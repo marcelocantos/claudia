@@ -99,8 +99,8 @@ agent.OnEvent(func(ev claudia.Event) {
     // ev.Raw:  complete JSONL line
 })
 
-agent.Send("prompt")  // newline is appended automatically
-reply, err := agent.WaitForResponse(ctx)  // blocks until "system" event
+agent.Send("prompt")  // Enter key appended; newlines inside msg are preserved as multi-line input
+reply, err := agent.WaitForResponse(ctx)  // blocks until the turn's terminal stop_reason
 ```
 
 For a one-shot, use the package-level helper:
