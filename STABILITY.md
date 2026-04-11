@@ -69,7 +69,6 @@ is annotated with a stability assessment:
 | `JSONLPath` | `() string` | Stable |
 | `TermLogPath` | `() string` | Needs review |
 | `Alive` | `() bool` | Stable |
-| `WaitReady` | `(ctx context.Context) error` | Stable |
 | `OnEvent` | `(fn EventFunc)` | Fluid |
 | `Interrupt` | `() error` | Stable |
 | `Send` | `(msg string) error` | Stable |
