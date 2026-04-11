@@ -28,7 +28,7 @@ maintenance activities. Append-only — newest entries at the bottom.
 
 ## 2026-04-12 — /release v0.5.0
 
-- **Commit**: `pending`
+- **Commit**: `1ffc493`
 - **Outcome**: Released v0.5.0, a bug-fix release correcting three independent
   issues in v0.4.0's Send-to-response path that together caused consumers to
   hang on the first prompt. (1) `Send` now uses `\r` (Enter) instead of
