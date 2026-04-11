@@ -80,6 +80,15 @@ agent, err := claudia.Start(claudia.Config{
 defer agent.Stop()
 ```
 
+`Start` returns as soon as the `claude` process has been spawned,
+which is before the TUI has finished painting its startup UI. You
+do **not** need to sleep or poll: the first `Send` blocks
+internally until the TUI has gone quiet for 500 ms, which on a
+typical standalone session takes about 1.2 s from `Start`. If you
+want to observe the ready transition (e.g. to update a spinner),
+call `agent.WaitReady(ctx)` explicitly — it returns nil once the
+TUI is ready, or an error if detection gave up.
+
 Set an event handler **before** sending the first message — messages
 may arrive quickly, and only one handler is active at a time:
 
@@ -162,20 +171,18 @@ arguments.
    one on return. Don't stack multiple `WaitForResponse` calls
    concurrently on the same agent.
 
-6. **Task mode unsets `CLAUDECODE`.** When a Go program running under
-   Claude Code spawns a nested `claude` via Task mode, claudia strips
-   the env var to avoid nested-session detection. Don't re-add it.
+6. **Both modes strip `CLAUDECODE`.** When a Go program running
+   under Claude Code spawns a nested `claude`, claudia removes the
+   `CLAUDECODE` env var from the child's environment so it doesn't
+   detect itself as a nested session. Applies to both Task and
+   Session mode. Don't re-add it.
 
-7. **Session mode does not strip `CLAUDECODE`.** It assumes it is
-   running standalone. If you spawn a claudia Session agent from
-   inside a Claude Code harness, the nested session may misbehave.
-
-8. **PTY close races with log writes.** `Stop` serialises termLog
+7. **PTY close races with log writes.** `Stop` serialises termLog
    close with in-flight PTY writes via `termMu`. If you build on top
    of `pushTermOutput` or subscribe to terminal output, respect the
    same mutex discipline.
 
-9. **Task method names are verbose.** `TaskID()`, `TaskName()`,
+8. **Task method names are verbose.** `TaskID()`, `TaskName()`,
    `TaskWorkDir()`, `TaskStatus()` repeat "Task" even though they
    are methods on `Task`. This will likely be renamed before 1.0 —
    see `STABILITY.md`.

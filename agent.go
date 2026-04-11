@@ -86,14 +86,33 @@ type Agent struct {
 	onEvent  EventFunc
 	stopOnce sync.Once
 
-	// Terminal output streaming. termMu also guards termLog writes
-	// and close, so Stop cannot close the file while pushTermOutput
-	// is mid-write.
-	termMu   sync.Mutex
-	termBuf  []byte
-	termSubs []chan []byte
-	termLog  *os.File
+	// Terminal output streaming. termMu also guards termLog writes,
+	// termLog close, and lastTermWrite, so Stop cannot close the
+	// file while pushTermOutput is mid-write.
+	termMu        sync.Mutex
+	termBuf       []byte
+	termSubs      []chan []byte
+	termLog       *os.File
+	lastTermWrite time.Time
+
+	// TUI readiness. ready closes once detectReady concludes, either
+	// because the TUI has quiesced (success, readyErr == nil) or
+	// because detection gave up (failure, readyErr set). Send blocks
+	// on this channel before writing to the PTY.
+	ready    chan struct{}
+	readyErr error
 }
+
+// Readiness detection tuning. These are not currently exposed via
+// Config — the defaults match the startup profile observed in
+// cmd/probe-ready on a standalone session (first PTY burst ~200ms,
+// quiet by ~750ms). Expose them through Config if consumers need
+// per-site tuning.
+const (
+	readyQuiescenceDuration = 500 * time.Millisecond
+	readyOverallTimeout     = 30 * time.Second
+	readyPollInterval       = 50 * time.Millisecond
+)
 
 // Start spawns a new Claude Code agent in a PTY.
 func Start(cfg Config) (*Agent, error) {
@@ -151,6 +170,12 @@ func Start(cfg Config) (*Agent, error) {
 
 	cmd := exec.Command("claude", args...)
 	cmd.Dir = workDir
+	// Strip CLAUDECODE so the child doesn't detect itself as nested
+	// when the host Go program is itself running under a Claude Code
+	// harness. Task mode already does this; Session mode must match
+	// or the child misbehaves (notably: JSONL transcript is never
+	// written, which breaks event-driven consumers).
+	cmd.Env = filterEnv(os.Environ(), "CLAUDECODE")
 
 	ptmx, pts, err := pty.Open()
 	if err != nil {
@@ -176,6 +201,7 @@ func Start(cfg Config) (*Agent, error) {
 		ptmx:        ptmx,
 		cmd:         cmd,
 		alive:       true,
+		ready:       make(chan struct{}),
 	}
 
 	if termLogPath != "" {
@@ -217,7 +243,76 @@ func Start(cfg Config) (*Agent, error) {
 	// Tail JSONL.
 	go a.tailJSONL()
 
+	// Detect TUI readiness so Send can safely block on it.
+	go a.detectReady()
+
 	return a, nil
+}
+
+// detectReady watches the PTY byte stream for quiescence — the
+// point at which Claude Code's TUI has finished painting its
+// startup UI and stops writing to the terminal until user input
+// arrives. That silence is the readiness signal Send gates on.
+//
+// cmd/probe-ready confirms that a standalone `claude` session
+// emits a burst of output (banner, config load, input prompt) in
+// the first ~750ms of startup and then goes silent. A 500ms
+// silence window is long enough to clear the initial burst and
+// short enough that consumers don't notice the block.
+//
+// A prior version of this function also waited for the session's
+// JSONL file to exist, on the theory that file existence meant
+// "transcript initialised". That check was dead weight — the
+// JSONL is written lazily, sometimes only after the first turn,
+// and its appearance is not coupled to TUI readiness. Removing it
+// fixed a 30s hang on every Send for sessions where the JSONL
+// never materialised in time.
+//
+// On success, detectReady returns with readyErr == nil and the
+// deferred close fires. On failure (process death, overall
+// timeout) readyErr is set before the close.
+func (a *Agent) detectReady() {
+	defer close(a.ready)
+
+	start := time.Now()
+	for {
+		a.termMu.Lock()
+		hasData := len(a.termBuf) > 0
+		last := a.lastTermWrite
+		a.termMu.Unlock()
+
+		if hasData && !last.IsZero() && time.Since(last) >= readyQuiescenceDuration {
+			return
+		}
+		if !a.Alive() {
+			a.readyErr = fmt.Errorf("claude exited before TUI became ready")
+			return
+		}
+		if time.Since(start) > readyOverallTimeout {
+			a.readyErr = fmt.Errorf("timeout waiting for TUI to quiesce after %s", readyOverallTimeout)
+			return
+		}
+		time.Sleep(readyPollInterval)
+	}
+}
+
+// WaitReady blocks until the TUI has finished initialising and is
+// ready to accept input from Send, or until ctx is cancelled. It
+// returns any error recorded during readiness detection (e.g. Claude
+// exited during startup, or the overall timeout elapsed).
+//
+// Calling this is optional: Send calls it internally on every
+// invocation, so consumers that just want to send a prompt do not
+// need to wait explicitly. WaitReady is exposed for consumers that
+// want to observe the ready transition (e.g. to update a UI) or
+// distinguish "readiness failed" from "send failed".
+func (a *Agent) WaitReady(ctx context.Context) error {
+	select {
+	case <-a.ready:
+		return a.readyErr
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // Run sends a single prompt to a new Claude Code session, waits for
@@ -274,7 +369,24 @@ func (a *Agent) Interrupt() error {
 }
 
 // Send writes a user message to the Claude process.
+//
+// Send blocks until Claude Code's TUI has finished initialising and
+// is ready to accept input (see [Agent.WaitReady] for the detection
+// strategy). This prevents keystrokes from being typed into a
+// half-painted startup UI where they would be silently dropped.
+// Once the session has reached readiness, subsequent Send calls
+// return immediately — the ready channel stays closed for the life
+// of the agent.
+//
+// If readiness detection failed (process exited during startup, or
+// the overall timeout elapsed) Send returns the detection error
+// without writing anything.
 func (a *Agent) Send(msg string) error {
+	<-a.ready
+	if a.readyErr != nil {
+		return fmt.Errorf("claude not ready: %w", a.readyErr)
+	}
+
 	a.mu.Lock()
 	alive := a.alive
 	a.mu.Unlock()
@@ -286,8 +398,13 @@ func (a *Agent) Send(msg string) error {
 	return err
 }
 
-// WaitForResponse blocks until the next assistant response is complete
-// (signalled by a "system" event in the JSONL). Returns the assistant text.
+// WaitForResponse blocks until the next assistant turn completes and
+// returns the assistant text accumulated across the turn.
+//
+// Completion is signalled by an assistant event whose stop_reason is
+// terminal (end_turn, stop_sequence, or max_tokens). A tool_use stop
+// reason is not terminal — the model paused for tool results and will
+// emit further assistant events as the turn continues.
 func (a *Agent) WaitForResponse(ctx context.Context) (string, error) {
 	ch := make(chan string, 1)
 	var text strings.Builder
@@ -297,12 +414,16 @@ func (a *Agent) WaitForResponse(ctx context.Context) (string, error) {
 		if oldFn != nil {
 			oldFn(ev)
 		}
-		switch ev.Type {
-		case "assistant":
-			if ev.Text != "" {
-				text.WriteString(ev.Text)
+		if ev.Type != "assistant" {
+			return
+		}
+		if ev.Text != "" {
+			if text.Len() > 0 {
+				text.WriteByte('\n')
 			}
-		case "system":
+			text.WriteString(ev.Text)
+		}
+		if ev.IsTerminalStop() {
 			select {
 			case ch <- text.String():
 			default:
@@ -347,6 +468,8 @@ const termBufSize = 128 * 1024 // 128KB ring buffer
 func (a *Agent) pushTermOutput(data []byte) {
 	a.termMu.Lock()
 	defer a.termMu.Unlock()
+
+	a.lastTermWrite = time.Now()
 
 	a.termBuf = append(a.termBuf, data...)
 	if len(a.termBuf) > termBufSize {

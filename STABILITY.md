@@ -12,7 +12,7 @@ new module (e.g. `claudia2`) rather than breaking an existing import
 path. The pre-1.0 period exists to shake out the API design before
 that contract takes effect.
 
-Snapshot as of: v0.3.0.
+Snapshot as of: v0.4.0.
 
 ## Interaction surface
 
@@ -32,7 +32,7 @@ is annotated with a stability assessment:
 |---|---|---|
 | `Config` | struct with `WorkDir, SessionID, Model, PermissionMode, MCPConfig, DisallowTools, ExtraArgs, TermLogPath` (all `string` except `ExtraArgs []string`) | Needs review |
 | `Agent` | opaque struct; methods listed below | Needs review |
-| `Event` | struct with `Type string`, `Raw json.RawMessage`, `Text string`, `ProgressType string` | Needs review |
+| `Event` | struct with `Type string`, `Raw json.RawMessage`, `Text string`, `StopReason string`, `ProgressType string`; method `IsTerminalStop() bool` | Stable |
 | `EventFunc` | `func(Event)` | Needs review |
 | `Usage` | struct with `InputTokens, OutputTokens, CacheCreationInputTokens, CacheReadInputTokens int` | Stable |
 | `TaskEvent` | struct with `Type TaskEventType`, `Content, ToolName, ToolInput, ToolID, SessionID string`, `DurationMs, CostUSD float64`, `Usage Usage`, `IsError bool`, `ErrorMsg string` | Needs review |
@@ -69,6 +69,7 @@ is annotated with a stability assessment:
 | `JSONLPath` | `() string` | Stable |
 | `TermLogPath` | `() string` | Needs review |
 | `Alive` | `() bool` | Stable |
+| `WaitReady` | `(ctx context.Context) error` | Stable |
 | `OnEvent` | `(fn EventFunc)` | Fluid |
 | `Interrupt` | `() error` | Stable |
 | `Send` | `(msg string) error` | Stable |
@@ -182,13 +183,17 @@ Concrete items that must be addressed before cutting 1.0.
 - **Session mode has no cost or usage accounting.** Only Task mode
   exposes this. Either document the asymmetry or parse usage from
   the JSONL transcript.
-- **`WaitForResponse` signal is fragile.** It resolves on the next
-  `system` event after any `assistant` text. This conflates "turn
-  ended" with unrelated system events. Find a more robust signal.
 - **`OnEvent` is a single handler.** Replace with either a
   subscribe/unsubscribe pattern (like `SubscribeTerminal`) or a
   channel-returning primitive so multiple consumers can observe
   events without colliding.
+- **Readiness tuning is hardcoded.** `detectReady` uses a 500 ms
+  quiescence window and a 30 s overall cap, constants in `agent.go`
+  with no `Config` override. The values were measured on a single
+  machine against a standalone session; slow-startup environments
+  (many MCP servers, cold file caches, CI runners) have not been
+  tested. Expose via `Config` if consumers report timeouts, and
+  add integration coverage before 1.0.
 
 ### Documentation
 

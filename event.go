@@ -17,11 +17,35 @@ type Event struct {
 	Raw json.RawMessage `json:"-"`
 
 	// Text is populated for type == "assistant" with the concatenated text
-	// content blocks.
+	// content blocks from the message.
 	Text string `json:"-"`
+
+	// StopReason is populated for type == "assistant" with the message's
+	// stop_reason field. A single logical assistant message is split across
+	// multiple JSONL events (one per content block); only the last event in
+	// the message carries a stop_reason, earlier ones have it unset.
+	// Terminal values are "end_turn", "stop_sequence", and "max_tokens";
+	// "tool_use" means the model paused for tool results and will continue.
+	StopReason string `json:"-"`
 
 	// ProgressType is populated for type == "progress" (e.g. "tool_use").
 	ProgressType string `json:"-"`
+}
+
+// IsTerminalStop reports whether the event represents a completed
+// assistant turn — i.e. an assistant event whose stop_reason is one of
+// the terminal values (end_turn, stop_sequence, max_tokens). A tool_use
+// stop reason is intentionally excluded: the model paused for tool
+// results and further assistant events will follow.
+func (e Event) IsTerminalStop() bool {
+	if e.Type != "assistant" {
+		return false
+	}
+	switch e.StopReason {
+	case "end_turn", "stop_sequence", "max_tokens":
+		return true
+	}
+	return false
 }
 
 // EventFunc receives events from the session transcript.
@@ -41,6 +65,9 @@ func parseEvent(line string) Event {
 	switch ev.Type {
 	case "assistant":
 		if msg, ok := entry["message"].(map[string]any); ok {
+			if sr, ok := msg["stop_reason"].(string); ok {
+				ev.StopReason = sr
+			}
 			if content, ok := msg["content"].([]any); ok {
 				var texts []string
 				for _, c := range content {
