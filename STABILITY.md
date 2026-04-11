@@ -12,7 +12,7 @@ new module (e.g. `claudia2`) rather than breaking an existing import
 path. The pre-1.0 period exists to shake out the API design before
 that contract takes effect.
 
-Snapshot as of: v0.3.0.
+Snapshot as of: v0.4.0.
 
 ## Interaction surface
 
@@ -187,6 +187,13 @@ Concrete items that must be addressed before cutting 1.0.
   subscribe/unsubscribe pattern (like `SubscribeTerminal`) or a
   channel-returning primitive so multiple consumers can observe
   events without colliding.
+- **Readiness tuning is hardcoded.** `detectReady` uses a 500 ms
+  quiescence window and a 30 s overall cap, constants in `agent.go`
+  with no `Config` override. The values were measured on a single
+  machine against a standalone session; slow-startup environments
+  (many MCP servers, cold file caches, CI runners) have not been
+  tested. Expose via `Config` if consumers report timeouts, and
+  add integration coverage before 1.0.
 
 ### Documentation
 
