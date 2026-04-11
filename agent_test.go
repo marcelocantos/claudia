@@ -121,6 +121,370 @@ func TestAgentReadinessSmoke(t *testing.T) {
 	t.Logf("WaitReady end-to-end: %s", latency.Round(time.Millisecond))
 }
 
+// TestAgentSendAndWaitForResponse is the end-to-end smoke test that
+// should have existed since v0.4.0. It spawns a real claude session,
+// sends a trivial prompt, and waits for a response. This exercises
+// the full chain:
+//
+//   - TUI readiness detection
+//   - Send submitting the turn (via the Enter key, not Shift+Enter)
+//   - Claude Code writing JSONL events
+//   - claudia tailing the JSONL
+//   - WaitForResponse resolving on terminal stop_reason
+//
+// The bug that motivated this test: v0.4.0 shipped with Send using
+// "\n" as the submit key, which Claude Code's TUI interprets as
+// Shift+Enter — prompt inserted but never submitted, no API request,
+// no JSONL events, WaitForResponse hangs indefinitely. The smoke
+// test for v0.4.0 only exercised WaitReady and missed this entirely.
+//
+// The test uses a deliberately cheap prompt ("respond with: ok") to
+// minimise API cost and keep runtime under 60 seconds. It does incur
+// one real API call per run, so it's only run when CLAUDIA_LIVE=1 is
+// set in the environment, in addition to the claude binary being
+// available.
+func TestAgentSendAndWaitForResponse(t *testing.T) {
+	if os.Getenv("CLAUDIA_LIVE") == "" {
+		t.Skip("CLAUDIA_LIVE not set (this test spends API credit)")
+	}
+	if _, err := exec.LookPath("claude"); err != nil {
+		t.Skip("claude binary not on PATH")
+	}
+
+	workDir := t.TempDir()
+
+	agent, err := Start(Config{WorkDir: workDir, Model: "haiku"})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer agent.Stop()
+
+	if err := agent.Send("respond with: ok"); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	reply, err := agent.WaitForResponse(ctx)
+	if err != nil {
+		t.Fatalf("WaitForResponse: %v", err)
+	}
+	if reply == "" {
+		t.Error("WaitForResponse returned empty string")
+	}
+	t.Logf("reply: %q", reply)
+}
+
+// waitForResponseFixture builds a minimal Agent and drives synthetic
+// Event values through its handler so WaitForResponse can be tested
+// without spawning a real claude process. It returns the agent plus a
+// dispatch function that the test can call to deliver events.
+//
+// Start WaitForResponse in a goroutine first, then use dispatch() to
+// feed events, then read from the result channel. The fixture polls
+// briefly for the handler to be installed before dispatch is safe —
+// WaitForResponse is the thing under test, not the dispatch plumbing.
+func waitForResponseFixture(t *testing.T) (*Agent, func(Event)) {
+	t.Helper()
+	a := &Agent{}
+	dispatch := func(ev Event) {
+		// Wait for WaitForResponse to install its handler before
+		// delivering the first event, otherwise the dispatch is a
+		// no-op. 200ms is comfortably more than the goroutine
+		// scheduling latency.
+		deadline := time.Now().Add(200 * time.Millisecond)
+		for {
+			a.mu.Lock()
+			fn := a.onEvent
+			a.mu.Unlock()
+			if fn != nil {
+				fn(ev)
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("WaitForResponse handler never installed")
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	return a, dispatch
+}
+
+func TestWaitForResponseSingleTerminalEvent(t *testing.T) {
+	a, dispatch := waitForResponseFixture(t)
+
+	done := make(chan struct {
+		text string
+		err  error
+	}, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	go func() {
+		text, err := a.WaitForResponse(ctx)
+		done <- struct {
+			text string
+			err  error
+		}{text, err}
+	}()
+
+	dispatch(Event{Type: "assistant", Text: "hello world", StopReason: "end_turn"})
+
+	select {
+	case r := <-done:
+		if r.err != nil {
+			t.Fatalf("err = %v", r.err)
+		}
+		if r.text != "hello world" {
+			t.Errorf("text = %q, want %q", r.text, "hello world")
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("WaitForResponse did not return after terminal event + settle window")
+	}
+}
+
+// TestWaitForResponseThinkingThenText exercises the exact bug that
+// motivated the settle-timer fix: a thinking block and a text block
+// for the same message, both annotated with end_turn, arriving
+// within a few milliseconds of each other. The old implementation
+// resolved on the first terminal event (thinking, empty) and lost
+// the subsequent text block.
+func TestWaitForResponseThinkingThenText(t *testing.T) {
+	a, dispatch := waitForResponseFixture(t)
+
+	done := make(chan struct {
+		text string
+		err  error
+	}, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	go func() {
+		text, err := a.WaitForResponse(ctx)
+		done <- struct {
+			text string
+			err  error
+		}{text, err}
+	}()
+
+	dispatch(Event{Type: "assistant", Text: "", StopReason: "end_turn"})
+	time.Sleep(50 * time.Millisecond) // simulate Claude Code's ~45ms gap
+	dispatch(Event{Type: "assistant", Text: "ok", StopReason: "end_turn"})
+
+	select {
+	case r := <-done:
+		if r.text != "ok" {
+			t.Errorf("text = %q, want %q (settle timer dropped the text block)", r.text, "ok")
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("WaitForResponse did not return")
+	}
+}
+
+func TestWaitForResponseResetsSettleTimer(t *testing.T) {
+	a, dispatch := waitForResponseFixture(t)
+
+	done := make(chan struct {
+		text string
+		err  error
+	}, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	go func() {
+		text, err := a.WaitForResponse(ctx)
+		done <- struct {
+			text string
+			err  error
+		}{text, err}
+	}()
+
+	// First terminal event starts the settle timer at t=0.
+	dispatch(Event{Type: "assistant", Text: "one", StopReason: "end_turn"})
+	// Wait most of the settle window, then deliver another event — this
+	// must reset the timer so the third event still gets accumulated.
+	time.Sleep(waitSettleDuration - 50*time.Millisecond)
+	dispatch(Event{Type: "assistant", Text: "two", StopReason: "end_turn"})
+	time.Sleep(waitSettleDuration - 50*time.Millisecond)
+	dispatch(Event{Type: "assistant", Text: "three", StopReason: "end_turn"})
+
+	select {
+	case r := <-done:
+		want := "one\ntwo\nthree"
+		if r.text != want {
+			t.Errorf("text = %q, want %q", r.text, want)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("WaitForResponse did not return")
+	}
+}
+
+func TestWaitForResponseIgnoresNonAssistantEvents(t *testing.T) {
+	a, dispatch := waitForResponseFixture(t)
+
+	done := make(chan struct {
+		text string
+		err  error
+	}, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	go func() {
+		text, err := a.WaitForResponse(ctx)
+		done <- struct {
+			text string
+			err  error
+		}{text, err}
+	}()
+
+	// Non-assistant events must not start the settle timer.
+	dispatch(Event{Type: "user"})
+	dispatch(Event{Type: "system"})
+	dispatch(Event{Type: "file-history-snapshot"})
+
+	// Verify WaitForResponse has NOT returned yet (no assistant event
+	// with terminal stop has been seen).
+	select {
+	case r := <-done:
+		t.Fatalf("WaitForResponse returned prematurely with text=%q err=%v", r.text, r.err)
+	case <-time.After(waitSettleDuration + 100*time.Millisecond):
+		// Expected: still waiting.
+	}
+
+	// Now deliver the real turn.
+	dispatch(Event{Type: "assistant", Text: "final", StopReason: "end_turn"})
+
+	select {
+	case r := <-done:
+		if r.text != "final" {
+			t.Errorf("text = %q, want final", r.text)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("WaitForResponse did not return after real turn")
+	}
+}
+
+func TestWaitForResponseToolUseNotTerminal(t *testing.T) {
+	// A tool_use stop_reason is not terminal. The settle timer must
+	// not start, and subsequent non-terminal streaming chunks must
+	// accumulate without resolving WaitForResponse.
+	a, dispatch := waitForResponseFixture(t)
+
+	done := make(chan struct {
+		text string
+		err  error
+	}, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	go func() {
+		text, err := a.WaitForResponse(ctx)
+		done <- struct {
+			text string
+			err  error
+		}{text, err}
+	}()
+
+	// Simulate an assistant turn that includes a tool_use (model
+	// pauses for tool results), followed by a real response after
+	// the tool result comes back.
+	dispatch(Event{Type: "assistant", Text: "let me check", StopReason: "tool_use"})
+	time.Sleep(waitSettleDuration + 100*time.Millisecond)
+
+	// WaitForResponse must NOT have returned yet — tool_use is not
+	// terminal.
+	select {
+	case r := <-done:
+		t.Fatalf("WaitForResponse resolved on tool_use stop: text=%q", r.text)
+	default:
+	}
+
+	// Tool result arrives (user event), then assistant continues.
+	dispatch(Event{Type: "user"})
+	dispatch(Event{Type: "assistant", Text: "done", StopReason: "end_turn"})
+
+	select {
+	case r := <-done:
+		want := "let me check\ndone"
+		if r.text != want {
+			t.Errorf("text = %q, want %q", r.text, want)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("WaitForResponse did not return")
+	}
+}
+
+// TestAgentMultiTurn exercises back-to-back Send + WaitForResponse on
+// the same agent. Verifies that state between turns (particularly the
+// settle timer cleanup in WaitForResponse's defer) does not carry
+// over and cause the second turn to misbehave.
+func TestAgentMultiTurn(t *testing.T) {
+	if os.Getenv("CLAUDIA_LIVE") == "" {
+		t.Skip("CLAUDIA_LIVE not set (this test spends API credit)")
+	}
+	if _, err := exec.LookPath("claude"); err != nil {
+		t.Skip("claude binary not on PATH")
+	}
+
+	workDir := t.TempDir()
+	agent, err := Start(Config{WorkDir: workDir, Model: "haiku"})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer agent.Stop()
+
+	send := func(prompt string) string {
+		t.Helper()
+		if err := agent.Send(prompt); err != nil {
+			t.Fatalf("Send(%q): %v", prompt, err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		defer cancel()
+		reply, err := agent.WaitForResponse(ctx)
+		if err != nil {
+			t.Fatalf("WaitForResponse after %q: %v", prompt, err)
+		}
+		if reply == "" {
+			t.Fatalf("WaitForResponse after %q: empty reply", prompt)
+		}
+		return reply
+	}
+
+	first := send("respond with exactly: alpha")
+	t.Logf("first reply: %q", first)
+	second := send("respond with exactly: beta")
+	t.Logf("second reply: %q", second)
+
+	// Loose sanity checks — the point is that both replies came back,
+	// not that Claude obeyed the prompt format perfectly.
+	if first == second {
+		t.Error("both turns returned identical text — state probably carried over")
+	}
+}
+
+// TestRunHelper exercises the package-level claudia.Run one-shot
+// helper end-to-end. Run is the simplest possible consumer API and
+// had no prior coverage.
+func TestRunHelper(t *testing.T) {
+	if os.Getenv("CLAUDIA_LIVE") == "" {
+		t.Skip("CLAUDIA_LIVE not set (this test spends API credit)")
+	}
+	if _, err := exec.LookPath("claude"); err != nil {
+		t.Skip("claude binary not on PATH")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	reply, err := Run(ctx, "respond with: ok", Config{
+		WorkDir: t.TempDir(),
+		Model:   "haiku",
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if reply == "" {
+		t.Error("Run returned empty reply")
+	}
+	t.Logf("reply: %q", reply)
+}
+
 // TestAgentReadinessFailureOnDeadProcess verifies that if the Claude
 // process dies during startup (before the TUI quiesces), detectReady
 // sets a sensible error and closes the channel rather than hanging.

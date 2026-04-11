@@ -6,7 +6,10 @@ package claudia
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"os/exec"
 	"testing"
+	"time"
 )
 
 func TestParseTaskSystemEvent(t *testing.T) {
@@ -282,6 +285,76 @@ func TestTaskFilterEnvPartialMatch(t *testing.T) {
 	got := filterEnv(env, "CLAUDECODE")
 	if len(got) != 1 || got[0] != "CLAUDECODEOTHER=2" {
 		t.Errorf("filterEnv partial match: got %v", got)
+	}
+}
+
+// TestTaskRunSmoke spawns a real claude -p process and runs a trivial
+// prompt through Task mode, collecting events from the channel until
+// the result arrives. Covers the Task codepath end-to-end: process
+// spawn, stdout pipe wiring, NDJSON parsing, event dispatch, and the
+// final TaskEventResult.
+//
+// Gated on CLAUDIA_LIVE=1 (spends API credit) and on the claude
+// binary being available.
+func TestTaskRunSmoke(t *testing.T) {
+	if os.Getenv("CLAUDIA_LIVE") == "" {
+		t.Skip("CLAUDIA_LIVE not set (this test spends API credit)")
+	}
+	if _, err := exec.LookPath("claude"); err != nil {
+		t.Skip("claude binary not on PATH")
+	}
+
+	task := NewTask(TaskConfig{
+		ID:      "smoke-test",
+		Name:    "smoke",
+		WorkDir: t.TempDir(),
+		Model:   "haiku",
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	events, err := task.RunTask(ctx, "respond with: ok")
+	if err != nil {
+		t.Fatalf("RunTask: %v", err)
+	}
+
+	var (
+		sawInit   bool
+		sawResult bool
+		resultTxt string
+	)
+	for ev := range events {
+		switch ev.Type {
+		case TaskEventInit:
+			sawInit = true
+			if ev.SessionID == "" {
+				t.Error("TaskEventInit missing SessionID")
+			}
+		case TaskEventResult:
+			sawResult = true
+			resultTxt = ev.Content
+			if ev.DurationMs <= 0 {
+				t.Errorf("TaskEventResult DurationMs = %v, want > 0", ev.DurationMs)
+			}
+		case TaskEventError:
+			t.Fatalf("TaskEventError: %s", ev.ErrorMsg)
+		}
+	}
+
+	if !sawInit {
+		t.Error("never saw TaskEventInit")
+	}
+	if !sawResult {
+		t.Error("never saw TaskEventResult")
+	}
+	if resultTxt == "" {
+		t.Error("TaskEventResult content empty")
+	}
+	t.Logf("result: %q", resultTxt)
+
+	if got := task.TaskStatus(); got != TaskStatusIdle {
+		t.Errorf("post-run status = %q, want %q", got, TaskStatusIdle)
 	}
 }
 
