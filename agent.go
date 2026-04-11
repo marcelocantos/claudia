@@ -86,14 +86,32 @@ type Agent struct {
 	onEvent  EventFunc
 	stopOnce sync.Once
 
-	// Terminal output streaming. termMu also guards termLog writes
-	// and close, so Stop cannot close the file while pushTermOutput
-	// is mid-write.
-	termMu   sync.Mutex
-	termBuf  []byte
-	termSubs []chan []byte
-	termLog  *os.File
+	// Terminal output streaming. termMu also guards termLog writes,
+	// termLog close, and lastTermWrite, so Stop cannot close the
+	// file while pushTermOutput is mid-write.
+	termMu        sync.Mutex
+	termBuf       []byte
+	termSubs      []chan []byte
+	termLog       *os.File
+	lastTermWrite time.Time
+
+	// TUI readiness. ready closes once detectReady concludes, either
+	// because the TUI has quiesced (success, readyErr == nil) or
+	// because detection gave up (failure, readyErr set). Send blocks
+	// on this channel before writing to the PTY.
+	ready    chan struct{}
+	readyErr error
 }
+
+// Readiness detection tuning. These are not currently exposed via
+// Config — the defaults work for every Claude Code version observed
+// so far. If a consumer needs to override, expose them through
+// Config fields rather than adding another knob here.
+const (
+	readyQuiescenceDuration = 500 * time.Millisecond
+	readyOverallTimeout     = 30 * time.Second
+	readyPollInterval       = 50 * time.Millisecond
+)
 
 // Start spawns a new Claude Code agent in a PTY.
 func Start(cfg Config) (*Agent, error) {
@@ -176,6 +194,7 @@ func Start(cfg Config) (*Agent, error) {
 		ptmx:        ptmx,
 		cmd:         cmd,
 		alive:       true,
+		ready:       make(chan struct{}),
 	}
 
 	if termLogPath != "" {
@@ -217,7 +236,94 @@ func Start(cfg Config) (*Agent, error) {
 	// Tail JSONL.
 	go a.tailJSONL()
 
+	// Detect TUI readiness so Send can safely block on it.
+	go a.detectReady()
+
 	return a, nil
+}
+
+// detectReady watches the PTY stream and the JSONL file for signs
+// that Claude Code's TUI has finished initialising and is ready to
+// accept keystrokes. Success is signalled by closing a.ready with
+// a.readyErr == nil; failure (process death, overall timeout) sets
+// a.readyErr before closing.
+//
+// The detection strategy is:
+//
+//  1. Wait for the session's JSONL file to exist. Claude writes this
+//     early in startup, so file existence only means the process has
+//     reached the transcript-initialisation phase — not that the TUI
+//     is ready.
+//  2. Wait for the PTY stream to contain at least some bytes (the
+//     TUI has started painting) and then to go silent for
+//     readyQuiescenceDuration. The TUI redraws continuously while it
+//     loads MCP servers, scans files, and composes the input prompt;
+//     when it finishes, the byte stream stops until user input
+//     arrives. That silence is the most reliable "ready" signal
+//     available without parsing ANSI.
+//
+// The whole thing is capped at readyOverallTimeout so Send can never
+// hang indefinitely if Claude Code never finishes starting up.
+func (a *Agent) detectReady() {
+	defer close(a.ready)
+
+	start := time.Now()
+
+	// Phase 1: wait for JSONL file.
+	for {
+		if _, err := os.Stat(a.jsonlPath); err == nil {
+			break
+		}
+		if !a.Alive() {
+			a.readyErr = fmt.Errorf("claude exited before JSONL file was created")
+			return
+		}
+		if time.Since(start) > readyOverallTimeout {
+			a.readyErr = fmt.Errorf("timeout waiting for JSONL file after %s", readyOverallTimeout)
+			return
+		}
+		time.Sleep(readyPollInterval)
+	}
+
+	// Phase 2: wait for PTY quiescence.
+	for {
+		a.termMu.Lock()
+		hasData := len(a.termBuf) > 0
+		last := a.lastTermWrite
+		a.termMu.Unlock()
+
+		if hasData && !last.IsZero() && time.Since(last) >= readyQuiescenceDuration {
+			return
+		}
+		if !a.Alive() {
+			a.readyErr = fmt.Errorf("claude exited before TUI became ready")
+			return
+		}
+		if time.Since(start) > readyOverallTimeout {
+			a.readyErr = fmt.Errorf("timeout waiting for TUI to quiesce after %s", readyOverallTimeout)
+			return
+		}
+		time.Sleep(readyPollInterval)
+	}
+}
+
+// WaitReady blocks until the TUI has finished initialising and is
+// ready to accept input from Send, or until ctx is cancelled. It
+// returns any error recorded during readiness detection (e.g. Claude
+// exited during startup, or the overall timeout elapsed).
+//
+// Calling this is optional: Send calls it internally on every
+// invocation, so consumers that just want to send a prompt do not
+// need to wait explicitly. WaitReady is exposed for consumers that
+// want to observe the ready transition (e.g. to update a UI) or
+// distinguish "readiness failed" from "send failed".
+func (a *Agent) WaitReady(ctx context.Context) error {
+	select {
+	case <-a.ready:
+		return a.readyErr
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // Run sends a single prompt to a new Claude Code session, waits for
@@ -274,7 +380,24 @@ func (a *Agent) Interrupt() error {
 }
 
 // Send writes a user message to the Claude process.
+//
+// Send blocks until Claude Code's TUI has finished initialising and
+// is ready to accept input (see [Agent.WaitReady] for the
+// detection strategy). This prevents keystrokes from being typed
+// into a half-painted startup UI where they would be silently
+// dropped. Once the session has reached readiness, subsequent Send
+// calls return immediately — the ready channel stays closed for the
+// life of the agent.
+//
+// If readiness detection failed (process exited during startup,
+// overall timeout elapsed) Send returns the detection error
+// without writing anything.
 func (a *Agent) Send(msg string) error {
+	<-a.ready
+	if a.readyErr != nil {
+		return fmt.Errorf("claude not ready: %w", a.readyErr)
+	}
+
 	a.mu.Lock()
 	alive := a.alive
 	a.mu.Unlock()
@@ -356,6 +479,8 @@ const termBufSize = 128 * 1024 // 128KB ring buffer
 func (a *Agent) pushTermOutput(data []byte) {
 	a.termMu.Lock()
 	defer a.termMu.Unlock()
+
+	a.lastTermWrite = time.Now()
 
 	a.termBuf = append(a.termBuf, data...)
 	if len(a.termBuf) > termBufSize {

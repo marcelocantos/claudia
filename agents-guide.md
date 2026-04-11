@@ -80,6 +80,14 @@ agent, err := claudia.Start(claudia.Config{
 defer agent.Stop()
 ```
 
+`Start` returns as soon as the `claude` process has been spawned,
+which is before the TUI has finished initialising. You do **not**
+need to sleep or poll: the first `Send` call blocks internally on
+TUI readiness, so keystrokes cannot be typed into a half-painted
+startup UI. If you want to observe the ready transition (e.g. to
+update a spinner), call `agent.WaitReady(ctx)` explicitly — it
+returns once the TUI has quiesced or once detection fails.
+
 Set an event handler **before** sending the first message — messages
 may arrive quickly, and only one handler is active at a time:
 
@@ -152,33 +160,41 @@ arguments.
    If it does, claudia passes `--resume`; otherwise `--session-id`.
    Pass a stable `SessionID` to get resumption for free.
 
-4. **Terminal log files are append-only.** Resumed sessions
+4. **Readiness detection has a 30-second cap.** `Send` blocks on
+   `WaitReady` internally, which watches for the JSONL file to
+   exist and then for the PTY stream to fall silent for 500 ms.
+   If Claude Code takes longer than 30 seconds to finish starting
+   (slow MCP servers, large workdirs), `Send` returns a readiness
+   error rather than hanging. The caps are not yet exposed through
+   `Config`; if you need to override them, open an issue.
+
+5. **Terminal log files are append-only.** Resumed sessions
    accumulate PTY output across runs with no run-boundary markers.
    Don't treat the file as a single-session transcript without
    parsing it yourself.
 
-5. **`WaitForResponse` replaces the event handler.** It installs its
+6. **`WaitForResponse` replaces the event handler.** It installs its
    own callback (chaining to the previous one) and restores the old
    one on return. Don't stack multiple `WaitForResponse` calls
    concurrently on the same agent.
 
-6. **Task mode unsets `CLAUDECODE`.** When a Go program running under
+7. **Task mode unsets `CLAUDECODE`.** When a Go program running under
    Claude Code spawns a nested `claude` via Task mode, claudia strips
    the env var to avoid nested-session detection. Don't re-add it.
 
-7. **Session mode does not strip `CLAUDECODE`.** It assumes it is
+8. **Session mode does not strip `CLAUDECODE`.** It assumes it is
    running standalone. If you spawn a claudia Session agent from
    inside a Claude Code harness, the nested session may misbehave.
 
-8. **PTY close races with log writes.** `Stop` serialises termLog
+9. **PTY close races with log writes.** `Stop` serialises termLog
    close with in-flight PTY writes via `termMu`. If you build on top
    of `pushTermOutput` or subscribe to terminal output, respect the
    same mutex discipline.
 
-9. **Task method names are verbose.** `TaskID()`, `TaskName()`,
-   `TaskWorkDir()`, `TaskStatus()` repeat "Task" even though they
-   are methods on `Task`. This will likely be renamed before 1.0 —
-   see `STABILITY.md`.
+10. **Task method names are verbose.** `TaskID()`, `TaskName()`,
+    `TaskWorkDir()`, `TaskStatus()` repeat "Task" even though they
+    are methods on `Task`. This will likely be renamed before 1.0 —
+    see `STABILITY.md`.
 
 ## grok subpackage
 
