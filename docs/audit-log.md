@@ -5,7 +5,7 @@ maintenance activities. Append-only — newest entries at the bottom.
 
 ## 2026-04-12 — /release v0.4.0
 
-- **Commit**: `pending`
+- **Commit**: `12a5804`
 - **Outcome**: Released v0.4.0 as a Go module. Fixed `WaitForResponse` hang
   on systems without stop hooks by switching from `system` events to terminal
   `stop_reason` on assistant events. Added `Agent.WaitReady` primitive and
