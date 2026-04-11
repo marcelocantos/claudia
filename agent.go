@@ -120,6 +120,17 @@ func Start(cfg Config) (*Agent, error) {
 		cfg.WorkDir = "."
 	}
 	workDir, _ := filepath.Abs(cfg.WorkDir)
+	// Resolve symlinks so our project-dir escaping matches Claude
+	// Code's own canonicalisation. On macOS, /var is a symlink to
+	// /private/var, and any workdir under /var/folders (including
+	// Go's t.TempDir()) produces a JSONL transcript under
+	// -private-var-folders-..., while our unresolved path escapes
+	// to -var-folders-... — we'd tail a file Claude never writes.
+	// If resolution fails (path missing, permission denied) we fall
+	// back to the unresolved Abs path rather than failing Start.
+	if resolved, err := filepath.EvalSymlinks(workDir); err == nil {
+		workDir = resolved
+	}
 
 	if cfg.PermissionMode == "" {
 		cfg.PermissionMode = "bypassPermissions"
@@ -368,7 +379,7 @@ func (a *Agent) Interrupt() error {
 	return err
 }
 
-// Send writes a user message to the Claude process.
+// Send writes a user message to the Claude process and submits it.
 //
 // Send blocks until Claude Code's TUI has finished initialising and
 // is ready to accept input (see [Agent.WaitReady] for the detection
@@ -377,6 +388,16 @@ func (a *Agent) Interrupt() error {
 // Once the session has reached readiness, subsequent Send calls
 // return immediately — the ready channel stays closed for the life
 // of the agent.
+//
+// The message is submitted by appending a carriage return ("\r",
+// 0x0D) — Claude Code's TUI treats this as the Enter key, which
+// submits the current turn. A line feed ("\n", 0x0A) is treated as
+// Shift+Enter instead: it inserts a newline into the input buffer
+// without submitting. Early claudia releases used "\n" and silently
+// accumulated prompts in the input area where they were never sent
+// to the API. If you need to include a literal newline inside a
+// single prompt, embed "\n" characters in msg — Send only appends
+// the submit key.
 //
 // If readiness detection failed (process exited during startup, or
 // the overall timeout elapsed) Send returns the detection error
@@ -393,7 +414,7 @@ func (a *Agent) Send(msg string) error {
 	if !alive {
 		return fmt.Errorf("claude process not running")
 	}
-	data := []byte(msg + "\n")
+	data := []byte(msg + "\r")
 	_, err := a.ptmx.Write(data)
 	return err
 }
@@ -401,13 +422,43 @@ func (a *Agent) Send(msg string) error {
 // WaitForResponse blocks until the next assistant turn completes and
 // returns the assistant text accumulated across the turn.
 //
-// Completion is signalled by an assistant event whose stop_reason is
-// terminal (end_turn, stop_sequence, or max_tokens). A tool_use stop
-// reason is not terminal — the model paused for tool results and will
-// emit further assistant events as the turn continues.
+// A single logical assistant message can be split across multiple
+// JSONL events — one per content block (thinking, text, tool_use,
+// etc.). In some Claude Code versions every block in a message
+// carries the message's stop_reason, not just the last one; in
+// others only the final block does. WaitForResponse therefore does
+// not resolve on the first terminal stop_reason it sees. Instead,
+// it starts a short settle timer when a terminal event arrives and
+// resets the timer on every subsequent assistant event. The
+// accumulated text is returned only once the timer expires without
+// new events — the heuristic for "all content blocks of this turn
+// have arrived". The settle delay trades a small constant latency
+// (waitSettleDuration) against the risk of emitting an incomplete
+// message.
+//
+// Completion stop reasons are end_turn, stop_sequence, and
+// max_tokens. A tool_use stop reason is not terminal: the model
+// paused for tool results and will emit further assistant events
+// as the turn continues, and those events will keep the settle
+// timer from firing.
 func (a *Agent) WaitForResponse(ctx context.Context) (string, error) {
 	ch := make(chan string, 1)
-	var text strings.Builder
+	var (
+		mu           sync.Mutex
+		text         strings.Builder
+		seenTerminal bool
+		settleTimer  *time.Timer
+	)
+
+	emit := func() {
+		mu.Lock()
+		result := text.String()
+		mu.Unlock()
+		select {
+		case ch <- result:
+		default:
+		}
+	}
 
 	oldFn := a.onEvent
 	a.OnEvent(func(ev Event) {
@@ -417,6 +468,8 @@ func (a *Agent) WaitForResponse(ctx context.Context) (string, error) {
 		if ev.Type != "assistant" {
 			return
 		}
+
+		mu.Lock()
 		if ev.Text != "" {
 			if text.Len() > 0 {
 				text.WriteByte('\n')
@@ -424,14 +477,26 @@ func (a *Agent) WaitForResponse(ctx context.Context) (string, error) {
 			text.WriteString(ev.Text)
 		}
 		if ev.IsTerminalStop() {
-			select {
-			case ch <- text.String():
-			default:
-			}
+			seenTerminal = true
 		}
+		armed := seenTerminal
+		if armed {
+			if settleTimer != nil {
+				settleTimer.Stop()
+			}
+			settleTimer = time.AfterFunc(waitSettleDuration, emit)
+		}
+		mu.Unlock()
 	})
 
 	defer a.OnEvent(oldFn)
+	defer func() {
+		mu.Lock()
+		if settleTimer != nil {
+			settleTimer.Stop()
+		}
+		mu.Unlock()
+	}()
 
 	select {
 	case <-ctx.Done():
@@ -440,6 +505,14 @@ func (a *Agent) WaitForResponse(ctx context.Context) (string, error) {
 		return result, nil
 	}
 }
+
+// waitSettleDuration is how long WaitForResponse lingers after
+// seeing a terminal stop_reason to let any remaining content blocks
+// of the same message arrive. 250ms is comfortably longer than the
+// ~45ms gap observed between thinking and text blocks of a single
+// message in Claude Code v2.1.101, while still short enough to be
+// imperceptible to most consumers.
+const waitSettleDuration = 250 * time.Millisecond
 
 // Resize changes the PTY window size.
 func (a *Agent) Resize(cols, rows uint16) error {
