@@ -64,24 +64,35 @@ type Config struct {
 
 	// ExtraArgs are additional CLI arguments passed to claude.
 	ExtraArgs []string
+
+	// TermLogPath is the path to which raw PTY output (including ANSI
+	// escapes) is appended. If empty, it defaults to
+	// $XDG_STATE_HOME/claudia/terms/<escaped-workdir>/<sessionID>.term
+	// (with $XDG_STATE_HOME defaulting to ~/.local/state). Set to "-"
+	// to disable terminal logging.
+	TermLogPath string
 }
 
 // Agent is a persistent Claude Code process running in a PTY.
 type Agent struct {
-	sessionID string
-	jsonlPath string
-	ptmx      *os.File
-	cmd       *exec.Cmd
+	sessionID   string
+	jsonlPath   string
+	termLogPath string
+	ptmx        *os.File
+	cmd         *exec.Cmd
 
 	mu       sync.Mutex
 	alive    bool
 	onEvent  EventFunc
 	stopOnce sync.Once
 
-	// Terminal output streaming.
+	// Terminal output streaming. termMu also guards termLog writes
+	// and close, so Stop cannot close the file while pushTermOutput
+	// is mid-write.
 	termMu   sync.Mutex
 	termBuf  []byte
 	termSubs []chan []byte
+	termLog  *os.File
 }
 
 // Start spawns a new Claude Code agent in a PTY.
@@ -101,6 +112,14 @@ func Start(cfg Config) (*Agent, error) {
 	}
 	jsonlDir := projectDir(workDir)
 	jsonlPath := filepath.Join(jsonlDir, sessionID+".jsonl")
+
+	termLogPath := cfg.TermLogPath
+	switch termLogPath {
+	case "":
+		termLogPath = filepath.Join(termLogDir(workDir), sessionID+".term")
+	case "-":
+		termLogPath = ""
+	}
 
 	// If the JSONL already exists, this is a resume.
 	_, statErr := os.Stat(jsonlPath)
@@ -151,11 +170,22 @@ func Start(cfg Config) (*Agent, error) {
 	pts.Close()
 
 	a := &Agent{
-		sessionID: sessionID,
-		jsonlPath: jsonlPath,
-		ptmx:      ptmx,
-		cmd:       cmd,
-		alive:     true,
+		sessionID:   sessionID,
+		jsonlPath:   jsonlPath,
+		termLogPath: termLogPath,
+		ptmx:        ptmx,
+		cmd:         cmd,
+		alive:       true,
+	}
+
+	if termLogPath != "" {
+		if err := os.MkdirAll(filepath.Dir(termLogPath), 0o755); err != nil {
+			slog.Warn("term log mkdir failed", "path", termLogPath, "err", err)
+		} else if f, err := os.OpenFile(termLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); err != nil {
+			slog.Warn("term log open failed", "path", termLogPath, "err", err)
+		} else {
+			a.termLog = f
+		}
 	}
 
 	// Capture PTY output.
@@ -211,6 +241,10 @@ func (a *Agent) SessionID() string { return a.sessionID }
 
 // JSONLPath returns the path to the session JSONL file.
 func (a *Agent) JSONLPath() string { return a.jsonlPath }
+
+// TermLogPath returns the path to the raw terminal output log, or ""
+// if terminal logging is disabled.
+func (a *Agent) TermLogPath() string { return a.termLogPath }
 
 // Alive reports whether the Claude process is still running.
 func (a *Agent) Alive() bool {
@@ -298,6 +332,13 @@ func (a *Agent) Stop() {
 		time.Sleep(time.Second)
 		a.cmd.Process.Kill()
 		a.ptmx.Close()
+
+		a.termMu.Lock()
+		if a.termLog != nil {
+			a.termLog.Close()
+			a.termLog = nil
+		}
+		a.termMu.Unlock()
 	})
 }
 
@@ -310,6 +351,14 @@ func (a *Agent) pushTermOutput(data []byte) {
 	a.termBuf = append(a.termBuf, data...)
 	if len(a.termBuf) > termBufSize {
 		a.termBuf = a.termBuf[len(a.termBuf)-termBufSize:]
+	}
+
+	if a.termLog != nil {
+		if _, err := a.termLog.Write(data); err != nil {
+			slog.Warn("term log write failed", "path", a.termLogPath, "err", err)
+			a.termLog.Close()
+			a.termLog = nil
+		}
 	}
 
 	for _, ch := range a.termSubs {
@@ -396,13 +445,30 @@ func (a *Agent) tailJSONL() {
 
 // projectDir returns the Claude Code project directory for a workdir.
 func projectDir(workDir string) string {
-	var escaped strings.Builder
+	return filepath.Join(os.Getenv("HOME"), ".claude", "projects", escapeWorkDir(workDir))
+}
+
+// termLogDir returns the directory under which raw terminal output
+// logs are written for a given workdir. Follows XDG_STATE_HOME, with
+// a ~/.local/state fallback.
+func termLogDir(workDir string) string {
+	stateHome := os.Getenv("XDG_STATE_HOME")
+	if stateHome == "" {
+		stateHome = filepath.Join(os.Getenv("HOME"), ".local", "state")
+	}
+	return filepath.Join(stateHome, "claudia", "terms", escapeWorkDir(workDir))
+}
+
+// escapeWorkDir applies Claude Code's workdir-escape scheme:
+// non-alphanumeric/dash runes become '-'.
+func escapeWorkDir(workDir string) string {
+	var b strings.Builder
 	for _, r := range workDir {
 		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' {
-			escaped.WriteRune(r)
+			b.WriteRune(r)
 		} else {
-			escaped.WriteByte('-')
+			b.WriteByte('-')
 		}
 	}
-	return filepath.Join(os.Getenv("HOME"), ".claude", "projects", escaped.String())
+	return b.String()
 }
