@@ -32,7 +32,7 @@ is annotated with a stability assessment:
 |---|---|---|
 | `Config` | struct with `WorkDir, SessionID, Model, PermissionMode, MCPConfig, DisallowTools, ExtraArgs, TermLogPath` (all `string` except `ExtraArgs []string`) | Needs review |
 | `Agent` | opaque struct; methods listed below | Needs review |
-| `Event` | struct with `Type string`, `Raw json.RawMessage`, `Text string`, `ProgressType string` | Needs review |
+| `Event` | struct with `Type string`, `Raw json.RawMessage`, `Text string`, `StopReason string`, `ProgressType string`; method `IsTerminalStop() bool` | Stable |
 | `EventFunc` | `func(Event)` | Needs review |
 | `Usage` | struct with `InputTokens, OutputTokens, CacheCreationInputTokens, CacheReadInputTokens int` | Stable |
 | `TaskEvent` | struct with `Type TaskEventType`, `Content, ToolName, ToolInput, ToolID, SessionID string`, `DurationMs, CostUSD float64`, `Usage Usage`, `IsError bool`, `ErrorMsg string` | Needs review |
@@ -182,9 +182,6 @@ Concrete items that must be addressed before cutting 1.0.
 - **Session mode has no cost or usage accounting.** Only Task mode
   exposes this. Either document the asymmetry or parse usage from
   the JSONL transcript.
-- **`WaitForResponse` signal is fragile.** It resolves on the next
-  `system` event after any `assistant` text. This conflates "turn
-  ended" with unrelated system events. Find a more robust signal.
 - **`OnEvent` is a single handler.** Replace with either a
   subscribe/unsubscribe pattern (like `SubscribeTerminal`) or a
   channel-returning primitive so multiple consumers can observe

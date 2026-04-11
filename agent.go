@@ -286,8 +286,13 @@ func (a *Agent) Send(msg string) error {
 	return err
 }
 
-// WaitForResponse blocks until the next assistant response is complete
-// (signalled by a "system" event in the JSONL). Returns the assistant text.
+// WaitForResponse blocks until the next assistant turn completes and
+// returns the assistant text accumulated across the turn.
+//
+// Completion is signalled by an assistant event whose stop_reason is
+// terminal (end_turn, stop_sequence, or max_tokens). A tool_use stop
+// reason is not terminal — the model paused for tool results and will
+// emit further assistant events as the turn continues.
 func (a *Agent) WaitForResponse(ctx context.Context) (string, error) {
 	ch := make(chan string, 1)
 	var text strings.Builder
@@ -297,12 +302,16 @@ func (a *Agent) WaitForResponse(ctx context.Context) (string, error) {
 		if oldFn != nil {
 			oldFn(ev)
 		}
-		switch ev.Type {
-		case "assistant":
-			if ev.Text != "" {
-				text.WriteString(ev.Text)
+		if ev.Type != "assistant" {
+			return
+		}
+		if ev.Text != "" {
+			if text.Len() > 0 {
+				text.WriteByte('\n')
 			}
-		case "system":
+			text.WriteString(ev.Text)
+		}
+		if ev.IsTerminalStop() {
 			select {
 			case ch <- text.String():
 			default:
