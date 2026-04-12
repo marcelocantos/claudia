@@ -2,9 +2,10 @@ schema_version: 1
 targets:
   T1:
     name: claudia's Agent is backed by tmux with crash-survival, a warm pool, and human-attachable observability
-    status: converging
+    status: achieved
     value: 13.0
     cost: 13.0
+    actual_cost: 8.0
     acceptance:
     - Agent.Start / Send / WaitForResponse / Interrupt / Resize / Events / Stop all backed by tmux windows on a dedicated claudia tmux server at ~/.local/state/claudia/tmux.sock. No PTY-backed Agent in the codebase.
     - claudia.Acquire / Release package-level API provides a warm agent pool keyed by (workdir, model, disallowedTools), with crash-survival across consumer process boundaries handled by tmux.
@@ -55,6 +56,7 @@ targets:
     - pivot
     origin: manual
     discovered: 2026-04-12
+    achieved: 2026-04-12
   T1.1:
     name: claudia's Agent has a drop-in tmux-backed implementation
     status: achieved
@@ -107,9 +109,10 @@ targets:
     achieved: 2026-04-12
   T1.2:
     name: Warm agent pool is expressed as long-lived tmux windows with Acquire/Release semantics
-    status: identified
+    status: achieved
     value: 5.0
     cost: 3.0
+    actual_cost: 3.0
     acceptance:
     - claudia.Acquire(ctx, cfg) (*Agent, error) and (*Agent).Release(disposition) package-level functions added, backed entirely by tmux window lifetime. No custom pool code — tmux windows are the pool.
     - Pool keyed by (workdir, model, disallowedTools). Window names encode a stable hash of the key so Acquire from any process can look up existing windows idempotently via tmux list-windows.
@@ -136,11 +139,13 @@ targets:
     - T1.1
     origin: manual
     discovered: 2026-04-12
+    achieved: 2026-04-12
   T1.3:
     name: Session-chain tracking is daemon-free, backed by filesystem sidecars
-    status: identified
+    status: achieved
     value: 3.0
     cost: 3.0
+    actual_cost: 2.0
     acceptance:
     - 'Session-chain tracking from Slice 1 (PR #5) ported from its in-memory daemon-resident form to a daemon-free filesystem-backed implementation. Storage: one sidecar file per chain_id under ~/.local/state/claudia/chains/, containing the ordered list of session_ids.'
     - claudia.LookupChain(sid) package-level function reads the sidecar files and returns the chain. Replaces the Slice 1 RPC-to-daemon implementation; signature preserved so existing consumers don't have to change.
@@ -162,6 +167,7 @@ targets:
     - T1.1
     origin: manual
     discovered: 2026-04-12
+    achieved: 2026-04-12
   T1.4:
     name: The claudiad daemon code and the PTY-backed Agent are removed; tmux is the only modality
     status: achieved
@@ -200,9 +206,10 @@ targets:
     achieved: 2026-04-12
   T1.5:
     name: tmux runtime dependency is documented and surfaced; Windows unsupported
-    status: identified
+    status: achieved
     value: 2.0
     cost: 2.0
+    actual_cost: 2.0
     acceptance:
     - README and agents-guide.md document tmux as a hard runtime dependency with install one-liners for macOS (`brew install tmux`) and Linux (apt/dnf/pacman).
     - claudia.Start() (or the Agent constructor) returns a clear, structured error if tmux is missing from PATH or the wrong version, pointing the user at the install docs.
@@ -222,3 +229,4 @@ targets:
     - T1.4
     origin: forked-from T1.4 (tmux pivot, 2026-04-12)
     discovered: 2026-04-12
+    achieved: 2026-04-12
