@@ -55,7 +55,7 @@ maintenance activities. Append-only — newest entries at the bottom.
 
 ## 2026-04-12 — /release v0.6.0
 
-- **Commit**: `pending`
+- **Commit**: `aa00c77`
 - **Outcome**: Released v0.6.0, the tmux pivot release. Replaced the
   PTY-backed Agent and the claudiad daemon (PR #5, never released) with
   a tmux-backed substrate: agents run inside windows on a dedicated
