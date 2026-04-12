@@ -56,6 +56,9 @@ const poolWindowPrefix = "claudia-pool-"
 // windows for this key. When exceeded on Acquire the oldest idle
 // window is evicted before a new one is created.
 func Acquire(ctx context.Context, cfg Config) (*Agent, error) {
+	if err := checkTmux(); err != nil {
+		return nil, err
+	}
 	if cfg.WorkDir == "" {
 		cfg.WorkDir = "."
 	}

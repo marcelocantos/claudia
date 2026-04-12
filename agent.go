@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -136,9 +137,20 @@ const (
 	readyPollInterval   = 50 * time.Millisecond
 )
 
+// checkTmux returns a clear error if tmux is not on PATH.
+func checkTmux() error {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		return fmt.Errorf("tmux is required for claudia Session mode but was not found on PATH; install it via: brew install tmux (macOS) or apt install tmux (Linux)")
+	}
+	return nil
+}
+
 // Start spawns a new Claude Code agent inside a tmux window on the
 // dedicated claudia tmux server.
 func Start(cfg Config) (*Agent, error) {
+	if err := checkTmux(); err != nil {
+		return nil, err
+	}
 	if cfg.WorkDir == "" {
 		cfg.WorkDir = "."
 	}
