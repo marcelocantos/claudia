@@ -74,6 +74,19 @@ type Config struct {
 	// (with $XDG_STATE_HOME defaulting to ~/.local/state). Set to "-"
 	// to disable terminal logging.
 	TermLogPath string
+
+	// PoolPolicy controls what Acquire does when all matching pool
+	// windows are held by other consumers.
+	//   "spawn" (default): create a new window.
+	//   "wait":            block until a window is released (currently
+	//                      falls back to "spawn").
+	//   "error":           return an error immediately.
+	PoolPolicy string
+
+	// PoolCap is the maximum number of pool windows (idle + held) for
+	// this pool key. When Acquire would exceed the cap, the oldest idle
+	// window is evicted. 0 means unlimited.
+	PoolCap int
 }
 
 // Agent is a persistent Claude Code process running inside a tmux
@@ -92,6 +105,14 @@ type Agent struct {
 	alive    bool
 	onEvent  EventFunc
 	stopOnce sync.Once
+
+	// poolWindow is true when the agent was acquired from the warm pool
+	// (via Acquire) rather than spawned fresh (via Start). Pool agents
+	// must be released via Release rather than stopped with Stop.
+	poolWindow bool
+	// poolWorkDir is the resolved absolute working directory used as
+	// part of the pool key. Set by buildPoolAgent; empty for Start agents.
+	poolWorkDir string
 
 	// Terminal output streaming. termMu also guards termLog writes
 	// and termLog close, so Stop cannot close the file while
