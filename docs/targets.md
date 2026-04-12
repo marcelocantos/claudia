@@ -1,0 +1,220 @@
+# Targets
+
+## Active
+
+### 🎯T1 claudia's Agent is backed by tmux with crash-survival, a warm pool, and human-attachable observability
+- **Value**: 13
+- **Cost**: 13
+- **Acceptance**:
+  - Agent.Start / Send / WaitForResponse / Interrupt / Resize / Events / Stop all backed by tmux windows on a dedicated claudia tmux server at ~/.local/state/claudia/tmux.sock. No PTY-backed Agent in the codebase.
+  - claudia.Acquire / Release package-level API provides a warm agent pool keyed by (workdir, model, disallowedTools), with crash-survival across consumer process boundaries handled by tmux.
+  - claudia.LookupChain(sid) returns the session chain from daemon-free filesystem sidecars under ~/.local/state/claudia/chains/.
+  - Any live agent is human-attachable via the `tmux -S ... attach -t <window>` incantation the library exposes via Agent.AttachCommand(). This is the baseline observability mechanism for the entire system.
+  - cmd/claudiad, internal/daemon, internal/daemonproto, daemon_client.go, daemon_client_test.go, and the PTY-backed Agent implementation have all been removed from the repository. docs/audit-log.md records the pivot.
+  - tmux is documented as a hard runtime dependency. Windows is marked unsupported. No autostart infrastructure exists — tmux handles process lifetime on its own.
+- **Context**: **Pivoted 2026-04-12 from the claudiad daemon direction to a tmux-backed substrate.** The original T1 (as landed in Slice 1 / PR #5 on 2026-04-12) was building a custom Unix-socket daemon with JSON-RPC transport, PTY ownership semantics, warm pool lifecycle, session-chain tracking, and launchd/systemd packaging. The design conversation later the same day revealed that every one of those concerns collapses into a single tmux substrate:
+
+- **Crash survival** — a tmux server outlives any client, so consumers can die mid-session without affecting the agent.
+- **Warm pool** — long-lived windows on the dedicated server, keyed by hashed pool key. No custom pool code.
+- **Human observability** — `tmux attach` is a real, battle-tested mechanism for watching a live agent. The library just prints the incantation.
+- **Readiness detection** — on a rendered frame from `tmux capture-pane`, readiness is a regex matching the empty-prompt-box at the bottom of the viewport. Cleaner than parsing ANSI cursor state on a raw PTY stream.
+- **Multi-consumer routing** — tmux already multiplexes; any number of clients can attach to the same window.
+- **Packaging** — no launchd plist, no systemd unit, nothing to autostart. tmux already handles process lifetime.
+
+In every case, the replacement is simpler than the daemon design it replaces. Pre-1.0 is exactly when this kind of pivot is cheapest, so Slice 1's code (cmd/claudiad, internal/daemon, internal/daemonproto, daemon_client.go) is being removed in T1.4 rather than kept as a dead code path.
+
+The pivot's cost is Windows support: tmux is Unix-only. Claudia is a developer tool primarily used on macOS and Linux, so this is an acceptable tradeoff. WSL users can still run claudia inside WSL.
+
+**Sub-targets:**
+
+- **T1.1** — tmux-backed Agent implementation as a drop-in replacement for the PTY-backed Agent. This is the bulk of the work and carries the observable: true flag because tmux attach IS the observation mechanism.
+- **T1.2** — Acquire/Release pool semantics as a thin layer over long-lived tmux windows.
+- **T1.3** — session-chain tracking ported from the Slice 1 in-memory daemon form to a daemon-free filesystem sidecar form.
+- **T1.4** — removal of cmd/claudiad, internal/daemon, internal/daemonproto, daemon_client.go, and the PTY-backed Agent. tmux is the only modality.
+- **T1.5** — install docs, tmux dependency check, Windows marked unsupported.
+
+**Scope boundaries — what is NOT in this target:**
+- Remote / cross-machine agents. The tmux server socket is local Unix only.
+- Native Windows support. WSL is the fallback.
+- Managed Agents (/v1/agents) integration or any other non-Claude-Code backend.
+- OpenAI-compat public API surface.
+- Mnemo integration details beyond LookupChain(sid).
+
+**Historical reference:** the pre-pivot T1 body described a daemon architecture with four slices (chain tracker, warm pool, observability refactor, autostart packaging). Slice 1 landed as PR #5 (merge 68efc98, 2026-04-12); slices 2-4 were abandoned in favour of the tmux substrate described here. The audit-log entry in T1.4 is the durable record of the pivot.
+- **Depends on**: 🎯T1.1, 🎯T1.2, 🎯T1.3, 🎯T1.4, 🎯T1.5
+- **Tags**: tmux, architecture, api-cleanup, pivot
+- **Status**: Converging
+- **Discovered**: 2026-04-12
+
+### 🎯T1.1 ⦿ claudia's Agent has a drop-in tmux-backed implementation
+- **Value**: 13
+- **Cost**: 8
+- **Observable**: true
+- **Acceptance**:
+  - New internal package (internal/tmuxagent) spawns Claude Code inside a tmux window on a dedicated claudia server at $XDG_STATE_HOME/claudia/tmux.sock (fallback ~/.local/state/claudia/tmux.sock), overridable via CLAUDIA_TMUX_SOCKET. The server is separate from the user's default tmux so claudia windows never appear in the user's workspace.
+  - Implements the full Agent surface (Start/Send/WaitForResponse/Interrupt/Resize/OnEvent/WaitReady/SubscribeTerminal/UnsubscribeTerminal/Stop) as a drop-in replacement for the current PTY-backed implementation. Public API at the claudia package level is unchanged. During T1.1 the PTY path also stays in place behind a switch (CLAUDIA_TMUX=1 or Config.UseTmux); T1.4 removes it.
+  - Readiness detection: capture-pane + empty-prompt-box regex (─{10,}\n❯\s*\n─{10,}\s*\z) anchored to the tail of the captured viewport, polled at ~50ms, with a 30s overall timeout fallback preserving existing semantics. Replaces the 500ms PTY-silence heuristic from agent.go:322-345.
+  - Terminal byte stream (what SubscribeTerminal delivers) comes from a long-lived `tmux -C` control-mode client parsing %output notifications. Event stream (what OnEvent delivers) continues to come from JSONL tailing of ~/.claude/projects/<escaped>/<sid>.jsonl, exactly as today — the tmux substrate does not change the event source.
+  - Send routes via two tmux send-keys invocations: `send-keys -l <msg>` to type the literal text, then `send-keys Enter` to submit. Matches Claude Code TUI's expectation that Enter (\r) submits and Shift+Enter (\n) inserts a newline.
+  - Interrupt sends `tmux send-keys Escape` (0x1b), matching the existing agent.Interrupt semantics. Resize uses `tmux resize-window -t <window> -x <cols> -y <rows>`. Stop sends `tmux kill-window -t <window>` and lets tmux reap the child.
+  - Agent exposes AttachCommand() string returning the exact `tmux -S <socket> attach -t <window>` incantation so CLIs can print it for human inspection. This is the observable checkpoint that unblocks 🎯T1's convergence tunnel.
+  - Claude Code session_id is preserved across consumer crashes by storing it in the window's `@claudia-session-id` user option via `tmux set-option -w -t <window>`. A fresh consumer adopting the window reads it back via `tmux show-options`.
+  - Crash-survival integration test: Go test helper pattern spawns a subprocess, that subprocess starts a tmux-backed Agent and prints its window ID, the parent SIGKILLs the subprocess, the parent then lists windows on the claudia tmux server and confirms the Claude Code session is still alive and the session_id is preserved.
+  - The old PTY-backed Agent path stays in place during this target (so the existing test suite exercises both paths via CLAUDIA_TMUX=1); T1.4 removes it once the tmux path is proven green in CI across macOS and Linux.
+  - Makefile bullseye target lands as part of M6 (the final milestone of T1.1): `go vet ./...`, `go test ./... -race`, dirty-tree check. Unblocks bullseye_convergence's standing-invariants hook.
+- **Context**: Replaces the abandoned claudiad daemon direction entirely. Instead of building a custom Unix-socket daemon with JSON-RPC transport, PTY ownership semantics, pool lifecycle, and crash-survival wiring, claudia delegates process hosting to tmux — which already provides every one of those properties for free.
+
+Why this is dramatically simpler than the daemon design:
+
+1. **Crash survival for free.** A tmux server outlives any client. Consumer processes can die mid-session and the agent stays live; the next Acquire adopts the window. No custom PTY-detachment code, no daemon-side agent registry, no heartbeats.
+
+2. **Human observability for free.** Any live agent is attachable via `tmux -S ~/.local/state/claudia/tmux.sock attach -t <window>`. The library prints this incantation; a human pastes it and sees exactly what the agent sees. This is literally why T1.1 is `observable: true` — tmux attach IS the observation mechanism, not just a promise of one.
+
+3. **Readiness detection collapses to a regex.** On a raw PTY byte stream, readiness means parsing ANSI cursor-state machines. On a capture-pane rendered frame, readiness means pattern-matching `─{10,}\\n❯\\s*\\n─{10,}\\s*$` at the bottom of the viewport. When Claude is thinking, streaming, or running a tool, the pattern isn't there; when it returns to idle, it is. Clean edge, debounce ~100ms to absorb transient flickers.
+
+4. **Multi-consumer routing for free.** tmux already multiplexes — any number of clients can attach to the same window. The daemon design had to build this explicitly.
+
+5. **Battle-tested PTY handling.** tmux has been the reference implementation for terminal multiplexing for ~20 years. Unicode edge cases, resize handling, scrollback — all solved.
+
+Caveats worth knowing:
+
+- Tool-approval prompts, plan-mode banners, and AskUserQuestion render different UIs that are also 'waiting on input'. The empty-box regex detects idle-ready only; other waiting states need their own matchers if consumers care.
+- Theme/version drift: if Anthropic changes the prompt glyph in a future Claude Code release, the matcher breaks silently. Widen tolerance and pin a minimum Claude Code version.
+- tmux is Unix-only. Windows support dies — see T1.5 for documentation.
+
+Scope fences: dedicated tmux server at ~/.local/state/claudia/tmux.sock (not the user's default). No remote / cross-machine agents. No auth (filesystem permissions only). The existing PTY-backed Agent and Slice 1 daemon code stay in place during this target — T1.4 is the removal pass once the tmux path is proven.
+
+Forked from the original T1.2 (warm pool) after the design conversation on 2026-04-12 revealed that the pool, the observability story, and the crash-survival story all collapse into a single tmux substrate that's simpler than any of the three daemon slices individually.
+- **Tags**: tmux, architecture, pivot
+- **Origin**: forked-from T1.2 (tmux pivot, 2026-04-12)
+- **Status**: Identified
+- **Discovered**: 2026-04-12
+
+### 🎯T1.2 Warm agent pool is expressed as long-lived tmux windows with Acquire/Release semantics
+- **Value**: 5
+- **Cost**: 3
+- **Acceptance**:
+  - claudia.Acquire(ctx, cfg) (*Agent, error) and (*Agent).Release(disposition) package-level functions added, backed entirely by tmux window lifetime. No custom pool code — tmux windows are the pool.
+  - Pool keyed by (workdir, model, disallowedTools). Window names encode a stable hash of the key so Acquire from any process can look up existing windows idempotently via tmux list-windows.
+  - Cold Acquire (no matching window) creates a fresh window and pays the ~1.2s readiness cost. Warm Acquire adopts an existing window and returns in under 100ms (verified by benchmark test).
+  - Release disposition: 'return' (detach, leave window running on the server), 'drop' (tmux kill-window), 'keep_alive_for' (detach and record a grace deadline in a filesystem sidecar under ~/.local/state/claudia/pool/; expired windows swept by the next Acquire).
+  - Consumer crash survival: killing the consumer process mid-session leaves the window running on the tmux server. The next Acquire against the same key adopts it seamlessly with the session_id preserved.
+  - Pool policy field Config.PoolPolicy selects the behaviour when Acquire hits an in-use key: 'wait' (block until released), 'spawn-second' (create a second window), 'error' (return ErrPoolKeyBusy).
+  - Pool size cap enforced: when the number of live windows on the claudia tmux server exceeds Config.PoolCap, the oldest idle window is kill-windowed.
+  - Integration tests cover: cold acquire → release → warm reacquire, multiple concurrent consumers against different keys, consumer-crash-survives-agent, pool size cap eviction, disposition=drop kills the backing window, keep_alive_for grace expiry.
+  - Documentation: agents-guide.md gains a Pool subsection explaining Acquire/Release and the tmux window model; README updated; STABILITY.md catalogues Acquire/Release/Disposition as Needs review.
+- **Context**: Thin layer over T1.1. With tmux as the substrate, the pool is no longer a custom data structure owned by a daemon process — it is literally the set of windows on the dedicated claudia tmux server. Acquire lists windows, finds one whose name matches the hashed pool key, and adopts it; otherwise new-window. Release is either detach (keep) or kill-window (drop).
+
+This collapses the original T1.2 design (daemon-side Pool type, PTY ownership semantics, RPC routing of Send/WaitForResponse/Interrupt/Resize across process boundaries, agent handles, consumer-crash detection) into roughly nothing. Every one of those sub-problems was an artefact of building a custom process-hosting mechanism. tmux already solves them.
+
+Pool key → window name: a short hash of (workdir, model, disallowedTools) prefixed with 'claudia-' gives a stable, globally-unique, tmux-compatible window name that any consumer can compute deterministically. No central registry required.
+
+keep_alive_for grace windows: tmux has no native 'reserved for N seconds' concept, so the grace deadline lives in a filesystem sidecar file under ~/.local/state/claudia/pool/<window-name>.deadline. Acquire sweeps expired deadlines before returning a warm window.
+
+Depends on T1.1 — the tmux-backed Agent is the substrate; the pool is a small Acquire/Release semantic layer on top.
+
+Scope fences: local tmux server only; no remote pools; no cross-user pools (the server socket is per-user).
+- **Depends on**: 🎯T1.1
+- **Status**: Identified
+- **Discovered**: 2026-04-12
+
+### 🎯T1.3 Session-chain tracking is daemon-free, backed by filesystem sidecars
+- **Value**: 3
+- **Cost**: 3
+- **Acceptance**:
+  - Session-chain tracking from Slice 1 (PR #5) ported from its in-memory daemon-resident form to a daemon-free filesystem-backed implementation. Storage: one sidecar file per chain_id under ~/.local/state/claudia/chains/, containing the ordered list of session_ids.
+  - claudia.LookupChain(sid) package-level function reads the sidecar files and returns the chain. Replaces the Slice 1 RPC-to-daemon implementation; signature preserved so existing consumers don't have to change.
+  - fsnotify watching ~/.claude/projects/ for new JSONL files happens inside the first consumer process that registers a chain; subsequent consumers see the sidecar files and query them directly without needing their own watcher. File locking (flock) prevents races between concurrent registering consumers.
+  - Writes are append-only with O_APPEND + advisory locking so multiple writers can't clobber each other's entries. Reads are lock-free.
+  - Existing Slice 1 tests (TestLookupChainRoundTrip and friends) port to the new implementation with minimal changes and pass under -race.
+  - Documentation: agents-guide.md updated to reflect that LookupChain no longer requires a running daemon; STABILITY.md updated to reflect the move from daemon-backed to filesystem-backed.
+- **Context**: The session-chain tracker from Slice 1 was the smallest useful surface of the abandoned claudiad daemon: it mapped PIDs to session_ids by watching ~/.claude/projects/ for new JSONL files and attributing them to their owning PID via cwd matching. That work is valuable independent of the daemon — the pivot keeps the tracking, drops the daemon.
+
+The in-memory-in-a-daemon design from Slice 1 was appropriate for its context: a single long-lived process could hold the mapping, serve LookupChain RPCs, and re-populate from fsnotify events. With no daemon, the mapping has to live somewhere else. A filesystem sidecar directory is the simplest answer: one file per chain_id, O_APPEND writes, advisory file locking to serialise concurrent writers, and straightforward reads. It also survives consumer crashes trivially because it's on disk by construction.
+
+fsnotify watching still needs to happen somewhere — the first consumer process to register a chain takes on the watcher role for its lifetime. If that consumer dies, the next registering consumer starts a new watcher. There's a brief window where no one is watching; /clear events during that window won't link their new session_id to the chain until the next consumer picks up. This is an acceptable tradeoff vs. running a dedicated daemon.
+
+Depends on T1.1 because new sessions get registered by the tmux-backed Agent during Start. No dependency on T1.2 (pool) — the tracker is orthogonal.
+
+Scope fences: per-user only (sidecar directory under $HOME); no cross-machine chain tracking; no cross-user chain tracking.
+- **Depends on**: 🎯T1.1
+- **Status**: Identified
+- **Discovered**: 2026-04-12
+
+### 🎯T1.4 The claudiad daemon code and the PTY-backed Agent are removed; tmux is the only modality
+- **Value**: 5
+- **Cost**: 3
+- **Acceptance**:
+  - cmd/claudiad binary removed.
+  - internal/daemon and internal/daemonproto packages removed.
+  - daemon_client.go and daemon_client_test.go removed.
+  - The existing PTY-backed Agent implementation removed; the tmux-backed Agent from T1.1 becomes the sole implementation at the claudia package level.
+  - Any transitive dependencies used only by the daemon code (coder/websocket if not needed elsewhere) removed from go.mod via `go mod tidy`.
+  - .github/workflows/test.yml retained unchanged (it runs the test suite, not anything daemon-specific); any daemon-specific test targets in Makefile/mkfile removed.
+  - README, agents-guide.md, STABILITY.md rewritten to reflect tmux as the substrate and to remove all references to claudiad, JSON-RPC, WebSocket transport, Unix socket paths, and the daemon fallback. Gotcha sections updated.
+  - docs/audit-log.md entry recording the pivot from daemon to tmux substrate and the removal of Slice 1 code, with a one-paragraph explanation of why (human observability + crash survival + simpler readiness detection all collapse into a single tmux-backed implementation).
+  - A single PR (or small PR chain) lands the removal with the audit-log entry. CI stays green on macOS and Linux; Windows CI job deleted as part of this target if it existed.
+- **Context**: The cleanup pass after T1.1, T1.2, and T1.3 have validated the tmux substrate in CI. Rips out the claudiad daemon code that Slice 1 (PR #5, merge 68efc98, 2026-04-12) shipped — cmd/claudiad, internal/daemon, internal/daemonproto, daemon_client.go, daemon_client_test.go — plus the original PTY-backed Agent implementation. tmux is the only modality after this target lands.
+
+This is intentionally destructive to freshly-merged work. Slice 1 was the first slice of a daemon design that the 2026-04-12 design conversation determined was strictly more complex than a tmux substrate for the same set of requirements. The right response to 'we just built the wrong thing' is to remove it cleanly rather than leave it as a dead code path. Pre-1.0 is exactly when this kind of pivot is cheapest.
+
+Breaking-change consequences:
+- Windows support dies. claudia is a dev tool primarily and the Windows population is essentially zero, so this is acceptable. STABILITY.md catalogues the change.
+- claudia.LookupChain's signature is preserved but the implementation changes from RPC-to-daemon to filesystem sidecar reads (handled in T1.3). Consumers see no API change.
+- The fallback-to-direct-spawn behaviour from Slice 1 goes away because there's nothing to fall back from — tmux is always the path.
+
+Audit-log entry discipline: must clearly record that PR #5 (Slice 1) is being reverted in spirit and explain the pivot in one paragraph. The audit log is the durable history of what happened and why; a pivot of this size needs its own entry.
+
+Depends on T1.1, T1.2, T1.3 — the removal only makes sense once the replacements are all in place and green.
+- **Depends on**: 🎯T1.1, 🎯T1.2, 🎯T1.3
+- **Status**: Identified
+- **Discovered**: 2026-04-12
+
+### 🎯T1.5 tmux runtime dependency is documented and surfaced; Windows unsupported
+- **Value**: 2
+- **Cost**: 2
+- **Acceptance**:
+  - README and agents-guide.md document tmux as a hard runtime dependency with install one-liners for macOS (`brew install tmux`) and Linux (apt/dnf/pacman).
+  - claudia.Start() (or the Agent constructor) returns a clear, structured error if tmux is missing from PATH or the wrong version, pointing the user at the install docs.
+  - The dedicated tmux server socket path ~/.local/state/claudia/tmux.sock is documented along with the CLAUDIA_TMUX_SOCKET env var override.
+  - cmd/probe-ready (or a new cmd subcommand like `claudia doctor`) checks: tmux in PATH, tmux version >= some documented minimum, socket path writable, claudia tmux server reachable or spawnable. Reports pass/fail per check.
+  - Windows marked as unsupported with a note pointing at WSL. STABILITY.md catalogues the supported platform matrix (macOS arm64, Linux x86_64, Linux arm64).
+  - No autostart infrastructure needed (no launchd plist, no systemd unit) — tmux itself handles process lifetime. The removal of the old T1.4 packaging acceptance criteria is explicit in the audit-log entry.
+- **Context**: The smallest and last target of the pivot. With tmux as the substrate, host autostart becomes a non-problem: tmux already handles long-lived process supervision by design. The only installation concerns are making sure consumers have tmux available, know where the dedicated server socket lives, and can diagnose 'is my tmux setup working?' without reading claudia's source.
+
+Windows is dropped as a supported platform. The original T1.4 already noted 'Windows is out (claudia Session mode doesn't support Windows anyway)' in its scope fences, so this is not a new loss — it is making the existing reality explicit in STABILITY.md and the README. WSL users can run claudia inside WSL and it will work fine; native Windows is not a claudia target.
+
+Depends on T1.4 — docs can't meaningfully describe the tmux-only world until the daemon code is actually removed. If T1.5 shipped before T1.4, consumers reading the docs would see a tmux-only story while the code still contained a daemon fallback, which is worse than waiting.
+
+Scope fences: no packaging as a Homebrew formula (that's a separate marcelocantos/tap concern if the user wants it later); no .deb / .rpm / Nix / Snap; no cross-machine install guidance.
+- **Depends on**: 🎯T1.4
+- **Origin**: forked-from T1.4 (tmux pivot, 2026-04-12)
+- **Status**: Identified
+- **Discovered**: 2026-04-12
+
+## Achieved
+
+(none)
+
+## Graph
+
+```mermaid
+graph TD
+    T1["claudia's Agent is backed by …"]
+    T1_1["claudia's Agent has a drop-in…"]
+    T1_2["Warm agent pool is expressed …"]
+    T1_3["Session-chain tracking is dae…"]
+    T1_4["The claudiad daemon code and …"]
+    T1_5["tmux runtime dependency is do…"]
+    T1 -.->|needs| T1_1
+    T1 -.->|needs| T1_2
+    T1 -.->|needs| T1_3
+    T1 -.->|needs| T1_4
+    T1 -.->|needs| T1_5
+    T1_2 -.->|needs| T1_1
+    T1_3 -.->|needs| T1_1
+    T1_4 -.->|needs| T1_1
+    T1_4 -.->|needs| T1_2
+    T1_4 -.->|needs| T1_3
+    T1_5 -.->|needs| T1_4
+```
