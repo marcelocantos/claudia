@@ -147,8 +147,10 @@ arguments.
 
 ## Gotchas
 
-1. **`claude` must be on `$PATH`.** claudia shells out to the CLI;
-   there is no in-process API.
+1. **`claude` and `tmux` must be on `$PATH`.** claudia shells out to
+   both CLIs; there is no in-process API. `tmux` 3.0+ is required for
+   Session mode (`brew install tmux` / `apt install tmux`). Windows is
+   not supported; use WSL. Task mode does not require tmux.
 
 2. **Sub-agents are disabled.** claudia always passes
    `--disallowedTools Agent,TeamCreate,TeamDelete,SendMessage,EnterWorktree`.
@@ -187,65 +189,35 @@ arguments.
    are methods on `Task`. This will likely be renamed before 1.0 —
    see `STABILITY.md`.
 
-## Daemon (optional)
+## tmux substrate
 
-`cmd/claudiad` is an optional long-lived daemon that backs the
-library. Slice 1 of its design (the only piece shipped so far)
-tracks session chains: when the user presses `/clear` inside a
-Claude Code session, Claude Code rolls the session ID and starts
-writing a new JSONL file. Any tailer keyed on the original session
-ID loses its subject. The daemon fixes this by watching
-`~/.claude/projects/` for new `*.jsonl` files and attributing each
-one to its owning PID via cwd matching.
+Session mode agents run inside windows on a dedicated claudia tmux
+server (socket at `$XDG_STATE_HOME/claudia/tmux.sock`, defaulting
+to `~/.local/state/claudia/tmux.sock`). The server starts
+automatically on the first `Start` or `Acquire` call — no launchd
+or systemd setup is needed.
 
-When the daemon is running, `claudia.Start(cfg)` opportunistically
-reports each session it spawns (cwd, session ID, pid). Consumers
-can then call:
+### Human observability: AttachCommand
+
+Every agent exposes `AttachCommand()` which returns the exact tmux
+invocation to attach to its window:
 
 ```go
-chain, confidence, err := claudia.LookupChain(sid)
-if errors.Is(err, claudia.ErrDaemonUnavailable) {
-    // Daemon not running — fall back to treating sid as a
-    // single-element chain, or surface the unknown state, as
-    // the consumer prefers. See the note below on the fallback
-    // contract.
-}
+fmt.Println(agent.AttachCommand())
+// e.g. tmux -S ~/.local/state/claudia/tmux.sock attach -t @3
 ```
 
-`chain` is ordered oldest-first; a session that has never rolled
-over returns a single-element chain. `confidence` is
-`"deterministic"` for unambiguous attributions or `"ambiguous"`
-when multiple concurrent consumers registered against the same cwd
-and the daemon couldn't pick a single owner for a rollover.
+Run that command from a terminal to watch the live Claude Code TUI.
+This is the primary debugging tool when an agent is misbehaving.
 
-**Fallback contract.** `LookupChain` deliberately returns
-`ErrDaemonUnavailable` rather than a degenerate `[sid]` success
-when the daemon isn't running. Silently returning a single-element
-chain would contradict the daemon's role as the authoritative
-source of rollover linkage — consumers that trust the result
-would record fresh chains when the daemon was merely down.
-Consumers that want the degenerate behaviour can write it in one
-line at the call site.
+### Session-chain tracker (cmd/claudiad)
 
-**When the daemon is NOT running** claudia operates exactly as it
-did in prior releases — the daemon is an enhancement, not a
-requirement, and the library has no runtime dependency on it.
-
-To run the daemon manually:
-
-```sh
-go run github.com/marcelocantos/claudia/cmd/claudiad
-```
-
-It listens on `$XDG_STATE_HOME/claudia/claudiad.sock` (defaulting
-to `~/.local/state/claudia/claudiad.sock`) with the parent directory
-chmod'd `0700` and the socket file `0600`. Access control is
-filesystem permissions only; do not expose the socket over a
-network.
-
-Slices 2–4 (warm agent pool, live observability refactor, launchd
-autostart) are not yet shipped. See `docs/targets.yaml` 🎯T1 for
-the full roadmap.
+`cmd/claudiad` is an experimental sidecar (🎯T1.3, not yet fully
+shipped) that tracks session chains across `/clear` rollovers.
+It is separate from the tmux server and is not required for normal
+library operation. `LookupChain` and `ErrDaemonUnavailable` were
+removed in the daemon pivot — session-chain lookup will be
+filesystem-backed when 🎯T1.3 ships.
 
 ## grok subpackage
 

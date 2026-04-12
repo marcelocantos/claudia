@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -74,6 +75,19 @@ type Config struct {
 	// (with $XDG_STATE_HOME defaulting to ~/.local/state). Set to "-"
 	// to disable terminal logging.
 	TermLogPath string
+
+	// PoolPolicy controls what Acquire does when all matching pool
+	// windows are held by other consumers.
+	//   "spawn" (default): create a new window.
+	//   "wait":            block until a window is released (currently
+	//                      falls back to "spawn").
+	//   "error":           return an error immediately.
+	PoolPolicy string
+
+	// PoolCap is the maximum number of pool windows (idle + held) for
+	// this pool key. When Acquire would exceed the cap, the oldest idle
+	// window is evicted. 0 means unlimited.
+	PoolCap int
 }
 
 // Agent is a persistent Claude Code process running inside a tmux
@@ -92,6 +106,14 @@ type Agent struct {
 	alive    bool
 	onEvent  EventFunc
 	stopOnce sync.Once
+
+	// poolWindow is true when the agent was acquired from the warm pool
+	// (via Acquire) rather than spawned fresh (via Start). Pool agents
+	// must be released via Release rather than stopped with Stop.
+	poolWindow bool
+	// poolWorkDir is the resolved absolute working directory used as
+	// part of the pool key. Set by buildPoolAgent; empty for Start agents.
+	poolWorkDir string
 
 	// Terminal output streaming. termMu also guards termLog writes
 	// and termLog close, so Stop cannot close the file while
@@ -115,9 +137,20 @@ const (
 	readyPollInterval   = 50 * time.Millisecond
 )
 
+// checkTmux returns a clear error if tmux is not on PATH.
+func checkTmux() error {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		return fmt.Errorf("tmux is required for claudia Session mode but was not found on PATH; install it via: brew install tmux (macOS) or apt install tmux (Linux)")
+	}
+	return nil
+}
+
 // Start spawns a new Claude Code agent inside a tmux window on the
 // dedicated claudia tmux server.
 func Start(cfg Config) (*Agent, error) {
+	if err := checkTmux(); err != nil {
+		return nil, err
+	}
 	if cfg.WorkDir == "" {
 		cfg.WorkDir = "."
 	}
@@ -217,6 +250,14 @@ func Start(cfg Config) (*Agent, error) {
 		"session", sessionID,
 		"window", windowID,
 		"attach", a.AttachCommand())
+
+	// Register this session as the start of a new chain. The chain ID
+	// equals the session ID for freshly-started agents. /clear detection
+	// (which links subsequent sessions to the same chain) is deferred to
+	// a follow-up target.
+	if err := RegisterChain(sessionID, sessionID); err != nil {
+		slog.Warn("failed to register session chain", "session", sessionID, "err", err)
+	}
 
 	// Dial control mode for terminal byte stream.
 	ctrl, err := tmuxagent.DialControl(windowID)

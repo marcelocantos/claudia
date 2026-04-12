@@ -7,6 +7,15 @@ claudia wraps the `claude` CLI in two complementary modes, so you can
 drive Claude Code from a Go process without re-implementing PTY
 handling, JSONL transcript tailing, or session lifecycle management.
 
+## Requirements
+
+- Go 1.21+
+- `claude` CLI installed and on `$PATH`
+- tmux 3.0+ (`brew install tmux` / `apt install tmux` / `dnf install tmux`)
+- macOS or Linux (Windows is not supported; WSL works)
+
+No launchd or systemd setup is needed — tmux handles process lifetime for Session mode agents.
+
 ## Modes
 
 ### Task mode — one-shot prompts
@@ -42,9 +51,18 @@ session ID captured from a previous `TaskEventInit`.
 
 ### Session mode — persistent conversations
 
-Spawns `claude` inside a PTY and keeps it alive. Use it for multi-turn
-conversations, interactive agents that respond to external events, or
-programs that need to observe the session transcript as it happens.
+Spawns `claude` inside a tmux window on a dedicated claudia tmux server
+and keeps it alive. Use it for multi-turn conversations, interactive
+agents that respond to external events, or programs that need to observe
+the session transcript as it happens. The tmux substrate provides
+crash-survival (agents outlive the consumer process) and human-attachable
+observability — you can inspect any live agent with:
+
+```sh
+tmux -S ~/.local/state/claudia/tmux.sock attach -t <window>
+```
+
+(`AttachCommand()` on the agent returns the exact invocation.)
 
 ```go
 agent, err := claudia.Start(claudia.Config{
@@ -99,16 +117,23 @@ defer reg.StopAll()
 If the host program owns a single short-lived agent, skip the Registry
 and call `Start` directly.
 
-## claudiad (optional daemon)
+## tmux substrate
 
-`cmd/claudiad` is an optional long-lived daemon that backs the
-library. The first slice of its design tracks session chains:
-when `/clear` inside Claude Code rolls the session ID and starts a
-new JSONL file, the daemon attributes the new file to the owning
-process and exposes the full chain via `claudia.LookupChain(sid)`.
-When the daemon isn't running, claudia operates identically to
-prior releases — it is an enhancement, not a requirement. See
-`agents-guide.md` and `docs/targets.yaml` 🎯T1 for the full story.
+Session mode agents run inside a dedicated claudia tmux server (socket
+at `$XDG_STATE_HOME/claudia/tmux.sock`, defaulting to
+`~/.local/state/claudia/tmux.sock`). Each agent occupies one tmux
+window. The server starts automatically on the first `Start` or
+`Acquire` call and persists until the machine reboots — no launchd or
+systemd configuration is needed.
+
+Because agents live in tmux, they survive consumer process death. A
+new consumer process can reconnect to an existing window (via
+`Acquire` with a matching pool key) or observe its transcript via the
+JSONL file that Claude Code writes to `~/.claude/projects/`.
+
+`cmd/claudiad` in this repo is an experimental session-chain tracker
+(🎯T1.3 sidecar) and is separate from the tmux server. It is not
+required for normal operation.
 
 ## grok subpackage
 
@@ -125,10 +150,7 @@ if you don't.
 go get github.com/marcelocantos/claudia@latest
 ```
 
-Requires:
-
-- Go 1.26 or later
-- The `claude` CLI installed and on `$PATH`
+See [Requirements](#requirements) above for runtime dependencies.
 
 ## For agents
 

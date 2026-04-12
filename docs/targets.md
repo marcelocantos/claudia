@@ -2,6 +2,10 @@
 
 ## Active
 
+(none)
+
+## Achieved
+
 ### 🎯T1 claudia's Agent is backed by tmux with crash-survival, a warm pool, and human-attachable observability
 - **Value**: 13
 - **Cost**: 13
@@ -43,8 +47,10 @@ The pivot's cost is Windows support: tmux is Unix-only. Claudia is a developer t
 **Historical reference:** the pre-pivot T1 body described a daemon architecture with four slices (chain tracker, warm pool, observability refactor, autostart packaging). Slice 1 landed as PR #5 (merge 68efc98, 2026-04-12); slices 2-4 were abandoned in favour of the tmux substrate described here. The audit-log entry in T1.4 is the durable record of the pivot.
 - **Depends on**: 🎯T1.1, 🎯T1.2, 🎯T1.3, 🎯T1.4, 🎯T1.5
 - **Tags**: tmux, architecture, api-cleanup, pivot
-- **Status**: Converging
+- **Status**: Achieved
 - **Discovered**: 2026-04-12
+- **Achieved**: 2026-04-12
+- **Actual-cost**: 8
 
 ### 🎯T1.1 ⦿ claudia's Agent has a drop-in tmux-backed implementation
 - **Value**: 13
@@ -87,8 +93,10 @@ Scope fences: dedicated tmux server at ~/.local/state/claudia/tmux.sock (not the
 Forked from the original T1.2 (warm pool) after the design conversation on 2026-04-12 revealed that the pool, the observability story, and the crash-survival story all collapse into a single tmux substrate that's simpler than any of the three daemon slices individually.
 - **Tags**: tmux, architecture, pivot
 - **Origin**: forked-from T1.2 (tmux pivot, 2026-04-12)
-- **Status**: Converging
+- **Status**: Achieved
 - **Discovered**: 2026-04-12
+- **Achieved**: 2026-04-12
+- **Actual-cost**: 5
 
 ### 🎯T1.2 Warm agent pool is expressed as long-lived tmux windows with Acquire/Release semantics
 - **Value**: 5
@@ -115,8 +123,10 @@ Depends on T1.1 — the tmux-backed Agent is the substrate; the pool is a small 
 
 Scope fences: local tmux server only; no remote pools; no cross-user pools (the server socket is per-user).
 - **Depends on**: 🎯T1.1
-- **Status**: Identified
+- **Status**: Achieved
 - **Discovered**: 2026-04-12
+- **Achieved**: 2026-04-12
+- **Actual-cost**: 3
 
 ### 🎯T1.3 Session-chain tracking is daemon-free, backed by filesystem sidecars
 - **Value**: 3
@@ -138,32 +148,10 @@ Depends on T1.1 because new sessions get registered by the tmux-backed Agent dur
 
 Scope fences: per-user only (sidecar directory under $HOME); no cross-machine chain tracking; no cross-user chain tracking.
 - **Depends on**: 🎯T1.1
-- **Status**: Identified
+- **Status**: Achieved
 - **Discovered**: 2026-04-12
-
-### 🎯T1.5 tmux runtime dependency is documented and surfaced; Windows unsupported
-- **Value**: 2
-- **Cost**: 2
-- **Acceptance**:
-  - README and agents-guide.md document tmux as a hard runtime dependency with install one-liners for macOS (`brew install tmux`) and Linux (apt/dnf/pacman).
-  - claudia.Start() (or the Agent constructor) returns a clear, structured error if tmux is missing from PATH or the wrong version, pointing the user at the install docs.
-  - The dedicated tmux server socket path ~/.local/state/claudia/tmux.sock is documented along with the CLAUDIA_TMUX_SOCKET env var override.
-  - cmd/probe-ready (or a new cmd subcommand like `claudia doctor`) checks: tmux in PATH, tmux version >= some documented minimum, socket path writable, claudia tmux server reachable or spawnable. Reports pass/fail per check.
-  - Windows marked as unsupported with a note pointing at WSL. STABILITY.md catalogues the supported platform matrix (macOS arm64, Linux x86_64, Linux arm64).
-  - No autostart infrastructure needed (no launchd plist, no systemd unit) — tmux itself handles process lifetime. The removal of the old T1.4 packaging acceptance criteria is explicit in the audit-log entry.
-- **Context**: The smallest and last target of the pivot. With tmux as the substrate, host autostart becomes a non-problem: tmux already handles long-lived process supervision by design. The only installation concerns are making sure consumers have tmux available, know where the dedicated server socket lives, and can diagnose 'is my tmux setup working?' without reading claudia's source.
-
-Windows is dropped as a supported platform. The original T1.4 already noted 'Windows is out (claudia Session mode doesn't support Windows anyway)' in its scope fences, so this is not a new loss — it is making the existing reality explicit in STABILITY.md and the README. WSL users can run claudia inside WSL and it will work fine; native Windows is not a claudia target.
-
-Depends on T1.4 — docs can't meaningfully describe the tmux-only world until the daemon code is actually removed. If T1.5 shipped before T1.4, consumers reading the docs would see a tmux-only story while the code still contained a daemon fallback, which is worse than waiting.
-
-Scope fences: no packaging as a Homebrew formula (that's a separate marcelocantos/tap concern if the user wants it later); no .deb / .rpm / Nix / Snap; no cross-machine install guidance.
-- **Depends on**: 🎯T1.4
-- **Origin**: forked-from T1.4 (tmux pivot, 2026-04-12)
-- **Status**: Identified
-- **Discovered**: 2026-04-12
-
-## Achieved
+- **Achieved**: 2026-04-12
+- **Actual-cost**: 2
 
 ### 🎯T1.4 The claudiad daemon code and the PTY-backed Agent are removed; tmux is the only modality
 - **Value**: 5
@@ -196,19 +184,26 @@ Depends on T1.1, T1.2, T1.3 — the removal only makes sense once the replacemen
 - **Achieved**: 2026-04-12
 - **Actual-cost**: 2
 
-## Graph
+### 🎯T1.5 tmux runtime dependency is documented and surfaced; Windows unsupported
+- **Value**: 2
+- **Cost**: 2
+- **Acceptance**:
+  - README and agents-guide.md document tmux as a hard runtime dependency with install one-liners for macOS (`brew install tmux`) and Linux (apt/dnf/pacman).
+  - claudia.Start() (or the Agent constructor) returns a clear, structured error if tmux is missing from PATH or the wrong version, pointing the user at the install docs.
+  - The dedicated tmux server socket path ~/.local/state/claudia/tmux.sock is documented along with the CLAUDIA_TMUX_SOCKET env var override.
+  - cmd/probe-ready (or a new cmd subcommand like `claudia doctor`) checks: tmux in PATH, tmux version >= some documented minimum, socket path writable, claudia tmux server reachable or spawnable. Reports pass/fail per check.
+  - Windows marked as unsupported with a note pointing at WSL. STABILITY.md catalogues the supported platform matrix (macOS arm64, Linux x86_64, Linux arm64).
+  - No autostart infrastructure needed (no launchd plist, no systemd unit) — tmux itself handles process lifetime. The removal of the old T1.4 packaging acceptance criteria is explicit in the audit-log entry.
+- **Context**: The smallest and last target of the pivot. With tmux as the substrate, host autostart becomes a non-problem: tmux already handles long-lived process supervision by design. The only installation concerns are making sure consumers have tmux available, know where the dedicated server socket lives, and can diagnose 'is my tmux setup working?' without reading claudia's source.
 
-```mermaid
-graph TD
-    T1["claudia's Agent is backed by …"]
-    T1_1["claudia's Agent has a drop-in…"]
-    T1_2["Warm agent pool is expressed …"]
-    T1_3["Session-chain tracking is dae…"]
-    T1_5["tmux runtime dependency is do…"]
-    T1 -.->|needs| T1_1
-    T1 -.->|needs| T1_2
-    T1 -.->|needs| T1_3
-    T1 -.->|needs| T1_5
-    T1_2 -.->|needs| T1_1
-    T1_3 -.->|needs| T1_1
-```
+Windows is dropped as a supported platform. The original T1.4 already noted 'Windows is out (claudia Session mode doesn't support Windows anyway)' in its scope fences, so this is not a new loss — it is making the existing reality explicit in STABILITY.md and the README. WSL users can run claudia inside WSL and it will work fine; native Windows is not a claudia target.
+
+Depends on T1.4 — docs can't meaningfully describe the tmux-only world until the daemon code is actually removed. If T1.5 shipped before T1.4, consumers reading the docs would see a tmux-only story while the code still contained a daemon fallback, which is worse than waiting.
+
+Scope fences: no packaging as a Homebrew formula (that's a separate marcelocantos/tap concern if the user wants it later); no .deb / .rpm / Nix / Snap; no cross-machine install guidance.
+- **Depends on**: 🎯T1.4
+- **Origin**: forked-from T1.4 (tmux pivot, 2026-04-12)
+- **Status**: Achieved
+- **Discovered**: 2026-04-12
+- **Achieved**: 2026-04-12
+- **Actual-cost**: 2
