@@ -74,8 +74,8 @@ type RawLogFunc func(line []byte)
 
 // Task wraps a single headless Claude Code conversation using
 // --output-format stream-json. Unlike [Agent] (which uses a
-// persistent PTY), Task spawns a new process per prompt and parses
-// structured NDJSON events from stdout.
+// persistent tmux session), Task spawns a new process per prompt
+// and parses structured NDJSON events from stdout.
 type Task struct {
 	id      string
 	name    string

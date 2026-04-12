@@ -30,7 +30,7 @@ is annotated with a stability assessment:
 
 | Item | Definition | Status |
 |---|---|---|
-| `Config` | struct with `WorkDir, SessionID, Model, PermissionMode, MCPConfig, DisallowTools, ExtraArgs, TermLogPath` (all `string` except `ExtraArgs []string`) | Needs review |
+| `Config` | struct with `WorkDir, SessionID, Model, PermissionMode, MCPConfig, DisallowTools, TermLogPath string` and `ExtraArgs []string` | Needs review |
 | `Agent` | opaque struct; methods listed below | Needs review |
 | `Event` | struct with `Type string`, `Raw json.RawMessage`, `Text string`, `StopReason string`, `ProgressType string`; method `IsTerminalStop() bool` | Stable |
 | `EventFunc` | `func(Event)` | Needs review |
@@ -50,7 +50,7 @@ is annotated with a stability assessment:
 |---|---|
 | `TaskEventInit, TaskEventText, TaskEventToolUse, TaskEventResult, TaskEventError` (TaskEventType) | Stable |
 | `TaskStatusIdle, TaskStatusRunning, TaskStatusError, TaskStatusStopped` (TaskStatus) | Stable |
-| `ErrDaemonUnavailable` (error) | Needs review |
+| ~~`ErrDaemonUnavailable`~~ | Removed (daemon pivot) |
 
 #### Functions
 
@@ -61,8 +61,8 @@ is annotated with a stability assessment:
 | `NewTask` | `NewTask(cfg TaskConfig) *Task` | Stable |
 | `ParseTaskLine` | `ParseTaskLine(line []byte) []TaskEvent` | Stable |
 | `NewRegistry` | `NewRegistry(path string) (*Registry, error)` | Stable |
-| `LookupChain` | `LookupChain(sid string) ([]string, string, error)` | Needs review |
-| `DaemonSocketPath` | `DaemonSocketPath() string` | Needs review |
+| ~~`LookupChain`~~ | Removed (daemon pivot; see 🎯T1.3 for filesystem sidecar replacement) | — |
+| ~~`DaemonSocketPath`~~ | Removed (daemon pivot) | — |
 
 #### `Agent` methods
 
@@ -79,6 +79,7 @@ is annotated with a stability assessment:
 | `WaitForResponse` | `(ctx context.Context) (string, error)` | Needs review |
 | `Resize` | `(cols, rows uint16) error` | Stable |
 | `Stop` | `()` | Needs review |
+| `AttachCommand` | `() string` | Needs review |
 | `SubscribeTerminal` | `() (history []byte, ch chan []byte)` | Needs review |
 | `UnsubscribeTerminal` | `(ch chan []byte)` | Needs review |
 
@@ -173,15 +174,14 @@ Concrete items that must be addressed before cutting 1.0.
 
 ### Behavioural fixes
 
-- **`Stop` has a hard 1-second sleep** before SIGKILL. No graceful
-  shutdown signal, no caller control. Should accept a context or
-  timeout.
+- ~~**`Stop` has a hard 1-second sleep.**~~ Resolved by tmux pivot:
+  `Stop` now calls `tmux kill-window` which terminates immediately.
 - **`TermLogPath` lies after write failures.** The accessor returns
   the configured path even after `pushTermOutput` silently disabled
   the log on write error. Either keep logging best-effort with an
   accessor for "is logging live" or return "" once disabled.
 - **Terminal log lacks run-boundary markers.** Resumed sessions
-  concatenate PTY output with no way to split runs. Decide on a
+  concatenate terminal output with no way to split runs. Decide on a
   marker format (or don't, and document the choice) before 1.0.
 - **Session mode has no cost or usage accounting.** Only Task mode
   exposes this. Either document the asymmetry or parse usage from
@@ -190,13 +190,10 @@ Concrete items that must be addressed before cutting 1.0.
   subscribe/unsubscribe pattern (like `SubscribeTerminal`) or a
   channel-returning primitive so multiple consumers can observe
   events without colliding.
-- **Readiness tuning is hardcoded.** `detectReady` uses a 500 ms
-  quiescence window and a 30 s overall cap, constants in `agent.go`
-  with no `Config` override. The values were measured on a single
-  machine against a standalone session; slow-startup environments
-  (many MCP servers, cold file caches, CI runners) have not been
-  tested. Expose via `Config` if consumers report timeouts, and
-  add integration coverage before 1.0.
+- **Readiness tuning is hardcoded.** `detectReady` uses a capture-pane
+  regex polled at 50 ms with a 30 s overall cap. The values are
+  reasonable (startup readiness observed at ~680 ms on macOS) but
+  not configurable via `Config`. Expose if consumers report timeouts.
 
 ### Documentation
 
@@ -208,14 +205,15 @@ Concrete items that must be addressed before cutting 1.0.
 
 ### Testing and CI
 
-- **No CI workflow.** Add `.github/workflows/test.yml` running
-  `go test ./... && go vet ./...` on push.
-- **Test coverage is minimal.** Only `task_test.go` exists. Add
-  tests for Agent, Registry, event parsing, and the terminal log
-  path derivation.
-- **No integration tests against a real `claude` binary.** At least
-  one smoke test that exercises Task mode end-to-end (gated on
-  `claude` being available, or running in CI with a mock).
+- ~~**No CI workflow.**~~ Resolved: `.github/workflows/test.yml`
+  landed in PR #5 and runs on push.
+- **Test coverage is growing.** Agent readiness, crash-survival,
+  WaitForResponse settle semantics, event parsing, and terminal-log
+  path derivation are covered. Task mode still has no end-to-end
+  smoke test against a real `claude` binary.
+- **CI does not exercise tmux-backed Agent** on Linux runners.
+  GitHub macOS runners have tmux pre-installed; Linux runners need
+  `apt-get install tmux`. See 🎯T1.1 M6.
 
 ### Packaging
 
@@ -235,7 +233,8 @@ Concrete items that must be addressed before cutting 1.0.
   multi-backend library.
 - **WebSocket / HTTP server wrapping.** The concern of the host
   program, not this library.
-- **Windows-native PTY support** beyond whatever `creack/pty`
-  provides. macOS and Linux are the supported platforms.
+- **Windows support.** The tmux substrate is Unix-only. Windows
+  consumers must use WSL. This is a deliberate tradeoff for the
+  crash-survival and observability that tmux provides.
 - **Built-in persistence for Task sessions.** The `Registry` handles
   session mode agents; Task consumers can persist their own state.

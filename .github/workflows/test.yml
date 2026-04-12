@@ -19,6 +19,12 @@ jobs:
         with:
           go-version: '1.26.x'
 
+      # tmux is required for Session mode (Agent). macOS runners have
+      # it pre-installed; Ubuntu runners don't.
+      - name: Install tmux (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y tmux
+
       - name: Build
         run: go build ./...
 
@@ -30,12 +36,14 @@ jobs:
       #   - Tests that spawn the real `claude` binary check
       #     exec.LookPath("claude") and skip when it's absent. CI does
       #     not install claude, so those tests skip here.
+      #   - Tests that need tmux check exec.LookPath("tmux") and skip
+      #     if absent (should not happen given the install step above).
       #   - Tests that spend API credit check CLAUDIA_LIVE and skip
       #     unless explicitly enabled. CI never sets that.
       #
-      # What does run: every parse/unit test, the full internal/daemon
-      # test suite (state machine + WebSocket server + fsnotify
-      # watcher), and the library daemon_client round-trip. That
-      # covers everything CI can reach without an Anthropic key.
+      # What does run: every parse/unit test, the tmuxagent control-mode
+      # parser and readiness regex tests, and the full WaitForResponse
+      # settle-timer suite. That covers everything CI can reach without
+      # an Anthropic key or the claude binary.
       - name: Test
         run: go test -race -count=1 ./...
