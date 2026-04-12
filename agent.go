@@ -251,6 +251,14 @@ func Start(cfg Config) (*Agent, error) {
 		"window", windowID,
 		"attach", a.AttachCommand())
 
+	// Register this session as the start of a new chain. The chain ID
+	// equals the session ID for freshly-started agents. /clear detection
+	// (which links subsequent sessions to the same chain) is deferred to
+	// a follow-up target.
+	if err := RegisterChain(sessionID, sessionID); err != nil {
+		slog.Warn("failed to register session chain", "session", sessionID, "err", err)
+	}
+
 	// Dial control mode for terminal byte stream.
 	ctrl, err := tmuxagent.DialControl(windowID)
 	if err != nil {
