@@ -9,13 +9,17 @@
 //     completion, and returns the result text. Suitable for one-shot
 //     code generation, analysis, or transformation tasks.
 //
-//   - Session mode: [Start] spawns a persistent Claude Code process.
-//     Use [Agent.Send] to send messages, [Agent.OnEvent] to observe
-//     JSONL events, and [Agent.WaitForResponse] to block until the
-//     next assistant turn completes.
+//   - Session mode: [Start] spawns a persistent Claude Code process
+//     inside a tmux window on a dedicated claudia tmux server. Use
+//     [Agent.Send] to send messages, [Agent.OnEvent] to observe JSONL
+//     events, and [Agent.WaitForResponse] to block until the next
+//     assistant turn completes.
 //
-// Both modes manage the underlying PTY and JSONL transcript tailing
-// automatically. Claude Code's instability is absorbed behind a clean API.
+// The tmux substrate provides crash-survival (agents survive consumer
+// process death), human-attachable observability (tmux attach), and a
+// foundation for the warm agent pool (see Acquire/Release in T1.2).
+// JSONL transcript tailing drives the event stream regardless of
+// transport.
 package claudia
 
 import (
@@ -24,15 +28,14 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
-	"github.com/creack/pty"
 	"github.com/google/uuid"
+
+	"github.com/marcelocantos/claudia/internal/tmuxagent"
 )
 
 // Config configures a Claude Code agent.
@@ -65,63 +68,55 @@ type Config struct {
 	// ExtraArgs are additional CLI arguments passed to claude.
 	ExtraArgs []string
 
-	// TermLogPath is the path to which raw PTY output (including ANSI
-	// escapes) is appended. If empty, it defaults to
+	// TermLogPath is the path to which raw terminal output (including
+	// ANSI escapes) is appended. If empty, it defaults to
 	// $XDG_STATE_HOME/claudia/terms/<escaped-workdir>/<sessionID>.term
 	// (with $XDG_STATE_HOME defaulting to ~/.local/state). Set to "-"
 	// to disable terminal logging.
 	TermLogPath string
 }
 
-// Agent is a persistent Claude Code process running in a PTY.
+// Agent is a persistent Claude Code process running inside a tmux
+// window on the dedicated claudia tmux server. The tmux substrate
+// provides crash-survival (the agent stays alive if the consumer
+// process dies) and human-attachable observability (see
+// [Agent.AttachCommand]).
 type Agent struct {
-	sessionID   string
-	jsonlPath   string
-	termLogPath string
-	ptmx        *os.File
-	cmd         *exec.Cmd
-
-	// daemonClient is the opportunistic claudiad connection set up
-	// during Start. nil when no daemon is running; that's the normal
-	// fallback path and not an error condition. Used only to report
-	// session lifecycle to the daemon; the library otherwise operates
-	// independently of it.
-	daemonClient *daemonClient
+	sessionID    string
+	jsonlPath    string
+	termLogPath  string
+	tmuxWindowID string
+	tmuxCtrl     *tmuxagent.Control
 
 	mu       sync.Mutex
 	alive    bool
 	onEvent  EventFunc
 	stopOnce sync.Once
 
-	// Terminal output streaming. termMu also guards termLog writes,
-	// termLog close, and lastTermWrite, so Stop cannot close the
-	// file while pushTermOutput is mid-write.
-	termMu        sync.Mutex
-	termBuf       []byte
-	termSubs      []chan []byte
-	termLog       *os.File
-	lastTermWrite time.Time
+	// Terminal output streaming. termMu also guards termLog writes
+	// and termLog close, so Stop cannot close the file while
+	// pushTermOutput is mid-write.
+	termMu   sync.Mutex
+	termBuf  []byte
+	termSubs []chan []byte
+	termLog  *os.File
 
 	// TUI readiness. ready closes once detectReady concludes, either
-	// because the TUI has quiesced (success, readyErr == nil) or
-	// because detection gave up (failure, readyErr set). Send blocks
-	// on this channel before writing to the PTY.
+	// because the capture-pane regex matched (success, readyErr == nil)
+	// or because detection gave up (failure, readyErr set). Send
+	// blocks on this channel before writing to the agent.
 	ready    chan struct{}
 	readyErr error
 }
 
-// Readiness detection tuning. These are not currently exposed via
-// Config — the defaults match the startup profile observed in
-// cmd/probe-ready on a standalone session (first PTY burst ~200ms,
-// quiet by ~750ms). Expose them through Config if consumers need
-// per-site tuning.
+// Readiness detection tuning.
 const (
-	readyQuiescenceDuration = 500 * time.Millisecond
-	readyOverallTimeout     = 30 * time.Second
-	readyPollInterval       = 50 * time.Millisecond
+	readyOverallTimeout = 30 * time.Second
+	readyPollInterval   = 50 * time.Millisecond
 )
 
-// Start spawns a new Claude Code agent in a PTY.
+// Start spawns a new Claude Code agent inside a tmux window on the
+// dedicated claudia tmux server.
 func Start(cfg Config) (*Agent, error) {
 	if cfg.WorkDir == "" {
 		cfg.WorkDir = "."
@@ -186,42 +181,15 @@ func Start(cfg Config) (*Agent, error) {
 	}
 	args = append(args, cfg.ExtraArgs...)
 
-	cmd := exec.Command("claude", args...)
-	cmd.Dir = workDir
-	// Strip CLAUDECODE so the child doesn't detect itself as nested
-	// when the host Go program is itself running under a Claude Code
-	// harness. Task mode already does this; Session mode must match
-	// or the child misbehaves (notably: JSONL transcript is never
-	// written, which breaks event-driven consumers).
-	cmd.Env = filterEnv(os.Environ(), "CLAUDECODE")
-
-	ptmx, pts, err := pty.Open()
-	if err != nil {
-		return nil, fmt.Errorf("pty.Open: %w", err)
-	}
-
-	cmd.Stdin = pts
-	cmd.Stdout = pts
-	cmd.Stderr = pts
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true}
-
-	if err := cmd.Start(); err != nil {
-		ptmx.Close()
-		pts.Close()
-		return nil, fmt.Errorf("start claude: %w", err)
-	}
-	pts.Close()
-
 	a := &Agent{
 		sessionID:   sessionID,
 		jsonlPath:   jsonlPath,
 		termLogPath: termLogPath,
-		ptmx:        ptmx,
-		cmd:         cmd,
 		alive:       true,
 		ready:       make(chan struct{}),
 	}
 
+	// Open terminal log.
 	if termLogPath != "" {
 		if err := os.MkdirAll(filepath.Dir(termLogPath), 0o755); err != nil {
 			slog.Warn("term log mkdir failed", "path", termLogPath, "err", err)
@@ -232,135 +200,51 @@ func Start(cfg Config) (*Agent, error) {
 		}
 	}
 
-	// Capture PTY output.
-	go func() {
-		buf := make([]byte, 4096)
-		for {
-			n, err := ptmx.Read(buf)
-			if n > 0 {
-				data := make([]byte, n)
-				copy(data, buf[:n])
-				a.pushTermOutput(data)
-			}
-			if err != nil {
-				slog.Debug("pty read done", "err", err)
-				return
-			}
-		}
-	}()
+	// Spawn the claude window on the dedicated tmux server.
+	windowName := "claudia-" + sessionID[:8]
+	windowID, err := tmuxagent.SpawnWindow(workDir, windowName, "claude", args)
+	if err != nil {
+		return nil, fmt.Errorf("tmux spawn: %w", err)
+	}
+	a.tmuxWindowID = windowID
 
-	// Monitor process exit.
+	// Store session ID on the window for crash-survival recovery.
+	if err := tmuxagent.SetWindowOption(windowID, "claudia-session-id", sessionID); err != nil {
+		slog.Warn("failed to set session ID on tmux window", "err", err)
+	}
+
+	slog.Info("claudia agent started",
+		"session", sessionID,
+		"window", windowID,
+		"attach", a.AttachCommand())
+
+	// Dial control mode for terminal byte stream.
+	ctrl, err := tmuxagent.DialControl(windowID)
+	if err != nil {
+		tmuxagent.KillWindow(windowID)
+		return nil, fmt.Errorf("tmux control-mode: %w", err)
+	}
+	a.tmuxCtrl = ctrl
+
+	// Route control-mode bytes → pushTermOutput.
 	go func() {
-		err := cmd.Wait()
-		slog.Debug("claude process exited", "session", sessionID, "err", err)
+		for data := range ctrl.Bytes() {
+			a.pushTermOutput(data)
+		}
+		slog.Debug("tmux control stream closed", "session", sessionID)
 		a.mu.Lock()
 		a.alive = false
 		a.mu.Unlock()
 	}()
 
-	// Tail JSONL.
+	// Tail JSONL — events come from the transcript file, not from
+	// terminal bytes.
 	go a.tailJSONL()
 
 	// Detect TUI readiness so Send can safely block on it.
 	go a.detectReady()
 
-	// Opportunistically dial the claudiad daemon and report this
-	// session. Best-effort: a missing daemon is the normal fallback
-	// path, not a failure. The dial budget is intentionally short so
-	// Start stays fast on hosts without the daemon.
-	go a.maybeRegisterWithDaemon(workDir, cmd.Process.Pid)
-
 	return a, nil
-}
-
-// maybeRegisterWithDaemon tries to dial claudiad and report this
-// agent's (cwd, session_id, pid) tuple. Runs in a goroutine so a
-// slow/unreachable daemon never blocks Start. On success, the
-// client is cached on the Agent so Stop can close it cleanly.
-func (a *Agent) maybeRegisterWithDaemon(cwd string, pid int) {
-	ctx, cancel := context.WithTimeout(context.Background(), daemonDialBudget)
-	defer cancel()
-
-	client, err := dialDaemon(ctx)
-	if err != nil {
-		slog.Debug("daemon dial failed (fallback to direct spawn)", "err", err)
-		return
-	}
-	if err := client.registerSession(ctx, cwd, a.sessionID, pid); err != nil {
-		slog.Debug("daemon register failed", "err", err)
-		client.Close()
-		return
-	}
-
-	a.mu.Lock()
-	a.daemonClient = client
-	a.mu.Unlock()
-}
-
-// detectReady watches the PTY byte stream for quiescence — the
-// point at which Claude Code's TUI has finished painting its
-// startup UI and stops writing to the terminal until user input
-// arrives. That silence is the readiness signal Send gates on.
-//
-// cmd/probe-ready confirms that a standalone `claude` session
-// emits a burst of output (banner, config load, input prompt) in
-// the first ~750ms of startup and then goes silent. A 500ms
-// silence window is long enough to clear the initial burst and
-// short enough that consumers don't notice the block.
-//
-// A prior version of this function also waited for the session's
-// JSONL file to exist, on the theory that file existence meant
-// "transcript initialised". That check was dead weight — the
-// JSONL is written lazily, sometimes only after the first turn,
-// and its appearance is not coupled to TUI readiness. Removing it
-// fixed a 30s hang on every Send for sessions where the JSONL
-// never materialised in time.
-//
-// On success, detectReady returns with readyErr == nil and the
-// deferred close fires. On failure (process death, overall
-// timeout) readyErr is set before the close.
-func (a *Agent) detectReady() {
-	defer close(a.ready)
-
-	start := time.Now()
-	for {
-		a.termMu.Lock()
-		hasData := len(a.termBuf) > 0
-		last := a.lastTermWrite
-		a.termMu.Unlock()
-
-		if hasData && !last.IsZero() && time.Since(last) >= readyQuiescenceDuration {
-			return
-		}
-		if !a.Alive() {
-			a.readyErr = fmt.Errorf("claude exited before TUI became ready")
-			return
-		}
-		if time.Since(start) > readyOverallTimeout {
-			a.readyErr = fmt.Errorf("timeout waiting for TUI to quiesce after %s", readyOverallTimeout)
-			return
-		}
-		time.Sleep(readyPollInterval)
-	}
-}
-
-// WaitReady blocks until the TUI has finished initialising and is
-// ready to accept input from Send, or until ctx is cancelled. It
-// returns any error recorded during readiness detection (e.g. Claude
-// exited during startup, or the overall timeout elapsed).
-//
-// Calling this is optional: Send calls it internally on every
-// invocation, so consumers that just want to send a prompt do not
-// need to wait explicitly. WaitReady is exposed for consumers that
-// want to observe the ready transition (e.g. to update a UI) or
-// distinguish "readiness failed" from "send failed".
-func (a *Agent) WaitReady(ctx context.Context) error {
-	select {
-	case <-a.ready:
-		return a.readyErr
-	case <-ctx.Done():
-		return ctx.Err()
-	}
 }
 
 // Run sends a single prompt to a new Claude Code session, waits for
@@ -389,6 +273,13 @@ func (a *Agent) JSONLPath() string { return a.jsonlPath }
 // if terminal logging is disabled.
 func (a *Agent) TermLogPath() string { return a.termLogPath }
 
+// AttachCommand returns the tmux incantation a human can paste to
+// watch the live agent session. This is the primary observability
+// mechanism for claudia agents.
+func (a *Agent) AttachCommand() string {
+	return fmt.Sprintf("tmux -S %s attach -t %s", tmuxagent.SocketPath(), a.tmuxWindowID)
+}
+
 // Alive reports whether the Claude process is still running.
 func (a *Agent) Alive() bool {
 	a.mu.Lock()
@@ -404,7 +295,8 @@ func (a *Agent) OnEvent(fn EventFunc) {
 	a.onEvent = fn
 }
 
-// Interrupt sends Esc to the Claude process to cancel the current turn.
+// Interrupt sends the Escape key to the Claude process to cancel
+// the current turn.
 func (a *Agent) Interrupt() error {
 	a.mu.Lock()
 	alive := a.alive
@@ -412,8 +304,7 @@ func (a *Agent) Interrupt() error {
 	if !alive {
 		return fmt.Errorf("claude process not running")
 	}
-	_, err := a.ptmx.Write([]byte("\x1b"))
-	return err
+	return tmuxagent.SendEscape(a.tmuxWindowID)
 }
 
 // Send writes a user message to the Claude process and submits it.
@@ -426,15 +317,10 @@ func (a *Agent) Interrupt() error {
 // return immediately — the ready channel stays closed for the life
 // of the agent.
 //
-// The message is submitted by appending a carriage return ("\r",
-// 0x0D) — Claude Code's TUI treats this as the Enter key, which
-// submits the current turn. A line feed ("\n", 0x0A) is treated as
-// Shift+Enter instead: it inserts a newline into the input buffer
-// without submitting. Early claudia releases used "\n" and silently
-// accumulated prompts in the input area where they were never sent
-// to the API. If you need to include a literal newline inside a
-// single prompt, embed "\n" characters in msg — Send only appends
-// the submit key.
+// The message is typed literally via tmux send-keys -l, then
+// submitted with CR (Enter). Embedded newlines in msg become
+// Shift+Enter (insert newline without submitting) — matching Claude
+// Code's TUI semantics.
 //
 // If readiness detection failed (process exited during startup, or
 // the overall timeout elapsed) Send returns the detection error
@@ -451,9 +337,26 @@ func (a *Agent) Send(msg string) error {
 	if !alive {
 		return fmt.Errorf("claude process not running")
 	}
-	data := []byte(msg + "\r")
-	_, err := a.ptmx.Write(data)
-	return err
+	return tmuxagent.SendKeys(a.tmuxWindowID, msg)
+}
+
+// WaitReady blocks until the TUI has finished initialising and is
+// ready to accept input from Send, or until ctx is cancelled. It
+// returns any error recorded during readiness detection (e.g. Claude
+// exited during startup, or the overall timeout elapsed).
+//
+// Calling this is optional: Send calls it internally on every
+// invocation, so consumers that just want to send a prompt do not
+// need to wait explicitly. WaitReady is exposed for consumers that
+// want to observe the ready transition (e.g. to update a UI) or
+// distinguish "readiness failed" from "send failed".
+func (a *Agent) WaitReady(ctx context.Context) error {
+	select {
+	case <-a.ready:
+		return a.readyErr
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // WaitForResponse blocks until the next assistant turn completes and
@@ -551,18 +454,18 @@ func (a *Agent) WaitForResponse(ctx context.Context) (string, error) {
 // imperceptible to most consumers.
 const waitSettleDuration = 250 * time.Millisecond
 
-// Resize changes the PTY window size.
+// Resize changes the terminal dimensions.
 func (a *Agent) Resize(cols, rows uint16) error {
-	return pty.Setsize(a.ptmx, &pty.Winsize{Cols: cols, Rows: rows})
+	return tmuxagent.ResizeWindow(a.tmuxWindowID, cols, rows)
 }
 
-// Stop terminates the Claude process.
+// Stop terminates the Claude process and releases resources.
 func (a *Agent) Stop() {
 	a.stopOnce.Do(func() {
-		syscall.Kill(-a.cmd.Process.Pid, syscall.SIGTERM)
-		time.Sleep(time.Second)
-		a.cmd.Process.Kill()
-		a.ptmx.Close()
+		tmuxagent.KillWindow(a.tmuxWindowID)
+		if a.tmuxCtrl != nil {
+			a.tmuxCtrl.Close()
+		}
 
 		a.termMu.Lock()
 		if a.termLog != nil {
@@ -570,15 +473,24 @@ func (a *Agent) Stop() {
 			a.termLog = nil
 		}
 		a.termMu.Unlock()
-
-		a.mu.Lock()
-		client := a.daemonClient
-		a.daemonClient = nil
-		a.mu.Unlock()
-		if client != nil {
-			client.Close()
-		}
 	})
+}
+
+// detectReady polls capture-pane for Claude Code's idle input box
+// at the bottom of the rendered viewport. The empty-prompt-box regex
+// matches a horizontal rule, the ❯ prompt glyph, another horizontal
+// rule, and up to 5 trailing status lines.
+//
+// This replaces the earlier PTY-silence heuristic. The rendered-frame
+// approach is cleaner: it detects a fixed-point visual state rather
+// than inferring readiness from the absence of byte traffic.
+func (a *Agent) detectReady() {
+	defer close(a.ready)
+
+	_, err := tmuxagent.WaitReady(a.tmuxWindowID, readyPollInterval, readyOverallTimeout)
+	if err != nil {
+		a.readyErr = err
+	}
 }
 
 const termBufSize = 128 * 1024 // 128KB ring buffer
@@ -586,8 +498,6 @@ const termBufSize = 128 * 1024 // 128KB ring buffer
 func (a *Agent) pushTermOutput(data []byte) {
 	a.termMu.Lock()
 	defer a.termMu.Unlock()
-
-	a.lastTermWrite = time.Now()
 
 	a.termBuf = append(a.termBuf, data...)
 	if len(a.termBuf) > termBufSize {
@@ -610,8 +520,9 @@ func (a *Agent) pushTermOutput(data []byte) {
 	}
 }
 
-// SubscribeTerminal returns a channel that receives live PTY output
-// and the buffered recent output. Call [Agent.UnsubscribeTerminal] when done.
+// SubscribeTerminal returns a channel that receives live terminal
+// output and the buffered recent output. Call
+// [Agent.UnsubscribeTerminal] when done.
 func (a *Agent) SubscribeTerminal() (history []byte, ch chan []byte) {
 	a.termMu.Lock()
 	defer a.termMu.Unlock()

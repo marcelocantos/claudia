@@ -146,10 +146,9 @@ func (c *Control) handleLine(line string) {
 		case c.bytes <- decoded:
 		default:
 			// Drop on full buffer. Consumer is lagging; terminal
-			// byte stream is best-effort for display purposes, and
-			// the PTY-silence-debounce ring buffer (when this is
-			// wired into Agent in M3) will still deliver history
-			// via Subscribe on demand.
+			// byte stream is best-effort for display, and the
+			// Agent's ring buffer will still deliver history via
+			// SubscribeTerminal on demand.
 		}
 		return
 	}

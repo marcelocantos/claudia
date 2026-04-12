@@ -1,11 +1,10 @@
 // Copyright 2026 Marcelo Cantos
 // SPDX-License-Identifier: Apache-2.0
 
-// Package tmuxagent implements a tmux-backed substrate for claudia's
-// Agent. Instead of owning a PTY directly, it spawns Claude Code
-// inside a tmux window on a dedicated claudia tmux server and drives
-// the session via `tmux send-keys`, `tmux capture-pane`, and
-// `tmux -C` control-mode notifications.
+// Package tmuxagent implements the tmux substrate for claudia's
+// Agent. It spawns Claude Code inside a tmux window on a dedicated
+// claudia tmux server and drives the session via send-keys,
+// capture-pane, and control-mode notifications.
 //
 // The dedicated server runs on a socket under
 // $XDG_STATE_HOME/claudia/tmux.sock (with ~/.local/state fallback),
