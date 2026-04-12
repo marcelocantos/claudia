@@ -1,0 +1,41 @@
+name: test
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      # The test suite has two tiers of skip guards:
+      #
+      #   - Tests that spawn the real `claude` binary check
+      #     exec.LookPath("claude") and skip when it's absent. CI does
+      #     not install claude, so those tests skip here.
+      #   - Tests that spend API credit check CLAUDIA_LIVE and skip
+      #     unless explicitly enabled. CI never sets that.
+      #
+      # What does run: every parse/unit test, the full internal/daemon
+      # test suite (state machine + WebSocket server + fsnotify
+      # watcher), and the library daemon_client round-trip. That
+      # covers everything CI can reach without an Anthropic key.
+      - name: Test
+        run: go test -race -count=1 ./...
