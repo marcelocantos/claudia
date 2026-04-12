@@ -57,10 +57,11 @@ targets:
     discovered: 2026-04-12
   T1.1:
     name: claudia's Agent has a drop-in tmux-backed implementation
-    status: converging
+    status: achieved
     value: 13.0
     cost: 8.0
     observable: true
+    actual_cost: 5.0
     acceptance:
     - New internal package (internal/tmuxagent) spawns Claude Code inside a tmux window on a dedicated claudia server at $XDG_STATE_HOME/claudia/tmux.sock (fallback ~/.local/state/claudia/tmux.sock), overridable via CLAUDIA_TMUX_SOCKET. The server is separate from the user's default tmux so claudia windows never appear in the user's workspace.
     - Implements the full Agent surface (Start/Send/WaitForResponse/Interrupt/Resize/OnEvent/WaitReady/SubscribeTerminal/UnsubscribeTerminal/Stop) as a drop-in replacement for the current PTY-backed implementation. Public API at the claudia package level is unchanged. During T1.1 the PTY path also stays in place behind a switch (CLAUDIA_TMUX=1 or Config.UseTmux); T1.4 removes it.
@@ -103,6 +104,7 @@ targets:
     - pivot
     origin: forked-from T1.2 (tmux pivot, 2026-04-12)
     discovered: 2026-04-12
+    achieved: 2026-04-12
   T1.2:
     name: Warm agent pool is expressed as long-lived tmux windows with Acquire/Release semantics
     status: identified
