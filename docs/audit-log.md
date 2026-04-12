@@ -52,3 +52,25 @@ maintenance activities. Append-only — newest entries at the bottom.
     exercised by the resumption branch in `Start` but has no direct test
   - `OnEvent` single-handler limitation — tracked in `STABILITY.md`
   - No CI workflow — tracked in `STABILITY.md`
+
+## 2026-04-12 — /release v0.6.0
+
+- **Commit**: `pending`
+- **Outcome**: Released v0.6.0, the tmux pivot release. Replaced the
+  PTY-backed Agent and the claudiad daemon (PR #5, never released) with
+  a tmux-backed substrate: agents run inside windows on a dedicated
+  claudia tmux server (~/.local/state/claudia/tmux.sock). Added warm
+  agent pool (Acquire/Release), filesystem-backed session-chain tracking
+  (RegisterChain/LookupChain), tmux pre-flight check, and AttachCommand
+  for human observability. Deleted ~2,200 lines of daemon/PTY code,
+  dropped creack/pty, fsnotify, golang.org/x/sys dependencies. CI
+  updated to install tmux on Ubuntu runners. Makefile bullseye target
+  added for standing invariant checks. Net: dramatically simpler
+  architecture with crash-survival, human observability, and warm pooling
+  as emergent properties of the tmux substrate rather than custom code.
+  All six sub-targets of 🎯T1 achieved (estimated cost 13, actual 8).
+- **Deferred**:
+  - /clear session-chain detection (RegisterChain seeds the initial
+    entry; detecting /clear rollover to extend the chain is a follow-up)
+  - `OnEvent` single-handler limitation — tracked in `STABILITY.md`
+  - `Task` method renames — tracked in `STABILITY.md`
