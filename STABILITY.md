@@ -12,7 +12,7 @@ new module (e.g. `claudia2`) rather than breaking an existing import
 path. The pre-1.0 period exists to shake out the API design before
 that contract takes effect.
 
-Snapshot as of: v0.5.0.
+Snapshot as of: v0.6.0.
 
 ## Interaction surface
 
@@ -30,7 +30,7 @@ is annotated with a stability assessment:
 
 | Item | Definition | Status |
 |---|---|---|
-| `Config` | struct with `WorkDir, SessionID, Model, PermissionMode, MCPConfig, DisallowTools, TermLogPath string` and `ExtraArgs []string` | Needs review |
+| `Config` | struct with `WorkDir, SessionID, Model, PermissionMode, MCPConfig, DisallowTools, TermLogPath, PoolPolicy string`, `ExtraArgs []string`, `PoolCap int` | Needs review |
 | `Agent` | opaque struct; methods listed below | Needs review |
 | `Event` | struct with `Type string`, `Raw json.RawMessage`, `Text string`, `StopReason string`, `ProgressType string`; method `IsTerminalStop() bool` | Stable |
 | `EventFunc` | `func(Event)` | Needs review |
@@ -61,8 +61,9 @@ is annotated with a stability assessment:
 | `NewTask` | `NewTask(cfg TaskConfig) *Task` | Stable |
 | `ParseTaskLine` | `ParseTaskLine(line []byte) []TaskEvent` | Stable |
 | `NewRegistry` | `NewRegistry(path string) (*Registry, error)` | Stable |
-| ~~`LookupChain`~~ | Removed (daemon pivot; see 🎯T1.3 for filesystem sidecar replacement) | — |
-| ~~`DaemonSocketPath`~~ | Removed (daemon pivot) | — |
+| `Acquire` | `Acquire(ctx context.Context, cfg Config) (*Agent, error)` | Needs review |
+| `RegisterChain` | `RegisterChain(chainID, sessionID string) error` | Needs review |
+| `LookupChain` | `LookupChain(sessionID string) (string, []string, error)` | Needs review |
 
 #### `Agent` methods
 
@@ -79,6 +80,7 @@ is annotated with a stability assessment:
 | `WaitForResponse` | `(ctx context.Context) (string, error)` | Needs review |
 | `Resize` | `(cols, rows uint16) error` | Stable |
 | `Stop` | `()` | Needs review |
+| `Release` | `(disposition string) error` | Needs review |
 | `AttachCommand` | `() string` | Needs review |
 | `SubscribeTerminal` | `() (history []byte, ch chan []byte)` | Needs review |
 | `UnsubscribeTerminal` | `(ch chan []byte)` | Needs review |
