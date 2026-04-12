@@ -99,6 +99,17 @@ defer reg.StopAll()
 If the host program owns a single short-lived agent, skip the Registry
 and call `Start` directly.
 
+## claudiad (optional daemon)
+
+`cmd/claudiad` is an optional long-lived daemon that backs the
+library. The first slice of its design tracks session chains:
+when `/clear` inside Claude Code rolls the session ID and starts a
+new JSONL file, the daemon attributes the new file to the owning
+process and exposes the full chain via `claudia.LookupChain(sid)`.
+When the daemon isn't running, claudia operates identically to
+prior releases — it is an enhancement, not a requirement. See
+`agents-guide.md` and `docs/targets.yaml` 🎯T1 for the full story.
+
 ## grok subpackage
 
 `github.com/marcelocantos/claudia/grok` is a standalone client for

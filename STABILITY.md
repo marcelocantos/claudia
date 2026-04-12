@@ -50,6 +50,7 @@ is annotated with a stability assessment:
 |---|---|
 | `TaskEventInit, TaskEventText, TaskEventToolUse, TaskEventResult, TaskEventError` (TaskEventType) | Stable |
 | `TaskStatusIdle, TaskStatusRunning, TaskStatusError, TaskStatusStopped` (TaskStatus) | Stable |
+| `ErrDaemonUnavailable` (error) | Needs review |
 
 #### Functions
 
@@ -60,6 +61,8 @@ is annotated with a stability assessment:
 | `NewTask` | `NewTask(cfg TaskConfig) *Task` | Stable |
 | `ParseTaskLine` | `ParseTaskLine(line []byte) []TaskEvent` | Stable |
 | `NewRegistry` | `NewRegistry(path string) (*Registry, error)` | Stable |
+| `LookupChain` | `LookupChain(sid string) ([]string, string, error)` | Needs review |
+| `DaemonSocketPath` | `DaemonSocketPath() string` | Needs review |
 
 #### `Agent` methods
 
