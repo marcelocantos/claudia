@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"testing"
 	"time"
 )
@@ -85,8 +84,8 @@ func TestAgentReadinessSmoke(t *testing.T) {
 	if _, err := exec.LookPath("claude"); err != nil {
 		t.Skip("claude binary not on PATH")
 	}
-	if runtime.GOOS == "windows" {
-		t.Skip("claudia Session mode does not support Windows")
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not on PATH (required for claudia Session mode)")
 	}
 
 	workDir := t.TempDir()
