@@ -81,6 +81,13 @@ type Agent struct {
 	ptmx        *os.File
 	cmd         *exec.Cmd
 
+	// daemonClient is the opportunistic claudiad connection set up
+	// during Start. nil when no daemon is running; that's the normal
+	// fallback path and not an error condition. Used only to report
+	// session lifecycle to the daemon; the library otherwise operates
+	// independently of it.
+	daemonClient *daemonClient
+
 	mu       sync.Mutex
 	alive    bool
 	onEvent  EventFunc
@@ -257,7 +264,37 @@ func Start(cfg Config) (*Agent, error) {
 	// Detect TUI readiness so Send can safely block on it.
 	go a.detectReady()
 
+	// Opportunistically dial the claudiad daemon and report this
+	// session. Best-effort: a missing daemon is the normal fallback
+	// path, not a failure. The dial budget is intentionally short so
+	// Start stays fast on hosts without the daemon.
+	go a.maybeRegisterWithDaemon(workDir, cmd.Process.Pid)
+
 	return a, nil
+}
+
+// maybeRegisterWithDaemon tries to dial claudiad and report this
+// agent's (cwd, session_id, pid) tuple. Runs in a goroutine so a
+// slow/unreachable daemon never blocks Start. On success, the
+// client is cached on the Agent so Stop can close it cleanly.
+func (a *Agent) maybeRegisterWithDaemon(cwd string, pid int) {
+	ctx, cancel := context.WithTimeout(context.Background(), daemonDialBudget)
+	defer cancel()
+
+	client, err := dialDaemon(ctx)
+	if err != nil {
+		slog.Debug("daemon dial failed (fallback to direct spawn)", "err", err)
+		return
+	}
+	if err := client.registerSession(ctx, cwd, a.sessionID, pid); err != nil {
+		slog.Debug("daemon register failed", "err", err)
+		client.Close()
+		return
+	}
+
+	a.mu.Lock()
+	a.daemonClient = client
+	a.mu.Unlock()
 }
 
 // detectReady watches the PTY byte stream for quiescence — the
@@ -533,6 +570,14 @@ func (a *Agent) Stop() {
 			a.termLog = nil
 		}
 		a.termMu.Unlock()
+
+		a.mu.Lock()
+		client := a.daemonClient
+		a.daemonClient = nil
+		a.mu.Unlock()
+		if client != nil {
+			client.Close()
+		}
 	})
 }
 

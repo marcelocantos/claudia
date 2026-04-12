@@ -1,0 +1,54 @@
+schema_version: 1
+targets:
+  T1:
+    name: claudiad daemon backs the library with pooling, chain tracking, and a clean API
+    status: converging
+    value: 13.0
+    cost: 13.0
+    acceptance:
+    - cmd/claudiad binary implements a long-lived daemon that holds Claude Code sessions and exposes them over a local socket
+    - 'Transport: WebSocket (coder/websocket, already a transitive dep via the grok subpackage) with JSON-RPC 2.0 messages; no gRPC, protobuf, or code generation'
+    - Unix domain socket at a well-known path (e.g. $XDG_STATE_HOME/claudia/claudiad.sock) with filesystem permissions as the only access control
+    - Library falls back to direct exec.Command spawning when the daemon isn't running — existing consumers keep working unchanged
+    - 'Library facade unchanged at the top level: claudia.Start(cfg) still returns *Agent, and Send/WaitForResponse/Interrupt/Resize/Stop all work identically. Internally, Agent becomes a thin proxy that routes method calls over the socket when the daemon is available'
+    - 'API refactor forced by the daemon: Agent.OnEvent(fn) replaced by Agent.Events(ctx) returning a <-chan Event; Agent.SubscribeTerminal/UnsubscribeTerminal replaced by Agent.TerminalEvents(ctx) returning a <-chan []byte plus Agent.TerminalHistory() returning []byte; ctx cancellation is the unsubscribe mechanism. OnEvent''s single-handler limitation and SubscribeTerminal''s subscriber-fanout fragility both disappear because each caller gets its own stream'
+    - 'Warm agent pool: daemon keeps agents alive across consumer process boundaries, keyed by (workdir, model, disallowedTools). Acquire returns a warm agent when available; first acquire pays the ~1.2s readiness cost, subsequent acquires against the same key get it for free'
+    - 'Session chain tracking: daemon maintains a PID to session_id map in memory, watches for new .jsonl files under ~/.claude/projects/, and attributes each new file to its owning PID deterministically via cwd matching. Chains are exposed via claudia.LookupChain(sid) as a package-level function that RPCs the daemon. This is the authoritative source for /clear rollover linkage on the host'
+    - Launchd plist for macOS autostart at ~/Library/LaunchAgents/com.marcelocantos.claudiad.plist. Linux equivalents (systemd user unit) optional in the same release or deferred
+    - 'Integration tests exercise the full socket protocol end-to-end: spawn daemon, spawn library-side consumer, acquire/send/wait/release cycle, multiple concurrent consumers against different agent keys, agent-survives-consumer-crash, session chain detection across a manual /clear, daemon-absent fallback path'
+    - 'Documentation: agents-guide.md gains a Daemon mode section explaining when it''s active, how to inspect it, and how to opt out; README covers the daemon briefly; STABILITY.md catalogues the new API surface and retires the OnEvent and Subscribe*Terminal Fluid items'
+    context: |-
+      Claudia spent its first five releases as a pure Go library wrapping the `claude` CLI. That shape is correct for its real niche — driving and observing a live, workspace-aware Claude Code session from a Go program — but it has structural limits that the /clear investigation and the doit migration made obvious:
+
+      1. Process-local state dies with the consumer. If a consumer crashes mid-turn, the agent dies and the in-flight response is lost. No way for a second consumer to subscribe to a running session from another process.
+
+      2. Every consumer pays the ~1.2s TUI-readiness cost independently. A workload that spawns agents frequently (test runner, pool of evaluators) pays it N times with nothing amortised.
+
+      3. /clear rolls over Claude Code's session ID, creating a new JSONL file. Any fixed-path tailer loses its subject. Solving this inside the library requires fsnotify plus retroactive heuristics; solving it in a daemon allows deterministic PID-to-cwd attribution in real time, and makes claudia the authoritative source for session-chain linkage on the host (replacing the mnemo-side heuristic sketched in mnemo 🎯T16).
+
+      4. The library API has grown leaks that fight against a clean architecture: OnEvent is a single-handler slot that replaces the existing callback on each call; SubscribeTerminal returns raw channels that can't cross process boundaries; JSONLPath and TermLogPath leak local filesystem paths into the contract. These are currently flagged Fluid in STABILITY.md as 1.0 prerequisites. Designing for a daemon forces the cleanup because every leaky primitive has to be replaced with something RPC-shaped, which is a stricter design than 'anything that happens to compile'.
+
+      The daemon pattern (library facade over long-lived backend) is the same shape Docker, LSP, and most modern CLI tools with persistent state have converged on. Consumers keep seeing a library; the daemon does the stateful work. Consumers that don't want a daemon can still use direct spawn as the fallback path.
+
+      Scope boundaries — what is NOT in this target:
+      - Remote / cross-machine daemon. The socket is local Unix only. A remote daemon would need auth, TLS, and a different attack surface; defer.
+      - OpenAI-compat public API. The socket protocol is claudia-native, not chat-completions-shaped.
+      - Managed Agents (/v1/agents) integration. That's a separate product line that would displace Claude Code as the backend.
+      - Mnemo integration details. Mnemo consumes this via claudia.LookupChain(sid) but owns its own table and any cross-session analytics. 🎯T16 in mnemo tracks the consumer side.
+
+      Recommended implementation slicing — don't build the full target in one pass:
+
+      Slice 1: session-chain tracker only. Minimal daemon binary with just the chain tracking surface (RegisterSession, LookupChain, SubscribeChainUpdates). Library reports sessions as it spawns them. Socket protocol is skeletal. This unblocks mnemo 🎯T16 and validates the daemon plumbing on the smallest possible surface.
+
+      Slice 2: warm agent pool. Adds Acquire/Release, pool lifecycle, and the latency-win story. Biggest direct benefit for consumers that spawn frequently.
+
+      Slice 3: live observability refactor. Replaces OnEvent and SubscribeTerminal with context-scoped streaming. Retires the Fluid STABILITY.md items. Largest API change; defer until slices 1 and 2 have settled.
+
+      Slice 4: autostart + packaging. Launchd plist, binary install path, documentation. Lands as the user-facing story when all three slices are stable.
+    tags:
+    - daemon
+    - architecture
+    - ipc
+    - api-cleanup
+    origin: manual
+    discovered: 2026-04-12

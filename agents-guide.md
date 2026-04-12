@@ -187,6 +187,66 @@ arguments.
    are methods on `Task`. This will likely be renamed before 1.0 —
    see `STABILITY.md`.
 
+## Daemon (optional)
+
+`cmd/claudiad` is an optional long-lived daemon that backs the
+library. Slice 1 of its design (the only piece shipped so far)
+tracks session chains: when the user presses `/clear` inside a
+Claude Code session, Claude Code rolls the session ID and starts
+writing a new JSONL file. Any tailer keyed on the original session
+ID loses its subject. The daemon fixes this by watching
+`~/.claude/projects/` for new `*.jsonl` files and attributing each
+one to its owning PID via cwd matching.
+
+When the daemon is running, `claudia.Start(cfg)` opportunistically
+reports each session it spawns (cwd, session ID, pid). Consumers
+can then call:
+
+```go
+chain, confidence, err := claudia.LookupChain(sid)
+if errors.Is(err, claudia.ErrDaemonUnavailable) {
+    // Daemon not running — fall back to treating sid as a
+    // single-element chain, or surface the unknown state, as
+    // the consumer prefers. See the note below on the fallback
+    // contract.
+}
+```
+
+`chain` is ordered oldest-first; a session that has never rolled
+over returns a single-element chain. `confidence` is
+`"deterministic"` for unambiguous attributions or `"ambiguous"`
+when multiple concurrent consumers registered against the same cwd
+and the daemon couldn't pick a single owner for a rollover.
+
+**Fallback contract.** `LookupChain` deliberately returns
+`ErrDaemonUnavailable` rather than a degenerate `[sid]` success
+when the daemon isn't running. Silently returning a single-element
+chain would contradict the daemon's role as the authoritative
+source of rollover linkage — consumers that trust the result
+would record fresh chains when the daemon was merely down.
+Consumers that want the degenerate behaviour can write it in one
+line at the call site.
+
+**When the daemon is NOT running** claudia operates exactly as it
+did in prior releases — the daemon is an enhancement, not a
+requirement, and the library has no runtime dependency on it.
+
+To run the daemon manually:
+
+```sh
+go run github.com/marcelocantos/claudia/cmd/claudiad
+```
+
+It listens on `$XDG_STATE_HOME/claudia/claudiad.sock` (defaulting
+to `~/.local/state/claudia/claudiad.sock`) with the parent directory
+chmod'd `0700` and the socket file `0600`. Access control is
+filesystem permissions only; do not expose the socket over a
+network.
+
+Slices 2–4 (warm agent pool, live observability refactor, launchd
+autostart) are not yet shipped. See `docs/targets.yaml` 🎯T1 for
+the full roadmap.
+
 ## grok subpackage
 
 `github.com/marcelocantos/claudia/grok` is a Grok Realtime voice API
