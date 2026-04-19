@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 )
 
 // chainsDir returns the directory where chain sidecar files are stored.
@@ -48,10 +47,10 @@ func RegisterChain(chainID, sessionID string) error {
 	defer f.Close()
 
 	// Acquire exclusive advisory lock before appending.
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+	if err := flockExclusive(f); err != nil {
 		return fmt.Errorf("flock: %w", err)
 	}
-	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN) //nolint:errcheck
+	defer flockUnlock(f) //nolint:errcheck
 
 	if _, err := fmt.Fprintln(f, sessionID); err != nil {
 		return fmt.Errorf("write chain entry: %w", err)
