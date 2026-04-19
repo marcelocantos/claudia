@@ -77,7 +77,7 @@ maintenance activities. Append-only — newest entries at the bottom.
 
 ## 2026-04-19 — /release v0.7.0
 
-- **Commit**: `pending`
+- **Commit**: `4840c9f`
 - **Outcome**: Released v0.7.0. Split `syscall.Flock` into
   platform-gated `flock_unix.go` (syscall.Flock) and
   `flock_windows.go` (LockFileEx via `golang.org/x/sys/windows`)
