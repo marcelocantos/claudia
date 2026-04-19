@@ -74,3 +74,19 @@ maintenance activities. Append-only — newest entries at the bottom.
     entry; detecting /clear rollover to extend the chain is a follow-up)
   - `OnEvent` single-handler limitation — tracked in `STABILITY.md`
   - `Task` method renames — tracked in `STABILITY.md`
+
+## 2026-04-19 — /release v0.7.0
+
+- **Commit**: `pending`
+- **Outcome**: Released v0.7.0. Split `syscall.Flock` into
+  platform-gated `flock_unix.go` (syscall.Flock) and
+  `flock_windows.go` (LockFileEx via `golang.org/x/sys/windows`)
+  so the `RegisterChain` / `LookupChain` sidecar machinery builds
+  on Windows. The tmux-backed `Agent` is still Unix-only;
+  `STABILITY.md` narrows the Windows-support caveat accordingly.
+  Re-adds `golang.org/x/sys` as a direct dep (v0.6.0 had dropped
+  it). Unblocks `github.com/marcelocantos/mnemo` 🎯T22 which
+  needs the chain helpers to cross-compile for windows-latest.
+- **Deferred**:
+  - `OnEvent` single-handler limitation — tracked in `STABILITY.md`
+  - `Task` method renames — tracked in `STABILITY.md`
