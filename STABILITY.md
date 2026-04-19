@@ -12,7 +12,7 @@ new module (e.g. `claudia2`) rather than breaking an existing import
 path. The pre-1.0 period exists to shake out the API design before
 that contract takes effect.
 
-Snapshot as of: v0.6.0.
+Snapshot as of: v0.7.0.
 
 ## Interaction surface
 
@@ -235,8 +235,12 @@ Concrete items that must be addressed before cutting 1.0.
   multi-backend library.
 - **WebSocket / HTTP server wrapping.** The concern of the host
   program, not this library.
-- **Windows support.** The tmux substrate is Unix-only. Windows
-  consumers must use WSL. This is a deliberate tradeoff for the
-  crash-survival and observability that tmux provides.
+- **Windows support for the tmux-backed Agent.** The tmux substrate
+  is Unix-only. Windows consumers who want the Agent must use WSL.
+  This is a deliberate tradeoff for the crash-survival and
+  observability that tmux provides. The `RegisterChain` /
+  `LookupChain` sidecar machinery is cross-platform as of v0.7.0 —
+  Windows consumers that only need chain tracking do not require
+  WSL.
 - **Built-in persistence for Task sessions.** The `Registry` handles
   session mode agents; Task consumers can persist their own state.
