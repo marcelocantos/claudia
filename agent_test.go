@@ -64,6 +64,55 @@ func TestTermLogDirRespectsXDG(t *testing.T) {
 	}
 }
 
+// TestSessionJSONLPath checks the path computation matches Claude
+// Code's encoded-cwd convention. This is a stable convention claudia
+// owns; if it changes we need to know.
+func TestSessionJSONLPath(t *testing.T) {
+	home := os.Getenv("HOME")
+	got := SessionJSONLPath("abc-123", "/Users/marcelo/work/claudia")
+	want := filepath.Join(home, ".claude", "projects",
+		"-Users-marcelo-work-claudia", "abc-123.jsonl")
+	if got != want {
+		t.Errorf("SessionJSONLPath = %q, want %q", got, want)
+	}
+}
+
+// TestSessionExists exercises the public probe used by embedders that
+// need to distinguish "would resume" from "would start fresh" before
+// calling Start. Uses HOME redirection rather than a real claude run
+// so the test stays fast and independent of the binary.
+func TestSessionExists(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	workDir := "/some/project/dir"
+	sessionID := "test-session-abcdef"
+
+	exists, err := SessionExists(sessionID, workDir)
+	if err != nil {
+		t.Fatalf("SessionExists (absent): %v", err)
+	}
+	if exists {
+		t.Errorf("SessionExists returned true for nonexistent JSONL")
+	}
+
+	jsonlPath := SessionJSONLPath(sessionID, workDir)
+	if err := os.MkdirAll(filepath.Dir(jsonlPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(jsonlPath, []byte("{}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	exists, err = SessionExists(sessionID, workDir)
+	if err != nil {
+		t.Fatalf("SessionExists (present): %v", err)
+	}
+	if !exists {
+		t.Errorf("SessionExists returned false for present JSONL at %s", jsonlPath)
+	}
+}
+
 // TestAgentSmoke spawns a real claude process and exercises the
 // readiness detector end-to-end. Gated on `claude` being available on
 // PATH; skipped otherwise (CI without the binary installed, contributors

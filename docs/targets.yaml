@@ -232,9 +232,11 @@ targets:
     achieved: 2026-04-12
   T2:
     name: SessionExists(id) reports whether a Claude Code JSONL is on disk for a given session
-    status: identified
+    status: achieved
     value: 2.0
     cost: 2.0
+    actual_cost: 1.0
+    achieved: 2026-04-26
     acceptance:
     - claudia exposes a public function — e.g. SessionExists(sessionID, workDir string) (bool, error) — that returns true iff the corresponding JSONL exists under ~/.claude/projects/<encoded-cwd>/<session-id>.jsonl.
     - Returns false (no error) when the JSONL is absent so callers can branch on "would start fresh" vs "would resume" without relying on the agent's auto-detect path inside Start().

@@ -25,7 +25,9 @@ package claudia
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -175,8 +177,7 @@ func Start(cfg Config) (*Agent, error) {
 	if sessionID == "" {
 		sessionID = uuid.New().String()
 	}
-	jsonlDir := projectDir(workDir)
-	jsonlPath := filepath.Join(jsonlDir, sessionID+".jsonl")
+	jsonlPath := SessionJSONLPath(sessionID, workDir)
 
 	termLogPath := cfg.TermLogPath
 	switch termLogPath {
@@ -187,8 +188,10 @@ func Start(cfg Config) (*Agent, error) {
 	}
 
 	// If the JSONL already exists, this is a resume.
-	_, statErr := os.Stat(jsonlPath)
-	resuming := statErr == nil
+	resuming, err := SessionExists(sessionID, workDir)
+	if err != nil {
+		return nil, fmt.Errorf("check session JSONL: %w", err)
+	}
 
 	// Agents spawned by claudia are forbidden from creating their own
 	// sub-agents. The host program owns the process lifecycle.
@@ -309,6 +312,37 @@ func (a *Agent) SessionID() string { return a.sessionID }
 
 // JSONLPath returns the path to the session JSONL file.
 func (a *Agent) JSONLPath() string { return a.jsonlPath }
+
+// SessionJSONLPath returns the path Claude Code would use for the
+// given session ID and workdir, whether or not the file exists. The
+// path is ~/.claude/projects/<encoded-cwd>/<session-id>.jsonl, where
+// the cwd encoding maps non-alphanumeric/dash runes to '-'. Callers
+// embedding claudia (e.g. building a "resume meeting" flow) can use
+// this together with [SessionExists] to decide between fresh-start
+// and resume code paths before invoking [Start].
+func SessionJSONLPath(sessionID, workDir string) string {
+	return filepath.Join(projectDir(workDir), sessionID+".jsonl")
+}
+
+// SessionExists reports whether a Claude Code JSONL transcript exists
+// on disk for the given session ID and workdir. It returns (false,
+// nil) when the file is simply absent — only filesystem errors
+// (permission denied, etc.) are propagated.
+//
+// Embedders should prefer this over reproducing the path computation
+// themselves; the encoded-cwd convention is owned by Claude Code and
+// claudia tracks it here.
+func SessionExists(sessionID, workDir string) (bool, error) {
+	_, err := os.Stat(SessionJSONLPath(sessionID, workDir))
+	switch {
+	case err == nil:
+		return true, nil
+	case errors.Is(err, fs.ErrNotExist):
+		return false, nil
+	default:
+		return false, err
+	}
+}
 
 // TermLogPath returns the path to the raw terminal output log, or ""
 // if terminal logging is disabled.
