@@ -230,3 +230,27 @@ targets:
     origin: forked-from T1.4 (tmux pivot, 2026-04-12)
     discovered: 2026-04-12
     achieved: 2026-04-12
+  T2:
+    name: SessionExists(id) reports whether a Claude Code JSONL is on disk for a given session
+    status: identified
+    value: 2.0
+    cost: 2.0
+    acceptance:
+    - claudia exposes a public function — e.g. SessionExists(sessionID, workDir string) (bool, error) — that returns true iff the corresponding JSONL exists under ~/.claude/projects/<encoded-cwd>/<session-id>.jsonl.
+    - Returns false (no error) when the JSONL is absent so callers can branch on "would start fresh" vs "would resume" without relying on the agent's auto-detect path inside Start().
+    - Errors only on filesystem trouble (permission denied, etc.), never on plain absence.
+    - The motivating caller is meetcat (and similar embedders building a "resume meeting" flow); they need a clean signal before claudia.Start so they can log "specialist X starting fresh — no prior JSONL" rather than letting the agent silently fall through.
+    - The cwd-to-encoded-path mapping is either exported as a helper or documented as a stable convention so callers can compute the JSONL path themselves if needed.
+    context: |-
+      meetcat is building a `meetcat resume <meeting-id>` flow on top of claudia's existing auto-detect resume path (agent.go statting the JSONL and adding --resume on hit). That path is correct in steady state but yields no signal to the caller when a specialist's JSONL is missing — the "fall through to fresh session" outcome is silent.
+
+      Realistic causes of a missing JSONL on resume:
+        - The original meeting ran in a different cwd than the resume invocation (Claude Code keys JSONLs by encoded-cwd path).
+        - A specialist died before WaitReady, so no JSONL was ever written.
+        - ~/.claude/projects has been cleaned up or migrated without copying.
+
+      None of these are blocking — fresh-session fallback is acceptable when only one of N specialists is missing. SessionExists is pure ergonomics: it lets the embedder report a clear log line rather than have the operator discover the missing context later.
+
+      Originator: pageflip/meetcat resume design discussion 2026-04-25.
+    origin: forked-from pageflip/meetcat resume work (2026-04-25)
+    discovered: 2026-04-25
