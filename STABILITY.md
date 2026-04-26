@@ -12,7 +12,7 @@ new module (e.g. `claudia2`) rather than breaking an existing import
 path. The pre-1.0 period exists to shake out the API design before
 that contract takes effect.
 
-Snapshot as of: v0.7.0.
+Snapshot as of: v0.8.0.
 
 ## Interaction surface
 
@@ -64,6 +64,8 @@ is annotated with a stability assessment:
 | `Acquire` | `Acquire(ctx context.Context, cfg Config) (*Agent, error)` | Needs review |
 | `RegisterChain` | `RegisterChain(chainID, sessionID string) error` | Needs review |
 | `LookupChain` | `LookupChain(sessionID string) (string, []string, error)` | Needs review |
+| `SessionExists` | `SessionExists(sessionID, workDir string) (bool, error)` | Needs review |
+| `SessionJSONLPath` | `SessionJSONLPath(sessionID, workDir string) string` | Needs review |
 
 #### `Agent` methods
 
@@ -143,7 +145,7 @@ is annotated with a stability assessment:
 
 ### Surface item count
 
-~60 items across both packages. Per the release skill's settling
+~62 items across both packages. Per the release skill's settling
 table, this puts claudia in the 50–100 bracket with a minimum
 settling period of 3 months from the last breaking change.
 

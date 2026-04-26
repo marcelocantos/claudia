@@ -90,3 +90,22 @@ maintenance activities. Append-only — newest entries at the bottom.
 - **Deferred**:
   - `OnEvent` single-handler limitation — tracked in `STABILITY.md`
   - `Task` method renames — tracked in `STABILITY.md`
+
+## 2026-04-26 — /release v0.8.0
+
+- **Commit**: `pending`
+- **Outcome**: Released v0.8.0. Adds `SessionExists(sessionID,
+  workDir) (bool, error)` and `SessionJSONLPath(sessionID, workDir)
+  string` package-level probes so embedders can decide between
+  fresh-start and resume code paths *before* invoking `Start`,
+  rather than relying on the agent's silent auto-detect path. The
+  motivating consumer is `meetcat resume <meeting-id>`; pageflip
+  needs the explicit signal to log "specialist X starting fresh —
+  no prior JSONL" instead of discovering the missing context after
+  the fact. `Start`'s internal resume detection refactored through
+  the new `SessionExists` so the public probe and the auto-detect
+  path share one implementation. 🎯T2 achieved (estimated 2,
+  actual 1).
+- **Deferred**:
+  - `OnEvent` single-handler limitation — tracked in `STABILITY.md`
+  - `Task` method renames — tracked in `STABILITY.md`
