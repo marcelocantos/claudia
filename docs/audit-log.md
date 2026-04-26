@@ -112,7 +112,7 @@ maintenance activities. Append-only — newest entries at the bottom.
 
 ## 2026-04-26 — /release v0.9.0
 
-- **Commit**: `pending`
+- **Commit**: `20f8276`
 - **Outcome**: Released v0.9.0. Resolves the `claude` executable via
   a new `CLAUDE_BIN` env var (absolute or PATH-resolvable),
   `exec.LookPath`, then known install dirs (`~/.local/bin/claude`,
