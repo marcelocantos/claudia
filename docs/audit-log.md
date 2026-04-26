@@ -93,7 +93,7 @@ maintenance activities. Append-only — newest entries at the bottom.
 
 ## 2026-04-26 — /release v0.8.0
 
-- **Commit**: `pending`
+- **Commit**: `7fb1afc`
 - **Outcome**: Released v0.8.0. Adds `SessionExists(sessionID,
   workDir) (bool, error)` and `SessionJSONLPath(sessionID, workDir)
   string` package-level probes so embedders can decide between
