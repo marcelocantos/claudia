@@ -109,3 +109,26 @@ maintenance activities. Append-only — newest entries at the bottom.
 - **Deferred**:
   - `OnEvent` single-handler limitation — tracked in `STABILITY.md`
   - `Task` method renames — tracked in `STABILITY.md`
+
+## 2026-04-26 — /release v0.9.0
+
+- **Commit**: `pending`
+- **Outcome**: Released v0.9.0. Resolves the `claude` executable via
+  a new `CLAUDE_BIN` env var (absolute or PATH-resolvable),
+  `exec.LookPath`, then known install dirs (`~/.local/bin/claude`,
+  `~/.claude/local/claude`, `/opt/homebrew/bin/claude`,
+  `/usr/local/bin/claude`). Applied to all three spawn paths —
+  Task (`task.go`), Session (`agent.go`), and Pool (`pool.go`) —
+  so claudia can run under launchd / systemd / Windows Service
+  whose `$PATH` excludes user-local install dirs. Surfaced the env
+  var in `STABILITY.md`'s interaction-surface catalogue, and
+  rewrote a stale `agents-guide.md` gotcha that previously
+  asserted `claude` had to be on `$PATH`. New unit test
+  `TestResolveClaudeBin` covers all five branches; existing live
+  tests (`TestTaskRunSmoke`, `TestAgentSendAndWaitForResponse`,
+  `TestAgentMultiTurn`, `TestRunHelper`,
+  `TestAgentReadinessFailureOnDeadProcess`) confirm the resolver
+  works end-to-end through both Task and Session/Pool spawn paths.
+- **Deferred**:
+  - `OnEvent` single-handler limitation — tracked in `STABILITY.md`
+  - `Task` method renames — tracked in `STABILITY.md`

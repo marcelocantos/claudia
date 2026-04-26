@@ -12,7 +12,7 @@ new module (e.g. `claudia2`) rather than breaking an existing import
 path. The pre-1.0 period exists to shake out the API design before
 that contract takes effect.
 
-Snapshot as of: v0.8.0.
+Snapshot as of: v0.9.0.
 
 ## Interaction surface
 
@@ -143,11 +143,17 @@ is annotated with a stability assessment:
 | `InjectAssistantText` | `(ctx context.Context, text string) error` | Needs review |
 | `Close` | `() error` | Stable |
 
+#### Environment variables
+
+| Item | Purpose | Status |
+|---|---|---|
+| `CLAUDE_BIN` | Absolute path or PATH-resolvable name of the `claude` executable. Honoured by both Task and Session/Pool spawn paths. Falls back to `exec.LookPath("claude")` then to known install locations (`~/.local/bin/claude`, `~/.claude/local/claude`, `/opt/homebrew/bin/claude`, `/usr/local/bin/claude`). | Stable |
+
 ### Surface item count
 
-~62 items across both packages. Per the release skill's settling
-table, this puts claudia in the 50–100 bracket with a minimum
-settling period of 3 months from the last breaking change.
+~63 items across both packages (62 API + 1 env var). Per the release
+skill's settling table, this puts claudia in the 50–100 bracket with
+a minimum settling period of 3 months from the last breaking change.
 
 ## Gaps and prerequisites for 1.0
 
