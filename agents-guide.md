@@ -147,9 +147,15 @@ arguments.
 
 ## Gotchas
 
-1. **`claude` and `tmux` must be on `$PATH`.** claudia shells out to
-   both CLIs; there is no in-process API. `tmux` 3.0+ is required for
-   Session mode (`brew install tmux` / `apt install tmux`). Windows is
+1. **`tmux` must be on `$PATH`; `claude` must be resolvable.** claudia
+   shells out to both CLIs; there is no in-process API. `tmux` 3.0+ is
+   required for Session mode (`brew install tmux` / `apt install tmux`).
+   `claude` is located via `CLAUDE_BIN` (env var, absolute path or
+   PATH-resolvable name), then `exec.LookPath`, then known install
+   dirs (`~/.local/bin/claude`, `~/.claude/local/claude`,
+   `/opt/homebrew/bin/claude`, `/usr/local/bin/claude`). Set
+   `CLAUDE_BIN` when running under launchd / systemd / a Windows
+   Service whose `$PATH` excludes user-local install dirs. Windows is
    not supported; use WSL. Task mode does not require tmux.
 
 2. **Sub-agents are disabled.** claudia always passes

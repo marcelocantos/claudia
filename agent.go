@@ -238,7 +238,11 @@ func Start(cfg Config) (*Agent, error) {
 
 	// Spawn the claude window on the dedicated tmux server.
 	windowName := "claudia-" + sessionID[:8]
-	windowID, err := tmuxagent.SpawnWindow(workDir, windowName, "claude", args)
+	claudeBin, err := resolveClaudeBin()
+	if err != nil {
+		return nil, err
+	}
+	windowID, err := tmuxagent.SpawnWindow(workDir, windowName, claudeBin, args)
 	if err != nil {
 		return nil, fmt.Errorf("tmux spawn: %w", err)
 	}

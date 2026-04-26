@@ -10,7 +10,7 @@ handling, JSONL transcript tailing, or session lifecycle management.
 ## Requirements
 
 - Go 1.21+
-- `claude` CLI installed and on `$PATH`
+- `claude` CLI installed (on `$PATH`, in a known install dir like `~/.local/bin`, or pointed at via the `CLAUDE_BIN` env var)
 - tmux 3.0+ (`brew install tmux` / `apt install tmux` / `dnf install tmux`)
 - macOS or Linux (Windows is not supported; WSL works)
 
