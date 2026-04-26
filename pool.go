@@ -208,7 +208,11 @@ func spawnPoolWindow(_ context.Context, cfg Config, workDir, disallowed, windowN
 	}
 	args = append(args, cfg.ExtraArgs...)
 
-	windowID, err := tmuxagent.SpawnWindow(workDir, windowName, "claude", args)
+	claudeBin, err := resolveClaudeBin()
+	if err != nil {
+		return nil, err
+	}
+	windowID, err := tmuxagent.SpawnWindow(workDir, windowName, claudeBin, args)
 	if err != nil {
 		return nil, fmt.Errorf("pool spawn: %w", err)
 	}
