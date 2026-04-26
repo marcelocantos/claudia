@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -186,7 +187,15 @@ func (t *Task) RunTask(ctx context.Context, prompt string) (<-chan TaskEvent, er
 
 	slog.Debug("spawning claude task", "task", t.id, "args", args)
 
-	cmd := exec.CommandContext(cmdCtx, "claude", args...)
+	claudeBin, err := resolveClaudeBin()
+	if err != nil {
+		cancel()
+		t.mu.Lock()
+		t.status = TaskStatusError
+		t.mu.Unlock()
+		return nil, err
+	}
+	cmd := exec.CommandContext(cmdCtx, claudeBin, args...)
 	cmd.Dir = t.workDir
 
 	// Unset CLAUDECODE to avoid nested session detection.
@@ -441,6 +450,43 @@ func parseTaskResult(line []byte) []TaskEvent {
 		IsError:  true,
 		ErrorMsg: strings.Join(errMsgs, "; "),
 	}}
+}
+
+// resolveClaudeBin locates the `claude` executable. It honours the
+// CLAUDE_BIN env var (absolute path or PATH-resolvable name), then
+// tries exec.LookPath, then falls back to common install locations.
+// This matters when the parent process runs under a launcher (launchd,
+// systemd, Windows Service) whose PATH excludes the user-local install
+// dirs where Claude Code usually lives — e.g. ~/.local/bin/claude.
+func resolveClaudeBin() (string, error) {
+	if p := os.Getenv("CLAUDE_BIN"); p != "" {
+		if filepath.IsAbs(p) {
+			if _, err := os.Stat(p); err == nil {
+				return p, nil
+			}
+		} else if abs, err := exec.LookPath(p); err == nil {
+			return abs, nil
+		}
+	}
+	if p, err := exec.LookPath("claude"); err == nil {
+		return p, nil
+	}
+	home, _ := os.UserHomeDir()
+	candidates := []string{
+		filepath.Join(home, ".local", "bin", "claude"),
+		filepath.Join(home, ".claude", "local", "claude"),
+		"/opt/homebrew/bin/claude",
+		"/usr/local/bin/claude",
+	}
+	for _, c := range candidates {
+		if c == "" {
+			continue
+		}
+		if _, err := os.Stat(c); err == nil {
+			return c, nil
+		}
+	}
+	return "", fmt.Errorf("claude executable not found in PATH or known install dirs (set CLAUDE_BIN to override)")
 }
 
 func filterEnv(env []string, exclude string) []string {
