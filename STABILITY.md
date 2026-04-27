@@ -48,6 +48,7 @@ is annotated with a stability assessment:
 
 | Item | Status |
 |---|---|
+| `Version` | Stable |
 | `TaskEventInit, TaskEventText, TaskEventToolUse, TaskEventResult, TaskEventError` (TaskEventType) | Stable |
 | `TaskStatusIdle, TaskStatusRunning, TaskStatusError, TaskStatusStopped` (TaskStatus) | Stable |
 | ~~`ErrDaemonUnavailable`~~ | Removed (daemon pivot) |
