@@ -65,9 +65,10 @@ targets:
     discovered: 2026-04-27
   T1.4:
     name: CLAUDIA_LIVE=1 is the documented pre-release validation step for end-to-end coverage
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
+    actual_cost: 1.0
     acceptance:
     - README and/or agents-guide.md document `CLAUDIA_LIVE=1 go test -race -count=1 ./...` (with the `claude` binary on PATH and Anthropic auth in place) as the canonical pre-release validation command — explaining what it covers (real-binary tmux-backed Agent send/receive, crash-survival, pool acquire/release, Task-mode end-to-end) and why CI doesn't run it (auth + per-run cost).
     - 'STABILITY.md''s "Testing and CI" subsection is rewritten: drop the "CI does not exercise tmux-backed Agent on Linux runners" gap (it is now a deliberate scope decision, not a gap), and drop the "Task mode still has no end-to-end smoke test" line (TaskRun''s CLAUDIA_LIVE-gated test in task_test.go already covers it — verify and reference by name).'
@@ -76,11 +77,13 @@ targets:
     context: 'Original T1.4 wanted CI itself to exercise the tmux-backed Agent end-to-end on Linux. That''s infeasible without one of: (a) installing the `claude` binary on the runner and providing Anthropic auth as a GitHub secret (burns API credit per push, sets a precedent the rest of the ecosystem doesn''t follow); (b) building a stub `claude` binary that fakes the prompt-box readiness pattern and replays canned JSONL (real work, deferred). The honest answer for v1.0 is that the integration tests are CLAUDIA_LIVE-gated by design and only run locally before tagging. CI already installs tmux on Linux and runs every test that doesn''t require `claude` — that''s enough for the substrate-correctness claim. The pre-release live run, enforced by /release''s tests-exist gate, covers the rest. T1.4 is now about making that contract explicit in the docs and STABILITY.md rather than expanding CI.'
     origin: reshaped from original CI-end-to-end framing after credentials/auth feasibility review on 2026-04-27
     discovered: 2026-04-27
+    achieved: 2026-04-27
   T1.5:
     name: claudia exposes a Version constant kept in sync by the release skill
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
+    actual_cost: 1.0
     acceptance:
     - Package claudia exposes `const Version = "x.y.z"` matching the most recent release tag.
     - The /release skill's prep step updates this constant as part of the version-bump commit (or scripts/hooks enforce that the constant matches the upcoming tag).
@@ -88,3 +91,4 @@ targets:
     context: Item from STABILITY.md §"Packaging". Without an in-source version, consumers can only learn claudia's version from go.mod, which is awkward for runtime diagnostics ("which claudia is this binary using?"). Small change, mostly mechanical, but it requires release-skill cooperation so the constant doesn't drift from the tag.
     origin: STABILITY.md gap audit
     discovered: 2026-04-27
+    achieved: 2026-04-27
