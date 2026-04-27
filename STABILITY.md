@@ -12,7 +12,7 @@ new module (e.g. `claudia2`) rather than breaking an existing import
 path. The pre-1.0 period exists to shake out the API design before
 that contract takes effect.
 
-Snapshot as of: v0.9.0.
+Snapshot as of: v0.10.0.
 
 ## Interaction surface
 
@@ -48,6 +48,7 @@ is annotated with a stability assessment:
 
 | Item | Status |
 |---|---|
+| `Version` | Stable |
 | `TaskEventInit, TaskEventText, TaskEventToolUse, TaskEventResult, TaskEventError` (TaskEventType) | Stable |
 | `TaskStatusIdle, TaskStatusRunning, TaskStatusError, TaskStatusStopped` (TaskStatus) | Stable |
 | ~~`ErrDaemonUnavailable`~~ | Removed (daemon pivot) |
@@ -219,18 +220,22 @@ Concrete items that must be addressed before cutting 1.0.
   landed in PR #5 and runs on push.
 - **Test coverage is growing.** Agent readiness, crash-survival,
   WaitForResponse settle semantics, event parsing, and terminal-log
-  path derivation are covered. Task mode still has no end-to-end
-  smoke test against a real `claude` binary.
-- **CI does not exercise tmux-backed Agent** on Linux runners.
+  path derivation are covered. ~~Task mode still has no end-to-end
+  smoke test against a real `claude` binary.~~ Resolved: `TestTaskRunSmoke`
+  in `task_test.go` covers Task-mode end-to-end against the real binary
+  (gated on `CLAUDIA_LIVE=1`).
+- ~~**CI does not exercise tmux-backed Agent** on Linux runners.
   GitHub macOS runners have tmux pre-installed; Linux runners need
-  `apt-get install tmux`. See 🎯T1.1 M6.
+  `apt-get install tmux`. See 🎯T1.1 M6.~~ Resolved by deliberate scope
+  decision: CI installs tmux on Linux and runs all hermetic tests on
+  both macOS and Linux. Live tests (those that spawn the real `claude`
+  binary and make API calls) are gated on `CLAUDIA_LIVE=1` and run
+  locally before each release. See `agents-guide.md` § Testing for the
+  canonical pre-release validation command.
 
 ### Packaging
 
-- **No version constant.** claudia has no in-source version string.
-  Consumers rely on `go.mod` pinning. Consider adding a
-  `const Version = "x.y.z"` that the release skill keeps in sync, so
-  runtime diagnostics can report the library version.
+- ~~**No version constant.**~~ Resolved in v0.10.0 — `claudia.Version` exposes the build's released version.
 
 ## Out of scope for 1.0
 

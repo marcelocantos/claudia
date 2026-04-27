@@ -1,0 +1,94 @@
+schema_version: 3
+targets:
+  T1:
+    name: claudia ships v1.0 with a settled public API contract
+    status: identified
+    value: 5.0
+    cost: 3.0
+    showcase: true
+    acceptance:
+    - A v1.0.0 tag is published on master and the release notes catalogue the breaking API changes that landed during the settling period.
+    - STABILITY.md's "Gaps and prerequisites for 1.0" section is empty (or rewrites itself into a post-1.0 changelog).
+    - go doc on each public type and function reads as self-sufficient — no required context from STABILITY.md or README.
+    - All sub-targets (T1.1 through T1.5) are achieved; the release skill's settling-period gate is satisfied.
+    context: claudia is currently at v0.9.x and pre-1.0 by design — STABILITY.md tracks the gaps that need closing before 1.0 locks in a backwards-compatibility contract. After 1.0 a major bump means forking the module (claudia2), so the API design needs to settle first. The sub-targets correspond directly to the four gap categories in STABILITY.md (API design fixes, behavioural fixes, documentation, testing/CI) plus a small packaging item (Version constant). Retirement requires actually publishing v1.0.0 — this is the showcase.
+    depends_on:
+    - T1.1
+    - T1.2
+    - T1.3
+    - T1.4
+    - T1.5
+    origin: replaces bullseye_init starter
+    discovered: 2026-04-27
+  T1.1:
+    name: Breaking API renames from STABILITY.md are complete
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'Task accessor methods renamed: TaskID/TaskName/TaskWorkDir/TaskStatus → ID/Name/WorkDir/Status. RunTask → Run. CancelTask/StopTask → Cancel/Stop.'
+    - Task.SetLastResult removed from public API (moved to a constructor option or made package-private).
+    - Config.DisallowTools changed from comma-separated string to []string for parity with ExtraArgs.
+    - Event.Raw type mismatch resolved — declared and populated as []byte (or json.RawMessage with explicit conversion in the parser), no relying on string→RawMessage coincidence.
+    - AgentDef.Parent audited and removed if no consumer needs it; documented otherwise.
+    - Registry.Start renamed (Launch or StartAgent) so it no longer shadows the package-level Start.
+    - STABILITY.md "API design fixes (breaking)" subsection is fully struck through or removed.
+    context: All items are listed verbatim in STABILITY.md §"API design fixes (breaking)". They are deliberately deferred until the v1.0 ship to avoid churning consumers with a string of small breaking releases. Cluster them into one (or a small chain of) breaking PR(s) so consumers absorb the transition once.
+    origin: STABILITY.md gap audit
+    discovered: 2026-04-27
+  T1.2:
+    name: Behavioural rough edges flagged in STABILITY.md are resolved
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'TermLogPath no longer lies after write failures: either the accessor returns "" once logging is silently disabled, or a separate "is logging live" accessor exists, with behaviour documented.'
+    - Terminal log run-boundary marker decision recorded — either a marker format is implemented, or the design choice to concatenate without markers is documented in agents-guide.md / STABILITY.md with rationale.
+    - Session-mode cost/usage accounting story is settled — either Session mode parses usage from the JSONL transcript, or the asymmetry with Task mode is documented as an explicit design choice.
+    - OnEvent's single-handler limitation replaced by a subscribe/unsubscribe or channel-returning primitive that supports multiple consumers without collisions.
+    - Readiness tuning (capture-pane regex poll interval, overall timeout) configurable via Config if consumers report timeouts; otherwise documented as deliberately fixed.
+    - STABILITY.md "Behavioural fixes" subsection is fully struck through or removed.
+    context: These are the items in STABILITY.md §"Behavioural fixes". Some (TermLogPath, run-boundary markers) are small and can be fixed inline; others (Session-mode usage accounting, OnEvent multi-consumer) are larger design questions. Each can ship in its own minor release pre-1.0 — they don't need to cluster like the API renames.
+    origin: STABILITY.md gap audit
+    discovered: 2026-04-27
+  T1.3:
+    name: Package and type-level docs are sufficient for go doc / pkg.go.dev
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - Every exported type, function, method, and constant in claudia and claudia/grok has a doc comment readable as standalone go doc output.
+    - 'At least one runnable Example function in *_test.go for each of: Task mode, Session mode, Acquire/Release, Registry. pkg.go.dev renders these.'
+    - STABILITY.md "Documentation" subsection is fully struck through or removed.
+    context: Item from STABILITY.md §"Documentation". `go doc` should be self-sufficient before 1.0 — consumers reading the API reference shouldn't need to cross-reference STABILITY.md or README to understand what a function does. Examples in *_test.go also get rendered as runnable snippets on pkg.go.dev, which is the canonical Go discovery surface.
+    origin: STABILITY.md gap audit
+    discovered: 2026-04-27
+  T1.4:
+    name: CLAUDIA_LIVE=1 is the documented pre-release validation step for end-to-end coverage
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    actual_cost: 1.0
+    acceptance:
+    - README and/or agents-guide.md document `CLAUDIA_LIVE=1 go test -race -count=1 ./...` (with the `claude` binary on PATH and Anthropic auth in place) as the canonical pre-release validation command — explaining what it covers (real-binary tmux-backed Agent send/receive, crash-survival, pool acquire/release, Task-mode end-to-end) and why CI doesn't run it (auth + per-run cost).
+    - 'STABILITY.md''s "Testing and CI" subsection is rewritten: drop the "CI does not exercise tmux-backed Agent on Linux runners" gap (it is now a deliberate scope decision, not a gap), and drop the "Task mode still has no end-to-end smoke test" line (TaskRun''s CLAUDIA_LIVE-gated test in task_test.go already covers it — verify and reference by name).'
+    - The /release skill's tests-exist gate runs the live test suite as part of pre-release verification (the skill already declares this in Phase 4.5 — verify it triggers for claudia and surfaces a failure if either CLAUDIA_LIVE is unset or the live tests fail).
+    - If a stub-claude-binary path is later considered desirable, it is filed as a separate forked target (e.g. T1.4.1) rather than re-expanding T1.4's scope.
+    context: 'Original T1.4 wanted CI itself to exercise the tmux-backed Agent end-to-end on Linux. That''s infeasible without one of: (a) installing the `claude` binary on the runner and providing Anthropic auth as a GitHub secret (burns API credit per push, sets a precedent the rest of the ecosystem doesn''t follow); (b) building a stub `claude` binary that fakes the prompt-box readiness pattern and replays canned JSONL (real work, deferred). The honest answer for v1.0 is that the integration tests are CLAUDIA_LIVE-gated by design and only run locally before tagging. CI already installs tmux on Linux and runs every test that doesn''t require `claude` — that''s enough for the substrate-correctness claim. The pre-release live run, enforced by /release''s tests-exist gate, covers the rest. T1.4 is now about making that contract explicit in the docs and STABILITY.md rather than expanding CI.'
+    origin: reshaped from original CI-end-to-end framing after credentials/auth feasibility review on 2026-04-27
+    discovered: 2026-04-27
+    achieved: 2026-04-27
+  T1.5:
+    name: claudia exposes a Version constant kept in sync by the release skill
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    actual_cost: 1.0
+    acceptance:
+    - Package claudia exposes `const Version = "x.y.z"` matching the most recent release tag.
+    - The /release skill's prep step updates this constant as part of the version-bump commit (or scripts/hooks enforce that the constant matches the upcoming tag).
+    - STABILITY.md "Packaging" note about "No version constant" is struck through.
+    context: Item from STABILITY.md §"Packaging". Without an in-source version, consumers can only learn claudia's version from go.mod, which is awkward for runtime diagnostics ("which claudia is this binary using?"). Small change, mostly mechanical, but it requires release-skill cooperation so the constant doesn't drift from the tag.
+    origin: STABILITY.md gap audit
+    discovered: 2026-04-27
+    achieved: 2026-04-27

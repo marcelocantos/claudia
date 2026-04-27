@@ -235,6 +235,35 @@ Claude Code, wire `grok.Config.OnFunctionCall` to a `claudia.Task`
 `RunTask` invocation and relay results via `InjectAssistantText`.
 Otherwise, ignore it.
 
+## Testing
+
+The test suite has two tiers:
+
+**Hermetic tests** run anywhere — no `claude` binary, no Anthropic
+credentials, no API cost. They cover event parsing, WaitForResponse
+settle semantics, terminal-log path derivation, readiness detection,
+and the full tmux control-mode mock machinery. CI runs these on every
+push, on both macOS and Linux.
+
+**Live tests** are gated on two conditions: `CLAUDIA_LIVE=1` in the
+environment and `claude` on `$PATH`. They exercise the real binary
+end-to-end: tmux-backed Agent send/receive (`TestAgentSendAndWaitForResponse`,
+`TestAgentMultiTurn`, `TestRunHelper`), crash-survival
+(`TestAgentReadinessFailureOnDeadProcess`), pool acquire/release
+(`pool_test.go`), and Task-mode end-to-end (`TestTaskRunSmoke`). CI
+does **not** run these — doing so would require Anthropic auth and
+would burn API credit on every push.
+
+The canonical pre-release validation command (run locally before
+tagging a release):
+
+```sh
+CLAUDIA_LIVE=1 go test -race -count=1 ./...
+```
+
+This is the full gate: it runs the hermetic suite plus all live tests.
+Both must pass before cutting a release.
+
 ## Stability
 
 claudia is pre-1.0. `STABILITY.md` in the repo root tracks the public
