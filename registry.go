@@ -16,13 +16,12 @@ import (
 
 // AgentDef is the persistent definition of an agent.
 type AgentDef struct {
-	Name          string `json:"name"`                      // unique identifier
-	WorkDir       string `json:"workdir"`                   // working directory
-	SessionID     string `json:"session_id"`                // persistent Claude session ID
-	Model         string `json:"model,omitempty"`           // model override
-	AutoStart     bool   `json:"auto_start"`                // start on registry startup
-	Parent        string `json:"parent,omitempty"`          // parent agent name (for tree display)
-	DisallowTools string `json:"disallow_tools,omitempty"`  // extra tools to disallow
+	Name          string   `json:"name"`                     // unique identifier
+	WorkDir       string   `json:"workdir"`                  // working directory
+	SessionID     string   `json:"session_id"`               // persistent Claude session ID
+	Model         string   `json:"model,omitempty"`          // model override
+	AutoStart     bool     `json:"auto_start"`               // start on registry startup
+	DisallowTools []string `json:"disallow_tools,omitempty"` // extra tools to disallow
 }
 
 // Registry manages persistent agent definitions and their running processes.
@@ -96,9 +95,10 @@ func (r *Registry) Remove(name string) error {
 	return r.save()
 }
 
-// Start starts a registered agent. Returns the existing process if
-// already running.
-func (r *Registry) Start(name string) (*Agent, error) {
+// Launch starts a registered agent. Returns the existing process if
+// already running. The name is intentionally distinct from the
+// package-level Start so call sites read unambiguously.
+func (r *Registry) Launch(name string) (*Agent, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -185,7 +185,7 @@ func (r *Registry) StartAll() {
 	r.mu.Unlock()
 
 	for _, name := range names {
-		if _, err := r.Start(name); err != nil {
+		if _, err := r.Launch(name); err != nil {
 			slog.Error("auto-start failed", "agent", name, "err", err)
 		}
 	}

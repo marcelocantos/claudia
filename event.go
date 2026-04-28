@@ -13,8 +13,9 @@ type Event struct {
 	// Type is the event type: "assistant", "user", "system", "progress", etc.
 	Type string `json:"type"`
 
-	// Raw is the complete JSONL line.
-	Raw json.RawMessage `json:"-"`
+	// Raw is the complete JSONL line as the bytes that were parsed.
+	// Callers that want to re-marshal can wrap in json.RawMessage.
+	Raw []byte `json:"-"`
 
 	// Text is populated for type == "assistant" with the concatenated text
 	// content blocks from the message.
@@ -53,10 +54,10 @@ type EventFunc func(Event)
 
 func parseEvent(line string) Event {
 	var ev Event
-	ev.Raw = json.RawMessage(line)
+	ev.Raw = []byte(line)
 
 	var entry map[string]any
-	if err := json.Unmarshal([]byte(line), &entry); err != nil {
+	if err := json.Unmarshal(ev.Raw, &entry); err != nil {
 		ev.Type = "unknown"
 		return ev
 	}

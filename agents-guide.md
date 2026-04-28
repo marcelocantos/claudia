@@ -26,7 +26,7 @@ transcript live.
 
 ## Task mode: essential patterns
 
-Construct with `NewTask`, then call `RunTask` to get a channel of
+Construct with `NewTask`, then call `Run` to get a channel of
 events:
 
 ```go
@@ -35,7 +35,7 @@ task := claudia.NewTask(claudia.TaskConfig{
     WorkDir: "/abs/path",
     Model:   "sonnet", // or "opus", or "" for default
 })
-events, err := task.RunTask(ctx, prompt)
+events, err := task.Run(ctx, prompt)
 ```
 
 The channel closes when the process exits. Drain it until then:
@@ -66,8 +66,8 @@ from a prior `TaskEventInit`. claudia passes `--resume <id>` to
 line from `claude` before parsing — useful for debugging or custom
 processing.
 
-**Cancellation**: `Task.CancelTask()` sends SIGINT to the running
-process; `Task.StopTask()` cancels and marks the task as stopped so
+**Cancellation**: `Task.Cancel()` sends SIGINT to the running
+process; `Task.Stop()` cancels and marks the task as stopped so
 it cannot be re-run.
 
 ## Session mode: essential patterns
@@ -138,12 +138,8 @@ manages their processes. Useful when the host program needs to:
 - Rename or reassign agents without losing session history
 
 Construct with `NewRegistry(path)`, then `Register` / `EnsureAgent`
-to add definitions and `Start` / `StartAll` to launch them. If the
+to add definitions and `Launch` / `StartAll` to launch them. If the
 host program owns a single short-lived agent, skip the Registry.
-
-Note: `Registry.Start(name)` shadows the package-level
-`claudia.Start(cfg)`. They return the same type but take different
-arguments.
 
 ## Gotchas
 
@@ -190,11 +186,6 @@ arguments.
    of `pushTermOutput` or subscribe to terminal output, respect the
    same mutex discipline.
 
-8. **Task method names are verbose.** `TaskID()`, `TaskName()`,
-   `TaskWorkDir()`, `TaskStatus()` repeat "Task" even though they
-   are methods on `Task`. This will likely be renamed before 1.0 —
-   see `STABILITY.md`.
-
 ## tmux substrate
 
 Session mode agents run inside windows on a dedicated claudia tmux
@@ -232,7 +223,7 @@ client. It is independent of the rest of claudia — a separate concern
 that happens to live in the same module because the original use case
 was voice-driving a claudia agent. If you're integrating voice +
 Claude Code, wire `grok.Config.OnFunctionCall` to a `claudia.Task`
-`RunTask` invocation and relay results via `InjectAssistantText`.
+`Run` invocation and relay results via `InjectAssistantText`.
 Otherwise, ignore it.
 
 ## Testing

@@ -63,11 +63,12 @@ const (
 
 // TaskConfig holds the configuration for creating a task session.
 type TaskConfig struct {
-	ID       string // unique session ID
-	Name     string // human-readable name
-	WorkDir  string // working directory for claude process
-	Model    string // model name (e.g. "opus", "sonnet"); empty = default
-	ClaudeID string // claude session ID for --resume (empty = new session)
+	ID         string // unique session ID
+	Name       string // human-readable name
+	WorkDir    string // working directory for claude process
+	Model      string // model name (e.g. "opus", "sonnet"); empty = default
+	ClaudeID   string // claude session ID for --resume (empty = new session)
+	LastResult string // initial value for LastResult (e.g. when restoring from persisted state)
 }
 
 // RawLogFunc receives raw NDJSON lines from the Claude process.
@@ -95,26 +96,27 @@ type Task struct {
 // NewTask creates a Task from a TaskConfig.
 func NewTask(cfg TaskConfig) *Task {
 	return &Task{
-		id:       cfg.ID,
-		name:     cfg.Name,
-		workDir:  cfg.WorkDir,
-		model:    cfg.Model,
-		status:   TaskStatusIdle,
-		claudeID: cfg.ClaudeID,
+		id:         cfg.ID,
+		name:       cfg.Name,
+		workDir:    cfg.WorkDir,
+		model:      cfg.Model,
+		status:     TaskStatusIdle,
+		claudeID:   cfg.ClaudeID,
+		lastResult: cfg.LastResult,
 	}
 }
 
-// TaskID returns the task's unique identifier.
-func (t *Task) TaskID() string { return t.id }
+// ID returns the task's unique identifier.
+func (t *Task) ID() string { return t.id }
 
-// TaskName returns the task's human-readable name.
-func (t *Task) TaskName() string { return t.name }
+// Name returns the task's human-readable name.
+func (t *Task) Name() string { return t.name }
 
-// TaskWorkDir returns the task's working directory.
-func (t *Task) TaskWorkDir() string { return t.workDir }
+// WorkDir returns the task's working directory.
+func (t *Task) WorkDir() string { return t.workDir }
 
-// TaskStatus returns the current task status.
-func (t *Task) TaskStatus() TaskStatus {
+// Status returns the current task status.
+func (t *Task) Status() TaskStatus {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.status
@@ -141,16 +143,9 @@ func (t *Task) SetRawLog(fn RawLogFunc) {
 	t.onRawLog = fn
 }
 
-// SetLastResult sets the last result (used when restoring from DB).
-func (t *Task) SetLastResult(r string) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.lastResult = r
-}
-
-// RunTask sends a prompt to the task and returns a channel of events.
+// Run sends a prompt to the task and returns a channel of events.
 // The channel is closed when the process exits.
-func (t *Task) RunTask(ctx context.Context, prompt string) (<-chan TaskEvent, error) {
+func (t *Task) Run(ctx context.Context, prompt string) (<-chan TaskEvent, error) {
 	t.mu.Lock()
 	if t.status == TaskStatusRunning {
 		t.mu.Unlock()
@@ -311,8 +306,8 @@ func (t *Task) RunTask(ctx context.Context, prompt string) (<-chan TaskEvent, er
 	return ch, nil
 }
 
-// CancelTask sends SIGINT to the running claude process.
-func (t *Task) CancelTask() error {
+// Cancel sends SIGINT to the running claude process.
+func (t *Task) Cancel() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -322,8 +317,8 @@ func (t *Task) CancelTask() error {
 	return t.cmd.Process.Signal(syscall.SIGINT)
 }
 
-// StopTask terminates the task permanently.
-func (t *Task) StopTask() {
+// Stop terminates the task permanently.
+func (t *Task) Stop() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 

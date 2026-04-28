@@ -63,10 +63,10 @@ type Config struct {
 	// Empty means Claude Code uses its default discovery.
 	MCPConfig string
 
-	// DisallowTools is a comma-separated list of additional tools to
-	// disallow. Agent, TeamCreate, TeamDelete, SendMessage, and
-	// EnterWorktree are always disallowed.
-	DisallowTools string
+	// DisallowTools lists additional tool names to disallow. Agent,
+	// TeamCreate, TeamDelete, SendMessage, and EnterWorktree are
+	// always disallowed in addition to whatever appears here.
+	DisallowTools []string
 
 	// ExtraArgs are additional CLI arguments passed to claude.
 	ExtraArgs []string
@@ -196,8 +196,8 @@ func Start(cfg Config) (*Agent, error) {
 	// Agents spawned by claudia are forbidden from creating their own
 	// sub-agents. The host program owns the process lifecycle.
 	disallowed := "Agent,TeamCreate,TeamDelete,SendMessage,EnterWorktree"
-	if cfg.DisallowTools != "" {
-		disallowed += "," + cfg.DisallowTools
+	if len(cfg.DisallowTools) > 0 {
+		disallowed += "," + strings.Join(cfg.DisallowTools, ",")
 	}
 
 	args := []string{
