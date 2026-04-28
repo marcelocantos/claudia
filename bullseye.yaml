@@ -49,6 +49,8 @@ targets:
     - Readiness tuning (capture-pane regex poll interval, overall timeout) configurable via Config if consumers report timeouts; otherwise documented as deliberately fixed.
     - STABILITY.md "Behavioural fixes" subsection is fully struck through or removed.
     context: These are the items in STABILITY.md §"Behavioural fixes". Some (TermLogPath, run-boundary markers) are small and can be fixed inline; others (Session-mode usage accounting, OnEvent multi-consumer) are larger design questions. Each can ship in its own minor release pre-1.0 — they don't need to cluster like the API renames.
+    depends_on:
+    - T1.1
     origin: STABILITY.md gap audit
     discovered: 2026-04-27
   T1.3:
@@ -61,6 +63,8 @@ targets:
     - 'At least one runnable Example function in *_test.go for each of: Task mode, Session mode, Acquire/Release, Registry. pkg.go.dev renders these.'
     - STABILITY.md "Documentation" subsection is fully struck through or removed.
     context: Item from STABILITY.md §"Documentation". `go doc` should be self-sufficient before 1.0 — consumers reading the API reference shouldn't need to cross-reference STABILITY.md or README to understand what a function does. Examples in *_test.go also get rendered as runnable snippets on pkg.go.dev, which is the canonical Go discovery surface.
+    depends_on:
+    - T1.1
     origin: STABILITY.md gap audit
     discovered: 2026-04-27
   T1.4:
