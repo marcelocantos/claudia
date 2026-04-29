@@ -5,4 +5,4 @@ package claudia
 
 // Version is the released version of this library. It is kept in sync
 // with the git tag by the release skill.
-const Version = "0.9.0"
+const Version = "0.10.0"
