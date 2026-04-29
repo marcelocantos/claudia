@@ -12,7 +12,7 @@ new module (e.g. `claudia2`) rather than breaking an existing import
 path. The pre-1.0 period exists to shake out the API design before
 that contract takes effect.
 
-Snapshot as of: v0.11.0.
+Snapshot as of: v0.10.0.
 
 ## Interaction surface
 
@@ -161,7 +161,7 @@ Concrete items that must be addressed before cutting 1.0.
 
 ### ~~API design fixes (breaking)~~
 
-Resolved in v0.11.0. The following renames and type changes shipped
+Resolved in v0.10.0. The following renames and type changes shipped
 together as a single breaking release:
 
 - ~~**Rename `Task` accessor methods.** `TaskID`, `TaskName`,

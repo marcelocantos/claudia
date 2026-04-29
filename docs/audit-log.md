@@ -110,6 +110,30 @@ maintenance activities. Append-only — newest entries at the bottom.
   - `OnEvent` single-handler limitation — tracked in `STABILITY.md`
   - `Task` method renames — tracked in `STABILITY.md`
 
+## 2026-04-29 — /release v0.10.0
+
+- **Commit**: `pending`
+- **Outcome**: Released v0.10.0, the clustered breaking-changes release for
+  🎯T1.1. `Task` accessor methods drop the `Task` prefix
+  (`TaskID`/`TaskName`/`TaskWorkDir`/`TaskStatus` → `ID`/`Name`/`WorkDir`/`Status`);
+  `RunTask`/`CancelTask`/`StopTask` → `Run`/`Cancel`/`Stop`. `Task.SetLastResult`
+  removed from the public API; restoration moves to `TaskConfig.LastResult`.
+  `Config.DisallowTools` and `AgentDef.DisallowTools` change from comma-separated
+  `string` to `[]string` — the persisted registry JSON shape changes from a
+  string to an array. `Event.Raw` declared as `[]byte` instead of
+  `json.RawMessage` (no more string→RawMessage coincidence in the parser).
+  `AgentDef.Parent` removed (no consumer used it). `Registry.Start` renamed to
+  `Launch` so it no longer shadows the package-level `Start`. STABILITY.md's
+  "API design fixes (breaking)" subsection struck through. Surface remains in
+  the 50–100 settling bracket; the breaking-change clock for 1.0 restarts here.
+  🎯T1.4 and 🎯T1.5 retired in PR #18; 🎯T1.1 retires with this release.
+  🎯T1.2 and 🎯T1.3 still gate v1.0 (now have explicit `depends_on: [T1.1]`).
+- **Deferred**:
+  - `OnEvent` single-handler limitation — tracked in 🎯T1.2
+  - Behavioural rough edges (TermLogPath, run-boundary markers, Session-mode
+    usage accounting, readiness tuning) — tracked in 🎯T1.2
+  - Per-type `go doc` polish and runnable Examples — tracked in 🎯T1.3
+
 ## 2026-04-26 — /release v0.9.0
 
 - **Commit**: `20f8276`
