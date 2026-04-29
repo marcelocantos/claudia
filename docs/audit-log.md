@@ -112,7 +112,7 @@ maintenance activities. Append-only — newest entries at the bottom.
 
 ## 2026-04-29 — /release v0.10.0
 
-- **Commit**: `pending`
+- **Commit**: `e5d40d1`
 - **Outcome**: Released v0.10.0, the clustered breaking-changes release for
   🎯T1.1. `Task` accessor methods drop the `Task` prefix
   (`TaskID`/`TaskName`/`TaskWorkDir`/`TaskStatus` → `ID`/`Name`/`WorkDir`/`Status`);
