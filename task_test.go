@@ -229,24 +229,27 @@ func TestNewTask(t *testing.T) {
 		WorkDir: "/tmp",
 		Model:   "sonnet",
 	})
-	if s.TaskID() != "test-123" {
-		t.Errorf("expected ID %q, got %q", "test-123", s.TaskID())
+	if s.ID() != "test-123" {
+		t.Errorf("expected ID %q, got %q", "test-123", s.ID())
 	}
-	if s.TaskName() != "my task" {
-		t.Errorf("expected name %q, got %q", "my task", s.TaskName())
+	if s.Name() != "my task" {
+		t.Errorf("expected name %q, got %q", "my task", s.Name())
 	}
-	if s.TaskStatus() != TaskStatusIdle {
-		t.Errorf("expected status %q, got %q", TaskStatusIdle, s.TaskStatus())
+	if s.Status() != TaskStatusIdle {
+		t.Errorf("expected status %q, got %q", TaskStatusIdle, s.Status())
 	}
 }
 
-func TestTaskSetLastResult(t *testing.T) {
+func TestTaskRestoreLastResult(t *testing.T) {
+	// LastResult passed via TaskConfig is preserved (used to restore
+	// the most recent result text when re-hydrating a Task from
+	// persisted state).
 	s := NewTask(TaskConfig{ID: "test-789", Name: "test"})
 	if got := s.LastResult(); got != "" {
 		t.Errorf("initial LastResult = %q, want empty", got)
 	}
-	s.SetLastResult("done!")
-	if got := s.LastResult(); got != "done!" {
+	s2 := NewTask(TaskConfig{ID: "test-790", Name: "test", LastResult: "done!"})
+	if got := s2.LastResult(); got != "done!" {
 		t.Errorf("LastResult = %q, want done!", got)
 	}
 }
@@ -260,7 +263,7 @@ func TestTaskClaudeID(t *testing.T) {
 
 func TestTaskCancelNoProcess(t *testing.T) {
 	s := NewTask(TaskConfig{ID: "test-cancel", Name: "test"})
-	if err := s.CancelTask(); err != nil {
+	if err := s.Cancel(); err != nil {
 		t.Errorf("Cancel on idle task: %v", err)
 	}
 }
@@ -316,9 +319,9 @@ func TestTaskRunSmoke(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	events, err := task.RunTask(ctx, "respond with: ok")
+	events, err := task.Run(ctx, "respond with: ok")
 	if err != nil {
-		t.Fatalf("RunTask: %v", err)
+		t.Fatalf("Run: %v", err)
 	}
 
 	var (
@@ -355,18 +358,18 @@ func TestTaskRunSmoke(t *testing.T) {
 	}
 	t.Logf("result: %q", resultTxt)
 
-	if got := task.TaskStatus(); got != TaskStatusIdle {
+	if got := task.Status(); got != TaskStatusIdle {
 		t.Errorf("post-run status = %q, want %q", got, TaskStatusIdle)
 	}
 }
 
 func TestTaskStop(t *testing.T) {
 	s := NewTask(TaskConfig{ID: "test-456", Name: "test"})
-	s.StopTask()
-	if s.TaskStatus() != TaskStatusStopped {
-		t.Errorf("expected status %q, got %q", TaskStatusStopped, s.TaskStatus())
+	s.Stop()
+	if s.Status() != TaskStatusStopped {
+		t.Errorf("expected status %q, got %q", TaskStatusStopped, s.Status())
 	}
-	_, err := s.RunTask(context.Background(), "hello")
+	_, err := s.Run(context.Background(), "hello")
 	if err == nil {
 		t.Error("expected error running stopped task")
 	}

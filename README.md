@@ -32,7 +32,7 @@ task := claudia.NewTask(claudia.TaskConfig{
     Model:   "sonnet",
 })
 
-events, err := task.RunTask(ctx, "Summarise the public API of this module.")
+events, err := task.Run(ctx, "Summarise the public API of this module.")
 if err != nil {
     log.Fatal(err)
 }

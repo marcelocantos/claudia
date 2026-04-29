@@ -68,8 +68,8 @@ func Acquire(ctx context.Context, cfg Config) (*Agent, error) {
 	}
 
 	disallowed := "Agent,TeamCreate,TeamDelete,SendMessage,EnterWorktree"
-	if cfg.DisallowTools != "" {
-		disallowed += "," + cfg.DisallowTools
+	if len(cfg.DisallowTools) > 0 {
+		disallowed += "," + strings.Join(cfg.DisallowTools, ",")
 	}
 
 	key := poolKeyFor(workDir, cfg.Model, disallowed)

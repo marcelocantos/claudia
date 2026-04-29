@@ -12,7 +12,7 @@ new module (e.g. `claudia2`) rather than breaking an existing import
 path. The pre-1.0 period exists to shake out the API design before
 that contract takes effect.
 
-Snapshot as of: v0.10.0.
+Snapshot as of: v0.11.0.
 
 ## Interaction surface
 
@@ -30,18 +30,18 @@ is annotated with a stability assessment:
 
 | Item | Definition | Status |
 |---|---|---|
-| `Config` | struct with `WorkDir, SessionID, Model, PermissionMode, MCPConfig, DisallowTools, TermLogPath, PoolPolicy string`, `ExtraArgs []string`, `PoolCap int` | Needs review |
+| `Config` | struct with `WorkDir, SessionID, Model, PermissionMode, MCPConfig, TermLogPath, PoolPolicy string`, `ExtraArgs, DisallowTools []string`, `PoolCap int` | Needs review |
 | `Agent` | opaque struct; methods listed below | Needs review |
-| `Event` | struct with `Type string`, `Raw json.RawMessage`, `Text string`, `StopReason string`, `ProgressType string`; method `IsTerminalStop() bool` | Stable |
+| `Event` | struct with `Type string`, `Raw []byte`, `Text string`, `StopReason string`, `ProgressType string`; method `IsTerminalStop() bool` | Stable |
 | `EventFunc` | `func(Event)` | Needs review |
 | `Usage` | struct with `InputTokens, OutputTokens, CacheCreationInputTokens, CacheReadInputTokens int` | Stable |
 | `TaskEvent` | struct with `Type TaskEventType`, `Content, ToolName, ToolInput, ToolID, SessionID string`, `DurationMs, CostUSD float64`, `Usage Usage`, `IsError bool`, `ErrorMsg string` | Needs review |
 | `TaskEventType` | string type | Stable |
 | `TaskStatus` | string type | Stable |
-| `TaskConfig` | struct with `ID, Name, WorkDir, Model, ClaudeID string` | Needs review |
+| `TaskConfig` | struct with `ID, Name, WorkDir, Model, ClaudeID, LastResult string` | Needs review |
 | `RawLogFunc` | `func(line []byte)` | Stable |
-| `Task` | opaque struct; methods listed below | Fluid |
-| `AgentDef` | struct with `Name, WorkDir, SessionID, Model, Parent, DisallowTools string` and `AutoStart bool` | Fluid |
+| `Task` | opaque struct; methods listed below | Needs review |
+| `AgentDef` | struct with `Name, WorkDir, SessionID, Model string`, `DisallowTools []string` and `AutoStart bool` | Needs review |
 | `Registry` | opaque struct; methods listed below | Needs review |
 
 #### Constants
@@ -92,17 +92,16 @@ is annotated with a stability assessment:
 
 | Item | Signature | Status |
 |---|---|---|
-| `TaskID` | `() string` | Fluid |
-| `TaskName` | `() string` | Fluid |
-| `TaskWorkDir` | `() string` | Fluid |
-| `TaskStatus` | `() TaskStatus` | Fluid |
-| `LastResult` | `() string` | Needs review |
+| `ID` | `() string` | Stable |
+| `Name` | `() string` | Stable |
+| `WorkDir` | `() string` | Stable |
+| `Status` | `() TaskStatus` | Stable |
+| `LastResult` | `() string` | Stable |
 | `ClaudeID` | `() string` | Stable |
 | `SetRawLog` | `(fn RawLogFunc)` | Stable |
-| `SetLastResult` | `(r string)` | Fluid |
-| `RunTask` | `(ctx context.Context, prompt string) (<-chan TaskEvent, error)` | Fluid |
-| `CancelTask` | `() error` | Fluid |
-| `StopTask` | `()` | Fluid |
+| `Run` | `(ctx context.Context, prompt string) (<-chan TaskEvent, error)` | Stable |
+| `Cancel` | `() error` | Stable |
+| `Stop` | `()` | Stable |
 
 #### `Registry` methods
 
@@ -110,7 +109,7 @@ is annotated with a stability assessment:
 |---|---|---|
 | `Register` | `(def AgentDef) error` | Stable |
 | `Remove` | `(name string) error` | Stable |
-| `Start` | `(name string) (*Agent, error)` | Needs review |
+| `Launch` | `(name string) (*Agent, error)` | Stable |
 | `Stop` | `(name string)` | Stable |
 | `Get` | `(name string) *Agent` | Stable |
 | `Def` | `(name string) *AgentDef` | Stable |
@@ -160,28 +159,27 @@ a minimum settling period of 3 months from the last breaking change.
 
 Concrete items that must be addressed before cutting 1.0.
 
-### API design fixes (breaking)
+### ~~API design fixes (breaking)~~
 
-- **Rename `Task` accessor methods.** `TaskID`, `TaskName`,
+Resolved in v0.11.0. The following renames and type changes shipped
+together as a single breaking release:
+
+- ~~**Rename `Task` accessor methods.** `TaskID`, `TaskName`,
   `TaskWorkDir`, `TaskStatus` should be `ID`, `Name`, `WorkDir`,
-  `Status`. The current names repeat the receiver type.
-- **Remove `Task.SetLastResult`.** It exists only as a "restore from
-  DB" hack exposed as public API. Either move the restore path to a
-  constructor option or make it package-private.
-- **Rename `Task.CancelTask` / `Task.StopTask`** to `Cancel` / `Stop`
-  for consistency with `Agent.Stop`.
-- **Rename `Task.RunTask`** to `Run`, or accept the package-level
-  naming collision and document it.
-- **Audit `AgentDef.Parent`.** Described as "for tree display" but
-  unused by the library. Remove if no consumer needs it.
-- **`Config.DisallowTools` is comma-separated.** Should be
-  `[]string` for parity with `ExtraArgs`.
-- **`Event.Raw` type mismatch.** Declared as `json.RawMessage` but
-  populated via `json.RawMessage(line)` where `line` is a `string`.
-  This works by coincidence; should be `[]byte` from the start or
-  the parser should convert explicitly.
-- **`Registry.Start` shadows package-level `Start`.** Confusing at
-  call sites; consider renaming to `Launch` or `StartAgent`.
+  `Status`.~~
+- ~~**Remove `Task.SetLastResult`.**~~ Removed; restoration is now
+  via `TaskConfig.LastResult` at construction time.
+- ~~**Rename `Task.CancelTask` / `Task.StopTask`** to `Cancel` /
+  `Stop`.~~
+- ~~**Rename `Task.RunTask`** to `Run`.~~
+- ~~**Audit `AgentDef.Parent`.**~~ Removed (no consumer used it).
+- ~~**`Config.DisallowTools` is comma-separated.**~~ Now `[]string`.
+  `AgentDef.DisallowTools` follows suit; the persisted JSON shape
+  changes from a comma-separated string to an array.
+- ~~**`Event.Raw` type mismatch.**~~ Now declared as `[]byte` and
+  populated explicitly.
+- ~~**`Registry.Start` shadows package-level `Start`.**~~ Renamed
+  to `Launch`.
 
 ### Behavioural fixes
 
