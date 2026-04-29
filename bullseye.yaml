@@ -22,9 +22,10 @@ targets:
     discovered: 2026-04-27
   T1.1:
     name: Breaking API renames from STABILITY.md are complete
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
+    actual_cost: 2.0
     acceptance:
     - 'Task accessor methods renamed: TaskID/TaskName/TaskWorkDir/TaskStatus → ID/Name/WorkDir/Status. RunTask → Run. CancelTask/StopTask → Cancel/Stop.'
     - Task.SetLastResult removed from public API (moved to a constructor option or made package-private).
@@ -36,6 +37,7 @@ targets:
     context: All items are listed verbatim in STABILITY.md §"API design fixes (breaking)". They are deliberately deferred until the v1.0 ship to avoid churning consumers with a string of small breaking releases. Cluster them into one (or a small chain of) breaking PR(s) so consumers absorb the transition once.
     origin: STABILITY.md gap audit
     discovered: 2026-04-27
+    achieved: 2026-04-29
   T1.2:
     name: Behavioural rough edges flagged in STABILITY.md are resolved
     status: identified
