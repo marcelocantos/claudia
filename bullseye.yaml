@@ -40,7 +40,7 @@ targets:
     achieved: 2026-04-29
   T1.2:
     name: Behavioural rough edges flagged in STABILITY.md are resolved
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -55,9 +55,10 @@ targets:
     - T1.1
     origin: STABILITY.md gap audit
     discovered: 2026-04-27
+    achieved: 2026-04-30
   T1.3:
     name: Package and type-level docs are sufficient for go doc / pkg.go.dev
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -69,6 +70,7 @@ targets:
     - T1.1
     origin: STABILITY.md gap audit
     discovered: 2026-04-27
+    achieved: 2026-04-30
   T1.4:
     name: CLAUDIA_LIVE=1 is the documented pre-release validation step for end-to-end coverage
     status: achieved
