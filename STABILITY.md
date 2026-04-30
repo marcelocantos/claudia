@@ -77,7 +77,9 @@ is annotated with a stability assessment:
 | `TermLogPath` | `() string` | Needs review |
 | `Alive` | `() bool` | Stable |
 | `WaitReady` | `(ctx context.Context) error` | Stable |
-| `OnEvent` | `(fn EventFunc)` | Fluid |
+| `SubscribeEvents` | `(fn EventFunc) int64` | Needs review |
+| `UnsubscribeEvents` | `(token int64)` | Needs review |
+| `Usage` | `() Usage` | Needs review |
 | `Interrupt` | `() error` | Stable |
 | `Send` | `(msg string) error` | Stable |
 | `WaitForResponse` | `(ctx context.Context) (string, error)` | Needs review |
@@ -151,7 +153,7 @@ is annotated with a stability assessment:
 
 ### Surface item count
 
-~63 items across both packages (62 API + 1 env var). Per the release
+~65 items across both packages (64 API + 1 env var). Per the release
 skill's settling table, this puts claudia in the 50–100 bracket with
 a minimum settling period of 3 months from the last breaking change.
 
@@ -181,36 +183,41 @@ together as a single breaking release:
 - ~~**`Registry.Start` shadows package-level `Start`.**~~ Renamed
   to `Launch`.
 
-### Behavioural fixes
+### ~~Behavioural fixes~~
 
 - ~~**`Stop` has a hard 1-second sleep.**~~ Resolved by tmux pivot:
   `Stop` now calls `tmux kill-window` which terminates immediately.
-- **`TermLogPath` lies after write failures.** The accessor returns
-  the configured path even after `pushTermOutput` silently disabled
-  the log on write error. Either keep logging best-effort with an
-  accessor for "is logging live" or return "" once disabled.
-- **Terminal log lacks run-boundary markers.** Resumed sessions
-  concatenate terminal output with no way to split runs. Decide on a
-  marker format (or don't, and document the choice) before 1.0.
-- **Session mode has no cost or usage accounting.** Only Task mode
-  exposes this. Either document the asymmetry or parse usage from
-  the JSONL transcript.
-- **`OnEvent` is a single handler.** Replace with either a
-  subscribe/unsubscribe pattern (like `SubscribeTerminal`) or a
-  channel-returning primitive so multiple consumers can observe
-  events without colliding.
-- **Readiness tuning is hardcoded.** `detectReady` uses a capture-pane
-  regex polled at 50 ms with a 30 s overall cap. The values are
-  reasonable (startup readiness observed at ~680 ms on macOS) but
-  not configurable via `Config`. Expose if consumers report timeouts.
+- ~~**`TermLogPath` lies after write failures.**~~ Fixed: `TermLogPath()`
+  now returns `""` once the log file has been closed due to a write
+  error. See `agents-guide.md` § Gotcha 4.
+- ~~**Terminal log lacks run-boundary markers.**~~ Resolved by deliberate
+  design decision: the `.term` file is a raw PTY rendering aid, not a
+  structured transcript. No markers will be added. Documented in
+  `agents-guide.md` § Gotcha 4.
+- ~~**Session mode has no cost or usage accounting.**~~ Fixed: `Agent.Usage()`
+  returns cumulative token counts parsed from the JSONL transcript.
+  Documented in `agents-guide.md` § Usage accounting.
+- ~~**`OnEvent` is a single handler.**~~ Fixed: replaced with
+  `SubscribeEvents(fn EventFunc) int64` / `UnsubscribeEvents(token int64)`,
+  matching the `SubscribeTerminal`/`UnsubscribeTerminal` pattern.
+  Multiple subscribers are supported; `WaitForResponse` uses this
+  internally without displacing external subscribers.
+- ~~**Readiness tuning is hardcoded.**~~ Resolved by deliberate design
+  decision: 50 ms poll, 30 s cap, empirically-observed ~680 ms startup
+  on macOS. No config surface will be added speculatively. Documented
+  in `agents-guide.md` § Readiness detection.
 
-### Documentation
+### ~~Documentation~~
 
-- **Package doc comments are thin.** `claudia` and `grok` have
+- ~~**Package doc comments are thin.** `claudia` and `grok` have
   top-level package comments but type-level docs are inconsistent.
-  `go doc` output should be self-sufficient before 1.0.
-- **No examples in `_test.go` files.** Add `Example` functions so
-  pkg.go.dev renders runnable snippets.
+  `go doc` output should be self-sufficient before 1.0.~~
+- ~~**No examples in `_test.go` files.** Add `Example` functions so
+  pkg.go.dev renders runnable snippets.~~
+
+Resolved in v0.11.0 — all exported types, functions, methods, and constants
+have doc comments, and `example_test.go` adds `ExampleRun`, `ExampleNewTask`,
+`ExampleStart`, `ExampleAcquire`, and `ExampleNewRegistry`.
 
 ### Testing and CI
 

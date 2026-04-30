@@ -293,6 +293,7 @@ func buildPoolAgent(cfg Config, workDir, windowID string, waitForReady bool) (*A
 		ready:        make(chan struct{}),
 		poolWindow:   true,
 		poolWorkDir:  workDir,
+		eventSubs:    make(map[int64]EventFunc),
 	}
 
 	// Open terminal log if configured.
@@ -303,6 +304,7 @@ func buildPoolAgent(cfg Config, workDir, windowID string, waitForReady bool) (*A
 			slog.Warn("pool term log open failed", "path", termLogPath, "err", err)
 		} else {
 			a.termLog = f
+			a.termLogLive = true
 		}
 	}
 

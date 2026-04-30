@@ -2,8 +2,15 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package grok implements a client for the xAI Grok Realtime voice API.
-// It connects to wss://api.x.ai/v1/realtime and bridges full-duplex
-// voice I/O with function calling for agent delegation.
+//
+// Connect to a session with [Connect], then stream PCM audio with
+// [Client.SendAudio] or inject text with [Client.SendText]. Callbacks in
+// [Config] receive audio deltas, transcripts, and function-call requests.
+// Close the session with [Client.Close].
+//
+// Audio format: 24 kHz raw PCM (16-bit), matching the default for the
+// xAI Realtime API. Client-side VAD is not used; the server performs
+// voice-activity detection (server_vad mode).
 package grok
 
 import (
@@ -18,16 +25,28 @@ import (
 	"github.com/coder/websocket"
 )
 
-// Tool defines a function tool available to the Grok model.
+// Tool defines a function tool available to the Grok model. Set Type to
+// "function", Name to the callable identifier, Description to guide the
+// model, and Parameters to a JSON Schema object describing the arguments.
 type Tool struct {
-	Type        string          `json:"type"`
-	Name        string          `json:"name,omitempty"`
-	Description string          `json:"description,omitempty"`
-	Parameters  json.RawMessage `json:"parameters,omitempty"`
+	// Type should be "function".
+	Type string `json:"type"`
+
+	// Name is the function identifier the model uses in a function_call event.
+	Name string `json:"name,omitempty"`
+
+	// Description is shown to the model to describe what the function does.
+	Description string `json:"description,omitempty"`
+
+	// Parameters is a JSON Schema object describing the function's arguments.
+	Parameters json.RawMessage `json:"parameters,omitempty"`
 }
 
-// Config holds configuration for a Grok Realtime session.
+// Config holds configuration for a Grok Realtime session. All callback
+// fields are optional — unset callbacks are silently ignored. The only
+// required field is APIKey.
 type Config struct {
+	// APIKey is the xAI API key for authentication (required).
 	APIKey string
 
 	// OnAudio is called with base64-decoded PCM audio from Grok.
@@ -62,7 +81,8 @@ type Config struct {
 	SystemPrompt string
 }
 
-// Client manages a Grok Realtime WebSocket session.
+// Client manages a Grok Realtime WebSocket session. Obtain one via [Connect].
+// Call [Client.Close] when the session is no longer needed.
 type Client struct {
 	cfg  Config
 	conn *websocket.Conn
@@ -73,7 +93,10 @@ type Client struct {
 	pendingCalls map[string]bool
 }
 
-// Connect establishes a Grok Realtime session.
+// Connect dials wss://api.x.ai/v1/realtime, configures the session from cfg,
+// and starts the event loop. It blocks until the first server acknowledgement
+// is received, so the caller can detect auth failures before streaming audio.
+// The event loop runs until [Client.Close] is called or ctx is cancelled.
 func Connect(ctx context.Context, cfg Config) (*Client, error) {
 	if cfg.APIKey == "" {
 		return nil, fmt.Errorf("grok: API key required")
@@ -165,8 +188,10 @@ func (c *Client) SendText(ctx context.Context, text string) error {
 	})
 }
 
-// InjectAssistantText injects text as if the assistant said it, then
-// requests Grok to speak it. Used for relaying Claude's responses.
+// InjectAssistantText inserts text into the conversation as an assistant
+// turn, then asks Grok to speak it aloud verbatim. Use this to relay a
+// Claude Code response through the Grok voice channel without re-phrasing.
+// Config.OnTranscript will fire with the spoken text.
 func (c *Client) InjectAssistantText(ctx context.Context, text string) error {
 	if err := c.send(ctx, map[string]any{
 		"type": "conversation.item.create",

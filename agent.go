@@ -5,21 +5,30 @@
 //
 // It provides two modes of operation:
 //
-//   - Task mode: [Run] sends a single prompt to Claude Code, waits for
-//     completion, and returns the result text. Suitable for one-shot
-//     code generation, analysis, or transformation tasks.
+//   - Task mode: [Run] or [NewTask] + [Task.Run] sends a single prompt to
+//     Claude Code and returns the result. Each prompt spawns a new process
+//     with --output-format stream-json. Suitable for one-shot code
+//     generation, analysis, or transformation pipelines where you want
+//     structured event output and automatic token/cost accounting.
 //
-//   - Session mode: [Start] spawns a persistent Claude Code process
-//     inside a tmux window on a dedicated claudia tmux server. Use
-//     [Agent.Send] to send messages, [Agent.OnEvent] to observe JSONL
-//     events, and [Agent.WaitForResponse] to block until the next
-//     assistant turn completes.
+//   - Session mode: [Start] spawns a persistent Claude Code process inside
+//     a tmux window on a dedicated claudia tmux server. Use [Agent.Send] to
+//     send messages, [Agent.SubscribeEvents] to observe JSONL events, and
+//     [Agent.WaitForResponse] to block until the next assistant turn
+//     completes. The session persists across consumer restarts.
 //
-// The tmux substrate provides crash-survival (agents survive consumer
-// process death), human-attachable observability (tmux attach), and a
-// foundation for the warm agent pool (see Acquire/Release in T1.2).
-// JSONL transcript tailing drives the event stream regardless of
-// transport.
+// A warm agent pool is available for both modes: [Acquire] checks out a
+// pre-warmed [Agent] from the pool (identified by workdir, model, and
+// allowed tools). Return it with [Agent.Release].
+//
+// The tmux substrate gives agents crash-survival (the agent stays alive if
+// the consumer process dies) and human-attachable observability via
+// [Agent.AttachCommand]. JSONL transcript tailing drives the event stream
+// regardless of transport.
+//
+// The claude binary is located via the CLAUDE_BIN environment variable,
+// then exec.LookPath, then common install dirs (~/.local/bin/claude,
+// ~/.claude/local/claude, /opt/homebrew/bin/claude, /usr/local/bin/claude).
 package claudia
 
 import (
@@ -34,6 +43,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -104,10 +114,11 @@ type Agent struct {
 	tmuxWindowID string
 	tmuxCtrl     *tmuxagent.Control
 
-	mu       sync.Mutex
-	alive    bool
-	onEvent  EventFunc
-	stopOnce sync.Once
+	mu        sync.Mutex
+	alive     bool
+	stopOnce  sync.Once
+	eventSubs map[int64]EventFunc
+	usage     Usage
 
 	// poolWindow is true when the agent was acquired from the warm pool
 	// (via Acquire) rather than spawned fresh (via Start). Pool agents
@@ -117,13 +128,14 @@ type Agent struct {
 	// part of the pool key. Set by buildPoolAgent; empty for Start agents.
 	poolWorkDir string
 
-	// Terminal output streaming. termMu also guards termLog writes
-	// and termLog close, so Stop cannot close the file while
-	// pushTermOutput is mid-write.
-	termMu   sync.Mutex
-	termBuf  []byte
-	termSubs []chan []byte
-	termLog  *os.File
+	// Terminal output streaming. termMu also guards termLog writes,
+	// termLog close, and termLogLive so Stop cannot close the file
+	// while pushTermOutput is mid-write.
+	termMu      sync.Mutex
+	termBuf     []byte
+	termSubs    []chan []byte
+	termLog     *os.File
+	termLogLive bool // false once the log file has been closed or failed to open
 
 	// TUI readiness. ready closes once detectReady concludes, either
 	// because the capture-pane regex matched (success, readyErr == nil)
@@ -132,6 +144,9 @@ type Agent struct {
 	ready    chan struct{}
 	readyErr error
 }
+
+// nextEventSubID is a process-wide counter for event subscription tokens.
+var nextEventSubID atomic.Int64
 
 // Readiness detection tuning.
 const (
@@ -223,6 +238,7 @@ func Start(cfg Config) (*Agent, error) {
 		termLogPath: termLogPath,
 		alive:       true,
 		ready:       make(chan struct{}),
+		eventSubs:   make(map[int64]EventFunc),
 	}
 
 	// Open terminal log.
@@ -233,6 +249,7 @@ func Start(cfg Config) (*Agent, error) {
 			slog.Warn("term log open failed", "path", termLogPath, "err", err)
 		} else {
 			a.termLog = f
+			a.termLogLive = true
 		}
 	}
 
@@ -349,8 +366,16 @@ func SessionExists(sessionID, workDir string) (bool, error) {
 }
 
 // TermLogPath returns the path to the raw terminal output log, or ""
-// if terminal logging is disabled.
-func (a *Agent) TermLogPath() string { return a.termLogPath }
+// if terminal logging is disabled or has been silently halted after a
+// write error.
+func (a *Agent) TermLogPath() string {
+	a.termMu.Lock()
+	defer a.termMu.Unlock()
+	if !a.termLogLive {
+		return ""
+	}
+	return a.termLogPath
+}
 
 // AttachCommand returns the tmux incantation a human can paste to
 // watch the live agent session. This is the primary observability
@@ -366,12 +391,22 @@ func (a *Agent) Alive() bool {
 	return a.alive
 }
 
-// OnEvent sets the callback for JSONL events. Only one callback is
-// active at a time; setting a new one replaces the previous.
-func (a *Agent) OnEvent(fn EventFunc) {
+// SubscribeEvents registers fn to receive JSONL events and returns a
+// subscription token. Pass the token to [Agent.UnsubscribeEvents] when done.
+// Multiple subscribers are called in unspecified order on every event.
+func (a *Agent) SubscribeEvents(fn EventFunc) int64 {
+	id := nextEventSubID.Add(1)
 	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.onEvent = fn
+	a.eventSubs[id] = fn
+	a.mu.Unlock()
+	return id
+}
+
+// UnsubscribeEvents removes the event subscriber identified by token.
+func (a *Agent) UnsubscribeEvents(token int64) {
+	a.mu.Lock()
+	delete(a.eventSubs, token)
+	a.mu.Unlock()
 }
 
 // Interrupt sends the Escape key to the Claude process to cancel
@@ -438,6 +473,14 @@ func (a *Agent) WaitReady(ctx context.Context) error {
 	}
 }
 
+// Usage returns the cumulative token usage parsed from the JSONL transcript
+// since the agent was started.
+func (a *Agent) Usage() Usage {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.usage
+}
+
 // WaitForResponse blocks until the next assistant turn completes and
 // returns the assistant text accumulated across the turn.
 //
@@ -479,11 +522,7 @@ func (a *Agent) WaitForResponse(ctx context.Context) (string, error) {
 		}
 	}
 
-	oldFn := a.onEvent
-	a.OnEvent(func(ev Event) {
-		if oldFn != nil {
-			oldFn(ev)
-		}
+	token := a.SubscribeEvents(func(ev Event) {
 		if ev.Type != "assistant" {
 			return
 		}
@@ -508,7 +547,7 @@ func (a *Agent) WaitForResponse(ctx context.Context) (string, error) {
 		mu.Unlock()
 	})
 
-	defer a.OnEvent(oldFn)
+	defer a.UnsubscribeEvents(token)
 	defer func() {
 		mu.Lock()
 		if settleTimer != nil {
@@ -533,12 +572,16 @@ func (a *Agent) WaitForResponse(ctx context.Context) (string, error) {
 // imperceptible to most consumers.
 const waitSettleDuration = 250 * time.Millisecond
 
-// Resize changes the terminal dimensions.
+// Resize changes the terminal dimensions of the tmux window. Useful when
+// embedding terminal output in a variable-size UI.
 func (a *Agent) Resize(cols, rows uint16) error {
 	return tmuxagent.ResizeWindow(a.tmuxWindowID, cols, rows)
 }
 
-// Stop terminates the Claude process and releases resources.
+// Stop kills the tmux window, closes the control-mode connection, and
+// flushes the terminal log. It is idempotent. For agents obtained via
+// [Acquire], call [Agent.Release] instead — Stop does not return the
+// window to the pool.
 func (a *Agent) Stop() {
 	a.stopOnce.Do(func() {
 		tmuxagent.KillWindow(a.tmuxWindowID)
@@ -550,6 +593,7 @@ func (a *Agent) Stop() {
 		if a.termLog != nil {
 			a.termLog.Close()
 			a.termLog = nil
+			a.termLogLive = false
 		}
 		a.termMu.Unlock()
 	})
@@ -588,6 +632,7 @@ func (a *Agent) pushTermOutput(data []byte) {
 			slog.Warn("term log write failed", "path", a.termLogPath, "err", err)
 			a.termLog.Close()
 			a.termLog = nil
+			a.termLogLive = false
 		}
 	}
 
@@ -665,10 +710,20 @@ func (a *Agent) tailJSONL() {
 		ev := parseEvent(line)
 
 		a.mu.Lock()
-		fn := a.onEvent
+		if ev.Usage.InputTokens > 0 || ev.Usage.OutputTokens > 0 ||
+			ev.Usage.CacheCreationInputTokens > 0 || ev.Usage.CacheReadInputTokens > 0 {
+			a.usage.InputTokens += ev.Usage.InputTokens
+			a.usage.OutputTokens += ev.Usage.OutputTokens
+			a.usage.CacheCreationInputTokens += ev.Usage.CacheCreationInputTokens
+			a.usage.CacheReadInputTokens += ev.Usage.CacheReadInputTokens
+		}
+		subs := make([]EventFunc, 0, len(a.eventSubs))
+		for _, fn := range a.eventSubs {
+			subs = append(subs, fn)
+		}
 		a.mu.Unlock()
 
-		if fn != nil {
+		for _, fn := range subs {
 			fn(ev)
 		}
 	}

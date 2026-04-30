@@ -235,19 +235,25 @@ func TestAgentSendAndWaitForResponse(t *testing.T) {
 // WaitForResponse is the thing under test, not the dispatch plumbing.
 func waitForResponseFixture(t *testing.T) (*Agent, func(Event)) {
 	t.Helper()
-	a := &Agent{}
+	a := &Agent{eventSubs: make(map[int64]EventFunc)}
 	dispatch := func(ev Event) {
-		// Wait for WaitForResponse to install its handler before
+		// Wait for WaitForResponse to install its subscriber before
 		// delivering the first event, otherwise the dispatch is a
 		// no-op. 200ms is comfortably more than the goroutine
 		// scheduling latency.
 		deadline := time.Now().Add(200 * time.Millisecond)
 		for {
 			a.mu.Lock()
-			fn := a.onEvent
+			n := len(a.eventSubs)
+			subs := make([]EventFunc, 0, n)
+			for _, fn := range a.eventSubs {
+				subs = append(subs, fn)
+			}
 			a.mu.Unlock()
-			if fn != nil {
-				fn(ev)
+			if n > 0 {
+				for _, fn := range subs {
+					fn(ev)
+				}
 				return
 			}
 			if time.Now().After(deadline) {

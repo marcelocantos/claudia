@@ -29,6 +29,10 @@ type Event struct {
 	// "tool_use" means the model paused for tool results and will continue.
 	StopReason string `json:"-"`
 
+	// Usage is populated for type == "assistant" with the token usage
+	// reported by the message. Zero if the event carries no usage data.
+	Usage Usage `json:"-"`
+
 	// ProgressType is populated for type == "progress" (e.g. "tool_use").
 	ProgressType string `json:"-"`
 }
@@ -81,6 +85,12 @@ func parseEvent(line string) Event {
 				ev.Text = strings.Join(texts, "\n")
 			}
 		}
+		if u, ok := entry["usage"].(map[string]any); ok {
+			ev.Usage.InputTokens = int(jsonFloat(u, "input_tokens"))
+			ev.Usage.OutputTokens = int(jsonFloat(u, "output_tokens"))
+			ev.Usage.CacheCreationInputTokens = int(jsonFloat(u, "cache_creation_input_tokens"))
+			ev.Usage.CacheReadInputTokens = int(jsonFloat(u, "cache_read_input_tokens"))
+		}
 	case "progress":
 		if data, ok := entry["data"].(map[string]any); ok {
 			ev.ProgressType, _ = data["type"].(string)
@@ -88,4 +98,9 @@ func parseEvent(line string) Event {
 	}
 
 	return ev
+}
+
+func jsonFloat(m map[string]any, key string) float64 {
+	v, _ := m[key].(float64)
+	return v
 }
