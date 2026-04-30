@@ -14,19 +14,34 @@ import (
 	"github.com/google/uuid"
 )
 
-// AgentDef is the persistent definition of an agent.
+// AgentDef is the persistent definition of a named agent stored in a [Registry].
 type AgentDef struct {
-	Name          string   `json:"name"`                     // unique identifier
-	WorkDir       string   `json:"workdir"`                  // working directory
-	SessionID     string   `json:"session_id"`               // persistent Claude session ID
-	Model         string   `json:"model,omitempty"`          // model override
-	AutoStart     bool     `json:"auto_start"`               // start on registry startup
-	DisallowTools []string `json:"disallow_tools,omitempty"` // extra tools to disallow
+	// Name is the unique identifier for this agent within its registry.
+	Name string `json:"name"`
+
+	// WorkDir is the working directory the claude process runs in.
+	WorkDir string `json:"workdir"`
+
+	// SessionID is the Claude session ID used for --resume. It is
+	// assigned automatically when the agent is first registered.
+	SessionID string `json:"session_id"`
+
+	// Model overrides the default Claude model (e.g. "opus", "sonnet").
+	Model string `json:"model,omitempty"`
+
+	// AutoStart causes this agent to be launched by [Registry.StartAll].
+	AutoStart bool `json:"auto_start"`
+
+	// DisallowTools lists additional tool names to disallow beyond the
+	// claudia defaults.
+	DisallowTools []string `json:"disallow_tools,omitempty"`
 }
 
-// Registry manages persistent agent definitions and their running processes.
-// Agent definitions are persisted to a JSON file and can be started/stopped
-// independently of the registry lifecycle.
+// Registry manages named [Agent] processes keyed by [AgentDef]. Definitions
+// are persisted to a JSON file at the path passed to [NewRegistry], so agents
+// survive process restarts. Typical usage: call [Registry.Register] (or
+// [Registry.EnsureAgent]) once at startup, then [Registry.Launch] to get a
+// live [Agent], and [Registry.StopAll] on shutdown.
 type Registry struct {
 	path string
 
@@ -70,7 +85,9 @@ func (r *Registry) save() error {
 	return os.WriteFile(r.path, data, 0o644)
 }
 
-// Register adds or updates an agent definition and saves to disk.
+// Register adds or updates an agent definition and persists the registry.
+// def.SessionID must be non-empty; use [Registry.EnsureAgent] if you want
+// automatic session ID generation.
 func (r *Registry) Register(def AgentDef) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -95,9 +112,11 @@ func (r *Registry) Remove(name string) error {
 	return r.save()
 }
 
-// Launch starts a registered agent. Returns the existing process if
-// already running. The name is intentionally distinct from the
-// package-level Start so call sites read unambiguously.
+// Launch starts the registered agent named name and returns it. If the agent
+// is already running and alive, the existing [Agent] is returned without
+// spawning a new process. It returns an error if name is not registered.
+// If the agent's workDir contains a .mcp.json file, it is passed to claude
+// automatically.
 func (r *Registry) Launch(name string) (*Agent, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -205,9 +224,11 @@ func (r *Registry) StopAll() {
 	}
 }
 
-// EnsureAgent registers an agent if it doesn't exist. If an agent
-// with the same workdir exists under a different name, it is renamed.
-// Returns the definition (existing or new).
+// EnsureAgent returns the existing [AgentDef] for name if it is already
+// registered. If no agent with that name exists, it checks whether any agent
+// points at the same workDir — if so, it renames that agent to name. If no
+// matching agent exists at all, it creates a new one with a fresh session ID.
+// This idempotent behaviour makes it safe to call on every startup.
 func (r *Registry) EnsureAgent(name, workDir, model string, autoStart bool) (*AgentDef, error) {
 	r.mu.Lock()
 	if def, ok := r.agents[name]; ok {

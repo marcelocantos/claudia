@@ -21,54 +21,121 @@ import (
 type TaskEventType string
 
 const (
-	TaskEventInit    TaskEventType = "init"
-	TaskEventText    TaskEventType = "text"
+	// TaskEventInit is emitted once at the start of a run. It carries
+	// the Claude session ID in TaskEvent.SessionID.
+	TaskEventInit TaskEventType = "init"
+
+	// TaskEventText carries a text block from the assistant's response
+	// in TaskEvent.Content.
+	TaskEventText TaskEventType = "text"
+
+	// TaskEventToolUse is emitted when Claude invokes a tool. The tool
+	// name, ID, and JSON-encoded input are in TaskEvent.ToolName,
+	// ToolID, and ToolInput respectively.
 	TaskEventToolUse TaskEventType = "tool_use"
-	TaskEventResult  TaskEventType = "result"
-	TaskEventError   TaskEventType = "error"
+
+	// TaskEventResult is the final event in a successful run. It
+	// contains the assistant's full result text and usage/cost data.
+	TaskEventResult TaskEventType = "result"
+
+	// TaskEventError is emitted when Claude Code reports a run-level
+	// error. TaskEvent.IsError is true and TaskEvent.ErrorMsg contains
+	// the combined error message(s).
+	TaskEventError TaskEventType = "error"
 )
 
 // Usage holds token counts from a result event.
 type Usage struct {
 	InputTokens              int `json:"input_tokens"`
 	OutputTokens             int `json:"output_tokens"`
+	// CacheCreationInputTokens is tokens written to the prompt cache.
 	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
-	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+	// CacheReadInputTokens is tokens read from the prompt cache (billed
+	// at a lower rate than uncached input tokens).
+	CacheReadInputTokens int `json:"cache_read_input_tokens"`
 }
 
 // TaskEvent is a parsed event from Claude Code's stream-json output.
 type TaskEvent struct {
-	Type       TaskEventType
-	Content    string  // text content or result text
-	ToolName   string  // for tool_use events
-	ToolInput  string  // for tool_use events (JSON string)
-	ToolID     string  // for tool_use events
-	SessionID  string  // for init events
-	DurationMs float64 // for result events
-	CostUSD    float64 // for result events
-	Usage      Usage   // for result events
-	IsError    bool    // true if result is an error
-	ErrorMsg   string  // error message if IsError
+	// Type identifies the event kind; see the TaskEvent* constants.
+	Type TaskEventType
+
+	// Content is the text content (TaskEventText) or final result text
+	// (TaskEventResult).
+	Content string
+
+	// ToolName is the tool being invoked (TaskEventToolUse only).
+	ToolName string
+
+	// ToolInput is the JSON-encoded tool input object (TaskEventToolUse only).
+	ToolInput string
+
+	// ToolID is the unique tool-call identifier (TaskEventToolUse only).
+	ToolID string
+
+	// SessionID is the Claude session identifier (TaskEventInit only).
+	SessionID string
+
+	// DurationMs is the wall-clock duration of the run in milliseconds
+	// (TaskEventResult only).
+	DurationMs float64
+
+	// CostUSD is the API cost of the run in US dollars (TaskEventResult only).
+	CostUSD float64
+
+	// Usage holds per-run token counts (TaskEventResult only).
+	Usage Usage
+
+	// IsError is true for TaskEventError events.
+	IsError bool
+
+	// ErrorMsg contains the error description when IsError is true.
+	ErrorMsg string
 }
 
 // TaskStatus represents a task's lifecycle state.
 type TaskStatus string
 
 const (
-	TaskStatusIdle    TaskStatus = "idle"
+	// TaskStatusIdle means the task is ready to accept a new Run call.
+	TaskStatusIdle TaskStatus = "idle"
+
+	// TaskStatusRunning means a prompt is currently being processed.
+	// Calling Run returns an error until the current run completes.
 	TaskStatusRunning TaskStatus = "running"
-	TaskStatusError   TaskStatus = "error"
+
+	// TaskStatusError means the last run ended with an error. The task
+	// is still runnable — a subsequent Run call will retry.
+	TaskStatusError TaskStatus = "error"
+
+	// TaskStatusStopped means Stop was called. The task is permanently
+	// terminated and Run will return an error.
 	TaskStatusStopped TaskStatus = "stopped"
 )
 
-// TaskConfig holds the configuration for creating a task session.
+// TaskConfig holds the configuration for creating a Task.
 type TaskConfig struct {
-	ID         string // unique session ID
-	Name       string // human-readable name
-	WorkDir    string // working directory for claude process
-	Model      string // model name (e.g. "opus", "sonnet"); empty = default
-	ClaudeID   string // claude session ID for --resume (empty = new session)
-	LastResult string // initial value for LastResult (e.g. when restoring from persisted state)
+	// ID is the caller-assigned unique identifier for this task.
+	ID string
+
+	// Name is an optional human-readable label.
+	Name string
+
+	// WorkDir is the working directory passed to the claude process.
+	WorkDir string
+
+	// Model overrides the default model (e.g. "opus", "sonnet").
+	// Empty means use Claude Code's default.
+	Model string
+
+	// ClaudeID is the claude session ID to resume with --resume. If
+	// empty, each Run starts a fresh session. After the first run,
+	// Task.ClaudeID() returns the session ID for subsequent calls.
+	ClaudeID string
+
+	// LastResult seeds Task.LastResult() before the first run — useful
+	// when re-hydrating a task from persisted state.
+	LastResult string
 }
 
 // RawLogFunc receives raw NDJSON lines from the Claude process.
@@ -93,7 +160,8 @@ type Task struct {
 	onRawLog   RawLogFunc
 }
 
-// NewTask creates a Task from a TaskConfig.
+// NewTask creates a Task from cfg. The task starts in [TaskStatusIdle] and
+// is ready for its first [Task.Run] call immediately.
 func NewTask(cfg TaskConfig) *Task {
 	return &Task{
 		id:         cfg.ID,
@@ -129,7 +197,8 @@ func (t *Task) LastResult() string {
 	return t.lastResult
 }
 
-// ClaudeID returns the Claude session ID (for --resume).
+// ClaudeID returns the Claude session ID used with --resume on subsequent
+// runs. It is empty until the first TaskEventInit event is received.
 func (t *Task) ClaudeID() string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -143,8 +212,13 @@ func (t *Task) SetRawLog(fn RawLogFunc) {
 	t.onRawLog = fn
 }
 
-// Run sends a prompt to the task and returns a channel of events.
-// The channel is closed when the process exits.
+// Run sends prompt to claude and returns a channel of [TaskEvent] values.
+// The channel is closed when the process exits. Events arrive in order:
+// one [TaskEventInit], zero or more [TaskEventText]/[TaskEventToolUse], and
+// a final [TaskEventResult] or [TaskEventError].
+//
+// Run returns an error immediately if the task is already running or has
+// been stopped. ctx cancellation kills the underlying process.
 func (t *Task) Run(ctx context.Context, prompt string) (<-chan TaskEvent, error) {
 	t.mu.Lock()
 	if t.status == TaskStatusRunning {
@@ -306,7 +380,9 @@ func (t *Task) Run(ctx context.Context, prompt string) (<-chan TaskEvent, error)
 	return ch, nil
 }
 
-// Cancel sends SIGINT to the running claude process.
+// Cancel sends SIGINT to the running claude process, requesting a graceful
+// stop. It is a no-op if no process is running. To permanently stop the task
+// use [Task.Stop].
 func (t *Task) Cancel() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -317,7 +393,9 @@ func (t *Task) Cancel() error {
 	return t.cmd.Process.Signal(syscall.SIGINT)
 }
 
-// Stop terminates the task permanently.
+// Stop permanently terminates the task. Any running process is killed and
+// the status transitions to [TaskStatusStopped]. Subsequent Run calls return
+// an error. Stop is idempotent.
 func (t *Task) Stop() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -328,8 +406,10 @@ func (t *Task) Stop() {
 	}
 }
 
-// ParseTaskLine parses a single NDJSON line from claude's stream-json
-// output and returns zero or more TaskEvents.
+// ParseTaskLine parses a single NDJSON line from claude's --output-format
+// stream-json output and returns zero or more [TaskEvent] values. Lines that
+// are unrecognised or malformed return nil. Callers that want to log raw lines
+// before parsing can use [Task.SetRawLog].
 func ParseTaskLine(line []byte) []TaskEvent {
 	var base struct {
 		Type    string `json:"type"`

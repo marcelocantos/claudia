@@ -3,6 +3,7 @@
 
 package claudia
 
-// Version is the released version of this library. It is kept in sync
-// with the git tag by the release skill.
+// Version is the semantic version of this library. It is kept in sync with
+// the git tag by the release tooling and can be embedded in application
+// --version output.
 const Version = "0.10.0"

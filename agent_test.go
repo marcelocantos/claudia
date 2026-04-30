@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -235,19 +236,25 @@ func TestAgentSendAndWaitForResponse(t *testing.T) {
 // WaitForResponse is the thing under test, not the dispatch plumbing.
 func waitForResponseFixture(t *testing.T) (*Agent, func(Event)) {
 	t.Helper()
-	a := &Agent{}
+	a := &Agent{eventSubs: make(map[int64]EventFunc)}
 	dispatch := func(ev Event) {
-		// Wait for WaitForResponse to install its handler before
+		// Wait for WaitForResponse to install its subscriber before
 		// delivering the first event, otherwise the dispatch is a
 		// no-op. 200ms is comfortably more than the goroutine
 		// scheduling latency.
 		deadline := time.Now().Add(200 * time.Millisecond)
 		for {
 			a.mu.Lock()
-			fn := a.onEvent
+			n := len(a.eventSubs)
+			subs := make([]EventFunc, 0, n)
+			for _, fn := range a.eventSubs {
+				subs = append(subs, fn)
+			}
 			a.mu.Unlock()
-			if fn != nil {
-				fn(ev)
+			if n > 0 {
+				for _, fn := range subs {
+					fn(ev)
+				}
 				return
 			}
 			if time.Now().After(deadline) {
@@ -531,6 +538,151 @@ func TestRunHelper(t *testing.T) {
 		t.Error("Run returned empty reply")
 	}
 	t.Logf("reply: %q", reply)
+}
+
+// TestSubscribeEventsMultiSubscriber verifies that two concurrently
+// registered subscribers both receive every dispatched event, and that
+// unsubscribing one stops only that subscriber while the other continues
+// to receive events. The test is hermetic: no claude binary, no tmux,
+// no network. It uses the same bare-Agent pattern as waitForResponseFixture
+// and dispatches events by walking the subscriber map directly.
+func TestSubscribeEventsMultiSubscriber(t *testing.T) {
+	t.Parallel()
+
+	a := &Agent{eventSubs: make(map[int64]EventFunc)}
+
+	var (
+		mu       sync.Mutex
+		received [2][]Event
+	)
+
+	tok0 := a.SubscribeEvents(func(ev Event) {
+		mu.Lock()
+		received[0] = append(received[0], ev)
+		mu.Unlock()
+	})
+	tok1 := a.SubscribeEvents(func(ev Event) {
+		mu.Lock()
+		received[1] = append(received[1], ev)
+		mu.Unlock()
+	})
+
+	// dispatch drives event delivery the same way tailJSONL does: snapshot
+	// the subscriber map under the lock, then call each handler.
+	dispatch := func(ev Event) {
+		a.mu.Lock()
+		subs := make([]EventFunc, 0, len(a.eventSubs))
+		for _, fn := range a.eventSubs {
+			subs = append(subs, fn)
+		}
+		a.mu.Unlock()
+		for _, fn := range subs {
+			fn(ev)
+		}
+	}
+
+	ev1 := Event{Type: "assistant", Text: "first"}
+	ev2 := Event{Type: "user"}
+	dispatch(ev1)
+	dispatch(ev2)
+
+	// Both subscribers must have received both events.
+	mu.Lock()
+	for i, got := range received {
+		if len(got) != 2 {
+			t.Errorf("subscriber %d: got %d events, want 2", i, len(got))
+		}
+	}
+	mu.Unlock()
+
+	// Unsubscribe subscriber 0.
+	a.UnsubscribeEvents(tok0)
+
+	ev3 := Event{Type: "assistant", Text: "third"}
+	dispatch(ev3)
+
+	mu.Lock()
+	// Subscriber 0 must NOT have received ev3.
+	if len(received[0]) != 2 {
+		t.Errorf("subscriber 0 received event after unsubscribe: got %d events, want 2", len(received[0]))
+	}
+	// Subscriber 1 must have received ev3.
+	if len(received[1]) != 3 {
+		t.Errorf("subscriber 1: got %d events, want 3", len(received[1]))
+	}
+	mu.Unlock()
+
+	// Clean up: unsubscribe tok1 so we don't leak.
+	a.UnsubscribeEvents(tok1)
+}
+
+// TestUsageAccumulation verifies that Agent.Usage() accumulates token counts
+// correctly across multiple events: input + output tokens and both cache
+// fields are summed, and events with zero usage do not corrupt the totals.
+func TestUsageAccumulation(t *testing.T) {
+	t.Parallel()
+
+	a := &Agent{eventSubs: make(map[int64]EventFunc)}
+
+	// accumulateEvent replicates the accumulation block in tailJSONL.
+	// We duplicate it here rather than extracting a helper because the
+	// logic is six lines and extraction would fragment the narrative.
+	accumulateEvent := func(ev Event) {
+		a.mu.Lock()
+		if ev.Usage.InputTokens > 0 || ev.Usage.OutputTokens > 0 ||
+			ev.Usage.CacheCreationInputTokens > 0 || ev.Usage.CacheReadInputTokens > 0 {
+			a.usage.InputTokens += ev.Usage.InputTokens
+			a.usage.OutputTokens += ev.Usage.OutputTokens
+			a.usage.CacheCreationInputTokens += ev.Usage.CacheCreationInputTokens
+			a.usage.CacheReadInputTokens += ev.Usage.CacheReadInputTokens
+		}
+		a.mu.Unlock()
+	}
+
+	line1 := `{"type":"assistant","usage":{"input_tokens":10,"output_tokens":5,"cache_creation_input_tokens":3,"cache_read_input_tokens":2},"message":{"content":[]}}`
+	line2 := `{"type":"assistant","usage":{"input_tokens":20,"output_tokens":15,"cache_creation_input_tokens":0,"cache_read_input_tokens":7},"message":{"content":[]}}`
+	zeroLine := `{"type":"assistant","message":{"content":[]}}`
+
+	accumulateEvent(parseEvent(line1))
+	accumulateEvent(parseEvent(zeroLine)) // must not corrupt
+	accumulateEvent(parseEvent(line2))
+
+	got := a.Usage()
+	want := Usage{
+		InputTokens:              30,
+		OutputTokens:             20,
+		CacheCreationInputTokens: 3,
+		CacheReadInputTokens:     9,
+	}
+	if got != want {
+		t.Errorf("Usage() = %+v, want %+v", got, want)
+	}
+}
+
+// TestTermLogPathDisabled verifies that TermLogPath returns the configured
+// path while terminal logging is live, and returns "" once termLogLive is
+// flipped to false (simulating a write error or Stop). The termMu lock is
+// exercised on every call.
+func TestTermLogPathDisabled(t *testing.T) {
+	t.Parallel()
+
+	a := &Agent{
+		termLogPath: "/some/path.term",
+		termLogLive: true,
+	}
+
+	if got := a.TermLogPath(); got != "/some/path.term" {
+		t.Errorf("TermLogPath (live) = %q, want /some/path.term", got)
+	}
+
+	// Simulate a write error or Stop setting termLogLive = false.
+	a.termMu.Lock()
+	a.termLogLive = false
+	a.termMu.Unlock()
+
+	if got := a.TermLogPath(); got != "" {
+		t.Errorf("TermLogPath (disabled) = %q, want empty string", got)
+	}
 }
 
 // TestAgentReadinessFailureOnDeadProcess verifies that if the Claude

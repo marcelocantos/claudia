@@ -16,7 +16,7 @@ on the shape of the work.
 | Process model       | New `claude` per prompt              | Persistent PTY                          |
 | Output              | Structured NDJSON (stream-json)      | JSONL transcript + raw PTY              |
 | Use case            | One-shot generation / analysis       | Multi-turn conversations                |
-| Cost accounting     | Yes, per prompt                      | No (transcript only)                    |
+| Cost accounting     | Yes, per prompt via `TaskEvent`      | Cumulative via `Agent.Usage()`          |
 | Resume across runs  | Via `TaskConfig.ClaudeID`            | Via `Config.SessionID`                  |
 
 **Default to Task mode.** It's simpler, gives you structured events,
@@ -89,15 +89,18 @@ want to observe the ready transition (e.g. to update a spinner),
 call `agent.WaitReady(ctx)` explicitly — it returns nil once the
 TUI is ready, or an error if detection gave up.
 
-Set an event handler **before** sending the first message — messages
-may arrive quickly, and only one handler is active at a time:
+Subscribe to events **before** sending the first message — messages
+may arrive quickly. Multiple subscribers are supported; each receives
+every event independently:
 
 ```go
-agent.OnEvent(func(ev claudia.Event) {
+token := agent.SubscribeEvents(func(ev claudia.Event) {
     // ev.Type: "assistant", "user", "system", "progress", ...
     // ev.Text: concatenated text for assistant turns
+    // ev.Usage: token counts (populated on assistant events)
     // ev.Raw:  complete JSONL line
 })
+defer agent.UnsubscribeEvents(token)
 
 agent.Send("prompt")  // Enter key appended; newlines inside msg are preserved as multi-line input
 reply, err := agent.WaitForResponse(ctx)  // blocks until the turn's terminal stop_reason
@@ -127,6 +130,20 @@ is authoritative for logical content.
 buffered history and a live channel of PTY chunks. Always call
 `UnsubscribeTerminal(ch)` when done. Subscribers that don't drain
 their channel drop data (sends are non-blocking).
+
+**Usage accounting**: `Agent.Usage()` returns cumulative token counts
+parsed from the JSONL transcript. The counts accumulate across turns
+for the lifetime of the agent. Unlike Task mode (which reports per-prompt
+cost in `TaskEventResult`), Session mode totals usage over the whole
+session — this is intentional: a persistent session doesn't have clean
+per-turn billing boundaries from the API's perspective.
+
+**Readiness detection**: The TUI-ready detector polls `tmux capture-pane`
+every 50 ms and gives up after 30 s. These values are fixed and not
+exposed via `Config`. On macOS the typical ready time is ~680 ms; the
+30 s cap exists only as a safety net for pathological cases. If a
+consumer consistently hits the cap, file an issue — the values were
+chosen empirically and can be revised with evidence.
 
 ## Registry (optional)
 
@@ -165,10 +182,17 @@ host program owns a single short-lived agent, skip the Registry.
    If it does, claudia passes `--resume`; otherwise `--session-id`.
    Pass a stable `SessionID` to get resumption for free.
 
-4. **Terminal log files are append-only.** Resumed sessions
-   accumulate PTY output across runs with no run-boundary markers.
-   Don't treat the file as a single-session transcript without
-   parsing it yourself.
+4. **Terminal log files are append-only, with no run-boundary markers.**
+   Resumed sessions concatenate PTY output across runs — this is a
+   deliberate choice. The `.term` file is a raw rendering aid for
+   human operators (e.g. via `tmux attach`), not a structured
+   transcript. The JSONL file is authoritative for logical content and
+   carries its own timestamps. Don't treat the `.term` file as a
+   structured single-session record.
+
+   `TermLogPath()` returns `""` if logging is disabled (`Config.TermLogPath
+   = "-"`) or if a write error silently halted the log mid-session. Check
+   the return value rather than caching the path from `Config`.
 
 5. **`WaitForResponse` replaces the event handler.** It installs its
    own callback (chaining to the previous one) and restores the old
