@@ -6,4 +6,4 @@ package claudia
 // Version is the semantic version of this library. It is kept in sync with
 // the git tag by the release tooling and can be embedded in application
 // --version output.
-const Version = "0.10.0"
+const Version = "0.11.0"

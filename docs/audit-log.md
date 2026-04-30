@@ -156,3 +156,28 @@ maintenance activities. Append-only — newest entries at the bottom.
 - **Deferred**:
   - `OnEvent` single-handler limitation — tracked in `STABILITY.md`
   - `Task` method renames — tracked in `STABILITY.md`
+
+## 2026-04-30 — /release v0.11.0
+
+- **Commit**: `pending`
+- **Outcome**: Released v0.11.0, resolving 🎯T1.2 (behavioural fixes)
+  and 🎯T1.3 (pkg.go.dev-ready docs). Replaced single-handler `OnEvent`
+  with multi-subscriber `SubscribeEvents`/`UnsubscribeEvents`; added
+  `Agent.Usage()` for cumulative Session-mode token accounting (parsed
+  from JSONL transcript); fixed `TermLogPath` to return `""` once the
+  log has been closed after a write error instead of advertising a
+  stale path. Documented run-boundary markers and readiness tuning
+  (50 ms poll, 30 s cap) as deliberate non-features. Doc comments
+  audited and rewritten across the public surface; package docs cover
+  Task/Session/Pool modes and `CLAUDE_BIN` resolution; new
+  `example_test.go` adds `ExampleRun`, `ExampleNewTask`, `ExampleStart`,
+  `ExampleAcquire`, `ExampleNewRegistry` so pkg.go.dev renders runnable
+  snippets. Three new hermetic tests cover the user-facing flows for
+  the new methods (`TestSubscribeEventsMultiSubscriber`,
+  `TestUsageAccumulation`, `TestTermLogPathDisabled`). All five 🎯T1
+  sub-targets achieved; T1 itself remains Identified pending the
+  3-month settling threshold for the 50–100 surface-item bracket
+  (clock restarts from v0.10.0 on 2026-04-29).
+- **Deferred**:
+  - 🎯T1 (1.0 release) — gated on settling threshold, not on remaining
+    work.
