@@ -159,7 +159,7 @@ maintenance activities. Append-only — newest entries at the bottom.
 
 ## 2026-04-30 — /release v0.11.0
 
-- **Commit**: `pending`
+- **Commit**: `201001d`
 - **Outcome**: Released v0.11.0, resolving 🎯T1.2 (behavioural fixes)
   and 🎯T1.3 (pkg.go.dev-ready docs). Replaced single-handler `OnEvent`
   with multi-subscriber `SubscribeEvents`/`UnsubscribeEvents`; added
