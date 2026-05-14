@@ -211,9 +211,22 @@ func (c *Client) CommitAndRespond(ctx context.Context) error {
 	})
 }
 
-// SendText sends a text message into the conversation (e.g. injecting
-// an agent response for Grok to speak).
-func (c *Client) SendText(ctx context.Context, text string) error {
+// ResponseModalities selects which output modalities Grok generates
+// for a response. Pass to [Client.SendText] or [Client.SendSystemNote].
+// "text" emits only the transcript (no audio billed); the
+// "text,audio" combination produces spoken output too.
+type ResponseModalities []string
+
+var (
+	ModalitiesTextAudio = ResponseModalities{"text", "audio"}
+	ModalitiesText      = ResponseModalities{"text"}
+)
+
+// SendText sends a text user message into the conversation and asks
+// Grok to respond in the given modalities. Pass [ModalitiesText] for
+// typed input that should produce a text-only reply (no synthesised
+// audio); [ModalitiesTextAudio] for voice-style replies.
+func (c *Client) SendText(ctx context.Context, text string, modalities ResponseModalities) error {
 	if err := c.send(ctx, map[string]any{
 		"type": "conversation.item.create",
 		"item": map[string]any{
@@ -226,10 +239,48 @@ func (c *Client) SendText(ctx context.Context, text string) error {
 	}); err != nil {
 		return err
 	}
+	if len(modalities) == 0 {
+		modalities = ModalitiesTextAudio
+	}
 	return c.send(ctx, map[string]any{
 		"type": "response.create",
 		"response": map[string]any{
-			"modalities": []string{"text", "audio"},
+			"modalities": []string(modalities),
+		},
+	})
+}
+
+// SendSystemNote inserts a system-role message into the conversation
+// and triggers a response. Use this to notify the model of an async
+// event the conversation should react to (e.g. a worker task
+// completed, an external state change). The model treats system
+// messages as out-of-band context, distinct from user input.
+//
+// Modalities controls how Grok responds; pass ModalitiesText for a
+// text-only reaction (no synthesised audio) or ModalitiesTextAudio
+// for a spoken response. Callers should normally pass the modality
+// matching the original user input that initiated the work — text
+// for typed prompts, text+audio for voice prompts.
+func (c *Client) SendSystemNote(ctx context.Context, text string, modalities ResponseModalities) error {
+	if err := c.send(ctx, map[string]any{
+		"type": "conversation.item.create",
+		"item": map[string]any{
+			"type": "message",
+			"role": "system",
+			"content": []map[string]any{
+				{"type": "input_text", "text": text},
+			},
+		},
+	}); err != nil {
+		return err
+	}
+	if len(modalities) == 0 {
+		modalities = ModalitiesTextAudio
+	}
+	return c.send(ctx, map[string]any{
+		"type": "response.create",
+		"response": map[string]any{
+			"modalities": []string(modalities),
 		},
 	})
 }
@@ -238,6 +289,10 @@ func (c *Client) SendText(ctx context.Context, text string) error {
 // turn, then asks Grok to speak it aloud verbatim. Use this to relay a
 // Claude Code response through the Grok voice channel without re-phrasing.
 // Config.OnTranscript will fire with the spoken text.
+//
+// Deprecated: prefer SendSystemNote so the model reacts conversationally
+// to the new context rather than parroting it verbatim. Retained for
+// backwards compatibility with the legacy voice bridge.
 func (c *Client) InjectAssistantText(ctx context.Context, text string) error {
 	if err := c.send(ctx, map[string]any{
 		"type": "conversation.item.create",
