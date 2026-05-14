@@ -9,8 +9,10 @@
 // Close the session with [Client.Close].
 //
 // Audio format: 24 kHz raw PCM (16-bit), matching the default for the
-// xAI Realtime API. Client-side VAD is not used; the server performs
-// voice-activity detection (server_vad mode).
+// xAI Realtime API. By default the server performs voice-activity
+// detection (server_vad). Set [Config.ManualCommit] for push-to-talk
+// — the caller then signals end-of-utterance via
+// [Client.CommitAndRespond].
 package grok
 
 import (
@@ -68,6 +70,12 @@ type Config struct {
 	// OnSessionReady is called when the session is configured.
 	OnSessionReady func()
 
+	// OnResponseDone fires when Grok has emitted response.done — i.e.
+	// the full response for the current turn (audio, transcript, any
+	// tool calls) is complete. Use this to know when it is safe to
+	// commit the next utterance or close the session.
+	OnResponseDone func()
+
 	// OnError is called on protocol errors.
 	OnError func(err error)
 
@@ -79,6 +87,13 @@ type Config struct {
 
 	// SystemPrompt for the session.
 	SystemPrompt string
+
+	// ManualCommit disables Grok's server-side VAD. The caller must
+	// explicitly call [Client.CommitAndRespond] at end-of-utterance.
+	// Use this for push-to-talk: with server VAD enabled, mid-phrase
+	// pauses trigger spurious commits; with manual commit, the human
+	// is the VAD.
+	ManualCommit bool
 }
 
 // Client manages a Grok Realtime WebSocket session. Obtain one via [Connect].
@@ -165,6 +180,37 @@ func (c *Client) SendAudio(ctx context.Context, pcm []byte) error {
 	})
 }
 
+// Commit signals end-of-utterance to Grok and asks it to transcribe
+// the buffered audio. Useful for push-to-talk: when the user releases
+// the talk key, the trailing silence may be too short for server VAD
+// to fire — call Commit to force a transcription before tearing down.
+//
+// Commit only flushes the audio buffer. In ManualCommit mode the server
+// will not auto-generate a response; use [Client.CommitAndRespond] to
+// commit and request a response in one call.
+func (c *Client) Commit(ctx context.Context) error {
+	return c.send(ctx, map[string]any{
+		"type": "input_audio_buffer.commit",
+	})
+}
+
+// CommitAndRespond commits the buffered audio and explicitly asks Grok
+// to generate a response. Use this with [Config.ManualCommit] mode,
+// where Grok does not auto-respond after a commit.
+func (c *Client) CommitAndRespond(ctx context.Context) error {
+	if err := c.send(ctx, map[string]any{
+		"type": "input_audio_buffer.commit",
+	}); err != nil {
+		return err
+	}
+	return c.send(ctx, map[string]any{
+		"type": "response.create",
+		"response": map[string]any{
+			"modalities": []string{"text", "audio"},
+		},
+	})
+}
+
 // SendText sends a text message into the conversation (e.g. injecting
 // an agent response for Grok to speak).
 func (c *Client) SendText(ctx context.Context, text string) error {
@@ -230,12 +276,6 @@ func (c *Client) Close() error {
 func (c *Client) configureSession(ctx context.Context) error {
 	session := map[string]any{
 		"voice": c.cfg.Voice,
-		"turn_detection": map[string]any{
-			"type":                "server_vad",
-			"threshold":           0.7,
-			"silence_duration_ms": 800,
-			"prefix_padding_ms":   300,
-		},
 		"audio": map[string]any{
 			"input": map[string]any{
 				"format": map[string]any{
@@ -258,6 +298,18 @@ func (c *Client) configureSession(ctx context.Context) error {
 
 	if len(c.cfg.Tools) > 0 {
 		session["tools"] = c.cfg.Tools
+	}
+
+	if !c.cfg.ManualCommit {
+		// Default: server-side VAD auto-commits on silence and triggers
+		// a response. PTT callers set ManualCommit=true to suppress this
+		// and use CommitAndRespond instead.
+		session["turn_detection"] = map[string]any{
+			"type":                "server_vad",
+			"threshold":           0.7,
+			"silence_duration_ms": 800,
+			"prefix_padding_ms":   300,
+		}
 	}
 
 	return c.send(ctx, map[string]any{
@@ -347,6 +399,9 @@ func (c *Client) handleEvent(ctx context.Context, msg map[string]any) {
 
 	case "response.done":
 		slog.Debug("grok: response complete")
+		if c.cfg.OnResponseDone != nil {
+			c.cfg.OnResponseDone()
+		}
 
 	default:
 		slog.Info("grok: unhandled event", "type", eventType)
