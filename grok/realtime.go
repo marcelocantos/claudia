@@ -355,10 +355,15 @@ func (c *Client) configureSession(ctx context.Context) error {
 		session["tools"] = c.cfg.Tools
 	}
 
-	if !c.cfg.ManualCommit {
+	if c.cfg.ManualCommit {
+		// Explicit null disables server-side VAD entirely. Omitting the
+		// field leaves the API on its default, which is server_vad — so
+		// we must send the explicit null to actually suppress it. The
+		// caller drives commits via [Client.CommitAndRespond].
+		session["turn_detection"] = nil
+	} else {
 		// Default: server-side VAD auto-commits on silence and triggers
-		// a response. PTT callers set ManualCommit=true to suppress this
-		// and use CommitAndRespond instead.
+		// a response.
 		session["turn_detection"] = map[string]any{
 			"type":                "server_vad",
 			"threshold":           0.7,
