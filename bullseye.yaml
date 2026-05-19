@@ -102,15 +102,15 @@ targets:
     discovered: 2026-04-27
     achieved: 2026-04-27
   T1.6:
-    name: claudia has accumulated a 1-month shakeout period with no breaking API changes since v0.10.0
+    name: claudia has accumulated a 1-month shakeout period with no breaking API changes since v0.12.0
     status: identified
     value: 0.0
     cost: 0.0
     acceptance:
-    - The current date is on or after 2026-05-29 (one month after the v0.10.0 tag of 2026-04-29).
-    - No commit on master between v0.10.0 and HEAD changes the public API of github.com/marcelocantos/claudia or github.com/marcelocantos/claudia/grok in a backwards-incompatible way (no removals, no signature changes, no exported-field type changes). Additive changes are fine.
+    - The current date is on or after 2026-06-19 (one month after the v0.12.0 tag of 2026-05-19).
+    - No commit on master between v0.12.0 and HEAD changes the public API of github.com/marcelocantos/claudia or github.com/marcelocantos/claudia/grok in a backwards-incompatible way (no removals, no signature changes, no exported-field type changes). Additive changes are fine.
     - STABILITY.md's snapshot reflects the current release.
     - 'If a breaking change is judged necessary during the shakeout, the clock resets: this target reverts to Identified and the not-before date is recomputed from the new breaking release''s tag date.'
-    context: claudia's ~65-item public surface would normally get a 3-month settling period under the release skill's default table, but in the current LLM-coding era a month of real use shakes out as much as a quarter used to. v0.10.0 (2026-04-29) shipped the bundled API design fixes (Task accessor renames, DisallowTools shape change, Event.Raw type, Registry.Start - Launch, etc.). The earliest eligible 1.0 cut date is therefore 2026-05-29. This target makes that prerequisite explicit in the graph rather than buried in T1's prose, so the showcase release cannot fire prematurely. Forked from T1 on 2026-05-02 after recognising the shakeout gap during convergence evaluation; period shortened from 3 months to 1 month per user direction the same day.
+    context: claudia's ~74-item public surface would normally get a 3-month settling period under the release skill's default table, but in the current LLM-coding era a month of real use shakes out as much as a quarter used to. The clock previously ran from v0.10.0 (2026-04-29) but reset on 2026-05-19 when v0.12.0 shipped a breaking change to grok.Client.SendText (added a modalities parameter for per-call modality selection). The earliest eligible 1.0 cut date is therefore 2026-06-19. This target makes that prerequisite explicit in the graph rather than buried in T1's prose, so the showcase release cannot fire prematurely. Forked from T1 on 2026-05-02 after recognising the shakeout gap during convergence evaluation; period shortened from 3 months to 1 month per user direction the same day. Clock reset on 2026-05-19 per v0.12.0 SendText signature change.
     origin: forked-from T1 (2026-05-02)
     discovered: 2026-05-02

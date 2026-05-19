@@ -207,16 +207,35 @@ func (c *Client) Commit(ctx context.Context) error {
 // CommitAndRespond commits the buffered audio and explicitly asks Grok
 // to generate a response. Use this with [Config.ManualCommit] mode,
 // where Grok does not auto-respond after a commit.
+//
+// WARNING: in ManualCommit mode the input-audio transcription happens
+// asynchronously AFTER input_audio_buffer.commit is ACK'd. Sending
+// response.create immediately (as this method does) races the
+// transcription — the response is generated against the conversation
+// state at request time, which usually does not yet include the new
+// user item. Prefer [Client.RequestResponse] called from the
+// [Config.OnUserTranscript] callback for correct ordering.
 func (c *Client) CommitAndRespond(ctx context.Context) error {
-	if err := c.send(ctx, map[string]any{
-		"type": "input_audio_buffer.commit",
-	}); err != nil {
+	if err := c.Commit(ctx); err != nil {
 		return err
+	}
+	return c.RequestResponse(ctx, nil)
+}
+
+// RequestResponse explicitly asks Grok to generate a response based on
+// the current conversation state. The caller is responsible for
+// ordering: in ManualCommit mode this should be called only after the
+// new user item has actually been added to the conversation (i.e.
+// after OnUserTranscript fires), otherwise the response will be
+// generated without the user's just-committed audio in scope.
+func (c *Client) RequestResponse(ctx context.Context, modalities ResponseModalities) error {
+	if len(modalities) == 0 {
+		modalities = ModalitiesTextAudio
 	}
 	return c.send(ctx, map[string]any{
 		"type": "response.create",
 		"response": map[string]any{
-			"modalities": []string{"text", "audio"},
+			"modalities": []string(modalities),
 		},
 	})
 }
