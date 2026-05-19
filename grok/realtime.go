@@ -9,8 +9,10 @@
 // Close the session with [Client.Close].
 //
 // Audio format: 24 kHz raw PCM (16-bit), matching the default for the
-// xAI Realtime API. Client-side VAD is not used; the server performs
-// voice-activity detection (server_vad mode).
+// xAI Realtime API. By default the server performs voice-activity
+// detection (server_vad). Set [Config.ManualCommit] for push-to-talk
+// — the caller then signals end-of-utterance via
+// [Client.CommitAndRespond].
 package grok
 
 import (
@@ -68,6 +70,12 @@ type Config struct {
 	// OnSessionReady is called when the session is configured.
 	OnSessionReady func()
 
+	// OnResponseDone fires when Grok has emitted response.done — i.e.
+	// the full response for the current turn (audio, transcript, any
+	// tool calls) is complete. Use this to know when it is safe to
+	// commit the next utterance or close the session.
+	OnResponseDone func()
+
 	// OnError is called on protocol errors.
 	OnError func(err error)
 
@@ -79,6 +87,13 @@ type Config struct {
 
 	// SystemPrompt for the session.
 	SystemPrompt string
+
+	// ManualCommit disables Grok's server-side VAD. The caller must
+	// explicitly call [Client.CommitAndRespond] at end-of-utterance.
+	// Use this for push-to-talk: with server VAD enabled, mid-phrase
+	// pauses trigger spurious commits; with manual commit, the human
+	// is the VAD.
+	ManualCommit bool
 }
 
 // Client manages a Grok Realtime WebSocket session. Obtain one via [Connect].
@@ -165,9 +180,63 @@ func (c *Client) SendAudio(ctx context.Context, pcm []byte) error {
 	})
 }
 
-// SendText sends a text message into the conversation (e.g. injecting
-// an agent response for Grok to speak).
-func (c *Client) SendText(ctx context.Context, text string) error {
+// ClearBuffer discards any pending audio in the input buffer without
+// committing. Use to abort an utterance the user changed their mind
+// about — sending Commit on an empty/noisy buffer makes Grok transcribe
+// noise and respond to it.
+func (c *Client) ClearBuffer(ctx context.Context) error {
+	return c.send(ctx, map[string]any{
+		"type": "input_audio_buffer.clear",
+	})
+}
+
+// Commit signals end-of-utterance to Grok and asks it to transcribe
+// the buffered audio. Useful for push-to-talk: when the user releases
+// the talk key, the trailing silence may be too short for server VAD
+// to fire — call Commit to force a transcription before tearing down.
+//
+// Commit only flushes the audio buffer. In ManualCommit mode the server
+// will not auto-generate a response; use [Client.CommitAndRespond] to
+// commit and request a response in one call.
+func (c *Client) Commit(ctx context.Context) error {
+	return c.send(ctx, map[string]any{
+		"type": "input_audio_buffer.commit",
+	})
+}
+
+// CommitAndRespond commits the buffered audio and explicitly asks Grok
+// to generate a response. Use this with [Config.ManualCommit] mode,
+// where Grok does not auto-respond after a commit.
+func (c *Client) CommitAndRespond(ctx context.Context) error {
+	if err := c.send(ctx, map[string]any{
+		"type": "input_audio_buffer.commit",
+	}); err != nil {
+		return err
+	}
+	return c.send(ctx, map[string]any{
+		"type": "response.create",
+		"response": map[string]any{
+			"modalities": []string{"text", "audio"},
+		},
+	})
+}
+
+// ResponseModalities selects which output modalities Grok generates
+// for a response. Pass to [Client.SendText] or [Client.SendSystemNote].
+// "text" emits only the transcript (no audio billed); the
+// "text,audio" combination produces spoken output too.
+type ResponseModalities []string
+
+var (
+	ModalitiesTextAudio = ResponseModalities{"text", "audio"}
+	ModalitiesText      = ResponseModalities{"text"}
+)
+
+// SendText sends a text user message into the conversation and asks
+// Grok to respond in the given modalities. Pass [ModalitiesText] for
+// typed input that should produce a text-only reply (no synthesised
+// audio); [ModalitiesTextAudio] for voice-style replies.
+func (c *Client) SendText(ctx context.Context, text string, modalities ResponseModalities) error {
 	if err := c.send(ctx, map[string]any{
 		"type": "conversation.item.create",
 		"item": map[string]any{
@@ -180,10 +249,74 @@ func (c *Client) SendText(ctx context.Context, text string) error {
 	}); err != nil {
 		return err
 	}
+	if len(modalities) == 0 {
+		modalities = ModalitiesTextAudio
+	}
 	return c.send(ctx, map[string]any{
 		"type": "response.create",
 		"response": map[string]any{
-			"modalities": []string{"text", "audio"},
+			"modalities": []string(modalities),
+		},
+	})
+}
+
+// InjectConversationItem inserts a single conversation item (user,
+// assistant, or system role) WITHOUT triggering a response. Use this
+// to replay prior conversation history into a fresh session so the
+// model has context, without the model immediately reacting to each
+// replayed turn. The content type is "input_text" for user/system and
+// "text" for assistant, matching Realtime's per-role schema.
+func (c *Client) InjectConversationItem(ctx context.Context, role, text string) error {
+	if text == "" {
+		return nil
+	}
+	contentType := "input_text"
+	if role == "assistant" {
+		contentType = "text"
+	}
+	return c.send(ctx, map[string]any{
+		"type": "conversation.item.create",
+		"item": map[string]any{
+			"type": "message",
+			"role": role,
+			"content": []map[string]any{
+				{"type": contentType, "text": text},
+			},
+		},
+	})
+}
+
+// SendSystemNote inserts a system-role message into the conversation
+// and triggers a response. Use this to notify the model of an async
+// event the conversation should react to (e.g. a worker task
+// completed, an external state change). The model treats system
+// messages as out-of-band context, distinct from user input.
+//
+// Modalities controls how Grok responds; pass ModalitiesText for a
+// text-only reaction (no synthesised audio) or ModalitiesTextAudio
+// for a spoken response. Callers should normally pass the modality
+// matching the original user input that initiated the work — text
+// for typed prompts, text+audio for voice prompts.
+func (c *Client) SendSystemNote(ctx context.Context, text string, modalities ResponseModalities) error {
+	if err := c.send(ctx, map[string]any{
+		"type": "conversation.item.create",
+		"item": map[string]any{
+			"type": "message",
+			"role": "system",
+			"content": []map[string]any{
+				{"type": "input_text", "text": text},
+			},
+		},
+	}); err != nil {
+		return err
+	}
+	if len(modalities) == 0 {
+		modalities = ModalitiesTextAudio
+	}
+	return c.send(ctx, map[string]any{
+		"type": "response.create",
+		"response": map[string]any{
+			"modalities": []string(modalities),
 		},
 	})
 }
@@ -192,6 +325,10 @@ func (c *Client) SendText(ctx context.Context, text string) error {
 // turn, then asks Grok to speak it aloud verbatim. Use this to relay a
 // Claude Code response through the Grok voice channel without re-phrasing.
 // Config.OnTranscript will fire with the spoken text.
+//
+// Deprecated: prefer SendSystemNote so the model reacts conversationally
+// to the new context rather than parroting it verbatim. Retained for
+// backwards compatibility with the legacy voice bridge.
 func (c *Client) InjectAssistantText(ctx context.Context, text string) error {
 	if err := c.send(ctx, map[string]any{
 		"type": "conversation.item.create",
@@ -230,12 +367,6 @@ func (c *Client) Close() error {
 func (c *Client) configureSession(ctx context.Context) error {
 	session := map[string]any{
 		"voice": c.cfg.Voice,
-		"turn_detection": map[string]any{
-			"type":                "server_vad",
-			"threshold":           0.7,
-			"silence_duration_ms": 800,
-			"prefix_padding_ms":   300,
-		},
 		"audio": map[string]any{
 			"input": map[string]any{
 				"format": map[string]any{
@@ -258,6 +389,23 @@ func (c *Client) configureSession(ctx context.Context) error {
 
 	if len(c.cfg.Tools) > 0 {
 		session["tools"] = c.cfg.Tools
+	}
+
+	if c.cfg.ManualCommit {
+		// Explicit null disables server-side VAD entirely. Omitting the
+		// field leaves the API on its default, which is server_vad — so
+		// we must send the explicit null to actually suppress it. The
+		// caller drives commits via [Client.CommitAndRespond].
+		session["turn_detection"] = nil
+	} else {
+		// Default: server-side VAD auto-commits on silence and triggers
+		// a response.
+		session["turn_detection"] = map[string]any{
+			"type":                "server_vad",
+			"threshold":           0.7,
+			"silence_duration_ms": 800,
+			"prefix_padding_ms":   300,
+		}
 	}
 
 	return c.send(ctx, map[string]any{
@@ -347,6 +495,9 @@ func (c *Client) handleEvent(ctx context.Context, msg map[string]any) {
 
 	case "response.done":
 		slog.Debug("grok: response complete")
+		if c.cfg.OnResponseDone != nil {
+			c.cfg.OnResponseDone()
+		}
 
 	default:
 		slog.Info("grok: unhandled event", "type", eventType)

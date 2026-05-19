@@ -154,8 +154,12 @@ is annotated with a stability assessment:
 ### Surface item count
 
 ~65 items across both packages (64 API + 1 env var). Per the release
-skill's settling table, this puts claudia in the 50–100 bracket with
-a minimum settling period of 3 months from the last breaking change.
+skill's pre-1.0 → 1.0 shakeout gate (B.3a), the minimum settling
+period is **1 month** with no backwards-incompatible changes since
+the last breaking release. Historical SemVer practice scaled this by
+surface size (3+ months for >50 items); the LLM-coding era compresses
+real-world API exercise enough that a flat 1-month minimum suffices.
+The clock resets if a breaking change ships mid-shakeout.
 
 ## Gaps and prerequisites for 1.0
 
