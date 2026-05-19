@@ -12,7 +12,7 @@ new module (e.g. `claudia2`) rather than breaking an existing import
 path. The pre-1.0 period exists to shake out the API design before
 that contract takes effect.
 
-Snapshot as of: v0.11.0.
+Snapshot as of: v0.12.0.
 
 ## Interaction surface
 
@@ -127,8 +127,15 @@ is annotated with a stability assessment:
 | Item | Definition | Status |
 |---|---|---|
 | `Tool` | struct with `Type, Name, Description string` and `Parameters json.RawMessage` | Stable |
-| `Config` | struct with `APIKey string`, callback fields (`OnAudio, OnTranscript, OnTranscriptDone, OnUserTranscript, OnFunctionCall, OnSessionReady, OnError`), `Voice string`, `Tools []Tool`, `SystemPrompt string` | Needs review |
+| `Config` | struct with `APIKey string`, callback fields (`OnAudio, OnTranscript, OnTranscriptDone, OnUserTranscript, OnFunctionCall, OnSessionReady, OnResponseDone, OnError`), `Voice string`, `Tools []Tool`, `SystemPrompt string`, `ManualCommit bool` | Needs review |
 | `Client` | opaque struct; methods listed below | Stable |
+| `ResponseModalities` | `[]string`; selects which output modalities Grok generates for a response | Needs review |
+
+#### Constants
+
+| Item | Status |
+|---|---|
+| `ModalitiesTextAudio, ModalitiesText` (ResponseModalities) | Needs review |
 
 #### Functions
 
@@ -141,8 +148,14 @@ is annotated with a stability assessment:
 | Item | Signature | Status |
 |---|---|---|
 | `SendAudio` | `(ctx context.Context, pcm []byte) error` | Stable |
-| `SendText` | `(ctx context.Context, text string) error` | Stable |
-| `InjectAssistantText` | `(ctx context.Context, text string) error` | Needs review |
+| `SendText` | `(ctx context.Context, text string, modalities ResponseModalities) error` | Needs review |
+| `SendSystemNote` | `(ctx context.Context, text string, modalities ResponseModalities) error` | Needs review |
+| `InjectAssistantText` | `(ctx context.Context, text string) error` | Deprecated — prefer `SendSystemNote` |
+| `InjectConversationItem` | `(ctx context.Context, role, text string) error` | Needs review |
+| `Commit` | `(ctx context.Context) error` | Needs review |
+| `CommitAndRespond` | `(ctx context.Context) error` | Needs review |
+| `RequestResponse` | `(ctx context.Context, modalities ResponseModalities) error` | Needs review |
+| `ClearBuffer` | `(ctx context.Context) error` | Needs review |
 | `Close` | `() error` | Stable |
 
 #### Environment variables
@@ -153,13 +166,15 @@ is annotated with a stability assessment:
 
 ### Surface item count
 
-~65 items across both packages (64 API + 1 env var). Per the release
+~74 items across both packages (73 API + 1 env var). Per the release
 skill's pre-1.0 → 1.0 shakeout gate (B.3a), the minimum settling
 period is **1 month** with no backwards-incompatible changes since
 the last breaking release. Historical SemVer practice scaled this by
 surface size (3+ months for >50 items); the LLM-coding era compresses
 real-world API exercise enough that a flat 1-month minimum suffices.
-The clock resets if a breaking change ships mid-shakeout.
+The clock resets if a breaking change ships mid-shakeout — v0.12.0's
+`grok.Client.SendText` signature change does exactly that, so the
+earliest eligible 1.0 cut date moves to 2026-06-19.
 
 ## Gaps and prerequisites for 1.0
 
