@@ -180,6 +180,16 @@ func (c *Client) SendAudio(ctx context.Context, pcm []byte) error {
 	})
 }
 
+// ClearBuffer discards any pending audio in the input buffer without
+// committing. Use to abort an utterance the user changed their mind
+// about — sending Commit on an empty/noisy buffer makes Grok transcribe
+// noise and respond to it.
+func (c *Client) ClearBuffer(ctx context.Context) error {
+	return c.send(ctx, map[string]any{
+		"type": "input_audio_buffer.clear",
+	})
+}
+
 // Commit signals end-of-utterance to Grok and asks it to transcribe
 // the buffered audio. Useful for push-to-talk: when the user releases
 // the talk key, the trailing silence may be too short for server VAD
