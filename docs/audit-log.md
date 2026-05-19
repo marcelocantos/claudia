@@ -181,3 +181,34 @@ maintenance activities. Append-only — newest entries at the bottom.
 - **Deferred**:
   - 🎯T1 (1.0 release) — gated on settling threshold, not on remaining
     work.
+
+## 2026-05-19 — /release v0.12.0
+
+- **Commit**: `b2dc37c`
+- **Outcome**: Released v0.12.0 — additions to the `grok` Realtime
+  client plus one breaking signature change. Added `Client.ClearBuffer`
+  (abort a PTT utterance without transcribing noise), `Client.Commit`
+  + `Client.CommitAndRespond` (explicit end-of-utterance for PTT),
+  `Client.RequestResponse(ctx, modalities)` (request a response with a
+  specific modality set; pairs with `OnUserTranscript` for race-free
+  ordering in `ManualCommit` mode), `Client.InjectConversationItem`
+  (seed a fresh session with prior history without firing
+  `response.create`), `Client.SendSystemNote` (deprecates
+  `InjectAssistantText`), `Config.ManualCommit`, `Config.OnResponseDone`,
+  and a `ResponseModalities` type with `ModalitiesText` /
+  `ModalitiesTextAudio` constants. **Breaking**: `Client.SendText`
+  signature changed from `(ctx, text)` to `(ctx, text, modalities)`
+  for per-call modality selection. Fixed a bug shipped in v0.11.0
+  where `ManualCommit` mode omitted `turn_detection` instead of
+  sending explicit `null`, silently leaving server VAD enabled. The
+  `SendText` signature change is a backwards-incompatible change
+  during the pre-1.0 shakeout, so 🎯T1.6's not-before date reset
+  from 2026-05-29 to 2026-06-19 (1 month after this release).
+- **Deferred**:
+  - 🎯T1.6 shakeout clock — runs from v0.12.0; earliest eligible 1.0
+    cut date is 2026-06-19.
+  - 🎯T1 (1.0 release) — gated on T1.6.
+  - `CommitAndRespond` is preserved with a WARNING; long-term, callers
+    in `ManualCommit` mode should migrate to `RequestResponse` driven
+    by `OnUserTranscript`. No deprecation marker yet — revisit after
+    real-world use during shakeout.
