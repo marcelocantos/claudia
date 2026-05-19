@@ -250,6 +250,32 @@ func (c *Client) SendText(ctx context.Context, text string, modalities ResponseM
 	})
 }
 
+// InjectConversationItem inserts a single conversation item (user,
+// assistant, or system role) WITHOUT triggering a response. Use this
+// to replay prior conversation history into a fresh session so the
+// model has context, without the model immediately reacting to each
+// replayed turn. The content type is "input_text" for user/system and
+// "text" for assistant, matching Realtime's per-role schema.
+func (c *Client) InjectConversationItem(ctx context.Context, role, text string) error {
+	if text == "" {
+		return nil
+	}
+	contentType := "input_text"
+	if role == "assistant" {
+		contentType = "text"
+	}
+	return c.send(ctx, map[string]any{
+		"type": "conversation.item.create",
+		"item": map[string]any{
+			"type": "message",
+			"role": role,
+			"content": []map[string]any{
+				{"type": contentType, "text": text},
+			},
+		},
+	})
+}
+
 // SendSystemNote inserts a system-role message into the conversation
 // and triggers a response. Use this to notify the model of an async
 // event the conversation should react to (e.g. a worker task
