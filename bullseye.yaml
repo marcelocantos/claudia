@@ -114,3 +114,152 @@ targets:
     context: claudia's ~74-item public surface would normally get a 3-month settling period under the release skill's default table, but in the current LLM-coding era a month of real use shakes out as much as a quarter used to. The clock previously ran from v0.10.0 (2026-04-29) but reset on 2026-05-19 when v0.12.0 shipped a breaking change to grok.Client.SendText (added a modalities parameter for per-call modality selection). The earliest eligible 1.0 cut date is therefore 2026-06-19. This target makes that prerequisite explicit in the graph rather than buried in T1's prose, so the showcase release cannot fire prematurely. Forked from T1 on 2026-05-02 after recognising the shakeout gap during convergence evaluation; period shortened from 3 months to 1 month per user direction the same day. Clock reset on 2026-05-19 per v0.12.0 SendText signature change.
     origin: forked-from T1 (2026-05-02)
     discovered: 2026-05-02
+  T2:
+    name: claudia lifecycle broker daemon — autonomous multi-consumer control plane
+    status: identified
+    value: 13.0
+    cost: 21.0
+    showcase: true
+    acceptance:
+    - A standalone `claudia broker` daemon manages all claude process lifecycle across all consumers on the host.
+    - The daemon is installable via `brew services start claudia`.
+    - "`claudia broker tail` streams structured events (throttle, reap, preempt, resume, cost) for observability."
+    - The library SDK defaults to broker mode when the Unix socket exists, falls back to direct mode (today's behaviour) when the socket is absent.
+    - All T2.x sub-targets are achieved.
+    context: >
+      Explored during 2026-06-10 design session. Motivation: multiple consumers on the same host competing for Anthropic rate-limit slots, warm pool
+      waste, no cross-process cost visibility. The broker owns lifecycle policy (concurrency, pooling, idle reaping, preemption, cost tracking) while
+      the library API surface is unchanged — Start()/Acquire()/NewTask() become thin RPC calls to the broker socket when it exists, with a brokerless
+      fallback for single-process embedding. The novel value add over existing tools (ccusage, cc-budget, Bifrost) is per-agent lifecycle policy —
+      spawn/preempt/reap decisions — which none of those tools handle. Prior art survey: ccusage for spend parsing, Holt-Winters (cc-budget) for
+      forecasting, Bifrost/LiteLLM for request-level gating as a complementary layer. Anthropic Admin API (/v1/organizations/cost_report) provides
+      ground-truth reconciliation every ~10 min; local token-count tracking provides the real-time signal. Admin API integration must be double-gated
+      on explicit config opt-in AND the presence of ANTHROPIC_ADMIN_API_KEY (per mnemo cost_reconciliation opt-in precedent).
+    depends_on:
+    - T2.1
+    - T2.2
+    - T2.3
+    - T2.4
+    - T2.5
+    - T2.6
+    - T2.7
+    origin: design session 2026-06-10
+    discovered: 2026-06-10
+  T2.1:
+    name: Broker protocol and Unix socket transport
+    status: identified
+    value: 3.0
+    cost: 5.0
+    acceptance:
+    - The broker listens on a well-known Unix socket (~/.local/state/claudia/broker.sock).
+    - Protocol is newline-delimited JSON over the socket.
+    - Request types cover at minimum spawn, release, status, tail.
+    - The library's brokerless fallback is exercised by CLAUDIA_NO_BROKER=1 env var.
+    - A minimal integration test exercises spawn/release over a real socket.
+    origin: design session 2026-06-10
+    discovered: 2026-06-10
+  T2.2:
+    name: AIMD concurrency control with per-model tuning
+    status: identified
+    value: 5.0
+    cost: 5.0
+    acceptance:
+    - The broker tracks in-flight agent slots per model.
+    - On a 429 response observed from any agent, the broker applies multiplicative decrease (halve available slots for that model).
+    - Slots recover additively (one slot per clean turn-completion window).
+    - The broker emits throttle and recover events on the tail stream.
+    - No static concurrency knob is exposed to the consumer — policy is fully self-tuning.
+    context: >
+      Anthropic rate limits hit fast with parallel agents; opus-4-7 accounted for 96% of a 7-day $14.9k spend (62% of messages at 14x per-token cost
+      vs sonnet). Per-model AIMD is therefore the single highest-leverage lever. The 429 signal is the authoritative backpressure signal — no need to
+      guess at rate-limit headroom.
+    origin: design session 2026-06-10
+    discovered: 2026-06-10
+  T2.3:
+    name: Warm pool shared across consumers
+    status: identified
+    value: 3.0
+    cost: 5.0
+    acceptance:
+    - The broker maintains a pool of warm (idle) claude processes in tmux.
+    - Pool size adapts to observed spawn rate per (model, workdir) pair.
+    - A consumer calling spawn receives a pre-warmed agent when one is available, reducing per-spawn latency.
+    - Pool drains when the spawn rate drops to zero for a configurable idle window (default 10 minutes).
+    context: >
+      Today pool.go is per-process; idle warm agents from one consumer are unavailable to another. The broker makes the pool global, enabling
+      cross-consumer reuse. The pool substrate is unchanged (tmux); the broker just owns the policy of how many to keep warm.
+    origin: design session 2026-06-10
+    discovered: 2026-06-10
+  T2.4:
+    name: Cost tracking — local token accounting and optional Anthropic Cost API reconciliation
+    status: identified
+    value: 5.0
+    cost: 5.0
+    acceptance:
+    - The broker accumulates spend in real-time from per-turn token counts (Task mode CostUSD field; Session mode derived from JSONL usage blocks + built-in price table).
+    - An optional reconciliation loop polls /v1/organizations/cost_report every ~10 minutes when both ANTHROPIC_ADMIN_API_KEY is set AND cost_reconciliation.enabled is true in ~/.config/claudia/broker.yaml. Absent either, the broker logs "reconciliation unavailable, running open-loop" and uses local estimates only.
+    - The single user-configurable ceiling is daily_cap_usd in broker.yaml (optional; omit for no cap). All other throttle policy is derived automatically.
+    - The broker emits cost_update and budget_warning events on the tail stream.
+    context: >
+      Admin API reconciliation follows the same double-gate pattern as mnemo cost reconciliation (see mnemo CLAUDE.md): key alone is not enough,
+      explicit opt-in is required. Users in security-reviewed environments must not trigger outbound calls to hosted APIs due to ambient key presence.
+      The local token-count path is always-on and requires zero external calls. mnemo_usage (already supports group_by=model) is available as an
+      alternative read path for historical cost data; the broker's real-time loop avoids the MCP round-trip overhead.
+    origin: design session 2026-06-10
+    discovered: 2026-06-10
+  T2.5:
+    name: Idle reaping with model-cost-weighted thresholds
+    status: identified
+    value: 2.0
+    cost: 2.0
+    acceptance:
+    - The broker reaps idle agents after a model-weighted idle timeout (defaults — opus 5 minutes, sonnet 15 minutes, haiku 60 minutes).
+    - The broker emits reap events on the tail stream.
+    - No per-consumer idle-timeout knob is exposed to the API.
+    context: >
+      Idle opus processes are disproportionately expensive to keep around relative to sonnet/haiku. Model-weighted thresholds are a simple, no-knob
+      policy that matches cost sensitivity without user configuration.
+    origin: design session 2026-06-10
+    discovered: 2026-06-10
+  T2.6:
+    name: Priority and preemption (interactive > batch)
+    status: identified
+    value: 3.0
+    cost: 5.0
+    acceptance:
+    - Agent priority is inferred automatically from mode and recency (Session agents with recent human input = interactive; Task agents = batch; idle Session agents = background).
+    - Under concurrency pressure (AIMD slots exhausted), the broker suspends the longest-idle lowest-priority agent (tmux suspend-pane) and resumes when capacity returns.
+    - Consumers observe paused/resumed events via SubscribeEvents.
+    - No explicit priority hint in the API — intent is inferred from mode.
+    origin: design session 2026-06-10
+    discovered: 2026-06-10
+  T2.7:
+    name: brew services compatible daemon and claudia broker tail telemetry
+    status: identified
+    value: 2.0
+    cost: 2.0
+    acceptance:
+    - The Homebrew formula includes a launchd plist so `brew services start claudia` starts the broker on login.
+    - "`claudia broker tail` streams all broker events as newline-delimited JSON."
+    - "`claudia broker status` prints a human-readable summary of active agents, pool depth, AIMD slots, and rolling cost."
+    origin: design session 2026-06-10
+    discovered: 2026-06-10
+  T3:
+    name: Library SDK is a thin broker client with transparent brokerless fallback
+    status: identified
+    value: 8.0
+    cost: 8.0
+    acceptance:
+    - Start(), Acquire(), NewTask(), and Pool are implemented as RPC calls to the broker socket when the socket is present.
+    - When the socket is absent (or CLAUDIA_NO_BROKER=1), the library falls back to today's direct-spawn behaviour with no API change.
+    - The public API surface is unchanged for consumers — broker vs. direct is a runtime decision, not a compile-time one.
+    - All existing tests pass in both modes.
+    - The T1.6 shakeout window is not disturbed by the SDK pivot (broker path is additive; direct path is unchanged).
+    context: >
+      The broker client path must be strictly additive so the T1.6 shakeout clock is not reset — consumers who don't run the broker see identical
+      behaviour. The brokerless fallback is the existing direct-spawn code, not a stub; it must remain a fully supported mode for single-process
+      embedding and for users who don't want the daemon.
+    depends_on:
+    - T2.1
+    origin: design session 2026-06-10
+    discovered: 2026-06-10
