@@ -296,3 +296,16 @@ targets:
     origin: user request 2026-07-05
     discovered: 2026-07-05
     achieved: 2026-07-05
+  T6:
+    name: Agents survive Claude Code's stale-session resume/summary menu on launch
+    status: converging
+    value: 5.0
+    cost: 3.0
+    acceptance:
+    - '[decidable | ORACLE: internal/tmuxagent/readiness_test.go — DONE] The launch readiness handshake recognises Claude Code''s resume/summary selection menu distinctly from the idle input box: MatchStartupMenu true and MatchReady false for that frame, both false for a streaming frame.'
+    - '[decidable | ORACLE: readiness_test.go — DONE] WaitReady auto-confirms the highlighted default (Enter) when a startup menu is detected, bounded by maxMenuDismissals, reaching ready without operator intervention (deterministic loop test: [menu, menu, ready] frames, asserts Enter sent + ready reached).'
+    - '[decidable | ORACLE: readiness_test.go — DONE] If the menu never clears, WaitReady returns a distinct error naming the wedged startup menu after exactly maxMenuDismissals confirmations.'
+    - '[decidable | ORACLE: live regression, CLAUDIA_LIVE tier] Aged/large session id → launch → Send + WaitForResponse succeeds without operator intervention. Pre-release live tier.'
+    context: 'Consumer bug: jevons agents wedged when a registered agent''s session aged out and --resume parked the TUI at the resume/summary menu, which WaitReady could not distinguish from ''not ready'', timing out at 30s (jevons-po 2026-05-19/20). Fix in claudia''s launch handshake: MatchStartupMenu + WaitReady auto-confirm the default (bounded), poll loop refactored behind an injected readyDriver for deterministic tests. Load-bearing for every --resume path — restart, rehydrate, and the v0.13.0 rewind. Flip to achieved after the live regression passes at the next release.'
+    origin: manual
+    discovered: 2026-07-05
