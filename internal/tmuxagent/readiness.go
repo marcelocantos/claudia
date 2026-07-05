@@ -40,10 +40,34 @@ func CapturePane(windowID string) ([]byte, error) {
 // the input is always empty.
 var readyPattern = regexp.MustCompile(`─{10,}\n❯[^\n]*\n─{10,}(?:\n[^\n]*){0,5}\s*\z`)
 
+// startupMenuCursor matches a selection menu's highlighted numbered
+// option: the ❯ cursor immediately followed by a digit and a "." or
+// ")" (e.g. "❯ 1. Resume from summary"). The idle input box also uses
+// ❯ but never places a digit directly after it, so this discriminates
+// a menu awaiting a choice from a ready prompt.
+var startupMenuCursor = regexp.MustCompile(`❯\s*\d+[.)]`)
+
+// resumePrompt matches Claude Code's specific stale-session resume
+// wording as a belt-and-suspenders signal, in case the selection
+// glyph renders differently across versions. This is the exact wedge
+// T24 targets: a 5-day / 105k-token session parks the TUI at a
+// "Resume from summary / Resume full session / Don't ask again" menu.
+var resumePrompt = regexp.MustCompile(`(?i)resume (from summary|full session)|resume this session`)
+
 // MatchReady reports whether the captured frame shows Claude's idle
 // input box at the tail of the visible pane.
 func MatchReady(frame []byte) bool {
 	return readyPattern.Match(trimTrailingSpace(frame))
+}
+
+// MatchStartupMenu reports whether the captured frame shows a startup
+// selection menu awaiting a keypress — most importantly Claude Code's
+// resume/summary prompt for a stale session. When this is true and
+// MatchReady is false, the launch handshake auto-confirms the
+// highlighted default (Enter) rather than wedging until timeout.
+func MatchStartupMenu(frame []byte) bool {
+	f := trimTrailingSpace(frame)
+	return startupMenuCursor.Match(f) || resumePrompt.Match(f)
 }
 
 // trimTrailingSpace strips trailing whitespace so \z anchoring
@@ -61,38 +85,97 @@ func trimTrailingSpace(b []byte) []byte {
 	return b[:n]
 }
 
+const (
+	// maxMenuDismissals bounds how many startup menus the launch
+	// handshake will auto-confirm before giving up. A resume prompt may
+	// be followed by another startup screen (e.g. a trust-folder
+	// prompt), so we allow a few; if Enter never clears them we surface
+	// a distinct error rather than pressing forever.
+	maxMenuDismissals = 3
+	// menuSettleDelay gives the TUI time to transition after an Enter
+	// before the next capture, so we don't re-detect the same menu and
+	// burn a dismissal on a frame that's mid-repaint.
+	menuSettleDelay = 400 * time.Millisecond
+)
+
+// readyDriver abstracts the two side-effecting primitives WaitReady
+// needs — capturing the pane and pressing Enter — so the poll loop can
+// be exercised deterministically in tests without a live tmux server.
+type readyDriver struct {
+	capture   func() ([]byte, error)
+	sendEnter func() error
+}
+
 // WaitReady polls capture-pane at `poll` intervals until MatchReady
 // returns true or `timeout` elapses. Returns the elapsed time on
 // success, or an error describing the last failure state on timeout.
 //
-// On timeout, if a capture-pane call ever succeeded the error
-// includes the last captured frame so callers can diagnose why the
-// ready pattern never matched (wrong glyph, truncated render, Claude
-// hung in a tool-approval prompt).
+// If a startup selection menu is detected (MatchStartupMenu) — chiefly
+// Claude Code's stale-session resume/summary prompt — WaitReady
+// auto-confirms the highlighted default by pressing Enter, up to
+// maxMenuDismissals times, so a long-lived registered agent doesn't
+// wedge at the menu (T24). If the menu never clears, the timeout error
+// says so explicitly rather than emitting the generic
+// "ready pattern did not match" message.
 func WaitReady(windowID string, poll, timeout time.Duration) (time.Duration, error) {
+	return waitReadyLoop(readyDriver{
+		capture:   func() ([]byte, error) { return CapturePane(windowID) },
+		sendEnter: func() error { return SendKeys(windowID, "") }, // empty msg → bare Enter (select default)
+	}, poll, timeout, menuSettleDelay)
+}
+
+func waitReadyLoop(d readyDriver, poll, timeout, menuSettle time.Duration) (time.Duration, error) {
 	start := time.Now()
 	deadline := start.Add(timeout)
 
 	var lastFrame []byte
 	var lastErr error
+	dismissals := 0
+	menuSeen := false
 
 	for {
-		frame, err := CapturePane(windowID)
-		if err == nil {
-			lastFrame = frame
-			if MatchReady(frame) {
-				return time.Since(start), nil
-			}
-		} else {
-			lastErr = err
+		if !time.Now().Before(deadline) {
+			return 0, readyTimeoutErr(menuSeen, dismissals, timeout, lastFrame, lastErr)
 		}
 
-		if time.Now().After(deadline) {
-			if lastErr != nil && lastFrame == nil {
-				return 0, fmt.Errorf("capture-pane never succeeded within %s: %w", timeout, lastErr)
-			}
-			return 0, fmt.Errorf("ready pattern did not match within %s; last frame:\n%s", timeout, lastFrame)
+		frame, err := d.capture()
+		if err != nil {
+			lastErr = err
+			time.Sleep(poll)
+			continue
 		}
+		lastFrame = frame
+
+		if MatchReady(frame) {
+			return time.Since(start), nil
+		}
+
+		if MatchStartupMenu(frame) && dismissals < maxMenuDismissals {
+			menuSeen = true
+			dismissals++
+			if serr := d.sendEnter(); serr != nil {
+				lastErr = serr
+			}
+			time.Sleep(menuSettle)
+			continue
+		}
+
 		time.Sleep(poll)
 	}
+}
+
+// readyTimeoutErr builds the timeout error, distinguishing a wedged
+// startup menu (actionable) from a plain no-match or a capture that
+// never succeeded.
+func readyTimeoutErr(menuSeen bool, dismissals int, timeout time.Duration, lastFrame []byte, lastErr error) error {
+	if menuSeen {
+		return fmt.Errorf("startup menu (e.g. Claude Code's resume/summary prompt) still present after %d auto-confirmations within %s; last frame:\n%s", dismissals, timeout, lastFrame)
+	}
+	if lastFrame == nil {
+		if lastErr != nil {
+			return fmt.Errorf("capture-pane never succeeded within %s: %w", timeout, lastErr)
+		}
+		return fmt.Errorf("capture-pane never succeeded within %s", timeout)
+	}
+	return fmt.Errorf("ready pattern did not match within %s; last frame:\n%s", timeout, lastFrame)
 }
