@@ -43,6 +43,7 @@ is annotated with a stability assessment:
 | `Task` | opaque struct; methods listed below | Needs review |
 | `AgentDef` | struct with `Name, WorkDir, SessionID, Model string`, `DisallowTools []string` and `AutoStart bool` | Needs review |
 | `Registry` | opaque struct; methods listed below | Needs review |
+| `RewindResult` | struct with `SessionID, JSONLPath, BackupPath string`, `TurnsRemoved, LinesRemoved int`, `BytesRemoved int64` | Needs review |
 
 #### Constants
 
@@ -67,6 +68,8 @@ is annotated with a stability assessment:
 | `LookupChain` | `LookupChain(sessionID string) (string, []string, error)` | Needs review |
 | `SessionExists` | `SessionExists(sessionID, workDir string) (bool, error)` | Needs review |
 | `SessionJSONLPath` | `SessionJSONLPath(sessionID, workDir string) string` | Needs review |
+| `RewindSession` | `RewindSession(sessionID, workDir string, n int) (*RewindResult, error)` | Needs review |
+| `Unrewind` | `Unrewind(path string) error` | Needs review |
 
 #### `Agent` methods
 
@@ -85,6 +88,7 @@ is annotated with a stability assessment:
 | `WaitForResponse` | `(ctx context.Context) (string, error)` | Needs review |
 | `Resize` | `(cols, rows uint16) error` | Stable |
 | `Stop` | `()` | Needs review |
+| `Rewind` | `(n int, cfg Config) (*Agent, error)` | Needs review |
 | `Release` | `(disposition string) error` | Needs review |
 | `AttachCommand` | `() string` | Needs review |
 | `SubscribeTerminal` | `() (history []byte, ch chan []byte)` | Needs review |
