@@ -599,6 +599,28 @@ func (a *Agent) Stop() {
 	})
 }
 
+// Rewind rolls this Session-mode agent back by n user turns and resumes the
+// session, returning a fresh [Agent] positioned at the rewound state. The
+// receiver is stopped: rewinding must kill the live claude process (which holds
+// the conversation in memory and would otherwise re-append the dropped turns),
+// truncate the transcript, then start a new process with --resume — so all
+// derived state (token usage, the JSONL tailer, TUI readiness) is rebuilt by the
+// resume rather than patched in place.
+//
+// cfg supplies the resume parameters (WorkDir, Model, MCPConfig, …) and should
+// match the config the agent was started with; its SessionID is overridden with
+// this agent's session id. Turn-boundary and undo semantics are those of
+// [RewindSession]: tool-result entries are not counted as turns, so a rewind
+// never lands mid-tool-use, and the pre-rewind transcript is backed up.
+func (a *Agent) Rewind(n int, cfg Config) (*Agent, error) {
+	a.Stop()
+	if _, err := rewindJSONL(a.jsonlPath, n); err != nil {
+		return nil, err
+	}
+	cfg.SessionID = a.sessionID
+	return Start(cfg)
+}
+
 // detectReady polls capture-pane for Claude Code's idle input box
 // at the bottom of the rendered viewport. The empty-prompt-box regex
 // matches a horizontal rule, the ❯ prompt glyph, another horizontal

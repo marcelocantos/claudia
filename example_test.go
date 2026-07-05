@@ -103,6 +103,28 @@ func ExampleStart() {
 	fmt.Println("session:", agent.SessionID())
 }
 
+// ExampleAgent_Rewind rolls a session back by two user turns and resumes it.
+// Rewind stops the receiver and returns a fresh agent at the rewound state;
+// claude --resume replays only the surviving prefix of the transcript.
+func ExampleAgent_Rewind() {
+	cfg := claudia.Config{WorkDir: os.TempDir(), Model: "haiku"}
+	agent, err := claudia.Start(cfg)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// ... several turns of conversation via agent.Send / WaitForResponse ...
+
+	// Undo the last two user turns and continue from there. The returned
+	// agent replaces the stopped receiver; the pre-rewind transcript is
+	// backed up and can be restored with claudia.Unrewind.
+	agent, err = agent.Rewind(2, cfg)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer agent.Stop()
+}
+
 // ExampleAcquire demonstrates the warm agent pool. Acquire checks out a
 // pre-warmed agent; Release returns it for the next caller.
 func ExampleAcquire() {

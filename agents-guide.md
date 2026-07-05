@@ -145,6 +145,35 @@ exposed via `Config`. On macOS the typical ready time is ~680 ms; the
 consumer consistently hits the cap, file an issue — the values were
 chosen empirically and can be revised with evidence.
 
+**Rewinding a session**: `Agent.Rewind(n, cfg)` rolls a session back by
+`n` user turns and resumes it, returning a fresh `*Agent` at the rewound
+state (the receiver is stopped):
+
+```go
+agent2, err := agent.Rewind(2, cfg)  // undo the last two user turns
+```
+
+It kills the live `claude` process (which holds the conversation in
+memory), truncates the JSONL transcript at the turn boundary, and starts
+a new process with `--resume` — which replays only the surviving prefix.
+Tool-result entries (recorded with role `user`) are **not** counted as
+turns, so a rewind never lands mid-tool-use. The full pre-rewind
+transcript is copied to a `.rewind-bak` sidecar, so the rewind is
+undoable with `claudia.Unrewind(path)`.
+
+For a transcript-level rewind decoupled from the process lifecycle (e.g.
+Task mode, or rewinding a stopped session before the next `Run`), use the
+package function directly — stop any live process on the session first:
+
+```go
+res, err := claudia.RewindSession(sessionID, workDir, 2)
+// res.BackupPath, res.TurnsRemoved, res.BytesRemoved
+```
+
+Rewind is conversation-only: it rolls back the transcript, not any
+working-tree changes the agent made. Pair it with a git snapshot if you
+need code state restored too.
+
 ## Registry (optional)
 
 `claudia.Registry` persists agent definitions to a JSON file and
