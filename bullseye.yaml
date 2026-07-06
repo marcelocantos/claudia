@@ -146,9 +146,10 @@ targets:
     - T2.5
     - T2.6
     - T2.7
+    - T2.8
     origin: design session 2026-06-10
     discovered: 2026-06-10
-  T2.0:
+  T2.8:
     name: Broker policy is verified by deterministic oracles, not live observation
     status: identified
     value: 5.0
@@ -189,7 +190,7 @@ targets:
     context: |
       Anthropic rate limits hit fast with parallel agents; opus-4-7 accounted for 96% of a 7-day $14.9k spend (62% of messages at 14x per-token cost vs sonnet). Per-model AIMD is therefore the single highest-leverage lever. The 429 signal is the authoritative backpressure signal — no need to guess at rate-limit headroom.
     depends_on:
-    - T2.0
+    - T2.8
     origin: design session 2026-06-10
     discovered: 2026-06-10
   T2.3:
@@ -219,7 +220,7 @@ targets:
     context: |
       Admin API reconciliation follows the same double-gate pattern as mnemo cost reconciliation (see mnemo CLAUDE.md): key alone is not enough, explicit opt-in is required. Users in security-reviewed environments must not trigger outbound calls to hosted APIs due to ambient key presence. The local token-count path is always-on and requires zero external calls. mnemo_usage (already supports group_by=model) is available as an alternative read path for historical cost data; the broker's real-time loop avoids the MCP round-trip overhead.
     depends_on:
-    - T2.0
+    - T2.8
     origin: design session 2026-06-10
     discovered: 2026-06-10
   T2.5:
@@ -234,7 +235,7 @@ targets:
     context: |
       Idle opus processes are disproportionately expensive to keep around relative to sonnet/haiku. Model-weighted thresholds are a simple, no-knob policy that matches cost sensitivity without user configuration.
     depends_on:
-    - T2.0
+    - T2.8
     origin: design session 2026-06-10
     discovered: 2026-06-10
   T2.6:
@@ -248,7 +249,7 @@ targets:
     - Consumers observe paused/resumed events via SubscribeEvents.
     - No explicit priority hint in the API — intent is inferred from mode.
     depends_on:
-    - T2.0
+    - T2.8
     origin: design session 2026-06-10
     discovered: 2026-06-10
   T2.7:
