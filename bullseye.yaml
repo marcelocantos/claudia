@@ -345,9 +345,10 @@ targets:
     achieved: 2026-07-06
   T4.3:
     name: Codex Task mode streams provider-neutral events from `codex exec --json`
-    status: identified
+    status: achieved
     value: 5.0
     cost: 5.0
+    actual_cost: 5.0
     acceptance:
     - A Codex-backed Task runs `codex exec --json` with the configured workdir, model, sandbox, approval policy, and prompt.
     - 'Parser tests cover representative Codex JSONL events: `thread.started`, `turn.started`, `item.started`, `item.completed` with agent messages, `turn.completed` with usage, `turn.failed`, and `error`.'
@@ -356,11 +357,13 @@ targets:
     - Live tests are gated behind an explicit environment variable and skip cleanly when Codex is unavailable or unauthenticated.
     context: |
       This is the MVP path because `codex exec --json` is documented and stable enough for scripts. It delivers immediate value without solving persistent UI attachment, app-server lifecycle, or rewind parity.
+      Achieved 2026-07-06: TaskConfig gained additive provider, sandbox, and approval fields. ProviderCodex runs `codex exec --json` or `codex exec resume --json`, maps `thread.started` to TaskEventInit, command items to TaskEventToolUse, agent messages to TaskEventText, turn completion usage to TaskEventResult, and failures to TaskEventError. Hermetic parser and arg tests cover the documented event sample and resume shape; `CLAUDIA_CODEX_LIVE=1` gates the live smoke test.
     depends_on:
     - T4.1
     - T4.2
     origin: user strategy request 2026-07-06
     discovered: 2026-07-06
+    achieved: 2026-07-06
   T4.4:
     name: Codex app-server contract is proven before persistent Session mode depends on it
     status: identified

@@ -121,12 +121,24 @@ type TaskConfig struct {
 	// Name is an optional human-readable label.
 	Name string
 
+	// Provider selects the runtime backing this task. Empty means
+	// ProviderClaude.
+	Provider Provider
+
 	// WorkDir is the working directory passed to the claude process.
 	WorkDir string
 
 	// Model overrides the default model (e.g. "opus", "sonnet").
 	// Empty means use Claude Code's default.
 	Model string
+
+	// SandboxMode selects Codex's sandbox mode for ProviderCodex. Empty
+	// leaves Codex's default in place.
+	SandboxMode string
+
+	// ApprovalPolicy selects Codex's approval policy for ProviderCodex.
+	// Empty leaves Codex's default in place.
+	ApprovalPolicy string
 
 	// ClaudeID is the claude session ID to resume with --resume. If
 	// empty, each Run starts a fresh session. After the first run,
@@ -146,10 +158,13 @@ type RawLogFunc func(line []byte)
 // persistent tmux session), Task spawns a new process per prompt
 // and parses structured NDJSON events from stdout.
 type Task struct {
-	id      string
-	name    string
-	workDir string
-	model   string
+	id       string
+	name     string
+	provider Provider
+	workDir  string
+	model    string
+	sandbox  string
+	approval string
 
 	mu         sync.Mutex
 	run        *taskRun
@@ -162,11 +177,13 @@ type Task struct {
 }
 
 type taskRunRequest struct {
-	WorkDir   string
-	Model     string
-	SessionID string
-	Prompt    string
-	RawLog    RawLogFunc
+	WorkDir        string
+	Model          string
+	SandboxMode    string
+	ApprovalPolicy string
+	SessionID      string
+	Prompt         string
+	RawLog         RawLogFunc
 }
 
 type taskRun struct {
@@ -181,14 +198,46 @@ type taskBackend interface {
 
 type claudeTaskBackend struct{}
 
+type codexTaskBackend struct{}
+
+type errorTaskBackend struct {
+	err error
+}
+
+func taskBackendForProvider(provider Provider) taskBackend {
+	switch provider {
+	case "", ProviderClaude:
+		return claudeTaskBackend{}
+	case ProviderCodex:
+		return codexTaskBackend{}
+	default:
+		return errorTaskBackend{err: fmt.Errorf("unknown task provider %q", provider)}
+	}
+}
+
 func (claudeTaskBackend) Capabilities() providerCapabilities {
 	return claudeProviderCapabilities()
+}
+
+func (codexTaskBackend) Capabilities() providerCapabilities {
+	return providerCapabilities{
+		Task:   true,
+		Resume: true,
+	}
+}
+
+func (b errorTaskBackend) Capabilities() providerCapabilities {
+	return providerCapabilities{}
+}
+
+func (b errorTaskBackend) RunTask(context.Context, taskRunRequest) (*taskRun, error) {
+	return nil, b.err
 }
 
 // NewTask creates a Task from cfg. The task starts in [TaskStatusIdle] and
 // is ready for its first [Task.Run] call immediately.
 func NewTask(cfg TaskConfig) *Task {
-	return newTaskWithBackend(cfg, claudeTaskBackend{})
+	return newTaskWithBackend(cfg, taskBackendForProvider(cfg.Provider))
 }
 
 func newTaskWithBackend(cfg TaskConfig, backend taskBackend) *Task {
@@ -197,6 +246,9 @@ func newTaskWithBackend(cfg TaskConfig, backend taskBackend) *Task {
 		name:       cfg.Name,
 		workDir:    cfg.WorkDir,
 		model:      cfg.Model,
+		provider:   cfg.Provider,
+		sandbox:    cfg.SandboxMode,
+		approval:   cfg.ApprovalPolicy,
 		status:     TaskStatusIdle,
 		claudeID:   cfg.ClaudeID,
 		lastResult: cfg.LastResult,
@@ -270,11 +322,13 @@ func (t *Task) Run(ctx context.Context, prompt string) (<-chan TaskEvent, error)
 	t.mu.Unlock()
 
 	run, err := t.backend.RunTask(cmdCtx, taskRunRequest{
-		WorkDir:   t.workDir,
-		Model:     t.model,
-		SessionID: cid,
-		Prompt:    prompt,
-		RawLog:    rawFn,
+		WorkDir:        t.workDir,
+		Model:          t.model,
+		SandboxMode:    t.sandbox,
+		ApprovalPolicy: t.approval,
+		SessionID:      cid,
+		Prompt:         prompt,
+		RawLog:         rawFn,
 	})
 	if err != nil {
 		cancel()
@@ -455,6 +509,214 @@ func (claudeTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*task
 			return cmd.Process.Signal(syscall.SIGINT)
 		},
 	}, nil
+}
+
+func (codexTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*taskRun, error) {
+	codexBin, err := resolveCodexBin()
+	if err != nil {
+		return nil, err
+	}
+
+	args := codexTaskArgs(req)
+	slog.Debug("spawning codex task", "args", args)
+	cmd := exec.CommandContext(ctx, codexBin, args...)
+	cmd.Dir = req.WorkDir
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("stdout pipe: %w", err)
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, fmt.Errorf("stderr pipe: %w", err)
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("start codex: %w", err)
+	}
+
+	go func() {
+		scanner := bufio.NewScanner(stderr)
+		scanner.Buffer(make([]byte, 256*1024), 256*1024)
+		for scanner.Scan() {
+			slog.Debug("codex stderr", "line", scanner.Text())
+		}
+	}()
+
+	ch := make(chan TaskEvent, 16)
+	go func() {
+		defer close(ch)
+		defer func() {
+			if err := cmd.Wait(); err != nil {
+				slog.Warn("codex process exited with error", "error", err)
+			} else {
+				slog.Debug("codex process exited cleanly")
+			}
+		}()
+
+		parser := codexTaskParser{}
+		scanner := bufio.NewScanner(stdout)
+		scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+		for scanner.Scan() {
+			line := scanner.Bytes()
+			if len(line) == 0 {
+				continue
+			}
+			if req.RawLog != nil {
+				req.RawLog(line)
+			}
+			for _, ev := range parser.Parse(line) {
+				select {
+				case ch <- ev:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	}()
+
+	return &taskRun{
+		events: ch,
+		interrupt: func() error {
+			if cmd.Process == nil {
+				return nil
+			}
+			return cmd.Process.Signal(syscall.SIGINT)
+		},
+	}, nil
+}
+
+func codexTaskArgs(req taskRunRequest) []string {
+	args := []string{}
+	if req.ApprovalPolicy != "" {
+		args = append(args, "--ask-for-approval", req.ApprovalPolicy)
+	}
+	if req.WorkDir != "" {
+		args = append(args, "--cd", req.WorkDir)
+	}
+	if req.SandboxMode != "" {
+		args = append(args, "--sandbox", req.SandboxMode)
+	}
+	if req.Model != "" {
+		args = append(args, "--model", req.Model)
+	}
+	args = append(args, "exec")
+	if req.SessionID != "" {
+		args = append(args, "resume", "--json", req.SessionID, req.Prompt)
+	} else {
+		args = append(args, "--json", req.Prompt)
+	}
+	return args
+}
+
+type codexTaskParser struct {
+	lastAgentMessage string
+}
+
+func (p *codexTaskParser) Parse(line []byte) []TaskEvent {
+	var base struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(line, &base); err != nil {
+		return nil
+	}
+
+	switch base.Type {
+	case "thread.started":
+		var msg struct {
+			ThreadID string `json:"thread_id"`
+		}
+		if err := json.Unmarshal(line, &msg); err != nil {
+			return nil
+		}
+		return []TaskEvent{{Type: TaskEventInit, SessionID: msg.ThreadID}}
+	case "item.started", "item.completed":
+		return p.parseCodexItem(line)
+	case "turn.completed":
+		var msg struct {
+			Usage struct {
+				InputTokens           int `json:"input_tokens"`
+				CachedInputTokens     int `json:"cached_input_tokens"`
+				OutputTokens          int `json:"output_tokens"`
+				ReasoningOutputTokens int `json:"reasoning_output_tokens"`
+			} `json:"usage"`
+		}
+		if err := json.Unmarshal(line, &msg); err != nil {
+			return nil
+		}
+		return []TaskEvent{{
+			Type:    TaskEventResult,
+			Content: p.lastAgentMessage,
+			Usage: Usage{
+				InputTokens:          msg.Usage.InputTokens,
+				OutputTokens:         msg.Usage.OutputTokens,
+				CacheReadInputTokens: msg.Usage.CachedInputTokens,
+			},
+		}}
+	case "turn.failed":
+		var msg struct {
+			Error string `json:"error"`
+		}
+		if err := json.Unmarshal(line, &msg); err != nil {
+			return nil
+		}
+		return []TaskEvent{{Type: TaskEventError, IsError: true, ErrorMsg: msg.Error}}
+	case "error":
+		var msg struct {
+			Message string `json:"message"`
+			Error   string `json:"error"`
+		}
+		if err := json.Unmarshal(line, &msg); err != nil {
+			return nil
+		}
+		errMsg := msg.Message
+		if errMsg == "" {
+			errMsg = msg.Error
+		}
+		return []TaskEvent{{Type: TaskEventError, IsError: true, ErrorMsg: errMsg}}
+	default:
+		return nil
+	}
+}
+
+func (p *codexTaskParser) parseCodexItem(line []byte) []TaskEvent {
+	var msg struct {
+		Type string `json:"type"`
+		Item struct {
+			ID      string          `json:"id"`
+			Type    string          `json:"type"`
+			Text    string          `json:"text"`
+			Command string          `json:"command"`
+			Status  string          `json:"status"`
+			Raw     json.RawMessage `json:"-"`
+		} `json:"item"`
+	}
+	var raw struct {
+		Item json.RawMessage `json:"item"`
+	}
+	if err := json.Unmarshal(line, &msg); err != nil {
+		return nil
+	}
+	if err := json.Unmarshal(line, &raw); err == nil {
+		msg.Item.Raw = raw.Item
+	}
+
+	if msg.Type == "item.completed" && msg.Item.Type == "agent_message" && msg.Item.Text != "" {
+		p.lastAgentMessage = msg.Item.Text
+		return []TaskEvent{{Type: TaskEventText, Content: msg.Item.Text}}
+	}
+	if msg.Item.Type == "command_execution" {
+		input := string(msg.Item.Raw)
+		if input == "" {
+			input = fmt.Sprintf(`{"command":%q,"status":%q}`, msg.Item.Command, msg.Item.Status)
+		}
+		return []TaskEvent{{
+			Type:      TaskEventToolUse,
+			ToolID:    msg.Item.ID,
+			ToolName:  msg.Item.Type,
+			ToolInput: input,
+		}}
+	}
+	return nil
 }
 
 // ParseTaskLine parses a single NDJSON line from claude's --output-format

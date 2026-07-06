@@ -15,6 +15,16 @@ const (
 	codexBinName = "codex"
 )
 
+// Provider identifies the CLI/runtime backing a Task or Agent.
+type Provider string
+
+const (
+	// ProviderClaude uses Claude Code and is the default when Provider is empty.
+	ProviderClaude Provider = "claude"
+	// ProviderCodex uses Codex.
+	ProviderCodex Provider = "codex"
+)
+
 type providerCapabilities struct {
 	Task          bool
 	Session       bool

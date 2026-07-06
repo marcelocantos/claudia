@@ -224,6 +224,125 @@ func TestParseTaskEmptyContent(t *testing.T) {
 	}
 }
 
+func TestCodexTaskArgs(t *testing.T) {
+	req := taskRunRequest{
+		WorkDir:        "/repo",
+		Model:          "gpt-5.4",
+		SandboxMode:    "read-only",
+		ApprovalPolicy: "never",
+		Prompt:         "summarize",
+	}
+	got := codexTaskArgs(req)
+	want := []string{
+		"--ask-for-approval", "never",
+		"--cd", "/repo",
+		"--sandbox", "read-only",
+		"--model", "gpt-5.4",
+		"exec",
+		"--json",
+		"summarize",
+	}
+	if !slicesEqual(got, want) {
+		t.Errorf("codexTaskArgs = %v, want %v", got, want)
+	}
+}
+
+func TestCodexTaskArgsResume(t *testing.T) {
+	got := codexTaskArgs(taskRunRequest{SessionID: "thread-123", Prompt: "continue"})
+	want := []string{"exec", "resume", "--json", "thread-123", "continue"}
+	if !slicesEqual(got, want) {
+		t.Errorf("codexTaskArgs resume = %v, want %v", got, want)
+	}
+}
+
+func TestCodexTaskParser(t *testing.T) {
+	parser := codexTaskParser{}
+	lines := []string{
+		`{"type":"thread.started","thread_id":"0199a213-81c0-7800-8aa1-bbab2a035a53"}`,
+		`{"type":"turn.started"}`,
+		`{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"bash -lc ls","status":"in_progress"}}`,
+		`{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"Repo contains docs, sdk, and examples directories."}}`,
+		`{"type":"turn.completed","usage":{"input_tokens":24763,"cached_input_tokens":24448,"output_tokens":122,"reasoning_output_tokens":0}}`,
+	}
+
+	var events []TaskEvent
+	for _, line := range lines {
+		events = append(events, parser.Parse([]byte(line))...)
+	}
+	if len(events) != 4 {
+		t.Fatalf("events = %d, want 4: %#v", len(events), events)
+	}
+	if events[0].Type != TaskEventInit || events[0].SessionID == "" {
+		t.Errorf("init event = %#v", events[0])
+	}
+	if events[1].Type != TaskEventToolUse || events[1].ToolName != "command_execution" {
+		t.Errorf("command event = %#v", events[1])
+	}
+	if events[2].Type != TaskEventText || events[2].Content == "" {
+		t.Errorf("text event = %#v", events[2])
+	}
+	result := events[3]
+	if result.Type != TaskEventResult {
+		t.Fatalf("result event = %#v", result)
+	}
+	if result.Content != events[2].Content {
+		t.Errorf("result content = %q, want %q", result.Content, events[2].Content)
+	}
+	if result.Usage.InputTokens != 24763 {
+		t.Errorf("input tokens = %d, want 24763", result.Usage.InputTokens)
+	}
+	if result.Usage.CacheReadInputTokens != 24448 {
+		t.Errorf("cached input tokens = %d, want 24448", result.Usage.CacheReadInputTokens)
+	}
+	if result.Usage.OutputTokens != 122 {
+		t.Errorf("output tokens = %d, want 122", result.Usage.OutputTokens)
+	}
+}
+
+func TestCodexTaskParserErrors(t *testing.T) {
+	parser := codexTaskParser{}
+	for _, line := range []string{
+		`{"type":"turn.failed","error":"model failed"}`,
+		`{"type":"error","message":"bad request"}`,
+	} {
+		events := parser.Parse([]byte(line))
+		if len(events) != 1 {
+			t.Fatalf("events = %d, want 1 for %s", len(events), line)
+		}
+		if events[0].Type != TaskEventError || !events[0].IsError || events[0].ErrorMsg == "" {
+			t.Errorf("error event = %#v", events[0])
+		}
+	}
+}
+
+func TestTaskBackendForProvider(t *testing.T) {
+	if _, ok := taskBackendForProvider("").(claudeTaskBackend); !ok {
+		t.Error("empty provider did not select claudeTaskBackend")
+	}
+	if _, ok := taskBackendForProvider(ProviderCodex).(codexTaskBackend); !ok {
+		t.Error("ProviderCodex did not select codexTaskBackend")
+	}
+	backend := taskBackendForProvider(Provider("bogus"))
+	if _, ok := backend.(errorTaskBackend); !ok {
+		t.Fatalf("unknown provider backend = %T, want errorTaskBackend", backend)
+	}
+	if _, err := backend.RunTask(context.Background(), taskRunRequest{}); err == nil {
+		t.Error("unknown provider RunTask returned nil error")
+	}
+}
+
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func TestNewTask(t *testing.T) {
 	s := NewTask(TaskConfig{
 		ID:      "test-123",
@@ -551,6 +670,56 @@ func TestTaskRunSmoke(t *testing.T) {
 
 	if got := task.Status(); got != TaskStatusIdle {
 		t.Errorf("post-run status = %q, want %q", got, TaskStatusIdle)
+	}
+}
+
+// TestCodexTaskRunSmoke spawns a real codex exec --json process and runs a
+// trivial prompt through Task mode. It is gated separately from
+// CLAUDIA_LIVE because it uses Codex credentials and may contact OpenAI.
+func TestCodexTaskRunSmoke(t *testing.T) {
+	if os.Getenv("CLAUDIA_CODEX_LIVE") == "" {
+		t.Skip("CLAUDIA_CODEX_LIVE not set (this test spends API credit)")
+	}
+	if _, err := resolveCodexBin(); err != nil {
+		t.Skipf("codex binary not found: %v", err)
+	}
+
+	workDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+
+	task := NewTask(TaskConfig{
+		ID:             "codex-smoke-test",
+		Name:           "codex-smoke",
+		Provider:       ProviderCodex,
+		WorkDir:        workDir,
+		SandboxMode:    "read-only",
+		ApprovalPolicy: "never",
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	events, err := task.Run(ctx, "respond with: ok")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	var sawResult bool
+	for ev := range events {
+		switch ev.Type {
+		case TaskEventResult:
+			sawResult = true
+			if ev.Content == "" {
+				t.Error("TaskEventResult content empty")
+			}
+		case TaskEventError:
+			t.Fatalf("TaskEventError: %s", ev.ErrorMsg)
+		}
+	}
+	if !sawResult {
+		t.Error("never saw TaskEventResult")
 	}
 }
 
