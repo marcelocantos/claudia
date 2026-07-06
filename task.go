@@ -175,10 +175,15 @@ type taskRun struct {
 }
 
 type taskBackend interface {
+	Capabilities() providerCapabilities
 	RunTask(context.Context, taskRunRequest) (*taskRun, error)
 }
 
 type claudeTaskBackend struct{}
+
+func (claudeTaskBackend) Capabilities() providerCapabilities {
+	return claudeProviderCapabilities()
+}
 
 // NewTask creates a Task from cfg. The task starts in [TaskStatusIdle] and
 // is ready for its first [Task.Run] call immediately.

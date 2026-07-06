@@ -307,9 +307,10 @@ targets:
     discovered: 2026-07-06
   T4.1:
     name: Provider boundaries isolate Claude Code and Codex runtime contracts
-    status: converging
+    status: achieved
     value: 5.0
     cost: 5.0
+    actual_cost: 5.0
     acceptance:
     - A small internal provider interface separates binary discovery, argument construction, event parsing, session identity, capability reporting, and resume semantics from Agent/Task lifecycle code.
     - 'Existing Claude Code behaviour remains byte-for-byte compatible where externally observable: default provider is Claude, existing Config and TaskConfig calls still work, and existing tests pass without requiring Codex.'
@@ -319,8 +320,10 @@ targets:
     context: |
       This is the architectural choke point. Without it, Codex support would leak CLI-specific conditionals through Start, Acquire, Task.Run, transcript parsing, rewind, and tests. The change must be additive so it does not disturb the v1.0 shakeout target: Claude remains the default and existing consumers see no API break.
       Converging 2026-07-06: Task.Run now delegates binary resolution, argument construction, event parsing, resume identity, raw logs, and interrupt handling to an internal task backend. Fake Claude and fake Codex task backends exercise the same Task lifecycle. Remaining T4.1 work is to apply the provider boundary to Agent/session lifecycle code and make provider capability reporting explicit.
+      Achieved 2026-07-06: Agent Start/Send/Interrupt/Resize/Stop/AttachCommand now route through an internal agent backend/runtime-ops seam; Task.Run routes through an internal task backend; both backend families expose provider capabilities. Fake Claude and fake Codex backends exercise the same Agent and Task lifecycles without real binaries, while Claude remains the default public behaviour.
     origin: user strategy request 2026-07-06
     discovered: 2026-07-06
+    achieved: 2026-07-06
   T4.2:
     name: Codex binary discovery is reliable across CLI and desktop-app installs
     status: identified

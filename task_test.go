@@ -313,6 +313,14 @@ func (b *fakeTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*tas
 	}, nil
 }
 
+func (b *fakeTaskBackend) Capabilities() providerCapabilities {
+	return providerCapabilities{
+		Task:   true,
+		Resume: true,
+		Cost:   b.name == "fake-claude",
+	}
+}
+
 func (b *fakeTaskBackend) request(t *testing.T) taskRunRequest {
 	t.Helper()
 	b.mu.Lock()
@@ -370,6 +378,13 @@ func TestTaskRunUsesInjectedBackendLifecycle(t *testing.T) {
 			}
 			if task.Status() != TaskStatusIdle {
 				t.Errorf("Status = %q, want %q", task.Status(), TaskStatusIdle)
+			}
+			caps := backend.Capabilities()
+			if !caps.Task || !caps.Resume {
+				t.Errorf("capabilities = %+v, want task+resume", caps)
+			}
+			if provider == "fake-codex" && caps.Cost {
+				t.Errorf("fake Codex capabilities = %+v, want cost unsupported", caps)
 			}
 
 			req := backend.request(t)

@@ -112,7 +112,8 @@ type Agent struct {
 	jsonlPath    string
 	termLogPath  string
 	tmuxWindowID string
-	tmuxCtrl     *tmuxagent.Control
+	tmuxCtrl     agentControl
+	ops          agentOps
 
 	mu        sync.Mutex
 	alive     bool
@@ -162,12 +163,79 @@ func checkTmux() error {
 	return nil
 }
 
+type agentControl interface {
+	Bytes() <-chan []byte
+	Close() error
+}
+
+type agentOps struct {
+	attachCommand func(*Agent) string
+	interrupt     func(*Agent) error
+	send          func(*Agent, string) error
+	resize        func(*Agent, uint16, uint16) error
+	stop          func(*Agent)
+}
+
+type agentStartRequest struct {
+	Config          Config
+	WorkDir         string
+	SessionID       string
+	JSONLPath       string
+	TermLogPath     string
+	Resuming        bool
+	DisallowedTools string
+}
+
+type agentStart struct {
+	WindowID             string
+	Control              agentControl
+	Ops                  agentOps
+	TailJSONL            bool
+	StoreSessionInWindow bool
+	DetectReady          func(*Agent)
+}
+
+type agentBackend interface {
+	Capabilities() providerCapabilities
+	StartAgent(agentStartRequest) (*agentStart, error)
+}
+
+type claudeAgentBackend struct{}
+
+func (claudeAgentBackend) Capabilities() providerCapabilities {
+	return claudeProviderCapabilities()
+}
+
+func claudeAgentOps() agentOps {
+	return agentOps{
+		attachCommand: func(a *Agent) string {
+			return fmt.Sprintf("tmux -S %s attach -t %s", tmuxagent.SocketPath(), a.tmuxWindowID)
+		},
+		interrupt: func(a *Agent) error {
+			return tmuxagent.SendEscape(a.tmuxWindowID)
+		},
+		send: func(a *Agent, msg string) error {
+			return tmuxagent.SendKeys(a.tmuxWindowID, msg)
+		},
+		resize: func(a *Agent, cols, rows uint16) error {
+			return tmuxagent.ResizeWindow(a.tmuxWindowID, cols, rows)
+		},
+		stop: func(a *Agent) {
+			tmuxagent.KillWindow(a.tmuxWindowID)
+			if a.tmuxCtrl != nil {
+				a.tmuxCtrl.Close()
+			}
+		},
+	}
+}
+
 // Start spawns a new Claude Code agent inside a tmux window on the
 // dedicated claudia tmux server.
 func Start(cfg Config) (*Agent, error) {
-	if err := checkTmux(); err != nil {
-		return nil, err
-	}
+	return startWithBackend(cfg, claudeAgentBackend{})
+}
+
+func startWithBackend(cfg Config, backend agentBackend) (*Agent, error) {
 	if cfg.WorkDir == "" {
 		cfg.WorkDir = "."
 	}
@@ -215,23 +283,6 @@ func Start(cfg Config) (*Agent, error) {
 		disallowed += "," + strings.Join(cfg.DisallowTools, ",")
 	}
 
-	args := []string{
-		"--permission-mode", cfg.PermissionMode,
-		"--disallowedTools", disallowed,
-	}
-	if resuming {
-		args = append(args, "--resume", sessionID)
-	} else {
-		args = append(args, "--session-id", sessionID)
-	}
-	if cfg.MCPConfig != "" {
-		args = append(args, "--mcp-config", cfg.MCPConfig)
-	}
-	if cfg.Model != "" {
-		args = append(args, "--model", cfg.Model)
-	}
-	args = append(args, cfg.ExtraArgs...)
-
 	a := &Agent{
 		sessionID:   sessionID,
 		jsonlPath:   jsonlPath,
@@ -253,27 +304,38 @@ func Start(cfg Config) (*Agent, error) {
 		}
 	}
 
-	// Spawn the claude window on the dedicated tmux server.
-	windowName := "claudia-" + sessionID[:8]
-	claudeBin, err := resolveClaudeBin()
+	start, err := backend.StartAgent(agentStartRequest{
+		Config:          cfg,
+		WorkDir:         workDir,
+		SessionID:       sessionID,
+		JSONLPath:       jsonlPath,
+		TermLogPath:     termLogPath,
+		Resuming:        resuming,
+		DisallowedTools: disallowed,
+	})
 	if err != nil {
 		return nil, err
 	}
-	windowID, err := tmuxagent.SpawnWindow(workDir, windowName, claudeBin, args)
-	if err != nil {
-		return nil, fmt.Errorf("tmux spawn: %w", err)
-	}
+	windowID := start.WindowID
 	a.tmuxWindowID = windowID
+	a.tmuxCtrl = start.Control
+	a.ops = start.Ops
 
 	// Store session ID on the window for crash-survival recovery.
-	if err := tmuxagent.SetWindowOption(windowID, "claudia-session-id", sessionID); err != nil {
-		slog.Warn("failed to set session ID on tmux window", "err", err)
+	if start.StoreSessionInWindow {
+		if err := tmuxagent.SetWindowOption(windowID, "claudia-session-id", sessionID); err != nil {
+			slog.Warn("failed to set session ID on tmux window", "err", err)
+		}
 	}
 
+	attach := ""
+	if a.ops.attachCommand != nil {
+		attach = a.AttachCommand()
+	}
 	slog.Info("claudia agent started",
 		"session", sessionID,
 		"window", windowID,
-		"attach", a.AttachCommand())
+		"attach", attach)
 
 	// Register this session as the start of a new chain. The chain ID
 	// equals the session ID for freshly-started agents. /clear detection
@@ -283,33 +345,79 @@ func Start(cfg Config) (*Agent, error) {
 		slog.Warn("failed to register session chain", "session", sessionID, "err", err)
 	}
 
-	// Dial control mode for terminal byte stream.
+	if start.Control != nil {
+		go func() {
+			for data := range start.Control.Bytes() {
+				a.pushTermOutput(data)
+			}
+			slog.Debug("terminal control stream closed", "session", sessionID)
+			a.mu.Lock()
+			a.alive = false
+			a.mu.Unlock()
+		}()
+	}
+
+	if start.TailJSONL {
+		go a.tailJSONL()
+	}
+
+	if start.DetectReady != nil {
+		go start.DetectReady(a)
+	} else {
+		close(a.ready)
+	}
+
+	return a, nil
+}
+
+func (claudeAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
+	if err := checkTmux(); err != nil {
+		return nil, err
+	}
+
+	args := []string{
+		"--permission-mode", req.Config.PermissionMode,
+		"--disallowedTools", req.DisallowedTools,
+	}
+	if req.Resuming {
+		args = append(args, "--resume", req.SessionID)
+	} else {
+		args = append(args, "--session-id", req.SessionID)
+	}
+	if req.Config.MCPConfig != "" {
+		args = append(args, "--mcp-config", req.Config.MCPConfig)
+	}
+	if req.Config.Model != "" {
+		args = append(args, "--model", req.Config.Model)
+	}
+	args = append(args, req.Config.ExtraArgs...)
+
+	windowName := "claudia-" + req.SessionID[:8]
+	claudeBin, err := resolveClaudeBin()
+	if err != nil {
+		return nil, err
+	}
+	windowID, err := tmuxagent.SpawnWindow(req.WorkDir, windowName, claudeBin, args)
+	if err != nil {
+		return nil, fmt.Errorf("tmux spawn: %w", err)
+	}
+
 	ctrl, err := tmuxagent.DialControl(windowID)
 	if err != nil {
 		tmuxagent.KillWindow(windowID)
 		return nil, fmt.Errorf("tmux control-mode: %w", err)
 	}
-	a.tmuxCtrl = ctrl
 
-	// Route control-mode bytes → pushTermOutput.
-	go func() {
-		for data := range ctrl.Bytes() {
-			a.pushTermOutput(data)
-		}
-		slog.Debug("tmux control stream closed", "session", sessionID)
-		a.mu.Lock()
-		a.alive = false
-		a.mu.Unlock()
-	}()
-
-	// Tail JSONL — events come from the transcript file, not from
-	// terminal bytes.
-	go a.tailJSONL()
-
-	// Detect TUI readiness so Send can safely block on it.
-	go a.detectReady()
-
-	return a, nil
+	return &agentStart{
+		WindowID:             windowID,
+		Control:              ctrl,
+		Ops:                  claudeAgentOps(),
+		TailJSONL:            true,
+		StoreSessionInWindow: true,
+		DetectReady: func(a *Agent) {
+			a.detectReady()
+		},
+	}, nil
 }
 
 // Run sends a single prompt to a new Claude Code session, waits for
@@ -381,7 +489,10 @@ func (a *Agent) TermLogPath() string {
 // watch the live agent session. This is the primary observability
 // mechanism for claudia agents.
 func (a *Agent) AttachCommand() string {
-	return fmt.Sprintf("tmux -S %s attach -t %s", tmuxagent.SocketPath(), a.tmuxWindowID)
+	if a.ops.attachCommand == nil {
+		return ""
+	}
+	return a.ops.attachCommand(a)
 }
 
 // Alive reports whether the Claude process is still running.
@@ -418,7 +529,10 @@ func (a *Agent) Interrupt() error {
 	if !alive {
 		return fmt.Errorf("claude process not running")
 	}
-	return tmuxagent.SendEscape(a.tmuxWindowID)
+	if a.ops.interrupt == nil {
+		return fmt.Errorf("interrupt unsupported")
+	}
+	return a.ops.interrupt(a)
 }
 
 // Send writes a user message to the Claude process and submits it.
@@ -451,7 +565,10 @@ func (a *Agent) Send(msg string) error {
 	if !alive {
 		return fmt.Errorf("claude process not running")
 	}
-	return tmuxagent.SendKeys(a.tmuxWindowID, msg)
+	if a.ops.send == nil {
+		return fmt.Errorf("send unsupported")
+	}
+	return a.ops.send(a, msg)
 }
 
 // WaitReady blocks until the TUI has finished initialising and is
@@ -575,7 +692,10 @@ const waitSettleDuration = 250 * time.Millisecond
 // Resize changes the terminal dimensions of the tmux window. Useful when
 // embedding terminal output in a variable-size UI.
 func (a *Agent) Resize(cols, rows uint16) error {
-	return tmuxagent.ResizeWindow(a.tmuxWindowID, cols, rows)
+	if a.ops.resize == nil {
+		return fmt.Errorf("resize unsupported")
+	}
+	return a.ops.resize(a, cols, rows)
 }
 
 // Stop kills the tmux window, closes the control-mode connection, and
@@ -584,9 +704,8 @@ func (a *Agent) Resize(cols, rows uint16) error {
 // window to the pool.
 func (a *Agent) Stop() {
 	a.stopOnce.Do(func() {
-		tmuxagent.KillWindow(a.tmuxWindowID)
-		if a.tmuxCtrl != nil {
-			a.tmuxCtrl.Close()
+		if a.ops.stop != nil {
+			a.ops.stop(a)
 		}
 
 		a.termMu.Lock()

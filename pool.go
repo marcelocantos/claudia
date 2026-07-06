@@ -289,6 +289,7 @@ func buildPoolAgent(cfg Config, workDir, windowID string, waitForReady bool) (*A
 		jsonlPath:    "", // populated on first send when Claude writes it
 		termLogPath:  termLogPath,
 		tmuxWindowID: windowID,
+		ops:          claudeAgentOps(),
 		alive:        true,
 		ready:        make(chan struct{}),
 		poolWindow:   true,
