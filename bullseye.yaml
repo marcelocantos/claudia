@@ -460,6 +460,7 @@ targets:
       Converging 2026-07-06: Added docs/codex-provider-oracle-map.md, codex exec golden fixtures, app-server golden fixture scaffolding, parser tests backed by fixtures, and JSONL validity checks for app-server fixtures. Remaining work includes the fake app-server lifecycle harness, unsupported-capability typed errors, mutation/fault checks, and live-capture review.
       Converging 2026-07-06: Added a private-storage shortcut oracle that scans production Go files for private Codex state path tokens, so future Session work must go through `codex exec` or app-server seams rather than reading Codex internals.
       Converging 2026-07-06: Added an internal Codex app-server line parser and fixture-backed tests for success, failure, interrupted turn, unsupported capability response, malformed JSON, and usage field mapping. This moves the app-server fixture set from JSON-valid evidence to typed oracle coverage, while still leaving live turn capture and the fake lifecycle harness outstanding.
+      Converging 2026-07-06: Added a fake Codex app-server Agent backend harness that exercises Start, Send, WaitForResponse, SubscribeEvents, Interrupt, raw app-server payload forwarding, usage accumulation, and Claude-only attach/log semantics without real Codex, Claude, network, auth, tmux, or API spend. Production ProviderCodex Session mode remains fail-closed until T4.4's live contract proof completes.
     origin: oracle-first review 2026-07-06
     discovered: 2026-07-06
   T5:

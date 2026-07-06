@@ -9,6 +9,7 @@ import (
 )
 
 type codexAppServerEvent struct {
+	Raw        []byte
 	Method     string
 	ThreadID   string
 	TurnID     string
@@ -71,13 +72,17 @@ func parseCodexAppServerLine(line []byte) (codexAppServerEvent, bool, error) {
 	}
 	if msg.Error != nil {
 		return codexAppServerEvent{
+			Raw:        append([]byte(nil), line...),
 			ErrorMsg:   msg.Error.Message,
 			IsResponse: msg.ID != nil,
 			IsError:    true,
 		}, true, nil
 	}
 	if msg.Result != nil {
-		ev := codexAppServerEvent{IsResponse: msg.ID != nil}
+		ev := codexAppServerEvent{
+			Raw:        append([]byte(nil), line...),
+			IsResponse: msg.ID != nil,
+		}
 		if msg.Result.Thread != nil {
 			ev.Method = "thread/start"
 			ev.ThreadID = msg.Result.Thread.ID
@@ -95,6 +100,7 @@ func parseCodexAppServerLine(line []byte) (codexAppServerEvent, bool, error) {
 		return codexAppServerEvent{}, false, nil
 	}
 	ev := codexAppServerEvent{
+		Raw:      append([]byte(nil), line...),
 		Method:   msg.Method,
 		ThreadID: msg.Params.ThreadID,
 		TurnID:   msg.Params.TurnID,
@@ -125,4 +131,49 @@ func parseCodexAppServerLine(line []byte) (codexAppServerEvent, bool, error) {
 		ev.IsError = true
 	}
 	return ev, true, nil
+}
+
+func (ev codexAppServerEvent) agentEvent() (Event, bool) {
+	if ev.IsError {
+		return Event{
+			Type: "system",
+			Raw:  ev.Raw,
+			Text: ev.ErrorMsg,
+		}, true
+	}
+	switch ev.Method {
+	case "item/started", "item/completed":
+		if ev.ItemType == "command_execution" {
+			return Event{
+				Type:         "progress",
+				Raw:          ev.Raw,
+				ProgressType: "tool_use",
+			}, true
+		}
+		if ev.ItemType == "agent_message" {
+			return Event{
+				Type: "assistant",
+				Raw:  ev.Raw,
+				Text: ev.Text,
+			}, true
+		}
+	case "turn/completed":
+		out := Event{
+			Type:  "assistant",
+			Raw:   ev.Raw,
+			Usage: ev.Usage,
+		}
+		switch ev.Status {
+		case "completed", "interrupted":
+			out.StopReason = "end_turn"
+		case "failed":
+			return Event{
+				Type: "system",
+				Raw:  ev.Raw,
+				Text: ev.ErrorMsg,
+			}, true
+		}
+		return out, true
+	}
+	return Event{}, false
 }

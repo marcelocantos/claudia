@@ -648,6 +648,26 @@ func (a *Agent) Usage() Usage {
 	return a.usage
 }
 
+func (a *Agent) publishEvent(ev Event) {
+	a.mu.Lock()
+	if ev.Usage.InputTokens > 0 || ev.Usage.OutputTokens > 0 ||
+		ev.Usage.CacheCreationInputTokens > 0 || ev.Usage.CacheReadInputTokens > 0 {
+		a.usage.InputTokens += ev.Usage.InputTokens
+		a.usage.OutputTokens += ev.Usage.OutputTokens
+		a.usage.CacheCreationInputTokens += ev.Usage.CacheCreationInputTokens
+		a.usage.CacheReadInputTokens += ev.Usage.CacheReadInputTokens
+	}
+	subs := make([]EventFunc, 0, len(a.eventSubs))
+	for _, fn := range a.eventSubs {
+		subs = append(subs, fn)
+	}
+	a.mu.Unlock()
+
+	for _, fn := range subs {
+		fn(ev)
+	}
+}
+
 // WaitForResponse blocks until the next assistant turn completes and
 // returns the assistant text accumulated across the turn.
 //
@@ -903,23 +923,7 @@ func (a *Agent) tailJSONL() {
 
 		ev := parseEvent(line)
 
-		a.mu.Lock()
-		if ev.Usage.InputTokens > 0 || ev.Usage.OutputTokens > 0 ||
-			ev.Usage.CacheCreationInputTokens > 0 || ev.Usage.CacheReadInputTokens > 0 {
-			a.usage.InputTokens += ev.Usage.InputTokens
-			a.usage.OutputTokens += ev.Usage.OutputTokens
-			a.usage.CacheCreationInputTokens += ev.Usage.CacheCreationInputTokens
-			a.usage.CacheReadInputTokens += ev.Usage.CacheReadInputTokens
-		}
-		subs := make([]EventFunc, 0, len(a.eventSubs))
-		for _, fn := range a.eventSubs {
-			subs = append(subs, fn)
-		}
-		a.mu.Unlock()
-
-		for _, fn := range subs {
-			fn(ev)
-		}
+		a.publishEvent(ev)
 	}
 }
 

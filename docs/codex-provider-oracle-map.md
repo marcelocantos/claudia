@@ -15,7 +15,7 @@ Live Codex runs are smoke/regression checks only. They do not retire targets by 
 | 🎯T4.2 Codex binary discovery | Deterministic resolver | Resolver tests inject env, PATH lookup, app-bundle candidates, and missing-binary failure. | Optional manual install sanity |
 | 🎯T4.3 Codex Task mode | Public CLI fixture parser | Golden `codex exec --json` fixtures cover thread start, turn start/completion/failure, command/tool progress, agent messages, usage, malformed payloads, and final-message selection. | `CLAUDIA_CODEX_LIVE=1` smoke only |
 | 🎯T4.4 app-server contract spike | Public protocol fixture/schema | Generated schema inspection plus golden app-server JSON-RPC fixtures parsed into typed thread, turn, item, usage, interrupt, and failure events. | Explicitly approved live capture records notification order |
-| 🎯T4.5 Codex Session mode | Fake app-server lifecycle | Fake app-server exercises Start, Send, WaitForResponse, SubscribeEvents, Interrupt, resume, and capability errors with no real Codex/network/auth. | Gated live app-server smoke only |
+| 🎯T4.5 Codex Session mode | Fake app-server lifecycle | Fake app-server exercises Start, Send, WaitForResponse, SubscribeEvents, Interrupt, raw payload forwarding, usage accumulation, and Claude-only attach/log semantics with no real Codex/network/auth/tmux. | Gated live app-server smoke only |
 | 🎯T4.6 capability gaps | Negative capability oracle | Typed unsupported/experimental errors are asserted for rewind, tmux attach, terminal logs, cost, and permission mapping where public Codex contracts are absent or weaker. | Human review of accepted gaps |
 | 🎯T4.7 docs/release gate | Documentation consistency | README, agents-guide.md, STABILITY.md, release notes, and live-test gates name the same support matrix. | Release checklist only |
 
@@ -37,8 +37,11 @@ Live Codex runs are smoke/regression checks only. They do not retire targets by 
 
 Fixtures must be small, redacted, and hand-owned. `TestParseCodexAppServer*`
 parses them into typed events so notification order and field mapping are
-machine-checked. Do not commit full generated schema bundles unless a future
-review finds their license and churn acceptable.
+machine-checked. `TestFakeCodexAppServer*` then drives the Agent lifecycle
+through an injected app-server-shaped backend, proving the provider-neutral
+event seam before production Codex Session mode is enabled. Do not commit full
+generated schema bundles unless a future review finds their license and churn
+acceptable.
 
 ## Fault Checks
 
