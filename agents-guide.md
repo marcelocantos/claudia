@@ -198,7 +198,11 @@ host program owns a single short-lived agent, skip the Registry.
    `/opt/homebrew/bin/claude`, `/usr/local/bin/claude`). Set
    `CLAUDE_BIN` when running under launchd / systemd / a Windows
    Service whose `$PATH` excludes user-local install dirs. Windows is
-   not supported; use WSL. Task mode does not require tmux.
+   not supported; use WSL. Task mode does not require tmux. Codex
+   provider support is in progress; its resolver checks `CODEX_BIN`,
+   then `codex` on `$PATH`, then known locations including
+   `/Applications/Codex.app/Contents/Resources/codex`, because Codex
+   Desktop can be installed even when the CLI is not on `$PATH`.
 
 2. **Sub-agents are disabled.** claudia always passes
    `--disallowedTools Agent,TeamCreate,TeamDelete,SendMessage,EnterWorktree`.

@@ -3,6 +3,18 @@
 
 package claudia
 
+import (
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+)
+
+const (
+	codexBinEnv  = "CODEX_BIN"
+	codexBinName = "codex"
+)
+
 type providerCapabilities struct {
 	Task          bool
 	Session       bool
@@ -24,5 +36,48 @@ func claudeProviderCapabilities() providerCapabilities {
 		Permissions:   true,
 		TmuxAttach:    true,
 		TerminalBytes: true,
+	}
+}
+
+func resolveCodexBin() (string, error) {
+	return resolveCodexBinFrom(os.Getenv, exec.LookPath, os.Stat, codexBinCandidates())
+}
+
+func resolveCodexBinFrom(
+	getenv func(string) string,
+	lookPath func(string) (string, error),
+	stat func(string) (os.FileInfo, error),
+	candidates []string,
+) (string, error) {
+	if p := getenv(codexBinEnv); p != "" {
+		if filepath.IsAbs(p) {
+			if _, err := stat(p); err == nil {
+				return p, nil
+			}
+		} else if abs, err := lookPath(p); err == nil {
+			return abs, nil
+		}
+	}
+	if p, err := lookPath(codexBinName); err == nil {
+		return p, nil
+	}
+	for _, c := range candidates {
+		if c == "" {
+			continue
+		}
+		if _, err := stat(c); err == nil {
+			return c, nil
+		}
+	}
+	return "", fmt.Errorf("codex executable not found in PATH or known install dirs (set %s to override)", codexBinEnv)
+}
+
+func codexBinCandidates() []string {
+	home, _ := os.UserHomeDir()
+	return []string{
+		filepath.Join(home, ".local", "bin", codexBinName),
+		"/opt/homebrew/bin/codex",
+		"/usr/local/bin/codex",
+		"/Applications/Codex.app/Contents/Resources/codex",
 	}
 }

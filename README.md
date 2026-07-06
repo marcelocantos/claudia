@@ -16,6 +16,12 @@ handling, JSONL transcript tailing, or session lifecycle management.
 
 No launchd or systemd setup is needed — tmux handles process lifetime for Session mode agents.
 
+Codex provider support is in progress. The internal Codex resolver
+checks `CODEX_BIN`, then `codex` on `$PATH`, then known install
+locations including `/Applications/Codex.app/Contents/Resources/codex`.
+This matters on macOS because Codex Desktop can be installed even when
+the `codex` CLI is not on `$PATH`.
+
 ## Modes
 
 ### Task mode — one-shot prompts

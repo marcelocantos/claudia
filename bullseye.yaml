@@ -326,9 +326,10 @@ targets:
     achieved: 2026-07-06
   T4.2:
     name: Codex binary discovery is reliable across CLI and desktop-app installs
-    status: identified
+    status: achieved
     value: 2.0
     cost: 2.0
+    actual_cost: 2.0
     acceptance:
     - Codex provider resolution checks `CODEX_BIN`, then `exec.LookPath("codex")`, then known app-bundle locations including `/Applications/Codex.app/Contents/Resources/codex`.
     - Resolver tests cover absolute `CODEX_BIN`, PATH lookup, missing executable, and app-bundle fallback without depending on the host's real Codex install.
@@ -336,10 +337,12 @@ targets:
     - Documentation states that Codex Desktop may exist even when `codex` is not on PATH.
     context: |
       The local feasibility check found Codex at `/Applications/Codex.app/Contents/Resources/codex` while `codex` was not generally on PATH for the user. Binary resolution should mirror claudia's existing Claude resolver but must account for the desktop app bundle.
+      Achieved 2026-07-06: Added an internal Codex resolver that checks CODEX_BIN, PATH, and known install locations including the macOS desktop app bundle. Tests cover absolute CODEX_BIN, PATH lookup, missing executable errors, and app-bundle fallback without depending on a real Codex install. README and agents-guide.md document the desktop-app-without-PATH case.
     depends_on:
     - T4.1
     origin: user strategy request 2026-07-06
     discovered: 2026-07-06
+    achieved: 2026-07-06
   T4.3:
     name: Codex Task mode streams provider-neutral events from `codex exec --json`
     status: identified

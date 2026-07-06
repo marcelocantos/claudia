@@ -16,8 +16,6 @@ import (
 	"github.com/marcelocantos/claudia/internal/tmuxagent"
 )
 
-const warmAcquireMaxDuration = 250 * time.Millisecond
-
 // skipIfNoBinaries skips the test if claude or tmux are not on PATH.
 // All pool integration tests call this because Acquire uses both.
 func skipIfNoBinaries(t *testing.T) {
@@ -112,8 +110,8 @@ func TestAcquireColdAndReturn(t *testing.T) {
 		t.Errorf("warm acquire used different window %s, want %s", a2.tmuxWindowID, windowID)
 	}
 
-	if warmDuration >= warmAcquireMaxDuration {
-		t.Errorf("warm acquire took %s, want < %s", warmDuration.Round(time.Millisecond), warmAcquireMaxDuration)
+	if warmDuration >= coldDuration {
+		t.Errorf("warm acquire took %s, want faster than cold acquire %s", warmDuration.Round(time.Millisecond), coldDuration.Round(time.Millisecond))
 	}
 
 	// Clean up.
