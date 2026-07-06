@@ -257,20 +257,14 @@ func TestCodexTaskArgsResume(t *testing.T) {
 
 func TestCodexTaskParser(t *testing.T) {
 	parser := codexTaskParser{}
-	lines := []string{
-		`{"type":"thread.started","thread_id":"0199a213-81c0-7800-8aa1-bbab2a035a53"}`,
-		`{"type":"turn.started"}`,
-		`{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"bash -lc ls","status":"in_progress"}}`,
-		`{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"Repo contains docs, sdk, and examples directories."}}`,
-		`{"type":"turn.completed","usage":{"input_tokens":24763,"cached_input_tokens":24448,"output_tokens":122,"reasoning_output_tokens":0}}`,
-	}
+	lines := readFixtureLines(t, "testdata/codex/exec/success.jsonl")
 
 	var events []TaskEvent
 	for _, line := range lines {
 		events = append(events, parser.Parse([]byte(line))...)
 	}
-	if len(events) != 4 {
-		t.Fatalf("events = %d, want 4: %#v", len(events), events)
+	if len(events) != 5 {
+		t.Fatalf("events = %d, want 5: %#v", len(events), events)
 	}
 	if events[0].Type != TaskEventInit || events[0].SessionID == "" {
 		t.Errorf("init event = %#v", events[0])
@@ -281,12 +275,15 @@ func TestCodexTaskParser(t *testing.T) {
 	if events[2].Type != TaskEventText || events[2].Content == "" {
 		t.Errorf("text event = %#v", events[2])
 	}
-	result := events[3]
+	if events[3].Type != TaskEventText || events[3].Content != "Final answer." {
+		t.Errorf("final text event = %#v", events[3])
+	}
+	result := events[4]
 	if result.Type != TaskEventResult {
 		t.Fatalf("result event = %#v", result)
 	}
-	if result.Content != events[2].Content {
-		t.Errorf("result content = %q, want %q", result.Content, events[2].Content)
+	if result.Content != "Final answer." {
+		t.Errorf("result content = %q, want final agent message", result.Content)
 	}
 	if result.Usage.InputTokens != 24763 {
 		t.Errorf("input tokens = %d, want 24763", result.Usage.InputTokens)
@@ -301,16 +298,30 @@ func TestCodexTaskParser(t *testing.T) {
 
 func TestCodexTaskParserErrors(t *testing.T) {
 	parser := codexTaskParser{}
-	for _, line := range []string{
-		`{"type":"turn.failed","error":"model failed"}`,
-		`{"type":"error","message":"bad request"}`,
+	for _, fixture := range []string{
+		"testdata/codex/exec/failure.jsonl",
+		"testdata/codex/exec/error.jsonl",
 	} {
-		events := parser.Parse([]byte(line))
-		if len(events) != 1 {
-			t.Fatalf("events = %d, want 1 for %s", len(events), line)
+		var events []TaskEvent
+		for _, line := range readFixtureLines(t, fixture) {
+			events = append(events, parser.Parse([]byte(line))...)
 		}
-		if events[0].Type != TaskEventError || !events[0].IsError || events[0].ErrorMsg == "" {
-			t.Errorf("error event = %#v", events[0])
+		if len(events) == 0 {
+			t.Fatalf("no events for %s", fixture)
+		}
+		ev := events[len(events)-1]
+		if ev.Type != TaskEventError || !ev.IsError || ev.ErrorMsg == "" {
+			t.Errorf("error event = %#v", ev)
+		}
+	}
+}
+
+func TestCodexTaskParserMalformedFixture(t *testing.T) {
+	parser := codexTaskParser{}
+	for _, line := range readFixtureLines(t, "testdata/codex/exec/malformed.jsonl") {
+		events := parser.Parse([]byte(line))
+		if len(events) != 0 {
+			t.Errorf("events for malformed/unknown line %q = %#v, want none", line, events)
 		}
 	}
 }
@@ -341,6 +352,21 @@ func slicesEqual(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+func readFixtureLines(t *testing.T, path string) []string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%s): %v", path, err)
+	}
+	var lines []string
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if line != "" {
+			lines = append(lines, line)
+		}
+	}
+	return lines
 }
 
 func TestNewTask(t *testing.T) {

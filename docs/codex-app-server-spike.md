@@ -31,17 +31,16 @@ Documented notification families include `turn/started`, `item/started`, `item/c
 
 ## Configuration Mapping To Prove
 
-The manual says `turn/start` can override model, personality, `cwd`, sandbox policy, and more. The live spike must confirm the exact installed-version field names for:
+Generated schema inspection on 2026-07-06 confirmed these installed-version field names without starting a model turn:
 
-- `cwd`
-- `model`
-- sandbox policy
-- approval policy
-- resume via `thread/resume`
-- fork via `thread/fork`
-- archive/unarchive via thread APIs
+- `thread/start` params include `cwd`, `model`, `approvalPolicy`, `permissions`, and config/developer-instruction overrides.
+- `turn/start` params require `threadId` and `input`; optional turn overrides include `cwd`, `model`, `approvalPolicy`, `permissions`, and `sandboxPolicy`.
+- `thread/resume` params require `threadId` and also include `cwd`, `model`, and `approvalPolicy`.
+- `thread/fork` params require `threadId`; `path` is marked unstable and should not be preferred.
+- `thread/archive` and `thread/unarchive` take `threadId`.
+- `turn/interrupt` requires both `threadId` and `turnId`.
 
-Until the generated schema or a live exchange confirms those field names, claudia must not expose Codex Session mode as production-ready.
+The live spike must still prove the response and notification sequence, including the turn id needed for interruption.
 
 ## Schema Artifact Decision
 
@@ -52,7 +51,9 @@ codex app-server generate-ts --out ./schemas
 codex app-server generate-json-schema --out ./schemas
 ```
 
-These artifacts are version-specific and likely high churn. Before committing generated files, inspect their license/header and size. Prefer small hand-written golden fixtures if the generated output is large, lacks an acceptable license notice, or changes frequently across Codex releases.
+Generated JSON Schema with `--experimental` on 2026-07-06 produced a 4.0 MB bundle with 123,371 total lines and many version-specific v2 files. The aggregate schema files alone were ~21k and ~23k lines. The files did not include an obvious repo-local license/header in the inspected snippets, and their churn profile is intentionally tied to the installed Codex version.
+
+Decision: do not commit the generated schema bundle. Prefer small hand-written golden fixtures for claudia tests, and regenerate the schema in a temp directory during future spikes when exact field names need re-checking.
 
 ## Maturity Risk
 

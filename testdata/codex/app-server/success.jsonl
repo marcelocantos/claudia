@@ -1,0 +1,8 @@
+{"id":0,"result":{"userAgent":"codex-app-server-test","platformFamily":"macos","platformOs":"darwin"}}
+{"id":1,"result":{"thread":{"id":"thr_success"}}}
+{"method":"thread/started","params":{"thread":{"id":"thr_success"}}}
+{"id":2,"result":{"turn":{"id":"turn_success"}}}
+{"method":"turn/started","params":{"threadId":"thr_success","turn":{"id":"turn_success"}}}
+{"method":"item/started","params":{"threadId":"thr_success","turnId":"turn_success","item":{"id":"item_cmd","type":"command_execution","command":"bash -lc ls","status":"in_progress"}}}
+{"method":"item/completed","params":{"threadId":"thr_success","turnId":"turn_success","item":{"id":"item_msg","type":"agent_message","text":"Final answer."}}}
+{"method":"turn/completed","params":{"threadId":"thr_success","turn":{"id":"turn_success","status":"completed"},"usage":{"input_tokens":10,"cached_input_tokens":4,"output_tokens":5}}}

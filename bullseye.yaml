@@ -378,6 +378,7 @@ targets:
     context: |
       Codex persistent agents should not be implemented by scraping TUI output or editing private transcript files. The documented rich-client integration point is `codex app-server` JSON-RPC, but parts of that surface are experimental. This target creates a small, disposable referent before committing claudia's public API to it.
       Converging 2026-07-06: docs/codex-app-server-spike.md records the documented stdio JSON-RPC handshake, configuration mapping to prove, schema artifact decision, maturity risks, and fallback rule. Remaining work requires an explicitly approved live app-server turn capture because `turn/start` contacts the model and may export prompt/workspace context.
+      Converging 2026-07-06: Generated the installed Codex app-server JSON Schema to a temp directory and inspected thread/turn schemas without a live model call. The spike now records exact field names for cwd, model, approvalPolicy, sandboxPolicy, thread/resume, thread/fork, thread/archive, thread/unarchive, and turn/interrupt, plus the decision not to commit the 4.0 MB / 123k-line generated schema bundle.
     depends_on:
     - T4.1
     - T4.2
@@ -442,7 +443,7 @@ targets:
     discovered: 2026-07-06
   T4.8:
     name: Codex provider verification is oracle-first, not live-observation driven
-    status: identified
+    status: converging
     value: 5.0
     cost: 3.0
     acceptance:
@@ -453,6 +454,7 @@ targets:
     - 'The residual un-oracled surface is explicit: public API taste, acceptable parity gaps versus Claude Code, and app-server maturity risk are gated by one human accept/reject review after the machine checks pass.'
     context: |
       Oracle-first review on 2026-07-06 found the initial T4 graph had good implementation decomposition but no explicit verification choke point. Codex support is mostly new-code oracle mode with a port-like seam at the CLI/app-server boundary: golden fixtures and fakes can adjudicate parser/lifecycle/capability behaviour, while API taste and acceptable parity gaps remain human residue. This target is deliberately a sibling to the code targets, not a prerequisite for starting them; coding may proceed in parallel, but T4 cannot be retired and release docs cannot claim support until these oracles have run against the implementation. The failure mode to avoid is substituting live Codex observation ("it connected", "a message arrived") for fidelity checks ("the event was mapped correctly", "unsupported capability failed closed", "private storage was not touched").
+      Converging 2026-07-06: Added docs/codex-provider-oracle-map.md, codex exec golden fixtures, app-server golden fixture scaffolding, parser tests backed by fixtures, and JSONL validity checks for app-server fixtures. Remaining work includes the fake app-server lifecycle harness, unsupported-capability typed errors, mutation/fault checks, and live-capture review.
     origin: oracle-first review 2026-07-06
     discovered: 2026-07-06
   T5:

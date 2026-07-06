@@ -4,6 +4,7 @@
 package claudia
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"strings"
@@ -122,4 +123,41 @@ func TestCodexBinCandidatesIncludeDesktopAppBundle(t *testing.T) {
 		}
 	}
 	t.Fatalf("codexBinCandidates() does not include %s", appBundleCodex)
+}
+
+func TestCodexAppServerFixturesAreValidJSONL(t *testing.T) {
+	cases := []struct {
+		path       string
+		wantToken  string
+		wantMethod string
+	}{
+		{"testdata/codex/app-server/success.jsonl", "turn_success", "turn/completed"},
+		{"testdata/codex/app-server/failure.jsonl", "model failed", "turn/completed"},
+		{"testdata/codex/app-server/interrupted.jsonl", "turn_interrupted", "turn/completed"},
+		{"testdata/codex/app-server/unsupported-capability.jsonl", "experimentalApi", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.path, func(t *testing.T) {
+			var sawMethod bool
+			var sawToken bool
+			for _, line := range readFixtureLines(t, tc.path) {
+				var msg map[string]any
+				if err := json.Unmarshal([]byte(line), &msg); err != nil {
+					t.Fatalf("invalid JSONL line %q: %v", line, err)
+				}
+				if method, _ := msg["method"].(string); method == tc.wantMethod {
+					sawMethod = true
+				}
+				if strings.Contains(line, tc.wantToken) {
+					sawToken = true
+				}
+			}
+			if tc.wantMethod != "" && !sawMethod {
+				t.Errorf("%s did not contain method %s", tc.path, tc.wantMethod)
+			}
+			if !sawToken {
+				t.Errorf("%s did not contain token %s", tc.path, tc.wantToken)
+			}
+		})
+	}
 }
