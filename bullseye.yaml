@@ -366,7 +366,7 @@ targets:
     achieved: 2026-07-06
   T4.4:
     name: Codex app-server contract is proven before persistent Session mode depends on it
-    status: identified
+    status: converging
     value: 3.0
     cost: 3.0
     acceptance:
@@ -377,6 +377,7 @@ targets:
     - No production Session-mode code is built on private Codex session files as a shortcut.
     context: |
       Codex persistent agents should not be implemented by scraping TUI output or editing private transcript files. The documented rich-client integration point is `codex app-server` JSON-RPC, but parts of that surface are experimental. This target creates a small, disposable referent before committing claudia's public API to it.
+      Converging 2026-07-06: docs/codex-app-server-spike.md records the documented stdio JSON-RPC handshake, configuration mapping to prove, schema artifact decision, maturity risks, and fallback rule. Remaining work requires an explicitly approved live app-server turn capture because `turn/start` contacts the model and may export prompt/workspace context.
     depends_on:
     - T4.1
     - T4.2
