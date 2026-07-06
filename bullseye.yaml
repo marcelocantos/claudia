@@ -301,6 +301,7 @@ targets:
     - T4.4
     - T4.5
     - T4.6
+    - T4.7
     origin: user strategy request 2026-07-06
     discovered: 2026-07-06
   T4.0:
@@ -424,7 +425,23 @@ targets:
     - T4.2
     - T4.4
     - T4.5
+    - T4.7
     origin: user strategy request 2026-07-06
+    discovered: 2026-07-06
+  T4.7:
+    name: Codex provider verification is oracle-first, not live-observation driven
+    status: identified
+    value: 5.0
+    cost: 3.0
+    acceptance:
+    - A one-page oracle map under docs/ classifies each T4.x target by verification class and names the machine oracle that gates retirement, with live Codex runs marked as smoke/regression only.
+    - Golden fixtures cover `codex exec --json` streams and app-server thread/turn notification streams, including success, failure, interrupted turn, usage, command/tool progress, unsupported capability, and malformed payload cases.
+    - Fake Codex provider and fake app-server harnesses exercise Task and Session lifecycles in `go test` without real Codex, Claude, network, auth, tmux, or API spend.
+    - Mutation/fault-injection checks prove the oracle catches at least dropped session IDs, wrong final-message selection, malformed usage accounting, silent unsupported-capability success, and accidental reads of private Codex transcript storage.
+    - 'The residual un-oracled surface is explicit: public API taste, acceptable parity gaps versus Claude Code, and app-server maturity risk are gated by one human accept/reject review after the machine checks pass.'
+    context: |
+      Oracle-first review on 2026-07-06 found the initial T4 graph had good implementation decomposition but no explicit verification choke point. Codex support is mostly new-code oracle mode with a port-like seam at the CLI/app-server boundary: golden fixtures and fakes can adjudicate parser/lifecycle/capability behaviour, while API taste and acceptable parity gaps remain human residue. This target is deliberately a sibling to the code targets, not a prerequisite for starting them; coding may proceed in parallel, but T4 cannot be retired and release docs cannot claim support until these oracles have run against the implementation. The failure mode to avoid is substituting live Codex observation ("it connected", "a message arrived") for fidelity checks ("the event was mapped correctly", "unsupported capability failed closed", "private storage was not touched").
+    origin: oracle-first review 2026-07-06
     discovered: 2026-07-06
   T5:
     name: claudia Agents support conversation rewind — roll a session back to an earlier turn and resume
