@@ -294,7 +294,6 @@ targets:
     context: |
       Raised 2026-07-06 from the feasibility discussion about adapting claudia for Codex. The strategic shape is provider-first rather than a rename from `claude` to `codex`: claudia currently embeds Claude Code's contracts directly (`claude -p --output-format stream-json`, ~/.claude/projects JSONL transcripts, `--resume`, `--session-id`, TUI readiness, and transcript rewind). Codex offers enough public surface to support the same product idea, but with different seams: `codex exec --json` for non-interactive work, `codex exec resume` for continuing non-interactive sessions, and `codex app-server` JSON-RPC for richer persistent thread/turn integrations. The hard rule for this epic is to depend only on public Codex contracts. Private Codex storage formats and opportunistic TUI scraping are explicitly out of bounds because they would make claudia fragile across Codex releases.
     depends_on:
-    - T4.0
     - T4.1
     - T4.2
     - T4.3
@@ -302,9 +301,10 @@ targets:
     - T4.5
     - T4.6
     - T4.7
+    - T4.8
     origin: user strategy request 2026-07-06
     discovered: 2026-07-06
-  T4.0:
+  T4.1:
     name: Provider boundaries isolate Claude Code and Codex runtime contracts
     status: identified
     value: 5.0
@@ -319,7 +319,7 @@ targets:
       This is the architectural choke point. Without it, Codex support would leak CLI-specific conditionals through Start, Acquire, Task.Run, transcript parsing, rewind, and tests. The change must be additive so it does not disturb the v1.0 shakeout target: Claude remains the default and existing consumers see no API break.
     origin: user strategy request 2026-07-06
     discovered: 2026-07-06
-  T4.1:
+  T4.2:
     name: Codex binary discovery is reliable across CLI and desktop-app installs
     status: identified
     value: 2.0
@@ -332,10 +332,10 @@ targets:
     context: |
       The local feasibility check found Codex at `/Applications/Codex.app/Contents/Resources/codex` while `codex` was not generally on PATH for the user. Binary resolution should mirror claudia's existing Claude resolver but must account for the desktop app bundle.
     depends_on:
-    - T4.0
+    - T4.1
     origin: user strategy request 2026-07-06
     discovered: 2026-07-06
-  T4.2:
+  T4.3:
     name: Codex Task mode streams provider-neutral events from `codex exec --json`
     status: identified
     value: 5.0
@@ -349,11 +349,11 @@ targets:
     context: |
       This is the MVP path because `codex exec --json` is documented and stable enough for scripts. It delivers immediate value without solving persistent UI attachment, app-server lifecycle, or rewind parity.
     depends_on:
-    - T4.0
     - T4.1
+    - T4.2
     origin: user strategy request 2026-07-06
     discovered: 2026-07-06
-  T4.3:
+  T4.4:
     name: Codex app-server contract is proven before persistent Session mode depends on it
     status: identified
     value: 3.0
@@ -367,11 +367,11 @@ targets:
     context: |
       Codex persistent agents should not be implemented by scraping TUI output or editing private transcript files. The documented rich-client integration point is `codex app-server` JSON-RPC, but parts of that surface are experimental. This target creates a small, disposable referent before committing claudia's public API to it.
     depends_on:
-    - T4.0
     - T4.1
+    - T4.2
     origin: user strategy request 2026-07-06
     discovered: 2026-07-06
-  T4.4:
+  T4.5:
     name: Codex persistent Session mode uses public thread/turn APIs
     status: identified
     value: 5.0
@@ -386,11 +386,11 @@ targets:
     context: |
       Persistent Session mode is the large parity item. The intended implementation is not a Codex TUI in tmux; app-server already owns the rich-client thread/turn lifecycle and avoids readiness-regex fragility. This may deliberately produce a different observability story from Claude's human-attachable tmux window.
     depends_on:
-    - T4.2
     - T4.3
+    - T4.4
     origin: user strategy request 2026-07-06
     discovered: 2026-07-06
-  T4.5:
+  T4.6:
     name: Codex provider capability gaps are explicit and tested
     status: identified
     value: 3.0
@@ -404,11 +404,11 @@ targets:
     context: |
       Codex and Claude Code have overlapping but different affordances. The dangerous path is fake parity: pretending that Claude transcript rewind, tmux attach, or permission flags mean the same thing for Codex. Capability reporting keeps the user-facing surface honest while still allowing additive support as Codex public APIs mature.
     depends_on:
-    - T4.2
     - T4.3
+    - T4.4
     origin: user strategy request 2026-07-06
     discovered: 2026-07-06
-  T4.6:
+  T4.7:
     name: Codex provider is documented, packaged, and release-gated
     status: identified
     value: 3.0
@@ -422,13 +422,13 @@ targets:
     context: |
       Codex support affects user expectations more than it affects the package name. The docs must make the provider distinction obvious so existing Claude users are not surprised and new Codex users know which features are stable.
     depends_on:
-    - T4.2
-    - T4.4
+    - T4.3
     - T4.5
-    - T4.7
+    - T4.6
+    - T4.8
     origin: user strategy request 2026-07-06
     discovered: 2026-07-06
-  T4.7:
+  T4.8:
     name: Codex provider verification is oracle-first, not live-observation driven
     status: identified
     value: 5.0
