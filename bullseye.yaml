@@ -379,6 +379,7 @@ targets:
       Codex persistent agents should not be implemented by scraping TUI output or editing private transcript files. The documented rich-client integration point is `codex app-server` JSON-RPC, but parts of that surface are experimental. This target creates a small, disposable referent before committing claudia's public API to it.
       Converging 2026-07-06: docs/codex-app-server-spike.md records the documented stdio JSON-RPC handshake, configuration mapping to prove, schema artifact decision, maturity risks, and fallback rule. Remaining work requires an explicitly approved live app-server turn capture because `turn/start` contacts the model and may export prompt/workspace context.
       Converging 2026-07-06: Generated the installed Codex app-server JSON Schema to a temp directory and inspected thread/turn schemas without a live model call. The spike now records exact field names for cwd, model, approvalPolicy, sandboxPolicy, thread/resume, thread/fork, thread/archive, thread/unarchive, and turn/interrupt, plus the decision not to commit the 4.0 MB / 123k-line generated schema bundle.
+      Converging 2026-07-06: Captured a redacted installed-version app-server stdio initialize + thread/start sequence without sending turn/start. The fixture lives at testdata/codex/app-server/thread-start.jsonl. The live turn capture remains outstanding.
     depends_on:
     - T4.1
     - T4.2

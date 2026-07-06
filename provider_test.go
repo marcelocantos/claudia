@@ -131,6 +131,7 @@ func TestCodexAppServerFixturesAreValidJSONL(t *testing.T) {
 		wantToken  string
 		wantMethod string
 	}{
+		{"testdata/codex/app-server/thread-start.jsonl", "thr_redacted", "thread/started"},
 		{"testdata/codex/app-server/success.jsonl", "turn_success", "turn/completed"},
 		{"testdata/codex/app-server/failure.jsonl", "model failed", "turn/completed"},
 		{"testdata/codex/app-server/interrupted.jsonl", "turn_interrupted", "turn/completed"},

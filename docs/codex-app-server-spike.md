@@ -29,6 +29,18 @@ After `thread/start` returns a thread id, a turn starts with:
 
 Documented notification families include `turn/started`, `item/started`, `item/completed`, `item/agentMessage/delta`, tool progress, and `turn/completed`.
 
+## Installed-Version Non-Live Capture
+
+On 2026-07-06, a stdio app-server capture against Codex Desktop 0.142.5 proved initialize and thread/start without sending `turn/start`:
+
+- `initialize` returned user agent, Codex home, platform family, and platform OS.
+- `thread/start` returned a thread/session id, rollout path, cwd, runtime workspace roots, model, model provider, approval policy, approvals reviewer, sandbox object, reasoning effort, and multi-agent mode.
+- The server also emitted `thread/started` for the new idle thread.
+
+The redacted fixture is `testdata/codex/app-server/thread-start.jsonl`.
+
+Observed caveat: sending `sandboxPolicy: {"mode":"read-only"}` in the spike request returned a `workspaceWrite` sandbox object. Treat sandbox mapping as unproven until a dedicated request/response fixture establishes the exact accepted shape.
+
 ## Configuration Mapping To Prove
 
 Generated schema inspection on 2026-07-06 confirmed these installed-version field names without starting a model turn:
@@ -40,7 +52,7 @@ Generated schema inspection on 2026-07-06 confirmed these installed-version fiel
 - `thread/archive` and `thread/unarchive` take `threadId`.
 - `turn/interrupt` requires both `threadId` and `turnId`.
 
-The live spike must still prove the response and notification sequence, including the turn id needed for interruption.
+The live spike must still prove the turn response and notification sequence, including the turn id needed for interruption.
 
 ## Schema Artifact Decision
 
@@ -59,7 +71,7 @@ Decision: do not commit the generated schema bundle. Prefer small hand-written g
 
 The app-server page describes the interface as the rich-client integration point, but several transports and some methods/fields are explicitly experimental:
 
-- stdio JSONL is the safest transport for the first claudia integration.
+- stdio JSONL is the safest transport for the first claudia integration and has been smoke-checked through thread/start without a model turn.
 - WebSocket transport is experimental and unsupported.
 - Some app-server methods and fields require `capabilities.experimentalApi = true`.
 - Persistent Codex Session mode must expose capability errors if a required method or field is unavailable.
@@ -70,10 +82,9 @@ Fallback if app-server changes: Codex Task mode remains available through `codex
 
 To finish 🎯T4.4, run a live app-server stdio client against the installed Codex binary, with explicit user approval because `turn/start` contacts the model. The capture should record:
 
-- initialize response
-- thread/start response
-- turn/start response
-- notification sequence through turn/completed
-- exact fields for cwd/model/sandbox/approval/resume/fork/archive
+- `turn/start` response
+- notification sequence through `turn/completed`
+- dedicated request/response evidence for sandbox and approval mapping
+- resume/fork/archive behavior through public app-server methods
 
 The resulting redacted JSONL should live under `testdata/codex/app-server/` if small and stable, or be summarized here with a rationale if the raw fixture is too volatile.
