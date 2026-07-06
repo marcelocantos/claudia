@@ -45,7 +45,7 @@ Before 🎯T4 is retired, tests must prove these injected faults fail:
 - Wrong final-message selection: multiple agent messages arrive and the final result must use the last completed assistant message.
 - Malformed usage accounting: cached input and output token fields are swapped or ignored.
 - Silent unsupported capability success: Codex rewind/tmux attach/terminal log APIs appear to succeed without a public contract.
-- Private-storage shortcut: production Codex provider code reads or writes private Codex transcript/session storage instead of using `codex exec` or app-server.
+- Private-storage shortcut: production Codex provider code reads or writes private Codex transcript/session storage instead of using `codex exec` or app-server. `TestCodexProviderDoesNotReadPrivateStorage` scans production Go files for private Codex state path tokens.
 
 ## Human Residue
 

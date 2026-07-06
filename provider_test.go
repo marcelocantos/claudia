@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -183,5 +184,42 @@ func TestCodexAppServerFixturesAreValidJSONL(t *testing.T) {
 				t.Errorf("%s did not contain token %s", tc.path, tc.wantToken)
 			}
 		})
+	}
+}
+
+func TestCodexProviderDoesNotReadPrivateStorage(t *testing.T) {
+	forbidden := []string{
+		".codex/sessions",
+		".codex/history",
+		".codex/threads",
+		".codex/rollouts",
+		"rollout_path",
+	}
+	if err := filepath.WalkDir(".", func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			switch path {
+			case ".git", "docs", "testdata":
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		for _, token := range forbidden {
+			if strings.Contains(string(data), token) {
+				t.Errorf("%s contains private Codex storage token %q", path, token)
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
