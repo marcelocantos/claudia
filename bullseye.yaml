@@ -406,7 +406,7 @@ targets:
     discovered: 2026-07-06
   T4.6:
     name: Codex provider capability gaps are explicit and tested
-    status: identified
+    status: converging
     value: 3.0
     cost: 3.0
     acceptance:
@@ -417,6 +417,7 @@ targets:
     - Tests cover at least one unsupported capability and one experimental capability downgrade.
     context: |
       Codex and Claude Code have overlapping but different affordances. The dangerous path is fake parity: pretending that Claude transcript rewind, tmux attach, or permission flags mean the same thing for Codex. Capability reporting keeps the user-facing surface honest while still allowing additive support as Codex public APIs mature.
+      Converging 2026-07-06: Added a typed CapabilityError, fail-closed ProviderCodex Session startup, fail-closed Codex rewind guard, and tests proving unsupported capabilities surface through errors.As rather than silent Claude fallback. Remaining work includes a fuller supported/unsupported/experimental capability matrix for terminal logs, tmux attach, cost, permission/tool mapping, images, and web search.
     depends_on:
     - T4.3
     - T4.4

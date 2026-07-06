@@ -125,6 +125,16 @@ func TestCodexBinCandidatesIncludeDesktopAppBundle(t *testing.T) {
 	t.Fatalf("codexBinCandidates() does not include %s", appBundleCodex)
 }
 
+func TestCapabilityErrorMessage(t *testing.T) {
+	err := unsupportedCapability(ProviderCodex, "rewind", "requires public fork API")
+	msg := err.Error()
+	for _, want := range []string{"codex", "rewind", "unsupported", "requires public fork API"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("CapabilityError message %q does not contain %q", msg, want)
+		}
+	}
+}
+
 func TestCodexAppServerFixturesAreValidJSONL(t *testing.T) {
 	cases := []struct {
 		path       string

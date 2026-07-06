@@ -5,6 +5,7 @@ package claudia
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -310,6 +311,56 @@ func TestStartUsesInjectedBackendLifecycle(t *testing.T) {
 				t.Errorf("DisallowedTools = %q, want ExtraTool included", req.DisallowedTools)
 			}
 		})
+	}
+}
+
+func TestStartCodexSessionFailsWithCapabilityError(t *testing.T) {
+	_, err := Start(Config{Provider: ProviderCodex, WorkDir: t.TempDir()})
+	if err == nil {
+		t.Fatal("Start with ProviderCodex returned nil error")
+	}
+	var capErr *CapabilityError
+	if !errors.As(err, &capErr) {
+		t.Fatalf("error = %T %v, want CapabilityError", err, err)
+	}
+	if capErr.Provider != ProviderCodex || capErr.Capability != "session" || capErr.Status != "unsupported" {
+		t.Errorf("CapabilityError = %+v", capErr)
+	}
+}
+
+func TestCodexRewindFailsWithCapabilityError(t *testing.T) {
+	agent := &Agent{provider: ProviderCodex}
+	_, err := agent.Rewind(1, Config{Provider: ProviderCodex})
+	if err == nil {
+		t.Fatal("Codex Rewind returned nil error")
+	}
+	var capErr *CapabilityError
+	if !errors.As(err, &capErr) {
+		t.Fatalf("error = %T %v, want CapabilityError", err, err)
+	}
+	if capErr.Provider != ProviderCodex || capErr.Capability != "rewind" {
+		t.Errorf("CapabilityError = %+v", capErr)
+	}
+}
+
+func TestAgentMissingOperationFailsWithCapabilityError(t *testing.T) {
+	ready := make(chan struct{})
+	close(ready)
+	agent := &Agent{
+		provider: ProviderCodex,
+		alive:    true,
+		ready:    ready,
+	}
+	err := agent.Send("hello")
+	if err == nil {
+		t.Fatal("Send without provider operation returned nil error")
+	}
+	var capErr *CapabilityError
+	if !errors.As(err, &capErr) {
+		t.Fatalf("error = %T %v, want CapabilityError", err, err)
+	}
+	if capErr.Provider != ProviderCodex || capErr.Capability != "send" {
+		t.Errorf("CapabilityError = %+v", capErr)
 	}
 }
 

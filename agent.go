@@ -53,6 +53,11 @@ import (
 
 // Config configures a Claude Code agent.
 type Config struct {
+	// Provider selects the runtime backing this agent. Empty means
+	// ProviderClaude. ProviderCodex Session mode is experimental and
+	// currently fails closed until the app-server contract is proven.
+	Provider Provider
+
 	// WorkDir is the working directory for the Claude Code process.
 	// Defaults to ".".
 	WorkDir string
@@ -108,6 +113,7 @@ type Config struct {
 // process dies) and human-attachable observability (see
 // [Agent.AttachCommand]).
 type Agent struct {
+	provider     Provider
 	sessionID    string
 	jsonlPath    string
 	termLogPath  string
@@ -202,8 +208,44 @@ type agentBackend interface {
 
 type claudeAgentBackend struct{}
 
+type codexAgentBackend struct{}
+
+type errorAgentBackend struct {
+	err error
+}
+
+func agentBackendForProvider(provider Provider) agentBackend {
+	switch provider {
+	case "", ProviderClaude:
+		return claudeAgentBackend{}
+	case ProviderCodex:
+		return codexAgentBackend{}
+	default:
+		return errorAgentBackend{err: fmt.Errorf("unknown agent provider %q", provider)}
+	}
+}
+
 func (claudeAgentBackend) Capabilities() providerCapabilities {
 	return claudeProviderCapabilities()
+}
+
+func (codexAgentBackend) Capabilities() providerCapabilities {
+	return providerCapabilities{
+		Task:   true,
+		Resume: true,
+	}
+}
+
+func (codexAgentBackend) StartAgent(agentStartRequest) (*agentStart, error) {
+	return nil, unsupportedCapability(ProviderCodex, "session", "persistent Session mode requires the app-server live contract spike to complete")
+}
+
+func (b errorAgentBackend) Capabilities() providerCapabilities {
+	return providerCapabilities{}
+}
+
+func (b errorAgentBackend) StartAgent(agentStartRequest) (*agentStart, error) {
+	return nil, b.err
 }
 
 func claudeAgentOps() agentOps {
@@ -232,10 +274,17 @@ func claudeAgentOps() agentOps {
 // Start spawns a new Claude Code agent inside a tmux window on the
 // dedicated claudia tmux server.
 func Start(cfg Config) (*Agent, error) {
-	return startWithBackend(cfg, claudeAgentBackend{})
+	if cfg.Provider == ProviderCodex {
+		return nil, unsupportedCapability(ProviderCodex, "session", "persistent Session mode requires the app-server live contract spike to complete")
+	}
+	return startWithBackend(cfg, agentBackendForProvider(cfg.Provider))
 }
 
 func startWithBackend(cfg Config, backend agentBackend) (*Agent, error) {
+	provider := cfg.Provider
+	if provider == "" {
+		provider = ProviderClaude
+	}
 	if cfg.WorkDir == "" {
 		cfg.WorkDir = "."
 	}
@@ -284,6 +333,7 @@ func startWithBackend(cfg Config, backend agentBackend) (*Agent, error) {
 	}
 
 	a := &Agent{
+		provider:    provider,
 		sessionID:   sessionID,
 		jsonlPath:   jsonlPath,
 		termLogPath: termLogPath,
@@ -530,7 +580,7 @@ func (a *Agent) Interrupt() error {
 		return fmt.Errorf("claude process not running")
 	}
 	if a.ops.interrupt == nil {
-		return fmt.Errorf("interrupt unsupported")
+		return unsupportedCapability(a.provider, "interrupt", "provider did not supply an interrupt operation")
 	}
 	return a.ops.interrupt(a)
 }
@@ -566,7 +616,7 @@ func (a *Agent) Send(msg string) error {
 		return fmt.Errorf("claude process not running")
 	}
 	if a.ops.send == nil {
-		return fmt.Errorf("send unsupported")
+		return unsupportedCapability(a.provider, "send", "provider did not supply a send operation")
 	}
 	return a.ops.send(a, msg)
 }
@@ -693,7 +743,7 @@ const waitSettleDuration = 250 * time.Millisecond
 // embedding terminal output in a variable-size UI.
 func (a *Agent) Resize(cols, rows uint16) error {
 	if a.ops.resize == nil {
-		return fmt.Errorf("resize unsupported")
+		return unsupportedCapability(a.provider, "resize", "provider did not supply a resize operation")
 	}
 	return a.ops.resize(a, cols, rows)
 }
@@ -732,6 +782,9 @@ func (a *Agent) Stop() {
 // [RewindSession]: tool-result entries are not counted as turns, so a rewind
 // never lands mid-tool-use, and the pre-rewind transcript is backed up.
 func (a *Agent) Rewind(n int, cfg Config) (*Agent, error) {
+	if a.provider == ProviderCodex || cfg.Provider == ProviderCodex {
+		return nil, unsupportedCapability(ProviderCodex, "rewind", "Codex rewind requires a public app-server fork/resume contract; private transcript truncation is forbidden")
+	}
 	a.Stop()
 	if _, err := rewindJSONL(a.jsonlPath, n); err != nil {
 		return nil, err

@@ -25,6 +25,31 @@ const (
 	ProviderCodex Provider = "codex"
 )
 
+// CapabilityError reports that a provider capability is unsupported or
+// experimental in the current implementation.
+type CapabilityError struct {
+	Provider   Provider
+	Capability string
+	Status     string
+	Reason     string
+}
+
+func (e *CapabilityError) Error() string {
+	if e.Reason == "" {
+		return fmt.Sprintf("%s provider %s capability is %s", e.Provider, e.Capability, e.Status)
+	}
+	return fmt.Sprintf("%s provider %s capability is %s: %s", e.Provider, e.Capability, e.Status, e.Reason)
+}
+
+func unsupportedCapability(provider Provider, capability, reason string) *CapabilityError {
+	return &CapabilityError{
+		Provider:   provider,
+		Capability: capability,
+		Status:     "unsupported",
+		Reason:     reason,
+	}
+}
+
 type providerCapabilities struct {
 	Task          bool
 	Session       bool
