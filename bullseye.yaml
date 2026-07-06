@@ -279,6 +279,153 @@ targets:
     - T2.1
     origin: design session 2026-06-10
     discovered: 2026-06-10
+  T4:
+    name: claudia supports Codex as a first-class provider alongside Claude Code
+    status: identified
+    value: 13.0
+    cost: 13.0
+    acceptance:
+    - The public API can start either a Claude Code-backed agent/task or a Codex-backed agent/task without duplicating caller workflow code.
+    - Codex Task mode is implemented on top of documented `codex exec --json` output, with session IDs, assistant text, tool/command progress, result status, and token usage mapped into provider-neutral events.
+    - Codex persistent Session mode uses a documented public Codex interface (`codex app-server` JSON-RPC or a later stable equivalent), not private Codex transcript files or brittle TUI scraping.
+    - 'Provider-specific unsupported features are explicit: Codex rewind, cost accounting, permission mapping, and tmux attach semantics either work through public Codex contracts or return documented capability errors.'
+    - README, agents-guide.md, and STABILITY.md describe provider selection, binary discovery, known differences, and the compatibility contract.
+    - All T4.x sub-targets are achieved.
+    context: |
+      Raised 2026-07-06 from the feasibility discussion about adapting claudia for Codex. The strategic shape is provider-first rather than a rename from `claude` to `codex`: claudia currently embeds Claude Code's contracts directly (`claude -p --output-format stream-json`, ~/.claude/projects JSONL transcripts, `--resume`, `--session-id`, TUI readiness, and transcript rewind). Codex offers enough public surface to support the same product idea, but with different seams: `codex exec --json` for non-interactive work, `codex exec resume` for continuing non-interactive sessions, and `codex app-server` JSON-RPC for richer persistent thread/turn integrations. The hard rule for this epic is to depend only on public Codex contracts. Private Codex storage formats and opportunistic TUI scraping are explicitly out of bounds because they would make claudia fragile across Codex releases.
+    depends_on:
+    - T4.0
+    - T4.1
+    - T4.2
+    - T4.3
+    - T4.4
+    - T4.5
+    - T4.6
+    origin: user strategy request 2026-07-06
+    discovered: 2026-07-06
+  T4.0:
+    name: Provider boundaries isolate Claude Code and Codex runtime contracts
+    status: identified
+    value: 5.0
+    cost: 5.0
+    acceptance:
+    - A small internal provider interface separates binary discovery, argument construction, event parsing, session identity, capability reporting, and resume semantics from Agent/Task lifecycle code.
+    - 'Existing Claude Code behaviour remains byte-for-byte compatible where externally observable: default provider is Claude, existing Config and TaskConfig calls still work, and existing tests pass without requiring Codex.'
+    - Provider-neutral events preserve the existing TaskEvent/Event API where possible and introduce provider-specific detail only behind additive fields or raw payload access.
+    - The design does not use functional options; any new public configuration uses explicit struct fields.
+    - A regression test proves a fake Claude provider and fake Codex provider can both drive the same Task lifecycle without spawning real binaries.
+    context: |
+      This is the architectural choke point. Without it, Codex support would leak CLI-specific conditionals through Start, Acquire, Task.Run, transcript parsing, rewind, and tests. The change must be additive so it does not disturb the v1.0 shakeout target: Claude remains the default and existing consumers see no API break.
+    origin: user strategy request 2026-07-06
+    discovered: 2026-07-06
+  T4.1:
+    name: Codex binary discovery is reliable across CLI and desktop-app installs
+    status: identified
+    value: 2.0
+    cost: 2.0
+    acceptance:
+    - Codex provider resolution checks `CODEX_BIN`, then `exec.LookPath("codex")`, then known app-bundle locations including `/Applications/Codex.app/Contents/Resources/codex`.
+    - Resolver tests cover absolute `CODEX_BIN`, PATH lookup, missing executable, and app-bundle fallback without depending on the host's real Codex install.
+    - Error messages tell users how to install Codex, set `CODEX_BIN`, or use the app-bundle binary when Codex is not on PATH.
+    - Documentation states that Codex Desktop may exist even when `codex` is not on PATH.
+    context: |
+      The local feasibility check found Codex at `/Applications/Codex.app/Contents/Resources/codex` while `codex` was not generally on PATH for the user. Binary resolution should mirror claudia's existing Claude resolver but must account for the desktop app bundle.
+    depends_on:
+    - T4.0
+    origin: user strategy request 2026-07-06
+    discovered: 2026-07-06
+  T4.2:
+    name: Codex Task mode streams provider-neutral events from `codex exec --json`
+    status: identified
+    value: 5.0
+    cost: 5.0
+    acceptance:
+    - A Codex-backed Task runs `codex exec --json` with the configured workdir, model, sandbox, approval policy, and prompt.
+    - 'Parser tests cover representative Codex JSONL events: `thread.started`, `turn.started`, `item.started`, `item.completed` with agent messages, `turn.completed` with usage, `turn.failed`, and `error`.'
+    - Codex thread IDs are captured and exposed as the task's provider session ID; a subsequent run can resume via `codex exec resume <SESSION_ID>`.
+    - The final assistant message and token usage are available through the same high-level Task result flow as Claude Task mode.
+    - Live tests are gated behind an explicit environment variable and skip cleanly when Codex is unavailable or unauthenticated.
+    context: |
+      This is the MVP path because `codex exec --json` is documented and stable enough for scripts. It delivers immediate value without solving persistent UI attachment, app-server lifecycle, or rewind parity.
+    depends_on:
+    - T4.0
+    - T4.1
+    origin: user strategy request 2026-07-06
+    discovered: 2026-07-06
+  T4.3:
+    name: Codex app-server contract is proven before persistent Session mode depends on it
+    status: identified
+    value: 3.0
+    cost: 3.0
+    acceptance:
+    - A spike client starts `codex app-server` over stdio, performs initialize/initialized, starts a thread, starts a turn, and records the notification sequence as golden JSON fixtures.
+    - Generated JSON schema or TypeScript schema artifacts for the installed Codex version are captured under docs or testdata only if their license and churn profile are acceptable; otherwise the spike documents why hand-written fixture coverage is preferred.
+    - The spike establishes how to set cwd, model, sandbox, approval policy, and resume/fork/archive behaviour through public app-server methods.
+    - 'The spike explicitly records app-server maturity risk: which parts are stable, which are experimental, and what fallback behaviour claudia should expose if app-server changes.'
+    - No production Session-mode code is built on private Codex session files as a shortcut.
+    context: |
+      Codex persistent agents should not be implemented by scraping TUI output or editing private transcript files. The documented rich-client integration point is `codex app-server` JSON-RPC, but parts of that surface are experimental. This target creates a small, disposable referent before committing claudia's public API to it.
+    depends_on:
+    - T4.0
+    - T4.1
+    origin: user strategy request 2026-07-06
+    discovered: 2026-07-06
+  T4.4:
+    name: Codex persistent Session mode uses public thread/turn APIs
+    status: identified
+    value: 5.0
+    cost: 8.0
+    acceptance:
+    - Start with the Codex provider creates or resumes a Codex thread through app-server (or a later documented stable equivalent) and stores the returned thread/session ID.
+    - Send starts or steers Codex turns without relying on tmux key injection; WaitForResponse resolves from streamed agent-message and turn-completed notifications.
+    - SubscribeEvents receives provider-neutral assistant/user/progress events derived from app-server notifications, with raw Codex payloads available for consumers that need full fidelity.
+    - Interrupt maps to the documented turn interruption API and reports a capability error if the installed Codex version lacks it.
+    - AttachCommand/terminal-log semantics are documented as Claude-only unless a public Codex equivalent exists.
+    - Integration tests exercise a fake app-server and one gated live app-server path.
+    context: |
+      Persistent Session mode is the large parity item. The intended implementation is not a Codex TUI in tmux; app-server already owns the rich-client thread/turn lifecycle and avoids readiness-regex fragility. This may deliberately produce a different observability story from Claude's human-attachable tmux window.
+    depends_on:
+    - T4.2
+    - T4.3
+    origin: user strategy request 2026-07-06
+    discovered: 2026-07-06
+  T4.5:
+    name: Codex provider capability gaps are explicit and tested
+    status: identified
+    value: 3.0
+    cost: 3.0
+    acceptance:
+    - Provider capability reporting distinguishes supported, unsupported, and experimental Codex behaviours for rewind, cost accounting, tmux attach, terminal logs, permission/tool restrictions, image inputs, and web search.
+    - Calling an unsupported Codex feature returns a typed, documented error rather than silently falling back to Claude assumptions.
+    - Codex rewind is not implemented by truncating private transcript files; it is either implemented through a public fork/resume API or marked unsupported with a clear rationale.
+    - 'Permission and sandbox mapping is documented: Codex approval/sandbox flags are not treated as equivalent to Claude permission modes unless tests prove the mapping.'
+    - Tests cover at least one unsupported capability and one experimental capability downgrade.
+    context: |
+      Codex and Claude Code have overlapping but different affordances. The dangerous path is fake parity: pretending that Claude transcript rewind, tmux attach, or permission flags mean the same thing for Codex. Capability reporting keeps the user-facing surface honest while still allowing additive support as Codex public APIs mature.
+    depends_on:
+    - T4.2
+    - T4.3
+    origin: user strategy request 2026-07-06
+    discovered: 2026-07-06
+  T4.6:
+    name: Codex provider is documented, packaged, and release-gated
+    status: identified
+    value: 3.0
+    cost: 3.0
+    acceptance:
+    - README includes a Codex provider quickstart for Task mode and Session mode, including binary discovery and authentication prerequisites.
+    - agents-guide.md explains provider selection, event differences, live-test gates, and which APIs are Claude-only vs Codex-capable.
+    - STABILITY.md records the Codex provider API surface and any pre-1.0 compatibility risks.
+    - Pre-release validation includes hermetic Codex parser/provider tests and an optional `CODEX_LIVE=1` live test tier.
+    - Release notes for the first Codex-capable release call out experimental areas and required Codex CLI/app versions.
+    context: |
+      Codex support affects user expectations more than it affects the package name. The docs must make the provider distinction obvious so existing Claude users are not surprised and new Codex users know which features are stable.
+    depends_on:
+    - T4.2
+    - T4.4
+    - T4.5
+    origin: user strategy request 2026-07-06
+    discovered: 2026-07-06
   T5:
     name: claudia Agents support conversation rewind — roll a session back to an earlier turn and resume
     status: achieved
