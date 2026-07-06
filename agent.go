@@ -237,7 +237,7 @@ func (codexAgentBackend) Capabilities() providerCapabilities {
 }
 
 func (codexAgentBackend) StartAgent(agentStartRequest) (*agentStart, error) {
-	return nil, unsupportedCapability(ProviderCodex, "session", "persistent Session mode requires the app-server live contract spike to complete")
+	return nil, experimentalCapability(ProviderCodex, "session", "persistent Session mode requires the app-server live contract spike to complete")
 }
 
 func (b errorAgentBackend) Capabilities() providerCapabilities {
@@ -275,7 +275,7 @@ func claudeAgentOps() agentOps {
 // dedicated claudia tmux server.
 func Start(cfg Config) (*Agent, error) {
 	if cfg.Provider == ProviderCodex {
-		return nil, unsupportedCapability(ProviderCodex, "session", "persistent Session mode requires the app-server live contract spike to complete")
+		return nil, experimentalCapability(ProviderCodex, "session", "persistent Session mode requires the app-server live contract spike to complete")
 	}
 	return startWithBackend(cfg, agentBackendForProvider(cfg.Provider))
 }

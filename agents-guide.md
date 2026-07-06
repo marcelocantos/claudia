@@ -24,6 +24,32 @@ and exposes cost and token accounting. Only use Session mode if the
 user explicitly needs persistent state or wants to observe the
 transcript live.
 
+Codex is provider-selectable for Task mode:
+
+```go
+task := claudia.NewTask(claudia.TaskConfig{
+    Provider:       claudia.ProviderCodex,
+    WorkDir:        "/abs/path",
+    Model:          "gpt-5-codex",
+    SandboxMode:    "workspace-write",
+    ApprovalPolicy: "on-request",
+})
+```
+
+For Codex, `Task.Run` shells out to `codex exec --json`; `TaskConfig.ClaudeID`
+still names the resumable provider session id. Do not assume Codex and
+Claude flags are semantically identical: `SandboxMode` and
+`ApprovalPolicy` are passed as Codex flags, while Claude Session mode
+continues to use `PermissionMode` and `DisallowTools`.
+
+Codex persistent Session mode is experimental and currently fails
+closed. `Start(claudia.Config{Provider: claudia.ProviderCodex})`
+returns `*claudia.CapabilityError` with `Status ==
+claudia.CapabilityExperimental`. Codex rewind, tmux attach, and
+terminal logs are unsupported until a public Codex app-server contract
+proves equivalent behavior; do not implement them by editing private
+Codex storage or by driving the Codex TUI in tmux.
+
 ## Task mode: essential patterns
 
 Construct with `NewTask`, then call `Run` to get a channel of
@@ -203,6 +229,20 @@ host program owns a single short-lived agent, skip the Registry.
    then `codex` on `$PATH`, then known locations including
    `/Applications/Codex.app/Contents/Resources/codex`, because Codex
    Desktop can be installed even when the CLI is not on `$PATH`.
+
+   Current provider capability matrix:
+
+   | Capability | Claude | Codex |
+   |------------|--------|-------|
+   | Task prompts | Supported | Supported via `codex exec --json` |
+   | Task resume | Supported | Supported via `codex exec resume --json` |
+   | Task usage | Supported | Supported for token counts; cost remains unavailable |
+   | Persistent Session | Supported | Experimental fail-closed |
+   | Rewind | Supported | Unsupported without public fork/resume proof |
+   | tmux attach | Supported | Unsupported |
+   | Terminal byte log | Supported | Unsupported |
+   | Permission/tool restrictions | Supported | Codex sandbox/approval flags only; not treated as Claude-equivalent |
+   | Image inputs and web search | Provider-dependent | Not surfaced by claudia yet |
 
 2. **Sub-agents are disabled.** claudia always passes
    `--disallowedTools Agent,TeamCreate,TeamDelete,SendMessage,EnterWorktree`.

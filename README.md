@@ -55,6 +55,24 @@ for ev := range events {
 Resume a prior task session by setting `TaskConfig.ClaudeID` to the
 session ID captured from a previous `TaskEventInit`.
 
+Codex Task mode is available by selecting `ProviderCodex`. It runs
+`codex exec --json`, captures the Codex thread id as the task session
+id, and can resume with the same `TaskConfig.ClaudeID` field:
+
+```go
+task := claudia.NewTask(claudia.TaskConfig{
+    Provider:       claudia.ProviderCodex,
+    ID:             "codex-summary",
+    WorkDir:        "/path/to/repo",
+    Model:          "gpt-5-codex",
+    SandboxMode:    "workspace-write",
+    ApprovalPolicy: "on-request",
+})
+```
+
+Codex live tests are opt-in because they use local Codex credentials
+and may contact OpenAI. Run them with `CLAUDIA_CODEX_LIVE=1`.
+
 ### Session mode — persistent conversations
 
 Spawns `claude` inside a tmux window on a dedicated claudia tmux server
@@ -99,6 +117,13 @@ single call.
 Resuming works automatically: if `Config.SessionID` is set and a JSONL
 transcript already exists for it, claudia passes `--resume`; otherwise
 it passes `--session-id` to create a fresh session with that ID.
+
+`Config{Provider: claudia.ProviderCodex}` currently returns
+`*claudia.CapabilityError` with status `claudia.CapabilityExperimental`.
+Persistent Codex Session mode is waiting on a proven public app-server
+turn contract. claudia deliberately does not fake it by driving the
+Codex TUI, scraping private session files, or applying Claude transcript
+rewind rules to Codex.
 
 The PTY output is also captured to
 `$XDG_STATE_HOME/claudia/terms/<escaped-workdir>/<sessionID>.term`

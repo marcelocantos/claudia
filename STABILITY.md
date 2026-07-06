@@ -30,7 +30,7 @@ is annotated with a stability assessment:
 
 | Item | Definition | Status |
 |---|---|---|
-| `Config` | struct with `WorkDir, SessionID, Model, PermissionMode, MCPConfig, TermLogPath, PoolPolicy string`, `ExtraArgs, DisallowTools []string`, `PoolCap int` | Needs review |
+| `Config` | struct with `Provider Provider`, `WorkDir, SessionID, Model, PermissionMode, MCPConfig, TermLogPath, PoolPolicy string`, `ExtraArgs, DisallowTools []string`, `PoolCap int` | Needs review |
 | `Agent` | opaque struct; methods listed below | Needs review |
 | `Event` | struct with `Type string`, `Raw []byte`, `Text string`, `StopReason string`, `ProgressType string`; method `IsTerminalStop() bool` | Stable |
 | `EventFunc` | `func(Event)` | Needs review |
@@ -38,7 +38,9 @@ is annotated with a stability assessment:
 | `TaskEvent` | struct with `Type TaskEventType`, `Content, ToolName, ToolInput, ToolID, SessionID string`, `DurationMs, CostUSD float64`, `Usage Usage`, `IsError bool`, `ErrorMsg string` | Needs review |
 | `TaskEventType` | string type | Stable |
 | `TaskStatus` | string type | Stable |
-| `TaskConfig` | struct with `ID, Name, WorkDir, Model, ClaudeID, LastResult string` | Needs review |
+| `Provider` | string type selecting `ProviderClaude` or `ProviderCodex` | Fluid |
+| `CapabilityError` | struct with `Provider Provider`, `Capability, Status, Reason string`; method `Error() string` | Fluid |
+| `TaskConfig` | struct with `Provider Provider`, `ID, Name, WorkDir, Model, ClaudeID, LastResult, SandboxMode, ApprovalPolicy string` | Needs review |
 | `RawLogFunc` | `func(line []byte)` | Stable |
 | `Task` | opaque struct; methods listed below | Needs review |
 | `AgentDef` | struct with `Name, WorkDir, SessionID, Model string`, `DisallowTools []string` and `AutoStart bool` | Needs review |
@@ -50,6 +52,8 @@ is annotated with a stability assessment:
 | Item | Status |
 |---|---|
 | `Version` | Stable |
+| `ProviderClaude, ProviderCodex` (Provider) | Fluid |
+| `CapabilityUnsupported, CapabilityExperimental` | Fluid |
 | `TaskEventInit, TaskEventText, TaskEventToolUse, TaskEventResult, TaskEventError` (TaskEventType) | Stable |
 | `TaskStatusIdle, TaskStatusRunning, TaskStatusError, TaskStatusStopped` (TaskStatus) | Stable |
 | ~~`ErrDaemonUnavailable`~~ | Removed (daemon pivot) |
@@ -167,6 +171,26 @@ is annotated with a stability assessment:
 | Item | Purpose | Status |
 |---|---|---|
 | `CLAUDE_BIN` | Absolute path or PATH-resolvable name of the `claude` executable. Honoured by both Task and Session/Pool spawn paths. Falls back to `exec.LookPath("claude")` then to known install locations (`~/.local/bin/claude`, `~/.claude/local/claude`, `/opt/homebrew/bin/claude`, `/usr/local/bin/claude`). | Stable |
+| `CODEX_BIN` | Absolute path or PATH-resolvable name of the `codex` executable. Honoured by Codex Task mode. Falls back to `exec.LookPath("codex")` then to known install locations including `/Applications/Codex.app/Contents/Resources/codex`. | Fluid |
+
+### Codex provider surface
+
+Codex support is pre-1.0 and intentionally capability-gated. The stable
+surface today is Task mode through `codex exec --json`, selected by
+`TaskConfig.Provider = ProviderCodex`. Token usage maps into `Usage`,
+but Codex Task mode does not currently report cost in `CostUSD`.
+
+Persistent Codex Session mode is not implemented yet. `Start` with
+`Config.Provider = ProviderCodex` fails closed with `*CapabilityError`
+and `Status == CapabilityExperimental` until the public app-server
+thread/turn contract is proven. Codex rewind, tmux attach, terminal
+byte logs, and Claude-style transcript manipulation are unsupported;
+callers should expect `CapabilityError` rather than silent Claude
+fallback semantics.
+
+Codex sandbox and approval fields are passed to Codex as Codex flags.
+They are not treated as equivalent to Claude `PermissionMode` or
+`DisallowTools` until tests prove a narrower mapping.
 
 ### Surface item count
 

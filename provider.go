@@ -25,6 +25,16 @@ const (
 	ProviderCodex Provider = "codex"
 )
 
+const (
+	// CapabilityUnsupported means the provider has no supported public contract
+	// for the requested behavior.
+	CapabilityUnsupported = "unsupported"
+	// CapabilityExperimental means the provider may eventually support the
+	// behavior, but claudia is deliberately failing closed until the public
+	// contract is proven.
+	CapabilityExperimental = "experimental"
+)
+
 // CapabilityError reports that a provider capability is unsupported or
 // experimental in the current implementation.
 type CapabilityError struct {
@@ -45,7 +55,16 @@ func unsupportedCapability(provider Provider, capability, reason string) *Capabi
 	return &CapabilityError{
 		Provider:   provider,
 		Capability: capability,
-		Status:     "unsupported",
+		Status:     CapabilityUnsupported,
+		Reason:     reason,
+	}
+}
+
+func experimentalCapability(provider Provider, capability, reason string) *CapabilityError {
+	return &CapabilityError{
+		Provider:   provider,
+		Capability: capability,
+		Status:     CapabilityExperimental,
 		Reason:     reason,
 	}
 }

@@ -323,7 +323,7 @@ func TestStartCodexSessionFailsWithCapabilityError(t *testing.T) {
 	if !errors.As(err, &capErr) {
 		t.Fatalf("error = %T %v, want CapabilityError", err, err)
 	}
-	if capErr.Provider != ProviderCodex || capErr.Capability != "session" || capErr.Status != "unsupported" {
+	if capErr.Provider != ProviderCodex || capErr.Capability != "session" || capErr.Status != CapabilityExperimental {
 		t.Errorf("CapabilityError = %+v", capErr)
 	}
 }
@@ -338,7 +338,7 @@ func TestCodexRewindFailsWithCapabilityError(t *testing.T) {
 	if !errors.As(err, &capErr) {
 		t.Fatalf("error = %T %v, want CapabilityError", err, err)
 	}
-	if capErr.Provider != ProviderCodex || capErr.Capability != "rewind" {
+	if capErr.Provider != ProviderCodex || capErr.Capability != "rewind" || capErr.Status != CapabilityUnsupported {
 		t.Errorf("CapabilityError = %+v", capErr)
 	}
 }
@@ -359,7 +359,7 @@ func TestAgentMissingOperationFailsWithCapabilityError(t *testing.T) {
 	if !errors.As(err, &capErr) {
 		t.Fatalf("error = %T %v, want CapabilityError", err, err)
 	}
-	if capErr.Provider != ProviderCodex || capErr.Capability != "send" {
+	if capErr.Provider != ProviderCodex || capErr.Capability != "send" || capErr.Status != CapabilityUnsupported {
 		t.Errorf("CapabilityError = %+v", capErr)
 	}
 }

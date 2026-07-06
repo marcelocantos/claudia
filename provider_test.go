@@ -135,6 +135,19 @@ func TestCapabilityErrorMessage(t *testing.T) {
 	}
 }
 
+func TestExperimentalCapabilityErrorMessage(t *testing.T) {
+	err := experimentalCapability(ProviderCodex, "session", "app-server turn contract is unproven")
+	if err.Status != CapabilityExperimental {
+		t.Fatalf("Status = %q, want %q", err.Status, CapabilityExperimental)
+	}
+	msg := err.Error()
+	for _, want := range []string{"codex", "session", "experimental", "app-server turn contract is unproven"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("CapabilityError message %q does not contain %q", msg, want)
+		}
+	}
+}
+
 func TestCodexAppServerFixturesAreValidJSONL(t *testing.T) {
 	cases := []struct {
 		path       string
