@@ -46,8 +46,8 @@ const (
 
 // Usage holds token counts from a result event.
 type Usage struct {
-	InputTokens              int `json:"input_tokens"`
-	OutputTokens             int `json:"output_tokens"`
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
 	// CacheCreationInputTokens is tokens written to the prompt cache.
 	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 	// CacheReadInputTokens is tokens read from the prompt cache (billed
@@ -152,17 +152,41 @@ type Task struct {
 	model   string
 
 	mu         sync.Mutex
-	cmd        *exec.Cmd
+	run        *taskRun
 	cancel     context.CancelFunc
 	status     TaskStatus
 	lastResult string
 	claudeID   string
 	onRawLog   RawLogFunc
+	backend    taskBackend
 }
+
+type taskRunRequest struct {
+	WorkDir   string
+	Model     string
+	SessionID string
+	Prompt    string
+	RawLog    RawLogFunc
+}
+
+type taskRun struct {
+	events    <-chan TaskEvent
+	interrupt func() error
+}
+
+type taskBackend interface {
+	RunTask(context.Context, taskRunRequest) (*taskRun, error)
+}
+
+type claudeTaskBackend struct{}
 
 // NewTask creates a Task from cfg. The task starts in [TaskStatusIdle] and
 // is ready for its first [Task.Run] call immediately.
 func NewTask(cfg TaskConfig) *Task {
+	return newTaskWithBackend(cfg, claudeTaskBackend{})
+}
+
+func newTaskWithBackend(cfg TaskConfig, backend taskBackend) *Task {
 	return &Task{
 		id:         cfg.ID,
 		name:       cfg.Name,
@@ -171,6 +195,7 @@ func NewTask(cfg TaskConfig) *Task {
 		status:     TaskStatusIdle,
 		claudeID:   cfg.ClaudeID,
 		lastResult: cfg.LastResult,
+		backend:    backend,
 	}
 }
 
@@ -234,29 +259,18 @@ func (t *Task) Run(ctx context.Context, prompt string) (<-chan TaskEvent, error)
 
 	cmdCtx, cancel := context.WithCancel(ctx)
 
-	args := []string{
-		"-p",
-		"--verbose",
-		"--output-format", "stream-json",
-		"--include-partial-messages",
-		"--dangerously-skip-permissions",
-	}
-
 	t.mu.Lock()
 	cid := t.claudeID
+	rawFn := t.onRawLog
 	t.mu.Unlock()
 
-	if cid != "" {
-		args = append(args, "--resume", cid)
-	}
-	if t.model != "" {
-		args = append(args, "--model", t.model)
-	}
-	args = append(args, prompt)
-
-	slog.Debug("spawning claude task", "task", t.id, "args", args)
-
-	claudeBin, err := resolveClaudeBin()
+	run, err := t.backend.RunTask(cmdCtx, taskRunRequest{
+		WorkDir:   t.workDir,
+		Model:     t.model,
+		SessionID: cid,
+		Prompt:    prompt,
+		RawLog:    rawFn,
+	})
 	if err != nil {
 		cancel()
 		t.mu.Lock()
@@ -264,66 +278,20 @@ func (t *Task) Run(ctx context.Context, prompt string) (<-chan TaskEvent, error)
 		t.mu.Unlock()
 		return nil, err
 	}
-	cmd := exec.CommandContext(cmdCtx, claudeBin, args...)
-	cmd.Dir = t.workDir
-
-	// Unset CLAUDECODE to avoid nested session detection.
-	cmd.Env = filterEnv(os.Environ(), "CLAUDECODE")
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		cancel()
-		t.mu.Lock()
-		t.status = TaskStatusError
-		t.mu.Unlock()
-		return nil, fmt.Errorf("stdout pipe: %w", err)
-	}
-
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		cancel()
-		t.mu.Lock()
-		t.status = TaskStatusError
-		t.mu.Unlock()
-		return nil, fmt.Errorf("stderr pipe: %w", err)
-	}
-
-	if err := cmd.Start(); err != nil {
-		cancel()
-		t.mu.Lock()
-		t.status = TaskStatusError
-		t.mu.Unlock()
-		return nil, fmt.Errorf("start claude: %w", err)
-	}
 
 	t.mu.Lock()
-	t.cmd = cmd
+	t.run = run
 	t.cancel = cancel
 	t.mu.Unlock()
 
 	ch := make(chan TaskEvent, 16)
 
-	// Log stderr in a separate goroutine.
-	go func() {
-		scanner := bufio.NewScanner(stderr)
-		scanner.Buffer(make([]byte, 256*1024), 256*1024)
-		for scanner.Scan() {
-			slog.Debug("claude stderr", "task", t.id, "line", scanner.Text())
-		}
-	}()
-
-	// Parse stdout NDJSON and send events.
 	go func() {
 		defer close(ch)
 		defer func() {
-			if err := cmd.Wait(); err != nil {
-				slog.Warn("claude process exited with error", "task", t.id, "error", err)
-			} else {
-				slog.Debug("claude process exited cleanly", "task", t.id)
-			}
 			cancel()
 			t.mu.Lock()
-			t.cmd = nil
+			t.run = nil
 			t.cancel = nil
 			if t.status == TaskStatusRunning {
 				t.status = TaskStatusIdle
@@ -331,48 +299,12 @@ func (t *Task) Run(ctx context.Context, prompt string) (<-chan TaskEvent, error)
 			t.mu.Unlock()
 		}()
 
-		scanner := bufio.NewScanner(stdout)
-		scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
-
-		for scanner.Scan() {
-			line := scanner.Bytes()
-			if len(line) == 0 {
-				continue
-			}
-
-			t.mu.Lock()
-			rawFn := t.onRawLog
-			t.mu.Unlock()
-			if rawFn != nil {
-				rawFn(line)
-			}
-
-			events := ParseTaskLine(line)
-			for _, ev := range events {
-				switch ev.Type {
-				case TaskEventInit:
-					t.mu.Lock()
-					if t.claudeID == "" {
-						t.claudeID = ev.SessionID
-						slog.Info("task session established",
-							"task", t.id, "claude_id", ev.SessionID)
-					}
-					t.mu.Unlock()
-				case TaskEventResult:
-					t.mu.Lock()
-					t.lastResult = ev.Content
-					t.mu.Unlock()
-				case TaskEventError:
-					t.mu.Lock()
-					t.lastResult = "error: " + ev.ErrorMsg
-					t.mu.Unlock()
-				}
-
-				select {
-				case ch <- ev:
-				case <-ctx.Done():
-					return
-				}
+		for ev := range run.events {
+			t.recordTaskEvent(ev)
+			select {
+			case ch <- ev:
+			case <-ctx.Done():
+				return
 			}
 		}
 	}()
@@ -387,10 +319,10 @@ func (t *Task) Cancel() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	if t.cmd == nil || t.cmd.Process == nil {
+	if t.run == nil || t.run.interrupt == nil {
 		return nil
 	}
-	return t.cmd.Process.Signal(syscall.SIGINT)
+	return t.run.interrupt()
 }
 
 // Stop permanently terminates the task. Any running process is killed and
@@ -404,6 +336,120 @@ func (t *Task) Stop() {
 	if t.cancel != nil {
 		t.cancel()
 	}
+}
+
+func (t *Task) recordTaskEvent(ev TaskEvent) {
+	switch ev.Type {
+	case TaskEventInit:
+		t.mu.Lock()
+		if t.claudeID == "" {
+			t.claudeID = ev.SessionID
+			slog.Info("task session established",
+				"task", t.id, "claude_id", ev.SessionID)
+		}
+		t.mu.Unlock()
+	case TaskEventResult:
+		t.mu.Lock()
+		t.lastResult = ev.Content
+		t.mu.Unlock()
+	case TaskEventError:
+		t.mu.Lock()
+		t.lastResult = "error: " + ev.ErrorMsg
+		t.mu.Unlock()
+	}
+}
+
+func (claudeTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*taskRun, error) {
+	args := []string{
+		"-p",
+		"--verbose",
+		"--output-format", "stream-json",
+		"--include-partial-messages",
+		"--dangerously-skip-permissions",
+	}
+	if req.SessionID != "" {
+		args = append(args, "--resume", req.SessionID)
+	}
+	if req.Model != "" {
+		args = append(args, "--model", req.Model)
+	}
+	args = append(args, req.Prompt)
+
+	slog.Debug("spawning claude task", "args", args)
+
+	claudeBin, err := resolveClaudeBin()
+	if err != nil {
+		return nil, err
+	}
+	cmd := exec.CommandContext(ctx, claudeBin, args...)
+	cmd.Dir = req.WorkDir
+
+	// Unset CLAUDECODE to avoid nested session detection.
+	cmd.Env = filterEnv(os.Environ(), "CLAUDECODE")
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("stdout pipe: %w", err)
+	}
+
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, fmt.Errorf("stderr pipe: %w", err)
+	}
+
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("start claude: %w", err)
+	}
+
+	go func() {
+		scanner := bufio.NewScanner(stderr)
+		scanner.Buffer(make([]byte, 256*1024), 256*1024)
+		for scanner.Scan() {
+			slog.Debug("claude stderr", "line", scanner.Text())
+		}
+	}()
+
+	ch := make(chan TaskEvent, 16)
+	go func() {
+		defer close(ch)
+		defer func() {
+			if err := cmd.Wait(); err != nil {
+				slog.Warn("claude process exited with error", "error", err)
+			} else {
+				slog.Debug("claude process exited cleanly")
+			}
+		}()
+
+		scanner := bufio.NewScanner(stdout)
+		scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+
+		for scanner.Scan() {
+			line := scanner.Bytes()
+			if len(line) == 0 {
+				continue
+			}
+			if req.RawLog != nil {
+				req.RawLog(line)
+			}
+			for _, ev := range ParseTaskLine(line) {
+				select {
+				case ch <- ev:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	}()
+
+	return &taskRun{
+		events: ch,
+		interrupt: func() error {
+			if cmd.Process == nil {
+				return nil
+			}
+			return cmd.Process.Signal(syscall.SIGINT)
+		},
+	}, nil
 }
 
 // ParseTaskLine parses a single NDJSON line from claude's --output-format

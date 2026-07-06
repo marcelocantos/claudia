@@ -6,10 +6,12 @@ package claudia
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -258,6 +260,180 @@ func TestTaskClaudeID(t *testing.T) {
 	s := NewTask(TaskConfig{ID: "test-abc", Name: "test", ClaudeID: "claude-xyz"})
 	if got := s.ClaudeID(); got != "claude-xyz" {
 		t.Errorf("ClaudeID = %q, want claude-xyz", got)
+	}
+}
+
+type fakeTaskBackend struct {
+	name         string
+	events       []TaskEvent
+	ready        chan struct{}
+	release      chan struct{}
+	interruptErr error
+
+	mu              sync.Mutex
+	requests        []taskRunRequest
+	interruptCalled int
+}
+
+func (b *fakeTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*taskRun, error) {
+	b.mu.Lock()
+	b.requests = append(b.requests, req)
+	b.mu.Unlock()
+
+	ch := make(chan TaskEvent, 16)
+	go func() {
+		defer close(ch)
+		if b.ready != nil {
+			close(b.ready)
+		}
+		if b.release != nil {
+			select {
+			case <-b.release:
+			case <-ctx.Done():
+				return
+			}
+		}
+		for _, ev := range b.events {
+			select {
+			case ch <- ev:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	return &taskRun{
+		events: ch,
+		interrupt: func() error {
+			b.mu.Lock()
+			b.interruptCalled++
+			b.mu.Unlock()
+			return b.interruptErr
+		},
+	}, nil
+}
+
+func (b *fakeTaskBackend) request(t *testing.T) taskRunRequest {
+	t.Helper()
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if len(b.requests) != 1 {
+		t.Fatalf("%s requests = %d, want 1", b.name, len(b.requests))
+	}
+	return b.requests[0]
+}
+
+func (b *fakeTaskBackend) interrupts() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.interruptCalled
+}
+
+func TestTaskRunUsesInjectedBackendLifecycle(t *testing.T) {
+	for _, provider := range []string{"fake-claude", "fake-codex"} {
+		t.Run(provider, func(t *testing.T) {
+			backend := &fakeTaskBackend{
+				name: provider,
+				events: []TaskEvent{
+					{Type: TaskEventInit, SessionID: provider + "-session"},
+					{Type: TaskEventText, Content: "hello"},
+					{Type: TaskEventResult, Content: "done"},
+				},
+			}
+			task := newTaskWithBackend(TaskConfig{
+				ID:      provider + "-task",
+				Name:    provider,
+				WorkDir: "/tmp/" + provider,
+				Model:   "test-model",
+			}, backend)
+
+			events, err := task.Run(context.Background(), "test prompt")
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			var got []TaskEvent
+			for ev := range events {
+				got = append(got, ev)
+			}
+
+			if len(got) != len(backend.events) {
+				t.Fatalf("events = %d, want %d", len(got), len(backend.events))
+			}
+			if got[1].Content != "hello" {
+				t.Errorf("text event content = %q, want hello", got[1].Content)
+			}
+			if task.ClaudeID() != provider+"-session" {
+				t.Errorf("session id = %q, want %q", task.ClaudeID(), provider+"-session")
+			}
+			if task.LastResult() != "done" {
+				t.Errorf("LastResult = %q, want done", task.LastResult())
+			}
+			if task.Status() != TaskStatusIdle {
+				t.Errorf("Status = %q, want %q", task.Status(), TaskStatusIdle)
+			}
+
+			req := backend.request(t)
+			if req.WorkDir != "/tmp/"+provider {
+				t.Errorf("WorkDir = %q, want %q", req.WorkDir, "/tmp/"+provider)
+			}
+			if req.Model != "test-model" {
+				t.Errorf("Model = %q, want test-model", req.Model)
+			}
+			if req.SessionID != "" {
+				t.Errorf("SessionID = %q, want empty", req.SessionID)
+			}
+			if req.Prompt != "test prompt" {
+				t.Errorf("Prompt = %q, want test prompt", req.Prompt)
+			}
+		})
+	}
+}
+
+func TestTaskRunPassesExistingSessionToBackend(t *testing.T) {
+	backend := &fakeTaskBackend{events: []TaskEvent{{Type: TaskEventResult, Content: "done"}}}
+	task := newTaskWithBackend(TaskConfig{
+		ID:       "resume-task",
+		ClaudeID: "existing-session",
+	}, backend)
+
+	events, err := task.Run(context.Background(), "continue")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	for range events {
+	}
+
+	if req := backend.request(t); req.SessionID != "existing-session" {
+		t.Errorf("SessionID = %q, want existing-session", req.SessionID)
+	}
+	if task.ClaudeID() != "existing-session" {
+		t.Errorf("ClaudeID = %q, want existing-session", task.ClaudeID())
+	}
+}
+
+func TestTaskCancelDelegatesToBackendInterrupt(t *testing.T) {
+	wantErr := errors.New("interrupt failed")
+	backend := &fakeTaskBackend{
+		ready:        make(chan struct{}),
+		release:      make(chan struct{}),
+		interruptErr: wantErr,
+	}
+	task := newTaskWithBackend(TaskConfig{ID: "cancel-task"}, backend)
+
+	events, err := task.Run(context.Background(), "wait")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	<-backend.ready
+
+	if err := task.Cancel(); !errors.Is(err, wantErr) {
+		t.Fatalf("Cancel error = %v, want %v", err, wantErr)
+	}
+	if got := backend.interrupts(); got != 1 {
+		t.Errorf("interrupt calls = %d, want 1", got)
+	}
+	close(backend.release)
+	for range events {
 	}
 }
 

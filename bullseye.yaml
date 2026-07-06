@@ -307,7 +307,7 @@ targets:
     discovered: 2026-07-06
   T4.1:
     name: Provider boundaries isolate Claude Code and Codex runtime contracts
-    status: identified
+    status: converging
     value: 5.0
     cost: 5.0
     acceptance:
@@ -318,6 +318,7 @@ targets:
     - A regression test proves a fake Claude provider and fake Codex provider can both drive the same Task lifecycle without spawning real binaries.
     context: |
       This is the architectural choke point. Without it, Codex support would leak CLI-specific conditionals through Start, Acquire, Task.Run, transcript parsing, rewind, and tests. The change must be additive so it does not disturb the v1.0 shakeout target: Claude remains the default and existing consumers see no API break.
+      Converging 2026-07-06: Task.Run now delegates binary resolution, argument construction, event parsing, resume identity, raw logs, and interrupt handling to an internal task backend. Fake Claude and fake Codex task backends exercise the same Task lifecycle. Remaining T4.1 work is to apply the provider boundary to Agent/session lifecycle code and make provider capability reporting explicit.
     origin: user strategy request 2026-07-06
     discovered: 2026-07-06
   T4.2:
