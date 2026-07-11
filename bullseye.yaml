@@ -654,3 +654,39 @@ targets:
     origin: T7 decomposition
     discovered: 2026-07-11
     achieved: 2026-07-11
+  T8:
+    name: Package claudia/grok (Realtime voice) has hermetic tests covering Connect lifecycle and core client methods
+    status: identified
+    value: 2.0
+    cost: 5.0
+    acceptance:
+    - github.com/marcelocantos/claudia/grok has at least one *_test.go that runs under plain go test ./... without network or XAI_API_KEY.
+    - Connect failure paths are covered hermetically (missing API key; optional dial/auth failure via injectable transport or httptest/fake if the WebSocket dial is seam-injected).
+    - 'Core Client methods used by consumers are exercised with a fake WebSocket (or equivalent): at least SendText, Close, and one of Commit/CommitAndRespond/RequestResponse or SendAudio; callbacks in Config fire as documented for the simulated server events.'
+    - Statement coverage for package grok is non-zero and reported (or package is excluded from total with an explicit documented reason — default expectation is real tests, not exclusion).
+    - No live xAI Realtime call is required to retire the target; any live smoke is env-gated and optional.
+    context: 'Filed 2026-07-11 after first-observer verification audit: package grok/realtime.go is ~0% statement coverage with no tests, while root package and provider work are relatively well tested. Distinct from ProviderGrok (Grok Build CLI Task mode). Low priority — Realtime voice is a side surface; coding-agent harness remains the product core. Do not implement until higher-value verification gaps are closed.'
+    tags:
+    - testing
+    - low-priority
+    - grok-realtime
+    origin: user request after verification assessment 2026-07-11
+    discovered: 2026-07-11
+  T9:
+    name: Hermetic fake CLI binaries exercise real Task.Run spawn for Claude, Codex, and Grok
+    status: converging
+    value: 8.0
+    cost: 3.0
+    acceptance:
+    - Plain go test (no CLAUDIA_*_LIVE, no real claude/codex/grok auth) drives NewTask(...).Run for ProviderClaude, ProviderCodex, and ProviderGrok through the production RunTask spawn path (not only fakeTaskBackend injection).
+    - Each provider test points the binary resolver at a hermetic fake executable (env override or PATH) that emits golden streaming fixtures and exits 0.
+    - Assertions cover session id capture (TaskEventInit / ClaudeID), final TaskEventResult text, and process completion without hanging.
+    - At least one failure path is covered hermetically (non-zero exit or error stream event) for one provider without live network.
+    - Statement coverage of the three RunTask implementations is non-zero under hermetic go test.
+    context: 'Highest-leverage testing gap from 2026-07-11 verification audit: parsers and args builders were well covered but production RunTask process spawn showed ~0% hermetic coverage. Fake binaries close the gap without live API cost.'
+    tags:
+    - testing
+    - hermetic
+    - task-spawn
+    origin: user go after testing recommendations 2026-07-11
+    discovered: 2026-07-11
