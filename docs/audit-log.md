@@ -244,3 +244,11 @@ maintenance activities. Append-only — newest entries at the bottom.
   - Codex Session (🎯T4.4–T4.5)
   - Broker 🎯T2/T3
   - 🎯T1 (1.0)
+
+## 2026-07-11 — /release v0.17.0
+
+- **Outcome**: Released v0.17.0 — Registry honouring `AgentDef.Provider`
+  on Launch (so Grok Session ACP is reachable via Register/Launch, not
+  only bare `Start`). Persists SessionID when the provider allocates a
+  new id. Empty Provider remains Claude.
+- **Deferred**: same as v0.16.0.

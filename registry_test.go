@@ -157,6 +157,36 @@ func TestEnsureAgentCreatesNew(t *testing.T) {
 	}
 }
 
+// Launch must honour AgentDef.Provider — empty still means Claude, but a
+// non-Claude provider must not be silently dropped (that left Grok Session
+// unreachable via the registry after v0.16 shipped ACP Start).
+func TestLaunchPassesProvider(t *testing.T) {
+	dir := t.TempDir()
+	r, err := NewRegistry(filepath.Join(dir, "registry.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Register(AgentDef{
+		Name:      "codex-sess",
+		WorkDir:   t.TempDir(),
+		SessionID: "sid-x",
+		Provider:  ProviderCodex,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = r.Launch("codex-sess")
+	if err == nil {
+		t.Fatal("Launch with ProviderCodex returned nil error; want experimental CapabilityError")
+	}
+	capErr, ok := err.(*CapabilityError)
+	if !ok {
+		t.Fatalf("err type %T, want *CapabilityError: %v", err, err)
+	}
+	if capErr.Provider != ProviderCodex || capErr.Capability != "session" {
+		t.Fatalf("CapabilityError = %+v, want ProviderCodex session", capErr)
+	}
+}
+
 func TestEnsureAgentReturnsExisting(t *testing.T) {
 	dir := t.TempDir()
 	r, _ := NewRegistry(filepath.Join(dir, "registry.json"))
