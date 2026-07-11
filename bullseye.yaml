@@ -674,9 +674,10 @@ targets:
     discovered: 2026-07-11
   T9:
     name: Hermetic fake CLI binaries exercise real Task.Run spawn for Claude, Codex, and Grok
-    status: converging
+    status: achieved
     value: 8.0
     cost: 3.0
+    actual_cost: 2.0
     acceptance:
     - Plain go test (no CLAUDIA_*_LIVE, no real claude/codex/grok auth) drives NewTask(...).Run for ProviderClaude, ProviderCodex, and ProviderGrok through the production RunTask spawn path (not only fakeTaskBackend injection).
     - Each provider test points the binary resolver at a hermetic fake executable (env override or PATH) that emits golden streaming fixtures and exits 0.
@@ -690,3 +691,4 @@ targets:
     - task-spawn
     origin: user go after testing recommendations 2026-07-11
     discovered: 2026-07-11
+    achieved: 2026-07-11
