@@ -5,9 +5,11 @@ package claudia
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -111,6 +113,283 @@ func TestSessionExists(t *testing.T) {
 	}
 	if !exists {
 		t.Errorf("SessionExists returned false for present JSONL at %s", jsonlPath)
+	}
+}
+
+type fakeAgentControl struct {
+	bytes chan []byte
+}
+
+func (c *fakeAgentControl) Bytes() <-chan []byte { return c.bytes }
+
+func (c *fakeAgentControl) Close() error {
+	close(c.bytes)
+	return nil
+}
+
+type fakeAgentBackend struct {
+	name    string
+	control *fakeAgentControl
+
+	mu         sync.Mutex
+	requests   []agentStartRequest
+	sends      []string
+	interrupts int
+	resizes    []struct {
+		cols uint16
+		rows uint16
+	}
+	stops int
+}
+
+func (b *fakeAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
+	b.mu.Lock()
+	b.requests = append(b.requests, req)
+	b.mu.Unlock()
+
+	if b.control == nil {
+		b.control = &fakeAgentControl{bytes: make(chan []byte, 4)}
+	}
+	return &agentStart{
+		WindowID:  b.name + "-window",
+		Control:   b.control,
+		Ops:       b.ops(),
+		TailJSONL: false,
+		DetectReady: func(a *Agent) {
+			close(a.ready)
+		},
+	}, nil
+}
+
+func (b *fakeAgentBackend) Capabilities() providerCapabilities {
+	return providerCapabilities{
+		Session:       true,
+		Resume:        true,
+		Rewind:        b.name == "fake-claude",
+		TmuxAttach:    b.name == "fake-claude",
+		TerminalBytes: true,
+	}
+}
+
+func (b *fakeAgentBackend) ops() agentOps {
+	return agentOps{
+		attachCommand: func(a *Agent) string {
+			return "attach:" + a.tmuxWindowID
+		},
+		interrupt: func(*Agent) error {
+			b.mu.Lock()
+			b.interrupts++
+			b.mu.Unlock()
+			return nil
+		},
+		send: func(_ *Agent, msg string) error {
+			b.mu.Lock()
+			b.sends = append(b.sends, msg)
+			b.mu.Unlock()
+			return nil
+		},
+		resize: func(_ *Agent, cols, rows uint16) error {
+			b.mu.Lock()
+			b.resizes = append(b.resizes, struct {
+				cols uint16
+				rows uint16
+			}{cols: cols, rows: rows})
+			b.mu.Unlock()
+			return nil
+		},
+		stop: func(*Agent) {
+			b.mu.Lock()
+			b.stops++
+			b.mu.Unlock()
+			if b.control != nil {
+				_ = b.control.Close()
+			}
+		},
+	}
+}
+
+func (b *fakeAgentBackend) request(t *testing.T) agentStartRequest {
+	t.Helper()
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if len(b.requests) != 1 {
+		t.Fatalf("%s requests = %d, want 1", b.name, len(b.requests))
+	}
+	return b.requests[0]
+}
+
+func TestStartUsesInjectedBackendLifecycle(t *testing.T) {
+	for _, provider := range []string{"fake-claude", "fake-codex", "fake-grok"} {
+		t.Run(provider, func(t *testing.T) {
+			tmpHome := t.TempDir()
+			t.Setenv("HOME", tmpHome)
+			t.Setenv("XDG_STATE_HOME", filepath.Join(tmpHome, "state"))
+
+			workDir := t.TempDir()
+			backend := &fakeAgentBackend{name: provider}
+			agent, err := startWithBackend(Config{
+				WorkDir:        workDir,
+				SessionID:      provider + "-session",
+				Model:          "test-model",
+				PermissionMode: "acceptEdits",
+				MCPConfig:      "/tmp/mcp.json",
+				DisallowTools:  []string{"ExtraTool"},
+				ExtraArgs:      []string{"--extra"},
+				TermLogPath:    "-",
+			}, backend)
+			if err != nil {
+				t.Fatalf("startWithBackend: %v", err)
+			}
+
+			if err := agent.WaitReady(context.Background()); err != nil {
+				t.Fatalf("WaitReady: %v", err)
+			}
+			if got := agent.SessionID(); got != provider+"-session" {
+				t.Errorf("SessionID = %q, want %q", got, provider+"-session")
+			}
+			if got := agent.AttachCommand(); got != "attach:"+provider+"-window" {
+				t.Errorf("AttachCommand = %q", got)
+			}
+			caps := backend.Capabilities()
+			if !caps.Session || !caps.Resume {
+				t.Errorf("capabilities = %+v, want session+resume", caps)
+			}
+			if (provider == "fake-codex" || provider == "fake-grok") && (caps.Rewind || caps.TmuxAttach) {
+				t.Errorf("%s capabilities = %+v, want rewind/tmux unsupported", provider, caps)
+			}
+
+			if err := agent.Send("hello"); err != nil {
+				t.Fatalf("Send: %v", err)
+			}
+			if err := agent.Interrupt(); err != nil {
+				t.Fatalf("Interrupt: %v", err)
+			}
+			if err := agent.Resize(80, 24); err != nil {
+				t.Fatalf("Resize: %v", err)
+			}
+
+			_, termCh := agent.SubscribeTerminal()
+			defer agent.UnsubscribeTerminal(termCh)
+			backend.control.bytes <- []byte("terminal")
+			select {
+			case got := <-termCh:
+				if string(got) != "terminal" {
+					t.Errorf("terminal bytes = %q, want terminal", got)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("terminal bytes were not routed through Agent")
+			}
+
+			agent.Stop()
+
+			backend.mu.Lock()
+			defer backend.mu.Unlock()
+			if len(backend.sends) != 1 || backend.sends[0] != "hello" {
+				t.Errorf("sends = %v, want [hello]", backend.sends)
+			}
+			if backend.interrupts != 1 {
+				t.Errorf("interrupts = %d, want 1", backend.interrupts)
+			}
+			if len(backend.resizes) != 1 || backend.resizes[0].cols != 80 || backend.resizes[0].rows != 24 {
+				t.Errorf("resizes = %+v, want 80x24", backend.resizes)
+			}
+			if backend.stops != 1 {
+				t.Errorf("stops = %d, want 1", backend.stops)
+			}
+
+			req := backend.requests[0]
+			if req.WorkDir == "" || req.SessionID != provider+"-session" {
+				t.Errorf("request core fields = %+v", req)
+			}
+			if req.Config.Model != "test-model" {
+				t.Errorf("Config.Model = %q, want test-model", req.Config.Model)
+			}
+			if req.Config.PermissionMode != "acceptEdits" {
+				t.Errorf("PermissionMode = %q, want acceptEdits", req.Config.PermissionMode)
+			}
+			if !strings.Contains(req.DisallowedTools, "ExtraTool") {
+				t.Errorf("DisallowedTools = %q, want ExtraTool included", req.DisallowedTools)
+			}
+		})
+	}
+}
+
+func TestStartCodexSessionFailsWithCapabilityError(t *testing.T) {
+	_, err := Start(Config{Provider: ProviderCodex, WorkDir: t.TempDir()})
+	if err == nil {
+		t.Fatal("Start with ProviderCodex returned nil error")
+	}
+	var capErr *CapabilityError
+	if !errors.As(err, &capErr) {
+		t.Fatalf("error = %T %v, want CapabilityError", err, err)
+	}
+	if capErr.Provider != ProviderCodex || capErr.Capability != "session" || capErr.Status != CapabilityExperimental {
+		t.Errorf("CapabilityError = %+v", capErr)
+	}
+}
+
+func TestStartGrokSessionFailsWithCapabilityError(t *testing.T) {
+	_, err := Start(Config{Provider: ProviderGrok, WorkDir: t.TempDir()})
+	if err == nil {
+		t.Fatal("Start with ProviderGrok returned nil error")
+	}
+	var capErr *CapabilityError
+	if !errors.As(err, &capErr) {
+		t.Fatalf("error = %T %v, want CapabilityError", err, err)
+	}
+	if capErr.Provider != ProviderGrok || capErr.Capability != "session" || capErr.Status != CapabilityExperimental {
+		t.Errorf("CapabilityError = %+v", capErr)
+	}
+}
+
+func TestCodexRewindFailsWithCapabilityError(t *testing.T) {
+	agent := &Agent{provider: ProviderCodex}
+	_, err := agent.Rewind(1, Config{Provider: ProviderCodex})
+	if err == nil {
+		t.Fatal("Codex Rewind returned nil error")
+	}
+	var capErr *CapabilityError
+	if !errors.As(err, &capErr) {
+		t.Fatalf("error = %T %v, want CapabilityError", err, err)
+	}
+	if capErr.Provider != ProviderCodex || capErr.Capability != "rewind" || capErr.Status != CapabilityUnsupported {
+		t.Errorf("CapabilityError = %+v", capErr)
+	}
+}
+
+func TestGrokRewindFailsWithCapabilityError(t *testing.T) {
+	agent := &Agent{provider: ProviderGrok}
+	_, err := agent.Rewind(1, Config{Provider: ProviderGrok})
+	if err == nil {
+		t.Fatal("Grok Rewind returned nil error")
+	}
+	var capErr *CapabilityError
+	if !errors.As(err, &capErr) {
+		t.Fatalf("error = %T %v, want CapabilityError", err, err)
+	}
+	if capErr.Provider != ProviderGrok || capErr.Capability != "rewind" || capErr.Status != CapabilityUnsupported {
+		t.Errorf("CapabilityError = %+v", capErr)
+	}
+}
+
+func TestAgentMissingOperationFailsWithCapabilityError(t *testing.T) {
+	ready := make(chan struct{})
+	close(ready)
+	agent := &Agent{
+		provider: ProviderCodex,
+		alive:    true,
+		ready:    ready,
+	}
+	err := agent.Send("hello")
+	if err == nil {
+		t.Fatal("Send without provider operation returned nil error")
+	}
+	var capErr *CapabilityError
+	if !errors.As(err, &capErr) {
+		t.Fatalf("error = %T %v, want CapabilityError", err, err)
+	}
+	if capErr.Provider != ProviderCodex || capErr.Capability != "send" || capErr.Status != CapabilityUnsupported {
+		t.Errorf("CapabilityError = %+v", capErr)
 	}
 }
 

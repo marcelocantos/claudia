@@ -1,0 +1,6 @@
+{"id":0,"result":{"userAgent":"codex-app-server-test"}}
+{"id":1,"result":{"thread":{"id":"thr_interrupted"}}}
+{"id":2,"result":{"turn":{"id":"turn_interrupted"}}}
+{"method":"turn/started","params":{"threadId":"thr_interrupted","turn":{"id":"turn_interrupted"}}}
+{"id":3,"result":{}}
+{"method":"turn/completed","params":{"threadId":"thr_interrupted","turn":{"id":"turn_interrupted","status":"interrupted"}}}

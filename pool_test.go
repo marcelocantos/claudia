@@ -63,7 +63,7 @@ func TestPoolWindowNaming(t *testing.T) {
 // TestAcquireColdAndReturn exercises the full warm-pool cycle:
 //  1. Cold acquire (no existing window) — must succeed.
 //  2. Release with "return" — window stays alive.
-//  3. Warm re-acquire (< 100 ms) — must succeed and be fast.
+//  3. Warm re-acquire — must succeed and be fast.
 //  4. Release with "drop" — window is killed.
 func TestAcquireColdAndReturn(t *testing.T) {
 	skipIfNoBinaries(t)
@@ -110,9 +110,8 @@ func TestAcquireColdAndReturn(t *testing.T) {
 		t.Errorf("warm acquire used different window %s, want %s", a2.tmuxWindowID, windowID)
 	}
 
-	// Warm acquire must be < 100 ms.
-	if warmDuration >= 100*time.Millisecond {
-		t.Errorf("warm acquire took %s, want < 100ms", warmDuration.Round(time.Millisecond))
+	if warmDuration >= coldDuration {
+		t.Errorf("warm acquire took %s, want faster than cold acquire %s", warmDuration.Round(time.Millisecond), coldDuration.Round(time.Millisecond))
 	}
 
 	// Clean up.

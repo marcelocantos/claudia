@@ -212,3 +212,21 @@ maintenance activities. Append-only — newest entries at the bottom.
     in `ManualCommit` mode should migrate to `RequestResponse` driven
     by `OnUserTranscript`. No deprecation marker yet — revisit after
     real-world use during shakeout.
+
+## 2026-07-11 — /release v0.15.0
+
+- **Outcome**: Released v0.15.0 — multi-provider expansion. Ships **Grok Build
+  CLI Task mode** (`ProviderGrok`) via `grok -p --output-format streaming-json`,
+  with binary discovery (`GROK_BIN` / `~/.grok/bin/grok`), hermetic fixtures and
+  fault oracles, and fail-closed Session Start + Rewind (`*CapabilityError`).
+  Also lands the in-progress **Codex** Task path (`codex exec --json`), provider
+  backend seams, capability errors, app-server spike docs/fixtures, and private-
+  storage oracle (Codex Session remains experimental fail-closed). Session
+  rewind for Claude and the stale-session resume-menu auto-advance (from the
+  post-v0.14.0 line) are included in this release payload. Distinguishes
+  `ProviderGrok` from package `claudia/grok` (Realtime voice).
+- **Deferred**:
+  - Grok Session mode (ACP `grok agent stdio`) — bullseye 🎯T7.4/T7.5 set-aside
+  - Codex Session mode (app-server turn contract) — 🎯T4.4–T4.5 still open
+  - Broker control plane 🎯T2/T3
+  - 🎯T1 (1.0) — shakeout + surface review

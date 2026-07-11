@@ -12,7 +12,7 @@ new module (e.g. `claudia2`) rather than breaking an existing import
 path. The pre-1.0 period exists to shake out the API design before
 that contract takes effect.
 
-Snapshot as of: v0.12.0.
+Snapshot as of: v0.15.0.
 
 ## Interaction surface
 
@@ -30,7 +30,7 @@ is annotated with a stability assessment:
 
 | Item | Definition | Status |
 |---|---|---|
-| `Config` | struct with `WorkDir, SessionID, Model, PermissionMode, MCPConfig, TermLogPath, PoolPolicy string`, `ExtraArgs, DisallowTools []string`, `PoolCap int` | Needs review |
+| `Config` | struct with `Provider Provider`, `WorkDir, SessionID, Model, PermissionMode, MCPConfig, TermLogPath, PoolPolicy string`, `ExtraArgs, DisallowTools []string`, `PoolCap int` | Needs review |
 | `Agent` | opaque struct; methods listed below | Needs review |
 | `Event` | struct with `Type string`, `Raw []byte`, `Text string`, `StopReason string`, `ProgressType string`; method `IsTerminalStop() bool` | Stable |
 | `EventFunc` | `func(Event)` | Needs review |
@@ -38,7 +38,9 @@ is annotated with a stability assessment:
 | `TaskEvent` | struct with `Type TaskEventType`, `Content, ToolName, ToolInput, ToolID, SessionID string`, `DurationMs, CostUSD float64`, `Usage Usage`, `IsError bool`, `ErrorMsg string` | Needs review |
 | `TaskEventType` | string type | Stable |
 | `TaskStatus` | string type | Stable |
-| `TaskConfig` | struct with `ID, Name, WorkDir, Model, ClaudeID, LastResult string` | Needs review |
+| `Provider` | string type selecting `ProviderClaude`, `ProviderCodex`, or `ProviderGrok` | Fluid |
+| `CapabilityError` | struct with `Provider Provider`, `Capability, Status, Reason string`; method `Error() string` | Fluid |
+| `TaskConfig` | struct with `Provider Provider`, `ID, Name, WorkDir, Model, ClaudeID, LastResult, SandboxMode, ApprovalPolicy string` | Needs review |
 | `RawLogFunc` | `func(line []byte)` | Stable |
 | `Task` | opaque struct; methods listed below | Needs review |
 | `AgentDef` | struct with `Name, WorkDir, SessionID, Model string`, `DisallowTools []string` and `AutoStart bool` | Needs review |
@@ -50,6 +52,8 @@ is annotated with a stability assessment:
 | Item | Status |
 |---|---|
 | `Version` | Stable |
+| `ProviderClaude, ProviderCodex, ProviderGrok` (Provider) | Fluid |
+| `CapabilityUnsupported, CapabilityExperimental` | Fluid |
 | `TaskEventInit, TaskEventText, TaskEventToolUse, TaskEventResult, TaskEventError` (TaskEventType) | Stable |
 | `TaskStatusIdle, TaskStatusRunning, TaskStatusError, TaskStatusStopped` (TaskStatus) | Stable |
 | ~~`ErrDaemonUnavailable`~~ | Removed (daemon pivot) |
@@ -167,6 +171,45 @@ is annotated with a stability assessment:
 | Item | Purpose | Status |
 |---|---|---|
 | `CLAUDE_BIN` | Absolute path or PATH-resolvable name of the `claude` executable. Honoured by both Task and Session/Pool spawn paths. Falls back to `exec.LookPath("claude")` then to known install locations (`~/.local/bin/claude`, `~/.claude/local/claude`, `/opt/homebrew/bin/claude`, `/usr/local/bin/claude`). | Stable |
+| `CODEX_BIN` | Absolute path or PATH-resolvable name of the `codex` executable. Honoured by Codex Task mode. Falls back to `exec.LookPath("codex")` then to known install locations including `/Applications/Codex.app/Contents/Resources/codex`. | Fluid |
+| `GROK_BIN` | Absolute path or PATH-resolvable name of the Grok Build CLI (`grok`). Honoured by Grok Task mode. Falls back to `exec.LookPath("grok")` then to known install locations including `~/.grok/bin/grok`. Not related to package `claudia/grok` (Realtime voice). | Fluid |
+
+### Codex provider surface
+
+Codex support is pre-1.0 and intentionally capability-gated. The stable
+surface today is Task mode through `codex exec --json`, selected by
+`TaskConfig.Provider = ProviderCodex`. Token usage maps into `Usage`,
+but Codex Task mode does not currently report cost in `CostUSD`.
+
+Persistent Codex Session mode is not implemented yet. `Start` with
+`Config.Provider = ProviderCodex` fails closed with `*CapabilityError`
+and `Status == CapabilityExperimental` until the public app-server
+thread/turn contract is proven. Codex rewind, tmux attach, terminal
+byte logs, and Claude-style transcript manipulation are unsupported;
+callers should expect `CapabilityError` rather than silent Claude
+fallback semantics.
+
+Codex sandbox and approval fields are passed to Codex as Codex flags.
+They are not treated as equivalent to Claude `PermissionMode` or
+`DisallowTools` until tests prove a narrower mapping.
+
+### Grok Build CLI provider surface
+
+Grok Build CLI support is pre-1.0 and capability-gated. The surface
+today is Task mode through `grok -p … --output-format streaming-json`,
+selected by `TaskConfig.Provider = ProviderGrok`. Session id is taken
+from the terminal `end.sessionId` field; headless streaming-json does
+not currently map tool_use or cost/usage into `TaskEvent`.
+
+Persistent Grok Session mode is not implemented yet. `Start` with
+`Config.Provider = ProviderGrok` fails closed with `*CapabilityError`
+and `Status == CapabilityExperimental` until the public
+`grok agent stdio` (ACP) contract is proven. Grok rewind via private
+`~/.grok/sessions` files is unsupported.
+
+Do not confuse `ProviderGrok` with package
+`github.com/marcelocantos/claudia/grok`, which is a standalone Realtime
+voice WebSocket client.
 
 ### Surface item count
 
@@ -270,10 +313,10 @@ have doc comments, and `example_test.go` adds `ExampleRun`, `ExampleNewTask`,
 - **Replacing the `claude` CLI shell-out with a native API.** Not
   happening — claudia exists specifically because there is no such
   API. If Anthropic ships one, it becomes a separate project.
-- **Multi-backend support (OpenAI, Gemini, etc. as coding agents).**
-  claudia is Claude Code specific by definition. The `grok`
-  subpackage covers voice only and does not make claudia a
-  multi-backend library.
+- **Arbitrary multi-backend support (OpenAI Chat Completions, Gemini,
+  etc. as coding agents).** claudia harnesses terminal coding-agent
+  CLIs (Claude Code, Codex, Grok Build). The `grok` subpackage covers
+  Realtime voice only and is not a generic LLM SDK.
 - **WebSocket / HTTP server wrapping.** The concern of the host
   program, not this library.
 - **Windows support for the tmux-backed Agent.** The tmux substrate

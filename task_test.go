@@ -6,10 +6,12 @@ package claudia
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -222,6 +224,394 @@ func TestParseTaskEmptyContent(t *testing.T) {
 	}
 }
 
+func TestCodexTaskArgs(t *testing.T) {
+	req := taskRunRequest{
+		WorkDir:        "/repo",
+		Model:          "gpt-5.4",
+		SandboxMode:    "read-only",
+		ApprovalPolicy: "never",
+		Prompt:         "summarize",
+	}
+	got := codexTaskArgs(req)
+	want := []string{
+		"--ask-for-approval", "never",
+		"--cd", "/repo",
+		"--sandbox", "read-only",
+		"--model", "gpt-5.4",
+		"exec",
+		"--json",
+		"summarize",
+	}
+	if !slicesEqual(got, want) {
+		t.Errorf("codexTaskArgs = %v, want %v", got, want)
+	}
+}
+
+func TestCodexTaskArgsResume(t *testing.T) {
+	got := codexTaskArgs(taskRunRequest{SessionID: "thread-123", Prompt: "continue"})
+	want := []string{"exec", "resume", "--json", "thread-123", "continue"}
+	if !slicesEqual(got, want) {
+		t.Errorf("codexTaskArgs resume = %v, want %v", got, want)
+	}
+}
+
+func TestCodexTaskParser(t *testing.T) {
+	parser := codexTaskParser{}
+	lines := readFixtureLines(t, "testdata/codex/exec/success.jsonl")
+
+	var events []TaskEvent
+	for _, line := range lines {
+		events = append(events, parser.Parse([]byte(line))...)
+	}
+	if len(events) != 5 {
+		t.Fatalf("events = %d, want 5: %#v", len(events), events)
+	}
+	if events[0].Type != TaskEventInit || events[0].SessionID == "" {
+		t.Errorf("init event = %#v", events[0])
+	}
+	if events[1].Type != TaskEventToolUse || events[1].ToolName != "command_execution" {
+		t.Errorf("command event = %#v", events[1])
+	}
+	if events[2].Type != TaskEventText || events[2].Content == "" {
+		t.Errorf("text event = %#v", events[2])
+	}
+	if events[3].Type != TaskEventText || events[3].Content != "Final answer." {
+		t.Errorf("final text event = %#v", events[3])
+	}
+	result := events[4]
+	if result.Type != TaskEventResult {
+		t.Fatalf("result event = %#v", result)
+	}
+	if result.Content != "Final answer." {
+		t.Errorf("result content = %q, want final agent message", result.Content)
+	}
+	if result.Usage.InputTokens != 24763 {
+		t.Errorf("input tokens = %d, want 24763", result.Usage.InputTokens)
+	}
+	if result.Usage.CacheReadInputTokens != 24448 {
+		t.Errorf("cached input tokens = %d, want 24448", result.Usage.CacheReadInputTokens)
+	}
+	if result.Usage.OutputTokens != 122 {
+		t.Errorf("output tokens = %d, want 122", result.Usage.OutputTokens)
+	}
+}
+
+func TestCodexTaskSuccessOracleRejectsFaults(t *testing.T) {
+	lines := readFixtureLines(t, "testdata/codex/exec/success.jsonl")
+	if err := codexTaskSuccessOracle(lines); err != nil {
+		t.Fatalf("codexTaskSuccessOracle(success): %v", err)
+	}
+
+	droppedSessionID := append([]string(nil), lines[1:]...)
+	if err := codexTaskSuccessOracle(droppedSessionID); err == nil || !strings.Contains(err.Error(), "session") {
+		t.Fatalf("dropped session id error = %v, want session failure", err)
+	}
+
+	wrongFinalMessage := append([]string(nil), lines...)
+	wrongFinalMessage[4] = strings.Replace(wrongFinalMessage[4], "Final answer.", "Stale answer.", 1)
+	if err := codexTaskSuccessOracle(wrongFinalMessage); err == nil || !strings.Contains(err.Error(), "final") {
+		t.Fatalf("wrong final-message error = %v, want final failure", err)
+	}
+
+	malformedUsage := append([]string(nil), lines...)
+	malformedUsage[5] = strings.Replace(malformedUsage[5], `"cached_input_tokens":24448`, `"cached_input_tokens":122`, 1)
+	if err := codexTaskSuccessOracle(malformedUsage); err == nil || !strings.Contains(err.Error(), "usage") {
+		t.Fatalf("malformed usage error = %v, want usage failure", err)
+	}
+}
+
+func codexTaskSuccessOracle(lines []string) error {
+	parser := codexTaskParser{}
+	var (
+		sawSessionID bool
+		result       TaskEvent
+	)
+	for _, line := range lines {
+		for _, ev := range parser.Parse([]byte(line)) {
+			if ev.Type == TaskEventInit && ev.SessionID != "" {
+				sawSessionID = true
+			}
+			if ev.Type == TaskEventResult {
+				result = ev
+			}
+		}
+	}
+	if !sawSessionID {
+		return errors.New("missing session id")
+	}
+	if result.Type != TaskEventResult {
+		return errors.New("missing final result")
+	}
+	if result.Content != "Final answer." {
+		return errors.New("wrong final message")
+	}
+	if result.Usage.InputTokens != 24763 ||
+		result.Usage.CacheReadInputTokens != 24448 ||
+		result.Usage.OutputTokens != 122 {
+		return errors.New("malformed usage accounting")
+	}
+	return nil
+}
+
+func TestCodexTaskParserErrors(t *testing.T) {
+	parser := codexTaskParser{}
+	for _, fixture := range []string{
+		"testdata/codex/exec/failure.jsonl",
+		"testdata/codex/exec/error.jsonl",
+	} {
+		var events []TaskEvent
+		for _, line := range readFixtureLines(t, fixture) {
+			events = append(events, parser.Parse([]byte(line))...)
+		}
+		if len(events) == 0 {
+			t.Fatalf("no events for %s", fixture)
+		}
+		ev := events[len(events)-1]
+		if ev.Type != TaskEventError || !ev.IsError || ev.ErrorMsg == "" {
+			t.Errorf("error event = %#v", ev)
+		}
+	}
+}
+
+func TestCodexTaskParserMalformedFixture(t *testing.T) {
+	parser := codexTaskParser{}
+	for _, line := range readFixtureLines(t, "testdata/codex/exec/malformed.jsonl") {
+		events := parser.Parse([]byte(line))
+		if len(events) != 0 {
+			t.Errorf("events for malformed/unknown line %q = %#v, want none", line, events)
+		}
+	}
+}
+
+func TestGrokTaskArgs(t *testing.T) {
+	req := taskRunRequest{
+		WorkDir: "/repo",
+		Model:   "grok-4",
+		Prompt:  "summarize",
+	}
+	got := grokTaskArgs(req)
+	want := []string{
+		"-p", "summarize",
+		"--output-format", "streaming-json",
+		"--permission-mode", "bypassPermissions",
+		"--cwd", "/repo",
+		"--model", "grok-4",
+	}
+	if !slicesEqual(got, want) {
+		t.Errorf("grokTaskArgs = %v, want %v", got, want)
+	}
+}
+
+func TestGrokTaskArgsResume(t *testing.T) {
+	got := grokTaskArgs(taskRunRequest{SessionID: "sess-123", Prompt: "continue"})
+	want := []string{
+		"-p", "continue",
+		"--output-format", "streaming-json",
+		"--permission-mode", "bypassPermissions",
+		"--resume", "sess-123",
+	}
+	if !slicesEqual(got, want) {
+		t.Errorf("grokTaskArgs resume = %v, want %v", got, want)
+	}
+}
+
+func TestGrokTaskParser(t *testing.T) {
+	parser := grokTaskParser{}
+	var events []TaskEvent
+	for _, line := range readFixtureLines(t, "testdata/grok/exec/success.jsonl") {
+		events = append(events, parser.Parse([]byte(line))...)
+	}
+	// text, text, init, result — thought ignored
+	if len(events) != 4 {
+		t.Fatalf("events = %d, want 4: %#v", len(events), events)
+	}
+	if events[0].Type != TaskEventText || events[0].Content != "Final " {
+		t.Errorf("text[0] = %#v", events[0])
+	}
+	if events[1].Type != TaskEventText || events[1].Content != "answer." {
+		t.Errorf("text[1] = %#v", events[1])
+	}
+	if events[2].Type != TaskEventInit || events[2].SessionID != "019f4f39-0ad7-74c1-942b-32557bd3c302" {
+		t.Errorf("init = %#v", events[2])
+	}
+	if events[3].Type != TaskEventResult || events[3].Content != "Final answer." {
+		t.Errorf("result = %#v", events[3])
+	}
+}
+
+func TestGrokTaskSuccessOracleRejectsFaults(t *testing.T) {
+	lines := readFixtureLines(t, "testdata/grok/exec/success.jsonl")
+	if err := grokTaskSuccessOracle(lines); err != nil {
+		t.Fatalf("grokTaskSuccessOracle(success): %v", err)
+	}
+
+	droppedSessionID := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if strings.Contains(line, `"type":"end"`) {
+			line = `{"type":"end","stopReason":"EndTurn","requestId":"x"}`
+		}
+		droppedSessionID = append(droppedSessionID, line)
+	}
+	if err := grokTaskSuccessOracle(droppedSessionID); err == nil || !strings.Contains(err.Error(), "session") {
+		t.Fatalf("dropped session id error = %v, want session failure", err)
+	}
+
+	wrongFinal := append([]string(nil), lines...)
+	wrongFinal[2] = `{"type":"text","data":"Stale."}`
+	if err := grokTaskSuccessOracle(wrongFinal); err == nil || !strings.Contains(err.Error(), "final") {
+		t.Fatalf("wrong final-message error = %v, want final failure", err)
+	}
+}
+
+func grokTaskSuccessOracle(lines []string) error {
+	parser := grokTaskParser{}
+	var (
+		sawSessionID bool
+		result       TaskEvent
+	)
+	for _, line := range lines {
+		for _, ev := range parser.Parse([]byte(line)) {
+			if ev.Type == TaskEventInit && ev.SessionID != "" {
+				sawSessionID = true
+			}
+			if ev.Type == TaskEventResult {
+				result = ev
+			}
+		}
+	}
+	if !sawSessionID {
+		return errors.New("missing session id")
+	}
+	if result.Type != TaskEventResult {
+		return errors.New("missing final result")
+	}
+	if result.Content != "Final answer." {
+		return errors.New("wrong final message")
+	}
+	return nil
+}
+
+func TestGrokTaskParserErrors(t *testing.T) {
+	parser := grokTaskParser{}
+	var events []TaskEvent
+	for _, line := range readFixtureLines(t, "testdata/grok/exec/error.jsonl") {
+		events = append(events, parser.Parse([]byte(line))...)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events = %d, want 1", len(events))
+	}
+	if events[0].Type != TaskEventError || !events[0].IsError || events[0].ErrorMsg == "" {
+		t.Errorf("error event = %#v", events[0])
+	}
+}
+
+func TestGrokTaskParserMalformedFixture(t *testing.T) {
+	parser := grokTaskParser{}
+	var events []TaskEvent
+	for _, line := range readFixtureLines(t, "testdata/grok/exec/malformed.jsonl") {
+		events = append(events, parser.Parse([]byte(line))...)
+	}
+	// malformed + unknown ignored; text + init + result remain
+	if len(events) != 3 {
+		t.Fatalf("events = %d, want 3: %#v", len(events), events)
+	}
+	if events[0].Type != TaskEventText || events[0].Content != "ok" {
+		t.Errorf("text = %#v", events[0])
+	}
+	if events[1].Type != TaskEventInit || events[1].SessionID != "sess-malformed" {
+		t.Errorf("init = %#v", events[1])
+	}
+	if events[2].Type != TaskEventResult || events[2].Content != "ok" {
+		t.Errorf("result = %#v", events[2])
+	}
+}
+
+func TestTaskBackendForProvider(t *testing.T) {
+	if _, ok := taskBackendForProvider("").(claudeTaskBackend); !ok {
+		t.Error("empty provider did not select claudeTaskBackend")
+	}
+	if _, ok := taskBackendForProvider(ProviderCodex).(codexTaskBackend); !ok {
+		t.Error("ProviderCodex did not select codexTaskBackend")
+	}
+	if _, ok := taskBackendForProvider(ProviderGrok).(grokTaskBackend); !ok {
+		t.Error("ProviderGrok did not select grokTaskBackend")
+	}
+	caps := taskBackendForProvider(ProviderGrok).Capabilities()
+	if !caps.Task || !caps.Resume || caps.Cost || caps.Session {
+		t.Errorf("ProviderGrok capabilities = %+v, want Task+Resume only", caps)
+	}
+	backend := taskBackendForProvider(Provider("bogus"))
+	if _, ok := backend.(errorTaskBackend); !ok {
+		t.Fatalf("unknown provider backend = %T, want errorTaskBackend", backend)
+	}
+	if _, err := backend.RunTask(context.Background(), taskRunRequest{}); err == nil {
+		t.Error("unknown provider RunTask returned nil error")
+	}
+}
+
+// TestGrokPublicTaskEntryPath drives NewTask(ProviderGrok) and a fixture-
+// driven parser oracle on the real mapping functions used by the shipped
+// backend (not a reimplemented parser).
+func TestGrokPublicTaskEntryPath(t *testing.T) {
+	task := NewTask(TaskConfig{
+		Provider: ProviderGrok,
+		ID:       "public-entry",
+		WorkDir:  t.TempDir(),
+	})
+	if _, ok := task.backend.(grokTaskBackend); !ok {
+		t.Fatalf("NewTask(ProviderGrok).backend = %T, want grokTaskBackend", task.backend)
+	}
+	lines := readFixtureLines(t, "testdata/grok/exec/success.jsonl")
+	if err := grokTaskSuccessOracle(lines); err != nil {
+		t.Fatalf("success oracle: %v", err)
+	}
+	// Missing end event → no session id
+	if err := grokTaskSuccessOracle(lines[:len(lines)-1]); err == nil || !strings.Contains(err.Error(), "session") {
+		t.Fatalf("truncated stream error = %v, want session failure", err)
+	}
+	// Explicit error event path
+	errLines := readFixtureLines(t, "testdata/grok/exec/error.jsonl")
+	parser := grokTaskParser{}
+	var sawErr bool
+	for _, line := range errLines {
+		for _, ev := range parser.Parse([]byte(line)) {
+			if ev.Type == TaskEventError && ev.IsError && ev.ErrorMsg != "" {
+				sawErr = true
+			}
+		}
+	}
+	if !sawErr {
+		t.Fatal("error fixture did not produce TaskEventError via shipped parser")
+	}
+}
+
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func readFixtureLines(t *testing.T, path string) []string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%s): %v", path, err)
+	}
+	var lines []string
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if line != "" {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
 func TestNewTask(t *testing.T) {
 	s := NewTask(TaskConfig{
 		ID:      "test-123",
@@ -258,6 +648,195 @@ func TestTaskClaudeID(t *testing.T) {
 	s := NewTask(TaskConfig{ID: "test-abc", Name: "test", ClaudeID: "claude-xyz"})
 	if got := s.ClaudeID(); got != "claude-xyz" {
 		t.Errorf("ClaudeID = %q, want claude-xyz", got)
+	}
+}
+
+type fakeTaskBackend struct {
+	name         string
+	events       []TaskEvent
+	ready        chan struct{}
+	release      chan struct{}
+	interruptErr error
+
+	mu              sync.Mutex
+	requests        []taskRunRequest
+	interruptCalled int
+}
+
+func (b *fakeTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*taskRun, error) {
+	b.mu.Lock()
+	b.requests = append(b.requests, req)
+	b.mu.Unlock()
+
+	ch := make(chan TaskEvent, 16)
+	go func() {
+		defer close(ch)
+		if b.ready != nil {
+			close(b.ready)
+		}
+		if b.release != nil {
+			select {
+			case <-b.release:
+			case <-ctx.Done():
+				return
+			}
+		}
+		for _, ev := range b.events {
+			select {
+			case ch <- ev:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	return &taskRun{
+		events: ch,
+		interrupt: func() error {
+			b.mu.Lock()
+			b.interruptCalled++
+			b.mu.Unlock()
+			return b.interruptErr
+		},
+	}, nil
+}
+
+func (b *fakeTaskBackend) Capabilities() providerCapabilities {
+	return providerCapabilities{
+		Task:   true,
+		Resume: true,
+		Cost:   b.name == "fake-claude",
+	}
+}
+
+func (b *fakeTaskBackend) request(t *testing.T) taskRunRequest {
+	t.Helper()
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if len(b.requests) != 1 {
+		t.Fatalf("%s requests = %d, want 1", b.name, len(b.requests))
+	}
+	return b.requests[0]
+}
+
+func (b *fakeTaskBackend) interrupts() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.interruptCalled
+}
+
+func TestTaskRunUsesInjectedBackendLifecycle(t *testing.T) {
+	for _, provider := range []string{"fake-claude", "fake-codex", "fake-grok"} {
+		t.Run(provider, func(t *testing.T) {
+			backend := &fakeTaskBackend{
+				name: provider,
+				events: []TaskEvent{
+					{Type: TaskEventInit, SessionID: provider + "-session"},
+					{Type: TaskEventText, Content: "hello"},
+					{Type: TaskEventResult, Content: "done"},
+				},
+			}
+			task := newTaskWithBackend(TaskConfig{
+				ID:      provider + "-task",
+				Name:    provider,
+				WorkDir: "/tmp/" + provider,
+				Model:   "test-model",
+			}, backend)
+
+			events, err := task.Run(context.Background(), "test prompt")
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			var got []TaskEvent
+			for ev := range events {
+				got = append(got, ev)
+			}
+
+			if len(got) != len(backend.events) {
+				t.Fatalf("events = %d, want %d", len(got), len(backend.events))
+			}
+			if got[1].Content != "hello" {
+				t.Errorf("text event content = %q, want hello", got[1].Content)
+			}
+			if task.ClaudeID() != provider+"-session" {
+				t.Errorf("session id = %q, want %q", task.ClaudeID(), provider+"-session")
+			}
+			if task.LastResult() != "done" {
+				t.Errorf("LastResult = %q, want done", task.LastResult())
+			}
+			if task.Status() != TaskStatusIdle {
+				t.Errorf("Status = %q, want %q", task.Status(), TaskStatusIdle)
+			}
+			caps := backend.Capabilities()
+			if !caps.Task || !caps.Resume {
+				t.Errorf("capabilities = %+v, want task+resume", caps)
+			}
+			if (provider == "fake-codex" || provider == "fake-grok") && caps.Cost {
+				t.Errorf("%s capabilities = %+v, want cost unsupported", provider, caps)
+			}
+
+			req := backend.request(t)
+			if req.WorkDir != "/tmp/"+provider {
+				t.Errorf("WorkDir = %q, want %q", req.WorkDir, "/tmp/"+provider)
+			}
+			if req.Model != "test-model" {
+				t.Errorf("Model = %q, want test-model", req.Model)
+			}
+			if req.SessionID != "" {
+				t.Errorf("SessionID = %q, want empty", req.SessionID)
+			}
+			if req.Prompt != "test prompt" {
+				t.Errorf("Prompt = %q, want test prompt", req.Prompt)
+			}
+		})
+	}
+}
+
+func TestTaskRunPassesExistingSessionToBackend(t *testing.T) {
+	backend := &fakeTaskBackend{events: []TaskEvent{{Type: TaskEventResult, Content: "done"}}}
+	task := newTaskWithBackend(TaskConfig{
+		ID:       "resume-task",
+		ClaudeID: "existing-session",
+	}, backend)
+
+	events, err := task.Run(context.Background(), "continue")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	for range events {
+	}
+
+	if req := backend.request(t); req.SessionID != "existing-session" {
+		t.Errorf("SessionID = %q, want existing-session", req.SessionID)
+	}
+	if task.ClaudeID() != "existing-session" {
+		t.Errorf("ClaudeID = %q, want existing-session", task.ClaudeID())
+	}
+}
+
+func TestTaskCancelDelegatesToBackendInterrupt(t *testing.T) {
+	wantErr := errors.New("interrupt failed")
+	backend := &fakeTaskBackend{
+		ready:        make(chan struct{}),
+		release:      make(chan struct{}),
+		interruptErr: wantErr,
+	}
+	task := newTaskWithBackend(TaskConfig{ID: "cancel-task"}, backend)
+
+	events, err := task.Run(context.Background(), "wait")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	<-backend.ready
+
+	if err := task.Cancel(); !errors.Is(err, wantErr) {
+		t.Fatalf("Cancel error = %v, want %v", err, wantErr)
+	}
+	if got := backend.interrupts(); got != 1 {
+		t.Errorf("interrupt calls = %d, want 1", got)
+	}
+	close(backend.release)
+	for range events {
 	}
 }
 
@@ -360,6 +939,110 @@ func TestTaskRunSmoke(t *testing.T) {
 
 	if got := task.Status(); got != TaskStatusIdle {
 		t.Errorf("post-run status = %q, want %q", got, TaskStatusIdle)
+	}
+}
+
+// TestGrokTaskRunSmoke spawns a real grok headless process and runs a
+// trivial prompt through Task mode. Gated on CLAUDIA_GROK_LIVE because it
+// uses local Grok credentials and may contact xAI.
+func TestGrokTaskRunSmoke(t *testing.T) {
+	if os.Getenv("CLAUDIA_GROK_LIVE") == "" {
+		t.Skip("CLAUDIA_GROK_LIVE not set (this test spends API credit)")
+	}
+	if _, err := resolveGrokBin(); err != nil {
+		t.Skipf("grok binary not found: %v", err)
+	}
+
+	workDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+
+	task := NewTask(TaskConfig{
+		ID:       "grok-smoke-test",
+		Name:     "grok-smoke",
+		Provider: ProviderGrok,
+		WorkDir:  workDir,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	events, err := task.Run(ctx, "respond with exactly: ok")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	var sawResult bool
+	var sessionID string
+	for ev := range events {
+		switch ev.Type {
+		case TaskEventInit:
+			sessionID = ev.SessionID
+		case TaskEventResult:
+			sawResult = true
+			if ev.Content == "" {
+				t.Error("TaskEventResult content empty")
+			}
+		case TaskEventError:
+			t.Fatalf("TaskEventError: %s", ev.ErrorMsg)
+		}
+	}
+	if !sawResult {
+		t.Error("never saw TaskEventResult")
+	}
+	if sessionID == "" && task.ClaudeID() == "" {
+		t.Error("never captured Grok session id")
+	}
+}
+
+// TestCodexTaskRunSmoke spawns a real codex exec --json process and runs a
+// trivial prompt through Task mode. It is gated separately from
+// CLAUDIA_LIVE because it uses Codex credentials and may contact OpenAI.
+func TestCodexTaskRunSmoke(t *testing.T) {
+	if os.Getenv("CLAUDIA_CODEX_LIVE") == "" {
+		t.Skip("CLAUDIA_CODEX_LIVE not set (this test spends API credit)")
+	}
+	if _, err := resolveCodexBin(); err != nil {
+		t.Skipf("codex binary not found: %v", err)
+	}
+
+	workDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+
+	task := NewTask(TaskConfig{
+		ID:             "codex-smoke-test",
+		Name:           "codex-smoke",
+		Provider:       ProviderCodex,
+		WorkDir:        workDir,
+		SandboxMode:    "read-only",
+		ApprovalPolicy: "never",
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	events, err := task.Run(ctx, "respond with: ok")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	var sawResult bool
+	for ev := range events {
+		switch ev.Type {
+		case TaskEventResult:
+			sawResult = true
+			if ev.Content == "" {
+				t.Error("TaskEventResult content empty")
+			}
+		case TaskEventError:
+			t.Fatalf("TaskEventError: %s", ev.ErrorMsg)
+		}
+	}
+	if !sawResult {
+		t.Error("never saw TaskEventResult")
 	}
 }
 

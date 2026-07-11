@@ -285,10 +285,12 @@ func buildPoolAgent(cfg Config, workDir, windowID string, waitForReady bool) (*A
 	placeholderID := "pool-" + windowID
 
 	a := &Agent{
+		provider:     ProviderClaude,
 		sessionID:    placeholderID,
 		jsonlPath:    "", // populated on first send when Claude writes it
 		termLogPath:  termLogPath,
 		tmuxWindowID: windowID,
+		ops:          claudeAgentOps(),
 		alive:        true,
 		ready:        make(chan struct{}),
 		poolWindow:   true,

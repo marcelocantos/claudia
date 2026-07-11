@@ -146,22 +146,9 @@ targets:
     - T2.5
     - T2.6
     - T2.7
+    - T2.8
     origin: design session 2026-06-10
     discovered: 2026-06-10
-  T2.0:
-    name: Broker policy is verified by deterministic oracles, not live observation
-    status: identified
-    value: 5.0
-    cost: 5.0
-    acceptance:
-    - Injectable clock and rate-limit/429 signal interfaces exist and are the ONLY way broker policy code (AIMD, idle reaping, pool drain, preemption) reads time and backpressure; a vet/grep check fails the build if a policy path calls time.Now/time.After/time.Sleep or reads a live socket for these signals directly. (Today pool.go reads time.Now().Unix() directly — this is a real change, not free.)
-    - A behavioral fake-`claude` test double exists that, on command, emits 429 responses, canned JSONL usage blocks, and the readiness prompt-box pattern — letting AIMD/cost/reaping/preemption loops run headless in `go test -race` CI with zero API credit and no real claude binary. (Extends the exit-0 shim already in task_test.go into a behavioural fake.)
-    - The agent lifecycle state machine (idle→granted→in-use→paused→resumed→reaped→reclaimed) has a model-checked spec (TLA+ or equivalent), SEEDED BEFORE T2.6 implementation, whose mutation test confirms it catches an injected double-ownership fault and an injected Send-after-reaped fault.
-    - 'A one-page oracle map (docs/) declares, per T2.x policy target, its verification class and the specific machine oracle that gates it: T2.1 golden wire vectors + real-socket round-trip; T2.2 seeded-429 AIMD simulator (never-exceed-cap, halve-on-429, additive-recover); T2.4 bounded-drift cost diff (|local − reconciler| < ε over a window, NOT equality — the reconciler lags ~5min); T2.5 virtual-clock reap-threshold assertions; T2.6 lifecycle model-check (no double-ownership, no Send-after-reap). No policy sub-target is retired on live-observation evidence.'
-    - The residual un-oracled surface — policy-DESIGN validity (is AIMD / model-weighted TTL / intent-inference the RIGHT model, not merely correctly implemented) — is declared as explicit accepted risk, gated by dogfooding plus a single human accept/reject, never silence.
-    context: 'Oracle-first analysis (2026-07-05) of the T2 broker epic. The broker is a concurrent, timing-driven, control-loop system with almost no external referent — new-code oracle mode (author the spec as executable checks, à la csp/doit), not port mode. The dominant human cost term is verification-judgment, and the trap is verifying policy by running the live broker and watching 429s/timers/preemptions — a class-4 dynamical signal that is non-reproducible and worth ~1 bit per round-trip (oracle-first rule 2). This target is the choke-point foundation that makes every policy sub-target deterministically testable BEFORE it is built: inject the clock and the 429 source, manufacture a behavioural fake-claude referent, seed the lifecycle model-check, and declare per-target oracles up front. It embodies oracle-first rule 12 (seed load-bearing properties before code; manufacture a referent; test the oracle via mutation; declare the residual as accepted risk). Wiring it as a blocker of T2.2/T2.4/T2.5/T2.6 encodes ''build the oracle first'' in the graph shape. T2.1 (protocol, class-1 golden vectors) is the natural first PR and the place the clock seam + fake-claude foundation incubate.'
-    origin: oracle-first analysis 2026-07-05
-    discovered: 2026-07-05
   T2.1:
     name: Broker protocol and Unix socket transport
     status: identified
@@ -189,7 +176,7 @@ targets:
     context: |
       Anthropic rate limits hit fast with parallel agents; opus-4-7 accounted for 96% of a 7-day $14.9k spend (62% of messages at 14x per-token cost vs sonnet). Per-model AIMD is therefore the single highest-leverage lever. The 429 signal is the authoritative backpressure signal — no need to guess at rate-limit headroom.
     depends_on:
-    - T2.0
+    - T2.8
     origin: design session 2026-06-10
     discovered: 2026-06-10
   T2.3:
@@ -219,7 +206,7 @@ targets:
     context: |
       Admin API reconciliation follows the same double-gate pattern as mnemo cost reconciliation (see mnemo CLAUDE.md): key alone is not enough, explicit opt-in is required. Users in security-reviewed environments must not trigger outbound calls to hosted APIs due to ambient key presence. The local token-count path is always-on and requires zero external calls. mnemo_usage (already supports group_by=model) is available as an alternative read path for historical cost data; the broker's real-time loop avoids the MCP round-trip overhead.
     depends_on:
-    - T2.0
+    - T2.8
     origin: design session 2026-06-10
     discovered: 2026-06-10
   T2.5:
@@ -234,7 +221,7 @@ targets:
     context: |
       Idle opus processes are disproportionately expensive to keep around relative to sonnet/haiku. Model-weighted thresholds are a simple, no-knob policy that matches cost sensitivity without user configuration.
     depends_on:
-    - T2.0
+    - T2.8
     origin: design session 2026-06-10
     discovered: 2026-06-10
   T2.6:
@@ -248,7 +235,7 @@ targets:
     - Consumers observe paused/resumed events via SubscribeEvents.
     - No explicit priority hint in the API — intent is inferred from mode.
     depends_on:
-    - T2.0
+    - T2.8
     origin: design session 2026-06-10
     discovered: 2026-06-10
   T2.7:
@@ -262,6 +249,20 @@ targets:
     - '`claudia broker status` prints a human-readable summary of active agents, pool depth, AIMD slots, and rolling cost.'
     origin: design session 2026-06-10
     discovered: 2026-06-10
+  T2.8:
+    name: Broker policy is verified by deterministic oracles, not live observation
+    status: identified
+    value: 5.0
+    cost: 5.0
+    acceptance:
+    - Injectable clock and rate-limit/429 signal interfaces exist and are the ONLY way broker policy code (AIMD, idle reaping, pool drain, preemption) reads time and backpressure; a vet/grep check fails the build if a policy path calls time.Now/time.After/time.Sleep or reads a live socket for these signals directly. (Today pool.go reads time.Now().Unix() directly — this is a real change, not free.)
+    - A behavioral fake-`claude` test double exists that, on command, emits 429 responses, canned JSONL usage blocks, and the readiness prompt-box pattern — letting AIMD/cost/reaping/preemption loops run headless in `go test -race` CI with zero API credit and no real claude binary. (Extends the exit-0 shim already in task_test.go into a behavioural fake.)
+    - The agent lifecycle state machine (idle→granted→in-use→paused→resumed→reaped→reclaimed) has a model-checked spec (TLA+ or equivalent), SEEDED BEFORE T2.6 implementation, whose mutation test confirms it catches an injected double-ownership fault and an injected Send-after-reaped fault.
+    - 'A one-page oracle map (docs/) declares, per T2.x policy target, its verification class and the specific machine oracle that gates it: T2.1 golden wire vectors + real-socket round-trip; T2.2 seeded-429 AIMD simulator (never-exceed-cap, halve-on-429, additive-recover); T2.4 bounded-drift cost diff (|local − reconciler| < ε over a window, NOT equality — the reconciler lags ~5min); T2.5 virtual-clock reap-threshold assertions; T2.6 lifecycle model-check (no double-ownership, no Send-after-reap). No policy sub-target is retired on live-observation evidence.'
+    - The residual un-oracled surface — policy-DESIGN validity (is AIMD / model-weighted TTL / intent-inference the RIGHT model, not merely correctly implemented) — is declared as explicit accepted risk, gated by dogfooding plus a single human accept/reject, never silence.
+    context: 'Oracle-first analysis (2026-07-05) of the T2 broker epic. The broker is a concurrent, timing-driven, control-loop system with almost no external referent — new-code oracle mode (author the spec as executable checks, à la csp/doit), not port mode. The dominant human cost term is verification-judgment, and the trap is verifying policy by running the live broker and watching 429s/timers/preemptions — a class-4 dynamical signal that is non-reproducible and worth ~1 bit per round-trip (oracle-first rule 2). This target is the choke-point foundation that makes every policy sub-target deterministically testable BEFORE it is built: inject the clock and the 429 source, manufacture a behavioural fake-claude referent, seed the lifecycle model-check, and declare per-target oracles up front. It embodies oracle-first rule 12 (seed load-bearing properties before code; manufacture a referent; test the oracle via mutation; declare the residual as accepted risk). Wiring it as a blocker of T2.2/T2.4/T2.5/T2.6 encodes ''build the oracle first'' in the graph shape. T2.1 (protocol, class-1 golden vectors) is the natural first PR and the place the clock seam + fake-claude foundation incubate.'
+    origin: oracle-first analysis 2026-07-05
+    discovered: 2026-07-05
   T3:
     name: Library SDK is a thin broker client with transparent brokerless fallback
     status: identified
@@ -279,6 +280,189 @@ targets:
     - T2.1
     origin: design session 2026-06-10
     discovered: 2026-06-10
+  T4:
+    name: claudia supports Codex as a first-class provider alongside Claude Code
+    status: identified
+    value: 13.0
+    cost: 13.0
+    acceptance:
+    - The public API can start either a Claude Code-backed agent/task or a Codex-backed agent/task without duplicating caller workflow code.
+    - Codex Task mode is implemented on top of documented `codex exec --json` output, with session IDs, assistant text, tool/command progress, result status, and token usage mapped into provider-neutral events.
+    - Codex persistent Session mode uses a documented public Codex interface (`codex app-server` JSON-RPC or a later stable equivalent), not private Codex transcript files or brittle TUI scraping.
+    - 'Provider-specific unsupported features are explicit: Codex rewind, cost accounting, permission mapping, and tmux attach semantics either work through public Codex contracts or return documented capability errors.'
+    - README, agents-guide.md, and STABILITY.md describe provider selection, binary discovery, known differences, and the compatibility contract.
+    - All T4.x sub-targets are achieved.
+    context: |
+      Raised 2026-07-06 from the feasibility discussion about adapting claudia for Codex. The strategic shape is provider-first rather than a rename from `claude` to `codex`: claudia currently embeds Claude Code's contracts directly (`claude -p --output-format stream-json`, ~/.claude/projects JSONL transcripts, `--resume`, `--session-id`, TUI readiness, and transcript rewind). Codex offers enough public surface to support the same product idea, but with different seams: `codex exec --json` for non-interactive work, `codex exec resume` for continuing non-interactive sessions, and `codex app-server` JSON-RPC for richer persistent thread/turn integrations. The hard rule for this epic is to depend only on public Codex contracts. Private Codex storage formats and opportunistic TUI scraping are explicitly out of bounds because they would make claudia fragile across Codex releases.
+    depends_on:
+    - T4.1
+    - T4.2
+    - T4.3
+    - T4.4
+    - T4.5
+    - T4.6
+    - T4.7
+    - T4.8
+    origin: user strategy request 2026-07-06
+    discovered: 2026-07-06
+  T4.1:
+    name: Provider boundaries isolate Claude Code and Codex runtime contracts
+    status: achieved
+    value: 5.0
+    cost: 5.0
+    actual_cost: 5.0
+    acceptance:
+    - A small internal provider interface separates binary discovery, argument construction, event parsing, session identity, capability reporting, and resume semantics from Agent/Task lifecycle code.
+    - 'Existing Claude Code behaviour remains byte-for-byte compatible where externally observable: default provider is Claude, existing Config and TaskConfig calls still work, and existing tests pass without requiring Codex.'
+    - Provider-neutral events preserve the existing TaskEvent/Event API where possible and introduce provider-specific detail only behind additive fields or raw payload access.
+    - The design does not use functional options; any new public configuration uses explicit struct fields.
+    - A regression test proves a fake Claude provider and fake Codex provider can both drive the same Task lifecycle without spawning real binaries.
+    context: |
+      This is the architectural choke point. Without it, Codex support would leak CLI-specific conditionals through Start, Acquire, Task.Run, transcript parsing, rewind, and tests. The change must be additive so it does not disturb the v1.0 shakeout target: Claude remains the default and existing consumers see no API break.
+      Converging 2026-07-06: Task.Run now delegates binary resolution, argument construction, event parsing, resume identity, raw logs, and interrupt handling to an internal task backend. Fake Claude and fake Codex task backends exercise the same Task lifecycle. Remaining T4.1 work is to apply the provider boundary to Agent/session lifecycle code and make provider capability reporting explicit.
+      Achieved 2026-07-06: Agent Start/Send/Interrupt/Resize/Stop/AttachCommand now route through an internal agent backend/runtime-ops seam; Task.Run routes through an internal task backend; both backend families expose provider capabilities. Fake Claude and fake Codex backends exercise the same Agent and Task lifecycles without real binaries, while Claude remains the default public behaviour.
+    origin: user strategy request 2026-07-06
+    discovered: 2026-07-06
+    achieved: 2026-07-06
+  T4.2:
+    name: Codex binary discovery is reliable across CLI and desktop-app installs
+    status: achieved
+    value: 2.0
+    cost: 2.0
+    actual_cost: 2.0
+    acceptance:
+    - Codex provider resolution checks `CODEX_BIN`, then `exec.LookPath("codex")`, then known app-bundle locations including `/Applications/Codex.app/Contents/Resources/codex`.
+    - Resolver tests cover absolute `CODEX_BIN`, PATH lookup, missing executable, and app-bundle fallback without depending on the host's real Codex install.
+    - Error messages tell users how to install Codex, set `CODEX_BIN`, or use the app-bundle binary when Codex is not on PATH.
+    - Documentation states that Codex Desktop may exist even when `codex` is not on PATH.
+    context: |
+      The local feasibility check found Codex at `/Applications/Codex.app/Contents/Resources/codex` while `codex` was not generally on PATH for the user. Binary resolution should mirror claudia's existing Claude resolver but must account for the desktop app bundle.
+      Achieved 2026-07-06: Added an internal Codex resolver that checks CODEX_BIN, PATH, and known install locations including the macOS desktop app bundle. Tests cover absolute CODEX_BIN, PATH lookup, missing executable errors, and app-bundle fallback without depending on a real Codex install. README and agents-guide.md document the desktop-app-without-PATH case.
+    depends_on:
+    - T4.1
+    origin: user strategy request 2026-07-06
+    discovered: 2026-07-06
+    achieved: 2026-07-06
+  T4.3:
+    name: Codex Task mode streams provider-neutral events from `codex exec --json`
+    status: achieved
+    value: 5.0
+    cost: 5.0
+    actual_cost: 5.0
+    acceptance:
+    - A Codex-backed Task runs `codex exec --json` with the configured workdir, model, sandbox, approval policy, and prompt.
+    - 'Parser tests cover representative Codex JSONL events: `thread.started`, `turn.started`, `item.started`, `item.completed` with agent messages, `turn.completed` with usage, `turn.failed`, and `error`.'
+    - Codex thread IDs are captured and exposed as the task's provider session ID; a subsequent run can resume via `codex exec resume <SESSION_ID>`.
+    - The final assistant message and token usage are available through the same high-level Task result flow as Claude Task mode.
+    - Live tests are gated behind an explicit environment variable and skip cleanly when Codex is unavailable or unauthenticated.
+    context: |
+      This is the MVP path because `codex exec --json` is documented and stable enough for scripts. It delivers immediate value without solving persistent UI attachment, app-server lifecycle, or rewind parity.
+      Achieved 2026-07-06: TaskConfig gained additive provider, sandbox, and approval fields. ProviderCodex runs `codex exec --json` or `codex exec resume --json`, maps `thread.started` to TaskEventInit, command items to TaskEventToolUse, agent messages to TaskEventText, turn completion usage to TaskEventResult, and failures to TaskEventError. Hermetic parser and arg tests cover the documented event sample and resume shape; `CLAUDIA_CODEX_LIVE=1` gates the live smoke test.
+    depends_on:
+    - T4.1
+    - T4.2
+    origin: user strategy request 2026-07-06
+    discovered: 2026-07-06
+    achieved: 2026-07-06
+  T4.4:
+    name: Codex app-server contract is proven before persistent Session mode depends on it
+    status: converging
+    value: 3.0
+    cost: 3.0
+    acceptance:
+    - A spike client starts `codex app-server` over stdio, performs initialize/initialized, starts a thread, starts a turn, and records the notification sequence as golden JSON fixtures.
+    - Generated JSON schema or TypeScript schema artifacts for the installed Codex version are captured under docs or testdata only if their license and churn profile are acceptable; otherwise the spike documents why hand-written fixture coverage is preferred.
+    - The spike establishes how to set cwd, model, sandbox, approval policy, and resume/fork/archive behaviour through public app-server methods.
+    - 'The spike explicitly records app-server maturity risk: which parts are stable, which are experimental, and what fallback behaviour claudia should expose if app-server changes.'
+    - No production Session-mode code is built on private Codex session files as a shortcut.
+    context: |
+      Codex persistent agents should not be implemented by scraping TUI output or editing private transcript files. The documented rich-client integration point is `codex app-server` JSON-RPC, but parts of that surface are experimental. This target creates a small, disposable referent before committing claudia's public API to it.
+      Converging 2026-07-06: docs/codex-app-server-spike.md records the documented stdio JSON-RPC handshake, configuration mapping to prove, schema artifact decision, maturity risks, and fallback rule. Remaining work requires an explicitly approved live app-server turn capture because `turn/start` contacts the model and may export prompt/workspace context.
+      Converging 2026-07-06: Generated the installed Codex app-server JSON Schema to a temp directory and inspected thread/turn schemas without a live model call. The spike now records exact field names for cwd, model, approvalPolicy, sandboxPolicy, thread/resume, thread/fork, thread/archive, thread/unarchive, and turn/interrupt, plus the decision not to commit the 4.0 MB / 123k-line generated schema bundle.
+      Converging 2026-07-06: Captured a redacted installed-version app-server stdio initialize + thread/start sequence without sending turn/start. The fixture lives at testdata/codex/app-server/thread-start.jsonl. The live turn capture remains outstanding.
+    depends_on:
+    - T4.1
+    - T4.2
+    origin: user strategy request 2026-07-06
+    discovered: 2026-07-06
+  T4.5:
+    name: Codex persistent Session mode uses public thread/turn APIs
+    status: identified
+    value: 5.0
+    cost: 8.0
+    acceptance:
+    - Start with the Codex provider creates or resumes a Codex thread through app-server (or a later documented stable equivalent) and stores the returned thread/session ID.
+    - Send starts or steers Codex turns without relying on tmux key injection; WaitForResponse resolves from streamed agent-message and turn-completed notifications.
+    - SubscribeEvents receives provider-neutral assistant/user/progress events derived from app-server notifications, with raw Codex payloads available for consumers that need full fidelity.
+    - Interrupt maps to the documented turn interruption API and reports a capability error if the installed Codex version lacks it.
+    - AttachCommand/terminal-log semantics are documented as Claude-only unless a public Codex equivalent exists.
+    - Integration tests exercise a fake app-server and one gated live app-server path.
+    context: |
+      Persistent Session mode is the large parity item. The intended implementation is not a Codex TUI in tmux; app-server already owns the rich-client thread/turn lifecycle and avoids readiness-regex fragility. This may deliberately produce a different observability story from Claude's human-attachable tmux window.
+    depends_on:
+    - T4.3
+    - T4.4
+    origin: user strategy request 2026-07-06
+    discovered: 2026-07-06
+  T4.6:
+    name: Codex provider capability gaps are explicit and tested
+    status: converging
+    value: 3.0
+    cost: 3.0
+    acceptance:
+    - Provider capability reporting distinguishes supported, unsupported, and experimental Codex behaviours for rewind, cost accounting, tmux attach, terminal logs, permission/tool restrictions, image inputs, and web search.
+    - Calling an unsupported Codex feature returns a typed, documented error rather than silently falling back to Claude assumptions.
+    - Codex rewind is not implemented by truncating private transcript files; it is either implemented through a public fork/resume API or marked unsupported with a clear rationale.
+    - 'Permission and sandbox mapping is documented: Codex approval/sandbox flags are not treated as equivalent to Claude permission modes unless tests prove the mapping.'
+    - Tests cover at least one unsupported capability and one experimental capability downgrade.
+    context: |
+      Codex and Claude Code have overlapping but different affordances. The dangerous path is fake parity: pretending that Claude transcript rewind, tmux attach, or permission flags mean the same thing for Codex. Capability reporting keeps the user-facing surface honest while still allowing additive support as Codex public APIs mature.
+      Converging 2026-07-06: Added a typed CapabilityError, fail-closed ProviderCodex Session startup, fail-closed Codex rewind guard, and tests proving unsupported capabilities surface through errors.As rather than silent Claude fallback. Remaining work includes a fuller supported/unsupported/experimental capability matrix for terminal logs, tmux attach, cost, permission/tool mapping, images, and web search.
+      Converging 2026-07-06: Split typed capability status into unsupported vs experimental constants, changed Codex Session startup to an experimental fail-closed error, and documented the capability matrix in README, agents-guide.md, and STABILITY.md. T4.6 still waits on T4.4 before retirement because the app-server proof determines whether Session/interrupt/fork semantics remain experimental or become supported.
+    depends_on:
+    - T4.3
+    - T4.4
+    origin: user strategy request 2026-07-06
+    discovered: 2026-07-06
+  T4.7:
+    name: Codex provider is documented, packaged, and release-gated
+    status: identified
+    value: 3.0
+    cost: 3.0
+    acceptance:
+    - README includes a Codex provider quickstart for Task mode and Session mode, including binary discovery and authentication prerequisites.
+    - agents-guide.md explains provider selection, event differences, live-test gates, and which APIs are Claude-only vs Codex-capable.
+    - STABILITY.md records the Codex provider API surface and any pre-1.0 compatibility risks.
+    - Pre-release validation includes hermetic Codex parser/provider tests and an optional `CODEX_LIVE=1` live test tier.
+    - Release notes for the first Codex-capable release call out experimental areas and required Codex CLI/app versions.
+    context: |
+      Codex support affects user expectations more than it affects the package name. The docs must make the provider distinction obvious so existing Claude users are not surprised and new Codex users know which features are stable.
+    depends_on:
+    - T4.3
+    - T4.5
+    - T4.6
+    - T4.8
+    origin: user strategy request 2026-07-06
+    discovered: 2026-07-06
+  T4.8:
+    name: Codex provider verification is oracle-first, not live-observation driven
+    status: converging
+    value: 5.0
+    cost: 3.0
+    acceptance:
+    - A one-page oracle map under docs/ classifies each T4.x target by verification class and names the machine oracle that gates retirement, with live Codex runs marked as smoke/regression only.
+    - Golden fixtures cover `codex exec --json` streams and app-server thread/turn notification streams, including success, failure, interrupted turn, usage, command/tool progress, unsupported capability, and malformed payload cases.
+    - Fake Codex provider and fake app-server harnesses exercise Task and Session lifecycles in `go test` without real Codex, Claude, network, auth, tmux, or API spend.
+    - Mutation/fault-injection checks prove the oracle catches at least dropped session IDs, wrong final-message selection, malformed usage accounting, silent unsupported-capability success, and accidental reads of private Codex transcript storage.
+    - 'The residual un-oracled surface is explicit: public API taste, acceptable parity gaps versus Claude Code, and app-server maturity risk are gated by one human accept/reject review after the machine checks pass.'
+    context: |
+      Oracle-first review on 2026-07-06 found the initial T4 graph had good implementation decomposition but no explicit verification choke point. Codex support is mostly new-code oracle mode with a port-like seam at the CLI/app-server boundary: golden fixtures and fakes can adjudicate parser/lifecycle/capability behaviour, while API taste and acceptable parity gaps remain human residue. This target is deliberately a sibling to the code targets, not a prerequisite for starting them; coding may proceed in parallel, but T4 cannot be retired and release docs cannot claim support until these oracles have run against the implementation. The failure mode to avoid is substituting live Codex observation ("it connected", "a message arrived") for fidelity checks ("the event was mapped correctly", "unsupported capability failed closed", "private storage was not touched").
+      Converging 2026-07-06: Added docs/codex-provider-oracle-map.md, codex exec golden fixtures, app-server golden fixture scaffolding, parser tests backed by fixtures, and JSONL validity checks for app-server fixtures. Remaining work includes the fake app-server lifecycle harness, unsupported-capability typed errors, mutation/fault checks, and live-capture review.
+      Converging 2026-07-06: Added a private-storage shortcut oracle that scans production Go files for private Codex state path tokens, so future Session work must go through `codex exec` or app-server seams rather than reading Codex internals.
+      Converging 2026-07-06: Added an internal Codex app-server line parser and fixture-backed tests for success, failure, interrupted turn, unsupported capability response, malformed JSON, and usage field mapping. This moves the app-server fixture set from JSON-valid evidence to typed oracle coverage, while still leaving live turn capture and the fake lifecycle harness outstanding.
+      Converging 2026-07-06: Added a fake Codex app-server Agent backend harness that exercises Start, Send, WaitForResponse, SubscribeEvents, Interrupt, raw app-server payload forwarding, usage accumulation, and Claude-only attach/log semantics without real Codex, Claude, network, auth, tmux, or API spend. Production ProviderCodex Session mode remains fail-closed until T4.4's live contract proof completes.
+    origin: oracle-first review 2026-07-06
+    discovered: 2026-07-06
   T5:
     name: claudia Agents support conversation rewind — roll a session back to an earlier turn and resume
     status: achieved
@@ -309,3 +493,160 @@ targets:
     context: 'Consumer bug: jevons agents wedged when a registered agent''s session aged out and --resume parked the TUI at the resume/summary menu, which WaitReady could not distinguish from ''not ready'', timing out at 30s (jevons-po 2026-05-19/20). Fix in claudia''s launch handshake: MatchStartupMenu + WaitReady auto-confirm the default (bounded), poll loop refactored behind an injected readyDriver for deterministic tests. Load-bearing for every --resume path — restart, rehydrate, and the v0.13.0 rewind. Flip to achieved after the live regression passes at the next release.'
     origin: manual
     discovered: 2026-07-05
+  T7:
+    name: claudia ships Grok Build CLI as a first-class Task provider (Session deferred)
+    status: identified
+    value: 13.0
+    cost: 13.0
+    acceptance:
+    - The public API can start a Grok-backed Task via TaskConfig.Provider = ProviderGrok without duplicating caller lifecycle code.
+    - ProviderGrok resolves the grok binary, runs headless Task mode through provider-neutral TaskEvent streams, and fails closed with CapabilityError for Session Start and Rewind.
+    - Shipable T7.x children are achieved; Session children T7.4/T7.5 are set-aside (not claimed as shipped).
+    - STABILITY.md, README, and agents-guide document the Grok Task support matrix and distinguish ProviderGrok from package claudia/grok (Realtime).
+    - A minor release names Grok Build CLI Task support and known Session/cost/tool gaps.
+    context: Task-first re-scope 2026-07-11 for objective "T7 released". Original epic included Session (T7.4/T7.5); those are set-aside so the parent can retire when Task+docs+oracles ship without claiming unfinished Session work.
+    depends_on:
+    - T7.1
+    - T7.2
+    - T7.3
+    - T7.6
+    - T7.7
+    - T7.8
+    origin: user request 2026-07-11
+    discovered: 2026-07-11
+  T7.1:
+    name: Provider seams accept Grok Build CLI without collapsing Claude/Codex contracts
+    status: achieved
+    value: 3.0
+    cost: 2.0
+    actual_cost: 2.0
+    acceptance:
+    - taskBackendForProvider and agentBackendForProvider dispatch ProviderGrok to dedicated backends (not Claude or Codex code paths).
+    - Unknown provider still fails with a clear error; empty provider remains Claude.
+    - Fake Grok task/agent backends can drive the same public lifecycle as Claude fakes in hermetic tests.
+    - Production Grok code lives behind the existing provider interfaces; no private Grok session-file shortcuts in public API paths.
+    context: T4.1 already introduced taskBackend/agentBackend seams. T7.1 extends those seams for ProviderGrok rather than inventing a parallel abstraction. Package claudia/grok (Realtime voice) stays independent.
+    origin: T7 decomposition
+    discovered: 2026-07-11
+    achieved: 2026-07-11
+  T7.2:
+    name: Grok binary discovery is reliable across CLI install locations
+    status: achieved
+    value: 2.0
+    cost: 1.0
+    actual_cost: 1.0
+    acceptance:
+    - Resolver checks GROK_BIN, then exec.LookPath("grok"), then known install locations including ~/.grok/bin/grok, /opt/homebrew/bin/grok, /usr/local/bin/grok.
+    - Missing binary returns a clear error naming GROK_BIN as override.
+    - Unit tests inject env, PATH lookup, candidates, and missing-binary failure without requiring a real install.
+    context: 'Observed install: curl installer places binary at ~/.grok/bin/grok (symlink to versioned download). PATH may or may not include that dir.'
+    depends_on:
+    - T7.1
+    origin: T7 decomposition
+    discovered: 2026-07-11
+    achieved: 2026-07-11
+  T7.3:
+    name: Grok Task mode streams provider-neutral events from grok headless streaming-json
+    status: achieved
+    value: 5.0
+    cost: 3.0
+    actual_cost: 3.0
+    acceptance:
+    - A Grok-backed Task runs `grok -p <prompt> --output-format streaming-json` (plus cwd/model/permission/resume flags as configured) and maps events into TaskEvent.
+    - "Mapping: text\to TaskEventText (accumulated/streamed), end\to TaskEventInit sessionId once + TaskEventResult with final text, error\to TaskEventError; thought is either ignored or surfaced as progress without breaking consumers."
+    - Resume uses --resume with the session id captured from end.sessionId (or equivalent).
+    - Golden fixtures under testdata/grok/exec/ cover success, error, resume id, and at least one multi-chunk text stream.
+    - Live smoke is opt-in via CLAUDIA_GROK_LIVE=1 and does not retire the target alone.
+    context: 'Public headless contract (Grok Build docs § Output Formats): streaming-json types text/thought/end/error. Sample capture 2026-07-11 with grok 0.2.93: thought deltas, text deltas, end with stopReason/sessionId/requestId. Documented schema does not emit tool_use in streaming-json — TaskEventToolUse may stay empty for Grok Task mode; that gap is explicit under T7.6.'
+    depends_on:
+    - T7.1
+    - T7.2
+    origin: T7 decomposition
+    discovered: 2026-07-11
+    achieved: 2026-07-11
+  T7.4:
+    name: Grok Session contract is proven before persistent Session mode depends on it
+    status: set_aside
+    value: 5.0
+    cost: 5.0
+    set_aside_reason: Deferred from Task-first T7 ship (2026-07-11). Session ACP stdio contract spike is residual work; not claimed as released. Re-open when Session mode is in scope.
+    acceptance:
+    - 'Spike documents and fixtures the chosen public multi-turn contract: preferred candidate is `grok agent stdio` (ACP JSON-RPC); fallback candidates are tmux+TUI key injection (Claude-like) or multi-shot headless --resume only if ACP is unsuitable.'
+    - Spike proves session create/resume, prompt submission, streamed agent message chunks, interrupt/cancel if available, and permission auto-approve for unattended use.
+    - 'Maturity risk is recorded: which methods are stable vs experimental, and what fails closed.'
+    - No production Session-mode code depends on private files under ~/.grok/sessions as the primary control plane.
+    context: Grok docs describe ACP over `grok agent stdio` as the IDE/integration path (session/new, session/prompt, session/update with agent_message_chunk, tool_call, etc.). That is a better Session substrate than scraping the TUI. Tmux TUI remains an observability option if ACP lacks attach semantics. Parallel to Codex T4.4 app-server spike.
+    depends_on:
+    - T7.1
+    - T7.2
+    origin: T7 decomposition
+    discovered: 2026-07-11
+  T7.5:
+    name: Grok persistent Session mode uses the proven public multi-turn contract
+    status: set_aside
+    value: 5.0
+    cost: 8.0
+    set_aside_reason: Deferred from Task-first T7 ship (2026-07-11). Depends on T7.4 ACP contract; persistent Session mode is not in this release.
+    acceptance:
+    - Start with ProviderGrok creates or resumes a Grok session through the contract proven in T7.4 and stores the session id.
+    - Send / WaitForResponse / SubscribeEvents map to provider-neutral events; Interrupt maps to the public cancel API or CapabilityError.
+    - AttachCommand / terminal-byte logs are documented as Claude-only unless a public Grok equivalent exists.
+    - Hermetic fake ACP (or chosen transport) tests cover the Agent lifecycle; live smoke is CLAUDIA_GROK_LIVE-gated only.
+    context: 'Until T7.4 retires, Start(Config{Provider: ProviderGrok}) must fail closed with CapabilityExperimental, matching Codex Session posture.'
+    depends_on:
+    - T7.3
+    - T7.4
+    origin: T7 decomposition
+    discovered: 2026-07-11
+  T7.6:
+    name: Grok provider capability gaps are explicit and tested
+    status: achieved
+    value: 3.0
+    cost: 2.0
+    actual_cost: 2.0
+    acceptance:
+    - Backend capability reporting for ProviderGrok has Task+Resume true and Session/Cost false (or equivalent explicit gaps).
+    - Calling Start(ProviderGrok) returns *CapabilityError with experimental session status.
+    - Calling Rewind on a Grok-provider agent returns *CapabilityError unsupported.
+    - Permission mapping documents Grok --permission-mode (Task uses bypassPermissions) vs Claude PermissionMode; no false equivalence without tests.
+    - Production code does not read private Grok session storage paths (private-storage scan).
+    context: 'Known gaps from 2026-07-11 probe: streaming-json has no documented tool_use events; end event lacks cost/usage fields; rewind may exist via Grok session files/CLI but private storage must not be the API; package name overlap with claudia/grok Realtime is documentation-only.'
+    depends_on:
+    - T7.3
+    origin: T7 decomposition
+    discovered: 2026-07-11
+    achieved: 2026-07-11
+  T7.7:
+    name: Grok provider is documented, packaged, and release-gated
+    status: converging
+    value: 3.0
+    cost: 2.0
+    acceptance:
+    - README and agents-guide document ProviderGrok Task mode, binary discovery (GROK_BIN), auth (XAI_API_KEY / login), CLAUDIA_GROK_LIVE, Session fail-closed, and Realtime package disambiguation.
+    - STABILITY.md lists ProviderGrok as Fluid and documents Grok Build CLI Task surface + gaps.
+    - Release notes for the shipping minor version mention Grok Build CLI Task support and known gaps (Session experimental, no tool_use/cost on stream).
+    context: Package path github.com/marcelocantos/claudia/grok is already the Realtime voice client — docs must prevent consumer confusion with ProviderGrok on the root package.
+    depends_on:
+    - T7.3
+    - T7.6
+    - T7.8
+    origin: T7 decomposition
+    discovered: 2026-07-11
+  T7.8:
+    name: Grok provider verification is oracle-first, not live-observation driven
+    status: achieved
+    value: 5.0
+    cost: 3.0
+    actual_cost: 3.0
+    acceptance:
+    - docs/grok-provider-oracle-map.md classifies each T7.x target by verification class and names the machine oracle that gates retirement.
+    - Golden fixtures cover headless streaming-json for success, error, multi-chunk text, and session id capture.
+    - Fake Grok backends exercise Task lifecycle without real network/auth/tmux.
+    - Fault injection proves oracles catch dropped session ids, wrong final message, and silent unsupported-capability success (Session/Rewind).
+    - 'Human residue is explicit: API taste, acceptable parity gaps vs Claude, ACP maturity risk for deferred Session.'
+    context: Same verification economics as T4.8. Live grok runs are smoke only.
+    depends_on:
+    - T7.1
+    origin: T7 decomposition
+    discovered: 2026-07-11
+    achieved: 2026-07-11

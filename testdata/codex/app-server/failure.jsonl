@@ -1,0 +1,4 @@
+{"id":0,"result":{"userAgent":"codex-app-server-test"}}
+{"id":1,"result":{"thread":{"id":"thr_failure"}}}
+{"id":2,"result":{"turn":{"id":"turn_failure"}}}
+{"method":"turn/completed","params":{"threadId":"thr_failure","turn":{"id":"turn_failure","status":"failed"},"error":{"message":"model failed"}}}

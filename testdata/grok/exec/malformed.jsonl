@@ -1,0 +1,4 @@
+not-json
+{"type":"unknown_event","data":"ignore me"}
+{"type":"text","data":"ok"}
+{"type":"end","stopReason":"EndTurn","sessionId":"sess-malformed","requestId":"req-1"}
