@@ -16,15 +16,17 @@ handling, JSONL transcript tailing, or session lifecycle management.
 
 No launchd or systemd setup is needed — tmux handles process lifetime for Session mode agents.
 
-Codex and Grok Build CLI providers are in progress.
+**Grok Build CLI Task mode** ships via `ProviderGrok` (see Task mode
+below). Binary discovery checks `GROK_BIN`, then `grok` on `$PATH`, then
+known install locations including `~/.grok/bin/grok`. This is the terminal
+coding agent from [x.ai/cli](https://x.ai/cli), not the Realtime voice
+client in package `claudia/grok`. Grok Session mode is not shipped yet
+(`Start` fails closed with `*CapabilityError`).
 
-- **Codex:** resolver checks `CODEX_BIN`, then `codex` on `$PATH`, then
-  known install locations including
-  `/Applications/Codex.app/Contents/Resources/codex`.
-- **Grok Build CLI:** resolver checks `GROK_BIN`, then `grok` on `$PATH`,
-  then known install locations including `~/.grok/bin/grok`. This is the
-  terminal coding agent from [x.ai/cli](https://x.ai/cli), not the
-  Realtime voice client in package `claudia/grok`.
+**Codex Task mode** ships via `ProviderCodex`. The resolver checks
+`CODEX_BIN`, then `codex` on `$PATH`, then known install locations
+including `/Applications/Codex.app/Contents/Resources/codex`. Codex
+Session mode remains experimental (fail-closed).
 
 ## Modes
 
