@@ -12,7 +12,7 @@ new module (e.g. `claudia2`) rather than breaking an existing import
 path. The pre-1.0 period exists to shake out the API design before
 that contract takes effect.
 
-Snapshot as of: v0.15.0.
+Snapshot as of: v0.16.0.
 
 ## Interaction surface
 
@@ -195,17 +195,19 @@ They are not treated as equivalent to Claude `PermissionMode` or
 
 ### Grok Build CLI provider surface
 
-Grok Build CLI support is pre-1.0 and capability-gated. The surface
-today is Task mode through `grok -p … --output-format streaming-json`,
-selected by `TaskConfig.Provider = ProviderGrok`. Session id is taken
-from the terminal `end.sessionId` field; headless streaming-json does
-not currently map tool_use or cost/usage into `TaskEvent`.
+Grok Build CLI support is pre-1.0 and capability-gated.
 
-Persistent Grok Session mode is not implemented yet. `Start` with
-`Config.Provider = ProviderGrok` fails closed with `*CapabilityError`
-and `Status == CapabilityExperimental` until the public
-`grok agent stdio` (ACP) contract is proven. Grok rewind via private
-`~/.grok/sessions` files is unsupported.
+**Task mode** uses `grok -p … --output-format streaming-json`
+(`TaskConfig.Provider = ProviderGrok`). Session id is taken from the
+terminal `end.sessionId` field; headless streaming-json does not map
+tool_use into `TaskEvent`. Cost is not reported in `CostUSD`.
+
+**Session mode** uses ACP over `grok agent --always-approve stdio`
+(`Config.Provider = ProviderGrok`). `Send` / `WaitForResponse` /
+`Interrupt` / `Stop` are supported. There is no tmux attach or terminal
+byte log. Rewind via private session files is unsupported
+(`CapabilityUnsupported`). Resume uses ACP `session/load` when
+`Config.SessionID` is set, with fallback to `session/new`.
 
 Do not confuse `ProviderGrok` with package
 `github.com/marcelocantos/claudia/grok`, which is a standalone Realtime

@@ -230,3 +230,17 @@ maintenance activities. Append-only — newest entries at the bottom.
   - Codex Session mode (app-server turn contract) — 🎯T4.4–T4.5 still open
   - Broker control plane 🎯T2/T3
   - 🎯T1 (1.0) — shakeout + surface review
+
+## 2026-07-11 — /release v0.16.0
+
+- **Outcome**: Released v0.16.0 — **Grok Build Session mode** via ACP
+  (`ProviderGrok` + `grok agent stdio`): multi-turn Send/WaitForResponse/
+  Interrupt/Stop without tmux. Hermetic fake ACP server and
+  `CLAUDIA_GROK_LIVE` session smoke. Also ships hermetic fake-CLI
+  Task.Run spawn coverage for Claude/Codex/Grok (🎯T9). Rewind and tmux
+  attach remain unsupported for Grok; Codex Session still experimental.
+- **Deferred**:
+  - Grok Realtime package tests (🎯T8, low priority)
+  - Codex Session (🎯T4.4–T4.5)
+  - Broker 🎯T2/T3
+  - 🎯T1 (1.0)

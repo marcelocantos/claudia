@@ -568,38 +568,42 @@ targets:
     achieved: 2026-07-11
   T7.4:
     name: Grok Session contract is proven before persistent Session mode depends on it
-    status: set_aside
+    status: achieved
     value: 5.0
     cost: 5.0
+    actual_cost: 3.0
     set_aside_reason: Deferred from Task-first T7 ship (2026-07-11). Session ACP stdio contract spike is residual work; not claimed as released. Re-open when Session mode is in scope.
     acceptance:
     - 'Spike documents and fixtures the chosen public multi-turn contract: preferred candidate is `grok agent stdio` (ACP JSON-RPC); fallback candidates are tmux+TUI key injection (Claude-like) or multi-shot headless --resume only if ACP is unsuitable.'
     - Spike proves session create/resume, prompt submission, streamed agent message chunks, interrupt/cancel if available, and permission auto-approve for unattended use.
     - 'Maturity risk is recorded: which methods are stable vs experimental, and what fails closed.'
     - No production Session-mode code depends on private files under ~/.grok/sessions as the primary control plane.
-    context: Grok docs describe ACP over `grok agent stdio` as the IDE/integration path (session/new, session/prompt, session/update with agent_message_chunk, tool_call, etc.). That is a better Session substrate than scraping the TUI. Tmux TUI remains an observability option if ACP lacks attach semantics. Parallel to Codex T4.4 app-server spike.
+    context: Re-opened 2026-07-11 for ACP Session implementation. Grok docs describe ACP over grok agent stdio as the IDE/integration path. Shipped with hermetic fake + docs/grok-acp-session.md.
     depends_on:
     - T7.1
     - T7.2
     origin: T7 decomposition
     discovered: 2026-07-11
+    achieved: 2026-07-11
   T7.5:
     name: Grok persistent Session mode uses the proven public multi-turn contract
-    status: set_aside
+    status: achieved
     value: 5.0
     cost: 8.0
+    actual_cost: 5.0
     set_aside_reason: Deferred from Task-first T7 ship (2026-07-11). Depends on T7.4 ACP contract; persistent Session mode is not in this release.
     acceptance:
     - Start with ProviderGrok creates or resumes a Grok session through the contract proven in T7.4 and stores the session id.
     - Send / WaitForResponse / SubscribeEvents map to provider-neutral events; Interrupt maps to the public cancel API or CapabilityError.
     - AttachCommand / terminal-byte logs are documented as Claude-only unless a public Grok equivalent exists.
     - Hermetic fake ACP (or chosen transport) tests cover the Agent lifecycle; live smoke is CLAUDIA_GROK_LIVE-gated only.
-    context: 'Until T7.4 retires, Start(Config{Provider: ProviderGrok}) must fail closed with CapabilityExperimental, matching Codex Session posture.'
+    context: 'Re-opened 2026-07-11. Session mode via ACP: Start/Send/WaitForResponse/Interrupt/Stop; no tmux attach; rewind still unsupported.'
     depends_on:
     - T7.3
     - T7.4
     origin: T7 decomposition
     discovered: 2026-07-11
+    achieved: 2026-07-11
   T7.6:
     name: Grok provider capability gaps are explicit and tested
     status: achieved
@@ -652,5 +656,43 @@ targets:
     depends_on:
     - T7.1
     origin: T7 decomposition
+    discovered: 2026-07-11
+    achieved: 2026-07-11
+  T8:
+    name: Package claudia/grok (Realtime voice) has hermetic tests covering Connect lifecycle and core client methods
+    status: identified
+    value: 2.0
+    cost: 5.0
+    acceptance:
+    - github.com/marcelocantos/claudia/grok has at least one *_test.go that runs under plain go test ./... without network or XAI_API_KEY.
+    - Connect failure paths are covered hermetically (missing API key; optional dial/auth failure via injectable transport or httptest/fake if the WebSocket dial is seam-injected).
+    - 'Core Client methods used by consumers are exercised with a fake WebSocket (or equivalent): at least SendText, Close, and one of Commit/CommitAndRespond/RequestResponse or SendAudio; callbacks in Config fire as documented for the simulated server events.'
+    - Statement coverage for package grok is non-zero and reported (or package is excluded from total with an explicit documented reason — default expectation is real tests, not exclusion).
+    - No live xAI Realtime call is required to retire the target; any live smoke is env-gated and optional.
+    context: 'Filed 2026-07-11 after first-observer verification audit: package grok/realtime.go is ~0% statement coverage with no tests, while root package and provider work are relatively well tested. Distinct from ProviderGrok (Grok Build CLI Task mode). Low priority — Realtime voice is a side surface; coding-agent harness remains the product core. Do not implement until higher-value verification gaps are closed.'
+    tags:
+    - testing
+    - low-priority
+    - grok-realtime
+    origin: user request after verification assessment 2026-07-11
+    discovered: 2026-07-11
+  T9:
+    name: Hermetic fake CLI binaries exercise real Task.Run spawn for Claude, Codex, and Grok
+    status: achieved
+    value: 8.0
+    cost: 3.0
+    actual_cost: 2.0
+    acceptance:
+    - Plain go test (no CLAUDIA_*_LIVE, no real claude/codex/grok auth) drives NewTask(...).Run for ProviderClaude, ProviderCodex, and ProviderGrok through the production RunTask spawn path (not only fakeTaskBackend injection).
+    - Each provider test points the binary resolver at a hermetic fake executable (env override or PATH) that emits golden streaming fixtures and exits 0.
+    - Assertions cover session id capture (TaskEventInit / ClaudeID), final TaskEventResult text, and process completion without hanging.
+    - At least one failure path is covered hermetically (non-zero exit or error stream event) for one provider without live network.
+    - Statement coverage of the three RunTask implementations is non-zero under hermetic go test.
+    context: 'Highest-leverage testing gap from 2026-07-11 verification audit: parsers and args builders were well covered but production RunTask process spawn showed ~0% hermetic coverage. Fake binaries close the gap without live API cost.'
+    tags:
+    - testing
+    - hermetic
+    - task-spawn
+    origin: user go after testing recommendations 2026-07-11
     discovered: 2026-07-11
     achieved: 2026-07-11

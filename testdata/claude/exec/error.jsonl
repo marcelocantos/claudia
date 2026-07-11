@@ -1,0 +1,2 @@
+{"type":"system","subtype":"init","session_id":"claude-sess-err-1","tools":[],"model":"claude-sonnet-4-6"}
+{"type":"result","subtype":"error","errors":[{"message":"model overloaded"}],"usage":{"input_tokens":1,"output_tokens":0}}

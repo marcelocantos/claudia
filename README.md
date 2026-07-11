@@ -16,12 +16,12 @@ handling, JSONL transcript tailing, or session lifecycle management.
 
 No launchd or systemd setup is needed — tmux handles process lifetime for Session mode agents.
 
-**Grok Build CLI Task mode** ships via `ProviderGrok` (see Task mode
-below). Binary discovery checks `GROK_BIN`, then `grok` on `$PATH`, then
-known install locations including `~/.grok/bin/grok`. This is the terminal
-coding agent from [x.ai/cli](https://x.ai/cli), not the Realtime voice
-client in package `claudia/grok`. Grok Session mode is not shipped yet
-(`Start` fails closed with `*CapabilityError`).
+**Grok Build CLI** ships via `ProviderGrok` for both Task mode and
+Session mode. Binary discovery checks `GROK_BIN`, then `grok` on `$PATH`,
+then known install locations including `~/.grok/bin/grok`. This is the
+terminal coding agent from [x.ai/cli](https://x.ai/cli), not the Realtime
+voice client in package `claudia/grok`. Session mode uses ACP over
+`grok agent stdio` (not tmux).
 
 **Codex Task mode** ships via `ProviderCodex`. The resolver checks
 `CODEX_BIN`, then `codex` on `$PATH`, then known install locations
@@ -141,14 +141,25 @@ Resuming works automatically: if `Config.SessionID` is set and a JSONL
 transcript already exists for it, claudia passes `--resume`; otherwise
 it passes `--session-id` to create a fresh session with that ID.
 
-`Config{Provider: claudia.ProviderCodex}` and
-`Config{Provider: claudia.ProviderGrok}` currently return
-`*claudia.CapabilityError` with status `claudia.CapabilityExperimental`.
-Persistent Codex Session mode is waiting on a proven public app-server
-turn contract; Grok Session mode is waiting on a proven
-`grok agent stdio` (ACP) contract. claudia deliberately does not fake
-either by scraping private session files or applying Claude transcript
-rewind rules to non-Claude providers.
+Grok Session mode is available with `Config{Provider: claudia.ProviderGrok}`:
+
+```go
+agent, err := claudia.Start(claudia.Config{
+    Provider: claudia.ProviderGrok,
+    WorkDir:  "/path/to/repo",
+    Model:    "grok-4", // optional
+})
+```
+
+It runs `grok agent --always-approve stdio`, speaks ACP JSON-RPC, and
+supports `Send` / `WaitForResponse` / `Interrupt` / `Stop`. There is no
+tmux attach window. Rewind remains unsupported (`CapabilityUnsupported`).
+
+`Config{Provider: claudia.ProviderCodex}` returns
+`*claudia.CapabilityError` with status `claudia.CapabilityExperimental`
+until a public app-server turn contract is proven. claudia does not
+scrape private session files or apply Claude transcript rewind rules to
+non-Claude providers.
 
 The PTY output is also captured to
 `$XDG_STATE_HOME/claudia/terms/<escaped-workdir>/<sessionID>.term`
