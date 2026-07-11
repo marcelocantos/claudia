@@ -587,9 +587,10 @@ targets:
     achieved: 2026-07-11
   T7.5:
     name: Grok persistent Session mode uses the proven public multi-turn contract
-    status: converging
+    status: achieved
     value: 5.0
     cost: 8.0
+    actual_cost: 5.0
     set_aside_reason: Deferred from Task-first T7 ship (2026-07-11). Depends on T7.4 ACP contract; persistent Session mode is not in this release.
     acceptance:
     - Start with ProviderGrok creates or resumes a Grok session through the contract proven in T7.4 and stores the session id.
@@ -602,6 +603,7 @@ targets:
     - T7.4
     origin: T7 decomposition
     discovered: 2026-07-11
+    achieved: 2026-07-11
   T7.6:
     name: Grok provider capability gaps are explicit and tested
     status: achieved
