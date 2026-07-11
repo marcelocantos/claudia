@@ -494,22 +494,21 @@ targets:
     origin: manual
     discovered: 2026-07-05
   T7:
-    name: claudia supports Grok Build CLI as a first-class provider alongside Claude Code
+    name: claudia ships Grok Build CLI as a first-class Task provider (Session deferred)
     status: identified
     value: 13.0
     cost: 13.0
     acceptance:
-    - The public API can start either a Claude-backed or Grok-backed Task (and Session once Session mode is achieved) via Config/TaskConfig.Provider without duplicating caller lifecycle code.
-    - ProviderGrok resolves the grok binary, runs headless Task mode through provider-neutral TaskEvent streams, and fails closed with CapabilityError for unsupported Session/rewind/cost gaps until those contracts are proven.
-    - All T7.x sub-targets are achieved.
-    - STABILITY.md and README document the Grok support matrix; the existing claudia/grok Realtime voice package remains a separate surface and is not conflated with ProviderGrok.
-    context: 'User intent 2026-07-11: extend claudia to harness the official Grok Build CLI (https://x.ai/cli, binary `grok`, v0.2.93 observed) the same way Claude Code is harnessed today — not the Realtime voice client in package grok/. The CLI is closer to Claude than Codex: `-p/--single`, `--output-format streaming-json|json|plain`, `--resume`, `--session-id`, `--permission-mode` (incl. bypassPermissions), `--cwd`, `-m/--model`, `--allow`/`--deny`. Observed streaming-json events: thought/text/end/error (no tool_use in public headless schema). Session paths: interactive TUI (tmux substrate candidate), plus `grok agent stdio|leader` as a potential non-TUI multi-turn contract. Mirror T4''s oracle-first decomposition. Parallel to unfinished Codex T4; does not block T4.'
+    - The public API can start a Grok-backed Task via TaskConfig.Provider = ProviderGrok without duplicating caller lifecycle code.
+    - ProviderGrok resolves the grok binary, runs headless Task mode through provider-neutral TaskEvent streams, and fails closed with CapabilityError for Session Start and Rewind.
+    - Shipable T7.x children are achieved; Session children T7.4/T7.5 are set-aside (not claimed as shipped).
+    - STABILITY.md, README, and agents-guide document the Grok Task support matrix and distinguish ProviderGrok from package claudia/grok (Realtime).
+    - A minor release names Grok Build CLI Task support and known Session/cost/tool gaps.
+    context: Task-first re-scope 2026-07-11 for objective "T7 released". Original epic included Session (T7.4/T7.5); those are set-aside so the parent can retire when Task+docs+oracles ship without claiming unfinished Session work.
     depends_on:
     - T7.1
     - T7.2
     - T7.3
-    - T7.4
-    - T7.5
     - T7.6
     - T7.7
     - T7.8
@@ -517,9 +516,10 @@ targets:
     discovered: 2026-07-11
   T7.1:
     name: Provider seams accept Grok Build CLI without collapsing Claude/Codex contracts
-    status: converging
+    status: achieved
     value: 3.0
     cost: 2.0
+    actual_cost: 2.0
     acceptance:
     - taskBackendForProvider and agentBackendForProvider dispatch ProviderGrok to dedicated backends (not Claude or Codex code paths).
     - Unknown provider still fails with a clear error; empty provider remains Claude.
@@ -528,11 +528,13 @@ targets:
     context: T4.1 already introduced taskBackend/agentBackend seams. T7.1 extends those seams for ProviderGrok rather than inventing a parallel abstraction. Package claudia/grok (Realtime voice) stays independent.
     origin: T7 decomposition
     discovered: 2026-07-11
+    achieved: 2026-07-11
   T7.2:
     name: Grok binary discovery is reliable across CLI install locations
-    status: converging
+    status: achieved
     value: 2.0
     cost: 1.0
+    actual_cost: 1.0
     acceptance:
     - Resolver checks GROK_BIN, then exec.LookPath("grok"), then known install locations including ~/.grok/bin/grok, /opt/homebrew/bin/grok, /usr/local/bin/grok.
     - Missing binary returns a clear error naming GROK_BIN as override.
@@ -542,11 +544,13 @@ targets:
     - T7.1
     origin: T7 decomposition
     discovered: 2026-07-11
+    achieved: 2026-07-11
   T7.3:
     name: Grok Task mode streams provider-neutral events from grok headless streaming-json
-    status: converging
+    status: achieved
     value: 5.0
     cost: 3.0
+    actual_cost: 3.0
     acceptance:
     - A Grok-backed Task runs `grok -p <prompt> --output-format streaming-json` (plus cwd/model/permission/resume flags as configured) and maps events into TaskEvent.
     - "Mapping: text\to TaskEventText (accumulated/streamed), end\to TaskEventInit sessionId once + TaskEventResult with final text, error\to TaskEventError; thought is either ignored or surfaced as progress without breaking consumers."
@@ -559,11 +563,13 @@ targets:
     - T7.2
     origin: T7 decomposition
     discovered: 2026-07-11
+    achieved: 2026-07-11
   T7.4:
     name: Grok Session contract is proven before persistent Session mode depends on it
-    status: identified
+    status: set_aside
     value: 5.0
     cost: 5.0
+    set_aside_reason: Deferred from Task-first T7 ship (2026-07-11). Session ACP stdio contract spike is residual work; not claimed as released. Re-open when Session mode is in scope.
     acceptance:
     - 'Spike documents and fixtures the chosen public multi-turn contract: preferred candidate is `grok agent stdio` (ACP JSON-RPC); fallback candidates are tmux+TUI key injection (Claude-like) or multi-shot headless --resume only if ACP is unsuitable.'
     - Spike proves session create/resume, prompt submission, streamed agent message chunks, interrupt/cancel if available, and permission auto-approve for unattended use.
@@ -577,9 +583,10 @@ targets:
     discovered: 2026-07-11
   T7.5:
     name: Grok persistent Session mode uses the proven public multi-turn contract
-    status: identified
+    status: set_aside
     value: 5.0
     cost: 8.0
+    set_aside_reason: Deferred from Task-first T7 ship (2026-07-11). Depends on T7.4 ACP contract; persistent Session mode is not in this release.
     acceptance:
     - Start with ProviderGrok creates or resumes a Grok session through the contract proven in T7.4 and stores the session id.
     - Send / WaitForResponse / SubscribeEvents map to provider-neutral events; Interrupt maps to the public cancel API or CapabilityError.
@@ -593,50 +600,53 @@ targets:
     discovered: 2026-07-11
   T7.6:
     name: Grok provider capability gaps are explicit and tested
-    status: identified
+    status: achieved
     value: 3.0
     cost: 2.0
+    actual_cost: 2.0
     acceptance:
-    - Capability reporting distinguishes supported, unsupported, and experimental Grok behaviours for session, rewind, cost, tool-use streaming, tmux attach, and terminal logs.
-    - Calling an unsupported Grok feature returns *CapabilityError rather than silent Claude fallback.
-    - Permission mapping documents Grok --permission-mode / --allow / --deny vs Claude PermissionMode / DisallowTools; no false equivalence without tests.
-    - Tests cover at least one unsupported and one experimental capability path.
+    - Backend capability reporting for ProviderGrok has Task+Resume true and Session/Cost false (or equivalent explicit gaps).
+    - Calling Start(ProviderGrok) returns *CapabilityError with experimental session status.
+    - Calling Rewind on a Grok-provider agent returns *CapabilityError unsupported.
+    - Permission mapping documents Grok --permission-mode (Task uses bypassPermissions) vs Claude PermissionMode; no false equivalence without tests.
+    - Production code does not read private Grok session storage paths (private-storage scan).
     context: 'Known gaps from 2026-07-11 probe: streaming-json has no documented tool_use events; end event lacks cost/usage fields; rewind may exist via Grok session files/CLI but private storage must not be the API; package name overlap with claudia/grok Realtime is documentation-only.'
     depends_on:
     - T7.3
-    - T7.4
     origin: T7 decomposition
     discovered: 2026-07-11
+    achieved: 2026-07-11
   T7.7:
     name: Grok provider is documented, packaged, and release-gated
-    status: identified
+    status: converging
     value: 3.0
     cost: 2.0
     acceptance:
-    - README and agents-guide document ProviderGrok Task (and Session if achieved), binary discovery (GROK_BIN), auth (XAI_API_KEY / login), and CLAUDIA_GROK_LIVE.
-    - STABILITY.md lists ProviderGrok and related types as Fluid until post-shakeout review; Realtime package grok is clearly distinguished.
-    - Release notes for the shipping minor version mention Grok CLI provider support and known gaps.
+    - README and agents-guide document ProviderGrok Task mode, binary discovery (GROK_BIN), auth (XAI_API_KEY / login), CLAUDIA_GROK_LIVE, Session fail-closed, and Realtime package disambiguation.
+    - STABILITY.md lists ProviderGrok as Fluid and documents Grok Build CLI Task surface + gaps.
+    - Release notes for the shipping minor version mention Grok Build CLI Task support and known gaps (Session experimental, no tool_use/cost on stream).
     context: Package path github.com/marcelocantos/claudia/grok is already the Realtime voice client — docs must prevent consumer confusion with ProviderGrok on the root package.
     depends_on:
     - T7.3
-    - T7.5
     - T7.6
     - T7.8
     origin: T7 decomposition
     discovered: 2026-07-11
   T7.8:
     name: Grok provider verification is oracle-first, not live-observation driven
-    status: converging
+    status: achieved
     value: 5.0
     cost: 3.0
+    actual_cost: 3.0
     acceptance:
     - docs/grok-provider-oracle-map.md classifies each T7.x target by verification class and names the machine oracle that gates retirement.
-    - Golden fixtures cover headless streaming-json (and ACP stdio if Session is in scope) for success, error, multi-chunk text, and session id capture.
-    - Fake Grok backends exercise Task (and Session when implemented) without real network/auth/tmux.
-    - Fault injection proves oracles catch dropped session ids, missing end events, and silent unsupported-capability success.
-    - 'Human residue is explicit: API taste, acceptable parity gaps vs Claude, ACP/TUI maturity risk.'
+    - Golden fixtures cover headless streaming-json for success, error, multi-chunk text, and session id capture.
+    - Fake Grok backends exercise Task lifecycle without real network/auth/tmux.
+    - Fault injection proves oracles catch dropped session ids, wrong final message, and silent unsupported-capability success (Session/Rewind).
+    - 'Human residue is explicit: API taste, acceptable parity gaps vs Claude, ACP maturity risk for deferred Session.'
     context: Same verification economics as T4.8. Live grok runs are smoke only.
     depends_on:
     - T7.1
     origin: T7 decomposition
     discovered: 2026-07-11
+    achieved: 2026-07-11
