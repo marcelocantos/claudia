@@ -86,6 +86,21 @@ agent, err := claudia.Start(claudia.Config{
 // AttachCommand is empty (no tmux window). Rewind is unsupported.
 ```
 
+Or via the registry (set `AgentDef.Provider` — Launch forwards it to
+`Start`; empty Provider remains Claude):
+
+```go
+_ = reg.Register(claudia.AgentDef{
+    Name:      "helper",
+    WorkDir:   "/abs/path",
+    SessionID: uuid.NewString(), // load falls back to session/new if unknown
+    Provider:  claudia.ProviderGrok,
+    Model:     "grok-4",
+    AutoStart: true,
+})
+agent, err := reg.Launch("helper")
+```
+
 Pass `SessionID` to attempt `session/load` (falls back to `session/new`
 if load fails). Permissions are auto-approved (`--always-approve`).
 Rewind remains `CapabilityUnsupported`; do not truncate private Grok

@@ -19,21 +19,26 @@ type AgentDef struct {
 	// Name is the unique identifier for this agent within its registry.
 	Name string `json:"name"`
 
-	// WorkDir is the working directory the claude process runs in.
+	// WorkDir is the working directory the agent process runs in.
 	WorkDir string `json:"workdir"`
 
-	// SessionID is the Claude session ID used for --resume. It is
-	// assigned automatically when the agent is first registered.
+	// SessionID is the provider session ID used for resume/load. It is
+	// assigned automatically when the agent is first registered. Grok
+	// ACP may replace it with the id returned by session/new.
 	SessionID string `json:"session_id"`
 
-	// Model overrides the default Claude model (e.g. "opus", "sonnet").
+	// Provider selects the runtime (claude, codex, grok). Empty means
+	// ProviderClaude. Grok Session uses ACP over `grok agent stdio`.
+	Provider Provider `json:"provider,omitempty"`
+
+	// Model overrides the default model (e.g. "opus", "sonnet", "grok-4").
 	Model string `json:"model,omitempty"`
 
 	// AutoStart causes this agent to be launched by [Registry.StartAll].
 	AutoStart bool `json:"auto_start"`
 
 	// DisallowTools lists additional tool names to disallow beyond the
-	// claudia defaults.
+	// claudia defaults (Claude Session). Grok ACP may ignore these.
 	DisallowTools []string `json:"disallow_tools,omitempty"`
 }
 
@@ -115,8 +120,12 @@ func (r *Registry) Remove(name string) error {
 // Launch starts the registered agent named name and returns it. If the agent
 // is already running and alive, the existing [Agent] is returned without
 // spawning a new process. It returns an error if name is not registered.
-// If the agent's workDir contains a .mcp.json file, it is passed to claude
-// automatically.
+// If the agent's workDir contains a .mcp.json file, it is passed to the
+// provider when supported (Claude MCP config path).
+//
+// Provider is taken from AgentDef.Provider (empty = Claude). When the
+// launched agent reports a different SessionID (e.g. Grok ACP session/new),
+// the definition is updated and persisted.
 func (r *Registry) Launch(name string) (*Agent, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -136,6 +145,7 @@ func (r *Registry) Launch(name string) (*Agent, error) {
 	}
 
 	proc, err := Start(Config{
+		Provider:      def.Provider,
 		WorkDir:       def.WorkDir,
 		SessionID:     def.SessionID,
 		Model:         def.Model,
@@ -146,8 +156,15 @@ func (r *Registry) Launch(name string) (*Agent, error) {
 		return nil, err
 	}
 
+	if sid := proc.SessionID(); sid != "" && sid != def.SessionID {
+		def.SessionID = sid
+		if err := r.save(); err != nil {
+			slog.Warn("persist session id after launch", "name", name, "err", err)
+		}
+	}
+
 	r.procs[name] = proc
-	slog.Info("agent started", "name", name, "session", proc.SessionID())
+	slog.Info("agent started", "name", name, "provider", def.Provider, "session", proc.SessionID())
 	return proc, nil
 }
 
