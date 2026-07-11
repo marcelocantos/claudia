@@ -328,17 +328,17 @@ func TestStartCodexSessionFailsWithCapabilityError(t *testing.T) {
 	}
 }
 
-func TestStartGrokSessionFailsWithCapabilityError(t *testing.T) {
-	_, err := Start(Config{Provider: ProviderGrok, WorkDir: t.TempDir()})
+func TestStartGrokSessionNonExecutableBinary(t *testing.T) {
+	// Absolute path that exists but is not executable so resolve returns it
+	// and spawn fails (no fallthrough to a host grok install).
+	t.Setenv("GROK_BIN", t.TempDir())
+	_, err := Start(Config{Provider: ProviderGrok, WorkDir: t.TempDir(), TermLogPath: "-"})
 	if err == nil {
-		t.Fatal("Start with ProviderGrok returned nil error")
+		t.Fatal("Start returned nil error for non-executable GROK_BIN")
 	}
 	var capErr *CapabilityError
-	if !errors.As(err, &capErr) {
-		t.Fatalf("error = %T %v, want CapabilityError", err, err)
-	}
-	if capErr.Provider != ProviderGrok || capErr.Capability != "session" || capErr.Status != CapabilityExperimental {
-		t.Errorf("CapabilityError = %+v", capErr)
+	if errors.As(err, &capErr) {
+		t.Fatalf("unexpected CapabilityError: %+v", capErr)
 	}
 }
 

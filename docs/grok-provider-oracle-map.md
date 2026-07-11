@@ -19,8 +19,8 @@ retires when hermetic fixtures, fakes, and fault checks prove the mapping.
 | 🎯T7.2 binary discovery | Deterministic resolver | `TestResolveGrokBin` injects env, PATH, `~/.grok/bin/grok`, missing-binary failure. | Optional install sanity |
 | 🎯T7.3 Grok Task mode | Public CLI fixture parser | Golden `testdata/grok/exec/*` + `grokTaskParser` + `TestGrokTaskSuccessOracleRejectsFaults`. | `CLAUDIA_GROK_LIVE=1` smoke only |
 | Hermetic spawn (🎯T9) | Fake CLI process | `TestHermeticTaskRunGrokSpawn` sets `GROK_BIN` to a script that cats golden fixtures through production `RunTask`. | None |
-| 🎯T7.4 Session contract spike | Deferred (set-aside) | Not in Task-first ship; residual work for a later epic. | — |
-| 🎯T7.5 Grok Session mode | Deferred (set-aside) | Depends on T7.4; not shipped. | — |
+| 🎯T7.4 Session contract spike | ACP fixtures + docs | `docs/grok-acp-session.md`, `testdata/grok/acp/fake_acp.py`, live capture notes. | Optional live handshake |
+| 🎯T7.5 Grok Session mode | Fake ACP lifecycle | `TestHermeticGrokSessionStartSendWait`, `TestHermeticGrokSessionRunHelper`, `TestHermeticGrokSessionLoad`. | `CLAUDIA_GROK_LIVE` session smoke (optional) |
 | 🎯T7.6 capability gaps | Negative capability oracle | `TestStartGrokSessionFailsWithCapabilityError`, `TestGrokRewindFailsWithCapabilityError`, backend capability asserts (no cost), private-storage scan. | Human review of accepted gaps |
 | 🎯T7.7 docs/release gate | Documentation consistency | README, agents-guide, STABILITY, release notes share one support matrix. | Release checklist only |
 

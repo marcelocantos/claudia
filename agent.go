@@ -41,6 +41,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -54,8 +55,9 @@ import (
 // Config configures a Claude Code agent.
 type Config struct {
 	// Provider selects the runtime backing this agent. Empty means
-	// ProviderClaude. ProviderCodex Session mode is experimental and
-	// currently fails closed until the app-server contract is proven.
+	// ProviderClaude. ProviderGrok uses ACP over `grok agent stdio`.
+	// ProviderCodex Session mode is experimental and currently fails
+	// closed until the app-server contract is proven.
 	Provider Provider
 
 	// WorkDir is the working directory for the Claude Code process.
@@ -199,6 +201,11 @@ type agentStart struct {
 	TailJSONL            bool
 	StoreSessionInWindow bool
 	DetectReady          func(*Agent)
+	// SessionID, when non-empty, replaces the pre-assigned Agent.sessionID
+	// (used when the provider allocates the id, e.g. Grok ACP session/new).
+	SessionID string
+	// JSONLPath, when non-empty, replaces the Claude-shaped transcript path.
+	JSONLPath string
 }
 
 type agentBackend interface {
@@ -246,13 +253,14 @@ func (codexAgentBackend) StartAgent(agentStartRequest) (*agentStart, error) {
 
 func (grokAgentBackend) Capabilities() providerCapabilities {
 	return providerCapabilities{
-		Task:   true,
-		Resume: true,
+		Task:    true,
+		Session: true,
+		Resume:  true,
 	}
 }
 
-func (grokAgentBackend) StartAgent(agentStartRequest) (*agentStart, error) {
-	return nil, experimentalCapability(ProviderGrok, "session", "persistent Session mode requires the grok agent stdio (ACP) contract spike to complete")
+func (grokAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
+	return startGrokAgent(req)
 }
 
 func (b errorAgentBackend) Capabilities() providerCapabilities {
@@ -286,14 +294,12 @@ func claudeAgentOps() agentOps {
 	}
 }
 
-// Start spawns a new Claude Code agent inside a tmux window on the
-// dedicated claudia tmux server.
+// Start spawns a new agent for cfg.Provider. Claude uses a tmux-backed
+// Session; Grok uses ACP over `grok agent stdio`; Codex Session remains
+// experimental and fails closed.
 func Start(cfg Config) (*Agent, error) {
-	switch cfg.Provider {
-	case ProviderCodex:
+	if cfg.Provider == ProviderCodex {
 		return nil, experimentalCapability(ProviderCodex, "session", "persistent Session mode requires the app-server live contract spike to complete")
-	case ProviderGrok:
-		return nil, experimentalCapability(ProviderGrok, "session", "persistent Session mode requires the grok agent stdio (ACP) contract spike to complete")
 	}
 	return startWithBackend(cfg, agentBackendForProvider(cfg.Provider))
 }
@@ -384,6 +390,14 @@ func startWithBackend(cfg Config, backend agentBackend) (*Agent, error) {
 	if err != nil {
 		return nil, err
 	}
+	if start.SessionID != "" {
+		a.sessionID = start.SessionID
+		sessionID = start.SessionID
+	}
+	if start.JSONLPath != "" {
+		a.jsonlPath = start.JSONLPath
+		jsonlPath = start.JSONLPath
+	}
 	windowID := start.WindowID
 	a.tmuxWindowID = windowID
 	a.tmuxCtrl = start.Control
@@ -430,7 +444,10 @@ func startWithBackend(cfg Config, backend agentBackend) (*Agent, error) {
 	}
 
 	if start.DetectReady != nil {
-		go start.DetectReady(a)
+		// Synchronous: Grok ACP needs agentRef wired before Send, and
+		// Claude readiness still runs its poll loop from inside DetectReady
+		// as a nested goroutine where needed.
+		start.DetectReady(a)
 	} else {
 		close(a.ready)
 	}
@@ -483,13 +500,87 @@ func (claudeAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error)
 		TailJSONL:            true,
 		StoreSessionInWindow: true,
 		DetectReady: func(a *Agent) {
-			a.detectReady()
+			// Poll loop must not block Start.
+			go a.detectReady()
 		},
 	}, nil
 }
 
-// Run sends a single prompt to a new Claude Code session, waits for
+// startGrokAgent launches Grok Build over ACP (grok agent stdio). No tmux.
+func startGrokAgent(req agentStartRequest) (*agentStart, error) {
+	bin, err := resolveGrokBin()
+	if err != nil {
+		return nil, err
+	}
+
+	// Prefer caller SessionID when resuming; empty means session/new.
+	preferID := ""
+	if req.Resuming || req.Config.SessionID != "" {
+		preferID = req.SessionID
+	}
+
+	// Client is closed via ops.stop. publishEvent is wired once Agent exists;
+	// we stash a pointer-to-func that Start fills after construction by
+	// closing ready immediately and using ops that capture the client.
+	var agentRef atomic.Pointer[Agent]
+	client, err := startGrokACP(bin, req.WorkDir, req.Config.Model, preferID, func(ev Event) {
+		if a := agentRef.Load(); a != nil {
+			a.publishEvent(ev)
+		}
+	}, func() {
+		if a := agentRef.Load(); a != nil {
+			a.mu.Lock()
+			a.alive = false
+			a.mu.Unlock()
+		}
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	sid := client.SessionID()
+	ops := agentOps{
+		attachCommand: func(*Agent) string {
+			// No human-attachable TUI window; ACP is process-local.
+			return ""
+		},
+		interrupt: func(*Agent) error {
+			return client.Cancel()
+		},
+		send: func(_ *Agent, msg string) error {
+			// Non-blocking: streams + terminal stop arrive via onEvent.
+			return client.Prompt(msg)
+		},
+		resize: nil, // unsupported over ACP
+		stop: func(*Agent) {
+			client.Close()
+		},
+	}
+
+	return &agentStart{
+		WindowID:  "grok-acp-" + sid,
+		Ops:       ops,
+		TailJSONL: false,
+		SessionID: sid,
+		// Leave JSONLPath empty: Grok Session is not a Claude JSONL transcript.
+		DetectReady: func(a *Agent) {
+			// Must run before Send: wire publishEvent target, then mark ready.
+			agentRef.Store(a)
+			select {
+			case <-a.ready:
+			default:
+				close(a.ready)
+			}
+		},
+	}, nil
+}
+
+// Run sends a single prompt to a new Session-mode agent, waits for
 // completion, and returns the assistant's response text.
+//
+// WaitForResponse is started before Send so event subscription is active
+// before the provider begins streaming (important for fast ACP fakes and
+// quick local models).
 func Run(ctx context.Context, prompt string, cfg Config) (string, error) {
 	agent, err := Start(cfg)
 	if err != nil {
@@ -497,11 +588,28 @@ func Run(ctx context.Context, prompt string, cfg Config) (string, error) {
 	}
 	defer agent.Stop()
 
+	type outcome struct {
+		text string
+		err  error
+	}
+	ch := make(chan outcome, 1)
+	go func() {
+		text, err := agent.WaitForResponse(ctx)
+		ch <- outcome{text, err}
+	}()
+	// Let WaitForResponse register its subscriber before Send.
+	runtime.Gosched()
+
 	if err := agent.Send(prompt); err != nil {
 		return "", fmt.Errorf("send prompt: %w", err)
 	}
 
-	return agent.WaitForResponse(ctx)
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case out := <-ch:
+		return out.text, out.err
+	}
 }
 
 // SessionID returns the Claude Code session ID.

@@ -74,11 +74,21 @@ Headless `streaming-json` maps `text` → `TaskEventText`, terminal
 and cost/usage are not present on this public stream — do not expect
 Claude-parity accounting or tool events.
 
-Grok persistent Session mode is experimental and fails closed.
-`Start(claudia.Config{Provider: claudia.ProviderGrok})` returns
-`*claudia.CapabilityError` with `Status == CapabilityExperimental`
-until a public `grok agent stdio` (ACP) contract is proven. Rewind is
-unsupported (`CapabilityUnsupported`); do not truncate private Grok
+Grok persistent Session mode uses ACP over `grok agent stdio`:
+
+```go
+agent, err := claudia.Start(claudia.Config{
+    Provider: claudia.ProviderGrok,
+    WorkDir:  "/abs/path",
+    Model:    "grok-4", // optional
+})
+// Send / WaitForResponse / Interrupt / Stop as with Claude Session.
+// AttachCommand is empty (no tmux window). Rewind is unsupported.
+```
+
+Pass `SessionID` to attempt `session/load` (falls back to `session/new`
+if load fails). Permissions are auto-approved (`--always-approve`).
+Rewind remains `CapabilityUnsupported`; do not truncate private Grok
 session files.
 
 **Do not confuse `ProviderGrok` with package
@@ -272,9 +282,9 @@ host program owns a single short-lived agent, skip the Registry.
    | Task prompts | Supported | Supported via `codex exec --json` | Supported via `grok -p --output-format streaming-json` |
    | Task resume | Supported | Supported via `codex exec resume --json` | Supported via `--resume` |
    | Task usage / cost | Supported | Tokens yes; cost unavailable | Not on streaming-json (no tool_use/cost events) |
-   | Persistent Session | Supported | Experimental fail-closed | Experimental fail-closed (ACP spike pending) |
-   | Rewind | Supported | Unsupported without public fork/resume proof | Unsupported without public session API |
-   | tmux attach | Supported | Unsupported | Unsupported |
+   | Persistent Session | Supported | Experimental fail-closed | Supported via ACP (`grok agent stdio`) |
+   | Rewind | Supported | Unsupported without public fork/resume proof | Unsupported (no private session-file rewrite) |
+   | tmux attach | Supported | Unsupported | Unsupported (ACP is process-local; AttachCommand empty) |
    | Terminal byte log | Supported | Unsupported | Unsupported |
    | Permission/tool restrictions | Supported | Codex sandbox/approval flags only | `--permission-mode` / `--allow` / `--deny`; Task hardcodes bypassPermissions; not Claude-equivalent |
    | Image inputs and web search | Provider-dependent | Not surfaced by claudia yet | Not surfaced by claudia yet |

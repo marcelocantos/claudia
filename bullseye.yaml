@@ -568,9 +568,10 @@ targets:
     achieved: 2026-07-11
   T7.4:
     name: Grok Session contract is proven before persistent Session mode depends on it
-    status: converging
+    status: achieved
     value: 5.0
     cost: 5.0
+    actual_cost: 3.0
     set_aside_reason: Deferred from Task-first T7 ship (2026-07-11). Session ACP stdio contract spike is residual work; not claimed as released. Re-open when Session mode is in scope.
     acceptance:
     - 'Spike documents and fixtures the chosen public multi-turn contract: preferred candidate is `grok agent stdio` (ACP JSON-RPC); fallback candidates are tmux+TUI key injection (Claude-like) or multi-shot headless --resume only if ACP is unsuitable.'
@@ -583,6 +584,7 @@ targets:
     - T7.2
     origin: T7 decomposition
     discovered: 2026-07-11
+    achieved: 2026-07-11
   T7.5:
     name: Grok persistent Session mode uses the proven public multi-turn contract
     status: converging
