@@ -219,7 +219,7 @@ func (b *fakeAgentBackend) request(t *testing.T) agentStartRequest {
 }
 
 func TestStartUsesInjectedBackendLifecycle(t *testing.T) {
-	for _, provider := range []string{"fake-claude", "fake-codex"} {
+	for _, provider := range []string{"fake-claude", "fake-codex", "fake-grok"} {
 		t.Run(provider, func(t *testing.T) {
 			tmpHome := t.TempDir()
 			t.Setenv("HOME", tmpHome)
@@ -254,8 +254,8 @@ func TestStartUsesInjectedBackendLifecycle(t *testing.T) {
 			if !caps.Session || !caps.Resume {
 				t.Errorf("capabilities = %+v, want session+resume", caps)
 			}
-			if provider == "fake-codex" && (caps.Rewind || caps.TmuxAttach) {
-				t.Errorf("fake Codex capabilities = %+v, want rewind/tmux unsupported", caps)
+			if (provider == "fake-codex" || provider == "fake-grok") && (caps.Rewind || caps.TmuxAttach) {
+				t.Errorf("%s capabilities = %+v, want rewind/tmux unsupported", provider, caps)
 			}
 
 			if err := agent.Send("hello"); err != nil {

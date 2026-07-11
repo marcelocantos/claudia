@@ -24,7 +24,7 @@ and exposes cost and token accounting. Only use Session mode if the
 user explicitly needs persistent state or wants to observe the
 transcript live.
 
-Codex is provider-selectable for Task mode:
+### Codex provider (Task mode)
 
 ```go
 task := claudia.NewTask(claudia.TaskConfig{
@@ -49,6 +49,41 @@ claudia.CapabilityExperimental`. Codex rewind, tmux attach, and
 terminal logs are unsupported until a public Codex app-server contract
 proves equivalent behavior; do not implement them by editing private
 Codex storage or by driving the Codex TUI in tmux.
+
+### Grok Build CLI provider (Task mode)
+
+```go
+task := claudia.NewTask(claudia.TaskConfig{
+    Provider: claudia.ProviderGrok,
+    WorkDir:  "/abs/path",
+    Model:    "grok-4", // optional; empty uses Grok Build default
+})
+```
+
+For Grok Build CLI, `Task.Run` shells out to
+`grok -p <prompt> --output-format streaming-json` (with
+`--permission-mode bypassPermissions` for unattended runs). Binary
+discovery: `GROK_BIN`, then `grok` on `$PATH`, then known installs
+including `~/.grok/bin/grok`. Auth is whatever the installed CLI uses
+(`grok login` or `XAI_API_KEY`). Resume uses `TaskConfig.ClaudeID`
+as the Grok session id with `--resume`.
+
+Headless `streaming-json` maps `text` → `TaskEventText`, terminal
+`end.sessionId` → `TaskEventInit` then `TaskEventResult`, and
+`error` → `TaskEventError`. Thought deltas are ignored. Tool-use
+and cost/usage are not present on this public stream — do not expect
+Claude-parity accounting or tool events.
+
+Grok persistent Session mode is experimental and fails closed.
+`Start(claudia.Config{Provider: claudia.ProviderGrok})` returns
+`*claudia.CapabilityError` with `Status == CapabilityExperimental`
+until a public `grok agent stdio` (ACP) contract is proven. Rewind is
+unsupported (`CapabilityUnsupported`); do not truncate private Grok
+session files.
+
+**Do not confuse `ProviderGrok` with package
+`github.com/marcelocantos/claudia/grok`.** The latter is a standalone
+Realtime voice WebSocket client; it is not the coding-agent harness.
 
 ## Task mode: essential patterns
 
@@ -225,24 +260,24 @@ host program owns a single short-lived agent, skip the Registry.
    `CLAUDE_BIN` when running under launchd / systemd / a Windows
    Service whose `$PATH` excludes user-local install dirs. Windows is
    not supported; use WSL. Task mode does not require tmux. Codex
-   provider support is in progress; its resolver checks `CODEX_BIN`,
-   then `codex` on `$PATH`, then known locations including
-   `/Applications/Codex.app/Contents/Resources/codex`, because Codex
-   Desktop can be installed even when the CLI is not on `$PATH`.
+   resolver checks `CODEX_BIN`, then `codex` on `$PATH`, then known
+   locations including `/Applications/Codex.app/Contents/Resources/codex`.
+   Grok Build CLI resolver checks `GROK_BIN`, then `grok` on `$PATH`,
+   then known locations including `~/.grok/bin/grok`.
 
    Current provider capability matrix:
 
-   | Capability | Claude | Codex |
-   |------------|--------|-------|
-   | Task prompts | Supported | Supported via `codex exec --json` |
-   | Task resume | Supported | Supported via `codex exec resume --json` |
-   | Task usage | Supported | Supported for token counts; cost remains unavailable |
-   | Persistent Session | Supported | Experimental fail-closed |
-   | Rewind | Supported | Unsupported without public fork/resume proof |
-   | tmux attach | Supported | Unsupported |
-   | Terminal byte log | Supported | Unsupported |
-   | Permission/tool restrictions | Supported | Codex sandbox/approval flags only; not treated as Claude-equivalent |
-   | Image inputs and web search | Provider-dependent | Not surfaced by claudia yet |
+   | Capability | Claude | Codex | Grok Build CLI |
+   |------------|--------|-------|----------------|
+   | Task prompts | Supported | Supported via `codex exec --json` | Supported via `grok -p --output-format streaming-json` |
+   | Task resume | Supported | Supported via `codex exec resume --json` | Supported via `--resume` |
+   | Task usage / cost | Supported | Tokens yes; cost unavailable | Not on streaming-json (no tool_use/cost events) |
+   | Persistent Session | Supported | Experimental fail-closed | Experimental fail-closed (ACP spike pending) |
+   | Rewind | Supported | Unsupported without public fork/resume proof | Unsupported without public session API |
+   | tmux attach | Supported | Unsupported | Unsupported |
+   | Terminal byte log | Supported | Unsupported | Unsupported |
+   | Permission/tool restrictions | Supported | Codex sandbox/approval flags only | `--permission-mode` / `--allow` / `--deny`; Task hardcodes bypassPermissions; not Claude-equivalent |
+   | Image inputs and web search | Provider-dependent | Not surfaced by claudia yet | Not surfaced by claudia yet |
 
 2. **Sub-agents are disabled.** claudia always passes
    `--disallowedTools Agent,TeamCreate,TeamDelete,SendMessage,EnterWorktree`.
@@ -333,24 +368,25 @@ settle semantics, terminal-log path derivation, readiness detection,
 and the full tmux control-mode mock machinery. CI runs these on every
 push, on both macOS and Linux.
 
-**Live tests** are gated on two conditions: `CLAUDIA_LIVE=1` in the
-environment and `claude` on `$PATH`. They exercise the real binary
-end-to-end: tmux-backed Agent send/receive (`TestAgentSendAndWaitForResponse`,
-`TestAgentMultiTurn`, `TestRunHelper`), crash-survival
-(`TestAgentReadinessFailureOnDeadProcess`), pool acquire/release
-(`pool_test.go`), and Task-mode end-to-end (`TestTaskRunSmoke`). CI
-does **not** run these — doing so would require Anthropic auth and
-would burn API credit on every push.
+**Live tests** are env-gated and require the matching CLI binary:
+
+| Gate | Provider | Examples |
+|------|----------|----------|
+| `CLAUDIA_LIVE=1` | Claude | Agent send/receive, pool, `TestTaskRunSmoke` |
+| `CLAUDIA_CODEX_LIVE=1` | Codex | `TestCodexTaskRunSmoke` |
+| `CLAUDIA_GROK_LIVE=1` | Grok Build CLI | `TestGrokTaskRunSmoke` |
+
+CI does **not** set these — live runs need local auth and may spend
+API credit.
 
 The canonical pre-release validation command (run locally before
 tagging a release):
 
 ```sh
 CLAUDIA_LIVE=1 go test -race -count=1 ./...
+# optional provider smokes when those CLIs are installed and authed:
+# CLAUDIA_CODEX_LIVE=1 CLAUDIA_GROK_LIVE=1 go test -race -count=1 ./...
 ```
-
-This is the full gate: it runs the hermetic suite plus all live tests.
-Both must pass before cutting a release.
 
 ## Stability
 

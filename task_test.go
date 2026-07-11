@@ -536,12 +536,52 @@ func TestTaskBackendForProvider(t *testing.T) {
 	if _, ok := taskBackendForProvider(ProviderGrok).(grokTaskBackend); !ok {
 		t.Error("ProviderGrok did not select grokTaskBackend")
 	}
+	caps := taskBackendForProvider(ProviderGrok).Capabilities()
+	if !caps.Task || !caps.Resume || caps.Cost || caps.Session {
+		t.Errorf("ProviderGrok capabilities = %+v, want Task+Resume only", caps)
+	}
 	backend := taskBackendForProvider(Provider("bogus"))
 	if _, ok := backend.(errorTaskBackend); !ok {
 		t.Fatalf("unknown provider backend = %T, want errorTaskBackend", backend)
 	}
 	if _, err := backend.RunTask(context.Background(), taskRunRequest{}); err == nil {
 		t.Error("unknown provider RunTask returned nil error")
+	}
+}
+
+// TestGrokPublicTaskEntryPath drives NewTask(ProviderGrok) and a fixture-
+// driven parser oracle on the real mapping functions used by the shipped
+// backend (not a reimplemented parser).
+func TestGrokPublicTaskEntryPath(t *testing.T) {
+	task := NewTask(TaskConfig{
+		Provider: ProviderGrok,
+		ID:       "public-entry",
+		WorkDir:  t.TempDir(),
+	})
+	if _, ok := task.backend.(grokTaskBackend); !ok {
+		t.Fatalf("NewTask(ProviderGrok).backend = %T, want grokTaskBackend", task.backend)
+	}
+	lines := readFixtureLines(t, "testdata/grok/exec/success.jsonl")
+	if err := grokTaskSuccessOracle(lines); err != nil {
+		t.Fatalf("success oracle: %v", err)
+	}
+	// Missing end event → no session id
+	if err := grokTaskSuccessOracle(lines[:len(lines)-1]); err == nil || !strings.Contains(err.Error(), "session") {
+		t.Fatalf("truncated stream error = %v, want session failure", err)
+	}
+	// Explicit error event path
+	errLines := readFixtureLines(t, "testdata/grok/exec/error.jsonl")
+	parser := grokTaskParser{}
+	var sawErr bool
+	for _, line := range errLines {
+		for _, ev := range parser.Parse([]byte(line)) {
+			if ev.Type == TaskEventError && ev.IsError && ev.ErrorMsg != "" {
+				sawErr = true
+			}
+		}
+	}
+	if !sawErr {
+		t.Fatal("error fixture did not produce TaskEventError via shipped parser")
 	}
 }
 
@@ -686,7 +726,7 @@ func (b *fakeTaskBackend) interrupts() int {
 }
 
 func TestTaskRunUsesInjectedBackendLifecycle(t *testing.T) {
-	for _, provider := range []string{"fake-claude", "fake-codex"} {
+	for _, provider := range []string{"fake-claude", "fake-codex", "fake-grok"} {
 		t.Run(provider, func(t *testing.T) {
 			backend := &fakeTaskBackend{
 				name: provider,
@@ -731,8 +771,8 @@ func TestTaskRunUsesInjectedBackendLifecycle(t *testing.T) {
 			if !caps.Task || !caps.Resume {
 				t.Errorf("capabilities = %+v, want task+resume", caps)
 			}
-			if provider == "fake-codex" && caps.Cost {
-				t.Errorf("fake Codex capabilities = %+v, want cost unsupported", caps)
+			if (provider == "fake-codex" || provider == "fake-grok") && caps.Cost {
+				t.Errorf("%s capabilities = %+v, want cost unsupported", provider, caps)
 			}
 
 			req := backend.request(t)

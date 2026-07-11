@@ -18,9 +18,9 @@ retires when hermetic fixtures, fakes, and fault checks prove the mapping.
 | 🎯T7.1 provider seams | New-code lifecycle seam | Backend dispatch tests select `grokTaskBackend` / `grokAgentBackend` without Claude/Codex leakage. | None |
 | 🎯T7.2 binary discovery | Deterministic resolver | `TestResolveGrokBin` injects env, PATH, `~/.grok/bin/grok`, missing-binary failure. | Optional install sanity |
 | 🎯T7.3 Grok Task mode | Public CLI fixture parser | Golden `testdata/grok/exec/*` + `grokTaskParser` + `TestGrokTaskSuccessOracleRejectsFaults`. | `CLAUDIA_GROK_LIVE=1` smoke only |
-| 🎯T7.4 Session contract spike | Public protocol fixture/schema | ACP stdio capture fixtures (initialize / session/new / session/prompt / session/update). | Explicit approved live capture |
-| 🎯T7.5 Grok Session mode | Fake ACP lifecycle | Fake stdio ACP drives Start/Send/Wait/Subscribe/Interrupt hermetically. | Gated live smoke only |
-| 🎯T7.6 capability gaps | Negative capability oracle | `TestStartGrokSessionFailsWithCapabilityError`, `TestGrokRewindFailsWithCapabilityError`, plus cost/tool-stream gaps when declared. | Human review of accepted gaps |
+| 🎯T7.4 Session contract spike | Deferred (set-aside) | Not in Task-first ship; residual work for a later epic. | — |
+| 🎯T7.5 Grok Session mode | Deferred (set-aside) | Depends on T7.4; not shipped. | — |
+| 🎯T7.6 capability gaps | Negative capability oracle | `TestStartGrokSessionFailsWithCapabilityError`, `TestGrokRewindFailsWithCapabilityError`, backend capability asserts (no cost), private-storage scan. | Human review of accepted gaps |
 | 🎯T7.7 docs/release gate | Documentation consistency | README, agents-guide, STABILITY, release notes share one support matrix. | Release checklist only |
 
 ## Required Golden Fixtures
