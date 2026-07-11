@@ -47,10 +47,10 @@ acceptable.
 
 Before 🎯T4 is retired, tests must prove these injected faults fail:
 
-- Dropped thread/session id: parser or fake backend emits no session id and lifecycle assertions fail.
-- Wrong final-message selection: multiple agent messages arrive and the final result must use the last completed assistant message.
-- Malformed usage accounting: cached input and output token fields are swapped or ignored.
-- Silent unsupported capability success: Codex rewind/tmux attach/terminal log APIs appear to succeed without a public contract.
+- Dropped thread/session id: `TestCodexTaskSuccessOracleRejectsFaults` removes the `thread.started` line and proves the oracle fails.
+- Wrong final-message selection: `TestCodexTaskSuccessOracleRejectsFaults` mutates the last agent message and proves the oracle fails instead of accepting the first partial message.
+- Malformed usage accounting: `TestCodexTaskSuccessOracleRejectsFaults` mutates cached input tokens and proves the oracle fails.
+- Silent unsupported capability success: `TestStartCodexSessionFailsWithCapabilityError`, `TestCodexRewindFailsWithCapabilityError`, `TestAgentMissingOperationFailsWithCapabilityError`, and the fake app-server attach/log assertions prove unsupported or experimental Codex capabilities fail closed.
 - Private-storage shortcut: production Codex provider code reads or writes private Codex transcript/session storage instead of using `codex exec` or app-server. `TestCodexProviderDoesNotReadPrivateStorage` scans production Go files for private Codex state path tokens.
 
 ## Human Residue

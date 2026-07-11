@@ -328,6 +328,20 @@ func TestStartCodexSessionFailsWithCapabilityError(t *testing.T) {
 	}
 }
 
+func TestStartGrokSessionFailsWithCapabilityError(t *testing.T) {
+	_, err := Start(Config{Provider: ProviderGrok, WorkDir: t.TempDir()})
+	if err == nil {
+		t.Fatal("Start with ProviderGrok returned nil error")
+	}
+	var capErr *CapabilityError
+	if !errors.As(err, &capErr) {
+		t.Fatalf("error = %T %v, want CapabilityError", err, err)
+	}
+	if capErr.Provider != ProviderGrok || capErr.Capability != "session" || capErr.Status != CapabilityExperimental {
+		t.Errorf("CapabilityError = %+v", capErr)
+	}
+}
+
 func TestCodexRewindFailsWithCapabilityError(t *testing.T) {
 	agent := &Agent{provider: ProviderCodex}
 	_, err := agent.Rewind(1, Config{Provider: ProviderCodex})
@@ -339,6 +353,21 @@ func TestCodexRewindFailsWithCapabilityError(t *testing.T) {
 		t.Fatalf("error = %T %v, want CapabilityError", err, err)
 	}
 	if capErr.Provider != ProviderCodex || capErr.Capability != "rewind" || capErr.Status != CapabilityUnsupported {
+		t.Errorf("CapabilityError = %+v", capErr)
+	}
+}
+
+func TestGrokRewindFailsWithCapabilityError(t *testing.T) {
+	agent := &Agent{provider: ProviderGrok}
+	_, err := agent.Rewind(1, Config{Provider: ProviderGrok})
+	if err == nil {
+		t.Fatal("Grok Rewind returned nil error")
+	}
+	var capErr *CapabilityError
+	if !errors.As(err, &capErr) {
+		t.Fatalf("error = %T %v, want CapabilityError", err, err)
+	}
+	if capErr.Provider != ProviderGrok || capErr.Capability != "rewind" || capErr.Status != CapabilityUnsupported {
 		t.Errorf("CapabilityError = %+v", capErr)
 	}
 }

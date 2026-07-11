@@ -210,6 +210,8 @@ type claudeAgentBackend struct{}
 
 type codexAgentBackend struct{}
 
+type grokAgentBackend struct{}
+
 type errorAgentBackend struct {
 	err error
 }
@@ -220,6 +222,8 @@ func agentBackendForProvider(provider Provider) agentBackend {
 		return claudeAgentBackend{}
 	case ProviderCodex:
 		return codexAgentBackend{}
+	case ProviderGrok:
+		return grokAgentBackend{}
 	default:
 		return errorAgentBackend{err: fmt.Errorf("unknown agent provider %q", provider)}
 	}
@@ -238,6 +242,17 @@ func (codexAgentBackend) Capabilities() providerCapabilities {
 
 func (codexAgentBackend) StartAgent(agentStartRequest) (*agentStart, error) {
 	return nil, experimentalCapability(ProviderCodex, "session", "persistent Session mode requires the app-server live contract spike to complete")
+}
+
+func (grokAgentBackend) Capabilities() providerCapabilities {
+	return providerCapabilities{
+		Task:   true,
+		Resume: true,
+	}
+}
+
+func (grokAgentBackend) StartAgent(agentStartRequest) (*agentStart, error) {
+	return nil, experimentalCapability(ProviderGrok, "session", "persistent Session mode requires the grok agent stdio (ACP) contract spike to complete")
 }
 
 func (b errorAgentBackend) Capabilities() providerCapabilities {
@@ -274,8 +289,11 @@ func claudeAgentOps() agentOps {
 // Start spawns a new Claude Code agent inside a tmux window on the
 // dedicated claudia tmux server.
 func Start(cfg Config) (*Agent, error) {
-	if cfg.Provider == ProviderCodex {
+	switch cfg.Provider {
+	case ProviderCodex:
 		return nil, experimentalCapability(ProviderCodex, "session", "persistent Session mode requires the app-server live contract spike to complete")
+	case ProviderGrok:
+		return nil, experimentalCapability(ProviderGrok, "session", "persistent Session mode requires the grok agent stdio (ACP) contract spike to complete")
 	}
 	return startWithBackend(cfg, agentBackendForProvider(cfg.Provider))
 }
@@ -804,6 +822,9 @@ func (a *Agent) Stop() {
 func (a *Agent) Rewind(n int, cfg Config) (*Agent, error) {
 	if a.provider == ProviderCodex || cfg.Provider == ProviderCodex {
 		return nil, unsupportedCapability(ProviderCodex, "rewind", "Codex rewind requires a public app-server fork/resume contract; private transcript truncation is forbidden")
+	}
+	if a.provider == ProviderGrok || cfg.Provider == ProviderGrok {
+		return nil, unsupportedCapability(ProviderGrok, "rewind", "Grok rewind requires a public ACP/session API; private session-file truncation is forbidden")
 	}
 	a.Stop()
 	if _, err := rewindJSONL(a.jsonlPath, n); err != nil {

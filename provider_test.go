@@ -126,6 +126,101 @@ func TestCodexBinCandidatesIncludeDesktopAppBundle(t *testing.T) {
 	t.Fatalf("codexBinCandidates() does not include %s", appBundleCodex)
 }
 
+func TestResolveGrokBin(t *testing.T) {
+	fakeGrok := "/tmp/fake-grok"
+	fakeHomeGrok := filepath.Join("/Users/test", ".grok", "bin", "grok")
+	errNotFound := errors.New("not found")
+
+	statExisting := func(paths ...string) func(string) (os.FileInfo, error) {
+		exists := make(map[string]bool, len(paths))
+		for _, p := range paths {
+			exists[p] = true
+		}
+		return func(path string) (os.FileInfo, error) {
+			if exists[path] {
+				return nil, nil
+			}
+			return nil, errNotFound
+		}
+	}
+
+	t.Run("GROK_BIN absolute path that exists is honoured", func(t *testing.T) {
+		got, err := resolveGrokBinFrom(
+			func(string) string { return fakeGrok },
+			func(string) (string, error) { return "", errNotFound },
+			statExisting(fakeGrok),
+			nil,
+		)
+		if err != nil {
+			t.Fatalf("resolveGrokBinFrom: %v", err)
+		}
+		if got != fakeGrok {
+			t.Errorf("got %q, want %q", got, fakeGrok)
+		}
+	})
+
+	t.Run("PATH lookup wins when GROK_BIN is unset", func(t *testing.T) {
+		got, err := resolveGrokBinFrom(
+			func(string) string { return "" },
+			func(name string) (string, error) {
+				if name == grokBinName {
+					return fakeGrok, nil
+				}
+				return "", errNotFound
+			},
+			statExisting(),
+			nil,
+		)
+		if err != nil {
+			t.Fatalf("resolveGrokBinFrom: %v", err)
+		}
+		if got != fakeGrok {
+			t.Errorf("got %q, want %q", got, fakeGrok)
+		}
+	})
+
+	t.Run("install dir candidate is checked after PATH miss", func(t *testing.T) {
+		got, err := resolveGrokBinFrom(
+			func(string) string { return "" },
+			func(string) (string, error) { return "", errNotFound },
+			statExisting(fakeHomeGrok),
+			[]string{fakeHomeGrok},
+		)
+		if err != nil {
+			t.Fatalf("resolveGrokBinFrom: %v", err)
+		}
+		if got != fakeHomeGrok {
+			t.Errorf("got %q, want %q", got, fakeHomeGrok)
+		}
+	})
+
+	t.Run("missing everywhere returns error mentioning GROK_BIN", func(t *testing.T) {
+		_, err := resolveGrokBinFrom(
+			func(string) string { return "" },
+			func(string) (string, error) { return "", errNotFound },
+			statExisting(),
+			[]string{fakeHomeGrok},
+		)
+		if err == nil {
+			t.Fatal("expected error when grok is absent")
+		}
+		if !strings.Contains(err.Error(), grokBinEnv) {
+			t.Errorf("error %q does not mention %s", err.Error(), grokBinEnv)
+		}
+	})
+}
+
+func TestGrokBinCandidatesIncludeDotGrokBin(t *testing.T) {
+	home, _ := os.UserHomeDir()
+	want := filepath.Join(home, ".grok", "bin", grokBinName)
+	for _, candidate := range grokBinCandidates() {
+		if candidate == want {
+			return
+		}
+	}
+	t.Fatalf("grokBinCandidates() does not include %s", want)
+}
+
 func TestCapabilityErrorMessage(t *testing.T) {
 	err := unsupportedCapability(ProviderCodex, "rewind", "requires public fork API")
 	msg := err.Error()
@@ -184,6 +279,42 @@ func TestCodexAppServerFixturesAreValidJSONL(t *testing.T) {
 				t.Errorf("%s did not contain token %s", tc.path, tc.wantToken)
 			}
 		})
+	}
+}
+
+func TestGrokProviderDoesNotReadPrivateStorage(t *testing.T) {
+	// Session control plane must use public CLI/ACP contracts, not private
+	// session files. Docs may mention the path; production .go must not.
+	forbidden := []string{
+		".grok/sessions",
+		"~/.grok/sessions",
+	}
+	if err := filepath.WalkDir(".", func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			switch path {
+			case ".git", "docs", "testdata":
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		for _, token := range forbidden {
+			if strings.Contains(string(data), token) {
+				t.Errorf("%s contains private Grok storage token %q", path, token)
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
 

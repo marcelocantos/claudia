@@ -13,6 +13,8 @@ import (
 const (
 	codexBinEnv  = "CODEX_BIN"
 	codexBinName = "codex"
+	grokBinEnv   = "GROK_BIN"
+	grokBinName  = "grok"
 )
 
 // Provider identifies the CLI/runtime backing a Task or Agent.
@@ -23,6 +25,10 @@ const (
 	ProviderClaude Provider = "claude"
 	// ProviderCodex uses Codex.
 	ProviderCodex Provider = "codex"
+	// ProviderGrok uses the Grok Build CLI (binary name "grok").
+	// Distinct from the Realtime voice client in package
+	// github.com/marcelocantos/claudia/grok.
+	ProviderGrok Provider = "grok"
 )
 
 const (
@@ -133,5 +139,48 @@ func codexBinCandidates() []string {
 		"/opt/homebrew/bin/codex",
 		"/usr/local/bin/codex",
 		"/Applications/Codex.app/Contents/Resources/codex",
+	}
+}
+
+func resolveGrokBin() (string, error) {
+	return resolveGrokBinFrom(os.Getenv, exec.LookPath, os.Stat, grokBinCandidates())
+}
+
+func resolveGrokBinFrom(
+	getenv func(string) string,
+	lookPath func(string) (string, error),
+	stat func(string) (os.FileInfo, error),
+	candidates []string,
+) (string, error) {
+	if p := getenv(grokBinEnv); p != "" {
+		if filepath.IsAbs(p) {
+			if _, err := stat(p); err == nil {
+				return p, nil
+			}
+		} else if abs, err := lookPath(p); err == nil {
+			return abs, nil
+		}
+	}
+	if p, err := lookPath(grokBinName); err == nil {
+		return p, nil
+	}
+	for _, c := range candidates {
+		if c == "" {
+			continue
+		}
+		if _, err := stat(c); err == nil {
+			return c, nil
+		}
+	}
+	return "", fmt.Errorf("grok executable not found in PATH or known install dirs (set %s to override)", grokBinEnv)
+}
+
+func grokBinCandidates() []string {
+	home, _ := os.UserHomeDir()
+	return []string{
+		filepath.Join(home, ".grok", "bin", grokBinName),
+		filepath.Join(home, ".local", "bin", grokBinName),
+		"/opt/homebrew/bin/grok",
+		"/usr/local/bin/grok",
 	}
 }

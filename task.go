@@ -200,6 +200,8 @@ type claudeTaskBackend struct{}
 
 type codexTaskBackend struct{}
 
+type grokTaskBackend struct{}
+
 type errorTaskBackend struct {
 	err error
 }
@@ -210,6 +212,8 @@ func taskBackendForProvider(provider Provider) taskBackend {
 		return claudeTaskBackend{}
 	case ProviderCodex:
 		return codexTaskBackend{}
+	case ProviderGrok:
+		return grokTaskBackend{}
 	default:
 		return errorTaskBackend{err: fmt.Errorf("unknown task provider %q", provider)}
 	}
@@ -220,6 +224,13 @@ func (claudeTaskBackend) Capabilities() providerCapabilities {
 }
 
 func (codexTaskBackend) Capabilities() providerCapabilities {
+	return providerCapabilities{
+		Task:   true,
+		Resume: true,
+	}
+}
+
+func (grokTaskBackend) Capabilities() providerCapabilities {
 	return providerCapabilities{
 		Task:   true,
 		Resume: true,
@@ -606,6 +617,164 @@ func codexTaskArgs(req taskRunRequest) []string {
 		args = append(args, "--json", req.Prompt)
 	}
 	return args
+}
+
+func (grokTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*taskRun, error) {
+	grokBin, err := resolveGrokBin()
+	if err != nil {
+		return nil, err
+	}
+
+	args := grokTaskArgs(req)
+	slog.Debug("spawning grok task", "args", args)
+	cmd := exec.CommandContext(ctx, grokBin, args...)
+	if req.WorkDir != "" {
+		cmd.Dir = req.WorkDir
+	}
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("stdout pipe: %w", err)
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, fmt.Errorf("stderr pipe: %w", err)
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("start grok: %w", err)
+	}
+
+	go func() {
+		scanner := bufio.NewScanner(stderr)
+		scanner.Buffer(make([]byte, 256*1024), 256*1024)
+		for scanner.Scan() {
+			slog.Debug("grok stderr", "line", scanner.Text())
+		}
+	}()
+
+	ch := make(chan TaskEvent, 16)
+	go func() {
+		defer close(ch)
+		defer func() {
+			if err := cmd.Wait(); err != nil {
+				slog.Warn("grok process exited with error", "error", err)
+			} else {
+				slog.Debug("grok process exited cleanly")
+			}
+		}()
+
+		parser := grokTaskParser{}
+		scanner := bufio.NewScanner(stdout)
+		scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+		for scanner.Scan() {
+			line := scanner.Bytes()
+			if len(line) == 0 {
+				continue
+			}
+			if req.RawLog != nil {
+				req.RawLog(line)
+			}
+			for _, ev := range parser.Parse(line) {
+				select {
+				case ch <- ev:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	}()
+
+	return &taskRun{
+		events: ch,
+		interrupt: func() error {
+			if cmd.Process == nil {
+				return nil
+			}
+			return cmd.Process.Signal(syscall.SIGINT)
+		},
+	}, nil
+}
+
+// grokTaskArgs builds argv for a headless Grok Build Task run.
+//
+// Mirrors Claude Task's unattended posture with --permission-mode
+// bypassPermissions (Grok's analogue of --dangerously-skip-permissions).
+func grokTaskArgs(req taskRunRequest) []string {
+	args := []string{
+		"-p", req.Prompt,
+		"--output-format", "streaming-json",
+		"--permission-mode", "bypassPermissions",
+	}
+	if req.WorkDir != "" {
+		args = append(args, "--cwd", req.WorkDir)
+	}
+	if req.Model != "" {
+		args = append(args, "--model", req.Model)
+	}
+	if req.SessionID != "" {
+		args = append(args, "--resume", req.SessionID)
+	}
+	return args
+}
+
+// grokTaskParser maps Grok Build headless streaming-json lines to TaskEvent.
+//
+// Documented event types (Grok Build user guide § Headless mode):
+// text, thought, end, error. Session id arrives only on end.
+type grokTaskParser struct {
+	text strings.Builder
+}
+
+func (p *grokTaskParser) Parse(line []byte) []TaskEvent {
+	var base struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(line, &base); err != nil {
+		return nil
+	}
+
+	switch base.Type {
+	case "text":
+		var msg struct {
+			Data string `json:"data"`
+		}
+		if err := json.Unmarshal(line, &msg); err != nil {
+			return nil
+		}
+		p.text.WriteString(msg.Data)
+		return []TaskEvent{{Type: TaskEventText, Content: msg.Data}}
+	case "thought":
+		// Internal reasoning — not part of the provider-neutral result text.
+		return nil
+	case "end":
+		var msg struct {
+			SessionID  string `json:"sessionId"`
+			StopReason string `json:"stopReason"`
+		}
+		if err := json.Unmarshal(line, &msg); err != nil {
+			return nil
+		}
+		out := make([]TaskEvent, 0, 2)
+		if msg.SessionID != "" {
+			out = append(out, TaskEvent{Type: TaskEventInit, SessionID: msg.SessionID})
+		}
+		out = append(out, TaskEvent{
+			Type:    TaskEventResult,
+			Content: p.text.String(),
+		})
+		return out
+	case "error":
+		var msg struct {
+			Message string `json:"message"`
+		}
+		if err := json.Unmarshal(line, &msg); err != nil {
+			return nil
+		}
+		return []TaskEvent{{Type: TaskEventError, IsError: true, ErrorMsg: msg.Message}}
+	default:
+		// max_turns_reached, auto_compact_*, unknown — ignore until mapped.
+		return nil
+	}
 }
 
 type codexTaskParser struct {

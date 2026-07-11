@@ -16,11 +16,15 @@ handling, JSONL transcript tailing, or session lifecycle management.
 
 No launchd or systemd setup is needed — tmux handles process lifetime for Session mode agents.
 
-Codex provider support is in progress. The internal Codex resolver
-checks `CODEX_BIN`, then `codex` on `$PATH`, then known install
-locations including `/Applications/Codex.app/Contents/Resources/codex`.
-This matters on macOS because Codex Desktop can be installed even when
-the `codex` CLI is not on `$PATH`.
+Codex and Grok Build CLI providers are in progress.
+
+- **Codex:** resolver checks `CODEX_BIN`, then `codex` on `$PATH`, then
+  known install locations including
+  `/Applications/Codex.app/Contents/Resources/codex`.
+- **Grok Build CLI:** resolver checks `GROK_BIN`, then `grok` on `$PATH`,
+  then known install locations including `~/.grok/bin/grok`. This is the
+  terminal coding agent from [x.ai/cli](https://x.ai/cli), not the
+  Realtime voice client in package `claudia/grok`.
 
 ## Modes
 
@@ -73,6 +77,23 @@ task := claudia.NewTask(claudia.TaskConfig{
 Codex live tests are opt-in because they use local Codex credentials
 and may contact OpenAI. Run them with `CLAUDIA_CODEX_LIVE=1`.
 
+Grok Task mode is available by selecting `ProviderGrok`. It runs
+`grok -p … --output-format streaming-json`, captures the session id
+from the terminal `end` event, and can resume with the same
+`TaskConfig.ClaudeID` field:
+
+```go
+task := claudia.NewTask(claudia.TaskConfig{
+    Provider: claudia.ProviderGrok,
+    ID:       "grok-summary",
+    WorkDir:  "/path/to/repo",
+    Model:    "grok-4",
+})
+```
+
+Grok live tests are opt-in (`CLAUDIA_GROK_LIVE=1`). Auth is whatever the
+installed `grok` CLI already uses (`grok login` or `XAI_API_KEY`).
+
 ### Session mode — persistent conversations
 
 Spawns `claude` inside a tmux window on a dedicated claudia tmux server
@@ -118,12 +139,14 @@ Resuming works automatically: if `Config.SessionID` is set and a JSONL
 transcript already exists for it, claudia passes `--resume`; otherwise
 it passes `--session-id` to create a fresh session with that ID.
 
-`Config{Provider: claudia.ProviderCodex}` currently returns
+`Config{Provider: claudia.ProviderCodex}` and
+`Config{Provider: claudia.ProviderGrok}` currently return
 `*claudia.CapabilityError` with status `claudia.CapabilityExperimental`.
 Persistent Codex Session mode is waiting on a proven public app-server
-turn contract. claudia deliberately does not fake it by driving the
-Codex TUI, scraping private session files, or applying Claude transcript
-rewind rules to Codex.
+turn contract; Grok Session mode is waiting on a proven
+`grok agent stdio` (ACP) contract. claudia deliberately does not fake
+either by scraping private session files or applying Claude transcript
+rewind rules to non-Claude providers.
 
 The PTY output is also captured to
 `$XDG_STATE_HOME/claudia/terms/<escaped-workdir>/<sessionID>.term`
