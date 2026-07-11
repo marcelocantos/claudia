@@ -495,9 +495,10 @@ targets:
     discovered: 2026-07-05
   T7:
     name: claudia ships Grok Build CLI as a first-class Task provider (Session deferred)
-    status: identified
+    status: achieved
     value: 13.0
     cost: 13.0
+    actual_cost: 8.0
     acceptance:
     - The public API can start a Grok-backed Task via TaskConfig.Provider = ProviderGrok without duplicating caller lifecycle code.
     - ProviderGrok resolves the grok binary, runs headless Task mode through provider-neutral TaskEvent streams, and fails closed with CapabilityError for Session Start and Rewind.
@@ -514,6 +515,7 @@ targets:
     - T7.8
     origin: user request 2026-07-11
     discovered: 2026-07-11
+    achieved: 2026-07-11
   T7.1:
     name: Provider seams accept Grok Build CLI without collapsing Claude/Codex contracts
     status: achieved
@@ -618,9 +620,10 @@ targets:
     achieved: 2026-07-11
   T7.7:
     name: Grok provider is documented, packaged, and release-gated
-    status: converging
+    status: achieved
     value: 3.0
     cost: 2.0
+    actual_cost: 2.0
     acceptance:
     - README and agents-guide document ProviderGrok Task mode, binary discovery (GROK_BIN), auth (XAI_API_KEY / login), CLAUDIA_GROK_LIVE, Session fail-closed, and Realtime package disambiguation.
     - STABILITY.md lists ProviderGrok as Fluid and documents Grok Build CLI Task surface + gaps.
@@ -632,6 +635,7 @@ targets:
     - T7.8
     origin: T7 decomposition
     discovered: 2026-07-11
+    achieved: 2026-07-11
   T7.8:
     name: Grok provider verification is oracle-first, not live-observation driven
     status: achieved
