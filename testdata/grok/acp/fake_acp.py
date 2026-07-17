@@ -7,6 +7,7 @@ passes `agent --always-approve stdio`).
 from __future__ import annotations
 
 import json
+import os
 import sys
 
 
@@ -51,15 +52,26 @@ def main() -> None:
                 }
             )
         elif method == "session/load":
-            sid = params.get("sessionId") or session_id
-            session_id = sid
-            send(
-                {
-                    "jsonrpc": "2.0",
-                    "id": mid,
-                    "result": {"sessionId": sid},
-                }
-            )
+            # FAKE_ACP_REJECT_LOAD simulates a CLI that cannot restore the
+            # session (fail-closed load tests).
+            if os.environ.get("FAKE_ACP_REJECT_LOAD"):
+                send(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": mid,
+                        "error": {"code": -32000, "message": "session not found"},
+                    }
+                )
+            else:
+                sid = params.get("sessionId") or session_id
+                session_id = sid
+                send(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": mid,
+                        "result": {"sessionId": sid},
+                    }
+                )
         elif method == "session/prompt":
             sid = params.get("sessionId") or session_id
             text = ""

@@ -165,3 +165,59 @@ func TestGrokSessionLiveSmoke(t *testing.T) {
 		t.Fatalf("response %q, want pong", text)
 	}
 }
+
+// Fail-closed load (jevons 🎯T30.1): when the Grok store holds a
+// conversation for the preferred session id, a failed session/load must
+// error out rather than silently minting a replacement session — that
+// silent fallback is how a conversation gets lost.
+func TestHermeticGrokLoadFailsClosedWhenSessionOnDisk(t *testing.T) {
+	bin := writeFakeGrokACP(t)
+	t.Setenv("GROK_BIN", bin)
+	t.Setenv("FAKE_ACP_REJECT_LOAD", "1")
+
+	sessions := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(sessions, "bucket", "sess-exists"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CLAUDIA_GROK_SESSIONS_DIR", sessions)
+
+	agent, err := Start(Config{
+		Provider:    ProviderGrok,
+		WorkDir:     t.TempDir(),
+		SessionID:   "sess-exists",
+		TermLogPath: "-",
+	})
+	if err == nil {
+		agent.Stop()
+		t.Fatal("Start must fail closed when load fails for an on-disk conversation")
+	}
+	if !strings.Contains(err.Error(), "refusing to mint a replacement session") {
+		t.Fatalf("error %q lacks the fail-closed explanation", err)
+	}
+}
+
+// A locally minted id with no conversation on disk may still fall
+// through to session/new — that is the legitimate first-launch path.
+func TestHermeticGrokLoadFallsThroughForMintedID(t *testing.T) {
+	bin := writeFakeGrokACP(t)
+	t.Setenv("GROK_BIN", bin)
+	t.Setenv("FAKE_ACP_REJECT_LOAD", "1")
+	t.Setenv("CLAUDIA_GROK_SESSIONS_DIR", t.TempDir()) // empty store
+
+	agent, err := Start(Config{
+		Provider:    ProviderGrok,
+		WorkDir:     t.TempDir(),
+		SessionID:   "sess-never-materialized",
+		TermLogPath: "-",
+	})
+	if err != nil {
+		t.Fatalf("Start should mint a new session for an unmaterialized id: %v", err)
+	}
+	defer agent.Stop()
+	if agent.SessionID() == "" {
+		t.Fatal("empty session id after session/new fallback")
+	}
+	if agent.SessionID() == "sess-never-materialized" {
+		t.Fatal("fake rejected load but id unchanged — fallback did not run")
+	}
+}

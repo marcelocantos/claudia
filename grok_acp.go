@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 )
@@ -193,7 +195,7 @@ func (c *grokACPClient) handleServerRequest(msg acpRPCMessage) {
 		// Auto-approve: unattended embedding posture (mirrors --always-approve).
 		_ = c.reply(msg.ID, map[string]any{
 			"outcome": map[string]any{
-				"outcome": "selected",
+				"outcome":  "selected",
 				"optionId": "allow_always",
 			},
 		})
@@ -281,11 +283,20 @@ func (c *grokACPClient) initialize() error {
 
 func (c *grokACPClient) openSession(workDir, preferSessionID string) error {
 	if preferSessionID != "" {
-		if err := c.loadSession(preferSessionID, workDir); err == nil {
+		err := c.loadSession(preferSessionID, workDir)
+		if err == nil {
 			return nil
-		} else {
-			slog.Debug("grok acp session/load failed; creating new session", "err", err, "session", preferSessionID)
 		}
+		// FAIL-CLOSED LOAD: if the Grok store holds a conversation for
+		// this id, refusing to load it must be an error — silently
+		// minting a fresh session here is how a conversation gets lost
+		// (the registry would adopt the new id and orphan the old one).
+		// Only a locally minted id with no conversation on disk may fall
+		// through to session/new.
+		if grokSessionOnDisk(preferSessionID) {
+			return fmt.Errorf("acp session/load %s: %w — conversation exists on disk; refusing to mint a replacement session", preferSessionID, err)
+		}
+		slog.Debug("grok acp session/load failed for unmaterialized id; creating new session", "err", err, "session", preferSessionID)
 	}
 	result, err := c.request("session/new", map[string]any{
 		"cwd":        workDir,
@@ -535,4 +546,26 @@ func (c *grokACPClient) write(v any) error {
 	b = append(b, '\n')
 	_, err = c.stdin.Write(b)
 	return err
+}
+
+// grokSessionOnDisk reports whether the Grok CLI's session store holds a
+// conversation for sessionID (~/.grok/sessions/<encoded-cwd>/<id>/, any
+// cwd bucket). CLAUDIA_GROK_SESSIONS_DIR overrides the root for tests.
+func grokSessionOnDisk(sessionID string) bool {
+	if sessionID == "" {
+		return false
+	}
+	root := os.Getenv("CLAUDIA_GROK_SESSIONS_DIR")
+	if root == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return false
+		}
+		root = filepath.Join(home, ".grok", "sessions")
+	}
+	matches, err := filepath.Glob(filepath.Join(root, "*", sessionID))
+	if err != nil {
+		return false
+	}
+	return len(matches) > 0
 }
