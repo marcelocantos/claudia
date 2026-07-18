@@ -215,3 +215,37 @@ func TestHermeticGrokLoadFallsThroughForMintedID(t *testing.T) {
 		t.Fatal("fake rejected load but id unchanged — fallback did not run")
 	}
 }
+
+// grok agent stdio loads MCP servers ONLY from the ACP session param —
+// this pins the .mcp.json → ACP conversion that gives agents their tools.
+func TestACPMCPServersConversion(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".mcp.json")
+	cfg := `{"mcpServers":{
+		"jevons":{"type":"http","url":"http://127.0.0.1:13705/mcp"},
+		"bridge":{"command":"/usr/local/bin/mcpbridge","args":["connect","x.json"],"env":{"A":"1"}}}}`
+	if err := os.WriteFile(path, []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := acpMCPServers(path)
+	if len(out) != 2 {
+		t.Fatalf("got %d servers, want 2: %v", len(out), out)
+	}
+	byName := map[string]map[string]any{}
+	for _, e := range out {
+		m := e.(map[string]any)
+		byName[m["name"].(string)] = m
+	}
+	if byName["jevons"]["type"] != "http" || byName["jevons"]["url"] != "http://127.0.0.1:13705/mcp" {
+		t.Fatalf("http entry wrong: %v", byName["jevons"])
+	}
+	if byName["bridge"]["command"] != "/usr/local/bin/mcpbridge" {
+		t.Fatalf("stdio entry wrong: %v", byName["bridge"])
+	}
+	if got := acpMCPServers(filepath.Join(dir, "missing.json")); got != nil {
+		t.Fatalf("missing file should yield nil, got %v", got)
+	}
+	if got := acpMCPServers(""); got != nil {
+		t.Fatalf("empty path should yield nil, got %v", got)
+	}
+}

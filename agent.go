@@ -529,7 +529,7 @@ func startGrokAgent(req agentStartRequest) (*agentStart, error) {
 	// we stash a pointer-to-func that Start fills after construction by
 	// closing ready immediately and using ops that capture the client.
 	var agentRef atomic.Pointer[Agent]
-	client, err := startGrokACP(bin, req.WorkDir, req.Config.Model, preferID, req.Config.RequireResume, func(ev Event) {
+	client, err := startGrokACP(bin, req.WorkDir, req.Config.Model, preferID, req.Config.RequireResume, acpMCPServers(req.Config.MCPConfig), func(ev Event) {
 		if a := agentRef.Load(); a != nil {
 			a.publishEvent(ev)
 		}
