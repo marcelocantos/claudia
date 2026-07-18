@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"os/exec"
 	"sync"
 	"sync/atomic"
@@ -56,7 +57,7 @@ type acpRPCMessage struct {
 //
 // model is optional. sessionID, if non-empty and loadSession is available,
 // tries session/load first and falls back to session/new on failure.
-func startGrokACP(bin string, workDir, model, sessionID string, requireResume bool, onEvent func(Event), onClose func()) (*grokACPClient, error) {
+func startGrokACP(bin string, workDir, model, sessionID string, requireResume bool, mcpServers []any, onEvent func(Event), onClose func()) (*grokACPClient, error) {
 	args := []string{"agent", "--always-approve", "stdio"}
 	if model != "" {
 		// Flags on `grok agent` apply to every mode; pass before stdio.
@@ -105,7 +106,7 @@ func startGrokACP(bin string, workDir, model, sessionID string, requireResume bo
 		c.Close()
 		return nil, err
 	}
-	if err := c.openSession(workDir, sessionID, requireResume); err != nil {
+	if err := c.openSession(workDir, sessionID, requireResume, mcpServers); err != nil {
 		c.Close()
 		return nil, err
 	}
@@ -279,9 +280,9 @@ func (c *grokACPClient) initialize() error {
 	return nil
 }
 
-func (c *grokACPClient) openSession(workDir, preferSessionID string, requireResume bool) error {
+func (c *grokACPClient) openSession(workDir, preferSessionID string, requireResume bool, mcpServers []any) error {
 	if preferSessionID != "" {
-		err := c.loadSession(preferSessionID, workDir)
+		err := c.loadSession(preferSessionID, workDir, mcpServers)
 		if err == nil {
 			return nil
 		}
@@ -296,9 +297,12 @@ func (c *grokACPClient) openSession(workDir, preferSessionID string, requireResu
 		}
 		slog.Debug("grok acp session/load failed for unmaterialized id; creating new session", "err", err, "session", preferSessionID)
 	}
+	if mcpServers == nil {
+		mcpServers = []any{}
+	}
 	result, err := c.request("session/new", map[string]any{
 		"cwd":        workDir,
-		"mcpServers": []any{},
+		"mcpServers": mcpServers,
 	})
 	if err != nil {
 		return fmt.Errorf("acp session/new: %w", err)
@@ -318,11 +322,14 @@ func (c *grokACPClient) openSession(workDir, preferSessionID string, requireResu
 	return nil
 }
 
-func (c *grokACPClient) loadSession(sessionID, workDir string) error {
+func (c *grokACPClient) loadSession(sessionID, workDir string, mcpServers []any) error {
+	if mcpServers == nil {
+		mcpServers = []any{}
+	}
 	result, err := c.request("session/load", map[string]any{
 		"sessionId":  sessionID,
 		"cwd":        workDir,
-		"mcpServers": []any{},
+		"mcpServers": mcpServers,
 	})
 	if err != nil {
 		return err
@@ -479,6 +486,9 @@ func (c *grokACPClient) request(method string, params any) (json.RawMessage, err
 	c.pending[id] = ch
 	c.mu.Unlock()
 
+	if pj, err := json.Marshal(params); err == nil {
+		slog.Debug("grok acp request", "method", method, "params", string(pj))
+	}
 	msg := map[string]any{
 		"jsonrpc": "2.0",
 		"id":      id,
@@ -544,4 +554,62 @@ func (c *grokACPClient) write(v any) error {
 	b = append(b, '\n')
 	_, err = c.stdin.Write(b)
 	return err
+}
+
+// acpMCPServers converts a Claude-style .mcp.json file (the format
+// Config.MCPConfig points at: {"mcpServers":{name:{...}}}) into the ACP
+// session mcpServers array. grok agent stdio loads MCP servers ONLY from
+// this session parameter — it reads neither ~/.grok/config.toml nor a
+// cwd .mcp.json — so an agent launched without it has no tools at all.
+// HTTP entries map to ACP's http variant; stdio entries map to the
+// command variant. A missing/unreadable/empty file yields nil (no MCP).
+func acpMCPServers(mcpConfigPath string) []any {
+	if mcpConfigPath == "" {
+		return nil
+	}
+	data, err := os.ReadFile(mcpConfigPath)
+	if err != nil {
+		return nil
+	}
+	var cfg struct {
+		MCPServers map[string]struct {
+			Type    string            `json:"type"`
+			URL     string            `json:"url"`
+			Command string            `json:"command"`
+			Args    []string          `json:"args"`
+			Env     map[string]string `json:"env"`
+		} `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		slog.Warn("grok acp: bad mcp config; launching without MCP", "path", mcpConfigPath, "err", err)
+		return nil
+	}
+	var out []any
+	for name, srv := range cfg.MCPServers {
+		switch {
+		case srv.URL != "":
+			out = append(out, map[string]any{
+				"type":    "http",
+				"name":    name,
+				"url":     srv.URL,
+				"headers": []any{},
+			})
+		case srv.Command != "":
+			envs := []any{}
+			for k, v := range srv.Env {
+				envs = append(envs, map[string]any{"name": k, "value": v})
+			}
+			args := srv.Args
+			if args == nil {
+				args = []string{}
+			}
+			out = append(out, map[string]any{
+				"name":    name,
+				"command": srv.Command,
+				"args":    args,
+				"env":     envs,
+			})
+		}
+	}
+	return out
 }
