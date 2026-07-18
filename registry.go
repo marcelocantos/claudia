@@ -27,6 +27,11 @@ type AgentDef struct {
 	// ACP may replace it with the id returned by session/new.
 	SessionID string `json:"session_id"`
 
+	// Materialized records that SessionID has hosted a real conversation
+	// (a successful launch). Once set, launches pass RequireResume so a
+	// failed session load can never silently mint a replacement id.
+	Materialized bool `json:"materialized,omitempty"`
+
 	// Provider selects the runtime (claude, codex, grok). Empty means
 	// ProviderClaude. Grok Session uses ACP over `grok agent stdio`.
 	Provider Provider `json:"provider,omitempty"`
@@ -148,6 +153,7 @@ func (r *Registry) Launch(name string) (*Agent, error) {
 		Provider:      def.Provider,
 		WorkDir:       def.WorkDir,
 		SessionID:     def.SessionID,
+		RequireResume: def.Materialized,
 		Model:         def.Model,
 		DisallowTools: def.DisallowTools,
 		MCPConfig:     mcpConfig,
@@ -156,10 +162,15 @@ func (r *Registry) Launch(name string) (*Agent, error) {
 		return nil, err
 	}
 
+	changed := !def.Materialized
+	def.Materialized = true
 	if sid := proc.SessionID(); sid != "" && sid != def.SessionID {
 		def.SessionID = sid
+		changed = true
+	}
+	if changed {
 		if err := r.save(); err != nil {
-			slog.Warn("persist session id after launch", "name", name, "err", err)
+			slog.Warn("persist agent def after launch", "name", name, "err", err)
 		}
 	}
 

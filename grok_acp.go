@@ -9,9 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"sync"
 	"sync/atomic"
 )
@@ -58,7 +56,7 @@ type acpRPCMessage struct {
 //
 // model is optional. sessionID, if non-empty and loadSession is available,
 // tries session/load first and falls back to session/new on failure.
-func startGrokACP(bin string, workDir, model, sessionID string, onEvent func(Event), onClose func()) (*grokACPClient, error) {
+func startGrokACP(bin string, workDir, model, sessionID string, requireResume bool, onEvent func(Event), onClose func()) (*grokACPClient, error) {
 	args := []string{"agent", "--always-approve", "stdio"}
 	if model != "" {
 		// Flags on `grok agent` apply to every mode; pass before stdio.
@@ -107,7 +105,7 @@ func startGrokACP(bin string, workDir, model, sessionID string, onEvent func(Eve
 		c.Close()
 		return nil, err
 	}
-	if err := c.openSession(workDir, sessionID); err != nil {
+	if err := c.openSession(workDir, sessionID, requireResume); err != nil {
 		c.Close()
 		return nil, err
 	}
@@ -281,20 +279,20 @@ func (c *grokACPClient) initialize() error {
 	return nil
 }
 
-func (c *grokACPClient) openSession(workDir, preferSessionID string) error {
+func (c *grokACPClient) openSession(workDir, preferSessionID string, requireResume bool) error {
 	if preferSessionID != "" {
 		err := c.loadSession(preferSessionID, workDir)
 		if err == nil {
 			return nil
 		}
-		// FAIL-CLOSED LOAD: if the Grok store holds a conversation for
-		// this id, refusing to load it must be an error — silently
-		// minting a fresh session here is how a conversation gets lost
-		// (the registry would adopt the new id and orphan the old one).
-		// Only a locally minted id with no conversation on disk may fall
-		// through to session/new.
-		if grokSessionOnDisk(preferSessionID) {
-			return fmt.Errorf("acp session/load %s: %w — conversation exists on disk; refusing to mint a replacement session", preferSessionID, err)
+		// FAIL-CLOSED LOAD: when the caller marked this id as an existing
+		// conversation (RequireResume), refusing to load it must be an
+		// error — silently minting a fresh session here is how a
+		// conversation gets lost (the caller would adopt the new id and
+		// orphan the old one). Only an unmaterialized id may fall through
+		// to session/new (the legitimate first-launch path).
+		if requireResume {
+			return fmt.Errorf("acp session/load %s: %w — existing conversation; refusing to mint a replacement session", preferSessionID, err)
 		}
 		slog.Debug("grok acp session/load failed for unmaterialized id; creating new session", "err", err, "session", preferSessionID)
 	}
@@ -546,26 +544,4 @@ func (c *grokACPClient) write(v any) error {
 	b = append(b, '\n')
 	_, err = c.stdin.Write(b)
 	return err
-}
-
-// grokSessionOnDisk reports whether the Grok CLI's session store holds a
-// conversation for sessionID (~/.grok/sessions/<encoded-cwd>/<id>/, any
-// cwd bucket). CLAUDIA_GROK_SESSIONS_DIR overrides the root for tests.
-func grokSessionOnDisk(sessionID string) bool {
-	if sessionID == "" {
-		return false
-	}
-	root := os.Getenv("CLAUDIA_GROK_SESSIONS_DIR")
-	if root == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return false
-		}
-		root = filepath.Join(home, ".grok", "sessions")
-	}
-	matches, err := filepath.Glob(filepath.Join(root, "*", sessionID))
-	if err != nil {
-		return false
-	}
-	return len(matches) > 0
 }
