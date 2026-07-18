@@ -165,3 +165,53 @@ func TestGrokSessionLiveSmoke(t *testing.T) {
 		t.Fatalf("response %q, want pong", text)
 	}
 }
+
+// Fail-closed load (jevons 🎯T30.1): when the caller marks the session
+// id as an existing conversation (RequireResume), a failed session/load
+// must error out rather than silently minting a replacement session —
+// that silent fallback is how a conversation gets lost.
+func TestHermeticGrokLoadFailsClosedWhenRequireResume(t *testing.T) {
+	bin := writeFakeGrokACP(t)
+	t.Setenv("GROK_BIN", bin)
+	t.Setenv("FAKE_ACP_REJECT_LOAD", "1")
+
+	agent, err := Start(Config{
+		Provider:      ProviderGrok,
+		WorkDir:       t.TempDir(),
+		SessionID:     "sess-exists",
+		RequireResume: true,
+		TermLogPath:   "-",
+	})
+	if err == nil {
+		agent.Stop()
+		t.Fatal("Start must fail closed when load fails for an existing conversation")
+	}
+	if !strings.Contains(err.Error(), "refusing to mint a replacement session") {
+		t.Fatalf("error %q lacks the fail-closed explanation", err)
+	}
+}
+
+// Without RequireResume, a locally minted id may still fall through to
+// session/new — the legitimate first-launch path.
+func TestHermeticGrokLoadFallsThroughForMintedID(t *testing.T) {
+	bin := writeFakeGrokACP(t)
+	t.Setenv("GROK_BIN", bin)
+	t.Setenv("FAKE_ACP_REJECT_LOAD", "1")
+
+	agent, err := Start(Config{
+		Provider:    ProviderGrok,
+		WorkDir:     t.TempDir(),
+		SessionID:   "sess-never-materialized",
+		TermLogPath: "-",
+	})
+	if err != nil {
+		t.Fatalf("Start should mint a new session for an unmaterialized id: %v", err)
+	}
+	defer agent.Stop()
+	if agent.SessionID() == "" {
+		t.Fatal("empty session id after session/new fallback")
+	}
+	if agent.SessionID() == "sess-never-materialized" {
+		t.Fatal("fake rejected load but id unchanged — fallback did not run")
+	}
+}

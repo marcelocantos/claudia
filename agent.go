@@ -69,6 +69,12 @@ type Config struct {
 	// exists, the session is resumed with --resume.
 	SessionID string
 
+	// RequireResume marks SessionID as an existing conversation: a
+	// failed resume/load is then a hard error — the provider must never
+	// silently mint a replacement session (conversation loss). Leave
+	// false for locally minted ids that have no conversation yet.
+	RequireResume bool
+
 	// Model overrides the default Claude model (e.g. "opus", "sonnet").
 	Model string
 
@@ -523,7 +529,7 @@ func startGrokAgent(req agentStartRequest) (*agentStart, error) {
 	// we stash a pointer-to-func that Start fills after construction by
 	// closing ready immediately and using ops that capture the client.
 	var agentRef atomic.Pointer[Agent]
-	client, err := startGrokACP(bin, req.WorkDir, req.Config.Model, preferID, func(ev Event) {
+	client, err := startGrokACP(bin, req.WorkDir, req.Config.Model, preferID, req.Config.RequireResume, func(ev Event) {
 		if a := agentRef.Load(); a != nil {
 			a.publishEvent(ev)
 		}
