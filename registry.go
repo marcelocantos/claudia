@@ -144,9 +144,16 @@ func (r *Registry) Launch(name string) (*Agent, error) {
 		return nil, fmt.Errorf("agent %q not registered", name)
 	}
 
-	mcpConfig := filepath.Join(def.WorkDir, ".mcp.json")
+	// Prefer mcp.claudia.json: a file the Grok CLI does not scan. Entries
+	// in cwd/.mcp.json are cross-referenced by the CLI and classified as
+	// repo-local, which silently gates them behind folder trust — the
+	// claudia-private filename keeps ACP-passed servers session-scoped.
+	mcpConfig := filepath.Join(def.WorkDir, "mcp.claudia.json")
 	if _, err := os.Stat(mcpConfig); err != nil {
-		mcpConfig = ""
+		mcpConfig = filepath.Join(def.WorkDir, ".mcp.json")
+		if _, err := os.Stat(mcpConfig); err != nil {
+			mcpConfig = ""
+		}
 	}
 
 	proc, err := Start(Config{

@@ -204,6 +204,7 @@ func (c *grokACPClient) handleServerRequest(msg acpRPCMessage) {
 		// Minimal client: decline rich fs/terminal. Agent still has its own tools.
 		_ = c.replyError(msg.ID, -32601, "claudia grok acp client does not implement "+msg.Method)
 	default:
+		slog.Warn("grok acp unhandled server request", "method", msg.Method, "params", string(msg.Params))
 		_ = c.replyError(msg.ID, -32601, "method not found: "+msg.Method)
 	}
 }
