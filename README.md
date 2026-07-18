@@ -137,6 +137,12 @@ The one-shot helper `claudia.Run(ctx, prompt, cfg)` bundles `Start` +
 `Send` + `WaitForResponse` + `Stop` for session mode if you want a
 single call.
 
+Fail-closed resume: set `Config.RequireResume` when `SessionID` names an
+existing conversation — a failed load is then a hard error instead of a
+silent fall-through to a fresh session, so a conversation can never be
+orphaned by a resume failure. `Registry`-managed agents get this
+automatically once `AgentDef.Materialized` records a successful launch.
+
 Resuming works automatically: if `Config.SessionID` is set and a JSONL
 transcript already exists for it, claudia passes `--resume`; otherwise
 it passes `--session-id` to create a fresh session with that ID.
