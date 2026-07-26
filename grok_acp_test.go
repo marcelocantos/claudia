@@ -216,6 +216,69 @@ func TestHermeticGrokLoadFallsThroughForMintedID(t *testing.T) {
 	}
 }
 
+// With MCP configured, resume must rotate (session/new) rather than load —
+// Grok ignores mcpServers on session/load. Fake rejects load so a mistaken
+// load path would fail Start; rotation must succeed with a new id.
+func TestHermeticGrokTooledResumeRotates(t *testing.T) {
+	bin := writeFakeGrokACP(t)
+	t.Setenv("GROK_BIN", bin)
+	t.Setenv("FAKE_ACP_REJECT_LOAD", "1")
+
+	dir := t.TempDir()
+	mcpPath := filepath.Join(dir, ".mcp.json")
+	if err := os.WriteFile(mcpPath, []byte(`{"mcpServers":{"x":{"type":"http","url":"http://127.0.0.1:9/mcp"}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	agent, err := Start(Config{
+		Provider:    ProviderGrok,
+		WorkDir:     dir,
+		SessionID:   "sess-old-tooled",
+		MCPConfig:   mcpPath,
+		TermLogPath: "-",
+	})
+	if err != nil {
+		t.Fatalf("Start should rotate to session/new with tools: %v", err)
+	}
+	defer agent.Stop()
+	if agent.SessionID() == "sess-old-tooled" {
+		t.Fatal("expected new session id after tooled rotation")
+	}
+	if agent.SessionID() == "" {
+		t.Fatal("empty session id")
+	}
+}
+
+// RequireResume + MCP still rotates (tools over same-id load). Hosts that
+// track SessionID (Registry) pick up the new id after Start.
+func TestHermeticGrokRequireResumeWithMCPStillRotates(t *testing.T) {
+	bin := writeFakeGrokACP(t)
+	t.Setenv("GROK_BIN", bin)
+	t.Setenv("FAKE_ACP_REJECT_LOAD", "1")
+
+	dir := t.TempDir()
+	mcpPath := filepath.Join(dir, ".mcp.json")
+	if err := os.WriteFile(mcpPath, []byte(`{"mcpServers":{"x":{"type":"http","url":"http://127.0.0.1:9/mcp"}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	agent, err := Start(Config{
+		Provider:      ProviderGrok,
+		WorkDir:       dir,
+		SessionID:     "sess-exists",
+		RequireResume: true,
+		MCPConfig:     mcpPath,
+		TermLogPath:   "-",
+	})
+	if err != nil {
+		t.Fatalf("Start should rotate with tools even under RequireResume: %v", err)
+	}
+	defer agent.Stop()
+	if agent.SessionID() == "sess-exists" {
+		t.Fatal("expected rotated session id when MCP is configured")
+	}
+}
+
 // grok agent stdio loads MCP servers ONLY from the ACP session param —
 // this pins the .mcp.json → ACP conversion that gives agents their tools.
 func TestACPMCPServersConversion(t *testing.T) {

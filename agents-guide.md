@@ -101,10 +101,13 @@ _ = reg.Register(claudia.AgentDef{
 agent, err := reg.Launch("helper")
 ```
 
-Pass `SessionID` to attempt `session/load` (falls back to `session/new`
-if load fails). Permissions are auto-approved (`--always-approve`).
-Rewind remains `CapabilityUnsupported`; do not truncate private Grok
-session files.
+Pass `SessionID` to attempt `session/load` when **no** `MCPConfig` is set
+(falls back to `session/new` if load fails). With `MCPConfig`, claudia
+**always** opens a fresh `session/new` with tools — Grok’s CLI ignores
+`mcpServers` on `session/load` (ACP requires reconnect; Grok does not).
+Adopt the returned `SessionID` and inject a recap if you need history.
+Permissions are auto-approved (`--always-approve`). Rewind remains
+`CapabilityUnsupported`; do not truncate private Grok session files.
 
 **Do not confuse `ProviderGrok` with package
 `github.com/marcelocantos/claudia/grok`.** The latter is a standalone

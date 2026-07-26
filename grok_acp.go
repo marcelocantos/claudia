@@ -55,8 +55,9 @@ type acpRPCMessage struct {
 // startGrokACP spawns bin (typically the grok CLI) with ACP stdio args,
 // performs initialize + session setup, and returns a ready client.
 //
-// model is optional. sessionID, if non-empty and loadSession is available,
-// tries session/load first and falls back to session/new on failure.
+// model is optional. sessionID and requireResume control resume behaviour;
+// see openSession. mcpServers are attached on session/new (Grok CLI
+// attaches tools only there — not on session/load).
 func startGrokACP(bin string, workDir, model, sessionID string, requireResume bool, mcpServers []any, onEvent func(Event), onClose func()) (*grokACPClient, error) {
 	args := []string{"agent", "--always-approve", "stdio"}
 	if model != "" {
@@ -282,6 +283,31 @@ func (c *grokACPClient) initialize() error {
 }
 
 func (c *grokACPClient) openSession(workDir, preferSessionID string, requireResume bool, mcpServers []any) error {
+	if mcpServers == nil {
+		mcpServers = []any{}
+	}
+	tooled := len(mcpServers) > 0
+
+	// Grok CLI bug (not ACP): ACP requires Agents to reconnect MCP on
+	// session/load and session/resume, but Grok attaches mcpServers only
+	// on session/new and silently ignores them on session/load (observed
+	// 2026-07-18 in jevons: resumed overseer ran with zero tools). See
+	// docs/grok-acp-session.md § Resume and MCP.
+	//
+	// Policy when tools are configured: always session/new with mcpServers
+	// (rotation). Same-id load cannot keep tools under today's Grok CLI.
+	// Hosts that need continuity inject a recap after Start; Registry
+	// already persists SessionID when it changes after launch.
+	// RequireResume is overridden here — keeping the old id would mean a
+	// toolless agent, which is worse than a rotated id.
+	if preferSessionID != "" && tooled {
+		slog.Info("grok acp: rotating session for tools",
+			"prior_session", preferSessionID,
+			"require_resume", requireResume,
+			"reason", "Grok CLI ignores mcpServers on session/load")
+		return c.createSession(workDir, mcpServers)
+	}
+
 	if preferSessionID != "" {
 		err := c.loadSession(preferSessionID, workDir, mcpServers)
 		if err == nil {
@@ -298,6 +324,10 @@ func (c *grokACPClient) openSession(workDir, preferSessionID string, requireResu
 		}
 		slog.Debug("grok acp session/load failed for unmaterialized id; creating new session", "err", err, "session", preferSessionID)
 	}
+	return c.createSession(workDir, mcpServers)
+}
+
+func (c *grokACPClient) createSession(workDir string, mcpServers []any) error {
 	if mcpServers == nil {
 		mcpServers = []any{}
 	}
