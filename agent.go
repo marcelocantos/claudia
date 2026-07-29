@@ -355,12 +355,7 @@ func startWithBackend(cfg Config, backend agentBackend) (*Agent, error) {
 		return nil, fmt.Errorf("check session JSONL: %w", err)
 	}
 
-	// Agents spawned by claudia are forbidden from creating their own
-	// sub-agents. The host program owns the process lifecycle.
-	disallowed := "Agent,TeamCreate,TeamDelete,SendMessage,EnterWorktree"
-	if len(cfg.DisallowTools) > 0 {
-		disallowed += "," + strings.Join(cfg.DisallowTools, ",")
-	}
+	disallowed := disallowedToolList(cfg.DisallowTools)
 
 	a := &Agent{
 		provider:    provider,

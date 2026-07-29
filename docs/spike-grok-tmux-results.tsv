@@ -1,0 +1,8 @@
+G1_spawn	PASS	window=@1 pid=47175
+G2_ready	PASS	pane heuristic match after 25s
+G3_send	PASS	user content visible in updates.jsonl after 10s
+G4_wait	PASS	assistant/turn evidence after 5s text=spike-ok
+G5_mcp_new	PASS	spike_echo in mcp_config_resolved
+G7_interrupt	PASS	Esc sent; pane still alive
+G8_menus	PASS	no launch wedge observed with -s uuid path (no welcome picker)
+G6_mcp_resume	PASS	tool evidence after -r resume (9s)
