@@ -114,6 +114,27 @@ const (
 )
 
 // TaskConfig holds the configuration for creating a Task.
+// BaseDisallowedTools are the tools no claudia-spawned agent may use,
+// in either Session or Task mode.
+//
+// Agents spawned by claudia are forbidden from creating their own
+// sub-agents: the host program owns the process lifecycle, and an agent
+// that can spawn agents takes that ownership away. The cost of getting
+// this wrong is not abstract — a summariser handed a transcript
+// containing "go deep with fanout" obeyed it and produced ~33,000
+// subagents and ~4.3 billion tokens in two hours.
+const BaseDisallowedTools = "Agent,TeamCreate,TeamDelete,SendMessage,EnterWorktree"
+
+// disallowedToolList joins the always-forbidden baseline with any extra
+// tools the caller wants removed.
+func disallowedToolList(extra []string) string {
+	disallowed := BaseDisallowedTools
+	if len(extra) > 0 {
+		disallowed += "," + strings.Join(extra, ",")
+	}
+	return disallowed
+}
+
 type TaskConfig struct {
 	// ID is the caller-assigned unique identifier for this task.
 	ID string
@@ -140,6 +161,18 @@ type TaskConfig struct {
 	// Empty leaves Codex's default in place.
 	ApprovalPolicy string
 
+	// DisallowTools lists tool names to remove from this task, on top of
+	// BaseDisallowedTools which is always applied.
+	//
+	// A task that only reads text and emits text — a summariser, a
+	// classifier, a compactor — should disable shell, filesystem and
+	// network tools here. Such a task is running UNTRUSTED INPUT through
+	// a live agent: the model cannot distinguish the text it was asked
+	// to describe from instructions addressed to it, so any imperative
+	// sentence inside that text may be executed rather than summarised.
+	// Removing the tools is what makes that misfire harmless.
+	DisallowTools []string
+
 	// ClaudeID is the claude session ID to resume with --resume. If
 	// empty, each Run starts a fresh session. After the first run,
 	// Task.ClaudeID() returns the session ID for subsequent calls.
@@ -165,6 +198,7 @@ type Task struct {
 	model    string
 	sandbox  string
 	approval string
+	disallow []string
 
 	mu         sync.Mutex
 	run        *taskRun
@@ -181,6 +215,7 @@ type taskRunRequest struct {
 	Model          string
 	SandboxMode    string
 	ApprovalPolicy string
+	DisallowTools  []string
 	SessionID      string
 	Prompt         string
 	RawLog         RawLogFunc
@@ -260,6 +295,7 @@ func newTaskWithBackend(cfg TaskConfig, backend taskBackend) *Task {
 		provider:   cfg.Provider,
 		sandbox:    cfg.SandboxMode,
 		approval:   cfg.ApprovalPolicy,
+		disallow:   cfg.DisallowTools,
 		status:     TaskStatusIdle,
 		claudeID:   cfg.ClaudeID,
 		lastResult: cfg.LastResult,
@@ -337,6 +373,7 @@ func (t *Task) Run(ctx context.Context, prompt string) (<-chan TaskEvent, error)
 		Model:          t.model,
 		SandboxMode:    t.sandbox,
 		ApprovalPolicy: t.approval,
+		DisallowTools:  t.disallow,
 		SessionID:      cid,
 		Prompt:         prompt,
 		RawLog:         rawFn,
@@ -436,6 +473,11 @@ func (claudeTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*task
 		"--output-format", "stream-json",
 		"--include-partial-messages",
 		"--dangerously-skip-permissions",
+		// Task mode previously passed NO tool restriction at all, while
+		// the package documented Agent and friends as always disallowed
+		// — that guarantee lived only in Session mode. Callers reading
+		// the docs reasonably believed they were protected and were not.
+		"--disallowedTools", disallowedToolList(req.DisallowTools),
 	}
 	if req.SessionID != "" {
 		args = append(args, "--resume", req.SessionID)
