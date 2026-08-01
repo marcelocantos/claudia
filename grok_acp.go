@@ -283,6 +283,10 @@ func (c *grokACPClient) handleSessionUpdate(params json.RawMessage) {
 	if c.onEvent == nil || len(params) == 0 {
 		return
 	}
+	// Probe only the fields needed for routing; keep Event.Raw as the
+	// original params so tool_call rawInput/arguments survive for consumers
+	// (jevons activity strip 🎯T64). Re-marshalling a narrow struct dropped
+	// rawInput and broke arg summaries.
 	var p struct {
 		SessionID string `json:"sessionId"`
 		Update    struct {
@@ -299,7 +303,6 @@ func (c *grokACPClient) handleSessionUpdate(params json.RawMessage) {
 	if err := json.Unmarshal(params, &p); err != nil {
 		return
 	}
-	raw, _ := json.Marshal(p)
 	switch p.Update.SessionUpdate {
 	case "agent_message_chunk":
 		text := ""
@@ -309,15 +312,16 @@ func (c *grokACPClient) handleSessionUpdate(params json.RawMessage) {
 		if text == "" {
 			return
 		}
-		c.onEvent(Event{Type: "assistant", Raw: raw, Text: text})
+		c.onEvent(Event{Type: "assistant", Raw: params, Text: text})
 	case "tool_call", "tool_call_update":
-		c.onEvent(Event{Type: "progress", Raw: raw, ProgressType: "tool_use"})
+		// Pass params through unchanged so rawInput is preserved.
+		c.onEvent(Event{Type: "progress", Raw: params, ProgressType: "tool_use"})
 	case "user_message_chunk":
 		text := ""
 		if p.Update.Content != nil {
 			text = p.Update.Content.Text
 		}
-		c.onEvent(Event{Type: "user", Raw: raw, Text: text})
+		c.onEvent(Event{Type: "user", Raw: params, Text: text})
 	}
 }
 
