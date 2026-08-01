@@ -42,6 +42,11 @@ type AgentDef struct {
 	// AutoStart causes this agent to be launched by [Registry.StartAll].
 	AutoStart bool `json:"auto_start"`
 
+	// Parent is the name of the agent that spawned this one (fleet
+	// lineage). Empty means root / unknown (typically the overseer).
+	// Used for kill authorization: only ancestors may kill descendants.
+	Parent string `json:"parent,omitempty"`
+
 	// DisallowTools lists additional tool names to disallow beyond the
 	// claudia defaults (Claude Session). Grok ACP may ignore these.
 	DisallowTools []string `json:"disallow_tools,omitempty"`
@@ -264,11 +269,21 @@ func (r *Registry) StopAll() {
 // fresh def and SessionID — even when another agent already uses the same
 // workDir. Identity is name-keyed; multiple concurrent workers may share a
 // repo path without stealing each other's session or process.
+//
+// parent is recorded only when minting a new agent; an existing def keeps
+// its Parent (callers that must reparent should Register explicitly).
 func (r *Registry) EnsureAgent(name, workDir, model string, autoStart bool) (*AgentDef, error) {
+	return r.EnsureAgentWithParent(name, workDir, model, "", autoStart)
+}
+
+// EnsureAgentWithParent is [EnsureAgent] with an explicit parent name for
+// new registrations (fleet lineage for kill authorization).
+func (r *Registry) EnsureAgentWithParent(name, workDir, model, parent string, autoStart bool) (*AgentDef, error) {
 	r.mu.Lock()
 	if def, ok := r.agents[name]; ok {
+		cp := *def
 		r.mu.Unlock()
-		return def, nil
+		return &cp, nil
 	}
 	r.mu.Unlock()
 
@@ -278,9 +293,53 @@ func (r *Registry) EnsureAgent(name, workDir, model string, autoStart bool) (*Ag
 		SessionID: uuid.New().String(),
 		Model:     model,
 		AutoStart: autoStart,
+		Parent:    parent,
 	}
 	if err := r.Register(def); err != nil {
 		return nil, err
 	}
 	return &def, nil
+}
+
+// IsAncestor reports whether ancestor is a strict ancestor of name by
+// walking Parent links. Cycles are broken with a visit set.
+func (r *Registry) IsAncestor(ancestor, name string) bool {
+	if ancestor == "" || name == "" || ancestor == name {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	seen := map[string]bool{}
+	cur := name
+	for cur != "" && !seen[cur] {
+		seen[cur] = true
+		def, ok := r.agents[cur]
+		if !ok || def.Parent == "" {
+			return false
+		}
+		if def.Parent == ancestor {
+			return true
+		}
+		cur = def.Parent
+	}
+	return false
+}
+
+// Descendants returns names of all agents in the subtree under root
+// (not including root), depth-first.
+func (r *Registry) Descendants(root string) []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []string
+	var walk func(string)
+	walk = func(parent string) {
+		for name, def := range r.agents {
+			if def.Parent == parent {
+				out = append(out, name)
+				walk(name)
+			}
+		}
+	}
+	walk(root)
+	return out
 }
