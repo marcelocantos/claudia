@@ -260,35 +260,15 @@ func (r *Registry) StopAll() {
 }
 
 // EnsureAgent returns the existing [AgentDef] for name if it is already
-// registered. If no agent with that name exists, it checks whether any agent
-// points at the same workDir — if so, it renames that agent to name. If no
-// matching agent exists at all, it creates a new one with a fresh session ID.
-// This idempotent behaviour makes it safe to call on every startup.
+// registered (same-name idempotent). If the name is new, it always mints a
+// fresh def and SessionID — even when another agent already uses the same
+// workDir. Identity is name-keyed; multiple concurrent workers may share a
+// repo path without stealing each other's session or process.
 func (r *Registry) EnsureAgent(name, workDir, model string, autoStart bool) (*AgentDef, error) {
 	r.mu.Lock()
 	if def, ok := r.agents[name]; ok {
 		r.mu.Unlock()
 		return def, nil
-	}
-
-	// Check if an agent with the same workdir exists under a different name.
-	for oldName, def := range r.agents {
-		if def.WorkDir == workDir {
-			slog.Info("renaming agent", "from", oldName, "to", name)
-			delete(r.agents, oldName)
-			def.Name = name
-			r.agents[name] = def
-			if proc, ok := r.procs[oldName]; ok {
-				delete(r.procs, oldName)
-				r.procs[name] = proc
-			}
-			err := r.save()
-			r.mu.Unlock()
-			if err != nil {
-				return nil, err
-			}
-			return def, nil
-		}
 	}
 	r.mu.Unlock()
 

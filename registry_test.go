@@ -202,26 +202,46 @@ func TestEnsureAgentReturnsExisting(t *testing.T) {
 	}
 }
 
-func TestEnsureAgentRenamesOnWorkdirCollision(t *testing.T) {
+func TestEnsureAgentSameWorkdirDifferentNamesAreIndependent(t *testing.T) {
 	dir := t.TempDir()
 	r, _ := NewRegistry(filepath.Join(dir, "registry.json"))
 
-	// Register under one name, then EnsureAgent with a different name
-	// but the same workdir — the existing definition should be renamed
-	// and its SessionID preserved.
-	original, _ := r.EnsureAgent("old-name", "/tmp/proj", "sonnet", false)
-	renamed, err := r.EnsureAgent("new-name", "/tmp/proj", "sonnet", false)
+	// Two fleet workers often share a repo workdir under different names.
+	// EnsureAgent must mint two defs/sessions and leave the original name
+	// alone (no workdir-based session steal / silent rename).
+	const workDir = "/tmp/proj"
+	first, err := r.EnsureAgent("old-name", workDir, "sonnet", false)
 	if err != nil {
-		t.Fatalf("EnsureAgent rename: %v", err)
+		t.Fatalf("EnsureAgent first: %v", err)
 	}
-	if renamed.Name != "new-name" {
-		t.Errorf("Name = %q, want new-name", renamed.Name)
+	second, err := r.EnsureAgent("new-name", workDir, "sonnet", false)
+	if err != nil {
+		t.Fatalf("EnsureAgent second: %v", err)
 	}
-	if renamed.SessionID != original.SessionID {
-		t.Errorf("SessionID changed on rename: %q → %q",
-			original.SessionID, renamed.SessionID)
+	if second.Name != "new-name" {
+		t.Errorf("second.Name = %q, want new-name", second.Name)
 	}
-	if r.Def("old-name") != nil {
-		t.Error("old name still in registry after rename")
+	if second.SessionID == first.SessionID {
+		t.Errorf("SessionIDs collided: both %q", first.SessionID)
+	}
+	if second.SessionID == "" {
+		t.Error("second SessionID empty")
+	}
+	still := r.Def("old-name")
+	if still == nil {
+		t.Fatal("old-name missing from registry after second EnsureAgent")
+	}
+	if still.Name != "old-name" {
+		t.Errorf("old-name silently renamed to %q", still.Name)
+	}
+	if still.SessionID != first.SessionID {
+		t.Errorf("old-name SessionID changed: %q → %q", first.SessionID, still.SessionID)
+	}
+	if r.Def("new-name") == nil {
+		t.Fatal("new-name not registered")
+	}
+	list := r.List()
+	if len(list) != 2 {
+		t.Fatalf("List len = %d, want 2", len(list))
 	}
 }
