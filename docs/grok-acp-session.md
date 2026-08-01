@@ -26,9 +26,19 @@ lines over stdin/stdout.
 
 ### Auto-approve
 
-`--always-approve` plus auto-reply to `session/request_permission` keep
-unattended embedding workable. Rich `fs/*` and `terminal/*` client methods
-are declined; the agent still uses its own tools.
+`--always-approve` plus `_meta.yoloMode: true` on `session/new` (and load)
+plus auto-reply to `session/request_permission` keep unattended embedding
+workable.
+
+Permission replies **must** select an `optionId` from the request's offered
+`options` list. Prefer `allow_always`, then any `allow_always_*` (e.g.
+`allow_always_bash` for `run_terminal_command`), then `allow_once`. Hardcoding
+`allow_always` when only bash-scoped options are offered yields Grok's
+`unknown permission option for tool run_terminal_command` and stalls fleet
+workers.
+
+Rich `fs/*` and `terminal/*` client methods are declined; the agent still
+uses its own tools.
 
 ### Resume and MCP
 

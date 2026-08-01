@@ -97,6 +97,56 @@ func TestHermeticGrokSessionStartSendWait(t *testing.T) {
 	}
 }
 
+// TestHermeticGrokBashPermissionOptionID proves the client never replies
+// with a foreign optionId when Grok only offers bash-scoped allows
+// (live failure: unknown permission option for tool run_terminal_command).
+func TestHermeticGrokBashPermissionOptionID(t *testing.T) {
+	bin := writeFakeGrokACP(t)
+	t.Setenv("GROK_BIN", bin)
+	t.Setenv("FAKE_ACP_BASH_PERMISSION", "1")
+
+	workDir := t.TempDir()
+	agent, err := Start(Config{
+		Provider:    ProviderGrok,
+		WorkDir:     workDir,
+		TermLogPath: "-",
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer agent.Stop()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	type outcome struct {
+		text string
+		err  error
+	}
+	ch := make(chan outcome, 1)
+	go func() {
+		text, err := agent.WaitForResponse(ctx)
+		ch <- outcome{text, err}
+	}()
+	runtime.Gosched()
+
+	if err := agent.Send("run a shell command then reply pong"); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	select {
+	case <-ctx.Done():
+		t.Fatal("timeout waiting for response (permission round-trip stuck?)")
+	case out := <-ch:
+		if out.err != nil {
+			t.Fatalf("WaitForResponse: %v", out.err)
+		}
+		if !strings.Contains(out.text, "pong") {
+			t.Fatalf("response %q, want pong after bash permission grant", out.text)
+		}
+	}
+}
+
 func TestHermeticGrokSessionRunHelper(t *testing.T) {
 	bin := writeFakeGrokACP(t)
 	t.Setenv("GROK_BIN", bin)

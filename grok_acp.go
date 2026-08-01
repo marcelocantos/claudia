@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"sync/atomic"
 )
@@ -192,11 +193,15 @@ func (c *grokACPClient) readLoop() {
 func (c *grokACPClient) handleServerRequest(msg acpRPCMessage) {
 	switch msg.Method {
 	case "session/request_permission":
-		// Auto-approve: unattended embedding posture (mirrors --always-approve).
+		// Auto-approve for unattended embedding. Must pick an optionId that
+		// appears in the request: Grok offers tool-specific IDs for shell
+		// (e.g. allow_always_bash) and rejects unknown ones with
+		// "unknown permission option for tool run_terminal_command".
+		optionID := selectPermissionOptionID(msg.Params)
 		_ = c.reply(msg.ID, map[string]any{
 			"outcome": map[string]any{
 				"outcome":  "selected",
-				"optionId": "allow_always",
+				"optionId": optionID,
 			},
 		})
 	case "fs/read_text_file", "fs/write_text_file",
@@ -208,6 +213,63 @@ func (c *grokACPClient) handleServerRequest(msg acpRPCMessage) {
 		slog.Warn("grok acp unhandled server request", "method", msg.Method, "params", string(msg.Params))
 		_ = c.replyError(msg.ID, -32601, "method not found: "+msg.Method)
 	}
+}
+
+// selectPermissionOptionID chooses an allow option from a
+// session/request_permission params blob. Preference: generic
+// allow_always, then any allow_always_* (bash/mcp/domain), then
+// allow_once, then any other allow_*. Empty or unparseable params fall
+// back to allow_always (legacy Grok shape).
+func selectPermissionOptionID(params json.RawMessage) string {
+	ids := permissionOptionIDs(params)
+	if len(ids) == 0 {
+		return "allow_always"
+	}
+	has := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		has[id] = struct{}{}
+	}
+	if _, ok := has["allow_always"]; ok {
+		return "allow_always"
+	}
+	// Tool-scoped always grants (shell, MCP, domain, …).
+	for _, id := range ids {
+		if strings.HasPrefix(id, "allow_always") {
+			return id
+		}
+	}
+	if _, ok := has["allow_once"]; ok {
+		return "allow_once"
+	}
+	for _, id := range ids {
+		if strings.HasPrefix(id, "allow_") {
+			return id
+		}
+	}
+	// Offered only rejects or unknown kinds — still must pick something
+	// from the list so Grok does not error on a foreign optionId.
+	return ids[0]
+}
+
+func permissionOptionIDs(params json.RawMessage) []string {
+	if len(params) == 0 {
+		return nil
+	}
+	var p struct {
+		Options []struct {
+			OptionID string `json:"optionId"`
+		} `json:"options"`
+	}
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil
+	}
+	var ids []string
+	for _, opt := range p.Options {
+		if opt.OptionID != "" {
+			ids = append(ids, opt.OptionID)
+		}
+	}
+	return ids
 }
 
 func (c *grokACPClient) handleNotification(msg acpRPCMessage) {
@@ -331,9 +393,12 @@ func (c *grokACPClient) createSession(workDir string, mcpServers []any) error {
 	if mcpServers == nil {
 		mcpServers = []any{}
 	}
+	// yoloMode is Grok's ACP always-approve switch for the session
+	// (belt-and-suspenders with CLI --always-approve). See Grok agent-mode docs.
 	result, err := c.request("session/new", map[string]any{
 		"cwd":        workDir,
 		"mcpServers": mcpServers,
+		"_meta":      map[string]any{"yoloMode": true},
 	})
 	if err != nil {
 		return fmt.Errorf("acp session/new: %w", err)
@@ -361,6 +426,7 @@ func (c *grokACPClient) loadSession(sessionID, workDir string, mcpServers []any)
 		"sessionId":  sessionID,
 		"cwd":        workDir,
 		"mcpServers": mcpServers,
+		"_meta":      map[string]any{"yoloMode": true},
 	})
 	if err != nil {
 		return err
