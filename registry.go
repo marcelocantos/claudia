@@ -53,6 +53,10 @@ type AgentDef struct {
 	// present them differently without a second store.
 	Purpose string `json:"purpose,omitempty"`
 
+	// Description is an optional owner-facing label (e.g. aside title for
+	// purpose=aside rows). Empty means UI falls back to Name.
+	Description string `json:"description,omitempty"`
+
 	// DisallowTools lists additional tool names to disallow beyond the
 	// claudia defaults (Claude Session). Grok ACP may ignore these.
 	DisallowTools []string `json:"disallow_tools,omitempty"`
