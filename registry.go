@@ -47,10 +47,23 @@ type AgentDef struct {
 	// Used for kill authorization: only ancestors may kill descendants.
 	Parent string `json:"parent,omitempty"`
 
+	// Purpose classifies the agent in a unified fleet model (work | aside |
+	// overseer). Empty means work. Aside agents are side-chat participants
+	// that share the same registry and deliver path as workers; UI may
+	// present them differently without a second store.
+	Purpose string `json:"purpose,omitempty"`
+
 	// DisallowTools lists additional tool names to disallow beyond the
 	// claudia defaults (Claude Session). Grok ACP may ignore these.
 	DisallowTools []string `json:"disallow_tools,omitempty"`
 }
+
+// Canonical Purpose values for [AgentDef.Purpose].
+const (
+	PurposeWork     = "work"
+	PurposeAside    = "aside"
+	PurposeOverseer = "overseer"
+)
 
 // Registry manages named [Agent] processes keyed by [AgentDef]. Definitions
 // are persisted to a JSON file at the path passed to [NewRegistry], so agents

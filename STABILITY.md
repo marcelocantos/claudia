@@ -43,7 +43,7 @@ is annotated with a stability assessment:
 | `TaskConfig` | struct with `Provider Provider`, `ID, Name, WorkDir, Model, ClaudeID, LastResult, SandboxMode, ApprovalPolicy string` | Needs review |
 | `RawLogFunc` | `func(line []byte)` | Stable |
 | `Task` | opaque struct; methods listed below | Needs review |
-| `AgentDef` | struct with `Name, WorkDir, SessionID, Model string`, `DisallowTools []string`, `AutoStart bool` and `Materialized bool` | Needs review |
+| `AgentDef` | struct with `Name, WorkDir, SessionID, Model, Parent, Purpose string`, `DisallowTools []string`, `AutoStart bool` and `Materialized bool` | Needs review |
 | `Registry` | opaque struct; methods listed below | Needs review |
 | `RewindResult` | struct with `SessionID, JSONLPath, BackupPath string`, `TurnsRemoved, LinesRemoved int`, `BytesRemoved int64` | Needs review |
 

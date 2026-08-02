@@ -93,6 +93,8 @@ func TestRegistryRegisterPersists(t *testing.T) {
 		Name:      "carol",
 		WorkDir:   "/tmp/carol",
 		SessionID: "session-carol",
+		Parent:    "overseer",
+		Purpose:   PurposeAside,
 	}
 	if err := r.Register(def); err != nil {
 		t.Fatalf("Register: %v", err)
@@ -109,6 +111,12 @@ func TestRegistryRegisterPersists(t *testing.T) {
 	}
 	if got.SessionID != "session-carol" {
 		t.Errorf("SessionID after reload = %q, want session-carol", got.SessionID)
+	}
+	if got.Parent != "overseer" {
+		t.Errorf("Parent after reload = %q, want overseer", got.Parent)
+	}
+	if got.Purpose != PurposeAside {
+		t.Errorf("Purpose after reload = %q, want %q", got.Purpose, PurposeAside)
 	}
 }
 
