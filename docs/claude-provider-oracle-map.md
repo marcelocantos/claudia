@@ -93,11 +93,14 @@ Live gates (optional smoke, never sole retirement evidence):
 
 ## Jevons-side gaps (do not patch from claudia)
 
+**Re-stitch audit (🎯T11.1, 2026-08-03):** see **`docs/claude-jevons-restitch.md`** for WORKS/GAP/UNKNOWN rows after Grok-only production wiring. Selection surface is jevons 🎯T148 (achieved). Default fleet remains **Grok** (intentional); Claude is opt-in via provider select.
+
 List for overseer → **jevons-po** (claudia owns runtime contract only):
 
-- Confirm Jevons fleet threads use `ProviderClaude` (default) and surface `CapabilityError` if a consumer ever selects Codex Session / Grok Rewind.
+- Confirm Jevons fleet threads use `ProviderClaude` when selected (default fleet is Grok — restitch map) and surface `CapabilityError` if a consumer ever selects Codex Session / Grok Rewind.
 - Interrupt / stop / rewind UI must call claudia `Agent.Interrupt` / `Stop` / `Rewind` (or Task Cancel/Stop) — product wiring is Jevons-owned.
-- Transcript durability after Jevons process death relies on claudia JSONL + Registry `Materialized` / `RequireResume`; Jevons must persist `SessionID` and not mint a new id on reconnect.
+- Transcript durability after Jevons process death relies on claudia JSONL + Registry `Materialized` / `RequireResume`; Jevons must persist `SessionID` and not mint a new id on reconnect. Jevons `SessionsDir` / transcript reader remain Grok-tree (`~/.grok/sessions`) — Claude JSONL inspect is a jevons gap (restitch J2).
+- Overseer MCP is registered only via Grok user-scoped config (`ensureGrokMCPServer`) — Claude overseer would start toolless (restitch J1).
 - Any Jevons assumption that Session mode reports per-turn USD cost is wrong — Task has `CostUSD`; Session has `Usage()` tokens only.
 
 ## Relationship to other maps
