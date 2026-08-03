@@ -57,6 +57,12 @@ type AgentDef struct {
 	// purpose=aside rows). Empty means UI falls back to Name.
 	Description string `json:"description,omitempty"`
 
+	// TargetID is an optional bullseye target id this agent is engaged on
+	// (e.g. "T10.2"). Jevons frontier UI merges fleet rows with the frontier
+	// by exact TargetID equality — never by parsing agent names (🎯T198).
+	// Empty means not engaged on a specific ledger target.
+	TargetID string `json:"target_id,omitempty"`
+
 	// DisallowTools lists additional tool names to disallow beyond the
 	// claudia defaults (Claude Session). Grok ACP may ignore these.
 	DisallowTools []string `json:"disallow_tools,omitempty"`
