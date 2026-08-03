@@ -128,8 +128,9 @@ func (c *fakeAgentControl) Close() error {
 }
 
 type fakeAgentBackend struct {
-	name    string
-	control *fakeAgentControl
+	name      string
+	control   *fakeAgentControl
+	tailJSONL bool
 
 	mu         sync.Mutex
 	requests   []agentStartRequest
@@ -154,7 +155,7 @@ func (b *fakeAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error
 		WindowID:  b.name + "-window",
 		Control:   b.control,
 		Ops:       b.ops(),
-		TailJSONL: false,
+		TailJSONL: b.tailJSONL,
 		DetectReady: func(a *Agent) {
 			close(a.ready)
 		},

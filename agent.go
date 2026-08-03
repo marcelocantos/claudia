@@ -349,10 +349,21 @@ func startWithBackend(cfg Config, backend agentBackend) (*Agent, error) {
 		termLogPath = ""
 	}
 
-	// If the JSONL already exists, this is a resume.
+	// If the Claude JSONL already exists, this is a resume. Grok/Codex do
+	// not use ~/.claude/projects transcripts; their resume semantics live
+	// in the provider backend (Grok ACP session/load, etc.).
 	resuming, err := SessionExists(sessionID, workDir)
 	if err != nil {
 		return nil, fmt.Errorf("check session JSONL: %w", err)
+	}
+	// FAIL-CLOSED RESUME (Claude): when the caller marked this id as an
+	// existing conversation (RequireResume), missing JSONL must be a hard
+	// error — silently falling through to --session-id would mint a
+	// replacement conversation and orphan the caller's history (Registry
+	// Materialized sets RequireResume after the first successful launch).
+	// Grok enforces the same policy inside startGrokACP / session/load.
+	if (provider == ProviderClaude) && cfg.RequireResume && !resuming {
+		return nil, fmt.Errorf("session %s: existing conversation required but JSONL not found at %s — refusing to mint a replacement session", sessionID, jsonlPath)
 	}
 
 	disallowed := disallowedToolList(cfg.DisallowTools)
