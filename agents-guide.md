@@ -113,6 +113,30 @@ Permissions are auto-approved (`--always-approve`). Rewind remains
 `github.com/marcelocantos/claudia/grok`.** The latter is a standalone
 Realtime voice WebSocket client; it is not the coding-agent harness.
 
+### AWS Bedrock provider (Task mode only, v1)
+
+```go
+task := claudia.NewTask(claudia.TaskConfig{
+    Provider: claudia.ProviderBedrock,
+    ID:       "bedrock-1",
+    Model:    "anthropic.claude-3-5-sonnet-20241022-v2:0", // or inference profile
+})
+```
+
+Bedrock is an **API path** (AWS ConverseStream), not the local `claude`
+CLI. Credentials: AWS SDK default chain (`AWS_PROFILE`, env keys, SSO,
+instance roles). Region: `CLAUDIA_BEDROCK_REGION` else `AWS_REGION` /
+`AWS_DEFAULT_REGION`. Model: `TaskConfig.Model` or
+`CLAUDIA_BEDROCK_MODEL_ID`.
+
+v1 maps streamed text deltas → `TaskEventText` and a terminal
+`TaskEventResult` (token `Usage` when metadata is present; no `CostUSD`).
+**Not claimed:** Session/tmux, resume, rewind, tools, permissions, local
+binary discovery. `Start(ProviderBedrock)` fails closed with
+`CapabilityError`. Work-account setup:
+[docs/bedrock-work-account.md](docs/bedrock-work-account.md). Design:
+[docs/bedrock-provider.md](docs/bedrock-provider.md).
+
 ## Task mode: essential patterns
 
 Construct with `NewTask`, then call `Run` to get a channel of
@@ -403,17 +427,19 @@ push, on both macOS and Linux.
 | `CLAUDIA_LIVE=1` | Claude | Agent send/receive, pool, `TestTaskRunSmoke` |
 | `CLAUDIA_CODEX_LIVE=1` | Codex | `TestCodexTaskRunSmoke` |
 | `CLAUDIA_GROK_LIVE=1` | Grok Build CLI | `TestGrokTaskRunSmoke` |
+| `CLAUDIA_BEDROCK_LIVE=1` | AWS Bedrock | `TestBedrockTaskLiveSmoke` |
 
 CI does **not** set these — live runs need local auth and may spend
-API credit.
+API credit. Bedrock needs work-account AWS credentials and model access
+([docs/bedrock-work-account.md](docs/bedrock-work-account.md)).
 
 The canonical pre-release validation command (run locally before
 tagging a release):
 
 ```sh
 CLAUDIA_LIVE=1 go test -race -count=1 ./...
-# optional provider smokes when those CLIs are installed and authed:
-# CLAUDIA_CODEX_LIVE=1 CLAUDIA_GROK_LIVE=1 go test -race -count=1 ./...
+# optional provider smokes when those CLIs/APIs are installed and authed:
+# CLAUDIA_CODEX_LIVE=1 CLAUDIA_GROK_LIVE=1 CLAUDIA_BEDROCK_LIVE=1 go test -race -count=1 ./...
 ```
 
 ## Stability

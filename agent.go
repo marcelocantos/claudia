@@ -237,6 +237,8 @@ func agentBackendForProvider(provider Provider) agentBackend {
 		return codexAgentBackend{}
 	case ProviderGrok:
 		return grokAgentBackend{}
+	case ProviderBedrock:
+		return errorAgentBackend{err: unsupportedCapability(ProviderBedrock, "session", "Bedrock v1 is Task-only (ConverseStream); Session/tmux is not supported")}
 	default:
 		return errorAgentBackend{err: fmt.Errorf("unknown agent provider %q", provider)}
 	}
@@ -306,6 +308,9 @@ func claudeAgentOps() agentOps {
 func Start(cfg Config) (*Agent, error) {
 	if cfg.Provider == ProviderCodex {
 		return nil, experimentalCapability(ProviderCodex, "session", "persistent Session mode requires the app-server live contract spike to complete")
+	}
+	if cfg.Provider == ProviderBedrock {
+		return nil, unsupportedCapability(ProviderBedrock, "session", "Bedrock v1 is Task-only (ConverseStream); Session/tmux is not supported")
 	}
 	return startWithBackend(cfg, agentBackendForProvider(cfg.Provider))
 }
@@ -945,6 +950,9 @@ func (a *Agent) Rewind(n int, cfg Config) (*Agent, error) {
 	}
 	if a.provider == ProviderGrok || cfg.Provider == ProviderGrok {
 		return nil, unsupportedCapability(ProviderGrok, "rewind", "Grok rewind requires a public ACP/session API; private session-file truncation is forbidden")
+	}
+	if a.provider == ProviderBedrock || cfg.Provider == ProviderBedrock {
+		return nil, unsupportedCapability(ProviderBedrock, "rewind", "Bedrock v1 is Task-only and has no Session transcript to rewind")
 	}
 	a.Stop()
 	if _, err := rewindJSONL(a.jsonlPath, n); err != nil {

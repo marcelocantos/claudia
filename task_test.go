@@ -536,9 +536,16 @@ func TestTaskBackendForProvider(t *testing.T) {
 	if _, ok := taskBackendForProvider(ProviderGrok).(grokTaskBackend); !ok {
 		t.Error("ProviderGrok did not select grokTaskBackend")
 	}
+	if _, ok := taskBackendForProvider(ProviderBedrock).(bedrockTaskBackend); !ok {
+		t.Error("ProviderBedrock did not select bedrockTaskBackend")
+	}
 	caps := taskBackendForProvider(ProviderGrok).Capabilities()
 	if !caps.Task || !caps.Resume || caps.Cost || caps.Session {
 		t.Errorf("ProviderGrok capabilities = %+v, want Task+Resume only", caps)
+	}
+	bcaps := taskBackendForProvider(ProviderBedrock).Capabilities()
+	if !bcaps.Task || bcaps.Resume || bcaps.Session || bcaps.Cost {
+		t.Errorf("ProviderBedrock capabilities = %+v, want Task only", bcaps)
 	}
 	backend := taskBackendForProvider(Provider("bogus"))
 	if _, ok := backend.(errorTaskBackend); !ok {

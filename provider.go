@@ -29,6 +29,9 @@ const (
 	// Distinct from the Realtime voice client in package
 	// github.com/marcelocantos/claudia/grok.
 	ProviderGrok Provider = "grok"
+	// ProviderBedrock uses Anthropic Claude models via AWS Bedrock
+	// ConverseStream (API path; no local claude CLI). Task mode only in v1.
+	ProviderBedrock Provider = "bedrock"
 )
 
 const (

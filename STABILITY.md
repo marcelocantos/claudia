@@ -38,7 +38,7 @@ is annotated with a stability assessment:
 | `TaskEvent` | struct with `Type TaskEventType`, `Content, ToolName, ToolInput, ToolID, SessionID string`, `DurationMs, CostUSD float64`, `Usage Usage`, `IsError bool`, `ErrorMsg string` | Needs review |
 | `TaskEventType` | string type | Stable |
 | `TaskStatus` | string type | Stable |
-| `Provider` | string type selecting `ProviderClaude`, `ProviderCodex`, or `ProviderGrok` | Fluid |
+| `Provider` | string type selecting `ProviderClaude`, `ProviderCodex`, `ProviderGrok`, or `ProviderBedrock` | Fluid |
 | `CapabilityError` | struct with `Provider Provider`, `Capability, Status, Reason string`; method `Error() string` | Fluid |
 | `TaskConfig` | struct with `Provider Provider`, `ID, Name, WorkDir, Model, ClaudeID, LastResult, SandboxMode, ApprovalPolicy string` | Needs review |
 | `RawLogFunc` | `func(line []byte)` | Stable |
@@ -52,7 +52,7 @@ is annotated with a stability assessment:
 | Item | Status |
 |---|---|
 | `Version` | Stable |
-| `ProviderClaude, ProviderCodex, ProviderGrok` (Provider) | Fluid |
+| `ProviderClaude, ProviderCodex, ProviderGrok, ProviderBedrock` (Provider) | Fluid |
 | `CapabilityUnsupported, CapabilityExperimental` | Fluid |
 | `TaskEventInit, TaskEventText, TaskEventToolUse, TaskEventResult, TaskEventError` (TaskEventType) | Stable |
 | `TaskStatusIdle, TaskStatusRunning, TaskStatusError, TaskStatusStopped` (TaskStatus) | Stable |

@@ -28,6 +28,15 @@ voice client in package `claudia/grok`. Session mode uses ACP over
 including `/Applications/Codex.app/Contents/Resources/codex`. Codex
 Session mode remains experimental (fail-closed).
 
+**AWS Bedrock Task mode** ships via `ProviderBedrock` — Anthropic Claude
+models through Bedrock **ConverseStream** (API path; no local `claude`
+CLI). Credentials use the AWS SDK default chain (`AWS_PROFILE`, env keys,
+SSO, roles). Region: `CLAUDIA_BEDROCK_REGION` or `AWS_REGION` /
+`AWS_DEFAULT_REGION`. Model: `TaskConfig.Model` or
+`CLAUDIA_BEDROCK_MODEL_ID`. Session/resume/tools are **not** claimed in
+v1. Setup: [docs/bedrock-work-account.md](docs/bedrock-work-account.md).
+Design: [docs/bedrock-provider.md](docs/bedrock-provider.md).
+
 ## Modes
 
 ### Task mode — one-shot prompts
@@ -95,6 +104,20 @@ task := claudia.NewTask(claudia.TaskConfig{
 
 Grok live tests are opt-in (`CLAUDIA_GROK_LIVE=1`). Auth is whatever the
 installed `grok` CLI already uses (`grok login` or `XAI_API_KEY`).
+
+Bedrock Task mode is available by selecting `ProviderBedrock`. It calls
+AWS Bedrock ConverseStream and maps text deltas to `TaskEventText`:
+
+```go
+task := claudia.NewTask(claudia.TaskConfig{
+    Provider: claudia.ProviderBedrock,
+    ID:       "bedrock-summary",
+    Model:    "anthropic.claude-3-5-sonnet-20241022-v2:0", // or inference profile id
+})
+```
+
+Bedrock live tests are opt-in (`CLAUDIA_BEDROCK_LIVE=1`) and need work-account
+credentials plus model access (see docs/bedrock-work-account.md).
 
 ### Session mode — persistent conversations
 
