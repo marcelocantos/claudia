@@ -411,6 +411,11 @@ func TestAgentMissingOperationFailsWithCapabilityError(t *testing.T) {
 // make the test slow. Readiness detection is the surface being
 // exercised here.
 func TestAgentReadinessSmoke(t *testing.T) {
+	// Real TUI readiness is live residual (CLAUDIA_LIVE); PATH-only gate
+	// hung default go test ./... with claude installed (T11.2 restitch smoke).
+	if os.Getenv("CLAUDIA_LIVE") == "" {
+		t.Skip("CLAUDIA_LIVE not set (this test starts a real Claude Session)")
+	}
 	if _, err := exec.LookPath("claude"); err != nil {
 		t.Skip("claude binary not on PATH")
 	}
@@ -972,6 +977,11 @@ func TestTermLogPathDisabled(t *testing.T) {
 // causes it to exit immediately — --help is a reasonable stand-in for
 // "claude that exits without finishing startup".
 func TestAgentReadinessFailureOnDeadProcess(t *testing.T) {
+	// Spawns a real claude binary (--help exit); keep under CLAUDIA_LIVE
+	// so default hermetic ./... stays offline-safe (T11.2).
+	if os.Getenv("CLAUDIA_LIVE") == "" {
+		t.Skip("CLAUDIA_LIVE not set (this test spawns a real claude process)")
+	}
 	if _, err := exec.LookPath("claude"); err != nil {
 		t.Skip("claude binary not on PATH")
 	}

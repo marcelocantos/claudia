@@ -38,8 +38,12 @@ import (
 //     user option matches what the child printed.
 //  5. Parent kills the window to clean up.
 //
-// This test requires `claude` and `tmux` on PATH; skipped otherwise.
+// This test requires CLAUDIA_LIVE=1 plus `claude` and `tmux` on PATH
+// (starts a real Session — live residual; ungated it hung default go test).
 func TestCrashSurvival(t *testing.T) {
+	if os.Getenv("CLAUDIA_LIVE") == "" {
+		t.Skip("CLAUDIA_LIVE not set (this test starts a real Claude Session)")
+	}
 	if _, err := exec.LookPath("claude"); err != nil {
 		t.Skip("claude binary not on PATH")
 	}

@@ -22,6 +22,9 @@ func writeFakeGrokACP(t *testing.T) string {
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 required for fake ACP server")
 	}
+	// Hermetic fakes speak ACP on stdio; ambient CLAUDIA_GROK_CONNECT=1
+	// (fleet shells) would force connect/serve and fail these tests.
+	t.Setenv(EnvGrokConnect, "")
 	py, err := filepath.Abs("testdata/grok/acp/fake_acp.py")
 	if err != nil {
 		t.Fatal(err)

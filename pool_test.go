@@ -16,10 +16,15 @@ import (
 	"github.com/marcelocantos/claudia/internal/tmuxagent"
 )
 
-// skipIfNoBinaries skips the test if claude or tmux are not on PATH.
-// All pool integration tests call this because Acquire uses both.
+// skipIfNoBinaries skips real-pool integration tests unless CLAUDIA_LIVE=1
+// and claude+tmux are on PATH. Pool Acquire cold-starts a real Claude
+// Session (live residual on the oracle map); without the env gate these
+// hang default `go test ./...` whenever claude is installed.
 func skipIfNoBinaries(t *testing.T) {
 	t.Helper()
+	if os.Getenv("CLAUDIA_LIVE") == "" {
+		t.Skip("CLAUDIA_LIVE not set (pool Acquire starts a real Claude session)")
+	}
 	if _, err := exec.LookPath("claude"); err != nil {
 		t.Skip("claude binary not on PATH")
 	}
