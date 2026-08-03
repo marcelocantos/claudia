@@ -5,6 +5,7 @@ package claudia
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,18 +15,38 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+
+	"github.com/coder/websocket"
 )
 
 // grokACPClient is a minimal ACP (Agent Client Protocol) client over
-// JSON-RPC 2.0 lines on a child process's stdin/stdout. It drives
-// Grok Build's `grok agent stdio` session surface.
+// JSON-RPC 2.0. Transport is either:
+//
+//   - stdio pipes to a parent-owned `grok agent stdio` child (default), or
+//   - WebSocket to a detached `grok agent serve` process (connect-mode;
+//     🎯T40 process durability — agent outlives the consumer).
 //
 // See https://agentclientprotocol.com and Grok Build agent-mode docs.
 type grokACPClient struct {
+	// stdio transport (default)
 	cmd    *exec.Cmd
 	stdin  io.WriteCloser
 	stdout io.ReadCloser
 	stderr io.ReadCloser
+
+	// connect-mode WebSocket transport (mutually exclusive with stdio pipes)
+	ws       *websocket.Conn
+	wsCtx    context.Context
+	wsCancel context.CancelFunc
+
+	// ownsProcess: when true, Close kills cmd (stdio child or serve we
+	// spawned). Reattach to an external serve also sets ownsProcess so
+	// Agent.Stop tears down the durable process.
+	ownsProcess bool
+	// connectURL / connectPID describe the durable serve endpoint when
+	// using connect-mode (empty/0 for stdio).
+	connectURL string
+	connectPID int
 
 	mu      sync.Mutex
 	nextID  int64
@@ -91,14 +112,15 @@ func startGrokACP(bin string, workDir, model, sessionID string, requireResume bo
 	}
 
 	c := &grokACPClient{
-		cmd:       cmd,
-		stdin:     stdin,
-		stdout:    stdout,
-		stderr:    stderr,
-		pending:   make(map[int64]chan acpRPCMessage),
-		onEvent:   onEvent,
-		onClose:   onClose,
-		sessionID: sessionID,
+		cmd:         cmd,
+		stdin:       stdin,
+		stdout:      stdout,
+		stderr:      stderr,
+		ownsProcess: true,
+		pending:     make(map[int64]chan acpRPCMessage),
+		onEvent:     onEvent,
+		onClose:     onClose,
+		sessionID:   sessionID,
 	}
 
 	go c.drainStderr()
@@ -115,6 +137,12 @@ func startGrokACP(bin string, workDir, model, sessionID string, requireResume bo
 	return c, nil
 }
 
+// ConnectURL returns the durable serve WebSocket URL in connect-mode, or "".
+func (c *grokACPClient) ConnectURL() string { return c.connectURL }
+
+// ConnectPID returns the durable serve PID in connect-mode, or 0.
+func (c *grokACPClient) ConnectPID() int { return c.connectPID }
+
 func (c *grokACPClient) SessionID() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -122,6 +150,9 @@ func (c *grokACPClient) SessionID() string {
 }
 
 func (c *grokACPClient) drainStderr() {
+	if c.stderr == nil {
+		return
+	}
 	sc := bufio.NewScanner(c.stderr)
 	sc.Buffer(make([]byte, 256*1024), 256*1024)
 	for sc.Scan() {
@@ -143,6 +174,13 @@ func (c *grokACPClient) readLoop() {
 		}
 	}()
 
+	if c.ws != nil {
+		c.readLoopWS()
+		return
+	}
+	if c.stdout == nil {
+		return
+	}
 	sc := bufio.NewScanner(c.stdout)
 	sc.Buffer(make([]byte, 1024*1024), 1024*1024)
 	for sc.Scan() {
@@ -150,43 +188,80 @@ func (c *grokACPClient) readLoop() {
 		if len(line) == 0 {
 			continue
 		}
-		var msg acpRPCMessage
-		if err := json.Unmarshal(line, &msg); err != nil {
-			slog.Debug("grok acp ignore non-json line", "err", err)
+		c.dispatchMessage(line)
+	}
+}
+
+func (c *grokACPClient) readLoopWS() {
+	for {
+		_, data, err := c.ws.Read(c.wsCtx)
+		if err != nil {
+			return
+		}
+		if len(data) == 0 {
 			continue
 		}
-		// Client-bound request (agent → client): auto-handle permissions.
-		if msg.ID != nil && msg.Method != "" {
-			c.handleServerRequest(msg)
+		// Serve may send one JSON object per frame; strip optional newline.
+		line := bytesTrimSpace(data)
+		if len(line) == 0 {
 			continue
 		}
-		// Response to a client request.
-		if msg.ID != nil {
-			c.mu.Lock()
-			ch := c.pending[*msg.ID]
-			if ch != nil {
-				delete(c.pending, *msg.ID)
-			}
-			isPrompt := c.promptID == *msg.ID
-			if isPrompt {
-				c.promptID = 0
-			}
-			c.mu.Unlock()
-			if isPrompt {
-				c.publishPromptResult(msg)
-			}
-			if ch != nil {
-				select {
-				case ch <- msg:
-				default:
-				}
-			}
+		c.dispatchMessage(line)
+	}
+}
+
+func bytesTrimSpace(b []byte) []byte {
+	for len(b) > 0 && (b[0] == ' ' || b[0] == '\t' || b[0] == '\n' || b[0] == '\r') {
+		b = b[1:]
+	}
+	for len(b) > 0 {
+		last := b[len(b)-1]
+		if last == ' ' || last == '\t' || last == '\n' || last == '\r' {
+			b = b[:len(b)-1]
 			continue
 		}
-		// Notification.
-		if msg.Method != "" {
-			c.handleNotification(msg)
+		break
+	}
+	return b
+}
+
+func (c *grokACPClient) dispatchMessage(line []byte) {
+	var msg acpRPCMessage
+	if err := json.Unmarshal(line, &msg); err != nil {
+		slog.Debug("grok acp ignore non-json line", "err", err)
+		return
+	}
+	// Client-bound request (agent → client): auto-handle permissions.
+	if msg.ID != nil && msg.Method != "" {
+		c.handleServerRequest(msg)
+		return
+	}
+	// Response to a client request.
+	if msg.ID != nil {
+		c.mu.Lock()
+		ch := c.pending[*msg.ID]
+		if ch != nil {
+			delete(c.pending, *msg.ID)
 		}
+		isPrompt := c.promptID == *msg.ID
+		if isPrompt {
+			c.promptID = 0
+		}
+		c.mu.Unlock()
+		if isPrompt {
+			c.publishPromptResult(msg)
+		}
+		if ch != nil {
+			select {
+			case ch <- msg:
+			default:
+			}
+		}
+		return
+	}
+	// Notification.
+	if msg.Method != "" {
+		c.handleNotification(msg)
 	}
 }
 
@@ -564,11 +639,37 @@ func (c *grokACPClient) Close() {
 		return
 	}
 	c.closed = true
+	owns := c.ownsProcess
+	cmd := c.cmd
+	pid := c.connectPID
+	ws := c.ws
+	wsCancel := c.wsCancel
+	stdin := c.stdin
 	c.mu.Unlock()
-	_ = c.stdin.Close()
-	if c.cmd != nil && c.cmd.Process != nil {
-		_ = c.cmd.Process.Kill()
-		_, _ = c.cmd.Process.Wait()
+
+	if wsCancel != nil {
+		wsCancel()
+	}
+	if ws != nil {
+		_ = ws.Close(websocket.StatusNormalClosure, "bye")
+	}
+	if stdin != nil {
+		_ = stdin.Close()
+	}
+	if !owns {
+		return
+	}
+	// Kill the durable serve by PID when we reattached without cmd, or
+	// the stdio/serve child we still hold as cmd.
+	if cmd != nil && cmd.Process != nil {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+		return
+	}
+	if pid > 0 {
+		if p, err := os.FindProcess(pid); err == nil {
+			_ = p.Kill()
+		}
 	}
 }
 
@@ -651,6 +752,13 @@ func (c *grokACPClient) write(v any) error {
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
+	}
+	if c.ws != nil {
+		// One JSON-RPC message per WebSocket text frame.
+		return c.ws.Write(c.wsCtx, websocket.MessageText, b)
+	}
+	if c.stdin == nil {
+		return fmt.Errorf("grok acp: no transport")
 	}
 	b = append(b, '\n')
 	_, err = c.stdin.Write(b)

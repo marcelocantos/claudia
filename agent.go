@@ -113,6 +113,21 @@ type Config struct {
 	// this pool key. When Acquire would exceed the cap, the oldest idle
 	// window is evicted. 0 means unlimited.
 	PoolCap int
+
+	// GrokConnect enables connect-mode for ProviderGrok Session: a
+	// detached `grok agent serve` process with ACP over WebSocket so
+	// the agent outlives the consumer (jevons 🎯T40). Also enabled when
+	// CLAUDIA_GROK_CONNECT is truthy, or when ConnectURL is set.
+	GrokConnect bool
+
+	// ConnectURL is a prior serve WebSocket URL for reattach
+	// (e.g. ws://127.0.0.1:PORT/ws?server-key=SECRET). Used with
+	// ConnectPID when process is still alive.
+	ConnectURL string
+
+	// ConnectPID is the OS PID of the durable serve process for
+	// reattach / Alive probes. 0 means unknown.
+	ConnectPID int
 }
 
 // Agent is a persistent Claude Code process running inside a tmux
@@ -128,6 +143,10 @@ type Agent struct {
 	tmuxWindowID string
 	tmuxCtrl     agentControl
 	ops          agentOps
+
+	// connect-mode (Grok serve): durable process endpoint for upgrade reattach.
+	connectURL string
+	connectPID int
 
 	mu        sync.Mutex
 	alive     bool
@@ -212,6 +231,9 @@ type agentStart struct {
 	SessionID string
 	// JSONLPath, when non-empty, replaces the Claude-shaped transcript path.
 	JSONLPath string
+	// ConnectURL / ConnectPID for Grok connect-mode (durable serve).
+	ConnectURL string
+	ConnectPID int
 }
 
 type agentBackend interface {
@@ -419,6 +441,8 @@ func startWithBackend(cfg Config, backend agentBackend) (*Agent, error) {
 	a.tmuxWindowID = windowID
 	a.tmuxCtrl = start.Control
 	a.ops = start.Ops
+	a.connectURL = start.ConnectURL
+	a.connectPID = start.ConnectPID
 
 	// Store session ID on the window for crash-survival recovery.
 	if start.StoreSessionInWindow {
@@ -523,7 +547,10 @@ func (claudeAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error)
 	}, nil
 }
 
-// startGrokAgent launches Grok Build over ACP (grok agent stdio). No tmux.
+// startGrokAgent launches Grok Build over ACP. Default is parent-owned
+// `grok agent stdio`. Connect-mode (Config.GrokConnect / CLAUDIA_GROK_CONNECT
+// / ConnectURL) uses detached `grok agent serve` + WebSocket so the agent
+// process survives consumer restart (jevons 🎯T40).
 func startGrokAgent(req agentStartRequest) (*agentStart, error) {
 	bin, err := resolveGrokBin()
 	if err != nil {
@@ -540,25 +567,40 @@ func startGrokAgent(req agentStartRequest) (*agentStart, error) {
 	// we stash a pointer-to-func that Start fills after construction by
 	// closing ready immediately and using ops that capture the client.
 	var agentRef atomic.Pointer[Agent]
-	client, err := startGrokACP(bin, req.WorkDir, req.Config.Model, preferID, req.Config.RequireResume, acpMCPServers(req.Config.MCPConfig), func(ev Event) {
+	onEvent := func(ev Event) {
 		if a := agentRef.Load(); a != nil {
 			a.publishEvent(ev)
 		}
-	}, func() {
+	}
+	onClose := func() {
 		if a := agentRef.Load(); a != nil {
 			a.mu.Lock()
 			a.alive = false
 			a.mu.Unlock()
 		}
-	})
+	}
+
+	var client *grokACPClient
+	if grokConnectEnabled(req.Config) {
+		client, err = startGrokACPConnect(bin, req.WorkDir, req.Config.Model, preferID, req.Config.RequireResume, acpMCPServers(req.Config.MCPConfig), req.Config, onEvent, onClose)
+	} else {
+		client, err = startGrokACP(bin, req.WorkDir, req.Config.Model, preferID, req.Config.RequireResume, acpMCPServers(req.Config.MCPConfig), onEvent, onClose)
+	}
 	if err != nil {
 		return nil, err
 	}
 
 	sid := client.SessionID()
+	windowID := "grok-acp-" + sid
+	if client.ConnectURL() != "" {
+		windowID = "grok-serve-" + sid
+	}
 	ops := agentOps{
 		attachCommand: func(*Agent) string {
-			// No human-attachable TUI window; ACP is process-local.
+			// Connect-mode: no TUI; surface endpoint for operators.
+			if u := client.ConnectURL(); u != "" {
+				return "grok-serve " + u
+			}
 			return ""
 		},
 		interrupt: func(*Agent) error {
@@ -575,10 +617,12 @@ func startGrokAgent(req agentStartRequest) (*agentStart, error) {
 	}
 
 	return &agentStart{
-		WindowID:  "grok-acp-" + sid,
-		Ops:       ops,
-		TailJSONL: false,
-		SessionID: sid,
+		WindowID:   windowID,
+		Ops:        ops,
+		TailJSONL:  false,
+		SessionID:  sid,
+		ConnectURL: client.ConnectURL(),
+		ConnectPID: client.ConnectPID(),
 		// Leave JSONLPath empty: Grok Session is not a Claude JSONL transcript.
 		DetectReady: func(a *Agent) {
 			// Must run before Send: wire publishEvent target, then mark ready.
@@ -688,11 +732,35 @@ func (a *Agent) AttachCommand() string {
 	return a.ops.attachCommand(a)
 }
 
-// Alive reports whether the Claude process is still running.
+// Alive reports whether this consumer still holds a live control session
+// (stdio child or WebSocket). For Grok connect-mode a dropped WebSocket
+// makes Alive false even if the serve PID still runs — use [Agent.PID]
+// + process reattach rather than treating the stale Agent as usable.
 func (a *Agent) Alive() bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.alive
+}
+
+// PID returns the durable agent OS process id when known (Grok
+// connect-mode serve PID). Zero for stdio children or Claude tmux
+// (use AttachCommand / window tooling there).
+func (a *Agent) PID() int {
+	return a.connectPID
+}
+
+// ConnectURL returns the Grok connect-mode WebSocket URL for reattach, or "".
+func (a *Agent) ConnectURL() string {
+	return a.connectURL
+}
+
+// ProcessAlive reports whether the durable OS process is still running
+// (connect-mode serve PID). Falls back to [Agent.Alive] when no PID is known.
+func (a *Agent) ProcessAlive() bool {
+	if a.connectPID > 0 {
+		return processAlive(a.connectPID)
+	}
+	return a.Alive()
 }
 
 // SubscribeEvents registers fn to receive JSONL events and returns a

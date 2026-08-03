@@ -60,6 +60,16 @@ type AgentDef struct {
 	// DisallowTools lists additional tool names to disallow beyond the
 	// claudia defaults (Claude Session). Grok ACP may ignore these.
 	DisallowTools []string `json:"disallow_tools,omitempty"`
+
+	// ConnectURL / ConnectPID persist Grok connect-mode serve endpoint so
+	// a restarted consumer can reattach to the same process (jevons 🎯T40).
+	// Empty / 0 means stdio mode or never launched in connect-mode.
+	ConnectURL string `json:"connect_url,omitempty"`
+	ConnectPID int    `json:"connect_pid,omitempty"`
+
+	// GrokConnect forces connect-mode on next Launch for ProviderGrok.
+	// Also enabled via CLAUDIA_GROK_CONNECT env.
+	GrokConnect bool `json:"grok_connect,omitempty"`
 }
 
 // Canonical Purpose values for [AgentDef.Purpose].
@@ -186,6 +196,9 @@ func (r *Registry) Launch(name string) (*Agent, error) {
 		Model:         def.Model,
 		DisallowTools: def.DisallowTools,
 		MCPConfig:     mcpConfig,
+		GrokConnect:   def.GrokConnect || def.ConnectURL != "",
+		ConnectURL:    def.ConnectURL,
+		ConnectPID:    def.ConnectPID,
 	})
 	if err != nil {
 		return nil, err
@@ -197,6 +210,14 @@ func (r *Registry) Launch(name string) (*Agent, error) {
 		def.SessionID = sid
 		changed = true
 	}
+	if u := proc.ConnectURL(); u != def.ConnectURL {
+		def.ConnectURL = u
+		changed = true
+	}
+	if p := proc.PID(); p != def.ConnectPID {
+		def.ConnectPID = p
+		changed = true
+	}
 	if changed {
 		if err := r.save(); err != nil {
 			slog.Warn("persist agent def after launch", "name", name, "err", err)
@@ -204,11 +225,14 @@ func (r *Registry) Launch(name string) (*Agent, error) {
 	}
 
 	r.procs[name] = proc
-	slog.Info("agent started", "name", name, "provider", def.Provider, "session", proc.SessionID())
+	slog.Info("agent started", "name", name, "provider", def.Provider, "session", proc.SessionID(),
+		"connect_pid", proc.PID(), "connect_url_set", proc.ConnectURL() != "")
 	return proc, nil
 }
 
-// Stop stops a running agent.
+// Stop stops a running agent. For Grok connect-mode this kills the
+// durable serve process and clears ConnectURL/ConnectPID so the next
+// Launch does not reattach to a dead endpoint.
 func (r *Registry) Stop(name string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -217,6 +241,15 @@ func (r *Registry) Stop(name string) {
 		proc.Stop()
 		delete(r.procs, name)
 		slog.Info("agent stopped", "name", name)
+	}
+	if def, ok := r.agents[name]; ok {
+		if def.ConnectURL != "" || def.ConnectPID != 0 {
+			def.ConnectURL = ""
+			def.ConnectPID = 0
+			if err := r.save(); err != nil {
+				slog.Warn("persist clear connect endpoint after stop", "name", name, "err", err)
+			}
+		}
 	}
 }
 
