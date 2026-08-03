@@ -51,31 +51,32 @@ func truthyEnv(v string) bool {
 // returns a ready ACP client over WebSocket.
 //
 // When cfg.ConnectURL is set and cfg.ConnectPID is alive, reattaches only
-// (no new process). Otherwise spawns `grok agent serve` detached, dials it,
-// and opens a session.
+// (no new process). If reattach dial/session fails (zombie PID, half-dead
+// serve after Stop), kills the stale PID and falls through to spawn — a
+// failed reattach must not strand the caller with no process.
+// Otherwise spawns `grok agent serve` detached, dials it, and opens a session.
 func startGrokACPConnect(bin string, workDir, model, sessionID string, requireResume bool, mcpServers []any, cfg Config, onEvent func(Event), onClose func()) (*grokACPClient, error) {
 	url := strings.TrimSpace(cfg.ConnectURL)
 	pid := cfg.ConnectPID
 
 	if url != "" && processAlive(pid) {
 		c, err := dialGrokServe(url, pid, true, onEvent, onClose)
-		if err != nil {
-			return nil, fmt.Errorf("grok connect reattach: %w", err)
-		}
-		c.sessionID = sessionID
-		if err := c.initialize(); err != nil {
+		if err == nil {
+			c.sessionID = sessionID
+			if err = c.initialize(); err == nil {
+				if err = c.openSession(workDir, sessionID, requireResume, mcpServers); err == nil {
+					return c, nil
+				}
+			}
 			c.Close()
-			return nil, err
 		}
-		if err := c.openSession(workDir, sessionID, requireResume, mcpServers); err != nil {
-			c.Close()
-			return nil, err
-		}
-		return c, nil
-	}
-
-	// Stale connect endpoint: fall through to spawn.
-	if url != "" {
+		// Reattach failed while processAlive was true (dying serve, reset
+		// peer, wrong key). Kill and spawn rather than failing closed.
+		slog.Warn("grok connect reattach failed; killing stale serve and spawning new",
+			"url", url, "pid", pid, "err", err)
+		_ = killPID(pid)
+	} else if url != "" {
+		// Stale connect endpoint: fall through to spawn.
 		slog.Info("grok connect: prior serve not alive; spawning new",
 			"url", url, "pid", pid)
 	}
