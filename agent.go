@@ -207,6 +207,8 @@ type agentOps struct {
 	send          func(*Agent, string) error
 	resize        func(*Agent, uint16, uint16) error
 	stop          func(*Agent)
+	// promptInFlight is optional (Grok ACP). Nil → always false.
+	promptInFlight func(*Agent) bool
 }
 
 type agentStartRequest struct {
@@ -614,6 +616,9 @@ func startGrokAgent(req agentStartRequest) (*agentStart, error) {
 		stop: func(*Agent) {
 			client.Close()
 		},
+		promptInFlight: func(*Agent) bool {
+			return client.promptInFlight()
+		},
 	}
 
 	return &agentStart{
@@ -766,9 +771,14 @@ func (a *Agent) ProcessAlive() bool {
 // SubscribeEvents registers fn to receive JSONL events and returns a
 // subscription token. Pass the token to [Agent.UnsubscribeEvents] when done.
 // Multiple subscribers are called in unspecified order on every event.
+// The subscriber map is created on first use so a zero Agent is usable for
+// hermetic fan-out tests (no Start required).
 func (a *Agent) SubscribeEvents(fn EventFunc) int64 {
 	id := nextEventSubID.Add(1)
 	a.mu.Lock()
+	if a.eventSubs == nil {
+		a.eventSubs = make(map[int64]EventFunc)
+	}
 	a.eventSubs[id] = fn
 	a.mu.Unlock()
 	return id
@@ -777,8 +787,17 @@ func (a *Agent) SubscribeEvents(fn EventFunc) int64 {
 // UnsubscribeEvents removes the event subscriber identified by token.
 func (a *Agent) UnsubscribeEvents(token int64) {
 	a.mu.Lock()
-	delete(a.eventSubs, token)
+	if a.eventSubs != nil {
+		delete(a.eventSubs, token)
+	}
 	a.mu.Unlock()
+}
+
+// PublishEvent delivers ev to every current subscriber. Used by provider
+// backends and hermetic tests that need to drive the fan-out without a
+// live JSONL tail (e.g. jevons 🎯T210 double-attach oracle).
+func (a *Agent) PublishEvent(ev Event) {
+	a.publishEvent(ev)
 }
 
 // Interrupt sends the Escape key to the Claude process to cancel
@@ -794,6 +813,16 @@ func (a *Agent) Interrupt() error {
 		return unsupportedCapability(a.provider, "interrupt", "provider did not supply an interrupt operation")
 	}
 	return a.ops.interrupt(a)
+}
+
+// PromptInFlight reports whether the provider has an open prompt/turn
+// that blocks concurrent Send (Grok ACP promptID). False when unknown
+// or unsupported. Used by jevons cockpit stuck-busy recovery (🎯T204).
+func (a *Agent) PromptInFlight() bool {
+	if a == nil || a.ops.promptInFlight == nil {
+		return false
+	}
+	return a.ops.promptInFlight(a)
 }
 
 // Send writes a user message to the Claude process and submits it.
@@ -877,6 +906,15 @@ func (a *Agent) publishEvent(ev Event) {
 	for _, fn := range subs {
 		fn(ev)
 	}
+}
+
+// EventSubscriberCount returns how many live event subscribers are registered.
+// Hermetic oracle for fan-out idempotency (e.g. single chat attach after re-attach).
+func (a *Agent) EventSubscriberCount() int {
+	a.mu.Lock()
+	n := len(a.eventSubs)
+	a.mu.Unlock()
+	return n
 }
 
 // WaitForResponse blocks until the next assistant turn completes and

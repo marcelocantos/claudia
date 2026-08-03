@@ -622,14 +622,25 @@ func (c *grokACPClient) publishPromptResult(msg acpRPCMessage) {
 }
 
 // Cancel sends session/cancel for the active session (interrupt).
+// Clears the local prompt-in-flight gate immediately so a subsequent
+// Prompt is not stuck on "prompt already in flight" when the peer never
+// returns a result for the cancelled id (half-dead serve / lost WS).
 func (c *grokACPClient) Cancel() error {
 	c.mu.Lock()
 	sid := c.sessionID
+	c.promptID = 0
 	c.mu.Unlock()
 	if sid == "" {
 		return nil
 	}
 	return c.notify("session/cancel", map[string]any{"sessionId": sid})
+}
+
+// promptInFlight reports whether a session/prompt is awaiting completion.
+func (c *grokACPClient) promptInFlight() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.promptID != 0
 }
 
 func (c *grokACPClient) Close() {
