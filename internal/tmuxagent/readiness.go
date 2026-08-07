@@ -33,12 +33,26 @@ func CapturePane(windowID string) ([]byte, error) {
 // match. \z anchors to end-of-input after trimTrailingSpace strips
 // any trailing whitespace tmux appends.
 //
-// The ❯ line is matched with a permissive body ([^\n]*) rather than
-// requiring an empty input area — that way we still detect
-// readiness if the user has typed something into the input buffer
-// and we haven't submitted yet. For startup readiness (the M1 case)
-// the input is always empty.
-var readyPattern = regexp.MustCompile(`─{10,}\n❯[^\n]*\n─{10,}(?:\n[^\n]*){0,5}\s*\z`)
+// The ❯ line is matched with a permissive body rather than requiring
+// an empty input area — that way we still detect readiness if the user
+// has typed something into the input buffer and we haven't submitted
+// yet. The body is captured so MatchReady can rule out the startup
+// splash (see startupPlaceholder).
+var readyPattern = regexp.MustCompile(`─{10,}\n❯([^\n]*)\n─{10,}(?:\n[^\n]*){0,5}\s*\z`)
+
+// startupPlaceholder matches the ghost hint Claude Code renders inside
+// the composer before the TUI has wired up input handling — a dimmed
+// example prompt such as `Try "fix lint errors"`. The box is already
+// drawn at this point, so it satisfies readyPattern exactly, which is
+// why the naive signal reported ready roughly 100ms too early and
+// keystrokes sent on that frame could be swallowed (🎯T284).
+//
+// It anchors on the composer body: the NBSP (U+00A0) Claude Code pads
+// the prompt glyph with, then the literal `Try "`. Real input the owner
+// has typed but not yet submitted still counts as ready — the one
+// exception being a message that itself begins `Try "`, which costs a
+// single extra poll and nothing else.
+var startupPlaceholder = regexp.MustCompile(`^\x{00A0}?\s*Try "`)
 
 // startupMenuCursor matches a selection menu's highlighted numbered
 // option: the ❯ cursor immediately followed by a digit and a "." or
@@ -55,9 +69,36 @@ var startupMenuCursor = regexp.MustCompile(`❯\s*\d+[.)]`)
 var resumePrompt = regexp.MustCompile(`(?i)resume (from summary|full session)|resume this session`)
 
 // MatchReady reports whether the captured frame shows Claude's idle
-// input box at the tail of the visible pane.
+// input box at the tail of the visible pane AND that box is live —
+// i.e. it will accept and submit a turn. The startup splash draws the
+// same box holding a ghost placeholder while input is still dead, and
+// is explicitly not ready.
 func MatchReady(frame []byte) bool {
-	return readyPattern.Match(trimTrailingSpace(frame))
+	body := composerBody(frame)
+	return body != nil && !startupPlaceholder.Match(body)
+}
+
+// MatchStartupSplash reports whether the frame shows the composer box
+// still holding Claude Code's ghost placeholder hint — drawn, but not
+// yet accepting input. Exposed so callers probing launch behaviour can
+// assert that a ready verdict never lands on a splash frame.
+func MatchStartupSplash(frame []byte) bool {
+	body := composerBody(frame)
+	return body != nil && startupPlaceholder.Match(body)
+}
+
+// composerBody returns the text after the ❯ prompt glyph when the
+// frame ends in the input box, or nil when there is no input box.
+// A present-but-empty body is a non-nil empty slice.
+func composerBody(frame []byte) []byte {
+	m := readyPattern.FindSubmatch(trimTrailingSpace(frame))
+	if m == nil {
+		return nil
+	}
+	if m[1] == nil {
+		return []byte{}
+	}
+	return m[1]
 }
 
 // MatchStartupMenu reports whether the captured frame shows a startup

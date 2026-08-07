@@ -126,3 +126,90 @@ func TestWaitReadyReadyImmediately(t *testing.T) {
 		t.Fatalf("pressed Enter %d time(s) on an already-ready prompt", enters)
 	}
 }
+
+// startupSplashFrame is a verbatim `tmux capture-pane -p` frame from a
+// real `claude` launch in a fresh workdir (v2.1.224, captured for
+// 🎯T284). The composer box is fully drawn and holds the dimmed ghost
+// hint, but the TUI is not yet accepting input — keystrokes sent on
+// this frame are swallowed.   is the NBSP Claude Code pads the
+// prompt glyph with; it is present in the live box too, so it cannot
+// itself discriminate.
+const startupSplashFrame = "" +
+	"\n\n\n" +
+	"────────────────────────────────────────────────────────────────────────────────\n" +
+	"❯ Try \"fix lint errors\"\n" +
+	"────────────────────────────────────────────────────────────────────────────────\n" +
+	"  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents  /rc connecting…\n"
+
+// liveComposerFrame is the same session ~100ms later: the ghost hint is
+// gone and the box accepts input.
+const liveComposerFrame = "" +
+	"\n\n\n" +
+	"────────────────────────────────────────────────────────────────────────────────\n" +
+	"❯ \n" +
+	"────────────────────────────────────────────────────────────────────────────────\n" +
+	"  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← 2 agents                /rc\n"
+
+// typedNotSubmittedFrame: the owner has typed into the live box but has
+// not pressed Enter. Still ready — MatchReady deliberately tolerates a
+// non-empty composer.
+const typedNotSubmittedFrame = "" +
+	"\n\n\n" +
+	"────────────────────────────────────────────────────────────────────────────────\n" +
+	"❯ summarise the build failure\n" +
+	"────────────────────────────────────────────────────────────────────────────────\n" +
+	"  ⏵⏵ bypass permissions on (shift+tab to cycle)\n"
+
+// TestMatchReadyRejectsStartupSplash is the 🎯T284 oracle: the launch
+// splash draws a composer box that satisfies the box pattern, and the
+// old signal called it ready ~100ms before the TUI would accept a turn.
+// Ready must mean input is accepted.
+func TestMatchReadyRejectsStartupSplash(t *testing.T) {
+	tests := []struct {
+		name       string
+		frame      string
+		wantReady  bool
+		wantSplash bool
+	}{
+		{"startup splash with ghost hint", startupSplashFrame, false, true},
+		{"live empty composer", liveComposerFrame, true, false},
+		{"typed but not submitted", typedNotSubmittedFrame, true, false},
+		{"resume menu", resumeMenuFrame, false, false},
+		{"streaming", streamingFrame, false, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := MatchReady([]byte(tc.frame)); got != tc.wantReady {
+				t.Errorf("MatchReady = %v, want %v", got, tc.wantReady)
+			}
+			if got := MatchStartupSplash([]byte(tc.frame)); got != tc.wantSplash {
+				t.Errorf("MatchStartupSplash = %v, want %v", got, tc.wantSplash)
+			}
+		})
+	}
+}
+
+// TestWaitReadyPollsThroughStartupSplash: the poll loop must not return
+// on the splash frame, and must not mistake it for a selection menu and
+// start pressing Enter into a dead composer.
+func TestWaitReadyPollsThroughStartupSplash(t *testing.T) {
+	frames := []string{startupSplashFrame, startupSplashFrame, liveComposerFrame}
+	i, enters := 0, 0
+	d := readyDriver{
+		capture: func() ([]byte, error) {
+			f := frames[min(i, len(frames)-1)]
+			i++
+			return []byte(f), nil
+		},
+		sendEnter: func() error { enters++; return nil },
+	}
+	if _, err := waitReadyLoop(d, time.Millisecond, time.Second, time.Millisecond); err != nil {
+		t.Fatalf("waitReadyLoop: %v", err)
+	}
+	if i < 3 {
+		t.Errorf("returned ready after %d capture(s); must poll past the splash frames", i)
+	}
+	if enters != 0 {
+		t.Errorf("pressed Enter %d time(s) into the dead splash composer", enters)
+	}
+}
