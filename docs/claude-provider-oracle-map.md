@@ -45,7 +45,8 @@ Public capability claim (`claudeProviderCapabilities`):
 | Session stream events from JSONL | Hermetic tail | `TestHermeticClaudeSessionJSONLTail` (TailJSONL + write transcript) | Live multi-turn | Hermetic |
 | Session WaitForResponse settle / tool_use non-terminal | Synthetic events | `TestWaitForResponse*` in `agent_test.go` | Live multi-turn | Hermetic |
 | Session resume: JSONL exists → `--resume` flag path | HOME redirect + backend request | `TestHermeticClaudeSessionResumeDecision` | Live resume | Hermetic |
-| Session fail-closed `RequireResume` when JSONL missing | Start path | `TestHermeticClaudeRequireResumeFailsClosed` | Registry Materialized path residual | Hermetic (fix) |
+| Session fail-closed `RequireResume` when JSONL missing | Start path | `TestHermeticClaudeRequireResumeFailsClosed`, `TestHermeticMaterializedRequireResumeFailsClosed` | — | Hermetic (fix) |
+| Materialized only after conversation evidence (not bare Start) | Registry Launch / MarkMaterialized | `TestHermeticLaunchDoesNotMaterializeWithoutJSONL`, `TestHermeticMaterializeFromJSONLAndRequireResume` | — | Hermetic (fix) |
 | Transcript path / SessionExists durability | Path + HOME redirect | `TestSessionJSONLPath`, `TestSessionExists` | Live file ownership residual | Hermetic |
 | Rewind JSONL turn boundaries + tool_use safety | Metamorphic fixture | `TestRewindJSONL*` | `TestRewindSessionLive` residual | Hermetic core; live end-to-end residual |
 | Permissions / disallow tools always applied | Arg construction + Task spawn | Session Start request carries disallowed list; Task always passes `--disallowedTools` including `BaseDisallowedTools` | Live tool denial residual | Hermetic list; live residual for real CLI enforcement |

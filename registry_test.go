@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -255,5 +256,245 @@ func TestEnsureAgentSameWorkdirDifferentNamesAreIndependent(t *testing.T) {
 	list := r.List()
 	if len(list) != 2 {
 		t.Fatalf("List len = %d, want 2", len(list))
+	}
+}
+
+// installFakeRegistryStart swaps registryStart for a backend that succeeds
+// without spawning Claude, and restores the original on cleanup. Returns a
+// pointer that receives each Config passed to Launch.
+func installFakeRegistryStart(t *testing.T) *[]Config {
+	t.Helper()
+	var cfgs []Config
+	prev := registryStart
+	t.Cleanup(func() { registryStart = prev })
+	registryStart = func(cfg Config) (*Agent, error) {
+		cfgs = append(cfgs, cfg)
+		backend := &fakeAgentBackend{name: "fake-claude"}
+		return startWithBackend(cfg, backend)
+	}
+	return &cfgs
+}
+
+func writeClaudeSessionJSONL(t *testing.T, sessionID, workDir string) {
+	t.Helper()
+	if resolved, err := filepath.EvalSymlinks(workDir); err == nil {
+		workDir = resolved
+	}
+	path := SessionJSONLPath(sessionID, workDir)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("{}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+}
+
+// 🎯T15 (a): Start success without JSONL must leave Materialized false so a
+// never-materialized seat can re-launch without RequireResume hard-fail.
+func TestHermeticLaunchDoesNotMaterializeWithoutJSONL(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("XDG_STATE_HOME", filepath.Join(tmpHome, "state"))
+
+	cfgs := installFakeRegistryStart(t)
+	workDir := t.TempDir()
+	regPath := filepath.Join(t.TempDir(), "registry.json")
+	r, err := NewRegistry(regPath)
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	const name = "seat-a"
+	const sid = "never-wrote-jsonl"
+	if err := r.Register(AgentDef{Name: name, WorkDir: workDir, SessionID: sid}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	agent, err := r.Launch(name)
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	defer agent.Stop()
+	r.Stop(name)
+
+	def := r.Def(name)
+	if def == nil {
+		t.Fatal("Def nil after Launch")
+	}
+	if def.Materialized {
+		t.Error("Materialized = true after Start without JSONL; want false")
+	}
+	if len(*cfgs) != 1 {
+		t.Fatalf("Start calls = %d, want 1", len(*cfgs))
+	}
+	if (*cfgs)[0].RequireResume {
+		t.Error("first Launch set RequireResume=true; want false for never-materialized")
+	}
+
+	// Re-launch still allowed without JSONL (no fail-closed).
+	agent2, err := r.Launch(name)
+	if err != nil {
+		t.Fatalf("second Launch (never materialized): %v", err)
+	}
+	agent2.Stop()
+	r.Stop(name)
+	if r.Def(name).Materialized {
+		t.Error("Materialized flipped true on second bare Launch")
+	}
+	if len(*cfgs) != 2 {
+		t.Fatalf("Start calls after re-launch = %d, want 2", len(*cfgs))
+	}
+	if (*cfgs)[1].RequireResume {
+		t.Error("second Launch set RequireResume=true; want false")
+	}
+}
+
+// 🎯T15 (b): after JSONL / MarkMaterialized evidence, Materialized is true and
+// subsequent Launch sets RequireResume.
+func TestHermeticMaterializeFromJSONLAndRequireResume(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("XDG_STATE_HOME", filepath.Join(tmpHome, "state"))
+
+	cfgs := installFakeRegistryStart(t)
+	workDir := t.TempDir()
+	if resolved, err := filepath.EvalSymlinks(workDir); err == nil {
+		workDir = resolved
+	}
+	r, err := NewRegistry(filepath.Join(t.TempDir(), "registry.json"))
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	const name = "seat-b"
+	const sid = "jsonl-evidence-session"
+	if err := r.Register(AgentDef{Name: name, WorkDir: workDir, SessionID: sid}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	// Bare Start: not materialized.
+	agent, err := r.Launch(name)
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	agent.Stop()
+	r.Stop(name)
+	if r.Def(name).Materialized {
+		t.Fatal("Materialized true before JSONL evidence")
+	}
+
+	// Mark without JSONL must refuse (Claude).
+	if err := r.MarkMaterialized(name); err == nil {
+		t.Fatal("MarkMaterialized without JSONL returned nil, want error")
+	}
+
+	// Durable transcript appears (first completed turn).
+	writeClaudeSessionJSONL(t, sid, workDir)
+
+	if err := r.MarkMaterialized(name); err != nil {
+		t.Fatalf("MarkMaterialized after JSONL: %v", err)
+	}
+	if !r.Def(name).Materialized {
+		t.Fatal("Materialized false after MarkMaterialized with JSONL")
+	}
+
+	// Next Launch must RequireResume.
+	agent2, err := r.Launch(name)
+	if err != nil {
+		t.Fatalf("Launch after materialize: %v", err)
+	}
+	agent2.Stop()
+	r.Stop(name)
+	if len(*cfgs) < 2 {
+		t.Fatalf("Start calls = %d, want ≥2", len(*cfgs))
+	}
+	last := (*cfgs)[len(*cfgs)-1]
+	if !last.RequireResume {
+		t.Error("Launch after materialize: RequireResume=false, want true")
+	}
+
+	// Launch with JSONL already present also promotes Materialized without
+	// an explicit MarkMaterialized (rehydrate path).
+	r2, err := NewRegistry(filepath.Join(t.TempDir(), "registry2.json"))
+	if err != nil {
+		t.Fatalf("NewRegistry r2: %v", err)
+	}
+	const name2 = "seat-b-promote"
+	const sid2 = "already-has-jsonl"
+	writeClaudeSessionJSONL(t, sid2, workDir)
+	if err := r2.Register(AgentDef{Name: name2, WorkDir: workDir, SessionID: sid2}); err != nil {
+		t.Fatalf("Register r2: %v", err)
+	}
+	agent3, err := r2.Launch(name2)
+	if err != nil {
+		t.Fatalf("Launch promote: %v", err)
+	}
+	agent3.Stop()
+	r2.Stop(name2)
+	if !r2.Def(name2).Materialized {
+		t.Error("Launch with existing JSONL left Materialized false; want promote")
+	}
+}
+
+// 🎯T15 (c): RequireResume still fails closed when Materialized && JSONL missing.
+func TestHermeticMaterializedRequireResumeFailsClosed(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("XDG_STATE_HOME", filepath.Join(tmpHome, "state"))
+
+	// Use real Start path (no fake) so RequireResume fail-closed in
+	// startWithBackend runs before any backend spawn — same as
+	// TestHermeticClaudeRequireResumeFailsClosed, wired through Registry.
+	workDir := t.TempDir()
+	r, err := NewRegistry(filepath.Join(t.TempDir(), "registry.json"))
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	const name = "seat-c"
+	if err := r.Register(AgentDef{
+		Name:         name,
+		WorkDir:      workDir,
+		SessionID:    "materialized-but-jsonl-gone",
+		Materialized: true,
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	_, err = r.Launch(name)
+	if err == nil {
+		t.Fatal("Launch with Materialized and missing JSONL returned nil")
+	}
+	if !strings.Contains(err.Error(), "refusing to mint") {
+		t.Errorf("error = %v, want refuse-to-mint wording", err)
+	}
+}
+
+func TestMarkMaterializedUnknownAgent(t *testing.T) {
+	r, err := NewRegistry(filepath.Join(t.TempDir(), "registry.json"))
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	if err := r.MarkMaterialized("ghost"); err == nil {
+		t.Error("MarkMaterialized unknown returned nil, want error")
+	}
+}
+
+func TestMarkMaterializedGrokHostAttestation(t *testing.T) {
+	// Non-Claude providers have no Claude JSONL; host may attest after a turn.
+	r, err := NewRegistry(filepath.Join(t.TempDir(), "registry.json"))
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	if err := r.Register(AgentDef{
+		Name:      "grok-seat",
+		WorkDir:   t.TempDir(),
+		SessionID: "grok-sid",
+		Provider:  ProviderGrok,
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if err := r.MarkMaterialized("grok-seat"); err != nil {
+		t.Fatalf("MarkMaterialized Grok: %v", err)
+	}
+	if !r.Def("grok-seat").Materialized {
+		t.Error("Grok MarkMaterialized left Materialized false")
 	}
 }

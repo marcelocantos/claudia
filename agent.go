@@ -389,7 +389,8 @@ func startWithBackend(cfg Config, backend agentBackend) (*Agent, error) {
 	// existing conversation (RequireResume), missing JSONL must be a hard
 	// error — silently falling through to --session-id would mint a
 	// replacement conversation and orphan the caller's history (Registry
-	// Materialized sets RequireResume after the first successful launch).
+	// Materialized sets RequireResume only after real conversation
+	// evidence, not bare Start success).
 	// Grok enforces the same policy inside startGrokACP / session/load.
 	if (provider == ProviderClaude) && cfg.RequireResume && !resuming {
 		return nil, fmt.Errorf("session %s: existing conversation required but JSONL not found at %s — refusing to mint a replacement session", sessionID, jsonlPath)

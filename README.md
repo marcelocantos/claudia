@@ -163,8 +163,10 @@ single call.
 Fail-closed resume: set `Config.RequireResume` when `SessionID` names an
 existing conversation — a failed load is then a hard error instead of a
 silent fall-through to a fresh session, so a conversation can never be
-orphaned by a resume failure. `Registry`-managed agents get this
-automatically once `AgentDef.Materialized` records a successful launch.
+orphaned by a resume failure. `Registry`-managed agents get this once
+`AgentDef.Materialized` records a real conversation (Claude session
+JSONL present, or `Registry.MarkMaterialized` after the first completed
+turn) — not merely because `Start` succeeded.
 
 Resuming works automatically: if `Config.SessionID` is set and a JSONL
 transcript already exists for it, claudia passes `--resume`; otherwise

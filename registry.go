@@ -28,8 +28,12 @@ type AgentDef struct {
 	SessionID string `json:"session_id"`
 
 	// Materialized records that SessionID has hosted a real conversation
-	// (a successful launch). Once set, launches pass RequireResume so a
-	// failed session load can never silently mint a replacement id.
+	// (durable transcript evidence such as a Claude session JSONL, not
+	// merely a successful process Start). Once set, launches pass
+	// RequireResume so a failed session load can never silently mint a
+	// replacement id. Never flip this on bare Start alone — use
+	// [Registry.MarkMaterialized] after evidence appears, or rely on
+	// Launch promoting from [SessionExists] when JSONL is already present.
 	Materialized bool `json:"materialized,omitempty"`
 
 	// Provider selects the runtime (claude, codex, grok). Empty means
@@ -160,6 +164,10 @@ func (r *Registry) Remove(name string) error {
 	return r.save()
 }
 
+// registryStart is the Session entrypoint used by [Registry.Launch].
+// Production points at [Start]; hermetic tests may override it.
+var registryStart = Start
+
 // Launch starts the registered agent named name and returns it. If the agent
 // is already running and alive, the existing [Agent] is returned without
 // spawning a new process. It returns an error if name is not registered.
@@ -169,6 +177,11 @@ func (r *Registry) Remove(name string) error {
 // Provider is taken from AgentDef.Provider (empty = Claude). When the
 // launched agent reports a different SessionID (e.g. Grok ACP session/new),
 // the definition is updated and persisted.
+//
+// Materialized is never set solely because Start succeeded. When Claude
+// session JSONL already exists for the def's SessionID, Launch promotes
+// Materialized so subsequent launches require resume. Hosts that complete
+// a first turn after a bare Start should call [Registry.MarkMaterialized].
 func (r *Registry) Launch(name string) (*Agent, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -194,7 +207,7 @@ func (r *Registry) Launch(name string) (*Agent, error) {
 		}
 	}
 
-	proc, err := Start(Config{
+	proc, err := registryStart(Config{
 		Provider:      def.Provider,
 		WorkDir:       def.WorkDir,
 		SessionID:     def.SessionID,
@@ -210,8 +223,7 @@ func (r *Registry) Launch(name string) (*Agent, error) {
 		return nil, err
 	}
 
-	changed := !def.Materialized
-	def.Materialized = true
+	changed := false
 	if sid := proc.SessionID(); sid != "" && sid != def.SessionID {
 		def.SessionID = sid
 		changed = true
@@ -224,6 +236,12 @@ func (r *Registry) Launch(name string) (*Agent, error) {
 		def.ConnectPID = p
 		changed = true
 	}
+	// Promote Materialized only from conversation evidence, never from
+	// bare Start success (Claude: SessionExists / durable JSONL).
+	if !def.Materialized && claudeSessionEvidence(def.Provider, def.SessionID, def.WorkDir) {
+		def.Materialized = true
+		changed = true
+	}
 	if changed {
 		if err := r.save(); err != nil {
 			slog.Warn("persist agent def after launch", "name", name, "err", err)
@@ -232,8 +250,54 @@ func (r *Registry) Launch(name string) (*Agent, error) {
 
 	r.procs[name] = proc
 	slog.Info("agent started", "name", name, "provider", def.Provider, "session", proc.SessionID(),
-		"connect_pid", proc.PID(), "connect_url_set", proc.ConnectURL() != "")
+		"connect_pid", proc.PID(), "connect_url_set", proc.ConnectURL() != "",
+		"materialized", def.Materialized)
 	return proc, nil
+}
+
+// MarkMaterialized records that name has hosted a real conversation and
+// persists Materialized=true so later launches pass RequireResume.
+//
+// For Claude (empty Provider), durable session JSONL must already exist
+// ([SessionExists]); callers cannot flip the flag on bare process start.
+// For other providers, the host attests first-turn / durable transcript
+// evidence (no Claude JSONL path applies).
+//
+// Idempotent when already Materialized. Returns an error if name is
+// unknown or Claude evidence is still missing.
+func (r *Registry) MarkMaterialized(name string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	def, ok := r.agents[name]
+	if !ok {
+		return fmt.Errorf("agent %q not registered", name)
+	}
+	if def.Materialized {
+		return nil
+	}
+	if isClaudeProvider(def.Provider) {
+		if !claudeSessionEvidence(def.Provider, def.SessionID, def.WorkDir) {
+			return fmt.Errorf("agent %q: cannot mark materialized without session JSONL (SessionID=%s)", name, def.SessionID)
+		}
+	}
+	def.Materialized = true
+	return r.save()
+}
+
+func isClaudeProvider(p Provider) bool {
+	return p == "" || p == ProviderClaude
+}
+
+// claudeSessionEvidence reports whether Claude durable transcript evidence
+// exists for sessionID under workDir. Non-Claude providers always return
+// false here (they materialize via [Registry.MarkMaterialized] attestation).
+func claudeSessionEvidence(provider Provider, sessionID, workDir string) bool {
+	if !isClaudeProvider(provider) || sessionID == "" || workDir == "" {
+		return false
+	}
+	ok, err := SessionExists(sessionID, workDir)
+	return err == nil && ok
 }
 
 // Stop stops a running agent. For Grok connect-mode this kills the
