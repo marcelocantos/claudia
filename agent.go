@@ -836,10 +836,12 @@ func (a *Agent) PromptInFlight() bool {
 // return immediately — the ready channel stays closed for the life
 // of the agent.
 //
-// The message is typed literally via tmux send-keys -l, then
-// submitted with CR (Enter). Embedded newlines in msg become
-// Shift+Enter (insert newline without submitting) — matching Claude
-// Code's TUI semantics.
+// Delivery: short single-line messages are typed via tmux send-keys -l;
+// multi-line or large messages use load-buffer + bracketed paste so
+// Claude Code receives one paste instead of a keystroke flood.
+// Submit is a named Enter key; if a collapsed paste chip remains,
+// additional Enters are pressed until the turn begins (composer leaves
+// idle). Silent "keys sent, turn never started" is an error (🎯T305).
 //
 // If readiness detection failed (process exited during startup, or
 // the overall timeout elapsed) Send returns the detection error
