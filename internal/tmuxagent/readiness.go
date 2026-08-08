@@ -68,12 +68,26 @@ var startupMenuCursor = regexp.MustCompile(`❯\s*\d+[.)]`)
 // "Resume from summary / Resume full session / Don't ask again" menu.
 var resumePrompt = regexp.MustCompile(`(?i)resume (from summary|full session)|resume this session`)
 
+// connectingPattern matches Claude Code's remote-control status while
+// the TUI is still wiring. Paste/Enter during this window is swallowed
+// or leaves a paste chip that never submits (🎯T305 live probe).
+var connectingPattern = regexp.MustCompile(`(?i)/rc\s+connecting`)
+
+// MatchConnecting reports whether the frame still shows Claude Code
+// connecting (not yet accepting a durable turn).
+func MatchConnecting(frame []byte) bool {
+	return connectingPattern.Match(trimTrailingSpace(frame))
+}
+
 // MatchReady reports whether the captured frame shows Claude's idle
 // input box at the tail of the visible pane AND that box is live —
 // i.e. it will accept and submit a turn. The startup splash draws the
 // same box holding a ghost placeholder while input is still dead, and
-// is explicitly not ready.
+// is explicitly not ready. /rc connecting is also not ready (🎯T305).
 func MatchReady(frame []byte) bool {
+	if MatchConnecting(frame) {
+		return false
+	}
 	body := composerBody(frame)
 	return body != nil && !startupPlaceholder.Match(body)
 }

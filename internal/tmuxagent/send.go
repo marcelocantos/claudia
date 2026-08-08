@@ -22,22 +22,47 @@ const pasteBlockThreshold = 400
 const (
 	// maxSubmitPresses bounds how many Enter keys we press after paste
 	// while the composer still shows an unsubmitted paste chip.
-	maxSubmitPresses = 4
+	maxSubmitPresses = 8
 	// submitSettle is how long to wait between capture-and-retry cycles
 	// so Claude Code can render the paste chip / leave the idle box.
-	submitSettle = 150 * time.Millisecond
+	// Live evidence (f8f9a4cf): 150ms was too short while /rc connecting
+	// and paste chips need ~300–500ms to accept Enter.
+	submitSettle = 400 * time.Millisecond
+	// contentLandTimeout waits for paste/type to appear before the first
+	// Enter (avoids Enter-into-empty during paste render).
+	contentLandTimeout = 3 * time.Second
+	// connectingClearTimeout waits for /rc connecting to clear before
+	// paste when the ready channel closed on a still-connecting frame
+	// (older agents); MatchReady now rejects connecting too.
+	connectingClearTimeout = 15 * time.Second
 )
 
-// pastedTextChip matches Claude Code's collapsed paste chip in the
-// composer or status area (spaces optional — capture-pane may insert
-// CSI between tokens).
-var pastedTextChip = regexp.MustCompile(`(?i)\[Pasted\s*text\s*#\d+|paste\s+again\s+to\s+expand`)
+// pastedTextChip matches Claude Code's collapsed paste chip. Prefer the
+// "[Pasted text #N" form; "paste again to expand" alone is a weaker
+// residual that may linger in the viewport.
+var (
+	pastedTextChip     = regexp.MustCompile(`(?i)\[Pasted\s*text\s*#\d+`)
+	pasteExpandHint    = regexp.MustCompile(`(?i)paste\s+again\s+to\s+expand`)
+	turnInProgressHint = regexp.MustCompile(`(?i)(burrowing|thinking|esc to interrupt|cooking|blanching|still thinking|✳|running stop|tokens)`)
+)
 
 // MatchUnsubmittedPaste reports whether the frame still holds a Claude
 // Code paste chip that has not been submitted as a turn. Used by Send
 // to press through the block and by hosts that confirm delivery.
 func MatchUnsubmittedPaste(frame []byte) bool {
-	return pastedTextChip.Match(trimTrailingSpace(frame))
+	f := trimTrailingSpace(frame)
+	if pastedTextChip.Match(f) {
+		return true
+	}
+	// Expand hint alone only counts while the idle composer is still up
+	// (working UIs may leave residual scrollback text).
+	return pasteExpandHint.Match(f) && MatchReady(frame)
+}
+
+// MatchTurnInProgress reports Claude Code actively running a turn
+// (spinner / thinking chrome), independent of the idle composer pattern.
+func MatchTurnInProgress(frame []byte) bool {
+	return turnInProgressHint.Match(trimTrailingSpace(frame))
 }
 
 // SendKeys delivers msg to the target window and submits the turn.
@@ -47,10 +72,10 @@ func MatchUnsubmittedPaste(frame []byte) bool {
 // load-buffer + paste-buffer -p -r so Claude Code receives one bracketed
 // paste instead of a keystroke flood.
 //
-// After paste, Enter is sent as a named key (not literal -l CR). If the
-// pane still shows a paste chip, additional Enter presses are issued
-// (bounded). SendKeys returns an error when the paste remains
-// unsubmitted — silent "keys sent, turn never started" is banned (🎯T305).
+// After paste, Enter is sent as a named key (not literal -l CR). If a
+// collapsed paste chip remains, additional Enter presses are issued
+// (bounded). SendKeys returns an error when the turn never begins —
+// silent "keys sent, turn never started" is banned (🎯T305).
 func SendKeys(windowID, msg string) error {
 	return sendKeysWith(defaultSendDriver(windowID), msg)
 }
@@ -62,6 +87,8 @@ type sendDriver struct {
 	sendEnter   func() error
 	capture     func() ([]byte, error)
 	sleep       func(time.Duration)
+	// now is optional; tests inject a virtual clock that advances with sleep.
+	now func() time.Time
 }
 
 func defaultSendDriver(windowID string) sendDriver {
@@ -71,13 +98,37 @@ func defaultSendDriver(windowID string) sendDriver {
 		sendEnter:   func() error { return sendNamedEnter(windowID) },
 		capture:     func() ([]byte, error) { return CapturePane(windowID) },
 		sleep:       time.Sleep,
+		now:         time.Now,
 	}
 }
 
+func (d *sendDriver) clock() time.Time {
+	if d.now != nil {
+		return d.now()
+	}
+	return time.Now()
+}
+
 func sendKeysWith(d sendDriver, msg string) error {
+	if d.sleep == nil {
+		d.sleep = time.Sleep
+	}
+	if d.now == nil {
+		d.now = time.Now
+	}
+	// Belt-and-suspenders: never paste while /rc connecting (MatchReady
+	// also rejects it, but older ready channels may already be closed).
+	if err := waitNotConnecting(d, connectingClearTimeout); err != nil {
+		return err
+	}
+
 	if msg != "" {
 		if useBracketedPaste(msg) {
 			if err := d.pasteBuffer(msg); err != nil {
+				return err
+			}
+			// Wait for the chip / body to appear before Enter.
+			if err := waitContentLanded(d, contentLandTimeout); err != nil {
 				return err
 			}
 		} else {
@@ -119,16 +170,21 @@ const (
 )
 
 // classifyComposer is the pure post-Send oracle for 🎯T305 delivery
-// confirmation. Turn began only when the pane left the idle composer
-// (composerWorking). Paste chips and non-empty idle text are unsubmitted.
+// confirmation. Turn began when Claude shows working chrome or the idle
+// single-line composer is gone without an active paste chip.
 func classifyComposer(frame []byte) composerState {
 	if frame == nil {
 		return composerUnknown
+	}
+	// Working chrome wins even if residual "paste again" text lingers.
+	if MatchTurnInProgress(frame) {
+		return composerWorking
 	}
 	if MatchUnsubmittedPaste(frame) {
 		return composerPasteChip
 	}
 	if !MatchReady(frame) {
+		// No idle box and no paste chip → turn began (or non-idle UI).
 		return composerWorking
 	}
 	body := composerBody(frame)
@@ -138,10 +194,49 @@ func classifyComposer(frame []byte) composerState {
 	return composerTyped
 }
 
+// waitNotConnecting polls until /rc connecting clears (or timeout).
+func waitNotConnecting(d sendDriver, timeout time.Duration) error {
+	if d.capture == nil {
+		return nil
+	}
+	deadline := d.clock().Add(timeout)
+	for {
+		frame, err := d.capture()
+		if err == nil && !MatchConnecting(frame) {
+			return nil
+		}
+		if !d.clock().Before(deadline) {
+			return fmt.Errorf("claude still /rc connecting after %s; refusing to paste", timeout)
+		}
+		d.sleep(submitSettle)
+	}
+}
+
+// waitContentLanded waits until paste chip or typed body appears.
+func waitContentLanded(d sendDriver, timeout time.Duration) error {
+	if d.capture == nil {
+		return nil
+	}
+	deadline := d.clock().Add(timeout)
+	for {
+		frame, err := d.capture()
+		if err == nil {
+			st := classifyComposer(frame)
+			if st == composerPasteChip || st == composerTyped || st == composerWorking {
+				return nil
+			}
+		}
+		if !d.clock().Before(deadline) {
+			return fmt.Errorf("turn not submitted: paste never appeared in pane within %s", timeout)
+		}
+		d.sleep(submitSettle)
+	}
+}
+
 // ensureSubmitted re-presses Enter while the composer still holds an
 // unsubmitted brief (paste chip or typed text). Returns nil only when
-// the pane leaves the idle box (turn began). Errors if the chip/text
-// remains or the composer is empty after paste (brief never landed).
+// the turn begins. Errors if the chip/text remains or the composer is
+// empty after paste (brief never landed).
 func ensureSubmitted(d sendDriver) error {
 	if d.capture == nil {
 		return nil
@@ -151,6 +246,7 @@ func ensureSubmitted(d sendDriver) error {
 	}
 	var last []byte
 	var lastState composerState
+	sawContent := false
 	for press := 0; press < maxSubmitPresses; press++ {
 		d.sleep(submitSettle)
 		frame, err := d.capture()
@@ -165,14 +261,25 @@ func ensureSubmitted(d sendDriver) error {
 		case composerWorking:
 			return nil
 		case composerPasteChip, composerTyped:
+			sawContent = true
 			if press+1 < maxSubmitPresses {
 				if err := d.sendEnter(); err != nil {
 					return fmt.Errorf("tmux send-keys Enter (paste submit retry): %w", err)
 				}
 			}
 		case composerEmptyIdle:
-			// Brief never appeared — more Enters will not help; fail loud.
-			return fmt.Errorf("turn not submitted: composer empty after paste (brief never reached pane)")
+			if !sawContent && press == 0 {
+				// First sample empty — brief may still be rendering.
+				continue
+			}
+			if !sawContent {
+				return fmt.Errorf("turn not submitted: composer empty after paste (brief never reached pane)")
+			}
+			// Content was seen then cleared without working chrome —
+			// keep pressing Enter a few more times.
+			if press+1 < maxSubmitPresses {
+				_ = d.sendEnter()
+			}
 		default:
 			if press+1 < maxSubmitPresses {
 				_ = d.sendEnter()
