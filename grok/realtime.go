@@ -21,11 +21,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"sync"
 	"time"
 
 	"github.com/coder/websocket"
 )
+
+// realtimeURL is the xAI Grok Realtime WebSocket endpoint.
+const realtimeURL = "wss://api.x.ai/v1/realtime"
 
 // Tool defines a function tool available to the Grok model. Set Type to
 // "function", Name to the callable identifier, Description to guide the
@@ -94,6 +98,21 @@ type Config struct {
 	// pauses trigger spurious commits; with manual commit, the human
 	// is the VAD.
 	ManualCommit bool
+
+	// Dial customises the endpoint and WebSocket dialer (tests).
+	// Nil is valid (defaults).
+	Dial *DialArgs
+}
+
+// DialArgs customises how [Connect] reaches the Realtime endpoint
+// (tests). Nil is valid (defaults). Prefer a struct over functional
+// options.
+type DialArgs struct {
+	// URL overrides the Realtime endpoint. Empty uses [realtimeURL].
+	URL string
+
+	// Dial overrides websocket.Dial. Nil uses websocket.Dial.
+	Dial func(ctx context.Context, url string, opts *websocket.DialOptions) (*websocket.Conn, *http.Response, error)
 }
 
 // Client manages a Grok Realtime WebSocket session. Obtain one via [Connect].
@@ -108,7 +127,8 @@ type Client struct {
 	pendingCalls map[string]bool
 }
 
-// Connect dials wss://api.x.ai/v1/realtime, configures the session from cfg,
+// Connect dials the Realtime endpoint ([realtimeURL], or
+// [Config.Dial]), configures the session from cfg,
 // and starts the event loop. It blocks until the first server acknowledgement
 // is received, so the caller can detect auth failures before streaming audio.
 // The event loop runs until [Client.Close] is called or ctx is cancelled.
@@ -120,7 +140,18 @@ func Connect(ctx context.Context, cfg Config) (*Client, error) {
 		cfg.Voice = "Eve"
 	}
 
-	conn, _, err := websocket.Dial(ctx, "wss://api.x.ai/v1/realtime", &websocket.DialOptions{
+	url := realtimeURL
+	dial := websocket.Dial
+	if cfg.Dial != nil {
+		if cfg.Dial.URL != "" {
+			url = cfg.Dial.URL
+		}
+		if cfg.Dial.Dial != nil {
+			dial = cfg.Dial.Dial
+		}
+	}
+
+	conn, _, err := dial(ctx, url, &websocket.DialOptions{
 		HTTPHeader: map[string][]string{
 			"Authorization": {"Bearer " + cfg.APIKey},
 		},
