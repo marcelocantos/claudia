@@ -201,6 +201,27 @@ until a public app-server turn contract is proven. claudia does not
 scrape private session files or apply Claude transcript rewind rules to
 non-Claude providers.
 
+Provider gaps are published, not discovered at runtime. Every capability
+claudia reports on carries an explicit `supported` / `unsupported` /
+`experimental` status per provider:
+
+```go
+status := claudia.ProviderCapabilityStatus(
+    claudia.ProviderCodex, claudia.CapabilityRewind) // "unsupported"
+
+if err := claudia.CheckCapability(
+    claudia.ProviderCodex, claudia.CapabilityToolRestrictions); err != nil {
+    // *claudia.CapabilityError, with the documented rationale.
+}
+```
+
+`ProviderCapabilityMatrix(provider)` returns the whole table. Unknown
+providers and unclaimed capabilities report `CapabilityUnsupported`:
+silence never reads as parity with Claude. See
+[STABILITY.md](STABILITY.md) for the current Codex matrix — including
+that a Codex task carrying `DisallowTools` is refused, because `codex
+exec` has no per-tool disallow flag to honour it with.
+
 The PTY output is also captured to
 `$XDG_STATE_HOME/claudia/terms/<escaped-workdir>/<sessionID>.term`
 (defaulting to `~/.local/state/...`) so you have a faithful record of

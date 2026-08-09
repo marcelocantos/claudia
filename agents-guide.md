@@ -393,14 +393,30 @@ host program owns a single short-lived agent, skip the Registry.
    | Rewind | Supported | Unsupported without public fork/resume proof | Unsupported (no private session-file rewrite) |
    | tmux attach | Supported | Unsupported | Unsupported (ACP is process-local; AttachCommand empty) |
    | Terminal byte log | Supported | Unsupported | Unsupported |
-   | Permission/tool restrictions | Supported | Codex sandbox/approval flags only | `--permission-mode` / `--allow` / `--deny`; Task hardcodes bypassPermissions; not Claude-equivalent |
-   | Image inputs and web search | Provider-dependent | Not surfaced by claudia yet | Not surfaced by claudia yet |
+   | Permission mode | Supported | Unsupported — Codex sandbox/approval flags are Codex-native, not a Claude mapping | Unsupported — Task hardcodes `--permission-mode bypassPermissions` |
+   | Tool restrictions (`DisallowTools`) | Supported | Unsupported — `codex exec` has no per-tool disallow flag, so `Task.Run` **refuses** the run | Unsupported — not translated into `--deny` |
+   | Image inputs | Unsupported (no claudia API on any provider) | Unsupported | Unsupported |
+   | Web search | Supported (WebSearch tool, restrictable) | Unsupported — claudia does not bind `--search` | Unsupported |
 
-2. **Sub-agents are disabled.** claudia always passes
+   This table is generated from the same claims production reads. Query
+   it with `claudia.ProviderCapabilityMatrix(provider)`, or gate one
+   call with `claudia.CheckCapability(provider, capability)`, which
+   returns the `*claudia.CapabilityError` the operation would return.
+   Unknown providers and unclaimed capabilities report
+   `CapabilityUnsupported` — silence never reads as parity with Claude.
+
+2. **Sub-agents are disabled — on Claude.** Claude Session and Task
+   modes always pass
    `--disallowedTools Agent,TeamCreate,TeamDelete,SendMessage,EnterWorktree`.
    The host Go program owns the process lifecycle; nested claudia
    sessions would fight over PTY ownership and transcript tailing.
    Don't try to re-enable these.
+
+   Those are Claude Code tool names, and no other provider has a
+   per-tool disallow flag to enforce them with. Rather than pretend, the
+   non-Claude providers report `CapabilityToolRestrictions` as
+   unsupported, and a Codex task carrying `DisallowTools` is refused
+   outright (see the matrix above).
 
 3. **Session resumption is automatic.** `Start` checks whether
    `<SessionID>.jsonl` exists under Claude Code's project directory.

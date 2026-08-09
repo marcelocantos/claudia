@@ -582,6 +582,15 @@ func (claudeTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*task
 }
 
 func (codexTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*taskRun, error) {
+	// 🎯T4.6: `codex exec` has no per-tool disallow flag, so a caller who
+	// asks for tool restrictions and gets a run anyway has been silently
+	// handed a fully-armed agent. That is the exact shape of the incident
+	// BaseDisallowedTools documents. Refuse before spawning rather than
+	// dropping the request on the floor.
+	if len(req.DisallowTools) > 0 {
+		return nil, CheckCapability(ProviderCodex, CapabilityToolRestrictions)
+	}
+
 	// 🎯T14.1: refuse to spawn on API-key / missing OAuth so Task mode never
 	// silently falls through to per-token OpenAI billing.
 	pf, err := ensureCodexSubscriptionAuth(nil)

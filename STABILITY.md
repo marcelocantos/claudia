@@ -39,7 +39,9 @@ is annotated with a stability assessment:
 | `TaskEventType` | string type | Stable |
 | `TaskStatus` | string type | Stable |
 | `Provider` | string type selecting `ProviderClaude`, `ProviderCodex`, `ProviderGrok`, or `ProviderBedrock` | Fluid |
-| `CapabilityError` | struct with `Provider Provider`, `Capability, Status, Reason string`; method `Error() string` | Fluid |
+| `CapabilityError` | struct with `Provider Provider`, `Capability Capability`, `Status CapabilityStatus`, `Reason string`; method `Error() string` | Fluid |
+| `Capability` | string type naming a reported provider behaviour | Fluid |
+| `CapabilityStatus` | string type: `CapabilitySupported`, `CapabilityUnsupported`, `CapabilityExperimental` | Fluid |
 | `TaskConfig` | struct with `Provider Provider`, `ID, Name, WorkDir, Model, ClaudeID, LastResult, SandboxMode, ApprovalPolicy string` | Needs review |
 | `RawLogFunc` | `func(line []byte)` | Stable |
 | `Task` | opaque struct; methods listed below | Needs review |
@@ -53,7 +55,8 @@ is annotated with a stability assessment:
 |---|---|
 | `Version` | Stable |
 | `ProviderClaude, ProviderCodex, ProviderGrok, ProviderBedrock` (Provider) | Fluid |
-| `CapabilityUnsupported, CapabilityExperimental` | Fluid |
+| `CapabilitySupported, CapabilityUnsupported, CapabilityExperimental` (CapabilityStatus) | Fluid |
+| `CapabilityTask, CapabilitySession, CapabilityResume, CapabilityRewind, CapabilityCost, CapabilityTmuxAttach, CapabilityTerminalLog, CapabilityPermissionMode, CapabilityToolRestrictions, CapabilityImageInput, CapabilityWebSearch` (Capability) | Fluid |
 | `TaskEventInit, TaskEventText, TaskEventToolUse, TaskEventResult, TaskEventError` (TaskEventType) | Stable |
 | `TaskStatusIdle, TaskStatusRunning, TaskStatusError, TaskStatusStopped` (TaskStatus) | Stable |
 | ~~`ErrDaemonUnavailable`~~ | Removed (daemon pivot) |
@@ -74,6 +77,10 @@ is annotated with a stability assessment:
 | `SessionJSONLPath` | `SessionJSONLPath(sessionID, workDir string) string` | Needs review |
 | `RewindSession` | `RewindSession(sessionID, workDir string, n int) (*RewindResult, error)` | Needs review |
 | `Unrewind` | `Unrewind(path string) error` | Needs review |
+| `ProviderCapabilityStatus` | `ProviderCapabilityStatus(provider Provider, capability Capability) CapabilityStatus` | Fluid |
+| `ProviderCapabilityReason` | `ProviderCapabilityReason(provider Provider, capability Capability) string` | Fluid |
+| `ProviderCapabilityMatrix` | `ProviderCapabilityMatrix(provider Provider) map[Capability]CapabilityStatus` | Fluid |
+| `CheckCapability` | `CheckCapability(provider Provider, capability Capability) error` | Fluid |
 
 #### `Agent` methods
 
@@ -191,9 +198,36 @@ byte logs, and Claude-style transcript manipulation are unsupported;
 callers should expect `CapabilityError` rather than silent Claude
 fallback semantics.
 
+Every gap is published rather than discovered at runtime. Query it with
+`ProviderCapabilityMatrix(ProviderCodex)`, or gate a call ahead of time
+with `CheckCapability`, which returns the same `*CapabilityError` the
+operation itself would have returned:
+
+| Capability | Claude | Codex | Rationale for the Codex status |
+|---|---|---|---|
+| `CapabilityTask` | Supported | Supported | `codex exec --json` |
+| `CapabilityResume` | Supported | Supported | `codex exec resume --json` |
+| `CapabilitySession` | Supported | **Experimental** | app-server live contract not yet wired into production `Start` |
+| `CapabilityRewind` | Supported | Unsupported | needs a public fork/resume contract; private transcript truncation is forbidden |
+| `CapabilityCost` | Supported | Unsupported | tokens are reported, monetary cost is not; `CostUSD` stays zero |
+| `CapabilityTmuxAttach` | Supported | Unsupported | claudia does not drive the Codex TUI in tmux |
+| `CapabilityTerminalLog` | Supported | Unsupported | Task mode consumes JSON, not a PTY |
+| `CapabilityPermissionMode` | Supported | Unsupported | Codex sandbox/approval flags are Codex-native, not a Claude `PermissionMode` mapping |
+| `CapabilityToolRestrictions` | Supported | Unsupported | `codex exec` has no per-tool disallow flag |
+| `CapabilityImageInput` | Unsupported | Unsupported | claudia has no image-attachment API on any provider |
+| `CapabilityWebSearch` | Supported | Unsupported | claudia does not bind Codex's `--search`; the Codex default applies |
+
 Codex sandbox and approval fields are passed to Codex as Codex flags.
 They are not treated as equivalent to Claude `PermissionMode` or
 `DisallowTools` until tests prove a narrower mapping.
+
+Consequently `Task.Run` **refuses** a Codex task that carries
+`TaskConfig.DisallowTools`, returning `*CapabilityError` with
+`Capability == CapabilityToolRestrictions` before any process is
+spawned. Running it would hand the caller a fully-armed agent while
+they believe the tools were removed. `BaseDisallowedTools` names Claude
+Code tools (`Agent`, `TeamCreate`, …) that do not exist in `codex
+exec`, so it is vacuous there and does not by itself block a task.
 
 ### Grok Build CLI provider surface
 

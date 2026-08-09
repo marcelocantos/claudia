@@ -263,7 +263,7 @@ func agentBackendForProvider(provider Provider) agentBackend {
 	case ProviderGrok:
 		return grokAgentBackend{}
 	case ProviderBedrock:
-		return errorAgentBackend{err: unsupportedCapability(ProviderBedrock, "session", "Bedrock v1 is Task-only (ConverseStream); Session/tmux is not supported")}
+		return errorAgentBackend{err: CheckCapability(ProviderBedrock, CapabilitySession)}
 	default:
 		return errorAgentBackend{err: fmt.Errorf("unknown agent provider %q", provider)}
 	}
@@ -281,7 +281,13 @@ func (codexAgentBackend) Capabilities() providerCapabilities {
 }
 
 func (codexAgentBackend) StartAgent(agentStartRequest) (*agentStart, error) {
-	return nil, experimentalCapability(ProviderCodex, "session", "persistent Session mode requires the app-server live contract spike to complete")
+	// An unconditional refusal, deliberately not a matrix lookup. 🎯T4.5
+	// has not wired a Codex app-server session, so this backend has
+	// nothing to return no matter what the published claim says — and a
+	// matrix-derived error would go nil the moment that claim flips,
+	// handing startWithBackend a nil *agentStart to dereference. Whoever
+	// lands 🎯T4.5 must replace this body, not just the claim.
+	return nil, experimentalCapability(ProviderCodex, CapabilitySession, codexSessionReason)
 }
 
 func (grokAgentBackend) Capabilities() providerCapabilities {
@@ -331,11 +337,14 @@ func claudeAgentOps() agentOps {
 // Session; Grok uses ACP over `grok agent stdio`; Codex Session remains
 // experimental and fails closed.
 func Start(cfg Config) (*Agent, error) {
-	if cfg.Provider == ProviderCodex {
-		return nil, experimentalCapability(ProviderCodex, "session", "persistent Session mode requires the app-server live contract spike to complete")
-	}
-	if cfg.Provider == ProviderBedrock {
-		return nil, unsupportedCapability(ProviderBedrock, "session", "Bedrock v1 is Task-only (ConverseStream); Session/tmux is not supported")
+	// Gate on the published capability matrix rather than a per-provider
+	// branch list, so Start cannot drift into offering a session claudia
+	// has not claimed. Unknown providers still fall through to the
+	// backend's own "unknown provider" error.
+	if _, known := providerCapabilityClaims[cfg.Provider]; known || cfg.Provider == "" {
+		if err := CheckCapability(cfg.Provider, CapabilitySession); err != nil {
+			return nil, err
+		}
 	}
 	return startWithBackend(cfg, agentBackendForProvider(cfg.Provider))
 }
@@ -432,6 +441,12 @@ func startWithBackend(cfg Config, backend agentBackend) (*Agent, error) {
 	})
 	if err != nil {
 		return nil, err
+	}
+	// A backend that returns neither a session nor an error is a bug in
+	// that backend, but the cost of trusting it is a nil dereference
+	// several lines below, well away from the cause.
+	if start == nil {
+		return nil, fmt.Errorf("%s agent backend returned no session and no error", provider)
 	}
 	if start.SessionID != "" {
 		a.sessionID = start.SessionID
@@ -1113,14 +1128,14 @@ func (a *Agent) Stop() {
 // [RewindSession]: tool-result entries are not counted as turns, so a rewind
 // never lands mid-tool-use, and the pre-rewind transcript is backed up.
 func (a *Agent) Rewind(n int, cfg Config) (*Agent, error) {
-	if a.provider == ProviderCodex || cfg.Provider == ProviderCodex {
-		return nil, unsupportedCapability(ProviderCodex, "rewind", "Codex rewind requires a public app-server fork/resume contract; private transcript truncation is forbidden")
-	}
-	if a.provider == ProviderGrok || cfg.Provider == ProviderGrok {
-		return nil, unsupportedCapability(ProviderGrok, "rewind", "Grok rewind requires a public ACP/session API; private session-file truncation is forbidden")
-	}
-	if a.provider == ProviderBedrock || cfg.Provider == ProviderBedrock {
-		return nil, unsupportedCapability(ProviderBedrock, "rewind", "Bedrock v1 is Task-only and has no Session transcript to rewind")
+	// Either provider naming a non-Claude runtime is enough to refuse:
+	// rewinding means truncating a Claude-shaped JSONL transcript, which
+	// is meaningless — and, for providers whose state is private,
+	// forbidden — anywhere else.
+	for _, provider := range []Provider{a.provider, cfg.Provider} {
+		if err := CheckCapability(provider, CapabilityRewind); err != nil {
+			return nil, err
+		}
 	}
 	a.Stop()
 	if _, err := rewindJSONL(a.jsonlPath, n); err != nil {

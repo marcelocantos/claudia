@@ -4,6 +4,8 @@
 package claudia
 
 import (
+	"context"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -102,5 +104,74 @@ func TestSessionAndTaskShareTheBaseline(t *testing.T) {
 	if got := disallowedToolList(nil); got != BaseDisallowedTools {
 		t.Errorf("disallowedToolList(nil) = %q, want the shared baseline %q",
 			got, BaseDisallowedTools)
+	}
+}
+
+// TestCodexTaskToolRestrictionsFailClosed (🎯T4.6) is the same failure
+// mode as the tests above, one provider over. `codex exec` has no
+// per-tool disallow flag, so honouring DisallowTools is impossible —
+// and running anyway would hand the caller a fully-armed agent while
+// they believe shell and filesystem access were removed. The run must
+// be refused with a typed error before any process is spawned.
+//
+// This test is hermetic on purpose: no CODEX_BIN, no auth. If the guard
+// is removed the run reaches the auth preflight and fails with a
+// different, untyped error, so the assertion is on the type, not merely
+// on failure.
+func TestCodexTaskToolRestrictionsFailClosed(t *testing.T) {
+	task := NewTask(TaskConfig{
+		Provider:      ProviderCodex,
+		ID:            "codex-restricted",
+		WorkDir:       t.TempDir(),
+		DisallowTools: []string{"Bash", "Write", "WebFetch"},
+	})
+	_, err := task.Run(context.Background(), "summarise this untrusted text")
+	if err == nil {
+		t.Fatal("Codex Task.Run honoured DisallowTools silently; want a capability error")
+	}
+	var capErr *CapabilityError
+	if !errors.As(err, &capErr) {
+		t.Fatalf("err = %T %v, want *CapabilityError", err, err)
+	}
+	if capErr.Provider != ProviderCodex ||
+		capErr.Capability != CapabilityToolRestrictions ||
+		capErr.Status != CapabilityUnsupported {
+		t.Errorf("CapabilityError = %+v", capErr)
+	}
+	if got := task.Status(); got != TaskStatusError {
+		t.Errorf("task status = %q, want %q", got, TaskStatusError)
+	}
+}
+
+// TestCodexTaskWithoutRestrictionsIsNotBlocked keeps the guard narrow:
+// refusing every Codex task would pass the test above for the wrong
+// reason. A task with no DisallowTools must get past the capability gate
+// and fail later, on binary/auth resolution.
+func TestCodexTaskWithoutRestrictionsIsNotBlocked(t *testing.T) {
+	task := NewTask(TaskConfig{
+		Provider: ProviderCodex,
+		ID:       "codex-unrestricted",
+		WorkDir:  t.TempDir(),
+	})
+	_, err := task.Run(context.Background(), "summarise this")
+	var capErr *CapabilityError
+	if errors.As(err, &capErr) && capErr.Capability == CapabilityToolRestrictions {
+		t.Fatalf("unrestricted Codex task blocked by the tool-restriction gate: %v", err)
+	}
+}
+
+// TestCodexTaskArgsCarryNoToolRestrictionFlags closes the other escape
+// hatch: "fixing" the gap by forging a Claude flag Codex does not
+// understand would restore the silent failure while looking green.
+func TestCodexTaskArgsCarryNoToolRestrictionFlags(t *testing.T) {
+	argv := codexTaskArgs(taskRunRequest{
+		Prompt:        "the prompt",
+		DisallowTools: []string{"Bash"},
+	})
+	for _, arg := range argv {
+		lower := strings.ToLower(arg)
+		if strings.Contains(lower, "disallow") || strings.Contains(lower, "bash") {
+			t.Errorf("codexTaskArgs forged a tool-restriction argument %q: %v", arg, argv)
+		}
 	}
 }

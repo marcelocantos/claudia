@@ -34,73 +34,8 @@ const (
 	ProviderBedrock Provider = "bedrock"
 )
 
-const (
-	// CapabilityUnsupported means the provider has no supported public contract
-	// for the requested behavior.
-	CapabilityUnsupported = "unsupported"
-	// CapabilityExperimental means the provider may eventually support the
-	// behavior, but claudia is deliberately failing closed until the public
-	// contract is proven.
-	CapabilityExperimental = "experimental"
-)
-
-// CapabilityError reports that a provider capability is unsupported or
-// experimental in the current implementation.
-type CapabilityError struct {
-	Provider   Provider
-	Capability string
-	Status     string
-	Reason     string
-}
-
-func (e *CapabilityError) Error() string {
-	if e.Reason == "" {
-		return fmt.Sprintf("%s provider %s capability is %s", e.Provider, e.Capability, e.Status)
-	}
-	return fmt.Sprintf("%s provider %s capability is %s: %s", e.Provider, e.Capability, e.Status, e.Reason)
-}
-
-func unsupportedCapability(provider Provider, capability, reason string) *CapabilityError {
-	return &CapabilityError{
-		Provider:   provider,
-		Capability: capability,
-		Status:     CapabilityUnsupported,
-		Reason:     reason,
-	}
-}
-
-func experimentalCapability(provider Provider, capability, reason string) *CapabilityError {
-	return &CapabilityError{
-		Provider:   provider,
-		Capability: capability,
-		Status:     CapabilityExperimental,
-		Reason:     reason,
-	}
-}
-
-type providerCapabilities struct {
-	Task          bool
-	Session       bool
-	Resume        bool
-	Rewind        bool
-	Cost          bool
-	Permissions   bool
-	TmuxAttach    bool
-	TerminalBytes bool
-}
-
-func claudeProviderCapabilities() providerCapabilities {
-	return providerCapabilities{
-		Task:          true,
-		Session:       true,
-		Resume:        true,
-		Rewind:        true,
-		Cost:          true,
-		Permissions:   true,
-		TmuxAttach:    true,
-		TerminalBytes: true,
-	}
-}
+// Capability reporting (Capability, CapabilityStatus, CapabilityError,
+// the provider claim matrix) lives in capability.go.
 
 func resolveCodexBin() (string, error) {
 	return resolveCodexBinFrom(os.Getenv, exec.LookPath, os.Stat, codexBinCandidates())

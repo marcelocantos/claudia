@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -257,6 +258,72 @@ func TestGrokBinCandidatesIncludeDotGrokBin(t *testing.T) {
 		}
 	}
 	t.Fatalf("grokBinCandidates() does not include %s", want)
+}
+
+// TestProviderCapabilityMatrixIsTotal: every provider must make an
+// explicit claim about every reported capability. A missing entry is the
+// failure 🎯T4.6 targets — a gap nobody wrote down, which a caller
+// discovers by watching it not work.
+func TestProviderCapabilityMatrixIsTotal(t *testing.T) {
+	providers := []Provider{ProviderClaude, ProviderCodex, ProviderGrok, ProviderBedrock}
+	for _, provider := range providers {
+		claims, ok := providerCapabilityClaims[provider]
+		if !ok {
+			t.Errorf("provider %q has no capability claims at all", provider)
+			continue
+		}
+		for _, capability := range reportedCapabilities() {
+			claim, ok := claims[capability]
+			if !ok {
+				t.Errorf("provider %q makes no claim about %s", provider, capability)
+				continue
+			}
+			switch claim.status {
+			case CapabilitySupported:
+			case CapabilityUnsupported, CapabilityExperimental:
+				if claim.reason == "" {
+					t.Errorf("provider %q %s is %q with no reason", provider, capability, claim.status)
+				}
+			default:
+				t.Errorf("provider %q %s has unknown status %q", provider, capability, claim.status)
+			}
+		}
+		for capability := range claims {
+			if !slices.Contains(reportedCapabilities(), capability) {
+				t.Errorf("provider %q claims unreported capability %s", provider, capability)
+			}
+		}
+	}
+}
+
+// TestCheckCapabilityFailsClosed: an unknown provider or an unclaimed
+// capability must report unsupported, never inherit Claude's answer.
+func TestCheckCapabilityFailsClosed(t *testing.T) {
+	if err := CheckCapability(ProviderClaude, CapabilityTask); err != nil {
+		t.Errorf("CheckCapability(claude, task) = %v, want nil", err)
+	}
+	if err := CheckCapability("", CapabilityTask); err != nil {
+		t.Errorf("CheckCapability(\"\", task) = %v, want nil (empty means claude)", err)
+	}
+	for _, tc := range []struct {
+		provider   Provider
+		capability Capability
+	}{
+		{"nonesuch", CapabilityTask},
+		{ProviderCodex, "teleportation"},
+	} {
+		err := CheckCapability(tc.provider, tc.capability)
+		var capErr *CapabilityError
+		if !errors.As(err, &capErr) {
+			t.Errorf("CheckCapability(%q, %s) = %T %v, want *CapabilityError",
+				tc.provider, tc.capability, err, err)
+			continue
+		}
+		if capErr.Status != CapabilityUnsupported {
+			t.Errorf("CheckCapability(%q, %s) status = %q, want unsupported",
+				tc.provider, tc.capability, capErr.Status)
+		}
+	}
 }
 
 func TestCapabilityErrorMessage(t *testing.T) {
