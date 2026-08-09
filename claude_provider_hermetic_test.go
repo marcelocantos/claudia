@@ -180,23 +180,24 @@ func TestHermeticTaskCancelSendsSIGINT(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	// Give the fake process time to start and install its trap.
-	time.Sleep(100 * time.Millisecond)
+	// Wait for init (ClaudeID) — proves the fake installed its handler and
+	// entered the hang phase. Fixed sleeps race under -race (🎯T17).
+	drained := make(chan struct{})
+	go func() {
+		defer close(drained)
+		for range events {
+		}
+	}()
+	waitHermeticTaskReady(t, task)
 	if err := task.Cancel(); err != nil {
 		t.Fatalf("Cancel: %v", err)
 	}
 
 	// Channel must close after SIGINT (fake exits 0 on INT).
-	deadline := time.After(5 * time.Second)
-	for {
-		select {
-		case _, ok := <-events:
-			if !ok {
-				return
-			}
-		case <-deadline:
-			t.Fatal("events channel did not close after Cancel")
-		}
+	select {
+	case <-drained:
+	case <-time.After(5 * time.Second):
+		t.Fatal("events channel did not close after Cancel")
 	}
 }
 
@@ -219,23 +220,21 @@ func TestHermeticTaskStopCancelsInFlight(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	time.Sleep(100 * time.Millisecond)
+	drained := make(chan struct{})
+	go func() {
+		defer close(drained)
+		for range events {
+		}
+	}()
+	waitHermeticTaskReady(t, task)
 	task.Stop()
 	if task.Status() != TaskStatusStopped {
 		t.Fatalf("Status = %q, want stopped", task.Status())
 	}
 
-	// Drain must finish (context cancel kills CommandContext child).
+	// Drain must finish (context cancel kills process group / CommandContext child).
 	select {
-	case <-func() <-chan struct{} {
-		done := make(chan struct{})
-		go func() {
-			for range events {
-			}
-			close(done)
-		}()
-		return done
-	}():
+	case <-drained:
 	case <-time.After(5 * time.Second):
 		t.Fatal("events did not drain after Stop")
 	}
@@ -244,6 +243,21 @@ func TestHermeticTaskStopCancelsInFlight(t *testing.T) {
 	if _, err := task.Run(context.Background(), "again"); err == nil {
 		t.Fatal("Run after Stop returned nil error")
 	}
+}
+
+// waitHermeticTaskReady blocks until the hermetic fake has emitted init
+// (ClaudeID set). Load-bearing readiness for Cancel/Stop: the slow fake
+// installs its SIGINT handler before printing init.
+func waitHermeticTaskReady(t *testing.T, task *Task) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if task.ClaudeID() != "" {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("hermetic task never became ready (no TaskEventInit / ClaudeID)")
 }
 
 func TestHermeticClaudeRequireResumeFailsClosed(t *testing.T) {
@@ -458,12 +472,19 @@ func writeArgCaptureCLI(t *testing.T, fixturePath, argsPath string) string {
 	return bin
 }
 
-// writeSlowFakeCLI emits the fixture then sleeps; traps SIGINT to exit 0 so
+// writeSlowFakeCLI emits the fixture init line then hangs until SIGINT/SIGTERM.
 // Cancel can be observed without leaving orphans.
+//
+// Implementation is a single-process perl helper — not a shell script that
+// forks `sleep`. Under bash/sh, a SIGINT trap is deferred until a foreground
+// child completes, so Process.Signal(SIGINT) leaves the process alive until
+// sleep ends; grandchildren also hold StdoutPipe open so Scan never sees EOF
+// (bimodal hang under -race / loaded CI — 🎯T17). Perl handles SIGINT in-process
+// and exits, releasing the pipe deterministically.
 func writeSlowFakeCLI(t *testing.T, fixturePath string, sleepFor time.Duration) string {
 	t.Helper()
 	if runtime.GOOS == "windows" {
-		t.Skip("POSIX shell fake CLI")
+		t.Skip("POSIX signal fake CLI")
 	}
 	absFixture, err := filepath.Abs(fixturePath)
 	if err != nil {
@@ -475,13 +496,20 @@ func writeSlowFakeCLI(t *testing.T, fixturePath string, sleepFor time.Duration) 
 	if sec < 1 {
 		sec = 1
 	}
-	// Emit init only so parsers have a session id, then hang until signal.
-	// Full fixture is not needed for cancel/stop oracles.
-	script := "#!/bin/sh\n" +
-		"trap 'exit 0' INT TERM\n" +
-		// First line of fixture if present, else a minimal init.
-		"head -n 1 \"" + absFixture + "\" 2>/dev/null || true\n" +
-		"sleep " + strconv.Itoa(sec) + "\n"
+	// Emit first fixture line (init), flush, hang until signal.
+	// Quote paths for the generated perl source.
+	script := "#!/usr/bin/env perl\n" +
+		"use strict;\n" +
+		"use warnings;\n" +
+		"$SIG{INT} = $SIG{TERM} = sub { exit 0 };\n" +
+		"my $fixture = \"" + absFixture + "\";\n" +
+		"if (open my $fh, '<', $fixture) {\n" +
+		"  my $line = <$fh>;\n" +
+		"  close $fh;\n" +
+		"  print $line if defined $line;\n" +
+		"} \n" +
+		"STDOUT->flush;\n" +
+		"select(undef, undef, undef, " + strconv.Itoa(sec) + ");\n"
 	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}

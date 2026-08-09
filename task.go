@@ -14,7 +14,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 )
 
 // TaskEventType identifies the kind of task event.
@@ -516,6 +515,7 @@ func (claudeTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*task
 	}
 	cmd := exec.CommandContext(ctx, claudeBin, args...)
 	cmd.Dir = req.WorkDir
+	setTaskProcessGroup(cmd)
 
 	// Unset CLAUDECODE to avoid nested session detection.
 	cmd.Env = filterEnv(os.Environ(), "CLAUDECODE")
@@ -533,6 +533,7 @@ func (claudeTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*task
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start claude: %w", err)
 	}
+	armTaskProcessGroupKill(ctx, cmd)
 
 	go func() {
 		scanner := bufio.NewScanner(stderr)
@@ -575,13 +576,8 @@ func (claudeTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*task
 	}()
 
 	return &taskRun{
-		events: ch,
-		interrupt: func() error {
-			if cmd.Process == nil {
-				return nil
-			}
-			return cmd.Process.Signal(syscall.SIGINT)
-		},
+		events:    ch,
+		interrupt: func() error { return interruptTaskProcess(cmd) },
 	}, nil
 }
 
@@ -610,6 +606,7 @@ func (codexTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*taskR
 	slog.Debug("spawning codex task", "args", args)
 	cmd := exec.CommandContext(ctx, codexBin, args...)
 	cmd.Dir = req.WorkDir
+	setTaskProcessGroup(cmd)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -622,6 +619,7 @@ func (codexTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*taskR
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start codex: %w", err)
 	}
+	armTaskProcessGroupKill(ctx, cmd)
 
 	go func() {
 		scanner := bufio.NewScanner(stderr)
@@ -664,13 +662,8 @@ func (codexTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*taskR
 	}()
 
 	return &taskRun{
-		events: ch,
-		interrupt: func() error {
-			if cmd.Process == nil {
-				return nil
-			}
-			return cmd.Process.Signal(syscall.SIGINT)
-		},
+		events:    ch,
+		interrupt: func() error { return interruptTaskProcess(cmd) },
 	}, nil
 }
 
@@ -709,6 +702,7 @@ func (grokTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*taskRu
 	if req.WorkDir != "" {
 		cmd.Dir = req.WorkDir
 	}
+	setTaskProcessGroup(cmd)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -721,6 +715,7 @@ func (grokTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*taskRu
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start grok: %w", err)
 	}
+	armTaskProcessGroupKill(ctx, cmd)
 
 	go func() {
 		scanner := bufio.NewScanner(stderr)
@@ -763,13 +758,8 @@ func (grokTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*taskRu
 	}()
 
 	return &taskRun{
-		events: ch,
-		interrupt: func() error {
-			if cmd.Process == nil {
-				return nil
-			}
-			return cmd.Process.Signal(syscall.SIGINT)
-		},
+		events:    ch,
+		interrupt: func() error { return interruptTaskProcess(cmd) },
 	}, nil
 }
 
