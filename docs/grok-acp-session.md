@@ -80,6 +80,11 @@ ACP is a public protocol; Grok also emits `_x.ai/*` notifications that
 claudia ignores. Field shapes on `session/request_permission` outcomes may
 evolve — live `CLAUDIA_GROK_LIVE` smokes catch breakage.
 
+Private product extensions used by the interactive TUI (not Session mode)
+include `x.ai/billing`, `x.ai/auto-topup-rule`, and `x.ai/session/usage` —
+see [grok-usage-billing.md](grok-usage-billing.md). claudia must not call
+those without a documented, versioned contract.
+
 ### Oracles
 
 - Hermetic: `testdata/grok/acp/fake_acp.py` + `TestHermeticGrokSession*`  

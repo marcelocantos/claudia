@@ -10,6 +10,10 @@ Public contracts:
 - Headless Task: `grok -p … --output-format streaming-json`
 - Persistent Session (planned): `grok agent stdio` (ACP JSON-RPC)
 
+Account-level SuperGrok weekly limit / Extra Credits / Auto Top Up and the
+console Management API prepaid surface are **not** Task/Session contracts.
+Research map: [grok-usage-billing.md](grok-usage-billing.md).
+
 Live Grok runs are smoke/regression only (`CLAUDIA_GROK_LIVE=1`). A target
 retires when hermetic fixtures, fakes, and fault checks prove the mapping.
 

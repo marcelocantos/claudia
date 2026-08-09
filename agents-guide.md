@@ -72,7 +72,12 @@ Headless `streaming-json` maps `text` → `TaskEventText`, terminal
 `end.sessionId` → `TaskEventInit` then `TaskEventResult`, and
 `error` → `TaskEventError`. Thought deltas are ignored. Tool-use
 and cost/usage are not present on this public stream — do not expect
-Claude-parity accounting or tool events.
+Claude-parity accounting or tool events. SuperGrok weekly limit /
+Extra Credits / Auto Top Up (`/usage` in the TUI) is a separate
+consumer-billing surface with **no documented API**;
+`grok -p "/usage"` is only a model prompt, not the slash command.
+Console API team prepaid balance uses the Management API, not the
+Grok Build CLI. Details: [docs/grok-usage-billing.md](docs/grok-usage-billing.md).
 
 Grok persistent Session mode uses ACP over `grok agent stdio`:
 
@@ -323,7 +328,7 @@ host program owns a single short-lived agent, skip the Registry.
    |------------|--------|-------|----------------|
    | Task prompts | Supported | Supported via `codex exec --json` | Supported via `grok -p --output-format streaming-json` |
    | Task resume | Supported | Supported via `codex exec resume --json` | Supported via `--resume` |
-   | Task usage / cost | Supported | Tokens yes; cost unavailable | Not on streaming-json (no tool_use/cost events) |
+   | Task usage / cost | Supported | Tokens yes; cost unavailable | Not on streaming-json (no tool_use/cost events); SuperGrok `/usage` panel has no public API ([docs/grok-usage-billing.md](docs/grok-usage-billing.md)) |
    | Persistent Session | Supported | Experimental fail-closed | Supported via ACP (`grok agent stdio`) |
    | Rewind | Supported | Unsupported without public fork/resume proof | Unsupported (no private session-file rewrite) |
    | tmux attach | Supported | Unsupported | Unsupported (ACP is process-local; AttachCommand empty) |

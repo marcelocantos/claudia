@@ -104,6 +104,9 @@ task := claudia.NewTask(claudia.TaskConfig{
 
 Grok live tests are opt-in (`CLAUDIA_GROK_LIVE=1`). Auth is whatever the
 installed `grok` CLI already uses (`grok login` or `XAI_API_KEY`).
+SuperGrok weekly usage / Extra Credits and console prepaid balance are
+**not** Task streams — see
+[docs/grok-usage-billing.md](docs/grok-usage-billing.md).
 
 Bedrock Task mode is available by selecting `ProviderBedrock`. It calls
 AWS Bedrock ConverseStream and maps text deltas to `TaskEventText`:
