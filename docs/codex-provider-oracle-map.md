@@ -5,7 +5,7 @@ Status: **sealed** for 🎯T4.8 (machine checks green on local master).
 Codex provider work is mostly new-code oracle mode with two public-contract seams:
 
 - `codex exec --json` for Task mode.
-- `codex app-server` JSON-RPC for persistent Session mode (production Start remains fail-closed experimental until 🎯T4.4 live contract proof).
+- `codex app-server` JSON-RPC for persistent Session mode (🎯T4.4 contract proven 2026-08-09; production Start still experimental until 🎯T4.5 wires it).
 
 Live Codex runs are smoke/regression only. They do not retire targets by themselves. A target retires when hermetic fixtures, fakes, and fault checks prove the mapping and lifecycle behavior.
 
@@ -28,7 +28,7 @@ Live residual (never sole retirement evidence): `CLAUDIA_CODEX_LIVE=1` → `Test
 | 🎯T4.1 provider boundaries | New-code lifecycle seam | Fake Claude / fake Codex task+agent backends drive the same public lifecycle (`TestStartUsesInjectedBackendLifecycle`, fake-codex Task path) without real binaries. | None | Hermetic sealed |
 | 🎯T4.2 Codex binary discovery | Deterministic resolver | Resolver tests inject env, PATH lookup, app-bundle candidates, missing-binary failure. | Optional manual install sanity | Hermetic sealed |
 | 🎯T4.3 Codex Task mode | Public CLI fixture parser + hermetic spawn | Golden `codex exec --json` fixtures + `TestCodexTaskParser*` + `TestCodexTaskSuccessOracleRejectsFaults` + `TestHermeticTaskRunCodexSpawn`. | `CLAUDIA_CODEX_LIVE=1` smoke only | Hermetic sealed |
-| 🎯T4.4 app-server contract spike | Public protocol fixture/schema | Golden app-server JSON-RPC fixtures + `TestParseCodexAppServer*` + `TestCodexAppServerFixturesAreValidJSONL`. | Explicit live capture residual | Hermetic fixtures sealed; live capture human residual |
+| 🎯T4.4 app-server contract spike | Public protocol fixture/schema | Golden fixtures (`success`/`failure`/`interrupted`/`unsupported`/`thread-start`/`live-turn`/`lifecycle`) + `TestParseCodexAppServer*` + request builders + private-storage scan. Spike: [codex-app-server-spike.md](codex-app-server-spike.md). | Live 2026-08-09 capture on codex-cli 0.146.0-alpha.9.2 (turn + resume/fork/archive/interrupt) | **Sealed** (live + hermetic) |
 | 🎯T4.5 Codex Session mode | Fake app-server lifecycle | `TestFakeCodexAppServerLifecycle`, `TestFakeCodexAppServerInterruptLifecycle` (Start/Send/Wait/Subscribe/Interrupt/raw/usage/attach-log fail-closed). Production `ProviderCodex` Session Start remains experimental fail-closed. | Gated live app-server smoke only | Fake harness sealed |
 | 🎯T4.6 capability gaps | Negative capability oracle | `TestStartCodexSessionFailsWithCapabilityError`, `TestCodexRewindFailsWithCapabilityError`, `TestAgentMissingOperationFailsWithCapabilityError`, attach/log empty on fake, `TestCodexProviderCapabilitiesClaimed`. | Human review of accepted gaps | Hermetic sealed |
 | 🎯T4.7 docs/release gate | Documentation consistency | README, agents-guide.md, STABILITY.md, release notes share one support matrix (blocked on code targets + this map). | Release checklist only | Map ready; release gate waits on T4.x code |
@@ -50,6 +50,8 @@ Live residual (never sole retirement evidence): `CLAUDIA_CODEX_LIVE=1` → `Test
 - `interrupted.jsonl`: turn/started, turn/interrupt, turn/completed interrupted.
 - `unsupported-capability.jsonl`: method/field rejection for experimental capability.
 - `thread-start.jsonl`: redacted live-shape thread start (JSONL validity + token check).
+- `live-turn.jsonl`: redacted live 0.146 full turn (camelCase items, `thread/tokenUsage/updated`, sandbox/approval map).
+- `lifecycle.jsonl`: redacted resume/fork/archive/unarchive/interrupt shapes.
 
 Fixtures must stay small, redacted, and hand-owned. `TestParseCodexAppServer*`
 parses them into typed events so notification order and field mapping are

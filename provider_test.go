@@ -293,6 +293,8 @@ func TestCodexAppServerFixturesAreValidJSONL(t *testing.T) {
 		{"testdata/codex/app-server/failure.jsonl", "model failed", "turn/completed"},
 		{"testdata/codex/app-server/interrupted.jsonl", "turn_interrupted", "turn/completed"},
 		{"testdata/codex/app-server/unsupported-capability.jsonl", "experimentalApi", ""},
+		{"testdata/codex/app-server/live-turn.jsonl", "T4.4-ok", "turn/completed"},
+		{"testdata/codex/app-server/lifecycle.jsonl", "thr_fork", "turn/completed"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.path, func(t *testing.T) {

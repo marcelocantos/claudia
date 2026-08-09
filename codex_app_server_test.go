@@ -5,6 +5,7 @@ package claudia
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"strings"
 	"sync"
@@ -123,6 +124,211 @@ func TestParseCodexAppServerUnsupportedCapabilityFixture(t *testing.T) {
 func TestParseCodexAppServerMalformedLine(t *testing.T) {
 	if _, _, err := parseCodexAppServerLine([]byte(`{"method":`)); err == nil {
 		t.Fatal("malformed line returned nil error")
+	}
+}
+
+func TestParseCodexAppServerLiveTurnFixture(t *testing.T) {
+	// Redacted live capture against codex-cli 0.146.0-alpha.9.2 (🎯T4.4).
+	// Proves camelCase item types, notification order, and tokenUsage path.
+	var (
+		threadID, turnID, model, approval, sandbox, finalText string
+		usage                                                 Usage
+		methods                                               []string
+		sawTurnCompleted                                      bool
+	)
+	for _, line := range readFixtureLines(t, "testdata/codex/app-server/live-turn.jsonl") {
+		ev, ok, err := parseCodexAppServerLine([]byte(line))
+		if err != nil {
+			t.Fatalf("parseCodexAppServerLine(%q): %v", line, err)
+		}
+		if !ok {
+			continue
+		}
+		if ev.Method != "" {
+			methods = append(methods, ev.Method)
+		}
+		if ev.Method == "thread/start" {
+			threadID = ev.ThreadID
+			model = ev.Model
+			approval = ev.ApprovalPolicy
+			sandbox = ev.SandboxType
+		}
+		if ev.Method == "turn/start" {
+			turnID = ev.TurnID
+		}
+		if ev.ItemType == "agent_message" && ev.Text != "" {
+			finalText = ev.Text
+		}
+		if ev.Method == "thread/tokenUsage/updated" {
+			usage = ev.Usage
+		}
+		if ev.Method == "turn/completed" {
+			sawTurnCompleted = ev.Status == "completed"
+		}
+		if agentEv, ok := ev.agentEvent(); ok && agentEv.Type == "assistant" && agentEv.Text == "T4.4-ok" {
+			finalText = agentEv.Text
+		}
+	}
+	if threadID != "thr_live" {
+		t.Fatalf("threadID = %q, want thr_live", threadID)
+	}
+	if turnID != "turn_live" {
+		t.Fatalf("turnID = %q, want turn_live", turnID)
+	}
+	if model != "gpt-5.4" {
+		t.Fatalf("model = %q, want gpt-5.4", model)
+	}
+	if approval != "never" {
+		t.Fatalf("approvalPolicy = %q, want never", approval)
+	}
+	if sandbox != "readOnly" {
+		t.Fatalf("sandbox.type = %q, want readOnly (request sandbox=read-only)", sandbox)
+	}
+	if finalText != "T4.4-ok" {
+		t.Fatalf("finalText = %q, want T4.4-ok", finalText)
+	}
+	if !sawTurnCompleted {
+		t.Fatal("live fixture missing completed turn/completed")
+	}
+	if usage.InputTokens == 0 || usage.OutputTokens == 0 {
+		t.Fatalf("tokenUsage not mapped from thread/tokenUsage/updated: %+v", usage)
+	}
+	// Notification order: thread/started before turn/started before item/*
+	// before tokenUsage before turn/completed.
+	wantOrder := []string{
+		"thread/start",
+		"thread/started",
+		"turn/start",
+		"turn/started",
+		"item/started",
+		"item/completed",
+		"thread/tokenUsage/updated",
+		"turn/completed",
+	}
+	pos := 0
+	for _, m := range methods {
+		if pos < len(wantOrder) && m == wantOrder[pos] {
+			pos++
+		}
+	}
+	if pos != len(wantOrder) {
+		t.Fatalf("notification order incomplete: matched %d/%d of %v; got %v", pos, len(wantOrder), wantOrder, methods)
+	}
+}
+
+func TestParseCodexAppServerLifecycleFixture(t *testing.T) {
+	// Resume/fork/archive/interrupt shapes from non-ephemeral live spike.
+	var sawResume, sawFork, sawInterrupted, sawArchived, sawUnarchived bool
+	for _, line := range readFixtureLines(t, "testdata/codex/app-server/lifecycle.jsonl") {
+		ev, ok, err := parseCodexAppServerLine([]byte(line))
+		if err != nil {
+			t.Fatalf("parse: %v", err)
+		}
+		if !ok {
+			continue
+		}
+		if ev.Method == "thread/start" && ev.ThreadID == "thr_lifecycle" && ev.Model == "gpt-5.4" {
+			sawResume = true
+			if ev.ApprovalPolicy != "never" || ev.SandboxType != "readOnly" {
+				t.Fatalf("resume config: approval=%q sandbox=%q", ev.ApprovalPolicy, ev.SandboxType)
+			}
+		}
+		if ev.Method == "thread/start" && ev.ThreadID == "thr_fork" {
+			sawFork = true
+		}
+		if ev.Method == "turn/completed" && ev.Status == "interrupted" {
+			sawInterrupted = true
+		}
+		if ev.Method == "thread/archived" {
+			sawArchived = true
+		}
+		if ev.Method == "thread/unarchived" {
+			sawUnarchived = true
+		}
+	}
+	if !sawResume || !sawFork || !sawInterrupted || !sawArchived || !sawUnarchived {
+		t.Fatalf("lifecycle fixture incomplete: resume=%v fork=%v interrupt=%v archive=%v unarchive=%v",
+			sawResume, sawFork, sawInterrupted, sawArchived, sawUnarchived)
+	}
+}
+
+func TestCodexAppServerRequestBuilders(t *testing.T) {
+	// Public method field names for Session mode — machine-checked against
+	// the spike contract (cwd, model, approvalPolicy, sandbox, resume/fork/archive).
+	initReq := codexAppServerInitialize(0, codexAppServerClientInfo{
+		Name: "claudia", Title: "claudia", Version: "0.1.0",
+	})
+	if initReq.Method != "initialize" || initReq.ID == nil || *initReq.ID != 0 {
+		t.Fatalf("initialize = %+v", initReq)
+	}
+	if codexAppServerInitialized().Method != "initialized" {
+		t.Fatal("initialized method")
+	}
+	ephemeral := true
+	start := codexAppServerThreadStart(1, codexAppServerThreadStartParams{
+		CWD:            "/tmp/w",
+		Model:          "gpt-5.4",
+		ApprovalPolicy: "never",
+		Sandbox:        "read-only",
+		Ephemeral:      &ephemeral,
+	})
+	raw, err := json.Marshal(start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"method":"thread/start"`, `"cwd":"/tmp/w"`, `"model":"gpt-5.4"`, `"approvalPolicy":"never"`, `"sandbox":"read-only"`, `"ephemeral":true`} {
+		if !strings.Contains(string(raw), want) {
+			t.Fatalf("thread/start missing %s in %s", want, raw)
+		}
+	}
+	turn := codexAppServerTurnStart(2, codexAppServerTurnStartParams{
+		ThreadID: "thr_x",
+		Input:    []codexAppServerUserInput{{Type: "text", Text: "hi"}},
+	})
+	raw, err = json.Marshal(turn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"method":"turn/start"`, `"threadId":"thr_x"`, `"type":"text"`, `"text":"hi"`} {
+		if !strings.Contains(string(raw), want) {
+			t.Fatalf("turn/start missing %s in %s", want, raw)
+		}
+	}
+	intr := codexAppServerTurnInterrupt(3, "thr_x", "turn_y")
+	raw, _ = json.Marshal(intr)
+	if !strings.Contains(string(raw), `"method":"turn/interrupt"`) || !strings.Contains(string(raw), `"turnId":"turn_y"`) {
+		t.Fatalf("interrupt = %s", raw)
+	}
+	for _, tc := range []struct {
+		name string
+		req  codexAppServerRequest
+		want string
+	}{
+		{"resume", codexAppServerThreadResume(4, codexAppServerThreadIDParams{ThreadID: "thr_x"}), "thread/resume"},
+		{"fork", codexAppServerThreadFork(5, codexAppServerThreadIDParams{ThreadID: "thr_x"}), "thread/fork"},
+		{"archive", codexAppServerThreadArchive(6, "thr_x"), "thread/archive"},
+		{"unarchive", codexAppServerThreadUnarchive(7, "thr_x"), "thread/unarchive"},
+	} {
+		raw, _ := json.Marshal(tc.req)
+		if !strings.Contains(string(raw), `"method":"`+tc.want+`"`) || !strings.Contains(string(raw), `"threadId":"thr_x"`) {
+			t.Fatalf("%s = %s", tc.name, raw)
+		}
+	}
+}
+
+func TestNormalizeCodexAppServerItemType(t *testing.T) {
+	cases := map[string]string{
+		"agentMessage":      "agent_message",
+		"commandExecution":  "command_execution",
+		"userMessage":       "user_message",
+		"agent_message":     "agent_message",
+		"command_execution": "command_execution",
+		"reasoning":         "reasoning",
+	}
+	for in, want := range cases {
+		if got := normalizeCodexAppServerItemType(in); got != want {
+			t.Errorf("normalize(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 

@@ -1,90 +1,157 @@
 # Codex App-Server Spike
 
-Status: converging for 🎯T4.4. No production Session-mode code may depend on this until the live notification sequence is captured and reviewed.
+Status: **proven for 🎯T4.4** (2026-08-09). Live stdio turn + resume/fork/archive/interrupt
+captured against `codex-cli 0.146.0-alpha.9.2`. Hermetic oracles parse redacted fixtures;
+production Session mode (🎯T4.5) may now depend on this public contract (not private files).
 
 ## Public Contract
 
-Source: current OpenAI Codex manual, "Codex App Server", fetched 2026-07-06.
+Source: OpenAI Codex app-server docs + installed-version schema + live captures.
 
-Codex app-server is the documented rich-client integration point for persistent Codex conversations. It uses JSON-RPC-style JSONL over stdio by default:
+Codex app-server is the documented rich-client integration point for persistent Codex
+conversations. Default transport is JSON-RPC-style JSONL over stdio:
 
 - Requests have `method`, `id`, and `params`.
 - Responses echo `id` with `result` or `error`.
 - Notifications omit `id` and have `method` plus `params`.
-- The client must send `initialize`, then `initialized`, before other methods.
+- Client must send `initialize`, then `initialized`, before other methods.
 
-Minimum handshake:
+Minimum handshake (request builders in `codex_app_server.go`):
 
 ```jsonl
 {"method":"initialize","id":0,"params":{"clientInfo":{"name":"claudia","title":"claudia","version":"0.1.0"}}}
 {"method":"initialized","params":{}}
-{"method":"thread/start","id":1,"params":{"model":"gpt-5.4"}}
+{"method":"thread/start","id":1,"params":{"model":"gpt-5.4","cwd":"<WORKDIR>","approvalPolicy":"never","sandbox":"read-only"}}
+{"method":"turn/start","id":2,"params":{"threadId":"<thread-id>","input":[{"type":"text","text":"<prompt>"}],"approvalPolicy":"never"}}
 ```
 
-After `thread/start` returns a thread id, a turn starts with:
+Documented / observed notification families include `thread/started`,
+`thread/status/changed`, `turn/started`, `item/started`, `item/completed`,
+`item/agentMessage/delta`, `thread/tokenUsage/updated`, `account/rateLimits/updated`,
+and `turn/completed`.
 
-```jsonl
-{"method":"turn/start","id":2,"params":{"threadId":"<thread-id>","input":[{"type":"text","text":"<prompt>"}]}}
-```
+## Live Capture (2026-08-09)
 
-Documented notification families include `turn/started`, `item/started`, `item/completed`, `item/agentMessage/delta`, tool progress, and `turn/completed`.
+Binary: `/Applications/ChatGPT.app/Contents/Resources/codex` (`codex-cli 0.146.0-alpha.9.2`).
+Auth: `~/.codex/auth.json` with `auth_mode=chatgpt` (subscription; `OPENAI_API_KEY` unset).
 
-## Installed-Version Non-Live Capture
+### Ephemeral turn (notification sequence)
 
-On 2026-07-06, a stdio app-server capture against Codex Desktop 0.142.5 proved initialize and thread/start without sending `turn/start`:
+`thread/start` with `ephemeral: true`, `approvalPolicy: "never"`, `sandbox: "read-only"`,
+then `turn/start` with text `Reply with exactly: T4.4-ok`.
 
-- `initialize` returned user agent, Codex home, platform family, and platform OS.
-- `thread/start` returned a thread/session id, rollout path, cwd, runtime workspace roots, model, model provider, approval policy, approvals reviewer, sandbox object, reasoning effort, and multi-agent mode.
-- The server also emitted `thread/started` for the new idle thread.
+Observed order (MCP noise omitted):
 
-The redacted fixture is `testdata/codex/app-server/thread-start.jsonl`.
+1. `initialize` result (userAgent, codexHome, platform)
+2. `thread/start` result — `model: gpt-5.4`, `approvalPolicy: never`,
+   `sandbox: {type: readOnly, networkAccess: false}` (**request `sandbox: "read-only"`
+   maps to response `type: "readOnly"`**)
+3. `thread/started`
+4. `turn/start` result — turn id, `status: inProgress`
+5. `thread/status/changed` → active
+6. `turn/started`
+7. `item/started` / `item/completed` for `userMessage`, `reasoning`, `agentMessage`
+8. `item/agentMessage/delta` stream
+9. `thread/tokenUsage/updated` (usage lives here, **not** on `turn/completed`)
+10. `thread/status/changed` → idle
+11. `turn/completed` with `status: completed` and summary items
 
-Observed caveat: sending `sandboxPolicy: {"mode":"read-only"}` in the spike request returned a `workspaceWrite` sandbox object. Treat sandbox mapping as unproven until a dedicated request/response fixture establishes the exact accepted shape.
+Redacted fixture: `testdata/codex/app-server/live-turn.jsonl`.
 
-## Configuration Mapping To Prove
+### Non-ephemeral lifecycle
 
-Generated schema inspection on 2026-07-06 confirmed these installed-version field names without starting a model turn:
+Without `ephemeral`, the same host proved:
 
-- `thread/start` params include `cwd`, `model`, `approvalPolicy`, `permissions`, and config/developer-instruction overrides.
-- `turn/start` params require `threadId` and `input`; optional turn overrides include `cwd`, `model`, `approvalPolicy`, `permissions`, and `sandboxPolicy`.
-- `thread/resume` params require `threadId` and also include `cwd`, `model`, and `approvalPolicy`.
-- `thread/fork` params require `threadId`; `path` is marked unstable and should not be preferred.
-- `thread/archive` and `thread/unarchive` take `threadId`.
-- `turn/interrupt` requires both `threadId` and `turnId`.
+| Method | Result |
+| --- | --- |
+| `thread/resume` | ok — returns thread + model + approval + sandbox |
+| `thread/fork` | ok — new thread id |
+| `thread/archive` | ok — emits `thread/archived` |
+| `thread/unarchive` | ok — emits `thread/unarchived` |
+| `turn/interrupt` | ok — `turn/completed` with `status: interrupted` |
 
-The live spike must still prove the turn response and notification sequence, including the turn id needed for interruption.
+Redacted shapes: `testdata/codex/app-server/lifecycle.jsonl`.
+
+**Ephemeral caveat:** `ephemeral: true` threads have no rollout path.
+`thread/resume`, `thread/fork`, `thread/archive` then fail with
+`no rollout found for thread id …`. Session mode must use non-ephemeral
+threads when resume/fork/archive are required.
+
+## Configuration Mapping (proven)
+
+| Concern | Public field | Notes |
+| --- | --- | --- |
+| Working directory | `cwd` on `thread/start`, `turn/start`, `thread/resume` | Absolute path |
+| Model | `model` | Resolved model echoed on `thread/start` / `thread/resume` result |
+| Approval | `approvalPolicy` (`never`, `on-request`, …) | Live: request `never` → response `never` |
+| Sandbox | **`sandbox`** on `thread/start` (string mode e.g. `read-only`) | Response object `{type:"readOnly",…}`. Do **not** send legacy `sandboxPolicy` alone on thread/start for this CLI. `permissions` cannot combine with `sandbox`. |
+| Resume | `thread/resume` + `threadId` | Prefer threadId over unstable path |
+| Fork | `thread/fork` + `threadId` | `path` marked unstable |
+| Archive | `thread/archive` / `thread/unarchive` + `threadId` | |
+| Interrupt | `turn/interrupt` + `threadId` + `turnId` | |
+
+## Item type naming
+
+Live 0.146+ uses camelCase item types (`agentMessage`, `commandExecution`,
+`userMessage`). Hermetic fixtures may use snake_case. Parser normalizes via
+`normalizeCodexAppServerItemType`.
 
 ## Schema Artifact Decision
-
-The installed CLI can generate TypeScript bindings and JSON Schema:
 
 ```bash
 codex app-server generate-ts --out ./schemas
 codex app-server generate-json-schema --out ./schemas
 ```
 
-Generated JSON Schema with `--experimental` on 2026-07-06 produced a 4.0 MB bundle with 123,371 total lines and many version-specific v2 files. The aggregate schema files alone were ~21k and ~23k lines. The files did not include an obvious repo-local license/header in the inspected snippets, and their churn profile is intentionally tied to the installed Codex version.
+Generated JSON Schema with `--experimental` (2026-08-09 recheck): ~4.2 MB
+bundle under a temp dir. No repo-local license header; churn is version-tied.
 
-Decision: do not commit the generated schema bundle. Prefer small hand-written golden fixtures for claudia tests, and regenerate the schema in a temp directory during future spikes when exact field names need re-checking.
+**Decision (unchanged):** do not commit the generated schema bundle. Prefer
+small hand-written / redacted live golden fixtures under
+`testdata/codex/app-server/`. Regenerate schema to a temp directory when field
+names need re-checking.
 
 ## Maturity Risk
 
-The app-server page describes the interface as the rich-client integration point, but several transports and some methods/fields are explicitly experimental:
+- **stdio JSONL** — proven through full turn + lifecycle on 0.146.0-alpha.9.2.
+- **WebSocket transport** — experimental / unsupported for claudia.
+- **Experimental methods/fields** — require `capabilities.experimentalApi = true`;
+  fixture `unsupported-capability.jsonl` + typed capability errors.
+- **MCP fan-out noise** — thread/start may emit many
+  `mcpServer/startupStatus/updated` notifications from the user's Codex config;
+  Session clients must ignore unknown methods.
+- **Usage accounting** — live path uses `thread/tokenUsage/updated` with camelCase
+  token fields; hermetic success fixture also places snake_case usage on
+  `turn/completed` for simplified lifecycle tests.
+- **Alpha CLI** — interface can still change; pin fixtures and fail closed on
+  missing methods.
 
-- stdio JSONL is the safest transport for the first claudia integration and has been smoke-checked through thread/start without a model turn.
-- WebSocket transport is experimental and unsupported.
-- Some app-server methods and fields require `capabilities.experimentalApi = true`.
-- Persistent Codex Session mode must expose capability errors if a required method or field is unavailable.
+**Fallback:** Codex Task mode via `codex exec --json` remains available.
+ProviderCodex Session mode reports typed experimental/unsupported capability
+errors rather than scraping private Codex session files or driving the TUI.
 
-Fallback if app-server changes: Codex Task mode remains available through `codex exec --json`; Session mode for ProviderCodex should report a typed unsupported/experimental capability error rather than scraping private Codex session files or driving the TUI.
+## Private storage
 
-## Live Capture Still Required
+Production code must not read `.codex/sessions`, rollouts, or history paths.
+Oracle: `TestCodexProviderDoesNotReadPrivateStorage`.
 
-To finish 🎯T4.4, run a live app-server stdio client against the installed Codex binary, with explicit user approval because `turn/start` contacts the model. The capture should record:
+## Hermetic oracles
 
-- `turn/start` response
-- notification sequence through `turn/completed`
-- dedicated request/response evidence for sandbox and approval mapping
-- resume/fork/archive behavior through public app-server methods
+| Test | Covers |
+| --- | --- |
+| `TestParseCodexAppServerSuccessFixture` | Hand-owned success stream |
+| `TestParseCodexAppServerLiveTurnFixture` | Live order + camelCase + tokenUsage + sandbox map |
+| `TestParseCodexAppServerLifecycleFixture` | Resume/fork/archive/interrupt shapes |
+| `TestParseCodexAppServerFailureFixture` | Failed turn |
+| `TestParseCodexAppServerInterruptedFixture` | Interrupted turn |
+| `TestParseCodexAppServerUnsupportedCapabilityFixture` | Experimental gate error |
+| `TestCodexAppServerRequestBuilders` | Public request field names |
+| `TestFakeCodexAppServerLifecycle` | Agent seam without real Codex |
+| `TestCodexProviderDoesNotReadPrivateStorage` | No private-path shortcut |
 
-The resulting redacted JSONL should live under `testdata/codex/app-server/` if small and stable, or be summarized here with a rationale if the raw fixture is too volatile.
+## Residual (class-3 / follow-ups)
+
+- Whether app-server maturity is **acceptable for product UX** is a human
+  accept/reject (oracle map human residue), not a machine gate.
+- Gated live Session smoke after 🎯T4.5 production wiring.
+- Host MCP config noise is environment-specific; not part of the golden path.

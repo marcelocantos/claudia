@@ -8,22 +8,145 @@ import (
 	"fmt"
 )
 
+// codexAppServerEvent is the hermetic parse of one app-server JSONL line
+// (JSON-RPC response or notification). Field names match the public contract
+// proven by the 🎯T4.4 live spike against codex-cli 0.146.0-alpha.9.2.
 type codexAppServerEvent struct {
-	Raw        []byte
-	Method     string
-	ThreadID   string
-	TurnID     string
-	ItemID     string
-	ItemType   string
-	Command    string
-	Text       string
-	Status     string
-	ErrorMsg   string
-	Model      string
-	Usage      Usage
-	IsResponse bool
-	IsError    bool
+	Raw            []byte
+	Method         string
+	ThreadID       string
+	TurnID         string
+	ItemID         string
+	ItemType       string
+	Command        string
+	Text           string
+	Delta          string
+	Status         string
+	ErrorMsg       string
+	Model          string
+	ApprovalPolicy string
+	SandboxType    string
+	CWD            string
+	Usage          Usage
+	IsResponse     bool
+	IsError        bool
 }
+
+// codexAppServerRequest is a JSON-RPC request/notification envelope for the
+// public app-server methods. Built by the helpers below so Session mode does
+// not invent field names.
+type codexAppServerRequest struct {
+	Method string `json:"method"`
+	ID     *int   `json:"id,omitempty"`
+	Params any    `json:"params,omitempty"`
+}
+
+// codexAppServerClientInfo is the initialize clientInfo payload.
+type codexAppServerClientInfo struct {
+	Name    string `json:"name"`
+	Title   string `json:"title,omitempty"`
+	Version string `json:"version,omitempty"`
+}
+
+// codexAppServerThreadStartParams are thread/start params (schema 0.146+).
+// Prefer sandbox (not sandboxPolicy) on thread/start; permissions cannot be
+// combined with sandbox.
+type codexAppServerThreadStartParams struct {
+	CWD            string `json:"cwd,omitempty"`
+	Model          string `json:"model,omitempty"`
+	ApprovalPolicy string `json:"approvalPolicy,omitempty"`
+	Sandbox        string `json:"sandbox,omitempty"`
+	Ephemeral      *bool  `json:"ephemeral,omitempty"`
+}
+
+// codexAppServerTurnStartParams are turn/start params.
+type codexAppServerTurnStartParams struct {
+	ThreadID       string                       `json:"threadId"`
+	Input          []codexAppServerUserInput    `json:"input"`
+	ApprovalPolicy string                       `json:"approvalPolicy,omitempty"`
+	Model          string                       `json:"model,omitempty"`
+	CWD            string                       `json:"cwd,omitempty"`
+	SandboxPolicy  any                          `json:"sandboxPolicy,omitempty"`
+}
+
+// codexAppServerUserInput is one turn/start input element.
+type codexAppServerUserInput struct {
+	Type string `json:"type"`
+	Text string `json:"text,omitempty"`
+}
+
+// codexAppServerThreadIDParams is the threadId-only envelope shared by
+// thread/resume, thread/fork, thread/archive, and thread/unarchive.
+type codexAppServerThreadIDParams struct {
+	ThreadID       string `json:"threadId"`
+	CWD            string `json:"cwd,omitempty"`
+	Model          string `json:"model,omitempty"`
+	ApprovalPolicy string `json:"approvalPolicy,omitempty"`
+	Sandbox        string `json:"sandbox,omitempty"`
+}
+
+// codexAppServerTurnInterruptParams is turn/interrupt.
+type codexAppServerTurnInterruptParams struct {
+	ThreadID string `json:"threadId"`
+	TurnID   string `json:"turnId"`
+}
+
+func codexAppServerInitialize(id int, info codexAppServerClientInfo) codexAppServerRequest {
+	return codexAppServerRequest{
+		Method: "initialize",
+		ID:     intPtr(id),
+		Params: map[string]any{"clientInfo": info},
+	}
+}
+
+func codexAppServerInitialized() codexAppServerRequest {
+	return codexAppServerRequest{
+		Method: "initialized",
+		Params: map[string]any{},
+	}
+}
+
+func codexAppServerThreadStart(id int, params codexAppServerThreadStartParams) codexAppServerRequest {
+	return codexAppServerRequest{Method: "thread/start", ID: intPtr(id), Params: params}
+}
+
+func codexAppServerTurnStart(id int, params codexAppServerTurnStartParams) codexAppServerRequest {
+	return codexAppServerRequest{Method: "turn/start", ID: intPtr(id), Params: params}
+}
+
+func codexAppServerTurnInterrupt(id int, threadID, turnID string) codexAppServerRequest {
+	return codexAppServerRequest{
+		Method: "turn/interrupt",
+		ID:     intPtr(id),
+		Params: codexAppServerTurnInterruptParams{ThreadID: threadID, TurnID: turnID},
+	}
+}
+
+func codexAppServerThreadResume(id int, params codexAppServerThreadIDParams) codexAppServerRequest {
+	return codexAppServerRequest{Method: "thread/resume", ID: intPtr(id), Params: params}
+}
+
+func codexAppServerThreadFork(id int, params codexAppServerThreadIDParams) codexAppServerRequest {
+	return codexAppServerRequest{Method: "thread/fork", ID: intPtr(id), Params: params}
+}
+
+func codexAppServerThreadArchive(id int, threadID string) codexAppServerRequest {
+	return codexAppServerRequest{
+		Method: "thread/archive",
+		ID:     intPtr(id),
+		Params: codexAppServerThreadIDParams{ThreadID: threadID},
+	}
+}
+
+func codexAppServerThreadUnarchive(id int, threadID string) codexAppServerRequest {
+	return codexAppServerRequest{
+		Method: "thread/unarchive",
+		ID:     intPtr(id),
+		Params: codexAppServerThreadIDParams{ThreadID: threadID},
+	}
+}
+
+func intPtr(v int) *int { return &v }
 
 func parseCodexAppServerLine(line []byte) (codexAppServerEvent, bool, error) {
 	var msg struct {
@@ -37,8 +160,13 @@ func parseCodexAppServerLine(line []byte) (codexAppServerEvent, bool, error) {
 				ID string `json:"id"`
 			} `json:"thread"`
 			// Model is the resolved model id on thread/start (sibling of thread).
-			Model string `json:"model"`
-			Turn  *struct {
+			Model          string `json:"model"`
+			ApprovalPolicy string `json:"approvalPolicy"`
+			CWD            string `json:"cwd"`
+			Sandbox        *struct {
+				Type string `json:"type"`
+			} `json:"sandbox"`
+			Turn *struct {
 				ID     string `json:"id"`
 				Status string `json:"status"`
 			} `json:"turn"`
@@ -46,6 +174,8 @@ func parseCodexAppServerLine(line []byte) (codexAppServerEvent, bool, error) {
 		Params *struct {
 			ThreadID string `json:"threadId"`
 			TurnID   string `json:"turnId"`
+			ItemID   string `json:"itemId"`
+			Delta    string `json:"delta"`
 			Thread   *struct {
 				ID string `json:"id"`
 			} `json:"thread"`
@@ -60,11 +190,21 @@ func parseCodexAppServerLine(line []byte) (codexAppServerEvent, bool, error) {
 				Text    string `json:"text"`
 				Status  string `json:"status"`
 			} `json:"item"`
+			// Hermetic fixtures put usage on turn/completed (snake_case tokens).
 			Usage *struct {
 				InputTokens       int `json:"input_tokens"`
 				CachedInputTokens int `json:"cached_input_tokens"`
 				OutputTokens      int `json:"output_tokens"`
 			} `json:"usage"`
+			// Live 0.146+ emits thread/tokenUsage/updated with camelCase totals.
+			TokenUsage *struct {
+				Total *struct {
+					InputTokens          int `json:"inputTokens"`
+					CachedInputTokens    int `json:"cachedInputTokens"`
+					OutputTokens         int `json:"outputTokens"`
+					ReasoningOutputTokens int `json:"reasoningOutputTokens"`
+				} `json:"total"`
+			} `json:"tokenUsage"`
 			Error *struct {
 				Message string `json:"message"`
 			} `json:"error"`
@@ -83,9 +223,14 @@ func parseCodexAppServerLine(line []byte) (codexAppServerEvent, bool, error) {
 	}
 	if msg.Result != nil {
 		ev := codexAppServerEvent{
-			Raw:        append([]byte(nil), line...),
-			IsResponse: msg.ID != nil,
-			Model:      msg.Result.Model,
+			Raw:            append([]byte(nil), line...),
+			IsResponse:     msg.ID != nil,
+			Model:          msg.Result.Model,
+			ApprovalPolicy: msg.Result.ApprovalPolicy,
+			CWD:            msg.Result.CWD,
+		}
+		if msg.Result.Sandbox != nil {
+			ev.SandboxType = msg.Result.Sandbox.Type
 		}
 		if msg.Result.Thread != nil {
 			ev.Method = "thread/start"
@@ -108,6 +253,8 @@ func parseCodexAppServerLine(line []byte) (codexAppServerEvent, bool, error) {
 		Method:   msg.Method,
 		ThreadID: msg.Params.ThreadID,
 		TurnID:   msg.Params.TurnID,
+		ItemID:   msg.Params.ItemID,
+		Delta:    msg.Params.Delta,
 	}
 	if msg.Params.Thread != nil {
 		ev.ThreadID = msg.Params.Thread.ID
@@ -118,7 +265,7 @@ func parseCodexAppServerLine(line []byte) (codexAppServerEvent, bool, error) {
 	}
 	if msg.Params.Item != nil {
 		ev.ItemID = msg.Params.Item.ID
-		ev.ItemType = msg.Params.Item.Type
+		ev.ItemType = normalizeCodexAppServerItemType(msg.Params.Item.Type)
 		ev.Command = msg.Params.Item.Command
 		ev.Text = msg.Params.Item.Text
 		ev.Status = msg.Params.Item.Status
@@ -130,11 +277,34 @@ func parseCodexAppServerLine(line []byte) (codexAppServerEvent, bool, error) {
 			OutputTokens:         msg.Params.Usage.OutputTokens,
 		}
 	}
+	if msg.Params.TokenUsage != nil && msg.Params.TokenUsage.Total != nil {
+		t := msg.Params.TokenUsage.Total
+		ev.Usage = Usage{
+			InputTokens:          t.InputTokens,
+			CacheReadInputTokens: t.CachedInputTokens,
+			OutputTokens:         t.OutputTokens,
+		}
+	}
 	if msg.Params.Error != nil {
 		ev.ErrorMsg = msg.Params.Error.Message
 		ev.IsError = true
 	}
 	return ev, true, nil
+}
+
+// normalizeCodexAppServerItemType maps live camelCase item types (0.146+) onto
+// the stable snake_case names used by hermetic fixtures and agentEvent.
+func normalizeCodexAppServerItemType(t string) string {
+	switch t {
+	case "agentMessage":
+		return "agent_message"
+	case "commandExecution":
+		return "command_execution"
+	case "userMessage":
+		return "user_message"
+	default:
+		return t
+	}
 }
 
 func (ev codexAppServerEvent) agentEvent() (Event, bool) {
@@ -168,6 +338,11 @@ func (ev codexAppServerEvent) agentEvent() (Event, bool) {
 			}, true
 		}
 		if ev.ItemType == "agent_message" {
+			// item/started often has empty text; only emit assistant on completed
+			// or when text is present so WaitForResponse does not race empty deltas.
+			if ev.Method == "item/started" && ev.Text == "" {
+				return Event{}, false
+			}
 			return Event{
 				Type:  "assistant",
 				Raw:   ev.Raw,
@@ -175,6 +350,15 @@ func (ev codexAppServerEvent) agentEvent() (Event, bool) {
 				Model: ev.Model,
 			}, true
 		}
+	case "thread/tokenUsage/updated":
+		if ev.Usage.InputTokens == 0 && ev.Usage.OutputTokens == 0 && ev.Usage.CacheReadInputTokens == 0 {
+			return Event{}, false
+		}
+		return Event{
+			Type:  "assistant",
+			Raw:   ev.Raw,
+			Usage: ev.Usage,
+		}, true
 	case "turn/completed":
 		out := Event{
 			Type:  "assistant",

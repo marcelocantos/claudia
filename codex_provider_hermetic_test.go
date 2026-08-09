@@ -45,6 +45,8 @@ func TestCodexOracleFixturesPresent(t *testing.T) {
 		"testdata/codex/app-server/interrupted.jsonl",
 		"testdata/codex/app-server/unsupported-capability.jsonl",
 		"testdata/codex/app-server/thread-start.jsonl",
+		"testdata/codex/app-server/live-turn.jsonl",
+		"testdata/codex/app-server/lifecycle.jsonl",
 		"docs/codex-provider-oracle-map.md",
 	}
 	for _, path := range required {
