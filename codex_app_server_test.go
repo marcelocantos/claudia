@@ -332,6 +332,76 @@ func TestNormalizeCodexAppServerItemType(t *testing.T) {
 	}
 }
 
+func TestCodexAppServerAgentMessageStartedGuard(t *testing.T) {
+	// item/started for an agentMessage arrives with empty text before the
+	// deltas land; emitting it as an assistant event would let WaitForResponse
+	// settle on an empty turn. Only started items that already carry text, and
+	// item/completed, may produce assistant events.
+	cases := []struct {
+		name        string
+		line        string
+		wantEmitted bool
+		wantText    string
+	}{
+		{
+			name: "started with empty text emits nothing",
+			line: `{"method":"item/started","params":{"item":{"type":"agentMessage","id":"item_msg","text":"","phase":"final_answer"},"threadId":"thr_guard","turnId":"turn_guard"}}`,
+		},
+		{
+			name:        "started with text still emits assistant",
+			line:        `{"method":"item/started","params":{"item":{"type":"agentMessage","id":"item_msg","text":"partial answer","phase":"final_answer"},"threadId":"thr_guard","turnId":"turn_guard"}}`,
+			wantEmitted: true,
+			wantText:    "partial answer",
+		},
+		{
+			name:        "completed with empty text still emits assistant",
+			line:        `{"method":"item/completed","params":{"item":{"type":"agentMessage","id":"item_msg","text":"","phase":"final_answer"},"threadId":"thr_guard","turnId":"turn_guard"}}`,
+			wantEmitted: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ev, ok, err := parseCodexAppServerLine([]byte(tc.line))
+			if err != nil {
+				t.Fatalf("parseCodexAppServerLine(%q): %v", tc.line, err)
+			}
+			if !ok {
+				t.Fatalf("parseCodexAppServerLine(%q) yielded no event", tc.line)
+			}
+			agentEv, emitted := ev.agentEvent()
+			if emitted != tc.wantEmitted {
+				t.Fatalf("agentEvent() emitted = %v (type %q, text %q), want %v", emitted, agentEv.Type, agentEv.Text, tc.wantEmitted)
+			}
+			if !emitted {
+				return
+			}
+			if agentEv.Type != "assistant" {
+				t.Fatalf("agentEvent().Type = %q, want assistant", agentEv.Type)
+			}
+			if agentEv.Text != tc.wantText {
+				t.Fatalf("agentEvent().Text = %q, want %q", agentEv.Text, tc.wantText)
+			}
+		})
+	}
+}
+
+func TestCodexAppServerLiveFixtureNoEmptyAssistant(t *testing.T) {
+	// The live capture contains the real empty-text item/started agentMessage;
+	// no agent_message line in it may yield an empty assistant event.
+	for _, line := range readFixtureLines(t, "testdata/codex/app-server/live-turn.jsonl") {
+		ev, ok, err := parseCodexAppServerLine([]byte(line))
+		if err != nil {
+			t.Fatalf("parseCodexAppServerLine(%q): %v", line, err)
+		}
+		if !ok || ev.ItemType != "agent_message" {
+			continue
+		}
+		if agentEv, emitted := ev.agentEvent(); emitted && agentEv.Type == "assistant" && agentEv.Text == "" {
+			t.Fatalf("empty assistant event from %s method %s", line, ev.Method)
+		}
+	}
+}
+
 type fakeCodexAppServerBackend struct {
 	fixture     string
 	allowEvents chan struct{}
