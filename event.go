@@ -35,6 +35,21 @@ type Event struct {
 
 	// ProgressType is populated for type == "progress" (e.g. "tool_use").
 	ProgressType string `json:"-"`
+
+	// Model is populated for type == "assistant" with the model that actually
+	// produced the message (the transcript's message.model), e.g.
+	// "claude-opus-5". It is the model Claude Code resolved and ran — an alias
+	// like "opus" resolves to its full id here. An unusable model surfaces as
+	// Model == "<synthetic>" with IsError set (Claude Code does not fail at
+	// launch). Compare against the model you requested to catch silent
+	// fallback or drift. Empty on non-assistant events that carry no model.
+	Model string `json:"-"`
+
+	// IsError is true when the backend reports a turn/API failure on this
+	// event (Claude model_not_found / is_api_error_message, Codex failed
+	// turn, etc.). [Agent.WaitForResponse] returns a descriptive error
+	// instead of treating the message as a normal reply or hanging.
+	IsError bool `json:"-"`
 }
 
 // IsTerminalStop reports whether the event represents a completed
@@ -73,6 +88,9 @@ func parseEvent(line string) Event {
 			if sr, ok := msg["stop_reason"].(string); ok {
 				ev.StopReason = sr
 			}
+			if m, ok := msg["model"].(string); ok {
+				ev.Model = m
+			}
 			if content, ok := msg["content"].([]any); ok {
 				var texts []string
 				for _, c := range content {
@@ -84,6 +102,16 @@ func parseEvent(line string) Event {
 				}
 				ev.Text = strings.Join(texts, "\n")
 			}
+		}
+		// Live shape (Claude Code ≥2.1.x): invalid --model is echoed on
+		// init, then the turn emits an assistant event with
+		// model "<synthetic>", top-level error "model_not_found", and
+		// is_api_error_message true — not a clean launch rejection.
+		if isAPI, ok := entry["is_api_error_message"].(bool); ok && isAPI {
+			ev.IsError = true
+		}
+		if errStr, ok := entry["error"].(string); ok && errStr != "" {
+			ev.IsError = true
 		}
 		if u, ok := entry["usage"].(map[string]any); ok {
 			ev.Usage.InputTokens = int(jsonFloat(u, "input_tokens"))

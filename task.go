@@ -91,6 +91,11 @@ type TaskEvent struct {
 
 	// ErrorMsg contains the error description when IsError is true.
 	ErrorMsg string
+
+	// Model is the model the backend resolved for the run (TaskEventInit),
+	// e.g. "claude-opus-5" — the full id even when an alias was requested.
+	// Compare it against the requested model to detect a silent fallback.
+	Model string
 }
 
 // TaskStatus represents a task's lifecycle state.
@@ -200,14 +205,15 @@ type Task struct {
 	approval string
 	disallow []string
 
-	mu         sync.Mutex
-	run        *taskRun
-	cancel     context.CancelFunc
-	status     TaskStatus
-	lastResult string
-	claudeID   string
-	onRawLog   RawLogFunc
-	backend    taskBackend
+	mu            sync.Mutex
+	run           *taskRun
+	cancel        context.CancelFunc
+	status        TaskStatus
+	lastResult    string
+	claudeID      string
+	resolvedModel string
+	onRawLog      RawLogFunc
+	backend       taskBackend
 }
 
 type taskRunRequest struct {
@@ -336,6 +342,16 @@ func (t *Task) ClaudeID() string {
 	return t.claudeID
 }
 
+// Model returns the model the backend resolved for this task, captured from
+// the init event (the full id even when an alias was requested). It is empty
+// until the first TaskEventInit arrives. Compare it against the requested
+// model to detect a silent fallback.
+func (t *Task) Model() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.resolvedModel
+}
+
 // SetRawLog sets the callback for raw NDJSON lines from the Claude process.
 func (t *Task) SetRawLog(fn RawLogFunc) {
 	t.mu.Lock()
@@ -455,6 +471,9 @@ func (t *Task) recordTaskEvent(ev TaskEvent) {
 			t.claudeID = ev.SessionID
 			slog.Info("task session established",
 				"task", t.id, "claude_id", ev.SessionID)
+		}
+		if ev.Model != "" && t.resolvedModel == "" {
+			t.resolvedModel = ev.Model
 		}
 		t.mu.Unlock()
 	case TaskEventResult:
@@ -975,6 +994,7 @@ func ParseTaskLine(line []byte) []TaskEvent {
 func parseTaskSystem(line []byte) []TaskEvent {
 	var msg struct {
 		SessionID string `json:"session_id"`
+		Model     string `json:"model"`
 	}
 	if err := json.Unmarshal(line, &msg); err != nil {
 		return nil
@@ -982,6 +1002,7 @@ func parseTaskSystem(line []byte) []TaskEvent {
 	return []TaskEvent{{
 		Type:      TaskEventInit,
 		SessionID: msg.SessionID,
+		Model:     msg.Model,
 	}}
 }
 
@@ -1036,6 +1057,7 @@ func parseTaskResult(line []byte) []TaskEvent {
 	var msg struct {
 		Subtype      string  `json:"subtype"`
 		Result       string  `json:"result"`
+		IsError      bool    `json:"is_error"`
 		DurationMs   float64 `json:"duration_ms"`
 		TotalCostUSD float64 `json:"total_cost_usd"`
 		Usage        Usage   `json:"usage"`
@@ -1047,24 +1069,36 @@ func parseTaskResult(line []byte) []TaskEvent {
 		return nil
 	}
 
-	if msg.Subtype == "success" {
+	// Live Claude shape (invalid --model): subtype stays "success" while
+	// is_error is true and result names the offending model. Treating
+	// subtype alone would swallow the failure as TaskEventResult.
+	if msg.IsError || msg.Subtype != "success" {
+		var errMsgs []string
+		for _, e := range msg.Errors {
+			if e.Message != "" {
+				errMsgs = append(errMsgs, e.Message)
+			}
+		}
+		errMsg := strings.Join(errMsgs, "; ")
+		if errMsg == "" {
+			errMsg = strings.TrimSpace(msg.Result)
+		}
+		if errMsg == "" {
+			errMsg = "task failed"
+		}
 		return []TaskEvent{{
-			Type:       TaskEventResult,
-			Content:    msg.Result,
-			DurationMs: msg.DurationMs,
-			CostUSD:    msg.TotalCostUSD,
-			Usage:      msg.Usage,
+			Type:     TaskEventError,
+			IsError:  true,
+			ErrorMsg: errMsg,
 		}}
 	}
 
-	var errMsgs []string
-	for _, e := range msg.Errors {
-		errMsgs = append(errMsgs, e.Message)
-	}
 	return []TaskEvent{{
-		Type:     TaskEventError,
-		IsError:  true,
-		ErrorMsg: strings.Join(errMsgs, "; "),
+		Type:       TaskEventResult,
+		Content:    msg.Result,
+		DurationMs: msg.DurationMs,
+		CostUSD:    msg.TotalCostUSD,
+		Usage:      msg.Usage,
 	}}
 }
 

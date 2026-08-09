@@ -19,6 +19,7 @@ type codexAppServerEvent struct {
 	Text       string
 	Status     string
 	ErrorMsg   string
+	Model      string
 	Usage      Usage
 	IsResponse bool
 	IsError    bool
@@ -35,7 +36,9 @@ func parseCodexAppServerLine(line []byte) (codexAppServerEvent, bool, error) {
 			Thread *struct {
 				ID string `json:"id"`
 			} `json:"thread"`
-			Turn *struct {
+			// Model is the resolved model id on thread/start (sibling of thread).
+			Model string `json:"model"`
+			Turn  *struct {
 				ID     string `json:"id"`
 				Status string `json:"status"`
 			} `json:"turn"`
@@ -82,6 +85,7 @@ func parseCodexAppServerLine(line []byte) (codexAppServerEvent, bool, error) {
 		ev := codexAppServerEvent{
 			Raw:        append([]byte(nil), line...),
 			IsResponse: msg.ID != nil,
+			Model:      msg.Result.Model,
 		}
 		if msg.Result.Thread != nil {
 			ev.Method = "thread/start"
@@ -136,12 +140,25 @@ func parseCodexAppServerLine(line []byte) (codexAppServerEvent, bool, error) {
 func (ev codexAppServerEvent) agentEvent() (Event, bool) {
 	if ev.IsError {
 		return Event{
-			Type: "system",
-			Raw:  ev.Raw,
-			Text: ev.ErrorMsg,
+			Type:    "system",
+			Raw:     ev.Raw,
+			Text:    ev.ErrorMsg,
+			IsError: true,
 		}, true
 	}
 	switch ev.Method {
+	case "thread/start":
+		// Publish resolved model from thread/start so Agent.Model() is set
+		// before the first assistant turn (Codex does not put model on items).
+		if ev.Model == "" && ev.ThreadID == "" {
+			return Event{}, false
+		}
+		return Event{
+			Type:  "system",
+			Raw:   ev.Raw,
+			Model: ev.Model,
+			Text:  ev.ThreadID,
+		}, true
 	case "item/started", "item/completed":
 		if ev.ItemType == "command_execution" {
 			return Event{
@@ -152,9 +169,10 @@ func (ev codexAppServerEvent) agentEvent() (Event, bool) {
 		}
 		if ev.ItemType == "agent_message" {
 			return Event{
-				Type: "assistant",
-				Raw:  ev.Raw,
-				Text: ev.Text,
+				Type:  "assistant",
+				Raw:   ev.Raw,
+				Text:  ev.Text,
+				Model: ev.Model,
 			}, true
 		}
 	case "turn/completed":
@@ -162,15 +180,17 @@ func (ev codexAppServerEvent) agentEvent() (Event, bool) {
 			Type:  "assistant",
 			Raw:   ev.Raw,
 			Usage: ev.Usage,
+			Model: ev.Model,
 		}
 		switch ev.Status {
 		case "completed", "interrupted":
 			out.StopReason = "end_turn"
 		case "failed":
 			return Event{
-				Type: "system",
-				Raw:  ev.Raw,
-				Text: ev.ErrorMsg,
+				Type:    "system",
+				Raw:     ev.Raw,
+				Text:    ev.ErrorMsg,
+				IsError: true,
 			}, true
 		}
 		return out, true

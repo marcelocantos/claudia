@@ -289,6 +289,26 @@ cost in `TaskEventResult`), Session mode totals usage over the whole
 session — this is intentional: a persistent session doesn't have clean
 per-turn billing boundaries from the API's perspective.
 
+**Verifying the model (no silent fallback)**: the `Model` you pass in
+`Config`/`TaskConfig` is the model you *requested*; the model the backend
+actually *resolved* is reported back — `Agent.Model()` (Session mode) and
+`Task.Model()` / `TaskEvent.Model` on the init event (Task mode). Claude
+aliases like `"opus"` resolve to a full id (`"claude-opus-5"`); Bedrock
+reports the ModelID passed to ConverseStream; Codex app-server reports
+`result.model` on thread start. There is **no** model allowlist in the
+public API — correctness is resolution observability + fail-loud errors.
+
+Claude does not fail fast on a bad `--model`: it echoes the string on
+init, then fails mid-turn with `message.model` `"<synthetic>"`,
+`error: "model_not_found"`, and (in stream-json) a result with
+`is_error: true` even when `subtype` is `"success"`. Task mode surfaces
+that as `TaskEventError` whose `ErrorMsg` names the model. Session mode
+sets `Event.IsError` and `WaitForResponse` returns that text as an
+`error` immediately — it never hangs to context timeout and never
+treats the synthetic message as a normal reply. The model is fixed at
+process launch: pass it on every spawn; it cannot be changed on an
+already-running or attached instance except via an in-session `/model`.
+
 **Readiness detection**: The TUI-ready detector polls `tmux capture-pane`
 every 50 ms and gives up after 30 s. These values are fixed and not
 exposed via `Config`. On macOS the typical ready time is ~680 ms; the

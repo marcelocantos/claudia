@@ -153,6 +153,7 @@ type Agent struct {
 	stopOnce  sync.Once
 	eventSubs map[int64]EventFunc
 	usage     Usage
+	model     string // resolved model from the latest event that carried one
 
 	// poolWindow is true when the agent was acquired from the warm pool
 	// (via Acquire) rather than spawned fresh (via Start). Pool agents
@@ -891,8 +892,25 @@ func (a *Agent) Usage() Usage {
 	return a.usage
 }
 
+// Model returns the model the backend resolved for this session, taken from
+// the most recent event that carried a model id (Claude: assistant
+// message.model; Codex app-server: thread/start result.model), e.g.
+// "claude-opus-5". It is empty until the first such event. Compare it against
+// [Config.Model] to detect silent fallback: an alias such as "opus" resolves
+// to its full id here. An unusable model surfaces as "<synthetic>" with
+// [Event.IsError] set — [Agent.WaitForResponse] returns that as a descriptive
+// error rather than a normal reply.
+func (a *Agent) Model() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.model
+}
+
 func (a *Agent) publishEvent(ev Event) {
 	a.mu.Lock()
+	if ev.Model != "" {
+		a.model = ev.Model
+	}
 	if ev.Usage.InputTokens > 0 || ev.Usage.OutputTokens > 0 ||
 		ev.Usage.CacheCreationInputTokens > 0 || ev.Usage.CacheReadInputTokens > 0 {
 		a.usage.InputTokens += ev.Usage.InputTokens
@@ -942,26 +960,67 @@ func (a *Agent) EventSubscriberCount() int {
 // paused for tool results and will emit further assistant events
 // as the turn continues, and those events will keep the settle
 // timer from firing.
+//
+// Fail-loud (🎯T16): when an event has [Event.IsError] (e.g. Claude
+// model_not_found with model "<synthetic>", or a Codex failed turn),
+// WaitForResponse returns a descriptive error immediately — never
+// treating the failure text as a normal reply and never hanging until
+// the caller's context times out.
 func (a *Agent) WaitForResponse(ctx context.Context) (string, error) {
-	ch := make(chan string, 1)
+	type outcome struct {
+		text string
+		err  error
+	}
+	ch := make(chan outcome, 1)
 	var (
 		mu           sync.Mutex
 		text         strings.Builder
 		seenTerminal bool
 		settleTimer  *time.Timer
+		emitted      bool
 	)
 
-	emit := func() {
+	emitOnce := func(out outcome) {
 		mu.Lock()
-		result := text.String()
+		if emitted {
+			mu.Unlock()
+			return
+		}
+		emitted = true
+		if settleTimer != nil {
+			settleTimer.Stop()
+		}
 		mu.Unlock()
 		select {
-		case ch <- result:
+		case ch <- out:
+		default:
+		}
+	}
+
+	emitOK := func() {
+		mu.Lock()
+		result := text.String()
+		if emitted {
+			mu.Unlock()
+			return
+		}
+		emitted = true
+		mu.Unlock()
+		select {
+		case ch <- outcome{text: result}:
 		default:
 		}
 	}
 
 	token := a.SubscribeEvents(func(ev Event) {
+		if ev.IsError {
+			msg := strings.TrimSpace(ev.Text)
+			if msg == "" {
+				msg = "agent turn failed"
+			}
+			emitOnce(outcome{err: errors.New(msg)})
+			return
+		}
 		if ev.Type != "assistant" {
 			return
 		}
@@ -981,7 +1040,7 @@ func (a *Agent) WaitForResponse(ctx context.Context) (string, error) {
 			if settleTimer != nil {
 				settleTimer.Stop()
 			}
-			settleTimer = time.AfterFunc(waitSettleDuration, emit)
+			settleTimer = time.AfterFunc(waitSettleDuration, emitOK)
 		}
 		mu.Unlock()
 	})
@@ -998,8 +1057,8 @@ func (a *Agent) WaitForResponse(ctx context.Context) (string, error) {
 	select {
 	case <-ctx.Done():
 		return "", ctx.Err()
-	case result := <-ch:
-		return result, nil
+	case out := <-ch:
+		return out.text, out.err
 	}
 }
 
