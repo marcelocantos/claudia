@@ -172,7 +172,7 @@ Console product docs for prepaid / auto top-up (human UI):
 | --- | --- |
 | Per-Task text result | `ProviderGrok` Task + `streaming-json` (today) |
 | Per-Task dollar / full usage parity with Claude | **Not available** on streaming-json; do not fake from reverse-engineered billing |
-| SuperGrok weekly % / credits / Auto Top Up | **Out of scope** until xAI documents a stable API; use TUI `/usage` or grok.com UI |
+| SuperGrok weekly % / credits / Auto Top Up | **Unavailable** via `QueryPlanUsage(ProviderGrok)` until xAI documents a stable API; use TUI `/usage` or grok.com UI. Multi-provider surface: [plan-usage.md](plan-usage.md) |
 | API team prepaid balance | Host-side Management API client (management key); not via `grok -p` or ACP Session |
 | Scraping `/billing?format=credits` with user OAuth | Reject for product code: private, undocumented, will break |
 

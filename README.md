@@ -108,6 +108,12 @@ SuperGrok weekly usage / Extra Credits and console prepaid balance are
 **not** Task streams — see
 [docs/grok-usage-billing.md](docs/grok-usage-billing.md).
 
+**Plan remaining (all providers):** `QueryPlanUsage` /
+`QueryAllPlanUsage` expose subscription session + weekly % remaining and
+rollover times when a backend publishes them; Grok and Bedrock report
+explicit unavailable (never invented numbers). See
+[docs/plan-usage.md](docs/plan-usage.md).
+
 Bedrock Task mode is available by selecting `ProviderBedrock`. It calls
 AWS Bedrock ConverseStream and maps text deltas to `TaskEventText`:
 

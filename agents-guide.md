@@ -142,6 +142,33 @@ binary discovery. `Start(ProviderBedrock)` fails closed with
 [docs/bedrock-work-account.md](docs/bedrock-work-account.md). Design:
 [docs/bedrock-provider.md](docs/bedrock-provider.md).
 
+## Plan usage (subscription remaining + rollover)
+
+Per-run token `Usage` / `CostUSD` on Task events is **not** the same as
+subscription plan remaining. For fleet backoff and host dashboards, use:
+
+```go
+pu, err := claudia.QueryPlanUsage(ctx, &claudia.PlanUsageArgs{
+    Provider: claudia.ProviderClaude, // or ProviderCodex, ProviderGrok, ProviderBedrock
+})
+// pu.Status: available | unavailable
+// pu.Windows: session / weekly with RemainingPercent + ResetsAt when published
+
+all, err := claudia.QueryAllPlanUsage(ctx, nil)
+```
+
+| Provider | Behaviour |
+| --- | --- |
+| Claude | OAuth `GET /api/oauth/usage` → session (5h) + weekly (7d) when signed into Claude.ai |
+| Codex | ChatGPT `wham/usage` → windows classified by `limit_window_seconds` |
+| Grok | **Unavailable** (no documented SuperGrok remaining API) |
+| Bedrock | **Unavailable** (no subscription remaining surface) |
+
+Never invent numbers: missing auth, HTTP errors, or unpublished windows
+yield `Status == PlanUsageUnavailable` with an explicit `Reason`. Full
+semantics: [docs/plan-usage.md](docs/plan-usage.md). Grok research:
+[docs/grok-usage-billing.md](docs/grok-usage-billing.md).
+
 ## Task mode: essential patterns
 
 Construct with `NewTask`, then call `Run` to get a channel of
