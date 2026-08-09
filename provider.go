@@ -141,6 +141,9 @@ func codexBinCandidates() []string {
 		filepath.Join(home, ".local", "bin", codexBinName),
 		"/opt/homebrew/bin/codex",
 		"/usr/local/bin/codex",
+		// Post 2026-07-09 Codex app → ChatGPT desktop merger: the CLI ships
+		// inside ChatGPT.app. Keep the legacy Codex.app path as a fallback.
+		"/Applications/ChatGPT.app/Contents/Resources/codex",
 		"/Applications/Codex.app/Contents/Resources/codex",
 	}
 }

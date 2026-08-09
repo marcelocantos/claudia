@@ -567,6 +567,21 @@ func (claudeTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*task
 }
 
 func (codexTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*taskRun, error) {
+	// 🎯T14.1: refuse to spawn on API-key / missing OAuth so Task mode never
+	// silently falls through to per-token OpenAI billing.
+	pf, err := ensureCodexSubscriptionAuth(nil)
+	if err != nil {
+		return nil, err
+	}
+	for _, w := range pf.Warnings {
+		slog.Warn(w)
+	}
+	slog.Debug("codex auth preflight",
+		"mode", pf.Mode,
+		"auth_path", pf.AuthPath,
+		"subscription_ok", pf.SubscriptionOK,
+	)
+
 	codexBin, err := resolveCodexBin()
 	if err != nil {
 		return nil, err

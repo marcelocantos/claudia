@@ -11,8 +11,9 @@ Live Codex runs are smoke/regression checks only. They do not retire targets by 
 
 | Target | Verification Class | Machine Oracle | Live Role |
 | --- | --- | --- | --- |
+| 🎯T14.1 binary + subscription foundation | Resolver + auth preflight + live spike | `TestResolveCodexBin*`, `TestCodexBinCandidatesIncludeDesktopAppBundle` (ChatGPT.app + Codex.app), `TestPreflightCodexAuth*`, `TestEnsureCodexSubscriptionAuth`, hermetic `TestHermeticTaskRunCodexSpawn` with fixture auth. Spike record: [codex-subscription-spike.md](codex-subscription-spike.md). | One-shot `codex exec --json` on ChatGPT OAuth (documented in spike); `CLAUDIA_CODEX_LIVE=1` for Task smoke |
 | 🎯T4.1 provider boundaries | New-code lifecycle seam | Fake Claude and fake Codex task/agent backends drive the same public lifecycle without real binaries. | None |
-| 🎯T4.2 Codex binary discovery | Deterministic resolver | Resolver tests inject env, PATH lookup, app-bundle candidates, and missing-binary failure. | Optional manual install sanity |
+| 🎯T4.2 Codex binary discovery | Deterministic resolver | Resolver tests inject env, PATH lookup, app-bundle candidates (ChatGPT.app + Codex.app), and missing-binary failure. | Optional manual install sanity |
 | 🎯T4.3 Codex Task mode | Public CLI fixture parser | Golden `codex exec --json` fixtures cover thread start, turn start/completion/failure, command/tool progress, agent messages, usage, malformed payloads, and final-message selection. | `CLAUDIA_CODEX_LIVE=1` smoke only |
 | 🎯T4.4 app-server contract spike | Public protocol fixture/schema | Generated schema inspection plus golden app-server JSON-RPC fixtures parsed into typed thread, turn, item, usage, interrupt, and failure events. | Explicitly approved live capture records notification order |
 | 🎯T4.5 Codex Session mode | Fake app-server lifecycle | Fake app-server exercises Start, Send, WaitForResponse, SubscribeEvents, Interrupt, raw payload forwarding, usage accumulation, and Claude-only attach/log semantics with no real Codex/network/auth/tmux. | Gated live app-server smoke only |

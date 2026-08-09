@@ -117,13 +117,51 @@ func TestResolveCodexBin(t *testing.T) {
 }
 
 func TestCodexBinCandidatesIncludeDesktopAppBundle(t *testing.T) {
-	const appBundleCodex = "/Applications/Codex.app/Contents/Resources/codex"
+	want := []string{
+		"/Applications/ChatGPT.app/Contents/Resources/codex",
+		"/Applications/Codex.app/Contents/Resources/codex",
+	}
+	have := map[string]bool{}
 	for _, candidate := range codexBinCandidates() {
-		if candidate == appBundleCodex {
-			return
+		have[candidate] = true
+	}
+	for _, path := range want {
+		if !have[path] {
+			t.Fatalf("codexBinCandidates() does not include %s", path)
 		}
 	}
-	t.Fatalf("codexBinCandidates() does not include %s", appBundleCodex)
+}
+
+func TestResolveCodexBinPrefersChatGPTAppOverCodexApp(t *testing.T) {
+	// After the desktop merger, ChatGPT.app is the install that exists on
+	// owner machines; Codex.app may be absent. When both exist, prefer ChatGPT.
+	chatgpt := "/Applications/ChatGPT.app/Contents/Resources/codex"
+	legacy := "/Applications/Codex.app/Contents/Resources/codex"
+	errNotFound := errors.New("not found")
+	statExisting := func(paths ...string) func(string) (os.FileInfo, error) {
+		exists := make(map[string]bool, len(paths))
+		for _, p := range paths {
+			exists[p] = true
+		}
+		return func(path string) (os.FileInfo, error) {
+			if exists[path] {
+				return nil, nil
+			}
+			return nil, errNotFound
+		}
+	}
+	got, err := resolveCodexBinFrom(
+		func(string) string { return "" },
+		func(string) (string, error) { return "", errNotFound },
+		statExisting(chatgpt, legacy),
+		[]string{chatgpt, legacy},
+	)
+	if err != nil {
+		t.Fatalf("resolveCodexBinFrom: %v", err)
+	}
+	if got != chatgpt {
+		t.Errorf("got %q, want ChatGPT.app path %q", got, chatgpt)
+	}
 }
 
 func TestResolveGrokBin(t *testing.T) {

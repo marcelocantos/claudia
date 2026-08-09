@@ -42,6 +42,12 @@ Claude flags are semantically identical: `SandboxMode` and
 `ApprovalPolicy` are passed as Codex flags, while Claude Session mode
 continues to use `PermissionMode` and `DisallowTools`.
 
+Before spawn, claudia runs `PreflightCodexAuth`: it requires ChatGPT
+subscription OAuth (`auth_mode=chatgpt` with a non-empty access token in
+`~/.codex/auth.json`, overridable via `CLAUDIA_CODEX_AUTH_PATH`) and
+fails closed when the path would use API-key / `OPENAI_API_KEY` per-token
+billing. See [docs/codex-subscription-spike.md](docs/codex-subscription-spike.md).
+
 Codex persistent Session mode is experimental and currently fails
 closed. `Start(claudia.Config{Provider: claudia.ProviderCodex})`
 returns `*claudia.CapabilityError` with `Status ==
@@ -345,7 +351,14 @@ host program owns a single short-lived agent, skip the Registry.
    Service whose `$PATH` excludes user-local install dirs. Windows is
    not supported; use WSL. Task mode does not require tmux. Codex
    resolver checks `CODEX_BIN`, then `codex` on `$PATH`, then known
-   locations including `/Applications/Codex.app/Contents/Resources/codex`.
+   locations including `/Applications/ChatGPT.app/Contents/Resources/codex`
+   (post desktop merger) and the legacy
+   `/Applications/Codex.app/Contents/Resources/codex`. Codex Task mode
+   also runs a subscription auth preflight before spawn: ChatGPT OAuth
+   (`auth_mode=chatgpt` + `tokens.access_token` in `~/.codex/auth.json`,
+   or `CLAUDIA_CODEX_AUTH_PATH`) is required; if `OPENAI_API_KEY` is set
+   or auth falls through to API-key mode, the spawn fails closed with a
+   loud warning so the no-per-token path is verified, not assumed.
    Grok Build CLI resolver checks `GROK_BIN`, then `grok` on `$PATH`,
    then known locations including `~/.grok/bin/grok`.
 
