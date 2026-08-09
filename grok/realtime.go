@@ -123,8 +123,6 @@ type Client struct {
 
 	mu     sync.Mutex
 	closed bool
-
-	pendingCalls map[string]bool
 }
 
 // Connect dials the Realtime endpoint ([realtimeURL], or
@@ -162,11 +160,7 @@ func Connect(ctx context.Context, cfg Config) (*Client, error) {
 
 	conn.SetReadLimit(4 << 20) // 4 MB
 
-	c := &Client{
-		cfg:          cfg,
-		conn:         conn,
-		pendingCalls: make(map[string]bool),
-	}
+	c := &Client{cfg: cfg, conn: conn}
 
 	slog.Info("grok: WebSocket connected, sending session config")
 

@@ -480,3 +480,69 @@ func TestFunctionCallFaults(t *testing.T) {
 		})
 	}
 }
+
+// TestFunctionCallDispatchIsSpecific pins that only
+// response.function_call_arguments.done invokes the tool path. The
+// client keeps no record of outstanding calls — every call_id it needs
+// arrives on that one event and goes straight back out on the matching
+// function_call_output — so an over-broad dispatch would silently
+// answer events that carry a stray call_id, with no state to catch it.
+//
+// The decoys carry a full function-call payload and are sent before the
+// genuine event, so a client that dispatched on the wrong event would
+// put their output on the wire first, or interleave it with the two
+// real round trips asserted here.
+func TestFunctionCallDispatchIsSpecific(t *testing.T) {
+	f := (&fakeGrok{}).start(t)
+
+	names := make(chan string, 8)
+	_, s := connectFake(t, f, Config{
+		OnFunctionCall: func(name string, _ json.RawMessage) (string, error) {
+			names <- name
+			return `{"ok":true}`, nil
+		},
+	})
+
+	for _, decoy := range []string{"response.done", "session.updated", "some.event.we.do.not.handle"} {
+		s.send(map[string]any{
+			"type":      decoy,
+			"call_id":   "call-decoy",
+			"name":      "decoy",
+			"arguments": `{}`,
+		})
+	}
+
+	// Two real round trips: any output the decoys provoked has to land
+	// somewhere in this stream, and every frame here is asserted.
+	for _, callID := range []string{"call-real-1", "call-real-2"} {
+		s.send(map[string]any{
+			"type":      "response.function_call_arguments.done",
+			"call_id":   callID,
+			"name":      "get_weather",
+			"arguments": `{}`,
+		})
+
+		select {
+		case got := <-names:
+			if got != "get_weather" {
+				t.Fatalf("handler fired for %q, want only get_weather", got)
+			}
+		case <-time.After(waitFor):
+			t.Fatal("OnFunctionCall never fired for the genuine event")
+		}
+
+		item := s.next(t)["item"].(map[string]any)
+		if item["call_id"] != callID {
+			t.Errorf("item = %#v, want the output for %s", item, callID)
+		}
+		if got := s.next(t)["type"]; got != "response.create" {
+			t.Errorf("follow-up = %v, want response.create", got)
+		}
+	}
+
+	select {
+	case got := <-names:
+		t.Errorf("handler also fired for %q, want dispatch only on response.function_call_arguments.done", got)
+	default:
+	}
+}
