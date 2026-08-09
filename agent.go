@@ -153,6 +153,7 @@ type Agent struct {
 	stopOnce  sync.Once
 	eventSubs map[int64]EventFunc
 	usage     Usage
+	model     string // resolved model from the latest assistant event (message.model)
 
 	// poolWindow is true when the agent was acquired from the warm pool
 	// (via Acquire) rather than spawned fresh (via Start). Pool agents
@@ -891,8 +892,24 @@ func (a *Agent) Usage() Usage {
 	return a.usage
 }
 
+// Model returns the model Claude Code resolved for this session, taken from the
+// most recent assistant event (the transcript's message.model), e.g.
+// "claude-opus-5". It is empty until the first assistant turn arrives. Compare
+// it against the model you passed in [Config.Model] to detect a silent
+// fallback: an alias such as "opus" resolves to its full id here, and a model
+// the CLI could not honour never appears — so a persistently empty Model after
+// a turn should have completed is itself a signal that the model was rejected.
+func (a *Agent) Model() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.model
+}
+
 func (a *Agent) publishEvent(ev Event) {
 	a.mu.Lock()
+	if ev.Model != "" {
+		a.model = ev.Model
+	}
 	if ev.Usage.InputTokens > 0 || ev.Usage.OutputTokens > 0 ||
 		ev.Usage.CacheCreationInputTokens > 0 || ev.Usage.CacheReadInputTokens > 0 {
 		a.usage.InputTokens += ev.Usage.InputTokens

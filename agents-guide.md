@@ -251,6 +251,19 @@ cost in `TaskEventResult`), Session mode totals usage over the whole
 session — this is intentional: a persistent session doesn't have clean
 per-turn billing boundaries from the API's perspective.
 
+**Verifying the model (no silent fallback)**: the `Model` you pass in
+`Config`/`TaskConfig` is the model you *requested*; the model Claude Code
+actually *resolved* is reported back — `Agent.Model()` (Session mode, from the
+latest assistant event) and `Task.Model()` / `TaskEvent.Model` on the init event
+(Task mode). An alias like `"opus"` resolves to its full id (`"claude-opus-5"`),
+so compare with that in mind. Two failure modes to guard against, because the
+CLI does not fail fast on a bad model: a model the CLI rejects surfaces in Task
+mode as a `TaskEventError` (never silently), while in Session mode it produces
+no assistant turn — so a `Model()` that stays empty after a turn should have
+completed means the model was not honoured. The model is fixed at process
+launch: pass it on every spawn, and note it cannot be changed on an
+already-running or attached instance except via an in-session `/model`.
+
 **Readiness detection**: The TUI-ready detector polls `tmux capture-pane`
 every 50 ms and gives up after 30 s. These values are fixed and not
 exposed via `Config`. On macOS the typical ready time is ~680 ms; the

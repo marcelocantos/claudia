@@ -32,10 +32,10 @@ is annotated with a stability assessment:
 |---|---|---|
 | `Config` | struct with `Provider Provider`, `WorkDir, SessionID, Model, PermissionMode, MCPConfig, TermLogPath, PoolPolicy string`, `RequireResume bool`, `ExtraArgs, DisallowTools []string`, `PoolCap int` | Needs review |
 | `Agent` | opaque struct; methods listed below | Needs review |
-| `Event` | struct with `Type string`, `Raw []byte`, `Text string`, `StopReason string`, `ProgressType string`; method `IsTerminalStop() bool` | Stable |
+| `Event` | struct with `Type string`, `Raw []byte`, `Text string`, `StopReason string`, `ProgressType string`, `Model string`; method `IsTerminalStop() bool` | Stable |
 | `EventFunc` | `func(Event)` | Needs review |
 | `Usage` | struct with `InputTokens, OutputTokens, CacheCreationInputTokens, CacheReadInputTokens int` | Stable |
-| `TaskEvent` | struct with `Type TaskEventType`, `Content, ToolName, ToolInput, ToolID, SessionID string`, `DurationMs, CostUSD float64`, `Usage Usage`, `IsError bool`, `ErrorMsg string` | Needs review |
+| `TaskEvent` | struct with `Type TaskEventType`, `Content, ToolName, ToolInput, ToolID, SessionID string`, `DurationMs, CostUSD float64`, `Usage Usage`, `IsError bool`, `ErrorMsg string`, `Model string` | Needs review |
 | `TaskEventType` | string type | Stable |
 | `TaskStatus` | string type | Stable |
 | `Provider` | string type selecting `ProviderClaude`, `ProviderCodex`, `ProviderGrok`, or `ProviderBedrock` | Fluid |
@@ -87,6 +87,7 @@ is annotated with a stability assessment:
 | `SubscribeEvents` | `(fn EventFunc) int64` | Needs review |
 | `UnsubscribeEvents` | `(token int64)` | Needs review |
 | `Usage` | `() Usage` | Needs review |
+| `Model` | `() string` | Needs review |
 | `Interrupt` | `() error` | Stable |
 | `Send` | `(msg string) error` | Stable |
 | `WaitForResponse` | `(ctx context.Context) (string, error)` | Needs review |
@@ -108,6 +109,7 @@ is annotated with a stability assessment:
 | `Status` | `() TaskStatus` | Stable |
 | `LastResult` | `() string` | Stable |
 | `ClaudeID` | `() string` | Stable |
+| `Model` | `() string` | Needs review |
 | `SetRawLog` | `(fn RawLogFunc)` | Stable |
 | `Run` | `(ctx context.Context, prompt string) (<-chan TaskEvent, error)` | Stable |
 | `Cancel` | `() error` | Stable |

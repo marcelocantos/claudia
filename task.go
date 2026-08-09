@@ -91,6 +91,11 @@ type TaskEvent struct {
 
 	// ErrorMsg contains the error description when IsError is true.
 	ErrorMsg string
+
+	// Model is the model Claude Code resolved for the run (TaskEventInit only),
+	// e.g. "claude-opus-5" — the full id even when an alias was requested.
+	// Compare it against the requested model to detect a silent fallback.
+	Model string
 }
 
 // TaskStatus represents a task's lifecycle state.
@@ -200,14 +205,15 @@ type Task struct {
 	approval string
 	disallow []string
 
-	mu         sync.Mutex
-	run        *taskRun
-	cancel     context.CancelFunc
-	status     TaskStatus
-	lastResult string
-	claudeID   string
-	onRawLog   RawLogFunc
-	backend    taskBackend
+	mu            sync.Mutex
+	run           *taskRun
+	cancel        context.CancelFunc
+	status        TaskStatus
+	lastResult    string
+	claudeID      string
+	resolvedModel string
+	onRawLog      RawLogFunc
+	backend       taskBackend
 }
 
 type taskRunRequest struct {
@@ -336,6 +342,16 @@ func (t *Task) ClaudeID() string {
 	return t.claudeID
 }
 
+// Model returns the model Claude Code resolved for this task, captured from the
+// init event (the full id even when an alias was requested). It is empty until
+// the first TaskEventInit arrives. Compare it against the requested model to
+// detect a silent fallback.
+func (t *Task) Model() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.resolvedModel
+}
+
 // SetRawLog sets the callback for raw NDJSON lines from the Claude process.
 func (t *Task) SetRawLog(fn RawLogFunc) {
 	t.mu.Lock()
@@ -455,6 +471,9 @@ func (t *Task) recordTaskEvent(ev TaskEvent) {
 			t.claudeID = ev.SessionID
 			slog.Info("task session established",
 				"task", t.id, "claude_id", ev.SessionID)
+		}
+		if ev.Model != "" && t.resolvedModel == "" {
+			t.resolvedModel = ev.Model
 		}
 		t.mu.Unlock()
 	case TaskEventResult:
@@ -960,6 +979,7 @@ func ParseTaskLine(line []byte) []TaskEvent {
 func parseTaskSystem(line []byte) []TaskEvent {
 	var msg struct {
 		SessionID string `json:"session_id"`
+		Model     string `json:"model"`
 	}
 	if err := json.Unmarshal(line, &msg); err != nil {
 		return nil
@@ -967,6 +987,7 @@ func parseTaskSystem(line []byte) []TaskEvent {
 	return []TaskEvent{{
 		Type:      TaskEventInit,
 		SessionID: msg.SessionID,
+		Model:     msg.Model,
 	}}
 }
 

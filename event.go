@@ -35,6 +35,14 @@ type Event struct {
 
 	// ProgressType is populated for type == "progress" (e.g. "tool_use").
 	ProgressType string `json:"-"`
+
+	// Model is populated for type == "assistant" with the model that actually
+	// produced the message (the transcript's message.model), e.g.
+	// "claude-opus-5". It is the model Claude Code resolved and ran — an alias
+	// like "opus" resolves to its full id here, and a model the CLI could not
+	// honour never appears. Compare it against the model you requested to catch
+	// a silent fallback or drift. Empty on non-assistant events.
+	Model string `json:"-"`
 }
 
 // IsTerminalStop reports whether the event represents a completed
@@ -72,6 +80,9 @@ func parseEvent(line string) Event {
 		if msg, ok := entry["message"].(map[string]any); ok {
 			if sr, ok := msg["stop_reason"].(string); ok {
 				ev.StopReason = sr
+			}
+			if m, ok := msg["model"].(string); ok {
+				ev.Model = m
 			}
 			if content, ok := msg["content"].([]any); ok {
 				var texts []string
