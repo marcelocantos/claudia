@@ -159,7 +159,8 @@ type composerState int
 
 const (
 	composerUnknown composerState = iota
-	// composerWorking: left the idle box — turn began (or non-idle UI).
+	// composerWorking: positive turn evidence — Claude is running a turn
+	// (or has just run one), so the brief was submitted.
 	composerWorking
 	// composerPasteChip: collapsed paste still holding the brief.
 	composerPasteChip
@@ -167,11 +168,21 @@ const (
 	composerTyped
 	// composerEmptyIdle: idle empty box — brief never landed or was cleared.
 	composerEmptyIdle
+	// composerUnrecognised: the frame shows neither turn chrome nor the
+	// idle composer at the pane tail. A startup/resume menu, a dialog, a
+	// multi-line composer holding an unsubmitted brief, scrolled output,
+	// a partial redraw, and the post-Enter window before spinner chrome
+	// all land here. Absence of the idle box is NOT evidence the turn
+	// began (🎯T21) — the caller must keep looking.
+	composerUnrecognised
 )
 
 // classifyComposer is the pure post-Send oracle for 🎯T305 delivery
-// confirmation. Turn began when Claude shows working chrome or the idle
-// single-line composer is gone without an active paste chip.
+// confirmation. The turn-began verdict requires POSITIVE evidence:
+// Claude Code's own turn chrome (spinner / "esc to interrupt" / token
+// counter), which is also what a frame still shows just after a turn
+// completes. Everything that merely fails to look like the idle
+// composer is composerUnrecognised, never working (🎯T21).
 func classifyComposer(frame []byte) composerState {
 	if frame == nil {
 		return composerUnknown
@@ -184,8 +195,7 @@ func classifyComposer(frame []byte) composerState {
 		return composerPasteChip
 	}
 	if !MatchReady(frame) {
-		// No idle box and no paste chip → turn began (or non-idle UI).
-		return composerWorking
+		return composerUnrecognised
 	}
 	body := composerBody(frame)
 	if len(strings.TrimSpace(string(body))) == 0 {
@@ -212,22 +222,30 @@ func waitNotConnecting(d sendDriver, timeout time.Duration) error {
 	}
 }
 
-// waitContentLanded waits until paste chip or typed body appears.
+// waitContentLanded waits until the pasted brief is visibly in the
+// composer (chip or typed body), or the pane already shows turn chrome.
+// An unrecognised frame is not proof the paste rendered — firing Enter
+// on it can submit nothing at all (🎯T21) — so the loop keeps polling
+// and reports the state it was stuck in when the timeout expires.
 func waitContentLanded(d sendDriver, timeout time.Duration) error {
 	if d.capture == nil {
 		return nil
 	}
 	deadline := d.clock().Add(timeout)
+	var last []byte
+	lastState := composerUnknown
 	for {
 		frame, err := d.capture()
 		if err == nil {
-			st := classifyComposer(frame)
-			if st == composerPasteChip || st == composerTyped || st == composerWorking {
+			last = frame
+			lastState = classifyComposer(frame)
+			if lastState == composerPasteChip || lastState == composerTyped || lastState == composerWorking {
 				return nil
 			}
 		}
 		if !d.clock().Before(deadline) {
-			return fmt.Errorf("turn not submitted: paste never appeared in pane within %s", timeout)
+			return fmt.Errorf("turn not submitted: paste never appeared in pane within %s; composer state=%s; last frame tail:\n%s",
+				timeout, composerStateName(lastState), frameTail(last))
 		}
 		d.sleep(submitSettle)
 	}
@@ -267,6 +285,16 @@ func ensureSubmitted(d sendDriver) error {
 					return fmt.Errorf("tmux send-keys Enter (paste submit retry): %w", err)
 				}
 			}
+		case composerUnrecognised:
+			// Neither turn chrome nor the idle composer: the Enter may
+			// have gone into a menu, a dialog, or a half-drawn frame.
+			// Keep polling and re-pressing within the bound rather than
+			// declaring the turn started (🎯T21).
+			if press+1 < maxSubmitPresses {
+				if err := d.sendEnter(); err != nil {
+					return fmt.Errorf("tmux send-keys Enter (unrecognised frame retry): %w", err)
+				}
+			}
 		case composerEmptyIdle:
 			if !sawContent && press == 0 {
 				// First sample empty — brief may still be rendering.
@@ -286,12 +314,21 @@ func ensureSubmitted(d sendDriver) error {
 			}
 		}
 	}
-	snippet := string(trimTrailingSpace(last))
-	if len(snippet) > 400 {
-		snippet = snippet[len(snippet)-400:]
-	}
 	return fmt.Errorf("turn not submitted: composer state=%s after %d Enter presses; last frame tail:\n%s",
-		composerStateName(lastState), maxSubmitPresses, snippet)
+		composerStateName(lastState), maxSubmitPresses, frameTail(last))
+}
+
+// frameTail renders the last frameTailBytes of a captured frame for
+// failure reports (🎯T305 / 🎯T21), so the operator sees the UI the
+// send loop was actually stuck on.
+const frameTailBytes = 400
+
+func frameTail(frame []byte) string {
+	snippet := string(trimTrailingSpace(frame))
+	if len(snippet) > frameTailBytes {
+		snippet = snippet[len(snippet)-frameTailBytes:]
+	}
+	return snippet
 }
 
 func composerStateName(s composerState) string {
@@ -304,6 +341,8 @@ func composerStateName(s composerState) string {
 		return "typed_unsubmitted"
 	case composerEmptyIdle:
 		return "empty_idle"
+	case composerUnrecognised:
+		return "unrecognised_no_turn_evidence"
 	default:
 		return "unknown"
 	}

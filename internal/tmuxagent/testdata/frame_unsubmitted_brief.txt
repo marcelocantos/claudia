@@ -1,0 +1,24 @@
+
+ ▐▛███▜▌   Claude Code v2.1.226
+▝▜█████▛▘  Opus 5 with high effort · Claude Max
+  ▘▘ ▝▝    ~/work/github.com/marcelocantos/claudia
+
+
+
+
+
+
+
+
+
+                                                               ● high · /effort
+────────────────────────────────────────────────────────────────────────────────
+❯ LOCAL MASTER ONLY (🎯T104): commit locally, no push, no PR, no release.
+
+  REPORT to claudia-po with commit SHA, which disposition you chose and why,
+  the coverage figure, and exact commands + real exit status. Do NOT achieve
+  the target yourself — report evidence and leave the achieve to the PO
+  (🎯T31).
+
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle)                             /rc
