@@ -2,7 +2,10 @@
 # Exit 0 = all green; non-zero = at least one violation.
 bullseye:
 	@go vet ./... && echo "✓ vet"
-	@go test -race -count=1 ./... 2>&1 | tail -n 5 && echo "✓ tests"
+	@# Never pipe this: `go test ... | tail` reports tail's status, not
+	@# go test's, so a failing suite prints "✓ tests" and exits 0. That
+	@# trap produced a false green here before.
+	@go test -race -count=1 ./... && echo "✓ tests"
 	@test -z "$$(git status --porcelain)" && echo "✓ clean" || \
 	 (echo "✗ dirty tree"; git status --short; exit 1)
 
