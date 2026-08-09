@@ -1,6 +1,6 @@
 name: specs
 
-# Formal-verification oracle for the broker lifecycle (T2.0). Kept separate
+# Formal-verification oracle for the broker lifecycle (T2.0/T2.8). Kept separate
 # from test.yml so the Go matrix and the TLA+ model-check evolve independently.
 on:
   push:
@@ -24,8 +24,8 @@ jobs:
           curl -fsSL -o "$HOME/.local/lib/tla2tools.jar" \
             https://github.com/tlaplus/tlaplus/releases/latest/download/tla2tools.jar
 
-      # verify-specs asserts the correct spec is green AND both fault-injection
-      # mutants are caught — proving the invariants have teeth, not just that
+      # verify-specs asserts the correct spec is green AND every fault-injection
+      # mutant is caught — proving the invariants have teeth, not just that
       # they are satisfiable.
       - name: Model-check broker lifecycle spec
         run: make verify-specs

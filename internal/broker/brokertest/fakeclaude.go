@@ -3,10 +3,14 @@
 
 // Package brokertest provides test doubles for the claudia broker's oracle
 // harness. Its centrepiece is a behavioural fake `claude` binary that emits
-// canned JSONL turns, an injectable 429 rate-limit error, and a readiness
-// marker on demand — letting the broker's policy loops (AIMD, cost tracking,
-// reaping, preemption) run headless under `go test -race` with zero API credit
-// and no real claude binary. See docs/broker-oracles.md (T2.0).
+// canned JSONL turns, canned usage blocks, an injectable 429 rate-limit error,
+// and the real readiness prompt-box pattern on demand — letting the broker's
+// policy loops (AIMD, cost tracking, reaping, preemption) run headless under
+// `go test -race` with zero API credit and no real claude binary. See
+// docs/broker-oracles.md (🎯T2.0, 🎯T2.8).
+//
+// The wire shapes themselves live in the leaf package fakewire, shared with the
+// fake binary so the double and the code that reads it cannot drift apart.
 package brokertest
 
 import (
@@ -15,23 +19,36 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
+
+	"github.com/marcelocantos/claudia/internal/broker/brokertest/fakewire"
 )
 
-// Scenario describes one fake claude run.
-type Scenario struct {
-	// ReadyMarker, if set, is written to stderr before any output, standing in
-	// for the prompt-box readiness pattern the real TUI shows.
-	ReadyMarker string `json:"ready_marker"`
-	// Lines are emitted verbatim to stdout, one per line, as JSONL turns.
-	Lines []string `json:"lines"`
-	// RateLimited makes the fake emit a 429 rate_limit_error result and exit
-	// non-zero, standing in for an Anthropic HTTP 429.
-	RateLimited bool `json:"rate_limited"`
-	// ExitCode is the process exit code (default 0, or 1 when RateLimited).
-	ExitCode int `json:"exit_code"`
-}
+// The scenario vocabulary is re-exported so tests need only import brokertest.
+type (
+	// Scenario describes one fake claude run.
+	Scenario = fakewire.Scenario
+	// UsageBlock is one canned token-usage record.
+	UsageBlock = fakewire.UsageBlock
+	// Readiness selects which terminal frame the fake writes to stderr.
+	Readiness = fakewire.Readiness
+)
+
+// Readiness frames.
+const (
+	ReadyNone      = fakewire.ReadyNone
+	ReadyPromptBox = fakewire.ReadyPromptBox
+	ReadySplash    = fakewire.ReadySplash
+)
+
+// PromptBoxFrame and SplashFrame are the captured-pane frames the fake writes,
+// exposed so a test can assert directly against tmuxagent's readiness matcher.
+var (
+	PromptBoxFrame = fakewire.PromptBoxFrame
+	SplashFrame    = fakewire.SplashFrame
+)
 
 // The fake binary is compiled once per test binary and shared across tests.
 var (
@@ -100,4 +117,30 @@ func (f *FakeClaude) Command(t *testing.T, s Scenario) *exec.Cmd {
 	cmd := exec.Command(f.Bin)
 	cmd.Env = append(os.Environ(), "FAKE_CLAUDE_SCENARIO="+fh.Name())
 	return cmd
+}
+
+// ParseUsage extracts the canned usage blocks from a captured stdout stream.
+// It reads only assistant turns, so the closing result line is not
+// double-counted.
+func ParseUsage(t *testing.T, stdout []byte) []UsageBlock {
+	t.Helper()
+	var out []UsageBlock
+	for line := range strings.SplitSeq(string(stdout), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var turn struct {
+			Type    string `json:"type"`
+			Message struct {
+				Usage UsageBlock `json:"usage"`
+			} `json:"message"`
+		}
+		if err := json.Unmarshal([]byte(line), &turn); err != nil {
+			continue
+		}
+		if turn.Type == fakewire.AssistantTurnType {
+			out = append(out, turn.Message.Usage)
+		}
+	}
+	return out
 }

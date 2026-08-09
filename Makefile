@@ -9,10 +9,10 @@ bullseye:
 	@test -z "$$(git status --porcelain)" && echo "✓ clean" || \
 	 (echo "✗ dirty tree"; git status --short; exit 1)
 
-# Model-check the broker lifecycle spec (T2.0 oracle). The correct config must
-# be green AND both fault-injection mutants must be caught — a spec that stays
-# green on known-broken code is toothless. Requires Java + tla2tools.jar (see
-# scripts/tlc.sh). CI runs this in .github/workflows/specs.yml.
+# Model-check the broker lifecycle spec (T2.0/T2.8 oracle). The correct config
+# must be green AND every fault-injection mutant must be caught — a spec that
+# stays green on known-broken code is toothless. Requires Java + tla2tools.jar
+# (see scripts/tlc.sh). CI runs this in .github/workflows/specs.yml.
 .PHONY: verify-specs
 verify-specs:
 	@scripts/tlc.sh AgentLifecycle.tla AgentLifecycle.cfg >/dev/null && \
@@ -23,3 +23,6 @@ verify-specs:
 	@if scripts/tlc.sh AgentLifecycle.tla AgentLifecycle_mutant_steal.cfg >/dev/null 2>&1; then \
 	 echo "✗ mutant steal-grant survived — Inv_NoDoubleOwnership is toothless"; exit 1; \
 	 else echo "✓ mutant steal-grant caught by Inv_NoDoubleOwnership"; fi
+	@if scripts/tlc.sh AgentLifecycle.tla AgentLifecycle_mutant_stale_handle.cfg >/dev/null 2>&1; then \
+	 echo "✗ mutant stale-handle survived — Inv_NoSendAfterReap is toothless"; exit 1; \
+	 else echo "✓ mutant stale-handle caught by Inv_NoSendAfterReap"; fi
