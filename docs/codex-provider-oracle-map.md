@@ -1,65 +1,87 @@
 # Codex Provider Oracle Map
 
-Status: active verification plan for 🎯T4.8.
+Status: **sealed** for 🎯T4.8 (machine checks green on local master).
 
 Codex provider work is mostly new-code oracle mode with two public-contract seams:
 
 - `codex exec --json` for Task mode.
-- `codex app-server` JSON-RPC for persistent Session mode.
+- `codex app-server` JSON-RPC for persistent Session mode (production Start remains fail-closed experimental until 🎯T4.4 live contract proof).
 
-Live Codex runs are smoke/regression checks only. They do not retire targets by themselves. A target retires when hermetic fixtures, fakes, and fault checks prove the mapping and lifecycle behavior.
+Live Codex runs are smoke/regression only. They do not retire targets by themselves. A target retires when hermetic fixtures, fakes, and fault checks prove the mapping and lifecycle behavior.
 
-| Target | Verification Class | Machine Oracle | Live Role |
-| --- | --- | --- | --- |
-| 🎯T14.1 binary + subscription foundation | Resolver + auth preflight + live spike | `TestResolveCodexBin*`, `TestCodexBinCandidatesIncludeDesktopAppBundle` (ChatGPT.app + Codex.app), `TestPreflightCodexAuth*`, `TestEnsureCodexSubscriptionAuth`, hermetic `TestHermeticTaskRunCodexSpawn` with fixture auth. Spike record: [codex-subscription-spike.md](codex-subscription-spike.md). | One-shot `codex exec --json` on ChatGPT OAuth (documented in spike); `CLAUDIA_CODEX_LIVE=1` for Task smoke |
-| 🎯T4.1 provider boundaries | New-code lifecycle seam | Fake Claude and fake Codex task/agent backends drive the same public lifecycle without real binaries. | None |
-| 🎯T4.2 Codex binary discovery | Deterministic resolver | Resolver tests inject env, PATH lookup, app-bundle candidates (ChatGPT.app + Codex.app), and missing-binary failure. | Optional manual install sanity |
-| 🎯T4.3 Codex Task mode | Public CLI fixture parser | Golden `codex exec --json` fixtures cover thread start, turn start/completion/failure, command/tool progress, agent messages, usage, malformed payloads, and final-message selection. | `CLAUDIA_CODEX_LIVE=1` smoke only |
-| 🎯T4.4 app-server contract spike | Public protocol fixture/schema | Generated schema inspection plus golden app-server JSON-RPC fixtures parsed into typed thread, turn, item, usage, interrupt, and failure events. | Explicitly approved live capture records notification order |
-| 🎯T4.5 Codex Session mode | Fake app-server lifecycle | Fake app-server exercises Start, Send, WaitForResponse, SubscribeEvents, Interrupt, raw payload forwarding, usage accumulation, and Claude-only attach/log semantics with no real Codex/network/auth/tmux. | Gated live app-server smoke only |
-| 🎯T4.6 capability gaps | Negative capability oracle | Typed unsupported/experimental errors are asserted for rewind, tmux attach, terminal logs, cost, and permission mapping where public Codex contracts are absent or weaker. | Human review of accepted gaps |
-| 🎯T4.7 docs/release gate | Documentation consistency | README, agents-guide.md, STABILITY.md, release notes, and live-test gates name the same support matrix. | Release checklist only |
+## Canonical hermetic command (T4.8)
 
-## Required Golden Fixtures
+```bash
+go test -count=1 -timeout 120s -run \
+  'TestCodex|TestFakeCodex|TestParseCodex|TestStartCodex|TestHermeticTaskRunCodex|TestResolveCodex|TestPreflightCodex|TestEnsureCodex|TestCapabilityError|TestExperimentalCapability|TestAgentMissing' \
+  .
+```
+
+Live residual (never sole retirement evidence): `CLAUDIA_CODEX_LIVE=1` → `TestCodexTaskRunSmoke`.
+
+## Claim → oracle matrix
+
+| Target | Verification class | Machine oracle | Live role | Status |
+| --- | --- | --- | --- | --- |
+| 🎯T14.1 binary + subscription foundation | Resolver + auth preflight + live spike | `TestResolveCodexBin*`, `TestCodexBinCandidatesIncludeDesktopAppBundle` (ChatGPT.app + Codex.app), `TestPreflightCodexAuth*`, `TestEnsureCodexSubscriptionAuth`, hermetic `TestHermeticTaskRunCodexSpawn` with fixture auth. Spike: [codex-subscription-spike.md](codex-subscription-spike.md). | One-shot `codex exec --json` on ChatGPT OAuth; `CLAUDIA_CODEX_LIVE=1` Task smoke | Hermetic sealed |
+| 🎯T4.1 provider boundaries | New-code lifecycle seam | Fake Claude / fake Codex task+agent backends drive the same public lifecycle (`TestStartUsesInjectedBackendLifecycle`, fake-codex Task path) without real binaries. | None | Hermetic sealed |
+| 🎯T4.2 Codex binary discovery | Deterministic resolver | Resolver tests inject env, PATH lookup, app-bundle candidates, missing-binary failure. | Optional manual install sanity | Hermetic sealed |
+| 🎯T4.3 Codex Task mode | Public CLI fixture parser + hermetic spawn | Golden `codex exec --json` fixtures + `TestCodexTaskParser*` + `TestCodexTaskSuccessOracleRejectsFaults` + `TestHermeticTaskRunCodexSpawn`. | `CLAUDIA_CODEX_LIVE=1` smoke only | Hermetic sealed |
+| 🎯T4.4 app-server contract spike | Public protocol fixture/schema | Golden app-server JSON-RPC fixtures + `TestParseCodexAppServer*` + `TestCodexAppServerFixturesAreValidJSONL`. | Explicit live capture residual | Hermetic fixtures sealed; live capture human residual |
+| 🎯T4.5 Codex Session mode | Fake app-server lifecycle | `TestFakeCodexAppServerLifecycle`, `TestFakeCodexAppServerInterruptLifecycle` (Start/Send/Wait/Subscribe/Interrupt/raw/usage/attach-log fail-closed). Production `ProviderCodex` Session Start remains experimental fail-closed. | Gated live app-server smoke only | Fake harness sealed |
+| 🎯T4.6 capability gaps | Negative capability oracle | `TestStartCodexSessionFailsWithCapabilityError`, `TestCodexRewindFailsWithCapabilityError`, `TestAgentMissingOperationFailsWithCapabilityError`, attach/log empty on fake, `TestCodexProviderCapabilitiesClaimed`. | Human review of accepted gaps | Hermetic sealed |
+| 🎯T4.7 docs/release gate | Documentation consistency | README, agents-guide.md, STABILITY.md, release notes share one support matrix (blocked on code targets + this map). | Release checklist only | Map ready; release gate waits on T4.x code |
+| 🎯T4.8 verification choke | Oracle-first map + assets | This document + fixture inventory + fault oracles below. | Live never sole evidence | **Sealed** |
+
+## Required golden fixtures
 
 `testdata/codex/exec/`:
 
-- `success.jsonl`: `thread.started`, `turn.started`, `item.started` command, `item.completed` agent message, `turn.completed` usage.
+- `success.jsonl`: `thread.started`, `turn.started`, `item.started` command, `item.completed` agent messages, `turn.completed` usage.
 - `failure.jsonl`: `thread.started`, `turn.started`, `turn.failed`.
 - `error.jsonl`: top-level `error`.
-- `malformed.jsonl`: invalid JSON and unknown event types, expected to be ignored or surfaced according to parser contract.
+- `malformed.jsonl`: invalid JSON and unknown event types (ignored per parser contract).
 
 `testdata/codex/app-server/`:
 
-- `success.jsonl`: initialize response, thread/start response, turn/start response, item notifications, agent-message deltas or completed messages, turn/completed.
-- `failure.jsonl`: turn failure or error response.
-- `interrupted.jsonl`: turn/started, turn/interrupt response, turn/completed with interrupted/cancelled status.
-- `unsupported-capability.jsonl`: method/field rejection for an experimental or unavailable capability.
+- `success.jsonl`: initialize response, thread/start response, turn/start response, item notifications, agent message, turn/completed + usage.
+- `failure.jsonl`: turn failure.
+- `interrupted.jsonl`: turn/started, turn/interrupt, turn/completed interrupted.
+- `unsupported-capability.jsonl`: method/field rejection for experimental capability.
+- `thread-start.jsonl`: redacted live-shape thread start (JSONL validity + token check).
 
-Fixtures must be small, redacted, and hand-owned. `TestParseCodexAppServer*`
+Fixtures must stay small, redacted, and hand-owned. `TestParseCodexAppServer*`
 parses them into typed events so notification order and field mapping are
-machine-checked. `TestFakeCodexAppServer*` then drives the Agent lifecycle
-through an injected app-server-shaped backend, proving the provider-neutral
-event seam before production Codex Session mode is enabled. Do not commit full
-generated schema bundles unless a future review finds their license and churn
-acceptable.
+machine-checked. `TestFakeCodexAppServer*` drives the Agent lifecycle through
+an injected app-server-shaped backend. `TestCodexOracleFixturesPresent` ratchets
+that every required fixture path still exists.
 
-## Fault Checks
+## Fault checks
 
-Before 🎯T4 is retired, tests must prove these injected faults fail:
+Machine oracles prove these injected faults fail:
 
-- Dropped thread/session id: `TestCodexTaskSuccessOracleRejectsFaults` removes the `thread.started` line and proves the oracle fails.
-- Wrong final-message selection: `TestCodexTaskSuccessOracleRejectsFaults` mutates the last agent message and proves the oracle fails instead of accepting the first partial message.
-- Malformed usage accounting: `TestCodexTaskSuccessOracleRejectsFaults` mutates cached input tokens and proves the oracle fails.
-- Silent unsupported capability success: `TestStartCodexSessionFailsWithCapabilityError`, `TestCodexRewindFailsWithCapabilityError`, `TestAgentMissingOperationFailsWithCapabilityError`, and the fake app-server attach/log assertions prove unsupported or experimental Codex capabilities fail closed.
-- Private-storage shortcut: production Codex provider code reads or writes private Codex transcript/session storage instead of using `codex exec` or app-server. `TestCodexProviderDoesNotReadPrivateStorage` scans production Go files for private Codex state path tokens.
+| Fault | Oracle |
+| --- | --- |
+| Dropped thread/session id | `TestCodexTaskSuccessOracleRejectsFaults` |
+| Wrong final-message selection | `TestCodexTaskSuccessOracleRejectsFaults` |
+| Malformed usage accounting | `TestCodexTaskSuccessOracleRejectsFaults` |
+| Silent unsupported capability success | `TestStartCodexSessionFailsWithCapabilityError`, `TestCodexRewindFailsWithCapabilityError`, `TestAgentMissingOperationFailsWithCapabilityError`, fake app-server attach/log empty |
+| Private-storage shortcut | `TestCodexProviderDoesNotReadPrivateStorage` scans production Go for private Codex state path tokens |
 
-## Human Residue
+## Human / live residue
 
-Machine checks do not decide:
+Machine checks do **not** decide:
 
-- Whether Codex parity gaps are acceptable for users.
-- Whether the public API names feel right before v1.0.
-- Whether app-server maturity risk is acceptable for persistent Session mode.
+- Whether Codex parity gaps versus Claude Code are acceptable for users.
+- Whether public API names feel right before v1.0.
+- Whether app-server maturity risk is acceptable for enabling production Session mode (🎯T4.4 / 🎯T4.5 product enablement).
+- Live ChatGPT subscription rate-limit / quota behavior under fleet load (related: 🎯T14.4).
 
-Those require one explicit human accept/reject review after the machine checks pass.
+Those require one explicit human accept/reject review after the machine checks pass. Live gates remain optional smoke, never sole retirement evidence.
+
+## Relationship to other maps
+
+- Claude: [claude-provider-oracle-map.md](claude-provider-oracle-map.md) (🎯T11)
+- Grok: [grok-provider-oracle-map.md](grok-provider-oracle-map.md) (🎯T7.8)
+- Bedrock: [bedrock-provider-oracle-map.md](bedrock-provider-oracle-map.md) (🎯T12)
+- Subscription foundation spike: [codex-subscription-spike.md](codex-subscription-spike.md) (🎯T14.1)
