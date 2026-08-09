@@ -20,7 +20,7 @@ const idleBoxFrame = `● Ready.
 ────────────────────────────────────────────
   ⏵⏵ bypass permissions on (shift+tab to cycle)`
 
-// resumeMenuFrame is the T24 wedge: a stale session parks the TUI at a
+// resumeMenuFrame is the 🎯T6 wedge: a stale session parks the TUI at a
 // resume/summary selection menu awaiting a keypress.
 const resumeMenuFrame = `  Do you want to resume this session?
 
@@ -29,6 +29,25 @@ const resumeMenuFrame = `  Do you want to resume this session?
     3. Don't ask again for this session
 
   Press Enter to confirm · Esc to cancel`
+
+// resumeMenuWordingOnly: selection glyph missing (version drift) but
+// Claude's resume copy still present — MatchStartupMenu must fire.
+const resumeMenuWordingOnly = `  Do you want to resume this session?
+
+    1. Resume from summary
+    2. Resume full session
+    3. Don't ask again for this session
+
+  Press Enter to confirm · Esc to cancel`
+
+// numberedMenuCursorOnly: a numbered ❯ selection without resume wording
+// (e.g. trust-folder or other startup menus).
+const numberedMenuCursorOnly = `  Choose an option:
+
+  ❯ 1. Yes, proceed
+    2. No
+
+  Press Enter to confirm`
 
 const streamingFrame = `● Rebuilding the maze generator…
 
@@ -44,6 +63,8 @@ func TestMatchReadyDiscriminatesMenu(t *testing.T) {
 	}{
 		{"idle input box", idleBoxFrame, true, false},
 		{"resume menu", resumeMenuFrame, false, true},
+		{"resume wording only", resumeMenuWordingOnly, false, true},
+		{"numbered menu cursor only", numberedMenuCursorOnly, false, true},
 		{"streaming", streamingFrame, false, false},
 	}
 	for _, tc := range tests {
@@ -58,7 +79,7 @@ func TestMatchReadyDiscriminatesMenu(t *testing.T) {
 	}
 }
 
-// TestWaitReadyAutoAdvancesResumeMenu is the T24 regression oracle: a
+// TestWaitReadyAutoAdvancesResumeMenu is the 🎯T6 regression oracle: a
 // session that opens on the resume menu must reach ready without
 // operator intervention, by the loop pressing Enter for it.
 func TestWaitReadyAutoAdvancesResumeMenu(t *testing.T) {
@@ -86,6 +107,31 @@ func TestWaitReadyAutoAdvancesResumeMenu(t *testing.T) {
 		t.Fatal("loop reached ready but never pressed Enter — menu was not auto-confirmed")
 	}
 	t.Logf("auto-advanced through resume menu in %s with %d Enter(s)", elapsed.Round(time.Millisecond), enters)
+}
+
+// TestWaitReadyMenuThenSplashThenReady: after menu dismiss, the TUI may
+// paint the startup splash before the live composer. WaitReady must
+// poll through the splash without more Enter presses into a dead box.
+func TestWaitReadyMenuThenSplashThenReady(t *testing.T) {
+	frames := []string{resumeMenuFrame, startupSplashFrame, startupSplashFrame, liveComposerFrame}
+	i, enters := 0, 0
+	d := readyDriver{
+		capture: func() ([]byte, error) {
+			f := frames[min(i, len(frames)-1)]
+			i++
+			return []byte(f), nil
+		},
+		sendEnter: func() error { enters++; return nil },
+	}
+	if _, err := waitReadyLoop(d, time.Millisecond, time.Second, time.Millisecond); err != nil {
+		t.Fatalf("waitReadyLoop: %v", err)
+	}
+	if enters != 1 {
+		t.Fatalf("Enter presses = %d, want 1 (menu only; splash must not be auto-confirmed)", enters)
+	}
+	if i < 4 {
+		t.Errorf("returned after %d capture(s); must poll menu→splash→live", i)
+	}
 }
 
 // TestWaitReadyMenuTimeoutIsDistinct asserts that when Enter never

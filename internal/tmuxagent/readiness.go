@@ -64,7 +64,7 @@ var startupMenuCursor = regexp.MustCompile(`❯\s*\d+[.)]`)
 // resumePrompt matches Claude Code's specific stale-session resume
 // wording as a belt-and-suspenders signal, in case the selection
 // glyph renders differently across versions. This is the exact wedge
-// T24 targets: a 5-day / 105k-token session parks the TUI at a
+// 🎯T6 targets: a 5-day / 105k-token session parks the TUI at a
 // "Resume from summary / Resume full session / Don't ask again" menu.
 var resumePrompt = regexp.MustCompile(`(?i)resume (from summary|full session)|resume this session`)
 
@@ -169,7 +169,7 @@ type readyDriver struct {
 // Claude Code's stale-session resume/summary prompt — WaitReady
 // auto-confirms the highlighted default by pressing Enter, up to
 // maxMenuDismissals times, so a long-lived registered agent doesn't
-// wedge at the menu (T24). If the menu never clears, the timeout error
+// wedge at the menu (🎯T6). If the menu never clears, the timeout error
 // says so explicitly rather than emitting the generic
 // "ready pattern did not match" message.
 func WaitReady(windowID string, poll, timeout time.Duration) (time.Duration, error) {
