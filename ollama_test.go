@@ -211,3 +211,59 @@ func TestNewTaskSelectsTheOllamaBackend(t *testing.T) {
 		t.Errorf("backend = %T, want ollamaTaskBackend", task.backend)
 	}
 }
+
+// The user-facing flow, not just the backend primitive: build a Task the
+// way a consumer does and drive Run to completion.
+//
+// The base pre-merge gate names this exact failure mode, citing three
+// bugs that shipped from this repository under a green check because the
+// primitive was tested and the flow through it was not.
+func TestOllamaTaskRunEndToEnd(t *testing.T) {
+	srv := fakeOllamaDaemon(t, []string{
+		`{"model":"gemma4:12b","response":"the answer","done":false}`,
+		`{"model":"gemma4:12b","done":true,"prompt_eval_count":7,"eval_count":3,"total_duration":1000000000}`,
+	})
+	t.Setenv("CLAUDIA_OLLAMA_ENDPOINT", srv.URL)
+
+	task := newTaskWithBackend(
+		TaskConfig{Provider: ProviderOllama, Model: "gemma4:12b"},
+		ollamaTaskBackend{http: srv.Client()},
+	)
+
+	events, err := task.Run(context.Background(), "what is the answer?")
+	if err != nil {
+		t.Fatalf("Task.Run: %v", err)
+	}
+
+	var text strings.Builder
+	var result *TaskEvent
+	for ev := range events {
+		switch ev.Type {
+		case TaskEventText:
+			text.WriteString(ev.Content)
+		case TaskEventResult:
+			e := ev
+			result = &e
+		case TaskEventError:
+			t.Fatalf("error event: %s", ev.ErrorMsg)
+		}
+	}
+
+	if text.String() != "the answer" {
+		t.Errorf("text = %q", text.String())
+	}
+	if result == nil {
+		t.Fatal("the run produced no result event")
+	}
+	if result.Usage.InputTokens != 7 || result.Usage.OutputTokens != 3 {
+		t.Errorf("usage = %+v", result.Usage)
+	}
+	// The public surface reports what ran, resolved rather than requested.
+	if got := task.Model(); got != "gemma4:12b" {
+		t.Errorf("Task.Model() = %q", got)
+	}
+	// Back to idle and reusable, not stuck running or wedged in error.
+	if got := task.Status(); got != TaskStatusIdle {
+		t.Errorf("status = %v, want idle after a clean run", got)
+	}
+}
