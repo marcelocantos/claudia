@@ -197,10 +197,7 @@ var providerCapabilityClaims = map[Provider]map[Capability]capabilityClaim{
 			status: CapabilityUnsupported,
 			reason: "Grok Task mode hardcodes --permission-mode bypassPermissions; Claude PermissionMode values are not mapped",
 		},
-		CapabilityToolRestrictions: {
-			status: CapabilityUnsupported,
-			reason: "claudia does not translate DisallowTools into Grok --deny rules",
-		},
+		CapabilityToolRestrictions: {status: CapabilityUnsupported, reason: grokToolRestrictionsReason},
 		CapabilityImageInput: {
 			status: CapabilityUnsupported,
 			reason: "claudia has no API for attaching images to a prompt on any provider",
@@ -258,8 +255,17 @@ const (
 	//nolint:lll // one sentence, kept whole for the error message.
 	codexToolRestrictionsReason = "codex exec has no per-tool disallow flag; running the task would silently ignore DisallowTools and leave every tool enabled"
 	grokRewindReason            = "Grok rewind requires a public ACP/session API; private session-file truncation is forbidden"
-	bedrockSessionReason        = "Bedrock v1 is Task-only (ConverseStream); Session/tmux is not supported"
-	bedrockRewindReason         = "Bedrock v1 is Task-only and has no Session transcript to rewind"
+	// Unlike Codex, the Grok CLI is not missing the machinery: `grok
+	// --deny <RULE>` gates tool invocations and `grok --disallowed-tools
+	// <IDS>` strips tools from the agent's toolset outright. What is
+	// missing is a translation claudia can stand behind, so the reason
+	// says so rather than claiming a gap in Grok that does not exist.
+	//nolint:lll // one sentence, kept whole for the error message.
+	grokToolRestrictionsReason = "grok has --deny permission rules and --disallowed-tools toolset removal, but claudia translates DisallowTools into neither: Task hardcodes --permission-mode bypassPermissions, which grok resolves by appending a catch-all allow rule, and grok accepts tool names it does not recognise without complaint, so a name claudia failed to translate would be dropped exactly as silently as it is dropped now"
+	//nolint:lll // one sentence, kept whole for the error message.
+	grokToolRestrictionsUnwiredReason = "the Grok tool_restrictions claim was flipped to supported, but grokTaskArgs still emits no --deny or --disallowed-tools argument, so the restriction would be dropped; wire the translation before changing the claim"
+	bedrockSessionReason              = "Bedrock v1 is Task-only (ConverseStream); Session/tmux is not supported"
+	bedrockRewindReason               = "Bedrock v1 is Task-only and has no Session transcript to rewind"
 )
 
 // providerCapabilityClaim resolves one claim, failing closed. An unknown

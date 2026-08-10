@@ -394,7 +394,7 @@ host program owns a single short-lived agent, skip the Registry.
    | tmux attach | Supported | Unsupported | Unsupported (ACP is process-local; AttachCommand empty) |
    | Terminal byte log | Supported | Unsupported | Unsupported |
    | Permission mode | Supported | Unsupported — Codex sandbox/approval flags are Codex-native, not a Claude mapping | Unsupported — Task hardcodes `--permission-mode bypassPermissions` |
-   | Tool restrictions (`DisallowTools`) | Supported | Unsupported — `codex exec` has no per-tool disallow flag, so `Task.Run` **refuses** the run | Unsupported — not translated into `--deny` |
+   | Tool restrictions (`DisallowTools`) | Supported | Unsupported — `codex exec` has no per-tool disallow flag, so `Task.Run` **refuses** the run | Unsupported — `grok` *has* `--deny` and `--disallowed-tools`, but claudia translates `DisallowTools` into neither, so `Task.Run` **refuses** the run |
    | Image inputs | Unsupported (no claudia API on any provider) | Unsupported | Unsupported |
    | Web search | Supported (WebSearch tool, restrictable) | Unsupported — claudia does not bind `--search` | Unsupported |
 
@@ -412,11 +412,24 @@ host program owns a single short-lived agent, skip the Registry.
    sessions would fight over PTY ownership and transcript tailing.
    Don't try to re-enable these.
 
-   Those are Claude Code tool names, and no other provider has a
-   per-tool disallow flag to enforce them with. Rather than pretend, the
-   non-Claude providers report `CapabilityToolRestrictions` as
-   unsupported, and a Codex task carrying `DisallowTools` is refused
-   outright (see the matrix above).
+   Those are Claude Code tool names, and `BaseDisallowedTools` is
+   applied on Claude only — never on Codex, Grok or Bedrock. Rather
+   than pretend otherwise, the non-Claude providers report
+   `CapabilityToolRestrictions` as unsupported, and a Codex **or Grok**
+   task carrying `DisallowTools` is refused outright rather than run
+   with the restriction dropped (see the matrix above).
+
+   The two refusals have different causes, and the published reasons
+   say which. `codex exec` has no per-tool disallow flag at all. `grok`
+   does — `--deny <RULE>` gates invocations and `--disallowed-tools
+   <IDS>` strips tools from the toolset — but claudia drives Grok Task
+   with a hardcoded `--permission-mode bypassPermissions`, which `grok`
+   resolves by appending a catch-all allow rule, and `grok` accepts
+   tool names it does not recognise without complaint. An untranslated
+   name would therefore be dropped exactly as silently as it is today,
+   under a claim that said otherwise. The gap is claudia's, not Grok's,
+   and closing it means wiring the translation, the argv builder and
+   the claim in one change.
 
 3. **Session resumption is automatic.** `Start` checks whether
    `<SessionID>.jsonl` exists under Claude Code's project directory.

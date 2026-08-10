@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // argvFor rebuilds the argv the claude backend passes, so these tests
@@ -157,6 +158,132 @@ func TestCodexTaskWithoutRestrictionsIsNotBlocked(t *testing.T) {
 	var capErr *CapabilityError
 	if errors.As(err, &capErr) && capErr.Capability == CapabilityToolRestrictions {
 		t.Fatalf("unrestricted Codex task blocked by the tool-restriction gate: %v", err)
+	}
+}
+
+// TestGrokTaskToolRestrictionsFailClosed (🎯T23) is the Codex guard above
+// carried to the provider that still had the hole: grokTaskArgs built
+// argv from prompt, output-format, permission-mode, cwd, model and
+// resume, and never looked at req.DisallowTools. A caller who removed
+// shell, filesystem and network tools from a summariser was handed all
+// three back with no signal.
+//
+// GROK_BIN deliberately points at a fake CLI that succeeds. A test that
+// leaned on grok being absent would pass for the wrong reason on the
+// only hosts that matter — the ones with grok installed — and would stay
+// green with the guard deleted. Here, deleting the guard lets the run
+// reach the fake, return no error, and fail the assertion below.
+func TestGrokTaskToolRestrictionsFailClosed(t *testing.T) {
+	t.Setenv("GROK_BIN", writeFakeCLI(t, "testdata/grok/exec/success.jsonl", 0))
+
+	task := NewTask(TaskConfig{
+		Provider:      ProviderGrok,
+		ID:            "grok-restricted",
+		WorkDir:       t.TempDir(),
+		DisallowTools: []string{"Bash", "Write", "WebFetch"},
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	_, err := task.Run(ctx, "summarise this untrusted text")
+	if err == nil {
+		t.Fatal("Grok Task.Run dropped DisallowTools and spawned anyway; want a capability error")
+	}
+	var capErr *CapabilityError
+	if !errors.As(err, &capErr) {
+		t.Fatalf("err = %T %v, want *CapabilityError", err, err)
+	}
+	if capErr.Provider != ProviderGrok ||
+		capErr.Capability != CapabilityToolRestrictions ||
+		capErr.Status != CapabilityUnsupported {
+		t.Errorf("CapabilityError = %+v", capErr)
+	}
+	if got := task.Status(); got != TaskStatusError {
+		t.Errorf("task status = %q, want %q", got, TaskStatusError)
+	}
+}
+
+// TestGrokTaskWithoutRestrictionsIsNotBlocked keeps that guard narrow.
+// Refusing every Grok task would satisfy the test above for entirely the
+// wrong reason, so an unrestricted task must not merely be allowed to
+// start — it must run to a result event through the real backend.
+func TestGrokTaskWithoutRestrictionsIsNotBlocked(t *testing.T) {
+	t.Setenv("GROK_BIN", writeFakeCLI(t, "testdata/grok/exec/success.jsonl", 0))
+
+	task := NewTask(TaskConfig{
+		Provider: ProviderGrok,
+		ID:       "grok-unrestricted",
+		WorkDir:  t.TempDir(),
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	events, err := task.Run(ctx, "summarise this")
+	if err != nil {
+		t.Fatalf("unrestricted Grok task refused: %v", err)
+	}
+	var sawResult bool
+	for _, ev := range drainTaskEvents(t, events) {
+		if ev.Type == TaskEventResult {
+			sawResult = true
+		}
+	}
+	if !sawResult {
+		t.Error("unrestricted Grok task produced no result event; the guard is over-broad")
+	}
+}
+
+// TestGrokTaskArgsCarryNoToolRestrictionFlags pins the refusal as the
+// whole implementation. grok really does understand `--deny Bash` and
+// `--disallowed-tools run_terminal_cmd`, so the tempting half-fix is to
+// emit one and call the gap closed — which would restore the silent drop
+// for every name the translation got wrong, under a green claim. The
+// guard, the argv builder and the published claim have to move together;
+// whoever wires the translation replaces all three, and this test with
+// them.
+func TestGrokTaskArgsCarryNoToolRestrictionFlags(t *testing.T) {
+	argv := grokTaskArgs(taskRunRequest{
+		Prompt:        "the prompt",
+		DisallowTools: []string{"Bash"},
+	})
+	for _, arg := range argv {
+		lower := strings.ToLower(arg)
+		if strings.Contains(lower, "deny") || strings.Contains(lower, "disallow") || lower == "bash" {
+			t.Errorf("grokTaskArgs emitted an untested tool-restriction argument %q: %v", arg, argv)
+		}
+	}
+}
+
+// TestGrokToolRestrictionRefusalSurvivesASupportedClaim covers the
+// branch that only fires after someone else's edit: flipping the Grok
+// tool_restrictions claim to supported makes CheckCapability return nil,
+// and a backend that returned that nil would answer (nil, nil) — no run,
+// no error, and a caller holding the armed agent they asked not to have.
+// Asserted through the helper rather than by swapping the claim map,
+// which twenty parallel tests read concurrently.
+func TestGrokToolRestrictionRefusalSurvivesASupportedClaim(t *testing.T) {
+	err := grokToolRestrictionRefusal(nil)
+	if err == nil {
+		t.Fatal("a supported claim collapsed the refusal to nil; Task.Run would return (nil, nil)")
+	}
+	var capErr *CapabilityError
+	if !errors.As(err, &capErr) {
+		t.Fatalf("err = %T %v, want *CapabilityError", err, err)
+	}
+	if capErr.Capability != CapabilityToolRestrictions {
+		t.Errorf("CapabilityError = %+v, want tool_restrictions", capErr)
+	}
+	// The reason must point at the unwired argv builder, not recite the
+	// ordinary gap: the whole point is that the claim moved and the code
+	// did not.
+	if !strings.Contains(capErr.Reason, "grokTaskArgs") {
+		t.Errorf("reason does not name the code that must change: %q", capErr.Reason)
+	}
+	// The ordinary path must still surface the ordinary reason.
+	if got := grokToolRestrictionRefusal(
+		CheckCapability(ProviderGrok, CapabilityToolRestrictions)); got == nil ||
+		strings.Contains(got.Error(), "grokTaskArgs") {
+		t.Errorf("refusal under the real claim = %v, want the published rationale", got)
 	}
 }
 

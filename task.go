@@ -117,9 +117,9 @@ const (
 	TaskStatusStopped TaskStatus = "stopped"
 )
 
-// TaskConfig holds the configuration for creating a Task.
-// BaseDisallowedTools are the tools no claudia-spawned agent may use,
-// in either Session or Task mode.
+// BaseDisallowedTools are the tools no claudia-spawned Claude agent may
+// use, in either Session or Task mode. It is applied on Claude only; the
+// names are Claude Code tools no other provider implements.
 //
 // Agents spawned by claudia are forbidden from creating their own
 // sub-agents: the host program owns the process lifecycle, and an agent
@@ -139,6 +139,7 @@ func disallowedToolList(extra []string) string {
 	return disallowed
 }
 
+// TaskConfig holds the configuration for creating a Task.
 type TaskConfig struct {
 	// ID is the caller-assigned unique identifier for this task.
 	ID string
@@ -165,8 +166,14 @@ type TaskConfig struct {
 	// Empty leaves Codex's default in place.
 	ApprovalPolicy string
 
-	// DisallowTools lists tool names to remove from this task, on top of
-	// BaseDisallowedTools which is always applied.
+	// DisallowTools lists tool names to remove from this task.
+	//
+	// Claude only. On Claude these are appended to BaseDisallowedTools
+	// and passed as --disallowedTools. Every other provider reports
+	// CapabilityToolRestrictions as unsupported, and Task.Run refuses a
+	// task carrying this field rather than spawning an agent whose tools
+	// were not actually removed. Check with CheckCapability before
+	// setting it on a non-Claude provider.
 	//
 	// A task that only reads text and emits text — a summariser, a
 	// classifier, a compactor — should disable shell, filesystem and
@@ -700,6 +707,29 @@ func codexTaskArgs(req taskRunRequest) []string {
 }
 
 func (grokTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*taskRun, error) {
+	// 🎯T23: the fail-open defect 🎯T4.6 closed for Codex, one provider
+	// over. grokTaskArgs never consulted req.DisallowTools, so a caller
+	// who stripped Bash, Write and WebFetch from a summariser got a
+	// fully-armed agent and no signal that anything had been ignored —
+	// the incident BaseDisallowedTools documents.
+	//
+	// Unlike `codex exec`, grok is not missing the machinery: `--deny
+	// <RULE>` gates invocations (`Bash(...)`, `Write(...)`,
+	// `WebFetch(...)`, … — Claude's own `Bash(cmd:*)` syntax is accepted)
+	// and `--disallowed-tools <IDS>` removes built-in tools outright. The
+	// refusal is about what claudia can prove, not what grok can do: Task
+	// hardcodes --permission-mode bypassPermissions, which grok resolves
+	// by appending a catch-all allow rule, and grok accepts a tool name it
+	// does not recognise without complaint. Emitting an untested
+	// translation would restore the silent drop while publishing a green
+	// claim on top of it, which is strictly worse than refusing. See
+	// docs/grok-provider-oracle-map.md for the live oracle that would
+	// settle it.
+	if len(req.DisallowTools) > 0 {
+		return nil, grokToolRestrictionRefusal(
+			CheckCapability(ProviderGrok, CapabilityToolRestrictions))
+	}
+
 	grokBin, err := resolveGrokBin()
 	if err != nil {
 		return nil, err
@@ -772,10 +802,33 @@ func (grokTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*taskRu
 	}, nil
 }
 
+// grokToolRestrictionRefusal turns the published tool_restrictions claim
+// into the error a restricted Grok task is refused with.
+//
+// It exists to survive its own success condition. CheckCapability returns
+// nil the moment the claim flips to supported, and a backend that passed
+// that nil straight back would return (nil, nil) — handing Task.Run no
+// run and no error, and the caller the fully-armed agent they asked not
+// to have. 399b1c8 found exactly this shape in codexAgentBackend by
+// mutating a claim; the lesson is that the claim and the argv builder
+// must move together, so flipping the claim alone still refuses, with a
+// reason that says what is missing.
+func grokToolRestrictionRefusal(claimed error) error {
+	if claimed != nil {
+		return claimed
+	}
+	return unsupportedCapability(
+		ProviderGrok, CapabilityToolRestrictions, grokToolRestrictionsUnwiredReason)
+}
+
 // grokTaskArgs builds argv for a headless Grok Build Task run.
 //
 // Mirrors Claude Task's unattended posture with --permission-mode
 // bypassPermissions (Grok's analogue of --dangerously-skip-permissions).
+//
+// Deliberately emits no --deny or --disallowed-tools: RunTask has already
+// refused any request carrying DisallowTools, and pinning that here keeps
+// the half-fix (emit a flag, keep the claim) from looking green.
 func grokTaskArgs(req taskRunRequest) []string {
 	args := []string{
 		"-p", req.Prompt,

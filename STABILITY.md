@@ -245,6 +245,28 @@ byte log. Rewind via private session files is unsupported
 (`CapabilityUnsupported`). Resume uses ACP `session/load` when
 `Config.SessionID` is set, with fallback to `session/new`.
 
+**Permission mode and tool restrictions are both unsupported, and
+`Task.Run` refuses rather than drops.** Task mode hardcodes
+`--permission-mode bypassPermissions`; `Config.PermissionMode` is not
+mapped onto it. A Grok task carrying `TaskConfig.DisallowTools` is
+refused before any process is spawned, returning `*CapabilityError`
+with `Capability == CapabilityToolRestrictions`.
+
+Unlike `codex exec`, the refusal is not for want of a mechanism:
+`grok --deny <RULE>` gates tool invocations and `grok
+--disallowed-tools <IDS>` removes built-in tools from the toolset.
+claudia translates `DisallowTools` into neither. The hardcoded
+`bypassPermissions` resolves to a catch-all allow rule, and `grok`
+accepts unrecognised tool names silently, so an untested translation
+would reinstate the silent drop under a `CapabilitySupported` claim.
+Until the translation is wired and proven, the claim stays
+`CapabilityUnsupported` and the run is refused.
+
+`BaseDisallowedTools` is applied on Claude only. It is never passed to
+Grok, so nothing removes `Agent`, `TeamCreate` and friends from a Grok
+agent — those names are Claude Code tools that Grok does not implement
+in the first place.
+
 Do not confuse `ProviderGrok` with package
 `github.com/marcelocantos/claudia/grok`, which is a standalone Realtime
 voice WebSocket client.
