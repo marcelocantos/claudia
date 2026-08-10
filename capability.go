@@ -129,6 +129,49 @@ func reportedCapabilities() []Capability {
 // [CheckCapability]. Production fail-closed paths read it, so a claim
 // edited here changes behaviour, not just documentation.
 var providerCapabilityClaims = map[Provider]map[Capability]capabilityClaim{
+	ProviderOllama: {
+		CapabilityTask: {status: CapabilitySupported},
+		CapabilitySession: {
+			status: CapabilityUnsupported,
+			reason: "Ollama's generate endpoint is one-shot; claudia binds no persistent session for it",
+		},
+		CapabilityResume: {
+			status: CapabilityUnsupported,
+			reason: "Ollama's generate endpoint carries no session id to resume",
+		},
+		CapabilityRewind: {
+			status: CapabilityUnsupported,
+			reason: "rewind needs a session with turn boundaries, and Ollama Task mode has none",
+		},
+		CapabilityCost: {
+			status: CapabilityUnsupported,
+			reason: "local inference has no price per token; its cost is latency, and reporting zero dollars would read as a measured spend",
+		},
+		CapabilityTmuxAttach: {
+			status: CapabilityUnsupported,
+			reason: "there is no interactive process to attach to",
+		},
+		CapabilityTerminalLog: {
+			status: CapabilityUnsupported,
+			reason: "there is no rendered terminal; the API path emits structured events only",
+		},
+		CapabilityPermissionMode: {
+			status: CapabilityUnsupported,
+			reason: "permission modes are a Claude Code concept with no Ollama counterpart",
+		},
+		CapabilityToolRestrictions: {
+			status: CapabilityUnsupported,
+			reason: "Ollama's generate endpoint runs no tools, so there is nothing to restrict; a request naming DisallowTools is refused rather than silently ignored",
+		},
+		CapabilityImageInput: {
+			status: CapabilityUnsupported,
+			reason: "claudia has no API for attaching images to a prompt on any provider",
+		},
+		CapabilityWebSearch: {
+			status: CapabilityUnsupported,
+			reason: "Ollama has no web-search switch for claudia to bind",
+		},
+	},
 	ProviderClaude: {
 		CapabilityTask:             {status: CapabilitySupported},
 		CapabilitySession:          {status: CapabilitySupported},

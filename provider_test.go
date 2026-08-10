@@ -265,7 +265,7 @@ func TestGrokBinCandidatesIncludeDotGrokBin(t *testing.T) {
 // failure 🎯T4.6 targets — a gap nobody wrote down, which a caller
 // discovers by watching it not work.
 func TestProviderCapabilityMatrixIsTotal(t *testing.T) {
-	providers := []Provider{ProviderClaude, ProviderCodex, ProviderGrok, ProviderBedrock}
+	providers := []Provider{ProviderClaude, ProviderCodex, ProviderGrok, ProviderBedrock, ProviderOllama}
 	for _, provider := range providers {
 		claims, ok := providerCapabilityClaims[provider]
 		if !ok {

@@ -61,12 +61,12 @@ type codexAppServerThreadStartParams struct {
 
 // codexAppServerTurnStartParams are turn/start params.
 type codexAppServerTurnStartParams struct {
-	ThreadID       string                       `json:"threadId"`
-	Input          []codexAppServerUserInput    `json:"input"`
-	ApprovalPolicy string                       `json:"approvalPolicy,omitempty"`
-	Model          string                       `json:"model,omitempty"`
-	CWD            string                       `json:"cwd,omitempty"`
-	SandboxPolicy  any                          `json:"sandboxPolicy,omitempty"`
+	ThreadID       string                    `json:"threadId"`
+	Input          []codexAppServerUserInput `json:"input"`
+	ApprovalPolicy string                    `json:"approvalPolicy,omitempty"`
+	Model          string                    `json:"model,omitempty"`
+	CWD            string                    `json:"cwd,omitempty"`
+	SandboxPolicy  any                       `json:"sandboxPolicy,omitempty"`
 }
 
 // codexAppServerUserInput is one turn/start input element.
@@ -199,9 +199,9 @@ func parseCodexAppServerLine(line []byte) (codexAppServerEvent, bool, error) {
 			// Live 0.146+ emits thread/tokenUsage/updated with camelCase totals.
 			TokenUsage *struct {
 				Total *struct {
-					InputTokens          int `json:"inputTokens"`
-					CachedInputTokens    int `json:"cachedInputTokens"`
-					OutputTokens         int `json:"outputTokens"`
+					InputTokens           int `json:"inputTokens"`
+					CachedInputTokens     int `json:"cachedInputTokens"`
+					OutputTokens          int `json:"outputTokens"`
 					ReasoningOutputTokens int `json:"reasoningOutputTokens"`
 				} `json:"total"`
 			} `json:"tokenUsage"`

@@ -71,15 +71,15 @@ type Task struct {
 // NewTask creates a Codex Task in [StatusIdle].
 func NewTask(cfg Config) *Task {
 	return &Task{
-		id:       cfg.ID,
-		name:     cfg.Name,
-		workDir:  cfg.WorkDir,
-		model:    cfg.Model,
-		sandbox:  cfg.SandboxMode,
-		approval: cfg.ApprovalPolicy,
-		resolve:  cfg.Resolve,
-		rawLog:   cfg.RawLog,
-		status:   StatusIdle,
+		id:        cfg.ID,
+		name:      cfg.Name,
+		workDir:   cfg.WorkDir,
+		model:     cfg.Model,
+		sandbox:   cfg.SandboxMode,
+		approval:  cfg.ApprovalPolicy,
+		resolve:   cfg.Resolve,
+		rawLog:    cfg.RawLog,
+		status:    StatusIdle,
 		sessionID: cfg.SessionID,
 	}
 }

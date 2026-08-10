@@ -9,7 +9,6 @@ import (
 	"strings"
 )
 
-
 // IsWindowAlive checks whether the given window ID still exists on
 // the claudia tmux server. It uses list-windows to enumerate all
 // windows and checks for an exact ID match. This is more reliable than
