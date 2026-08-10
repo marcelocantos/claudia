@@ -44,6 +44,13 @@ var (
 	pastedTextChip     = regexp.MustCompile(`(?i)\[Pasted\s*text\s*#\d+`)
 	pasteExpandHint    = regexp.MustCompile(`(?i)paste\s+again\s+to\s+expand`)
 	turnInProgressHint = regexp.MustCompile(`(?i)(burrowing|thinking|esc to interrupt|cooking|blanching|still thinking|✳|running stop|tokens)`)
+	// queuedMessagesHint is Claude Code's ghost hint in an otherwise
+	// empty composer, drawn only while at least one message is queued
+	// behind the running turn. It is the CLI's own statement that a
+	// mid-turn message was ACCEPTED: the composer is vacated the instant
+	// a message queues (🎯T28 live capture,
+	// testdata/frame_queued_hint_during_turn.txt).
+	queuedMessagesHint = regexp.MustCompile(`(?i)press up to edit queued message`)
 )
 
 // MatchUnsubmittedPaste reports whether the frame still holds a Claude
@@ -54,9 +61,28 @@ func MatchUnsubmittedPaste(frame []byte) bool {
 	if pastedTextChip.Match(f) {
 		return true
 	}
-	// Expand hint alone only counts while the idle composer is still up
-	// (working UIs may leave residual scrollback text).
-	return pasteExpandHint.Match(f) && MatchReady(frame)
+	// "paste again to expand" alone is a weak residual: Claude Code keeps
+	// it in the footer for a while after the paste it describes has been
+	// submitted (🎯T28 live probe run 2 — a payload that had queued
+	// cleanly read as a stuck chip, so Send failed a send that landed).
+	// It therefore only counts while the composer holds something
+	// unsubmitted of its own.
+	return pasteExpandHint.Match(f) && composerHoldsUnsubmitted(frame)
+}
+
+// composerHoldsUnsubmitted reports whether the live composer box at the
+// tail of the frame holds text that has not been submitted. The ghost
+// hints Claude Code draws inside an otherwise empty box — the startup
+// placeholder and the queued-messages hint — are chrome, not content.
+func composerHoldsUnsubmitted(frame []byte) bool {
+	body := composerBody(frame)
+	if body == nil {
+		return false
+	}
+	if startupPlaceholder.Match(body) || queuedMessagesHint.Match(body) {
+		return false
+	}
+	return len(strings.TrimSpace(string(body))) > 0
 }
 
 // MatchTurnInProgress reports Claude Code actively running a turn
@@ -160,8 +186,14 @@ type composerState int
 const (
 	composerUnknown composerState = iota
 	// composerWorking: positive turn evidence — Claude is running a turn
-	// (or has just run one), so the brief was submitted.
+	// (or has just run one) and the composer is not holding anything
+	// back, so the brief was submitted.
 	composerWorking
+	// composerQueued: the composer shows Claude Code's queued-messages
+	// ghost hint. The brief was accepted behind a running turn and will
+	// be delivered at the turn boundary — submitted, by the CLI's own
+	// account (🎯T28).
+	composerQueued
 	// composerPasteChip: collapsed paste still holding the brief.
 	composerPasteChip
 	// composerTyped: idle box still holds text (typed/expanded, not sent).
@@ -183,25 +215,56 @@ const (
 // counter), which is also what a frame still shows just after a turn
 // completes. Everything that merely fails to look like the idle
 // composer is composerUnrecognised, never working (🎯T21).
+//
+// The composer is read BEFORE the chrome (🎯T28). Turn chrome is
+// evidence that SOME turn is running, not that THIS send started one:
+// when a turn was already in flight at send time — the ordinary case
+// for a fleet that briefs a busy agent — chrome is on the pane from the
+// moment the payload arrives, so letting it win means a payload sitting
+// unsubmitted in the composer is reported as delivered, with zero
+// verification (the whole 🎯T28 symptom; see
+// testdata/frame_t28_probe.txt). Text in the box is unsubmitted text,
+// chrome or no chrome; a message that really queued behind the turn
+// vacates the box and leaves the queued-messages hint instead.
 func classifyComposer(frame []byte) composerState {
 	if frame == nil {
 		return composerUnknown
 	}
-	// Working chrome wins even if residual "paste again" text lingers.
-	if MatchTurnInProgress(frame) {
-		return composerWorking
-	}
 	if MatchUnsubmittedPaste(frame) {
 		return composerPasteChip
 	}
-	if !MatchReady(frame) {
-		return composerUnrecognised
-	}
 	body := composerBody(frame)
-	if len(strings.TrimSpace(string(body))) == 0 {
+	switch {
+	case body == nil:
+		// No live composer at the tail. Chrome is the only remaining
+		// evidence, and nothing is visibly being held back.
+		if MatchTurnInProgress(frame) {
+			return composerWorking
+		}
+		return composerUnrecognised
+	case queuedMessagesHint.Match(body):
+		return composerQueued
+	case startupPlaceholder.Match(body):
+		// Box drawn but input not yet wired (🎯T284): not ready, and
+		// certainly not a turn.
+		return composerUnrecognised
+	case len(strings.TrimSpace(string(body))) > 0:
+		return composerTyped
+	case MatchTurnInProgress(frame):
+		return composerWorking
+	case !MatchReady(frame):
+		// Empty box that cannot accept a turn (/rc connecting).
+		return composerUnrecognised
+	default:
 		return composerEmptyIdle
 	}
-	return composerTyped
+}
+
+// submitted reports whether the state is positive evidence that this
+// send's payload left the composer: a turn running with nothing held
+// back, or Claude Code's own queued-messages hint.
+func (s composerState) submitted() bool {
+	return s == composerWorking || s == composerQueued
 }
 
 // waitNotConnecting polls until /rc connecting clears (or timeout).
@@ -223,10 +286,15 @@ func waitNotConnecting(d sendDriver, timeout time.Duration) error {
 }
 
 // waitContentLanded waits until the pasted brief is visibly in the
-// composer (chip or typed body), or the pane already shows turn chrome.
-// An unrecognised frame is not proof the paste rendered — firing Enter
-// on it can submit nothing at all (🎯T21) — so the loop keeps polling
-// and reports the state it was stuck in when the timeout expires.
+// composer (chip or typed body). An unrecognised frame is not proof the
+// paste rendered — firing Enter on it can submit nothing at all
+// (🎯T21) — so the loop keeps polling and reports the state it was
+// stuck in when the timeout expires.
+//
+// Turn chrome does NOT satisfy this wait (🎯T28): pasting into an agent
+// that is mid-turn leaves the chrome of the RUNNING turn on the pane
+// from the first capture, so accepting it fired Enter before the paste
+// existed and made the whole submit loop a no-op.
 func waitContentLanded(d sendDriver, timeout time.Duration) error {
 	if d.capture == nil {
 		return nil
@@ -239,7 +307,7 @@ func waitContentLanded(d sendDriver, timeout time.Duration) error {
 		if err == nil {
 			last = frame
 			lastState = classifyComposer(frame)
-			if lastState == composerPasteChip || lastState == composerTyped || lastState == composerWorking {
+			if lastState == composerPasteChip || lastState == composerTyped {
 				return nil
 			}
 		}
@@ -252,9 +320,11 @@ func waitContentLanded(d sendDriver, timeout time.Duration) error {
 }
 
 // ensureSubmitted re-presses Enter while the composer still holds an
-// unsubmitted brief (paste chip or typed text). Returns nil only when
-// the turn begins. Errors if the chip/text remains or the composer is
-// empty after paste (brief never landed).
+// unsubmitted brief (paste chip or typed text). Returns nil only on
+// positive evidence that the brief left the composer — a running turn
+// with nothing held back, or the queued-messages hint (🎯T28). Errors if
+// the chip/text remains or the composer is empty after paste (brief
+// never landed).
 func ensureSubmitted(d sendDriver) error {
 	if d.capture == nil {
 		return nil
@@ -275,9 +345,10 @@ func ensureSubmitted(d sendDriver) error {
 		}
 		last = frame
 		lastState = classifyComposer(frame)
-		switch lastState {
-		case composerWorking:
+		if lastState.submitted() {
 			return nil
+		}
+		switch lastState {
 		case composerPasteChip, composerTyped:
 			sawContent = true
 			if press+1 < maxSubmitPresses {
@@ -335,6 +406,8 @@ func composerStateName(s composerState) string {
 	switch s {
 	case composerWorking:
 		return "working"
+	case composerQueued:
+		return "queued_behind_turn"
 	case composerPasteChip:
 		return "paste_chip"
 	case composerTyped:
