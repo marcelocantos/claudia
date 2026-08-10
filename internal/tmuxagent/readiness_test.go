@@ -235,6 +235,121 @@ func TestMatchReadyRejectsStartupSplash(t *testing.T) {
 	}
 }
 
+// TestMatchReadyRecognisesMultiLineComposer is the 🎯T25 oracle. Claude
+// Code soft-wraps a pasted brief across several rows inside the box; the
+// single-line body pattern could not see it, so a pane visibly holding a
+// whole unsubmitted brief reported NOT ready and the state had to be
+// diagnosed as "unrecognised". All three frames here are verbatim
+// captures with a multi-row composer at the tail.
+func TestMatchReadyRecognisesMultiLineComposer(t *testing.T) {
+	for _, name := range []string{
+		// The bug itself: a spawned worker's brief, unsubmitted, no chrome.
+		"frame_unsubmitted_brief.txt",
+		// A turn is running and the operator has queued a multi-row
+		// message; the box is live and accepting more input.
+		"frame_queued_during_turn.txt",
+		"frame_scrolled_during_turn.txt",
+	} {
+		t.Run(name, func(t *testing.T) {
+			frame := loadFrame(t, name)
+			if !MatchReady(frame) {
+				t.Errorf("MatchReady = false on a real multi-line composer capture")
+			}
+			if MatchStartupSplash(frame) {
+				t.Errorf("MatchStartupSplash = true on a live composer holding real text")
+			}
+			if body := composerBody(frame); len(strings.TrimSpace(string(body))) == 0 {
+				t.Errorf("composerBody = %q, want the wrapped brief text", body)
+			}
+		})
+	}
+}
+
+// transcriptThenIdleComposerFrame is derived (not a verbatim capture):
+// an earlier prompt is still echoed in the viewport inside its own rules,
+// unindented transcript output follows, and the LIVE EMPTY composer sits
+// at the tail. This is the over-broadness guard for the multi-line body
+// (🎯T25): the body must stop at the first unindented row, so it reports
+// the empty tail composer. Widen composerContinuation to arbitrary rows
+// and the body swallows the whole transcript from the earlier ❯ down —
+// a dead region of scrollback then reads as a composer holding text.
+const transcriptThenIdleComposerFrame = `────────────────────────────────────────────────────────────────────────────────
+❯ run the readiness oracles and report the exit status
+────────────────────────────────────────────────────────────────────────────────
+
+⏺ Ran the readiness oracles.
+  All cases passed.
+⏺ Ran go vet.
+  No findings.
+⏺ Committed the fix.
+  Reported the SHA.
+
+────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle)                             /rc`
+
+// TestComposerBodyStopsAtUnindentedRow pins the second direction of the
+// 🎯T25 acceptance: a looser composer must not make a dead frame look
+// live, nor attribute scrollback to the input box.
+func TestComposerBodyStopsAtUnindentedRow(t *testing.T) {
+	t.Run("live empty composer below an echoed prompt", func(t *testing.T) {
+		frame := []byte(transcriptThenIdleComposerFrame)
+		if !MatchReady(frame) {
+			t.Fatal("MatchReady = false; the empty box at the tail is live")
+		}
+		if body := composerBody(frame); len(strings.TrimSpace(string(body))) != 0 {
+			t.Errorf("composerBody = %q, want empty: the body must stop at the first\n"+
+				"unindented row instead of swallowing the transcript above it", body)
+		}
+		if got := classifyComposer(frame); got != composerEmptyIdle {
+			t.Errorf("classifyComposer = %s, want %s", composerStateName(got), composerStateName(composerEmptyIdle))
+		}
+	})
+
+	// Frames that must stay NOT ready: a drawn-but-dead box and a
+	// selection menu are exactly what a looser pattern tends to admit.
+	notReady := map[string]string{
+		"startup splash (ghost placeholder in a dead box)": startupSplashFrame,
+		"/rc still connecting":                             connectingFrame,
+		"resume menu":                                      resumeMenuFrame,
+		"numbered menu cursor only":                        numberedMenuCursorOnly,
+		"streaming output, no box":                         streamingFrame,
+	}
+	for name, frame := range notReady {
+		t.Run(name, func(t *testing.T) {
+			if MatchReady([]byte(frame)) {
+				t.Errorf("MatchReady = true on a frame that cannot accept a turn")
+			}
+		})
+	}
+}
+
+// TestWaitReadyReturnsOnMultiLineComposer: WaitReady must settle on a
+// pane whose box holds a wrapped brief, without pressing Enter into it —
+// before 🎯T25 that frame was invisible and the loop polled to timeout.
+func TestWaitReadyReturnsOnMultiLineComposer(t *testing.T) {
+	frames := [][]byte{[]byte(startupSplashFrame), loadFrame(t, "frame_unsubmitted_brief.txt")}
+	i, enters := 0, 0
+	d := readyDriver{
+		capture: func() ([]byte, error) {
+			f := frames[min(i, len(frames)-1)]
+			i++
+			return f, nil
+		},
+		sendEnter: func() error { enters++; return nil },
+	}
+	if _, err := waitReadyLoop(d, time.Millisecond, time.Second, time.Millisecond); err != nil {
+		t.Fatalf("waitReadyLoop timed out on a pane holding a wrapped brief: %v", err)
+	}
+	if enters != 0 {
+		t.Errorf("pressed Enter %d time(s); a composer is not a menu to auto-confirm", enters)
+	}
+	if i < 2 {
+		t.Errorf("returned ready after %d capture(s); must poll past the splash", i)
+	}
+}
+
 // TestWaitReadyPollsThroughStartupSplash: the poll loop must not return
 // on the splash frame, and must not mistake it for a selection menu and
 // start pressing Enter into a dead composer.

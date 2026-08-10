@@ -32,19 +32,19 @@ func (c *virtualClock) read() time.Time { return c.t }
 //
 //	frame_unsubmitted_brief.txt   the bug itself — a spawned worker whose
 //	                              multi-line brief sits in the composer,
-//	                              unsubmitted, with no turn chrome. The
-//	                              composer body spans several lines, so
-//	                              readyPattern (single-line body) does not
-//	                              match and MatchReady is false.
+//	                              unsubmitted, with no turn chrome. Since
+//	                              🎯T25 readyPattern reads the wrapped body,
+//	                              so this is diagnosed as composerTyped
+//	                              rather than merely composerUnrecognised.
 //	frame_turn_in_progress.txt    a genuinely running turn ("esc to
 //	                              interrupt") with the box at the tail.
 //	frame_queued_during_turn.txt  a running turn ("✽ Mustering… ↓ 5.0k
 //	                              tokens") with a queued multi-line message
-//	                              in the composer — MatchReady false but
-//	                              the turn HAS begun.
+//	                              in the composer — turn chrome decides the
+//	                              verdict, box or no box.
 //	frame_scrolled_during_turn.txt a running turn ("· Grooving… ↓ 5.6k
-//	                              tokens") whose composer has scrolled out
-//	                              of a matchable position.
+//	                              tokens") with a wrapped brief in the box
+//	                              below the scrolled output.
 //
 // The last three are the over-broadness guard: a fix that simply refuses
 // every frame without the idle box would break them, and with them every
@@ -87,8 +87,10 @@ func TestClassifyComposerRequiresPositiveTurnEvidence(t *testing.T) {
 		frame []byte
 		want  composerState
 	}{
-		// Must NOT be working: no positive turn evidence.
-		{"unsubmitted multi-line brief (real capture)", loadFrame(t, "frame_unsubmitted_brief.txt"), composerUnrecognised},
+		// Must NOT be working: no positive turn evidence. The brief frame
+		// is now named exactly — text present, unsubmitted (🎯T25) —
+		// instead of falling through to "unrecognised".
+		{"unsubmitted multi-line brief (real capture)", loadFrame(t, "frame_unsubmitted_brief.txt"), composerTyped},
 		{"startup/resume menu", []byte(resumeMenuFrame), composerUnrecognised},
 		{"mid-redraw, no composer and no chrome", []byte(midRedrawFrame), composerUnrecognised},
 		{"post-Enter gap before spinner", []byte(postEnterGapFrame), composerUnrecognised},
@@ -118,14 +120,15 @@ func TestClassifyComposerRequiresPositiveTurnEvidence(t *testing.T) {
 func TestSendKeysRefusesSuccessWithoutTurnEvidence(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name     string
-		frame    []byte
-		wantTail string
+		name      string
+		frame     []byte
+		wantState composerState
+		wantTail  string
 	}{
-		{"unsubmitted multi-line brief (real capture)", loadFrame(t, "frame_unsubmitted_brief.txt"), "bypass permissions on (shift+tab to cycle)"},
-		{"startup/resume menu", []byte(resumeMenuFrame), "Press Enter to confirm"},
-		{"mid-redraw, no composer and no chrome", []byte(midRedrawFrame), "────"},
-		{"post-Enter gap before spinner", []byte(postEnterGapFrame), "bypass permissions"},
+		{"unsubmitted multi-line brief (real capture)", loadFrame(t, "frame_unsubmitted_brief.txt"), composerTyped, "bypass permissions on (shift+tab to cycle)"},
+		{"startup/resume menu", []byte(resumeMenuFrame), composerUnrecognised, "Press Enter to confirm"},
+		{"mid-redraw, no composer and no chrome", []byte(midRedrawFrame), composerUnrecognised, "────"},
+		{"post-Enter gap before spinner", []byte(postEnterGapFrame), composerUnrecognised, "bypass permissions"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -143,8 +146,11 @@ func TestSendKeysRefusesSuccessWithoutTurnEvidence(t *testing.T) {
 			if !strings.Contains(err.Error(), "turn not submitted") {
 				t.Errorf("error should name the unsubmitted turn: %v", err)
 			}
-			if !strings.Contains(err.Error(), composerStateName(composerUnrecognised)) {
-				t.Errorf("error should name the unrecognised state: %v", err)
+			if got := classifyComposer(tc.frame); got != tc.wantState {
+				t.Errorf("classifyComposer = %s, want %s", composerStateName(got), composerStateName(tc.wantState))
+			}
+			if !strings.Contains(err.Error(), composerStateName(tc.wantState)) {
+				t.Errorf("error should name the %s state: %v", composerStateName(tc.wantState), err)
 			}
 			if !strings.Contains(err.Error(), tc.wantTail) {
 				t.Errorf("error should quote the frame tail (want %q): %v", tc.wantTail, err)
