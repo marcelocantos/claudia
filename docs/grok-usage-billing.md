@@ -81,7 +81,7 @@ when a host needs spend automation outside claudia’s Task event model.
 
 | System | Who | What | Programmatic access |
 | --- | --- | --- | --- |
-| **SuperGrok consumer** | grok.com / apps / Build subscription | Shared weekly pool, Extra Usage Credits, Auto Top Up | **None documented** |
+| **SuperGrok consumer** | grok.com / apps / Build subscription | Shared weekly pool, Extra Usage Credits, Auto Top Up | **None documented.** claudia reads the weekly pool **opt-in** via the undocumented `cli-chat-proxy` billing endpoint — see [Verified: what claudia uses](#verified-what-claudia-uses) |
 | **API team prepaid** | [console.x.ai](https://console.x.ai) teams | Prepaid credits, invoices, spending limits, usage analytics | **Management API** (documented) |
 
 `/usage` in Build is the SuperGrok consumer view (plus session counters).
@@ -111,6 +111,15 @@ as other `x.ai/*` methods). They are **not** REST paths on
 and ignores private `_x.ai/*` / product extensions unless explicitly
 added later.
 
+**`x.ai/billing` is pager-internal — not reachable from an external ACP
+client.** The documented extension-method set (`~/.grok/docs/user-guide/15-agent-mode.md`)
+covers `x.ai/{fs,git,search,terminal,session,auth,telemetry}/*` but **not**
+`billing`; the agent advertises available extensions in its `initialize`
+response and dispatches unknown ones through a single `ext_method` handler
+that returns "Method not found". Calling `x.ai/billing` over `grok agent
+stdio` therefore fails — the pager reaches billing over upstream HTTP, not
+its own ACP channel. claudia takes the same HTTP route (below).
+
 ### Upstream HTTP (agent ↔ xAI product backends)
 
 From binary strings (paths and errors; **undocumented**):
@@ -124,8 +133,46 @@ From binary strings (paths and errors; **undocumented**):
 - Proxy host in CLI config defaults: `https://cli-chat-proxy.grok.com/v1`
   (inference + settings; enterprise allowlist docs list this host)
 
-Exact base URL, schema, and stability are **not published**. Suitable for
-forensics only — not for claudia or host automation.
+Exact base URL, schema, and stability are **not published**.
+
+## Verified: what claudia uses
+
+Captured live 2026-08-10. claudia's Grok plan-usage path (`plan_usage_grok.go`,
+opt-in behind `CLAUDIA_GROK_USAGE=1`) replicates the pager's own upstream call:
+
+```
+GET https://cli-chat-proxy.grok.com/v1/billing?format=credits
+Authorization: Bearer <grok login OIDC token from ~/.grok/auth.json>
+X-XAI-Token-Auth: xai-grok-cli
+```
+
+Real 200 response (weekly SuperGrok pool):
+
+```json
+{"config":{"currentPeriod":{"type":"USAGE_PERIOD_TYPE_WEEKLY",
+  "start":"2026-08-08T01:53:09.930537+00:00","end":"2026-08-15T01:53:09.930537+00:00"},
+  "creditUsagePercent":100.0,"onDemandCap":{"val":0},"onDemandUsed":{"val":0},
+  "productUsage":[{"product":"GrokBuild","usagePercent":100.0},{"product":"GrokChat"}],
+  "isUnifiedBillingUser":true,"prepaidBalance":{"val":0},
+  "billingPeriodStart":"2026-08-08T01:53:09.930537+00:00",
+  "billingPeriodEnd":"2026-08-15T01:53:09.930537+00:00"}}
+```
+
+Mapping (weekly window only — no rolling session window is published here):
+
+- **Remaining %** = `100 - config.creditUsagePercent`. `creditUsagePercent`
+  is *used*, verified against the CLI panel ("Weekly limit left: 0%" at
+  `creditUsagePercent: 100`) — guessing the polarity would report the exact
+  opposite.
+- **ResetsAt** ← `config.currentPeriod.end` (fallback `billingPeriodEnd`).
+- `subscription_tier` is **absent** from the HTTP body (the ACP variant of the
+  payload carries it), so `PlanType` is empty on this path.
+
+Fail-loud contract: a missing/out-of-range `creditUsagePercent`, a non-200
+(e.g. 401 on an expired token — grok owns refresh), or an unparseable body all
+yield `PlanUsageUnavailable` **with a reason**, never a fabricated number. This
+is why the surface is opt-in: it can break on any grok update, and when it does
+it degrades loudly.
 
 Response-shaped field names seen in the binary for billing structs
 include (names only; no schema guarantee):

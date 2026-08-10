@@ -5,6 +5,7 @@ package claudia
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
@@ -90,6 +91,19 @@ type PlanUsageArgs struct {
 	CodexUsageURL string
 	// Now overrides wall clock for FetchedAt (tests). Zero uses time.Now.
 	Now time.Time
+	// GrokUnstableUsage opts into reading Grok plan usage from the undocumented
+	// cli-chat-proxy billing endpoint. Off by default — the surface is private
+	// and unversioned. CLAUDIA_GROK_USAGE=1 is an equivalent opt-in.
+	GrokUnstableUsage bool
+	// GrokAccessToken overrides the grok OIDC token (default: ~/.grok/auth.json).
+	GrokAccessToken string
+	// GrokAuthPath overrides the path to grok auth.json (tests).
+	GrokAuthPath string
+	// GrokBillingURL overrides the grok billing endpoint (tests).
+	GrokBillingURL string
+	// GrokBillingRaw injects a captured billing response for tests, bypassing
+	// the network call entirely.
+	GrokBillingRaw json.RawMessage
 }
 
 // AllPlanUsageArgs configures [QueryAllPlanUsage].
@@ -110,6 +124,17 @@ type AllPlanUsageArgs struct {
 	CodexUsageURL string
 	// Now overrides wall clock for FetchedAt (tests). Zero uses time.Now.
 	Now time.Time
+	// GrokUnstableUsage opts into the undocumented Grok billing surface
+	// (see PlanUsageArgs.GrokUnstableUsage). CLAUDIA_GROK_USAGE=1 is equivalent.
+	GrokUnstableUsage bool
+	// GrokAccessToken overrides the grok OIDC token (default: ~/.grok/auth.json).
+	GrokAccessToken string
+	// GrokAuthPath overrides the path to grok auth.json (tests).
+	GrokAuthPath string
+	// GrokBillingURL overrides the grok billing endpoint (tests).
+	GrokBillingURL string
+	// GrokBillingRaw injects a captured billing response for tests.
+	GrokBillingRaw json.RawMessage
 	// Providers limits which providers to query. Empty means all supported
 	// providers (Claude, Codex, Grok, Bedrock).
 	Providers []Provider
@@ -140,9 +165,10 @@ func QueryPlanUsage(ctx context.Context, args *PlanUsageArgs) (PlanUsage, error)
 	case ProviderCodex:
 		return queryCodexPlanUsage(ctx, client, args, now)
 	case ProviderGrok:
-		return unavailablePlan(ProviderGrok, now,
-			"SuperGrok weekly/session remaining has no documented public API; "+
-				"use TUI /usage or grok.com Settings → Usage (see docs/grok-usage-billing.md)"), nil
+		// SuperGrok has no documented public API; the weekly pool is read from
+		// the undocumented x.ai/billing ACP extension, opt-in only. Without the
+		// opt-in this returns unavailable with a reason (see queryGrokPlanUsage).
+		return queryGrokPlanUsage(ctx, args, now), nil
 	case ProviderBedrock:
 		return unavailablePlan(ProviderBedrock, now,
 			"AWS Bedrock does not publish Claude-style session/weekly subscription remaining; "+
@@ -176,6 +202,11 @@ func QueryAllPlanUsage(ctx context.Context, args *AllPlanUsageArgs) ([]PlanUsage
 			ClaudeUsageURL:    args.ClaudeUsageURL,
 			CodexUsageURL:     args.CodexUsageURL,
 			Now:               args.Now,
+			GrokUnstableUsage: args.GrokUnstableUsage,
+			GrokAccessToken:   args.GrokAccessToken,
+			GrokAuthPath:      args.GrokAuthPath,
+			GrokBillingURL:    args.GrokBillingURL,
+			GrokBillingRaw:    args.GrokBillingRaw,
 		})
 		if err != nil {
 			// Programmer / unknown-provider errors propagate.
