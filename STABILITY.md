@@ -14,6 +14,10 @@ that contract takes effect.
 
 Snapshot as of: v0.17.0.
 
+> **Unsnapshotted since v0.21.0:** the `ladder` tiered-cognition packages
+> and `ProviderOllama` are new public surface that this document does not
+> yet enumerate. Tracked by 🎯T29.
+
 ## Interaction surface
 
 The exhaustive list of public-facing items in the module. Each item

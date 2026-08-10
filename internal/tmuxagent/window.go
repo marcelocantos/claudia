@@ -97,7 +97,7 @@ func wrapExitErr(err error) error {
 // shellJoin quotes argv so it can be passed as a single shell-command
 // string to tmux new-window / send-keys. Uses POSIX single-quote
 // semantics: any character other than ' is safe inside '...', and
-// embedded ' is escaped as '\'' (close-quote, escaped quote,
+// embedded ' is escaped as '\” (close-quote, escaped quote,
 // reopen-quote). Arguments containing only safe characters are
 // emitted bare.
 func shellJoin(argv []string) string {

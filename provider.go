@@ -32,6 +32,11 @@ const (
 	// ProviderBedrock uses Anthropic Claude models via AWS Bedrock
 	// ConverseStream (API path; no local claude CLI). Task mode only in v1.
 	ProviderBedrock Provider = "bedrock"
+
+	// ProviderOllama is local inference through an Ollama daemon. Its
+	// cost is latency rather than money, which is why it reports no cost
+	// capability instead of reporting a spend of zero.
+	ProviderOllama Provider = "ollama"
 )
 
 // Capability reporting (Capability, CapabilityStatus, CapabilityError,
