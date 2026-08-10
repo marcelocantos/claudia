@@ -42,6 +42,12 @@ Claude flags are semantically identical: `SandboxMode` and
 `ApprovalPolicy` are passed as Codex flags, while Claude Session mode
 continues to use `PermissionMode` and `DisallowTools`.
 
+Before spawn, claudia runs `PreflightCodexAuth`: it requires ChatGPT
+subscription OAuth (`auth_mode=chatgpt` with a non-empty access token in
+`~/.codex/auth.json`, overridable via `CLAUDIA_CODEX_AUTH_PATH`) and
+fails closed when the path would use API-key / `OPENAI_API_KEY` per-token
+billing. See [docs/codex-subscription-spike.md](docs/codex-subscription-spike.md).
+
 Codex persistent Session mode is experimental and currently fails
 closed. `Start(claudia.Config{Provider: claudia.ProviderCodex})`
 returns `*claudia.CapabilityError` with `Status ==
@@ -72,7 +78,12 @@ Headless `streaming-json` maps `text` → `TaskEventText`, terminal
 `end.sessionId` → `TaskEventInit` then `TaskEventResult`, and
 `error` → `TaskEventError`. Thought deltas are ignored. Tool-use
 and cost/usage are not present on this public stream — do not expect
-Claude-parity accounting or tool events.
+Claude-parity accounting or tool events. SuperGrok weekly limit /
+Extra Credits / Auto Top Up (`/usage` in the TUI) is a separate
+consumer-billing surface with **no documented API**;
+`grok -p "/usage"` is only a model prompt, not the slash command.
+Console API team prepaid balance uses the Management API, not the
+Grok Build CLI. Details: [docs/grok-usage-billing.md](docs/grok-usage-billing.md).
 
 Grok persistent Session mode uses ACP over `grok agent stdio`:
 
@@ -136,6 +147,33 @@ binary discovery. `Start(ProviderBedrock)` fails closed with
 `CapabilityError`. Work-account setup:
 [docs/bedrock-work-account.md](docs/bedrock-work-account.md). Design:
 [docs/bedrock-provider.md](docs/bedrock-provider.md).
+
+## Plan usage (subscription remaining + rollover)
+
+Per-run token `Usage` / `CostUSD` on Task events is **not** the same as
+subscription plan remaining. For fleet backoff and host dashboards, use:
+
+```go
+pu, err := claudia.QueryPlanUsage(ctx, &claudia.PlanUsageArgs{
+    Provider: claudia.ProviderClaude, // or ProviderCodex, ProviderGrok, ProviderBedrock
+})
+// pu.Status: available | unavailable
+// pu.Windows: session / weekly with RemainingPercent + ResetsAt when published
+
+all, err := claudia.QueryAllPlanUsage(ctx, nil)
+```
+
+| Provider | Behaviour |
+| --- | --- |
+| Claude | OAuth `GET /api/oauth/usage` → session (5h) + weekly (7d) when signed into Claude.ai |
+| Codex | ChatGPT `wham/usage` → windows classified by `limit_window_seconds` |
+| Grok | **Unavailable** (no documented SuperGrok remaining API) |
+| Bedrock | **Unavailable** (no subscription remaining surface) |
+
+Never invent numbers: missing auth, HTTP errors, or unpublished windows
+yield `Status == PlanUsageUnavailable` with an explicit `Reason`. Full
+semantics: [docs/plan-usage.md](docs/plan-usage.md). Grok research:
+[docs/grok-usage-billing.md](docs/grok-usage-billing.md).
 
 ## Task mode: essential patterns
 
@@ -251,6 +289,26 @@ cost in `TaskEventResult`), Session mode totals usage over the whole
 session — this is intentional: a persistent session doesn't have clean
 per-turn billing boundaries from the API's perspective.
 
+**Verifying the model (no silent fallback)**: the `Model` you pass in
+`Config`/`TaskConfig` is the model you *requested*; the model the backend
+actually *resolved* is reported back — `Agent.Model()` (Session mode) and
+`Task.Model()` / `TaskEvent.Model` on the init event (Task mode). Claude
+aliases like `"opus"` resolve to a full id (`"claude-opus-5"`); Bedrock
+reports the ModelID passed to ConverseStream; Codex app-server reports
+`result.model` on thread start. There is **no** model allowlist in the
+public API — correctness is resolution observability + fail-loud errors.
+
+Claude does not fail fast on a bad `--model`: it echoes the string on
+init, then fails mid-turn with `message.model` `"<synthetic>"`,
+`error: "model_not_found"`, and (in stream-json) a result with
+`is_error: true` even when `subtype` is `"success"`. Task mode surfaces
+that as `TaskEventError` whose `ErrorMsg` names the model. Session mode
+sets `Event.IsError` and `WaitForResponse` returns that text as an
+`error` immediately — it never hangs to context timeout and never
+treats the synthetic message as a normal reply. The model is fixed at
+process launch: pass it on every spawn; it cannot be changed on an
+already-running or attached instance except via an in-session `/model`.
+
 **Readiness detection**: The TUI-ready detector polls `tmux capture-pane`
 every 50 ms and gives up after 30 s. These values are fixed and not
 exposed via `Config`. On macOS the typical ready time is ~680 ms; the
@@ -313,7 +371,14 @@ host program owns a single short-lived agent, skip the Registry.
    Service whose `$PATH` excludes user-local install dirs. Windows is
    not supported; use WSL. Task mode does not require tmux. Codex
    resolver checks `CODEX_BIN`, then `codex` on `$PATH`, then known
-   locations including `/Applications/Codex.app/Contents/Resources/codex`.
+   locations including `/Applications/ChatGPT.app/Contents/Resources/codex`
+   (post desktop merger) and the legacy
+   `/Applications/Codex.app/Contents/Resources/codex`. Codex Task mode
+   also runs a subscription auth preflight before spawn: ChatGPT OAuth
+   (`auth_mode=chatgpt` + `tokens.access_token` in `~/.codex/auth.json`,
+   or `CLAUDIA_CODEX_AUTH_PATH`) is required; if `OPENAI_API_KEY` is set
+   or auth falls through to API-key mode, the spawn fails closed with a
+   loud warning so the no-per-token path is verified, not assumed.
    Grok Build CLI resolver checks `GROK_BIN`, then `grok` on `$PATH`,
    then known locations including `~/.grok/bin/grok`.
 
@@ -323,19 +388,48 @@ host program owns a single short-lived agent, skip the Registry.
    |------------|--------|-------|----------------|
    | Task prompts | Supported | Supported via `codex exec --json` | Supported via `grok -p --output-format streaming-json` |
    | Task resume | Supported | Supported via `codex exec resume --json` | Supported via `--resume` |
-   | Task usage / cost | Supported | Tokens yes; cost unavailable | Not on streaming-json (no tool_use/cost events) |
+   | Task usage / cost | Supported | Tokens yes; cost unavailable | Not on streaming-json (no tool_use/cost events); SuperGrok `/usage` panel has no public API ([docs/grok-usage-billing.md](docs/grok-usage-billing.md)) |
    | Persistent Session | Supported | Experimental fail-closed | Supported via ACP (`grok agent stdio`) |
    | Rewind | Supported | Unsupported without public fork/resume proof | Unsupported (no private session-file rewrite) |
    | tmux attach | Supported | Unsupported | Unsupported (ACP is process-local; AttachCommand empty) |
    | Terminal byte log | Supported | Unsupported | Unsupported |
-   | Permission/tool restrictions | Supported | Codex sandbox/approval flags only | `--permission-mode` / `--allow` / `--deny`; Task hardcodes bypassPermissions; not Claude-equivalent |
-   | Image inputs and web search | Provider-dependent | Not surfaced by claudia yet | Not surfaced by claudia yet |
+   | Permission mode | Supported | Unsupported — Codex sandbox/approval flags are Codex-native, not a Claude mapping | Unsupported — Task hardcodes `--permission-mode bypassPermissions` |
+   | Tool restrictions (`DisallowTools`) | Supported | Unsupported — `codex exec` has no per-tool disallow flag, so `Task.Run` **refuses** the run | Unsupported — `grok` *has* `--deny` and `--disallowed-tools`, but claudia translates `DisallowTools` into neither, so `Task.Run` **refuses** the run |
+   | Image inputs | Unsupported (no claudia API on any provider) | Unsupported | Unsupported |
+   | Web search | Supported (WebSearch tool, restrictable) | Unsupported — claudia does not bind `--search` | Unsupported |
 
-2. **Sub-agents are disabled.** claudia always passes
+   This table is generated from the same claims production reads. Query
+   it with `claudia.ProviderCapabilityMatrix(provider)`, or gate one
+   call with `claudia.CheckCapability(provider, capability)`, which
+   returns the `*claudia.CapabilityError` the operation would return.
+   Unknown providers and unclaimed capabilities report
+   `CapabilityUnsupported` — silence never reads as parity with Claude.
+
+2. **Sub-agents are disabled — on Claude.** Claude Session and Task
+   modes always pass
    `--disallowedTools Agent,TeamCreate,TeamDelete,SendMessage,EnterWorktree`.
    The host Go program owns the process lifecycle; nested claudia
    sessions would fight over PTY ownership and transcript tailing.
    Don't try to re-enable these.
+
+   Those are Claude Code tool names, and `BaseDisallowedTools` is
+   applied on Claude only — never on Codex, Grok or Bedrock. Rather
+   than pretend otherwise, the non-Claude providers report
+   `CapabilityToolRestrictions` as unsupported, and a Codex **or Grok**
+   task carrying `DisallowTools` is refused outright rather than run
+   with the restriction dropped (see the matrix above).
+
+   The two refusals have different causes, and the published reasons
+   say which. `codex exec` has no per-tool disallow flag at all. `grok`
+   does — `--deny <RULE>` gates invocations and `--disallowed-tools
+   <IDS>` strips tools from the toolset — but claudia drives Grok Task
+   with a hardcoded `--permission-mode bypassPermissions`, which `grok`
+   resolves by appending a catch-all allow rule, and `grok` accepts
+   tool names it does not recognise without complaint. An untranslated
+   name would therefore be dropped exactly as silently as it is today,
+   under a claim that said otherwise. The gap is claudia's, not Grok's,
+   and closing it means wiring the translation, the argv builder and
+   the claim in one change.
 
 3. **Session resumption is automatic.** `Start` checks whether
    `<SessionID>.jsonl` exists under Claude Code's project directory.

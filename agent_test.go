@@ -316,6 +316,12 @@ func TestStartUsesInjectedBackendLifecycle(t *testing.T) {
 }
 
 func TestStartCodexSessionFailsWithCapabilityError(t *testing.T) {
+	// 🎯T4.5 has not landed, so production Codex Session Start must stay
+	// experimental and fail closed.
+	state := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", state)
+
 	_, err := Start(Config{Provider: ProviderCodex, WorkDir: t.TempDir()})
 	if err == nil {
 		t.Fatal("Start with ProviderCodex returned nil error")
@@ -326,6 +332,44 @@ func TestStartCodexSessionFailsWithCapabilityError(t *testing.T) {
 	}
 	if capErr.Provider != ProviderCodex || capErr.Capability != "session" || capErr.Status != CapabilityExperimental {
 		t.Errorf("CapabilityError = %+v", capErr)
+	}
+
+	// Refusing late is not refusing. startWithBackend mkdirs and opens
+	// the terminal log before it ever reaches the backend, so a Start
+	// that only fails once the backend is asked leaves a session's
+	// worth of state on disk for a session that was never allowed to
+	// exist. Assert the gate fires before any of that.
+	if entries, err := os.ReadDir(filepath.Join(state, "claudia")); err == nil && len(entries) > 0 {
+		t.Errorf("refused Codex Start left %d state entries under %s; the capability gate ran too late",
+			len(entries), filepath.Join(state, "claudia"))
+	}
+}
+
+// emptyAgentBackend models the mistake a provider backend makes when its
+// refusal is derived from something that can go nil — e.g. returning
+// CheckCapability(...) directly, which becomes nil the moment the claim
+// flips to supported.
+type emptyAgentBackend struct{}
+
+func (emptyAgentBackend) Capabilities() providerCapabilities { return providerCapabilities{} }
+
+func (emptyAgentBackend) StartAgent(agentStartRequest) (*agentStart, error) { return nil, nil }
+
+// TestStartWithBackendRejectsEmptyStart: neither a session nor an error
+// must be reported as an error here, not dereferenced twenty lines later
+// as a nil *agentStart. Found by mutating the Codex session claim to
+// "supported": the panic landed in startWithBackend with a stack that
+// said nothing about the capability matrix that caused it.
+func TestStartWithBackendRejectsEmptyStart(t *testing.T) {
+	_, err := startWithBackend(
+		Config{WorkDir: t.TempDir(), TermLogPath: "-"},
+		emptyAgentBackend{},
+	)
+	if err == nil {
+		t.Fatal("startWithBackend accepted a nil *agentStart with no error")
+	}
+	if !strings.Contains(err.Error(), "no session and no error") {
+		t.Errorf("err = %v, want it to name the empty backend result", err)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -117,13 +118,51 @@ func TestResolveCodexBin(t *testing.T) {
 }
 
 func TestCodexBinCandidatesIncludeDesktopAppBundle(t *testing.T) {
-	const appBundleCodex = "/Applications/Codex.app/Contents/Resources/codex"
+	want := []string{
+		"/Applications/ChatGPT.app/Contents/Resources/codex",
+		"/Applications/Codex.app/Contents/Resources/codex",
+	}
+	have := map[string]bool{}
 	for _, candidate := range codexBinCandidates() {
-		if candidate == appBundleCodex {
-			return
+		have[candidate] = true
+	}
+	for _, path := range want {
+		if !have[path] {
+			t.Fatalf("codexBinCandidates() does not include %s", path)
 		}
 	}
-	t.Fatalf("codexBinCandidates() does not include %s", appBundleCodex)
+}
+
+func TestResolveCodexBinPrefersChatGPTAppOverCodexApp(t *testing.T) {
+	// After the desktop merger, ChatGPT.app is the install that exists on
+	// owner machines; Codex.app may be absent. When both exist, prefer ChatGPT.
+	chatgpt := "/Applications/ChatGPT.app/Contents/Resources/codex"
+	legacy := "/Applications/Codex.app/Contents/Resources/codex"
+	errNotFound := errors.New("not found")
+	statExisting := func(paths ...string) func(string) (os.FileInfo, error) {
+		exists := make(map[string]bool, len(paths))
+		for _, p := range paths {
+			exists[p] = true
+		}
+		return func(path string) (os.FileInfo, error) {
+			if exists[path] {
+				return nil, nil
+			}
+			return nil, errNotFound
+		}
+	}
+	got, err := resolveCodexBinFrom(
+		func(string) string { return "" },
+		func(string) (string, error) { return "", errNotFound },
+		statExisting(chatgpt, legacy),
+		[]string{chatgpt, legacy},
+	)
+	if err != nil {
+		t.Fatalf("resolveCodexBinFrom: %v", err)
+	}
+	if got != chatgpt {
+		t.Errorf("got %q, want ChatGPT.app path %q", got, chatgpt)
+	}
 }
 
 func TestResolveGrokBin(t *testing.T) {
@@ -221,6 +260,72 @@ func TestGrokBinCandidatesIncludeDotGrokBin(t *testing.T) {
 	t.Fatalf("grokBinCandidates() does not include %s", want)
 }
 
+// TestProviderCapabilityMatrixIsTotal: every provider must make an
+// explicit claim about every reported capability. A missing entry is the
+// failure 🎯T4.6 targets — a gap nobody wrote down, which a caller
+// discovers by watching it not work.
+func TestProviderCapabilityMatrixIsTotal(t *testing.T) {
+	providers := []Provider{ProviderClaude, ProviderCodex, ProviderGrok, ProviderBedrock}
+	for _, provider := range providers {
+		claims, ok := providerCapabilityClaims[provider]
+		if !ok {
+			t.Errorf("provider %q has no capability claims at all", provider)
+			continue
+		}
+		for _, capability := range reportedCapabilities() {
+			claim, ok := claims[capability]
+			if !ok {
+				t.Errorf("provider %q makes no claim about %s", provider, capability)
+				continue
+			}
+			switch claim.status {
+			case CapabilitySupported:
+			case CapabilityUnsupported, CapabilityExperimental:
+				if claim.reason == "" {
+					t.Errorf("provider %q %s is %q with no reason", provider, capability, claim.status)
+				}
+			default:
+				t.Errorf("provider %q %s has unknown status %q", provider, capability, claim.status)
+			}
+		}
+		for capability := range claims {
+			if !slices.Contains(reportedCapabilities(), capability) {
+				t.Errorf("provider %q claims unreported capability %s", provider, capability)
+			}
+		}
+	}
+}
+
+// TestCheckCapabilityFailsClosed: an unknown provider or an unclaimed
+// capability must report unsupported, never inherit Claude's answer.
+func TestCheckCapabilityFailsClosed(t *testing.T) {
+	if err := CheckCapability(ProviderClaude, CapabilityTask); err != nil {
+		t.Errorf("CheckCapability(claude, task) = %v, want nil", err)
+	}
+	if err := CheckCapability("", CapabilityTask); err != nil {
+		t.Errorf("CheckCapability(\"\", task) = %v, want nil (empty means claude)", err)
+	}
+	for _, tc := range []struct {
+		provider   Provider
+		capability Capability
+	}{
+		{"nonesuch", CapabilityTask},
+		{ProviderCodex, "teleportation"},
+	} {
+		err := CheckCapability(tc.provider, tc.capability)
+		var capErr *CapabilityError
+		if !errors.As(err, &capErr) {
+			t.Errorf("CheckCapability(%q, %s) = %T %v, want *CapabilityError",
+				tc.provider, tc.capability, err, err)
+			continue
+		}
+		if capErr.Status != CapabilityUnsupported {
+			t.Errorf("CheckCapability(%q, %s) status = %q, want unsupported",
+				tc.provider, tc.capability, capErr.Status)
+		}
+	}
+}
+
 func TestCapabilityErrorMessage(t *testing.T) {
 	err := unsupportedCapability(ProviderCodex, "rewind", "requires public fork API")
 	msg := err.Error()
@@ -255,6 +360,8 @@ func TestCodexAppServerFixturesAreValidJSONL(t *testing.T) {
 		{"testdata/codex/app-server/failure.jsonl", "model failed", "turn/completed"},
 		{"testdata/codex/app-server/interrupted.jsonl", "turn_interrupted", "turn/completed"},
 		{"testdata/codex/app-server/unsupported-capability.jsonl", "experimentalApi", ""},
+		{"testdata/codex/app-server/live-turn.jsonl", "T4.4-ok", "turn/completed"},
+		{"testdata/codex/app-server/lifecycle.jsonl", "thr_fork", "turn/completed"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.path, func(t *testing.T) {

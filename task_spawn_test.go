@@ -139,6 +139,15 @@ func TestHermeticTaskRunClaudeErrorEvent(t *testing.T) {
 func TestHermeticTaskRunCodexSpawn(t *testing.T) {
 	bin := writeFakeCLI(t, "testdata/codex/exec/success.jsonl", 0)
 	t.Setenv("CODEX_BIN", bin)
+	// Subscription auth preflight (🎯T14.1) must pass hermetically without
+	// the machine's real ~/.codex/auth.json.
+	authDir := t.TempDir()
+	authPath := filepath.Join(authDir, "auth.json")
+	if err := os.WriteFile(authPath, []byte(`{"auth_mode":"chatgpt","tokens":{"access_token":"hermetic-tok"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CLAUDIA_CODEX_AUTH_PATH", authPath)
+	t.Setenv("OPENAI_API_KEY", "")
 
 	task := NewTask(TaskConfig{
 		ID:       "hermetic-codex",

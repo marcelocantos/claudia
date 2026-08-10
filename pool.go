@@ -15,8 +15,42 @@ import (
 	"sync"
 	"time"
 
+	"github.com/marcelocantos/claudia/internal/broker"
 	"github.com/marcelocantos/claudia/internal/tmuxagent"
 )
+
+// This file is broker policy: it decides when a warm pool window has expired
+// and how long a released window stays alive. Those are exactly the timing
+// decisions 🎯T2.5 (idle reaping) and 🎯T2.3 (pool drain) must be able to verify
+// deterministically, so the file reads time through the injected Clock seam
+// rather than the wall clock. The marker below enrols it in the policy guard
+// (internal/broker/policy_guard_test.go), which fails the build if any
+// time.Now/After/Sleep call reappears here.
+//
+//claudia:policy
+var poolClock broker.Clock = broker.SystemClock{}
+
+// poolWindowExpired reports whether a window's @claudia-deadline option, as
+// stored by a keep_alive_for release, has passed at now. A missing, malformed,
+// or non-positive deadline means "no deadline", never "expired" — a parse slip
+// must not become a licence to kill a live window.
+func poolWindowExpired(now time.Time, deadlineVal string, hasDeadline bool) bool {
+	if !hasDeadline {
+		return false
+	}
+	dl, err := strconv.ParseInt(strings.TrimSpace(deadlineVal), 10, 64)
+	if err != nil || dl <= 0 {
+		return false
+	}
+	return now.Unix() >= dl
+}
+
+// poolKeepAliveDeadline is the Unix deadline a keep_alive_for:<secs> release
+// stamps on a window: the eviction sweep of the first Acquire at or after this
+// instant kills it.
+func poolKeepAliveDeadline(now time.Time, secs int64) int64 {
+	return now.Add(time.Duration(secs) * time.Second).Unix()
+}
 
 // poolMu serialises pool operations within this process. tmux itself
 // serialises operations server-side, but we need the check-then-set
@@ -94,7 +128,7 @@ func acquireLocked(ctx context.Context, cfg Config, workDir, disallowed, windowN
 		return nil, fmt.Errorf("pool list windows: %w", err)
 	}
 
-	now := time.Now().Unix()
+	now := poolClock.Now()
 
 	// Collect all windows matching our pool key, categorised:
 	//   - idle: not held and not expired
@@ -113,16 +147,9 @@ func acquireLocked(ctx context.Context, cfg Config, workDir, disallowed, windowN
 		isHeld := strings.TrimSpace(heldVal) == "1"
 
 		deadlineVal, hasDeadline := tmuxagent.GetWindowOption(w.ID, "claudia-deadline")
-		isExpired := false
-		if hasDeadline {
-			dl, dlErr := strconv.ParseInt(strings.TrimSpace(deadlineVal), 10, 64)
-			if dlErr == nil && dl > 0 && now >= dl {
-				isExpired = true
-			}
-		}
 
 		switch {
-		case isExpired:
+		case poolWindowExpired(now, deadlineVal, hasDeadline):
 			expired = append(expired, candidate{w.ID})
 		case isHeld:
 			held = append(held, candidate{w.ID})
@@ -372,7 +399,7 @@ func (a *Agent) Release(disposition string) error {
 		if err != nil || secs <= 0 {
 			return fmt.Errorf("pool: invalid keep_alive_for seconds %q", secsStr)
 		}
-		deadline := time.Now().Add(time.Duration(secs) * time.Second).Unix()
+		deadline := poolKeepAliveDeadline(poolClock.Now(), secs)
 
 		if a.tmuxCtrl != nil {
 			a.tmuxCtrl.Close()

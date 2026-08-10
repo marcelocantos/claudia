@@ -1,0 +1,9 @@
+{"id":3,"result":{"thread":{"id":"thr_lifecycle"},"model":"gpt-5.4","approvalPolicy":"never","cwd":"<WORKDIR>","sandbox":{"type":"readOnly","networkAccess":false}}}
+{"id":4,"result":{"thread":{"id":"thr_fork"}}}
+{"id":5,"result":{}}
+{"id":6,"result":{}}
+{"id":7,"result":{"turn":{"id":"turn_interrupt","status":"inProgress"}}}
+{"id":8,"result":{}}
+{"method":"turn/completed","params":{"threadId":"thr_fork","turn":{"id":"turn_interrupt","status":"interrupted"}}}
+{"method":"thread/archived","params":{"threadId":"thr_lifecycle"}}
+{"method":"thread/unarchived","params":{"threadId":"thr_lifecycle"}}

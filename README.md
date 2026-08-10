@@ -104,6 +104,15 @@ task := claudia.NewTask(claudia.TaskConfig{
 
 Grok live tests are opt-in (`CLAUDIA_GROK_LIVE=1`). Auth is whatever the
 installed `grok` CLI already uses (`grok login` or `XAI_API_KEY`).
+SuperGrok weekly usage / Extra Credits and console prepaid balance are
+**not** Task streams — see
+[docs/grok-usage-billing.md](docs/grok-usage-billing.md).
+
+**Plan remaining (all providers):** `QueryPlanUsage` /
+`QueryAllPlanUsage` expose subscription session + weekly % remaining and
+rollover times when a backend publishes them; Grok and Bedrock report
+explicit unavailable (never invented numbers). See
+[docs/plan-usage.md](docs/plan-usage.md).
 
 Bedrock Task mode is available by selecting `ProviderBedrock`. It calls
 AWS Bedrock ConverseStream and maps text deltas to `TaskEventText`:
@@ -191,6 +200,27 @@ tmux attach window. Rewind remains unsupported (`CapabilityUnsupported`).
 until a public app-server turn contract is proven. claudia does not
 scrape private session files or apply Claude transcript rewind rules to
 non-Claude providers.
+
+Provider gaps are published, not discovered at runtime. Every capability
+claudia reports on carries an explicit `supported` / `unsupported` /
+`experimental` status per provider:
+
+```go
+status := claudia.ProviderCapabilityStatus(
+    claudia.ProviderCodex, claudia.CapabilityRewind) // "unsupported"
+
+if err := claudia.CheckCapability(
+    claudia.ProviderCodex, claudia.CapabilityToolRestrictions); err != nil {
+    // *claudia.CapabilityError, with the documented rationale.
+}
+```
+
+`ProviderCapabilityMatrix(provider)` returns the whole table. Unknown
+providers and unclaimed capabilities report `CapabilityUnsupported`:
+silence never reads as parity with Claude. See
+[STABILITY.md](STABILITY.md) for the current Codex matrix — including
+that a Codex task carrying `DisallowTools` is refused, because `codex
+exec` has no per-tool disallow flag to honour it with.
 
 The PTY output is also captured to
 `$XDG_STATE_HOME/claudia/terms/<escaped-workdir>/<sessionID>.term`

@@ -93,10 +93,22 @@ func (b bedrockTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*t
 	}
 
 	// Bridge: honour cancel by closing consumption; streamer should observe ctx.
+	// Emit TaskEventInit with the resolved model id first so Task.Model() and
+	// consumers can assert requested-vs-resolved (Bedrock has no alias layer —
+	// the ModelID passed to ConverseStream is the resolved id).
 	out := make(chan TaskEvent, 16)
 	go func() {
 		defer close(out)
 		defer cancel()
+		initEv := TaskEvent{Type: TaskEventInit, Model: settings.ModelID}
+		if req.RawLog != nil {
+			req.RawLog([]byte(fmt.Sprintf(`{"provider":"bedrock","type":%q,"model":%q}`, initEv.Type, initEv.Model)))
+		}
+		select {
+		case out <- initEv:
+		case <-streamCtx.Done():
+			return
+		}
 		for {
 			select {
 			case <-streamCtx.Done():

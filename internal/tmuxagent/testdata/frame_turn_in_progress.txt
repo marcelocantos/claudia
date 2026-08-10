@@ -1,0 +1,24 @@
+    have an opinion about: the daily cockpit threw "ReferenceError:
+    isAgentOriginBubble is not defined" four times because jv-t381 was
+    mid-write in web/index.html while the daemon served it from disk.
+    Different target (🎯T375 owns the serving side, worker spawned) but the
+    same root condition — N workers writing one hot file with no boundary.
+
+    When you report, I need: SHA, named oracle commands with green output
+    read from each command's OWN exit status (never a pipeline's — 🎯T386),
+    and the mutation demonstration. Add an OVER-BROADNESS mutation as well as
+    the pre-fix one — something that should NOT trip your guard — so the
+    oracle is not merely permissive. That practice caught real weakness in
+    two gates today.
+
+    State plainly whether 🎯T254.2 worktree isolation is the right mechanism
+    or whether treeguard stands on its own; do not build a weaker guard
+    beside a stronger answer.
+
+    Local master only (🎯T104).
+
+────────────────────────────────────────────────────────────────────────────────
+❯ Press up to edit queued messages
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt · ← 2 agents
+                                                                            /rc

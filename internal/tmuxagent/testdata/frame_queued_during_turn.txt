@@ -1,0 +1,24 @@
+
+⏺ Diffs are clean — no sibling-target lines, pigeon telemetry untouched. Running
+  the final unit gate in the main tree.
+
+  Running 2 shell commands · 4s…
+  ⎿  $ until grep -q 'MAKE_EXIT'
+     /private/tmp/claude-501/-Users-marcelo-work-github-com-marcelocantos-orthog
+     raph/dc471182-0ef7-4936-9a4b-b0f711da4930/scratchpad/final-iostest.log
+     2>/dev/null; do sleep 10; done; S=/private/tmp/claude-501/-Users-marcelo-wo
+     rk-github-com-marcelocantos-orthograph/dc471182-0e… (4s)
+     (ctrl+b ctrl+b (twice) to run in background)
+
+✽ Mustering… (1m 40s · ↓ 5.0k tokens)
+
+────────────────────────────────────────────────────────────────────────────────
+❯ worktree remove --force`), so it does not linger like the other stale verify
+  worktrees in this repo.
+
+  Report: SHA + oracle commands + results + mutant table + declared residual.
+  I re-verify in a clean worktree and re-run your mutants myself before the
+  ledger moves.
+
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on · 1 shell                                        /rc

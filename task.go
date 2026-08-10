@@ -14,7 +14,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 )
 
 // TaskEventType identifies the kind of task event.
@@ -91,6 +90,11 @@ type TaskEvent struct {
 
 	// ErrorMsg contains the error description when IsError is true.
 	ErrorMsg string
+
+	// Model is the model the backend resolved for the run (TaskEventInit),
+	// e.g. "claude-opus-5" — the full id even when an alias was requested.
+	// Compare it against the requested model to detect a silent fallback.
+	Model string
 }
 
 // TaskStatus represents a task's lifecycle state.
@@ -113,9 +117,9 @@ const (
 	TaskStatusStopped TaskStatus = "stopped"
 )
 
-// TaskConfig holds the configuration for creating a Task.
-// BaseDisallowedTools are the tools no claudia-spawned agent may use,
-// in either Session or Task mode.
+// BaseDisallowedTools are the tools no claudia-spawned Claude agent may
+// use, in either Session or Task mode. It is applied on Claude only; the
+// names are Claude Code tools no other provider implements.
 //
 // Agents spawned by claudia are forbidden from creating their own
 // sub-agents: the host program owns the process lifecycle, and an agent
@@ -135,6 +139,7 @@ func disallowedToolList(extra []string) string {
 	return disallowed
 }
 
+// TaskConfig holds the configuration for creating a Task.
 type TaskConfig struct {
 	// ID is the caller-assigned unique identifier for this task.
 	ID string
@@ -161,8 +166,14 @@ type TaskConfig struct {
 	// Empty leaves Codex's default in place.
 	ApprovalPolicy string
 
-	// DisallowTools lists tool names to remove from this task, on top of
-	// BaseDisallowedTools which is always applied.
+	// DisallowTools lists tool names to remove from this task.
+	//
+	// Claude only. On Claude these are appended to BaseDisallowedTools
+	// and passed as --disallowedTools. Every other provider reports
+	// CapabilityToolRestrictions as unsupported, and Task.Run refuses a
+	// task carrying this field rather than spawning an agent whose tools
+	// were not actually removed. Check with CheckCapability before
+	// setting it on a non-Claude provider.
 	//
 	// A task that only reads text and emits text — a summariser, a
 	// classifier, a compactor — should disable shell, filesystem and
@@ -200,14 +211,15 @@ type Task struct {
 	approval string
 	disallow []string
 
-	mu         sync.Mutex
-	run        *taskRun
-	cancel     context.CancelFunc
-	status     TaskStatus
-	lastResult string
-	claudeID   string
-	onRawLog   RawLogFunc
-	backend    taskBackend
+	mu            sync.Mutex
+	run           *taskRun
+	cancel        context.CancelFunc
+	status        TaskStatus
+	lastResult    string
+	claudeID      string
+	resolvedModel string
+	onRawLog      RawLogFunc
+	backend       taskBackend
 }
 
 type taskRunRequest struct {
@@ -336,6 +348,16 @@ func (t *Task) ClaudeID() string {
 	return t.claudeID
 }
 
+// Model returns the model the backend resolved for this task, captured from
+// the init event (the full id even when an alias was requested). It is empty
+// until the first TaskEventInit arrives. Compare it against the requested
+// model to detect a silent fallback.
+func (t *Task) Model() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.resolvedModel
+}
+
 // SetRawLog sets the callback for raw NDJSON lines from the Claude process.
 func (t *Task) SetRawLog(fn RawLogFunc) {
 	t.mu.Lock()
@@ -456,6 +478,9 @@ func (t *Task) recordTaskEvent(ev TaskEvent) {
 			slog.Info("task session established",
 				"task", t.id, "claude_id", ev.SessionID)
 		}
+		if ev.Model != "" && t.resolvedModel == "" {
+			t.resolvedModel = ev.Model
+		}
 		t.mu.Unlock()
 	case TaskEventResult:
 		t.mu.Lock()
@@ -497,6 +522,7 @@ func (claudeTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*task
 	}
 	cmd := exec.CommandContext(ctx, claudeBin, args...)
 	cmd.Dir = req.WorkDir
+	setTaskProcessGroup(cmd)
 
 	// Unset CLAUDECODE to avoid nested session detection.
 	cmd.Env = filterEnv(os.Environ(), "CLAUDECODE")
@@ -514,6 +540,7 @@ func (claudeTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*task
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start claude: %w", err)
 	}
+	armTaskProcessGroupKill(ctx, cmd)
 
 	go func() {
 		scanner := bufio.NewScanner(stderr)
@@ -556,17 +583,36 @@ func (claudeTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*task
 	}()
 
 	return &taskRun{
-		events: ch,
-		interrupt: func() error {
-			if cmd.Process == nil {
-				return nil
-			}
-			return cmd.Process.Signal(syscall.SIGINT)
-		},
+		events:    ch,
+		interrupt: func() error { return interruptTaskProcess(cmd) },
 	}, nil
 }
 
 func (codexTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*taskRun, error) {
+	// 🎯T4.6: `codex exec` has no per-tool disallow flag, so a caller who
+	// asks for tool restrictions and gets a run anyway has been silently
+	// handed a fully-armed agent. That is the exact shape of the incident
+	// BaseDisallowedTools documents. Refuse before spawning rather than
+	// dropping the request on the floor.
+	if len(req.DisallowTools) > 0 {
+		return nil, CheckCapability(ProviderCodex, CapabilityToolRestrictions)
+	}
+
+	// 🎯T14.1: refuse to spawn on API-key / missing OAuth so Task mode never
+	// silently falls through to per-token OpenAI billing.
+	pf, err := ensureCodexSubscriptionAuth(nil)
+	if err != nil {
+		return nil, err
+	}
+	for _, w := range pf.Warnings {
+		slog.Warn(w)
+	}
+	slog.Debug("codex auth preflight",
+		"mode", pf.Mode,
+		"auth_path", pf.AuthPath,
+		"subscription_ok", pf.SubscriptionOK,
+	)
+
 	codexBin, err := resolveCodexBin()
 	if err != nil {
 		return nil, err
@@ -576,6 +622,7 @@ func (codexTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*taskR
 	slog.Debug("spawning codex task", "args", args)
 	cmd := exec.CommandContext(ctx, codexBin, args...)
 	cmd.Dir = req.WorkDir
+	setTaskProcessGroup(cmd)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -588,6 +635,7 @@ func (codexTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*taskR
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start codex: %w", err)
 	}
+	armTaskProcessGroupKill(ctx, cmd)
 
 	go func() {
 		scanner := bufio.NewScanner(stderr)
@@ -630,13 +678,8 @@ func (codexTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*taskR
 	}()
 
 	return &taskRun{
-		events: ch,
-		interrupt: func() error {
-			if cmd.Process == nil {
-				return nil
-			}
-			return cmd.Process.Signal(syscall.SIGINT)
-		},
+		events:    ch,
+		interrupt: func() error { return interruptTaskProcess(cmd) },
 	}, nil
 }
 
@@ -664,6 +707,29 @@ func codexTaskArgs(req taskRunRequest) []string {
 }
 
 func (grokTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*taskRun, error) {
+	// 🎯T23: the fail-open defect 🎯T4.6 closed for Codex, one provider
+	// over. grokTaskArgs never consulted req.DisallowTools, so a caller
+	// who stripped Bash, Write and WebFetch from a summariser got a
+	// fully-armed agent and no signal that anything had been ignored —
+	// the incident BaseDisallowedTools documents.
+	//
+	// Unlike `codex exec`, grok is not missing the machinery: `--deny
+	// <RULE>` gates invocations (`Bash(...)`, `Write(...)`,
+	// `WebFetch(...)`, … — Claude's own `Bash(cmd:*)` syntax is accepted)
+	// and `--disallowed-tools <IDS>` removes built-in tools outright. The
+	// refusal is about what claudia can prove, not what grok can do: Task
+	// hardcodes --permission-mode bypassPermissions, which grok resolves
+	// by appending a catch-all allow rule, and grok accepts a tool name it
+	// does not recognise without complaint. Emitting an untested
+	// translation would restore the silent drop while publishing a green
+	// claim on top of it, which is strictly worse than refusing. See
+	// docs/grok-provider-oracle-map.md for the live oracle that would
+	// settle it.
+	if len(req.DisallowTools) > 0 {
+		return nil, grokToolRestrictionRefusal(
+			CheckCapability(ProviderGrok, CapabilityToolRestrictions))
+	}
+
 	grokBin, err := resolveGrokBin()
 	if err != nil {
 		return nil, err
@@ -675,6 +741,7 @@ func (grokTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*taskRu
 	if req.WorkDir != "" {
 		cmd.Dir = req.WorkDir
 	}
+	setTaskProcessGroup(cmd)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -687,6 +754,7 @@ func (grokTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*taskRu
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start grok: %w", err)
 	}
+	armTaskProcessGroupKill(ctx, cmd)
 
 	go func() {
 		scanner := bufio.NewScanner(stderr)
@@ -729,20 +797,38 @@ func (grokTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*taskRu
 	}()
 
 	return &taskRun{
-		events: ch,
-		interrupt: func() error {
-			if cmd.Process == nil {
-				return nil
-			}
-			return cmd.Process.Signal(syscall.SIGINT)
-		},
+		events:    ch,
+		interrupt: func() error { return interruptTaskProcess(cmd) },
 	}, nil
+}
+
+// grokToolRestrictionRefusal turns the published tool_restrictions claim
+// into the error a restricted Grok task is refused with.
+//
+// It exists to survive its own success condition. CheckCapability returns
+// nil the moment the claim flips to supported, and a backend that passed
+// that nil straight back would return (nil, nil) — handing Task.Run no
+// run and no error, and the caller the fully-armed agent they asked not
+// to have. 399b1c8 found exactly this shape in codexAgentBackend by
+// mutating a claim; the lesson is that the claim and the argv builder
+// must move together, so flipping the claim alone still refuses, with a
+// reason that says what is missing.
+func grokToolRestrictionRefusal(claimed error) error {
+	if claimed != nil {
+		return claimed
+	}
+	return unsupportedCapability(
+		ProviderGrok, CapabilityToolRestrictions, grokToolRestrictionsUnwiredReason)
 }
 
 // grokTaskArgs builds argv for a headless Grok Build Task run.
 //
 // Mirrors Claude Task's unattended posture with --permission-mode
 // bypassPermissions (Grok's analogue of --dangerously-skip-permissions).
+//
+// Deliberately emits no --deny or --disallowed-tools: RunTask has already
+// refused any request carrying DisallowTools, and pinning that here keeps
+// the half-fix (emit a flag, keep the claim) from looking green.
 func grokTaskArgs(req taskRunRequest) []string {
 	args := []string{
 		"-p", req.Prompt,
@@ -960,6 +1046,7 @@ func ParseTaskLine(line []byte) []TaskEvent {
 func parseTaskSystem(line []byte) []TaskEvent {
 	var msg struct {
 		SessionID string `json:"session_id"`
+		Model     string `json:"model"`
 	}
 	if err := json.Unmarshal(line, &msg); err != nil {
 		return nil
@@ -967,6 +1054,7 @@ func parseTaskSystem(line []byte) []TaskEvent {
 	return []TaskEvent{{
 		Type:      TaskEventInit,
 		SessionID: msg.SessionID,
+		Model:     msg.Model,
 	}}
 }
 
@@ -1021,6 +1109,7 @@ func parseTaskResult(line []byte) []TaskEvent {
 	var msg struct {
 		Subtype      string  `json:"subtype"`
 		Result       string  `json:"result"`
+		IsError      bool    `json:"is_error"`
 		DurationMs   float64 `json:"duration_ms"`
 		TotalCostUSD float64 `json:"total_cost_usd"`
 		Usage        Usage   `json:"usage"`
@@ -1032,24 +1121,36 @@ func parseTaskResult(line []byte) []TaskEvent {
 		return nil
 	}
 
-	if msg.Subtype == "success" {
+	// Live Claude shape (invalid --model): subtype stays "success" while
+	// is_error is true and result names the offending model. Treating
+	// subtype alone would swallow the failure as TaskEventResult.
+	if msg.IsError || msg.Subtype != "success" {
+		var errMsgs []string
+		for _, e := range msg.Errors {
+			if e.Message != "" {
+				errMsgs = append(errMsgs, e.Message)
+			}
+		}
+		errMsg := strings.Join(errMsgs, "; ")
+		if errMsg == "" {
+			errMsg = strings.TrimSpace(msg.Result)
+		}
+		if errMsg == "" {
+			errMsg = "task failed"
+		}
 		return []TaskEvent{{
-			Type:       TaskEventResult,
-			Content:    msg.Result,
-			DurationMs: msg.DurationMs,
-			CostUSD:    msg.TotalCostUSD,
-			Usage:      msg.Usage,
+			Type:     TaskEventError,
+			IsError:  true,
+			ErrorMsg: errMsg,
 		}}
 	}
 
-	var errMsgs []string
-	for _, e := range msg.Errors {
-		errMsgs = append(errMsgs, e.Message)
-	}
 	return []TaskEvent{{
-		Type:     TaskEventError,
-		IsError:  true,
-		ErrorMsg: strings.Join(errMsgs, "; "),
+		Type:       TaskEventResult,
+		Content:    msg.Result,
+		DurationMs: msg.DurationMs,
+		CostUSD:    msg.TotalCostUSD,
+		Usage:      msg.Usage,
 	}}
 }
 

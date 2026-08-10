@@ -38,7 +38,24 @@ func CapturePane(windowID string) ([]byte, error) {
 // has typed something into the input buffer and we haven't submitted
 // yet. The body is captured so MatchReady can rule out the startup
 // splash (see startupPlaceholder).
-var readyPattern = regexp.MustCompile(`─{10,}\n❯([^\n]*)\n─{10,}(?:\n[^\n]*){0,5}\s*\z`)
+//
+// The body may span several rows: Claude Code soft-wraps a pasted brief
+// inside the box and indents every continuation row under the prompt
+// glyph, leaving blank rows blank. A single-line-only body made exactly
+// that frame — a spawned worker's whole brief sitting unsubmitted —
+// invisible to MatchReady (🎯T25; see testdata/frame_unsubmitted_brief.txt).
+//
+// composerContinuation is therefore "a blank row, or a row starting with
+// whitespace", never an arbitrary row. That constraint is load-bearing in
+// the other direction: an unindented row — a rule, a ⏺ transcript bullet,
+// a spinner line — ends the composer. With arbitrary rows the body would
+// span from an earlier echoed prompt in the scrollback all the way to the
+// live box at the tail, so a dead region of transcript would read as a
+// composer holding text and MatchReady would fire on frames whose input
+// box is not where it appears to be.
+const composerContinuation = `(?:\n(?:[ \t\x{00A0}][^\n]*)?)*`
+
+var readyPattern = regexp.MustCompile(`─{10,}\n❯([^\n]*` + composerContinuation + `)\n─{10,}(?:\n[^\n]*){0,5}\s*\z`)
 
 // startupPlaceholder matches the ghost hint Claude Code renders inside
 // the composer before the TUI has wired up input handling — a dimmed
@@ -64,7 +81,7 @@ var startupMenuCursor = regexp.MustCompile(`❯\s*\d+[.)]`)
 // resumePrompt matches Claude Code's specific stale-session resume
 // wording as a belt-and-suspenders signal, in case the selection
 // glyph renders differently across versions. This is the exact wedge
-// T24 targets: a 5-day / 105k-token session parks the TUI at a
+// 🎯T6 targets: a 5-day / 105k-token session parks the TUI at a
 // "Resume from summary / Resume full session / Don't ask again" menu.
 var resumePrompt = regexp.MustCompile(`(?i)resume (from summary|full session)|resume this session`)
 
@@ -103,7 +120,9 @@ func MatchStartupSplash(frame []byte) bool {
 
 // composerBody returns the text after the ❯ prompt glyph when the
 // frame ends in the input box, or nil when there is no input box.
-// A present-but-empty body is a non-nil empty slice.
+// A present-but-empty body is a non-nil empty slice. A soft-wrapped
+// body spans multiple lines and is returned with its newlines and
+// indentation intact, so callers testing for content must trim it.
 func composerBody(frame []byte) []byte {
 	m := readyPattern.FindSubmatch(trimTrailingSpace(frame))
 	if m == nil {
@@ -169,7 +188,7 @@ type readyDriver struct {
 // Claude Code's stale-session resume/summary prompt — WaitReady
 // auto-confirms the highlighted default by pressing Enter, up to
 // maxMenuDismissals times, so a long-lived registered agent doesn't
-// wedge at the menu (T24). If the menu never clears, the timeout error
+// wedge at the menu (🎯T6). If the menu never clears, the timeout error
 // says so explicitly rather than emitting the generic
 // "ready pattern did not match" message.
 func WaitReady(windowID string, poll, timeout time.Duration) (time.Duration, error) {

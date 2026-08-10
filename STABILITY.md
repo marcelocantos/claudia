@@ -32,14 +32,16 @@ is annotated with a stability assessment:
 |---|---|---|
 | `Config` | struct with `Provider Provider`, `WorkDir, SessionID, Model, PermissionMode, MCPConfig, TermLogPath, PoolPolicy string`, `RequireResume bool`, `ExtraArgs, DisallowTools []string`, `PoolCap int` | Needs review |
 | `Agent` | opaque struct; methods listed below | Needs review |
-| `Event` | struct with `Type string`, `Raw []byte`, `Text string`, `StopReason string`, `ProgressType string`; method `IsTerminalStop() bool` | Stable |
+| `Event` | struct with `Type string`, `Raw []byte`, `Text string`, `StopReason string`, `ProgressType string`, `Model string`, `IsError bool`; method `IsTerminalStop() bool` | Stable |
 | `EventFunc` | `func(Event)` | Needs review |
 | `Usage` | struct with `InputTokens, OutputTokens, CacheCreationInputTokens, CacheReadInputTokens int` | Stable |
-| `TaskEvent` | struct with `Type TaskEventType`, `Content, ToolName, ToolInput, ToolID, SessionID string`, `DurationMs, CostUSD float64`, `Usage Usage`, `IsError bool`, `ErrorMsg string` | Needs review |
+| `TaskEvent` | struct with `Type TaskEventType`, `Content, ToolName, ToolInput, ToolID, SessionID string`, `DurationMs, CostUSD float64`, `Usage Usage`, `IsError bool`, `ErrorMsg string`, `Model string` | Needs review |
 | `TaskEventType` | string type | Stable |
 | `TaskStatus` | string type | Stable |
 | `Provider` | string type selecting `ProviderClaude`, `ProviderCodex`, `ProviderGrok`, or `ProviderBedrock` | Fluid |
-| `CapabilityError` | struct with `Provider Provider`, `Capability, Status, Reason string`; method `Error() string` | Fluid |
+| `CapabilityError` | struct with `Provider Provider`, `Capability Capability`, `Status CapabilityStatus`, `Reason string`; method `Error() string` | Fluid |
+| `Capability` | string type naming a reported provider behaviour | Fluid |
+| `CapabilityStatus` | string type: `CapabilitySupported`, `CapabilityUnsupported`, `CapabilityExperimental` | Fluid |
 | `TaskConfig` | struct with `Provider Provider`, `ID, Name, WorkDir, Model, ClaudeID, LastResult, SandboxMode, ApprovalPolicy string` | Needs review |
 | `RawLogFunc` | `func(line []byte)` | Stable |
 | `Task` | opaque struct; methods listed below | Needs review |
@@ -53,7 +55,8 @@ is annotated with a stability assessment:
 |---|---|
 | `Version` | Stable |
 | `ProviderClaude, ProviderCodex, ProviderGrok, ProviderBedrock` (Provider) | Fluid |
-| `CapabilityUnsupported, CapabilityExperimental` | Fluid |
+| `CapabilitySupported, CapabilityUnsupported, CapabilityExperimental` (CapabilityStatus) | Fluid |
+| `CapabilityTask, CapabilitySession, CapabilityResume, CapabilityRewind, CapabilityCost, CapabilityTmuxAttach, CapabilityTerminalLog, CapabilityPermissionMode, CapabilityToolRestrictions, CapabilityImageInput, CapabilityWebSearch` (Capability) | Fluid |
 | `TaskEventInit, TaskEventText, TaskEventToolUse, TaskEventResult, TaskEventError` (TaskEventType) | Stable |
 | `TaskStatusIdle, TaskStatusRunning, TaskStatusError, TaskStatusStopped` (TaskStatus) | Stable |
 | ~~`ErrDaemonUnavailable`~~ | Removed (daemon pivot) |
@@ -74,6 +77,10 @@ is annotated with a stability assessment:
 | `SessionJSONLPath` | `SessionJSONLPath(sessionID, workDir string) string` | Needs review |
 | `RewindSession` | `RewindSession(sessionID, workDir string, n int) (*RewindResult, error)` | Needs review |
 | `Unrewind` | `Unrewind(path string) error` | Needs review |
+| `ProviderCapabilityStatus` | `ProviderCapabilityStatus(provider Provider, capability Capability) CapabilityStatus` | Fluid |
+| `ProviderCapabilityReason` | `ProviderCapabilityReason(provider Provider, capability Capability) string` | Fluid |
+| `ProviderCapabilityMatrix` | `ProviderCapabilityMatrix(provider Provider) map[Capability]CapabilityStatus` | Fluid |
+| `CheckCapability` | `CheckCapability(provider Provider, capability Capability) error` | Fluid |
 
 #### `Agent` methods
 
@@ -87,6 +94,7 @@ is annotated with a stability assessment:
 | `SubscribeEvents` | `(fn EventFunc) int64` | Needs review |
 | `UnsubscribeEvents` | `(token int64)` | Needs review |
 | `Usage` | `() Usage` | Needs review |
+| `Model` | `() string` | Needs review |
 | `Interrupt` | `() error` | Stable |
 | `Send` | `(msg string) error` | Stable |
 | `WaitForResponse` | `(ctx context.Context) (string, error)` | Needs review |
@@ -108,6 +116,7 @@ is annotated with a stability assessment:
 | `Status` | `() TaskStatus` | Stable |
 | `LastResult` | `() string` | Stable |
 | `ClaudeID` | `() string` | Stable |
+| `Model` | `() string` | Needs review |
 | `SetRawLog` | `(fn RawLogFunc)` | Stable |
 | `Run` | `(ctx context.Context, prompt string) (<-chan TaskEvent, error)` | Stable |
 | `Cancel` | `() error` | Stable |
@@ -189,9 +198,36 @@ byte logs, and Claude-style transcript manipulation are unsupported;
 callers should expect `CapabilityError` rather than silent Claude
 fallback semantics.
 
+Every gap is published rather than discovered at runtime. Query it with
+`ProviderCapabilityMatrix(ProviderCodex)`, or gate a call ahead of time
+with `CheckCapability`, which returns the same `*CapabilityError` the
+operation itself would have returned:
+
+| Capability | Claude | Codex | Rationale for the Codex status |
+|---|---|---|---|
+| `CapabilityTask` | Supported | Supported | `codex exec --json` |
+| `CapabilityResume` | Supported | Supported | `codex exec resume --json` |
+| `CapabilitySession` | Supported | **Experimental** | app-server live contract not yet wired into production `Start` |
+| `CapabilityRewind` | Supported | Unsupported | needs a public fork/resume contract; private transcript truncation is forbidden |
+| `CapabilityCost` | Supported | Unsupported | tokens are reported, monetary cost is not; `CostUSD` stays zero |
+| `CapabilityTmuxAttach` | Supported | Unsupported | claudia does not drive the Codex TUI in tmux |
+| `CapabilityTerminalLog` | Supported | Unsupported | Task mode consumes JSON, not a PTY |
+| `CapabilityPermissionMode` | Supported | Unsupported | Codex sandbox/approval flags are Codex-native, not a Claude `PermissionMode` mapping |
+| `CapabilityToolRestrictions` | Supported | Unsupported | `codex exec` has no per-tool disallow flag |
+| `CapabilityImageInput` | Unsupported | Unsupported | claudia has no image-attachment API on any provider |
+| `CapabilityWebSearch` | Supported | Unsupported | claudia does not bind Codex's `--search`; the Codex default applies |
+
 Codex sandbox and approval fields are passed to Codex as Codex flags.
 They are not treated as equivalent to Claude `PermissionMode` or
 `DisallowTools` until tests prove a narrower mapping.
+
+Consequently `Task.Run` **refuses** a Codex task that carries
+`TaskConfig.DisallowTools`, returning `*CapabilityError` with
+`Capability == CapabilityToolRestrictions` before any process is
+spawned. Running it would hand the caller a fully-armed agent while
+they believe the tools were removed. `BaseDisallowedTools` names Claude
+Code tools (`Agent`, `TeamCreate`, …) that do not exist in `codex
+exec`, so it is vacuous there and does not by itself block a task.
 
 ### Grok Build CLI provider surface
 
@@ -208,6 +244,28 @@ tool_use into `TaskEvent`. Cost is not reported in `CostUSD`.
 byte log. Rewind via private session files is unsupported
 (`CapabilityUnsupported`). Resume uses ACP `session/load` when
 `Config.SessionID` is set, with fallback to `session/new`.
+
+**Permission mode and tool restrictions are both unsupported, and
+`Task.Run` refuses rather than drops.** Task mode hardcodes
+`--permission-mode bypassPermissions`; `Config.PermissionMode` is not
+mapped onto it. A Grok task carrying `TaskConfig.DisallowTools` is
+refused before any process is spawned, returning `*CapabilityError`
+with `Capability == CapabilityToolRestrictions`.
+
+Unlike `codex exec`, the refusal is not for want of a mechanism:
+`grok --deny <RULE>` gates tool invocations and `grok
+--disallowed-tools <IDS>` removes built-in tools from the toolset.
+claudia translates `DisallowTools` into neither. The hardcoded
+`bypassPermissions` resolves to a catch-all allow rule, and `grok`
+accepts unrecognised tool names silently, so an untested translation
+would reinstate the silent drop under a `CapabilitySupported` claim.
+Until the translation is wired and proven, the claim stays
+`CapabilityUnsupported` and the run is refused.
+
+`BaseDisallowedTools` is applied on Claude only. It is never passed to
+Grok, so nothing removes `Agent`, `TeamCreate` and friends from a Grok
+agent — those names are Claude Code tools that Grok does not implement
+in the first place.
 
 Do not confuse `ProviderGrok` with package
 `github.com/marcelocantos/claudia/grok`, which is a standalone Realtime

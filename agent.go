@@ -153,6 +153,7 @@ type Agent struct {
 	stopOnce  sync.Once
 	eventSubs map[int64]EventFunc
 	usage     Usage
+	model     string // resolved model from the latest event that carried one
 
 	// poolWindow is true when the agent was acquired from the warm pool
 	// (via Acquire) rather than spawned fresh (via Start). Pool agents
@@ -262,7 +263,7 @@ func agentBackendForProvider(provider Provider) agentBackend {
 	case ProviderGrok:
 		return grokAgentBackend{}
 	case ProviderBedrock:
-		return errorAgentBackend{err: unsupportedCapability(ProviderBedrock, "session", "Bedrock v1 is Task-only (ConverseStream); Session/tmux is not supported")}
+		return errorAgentBackend{err: CheckCapability(ProviderBedrock, CapabilitySession)}
 	default:
 		return errorAgentBackend{err: fmt.Errorf("unknown agent provider %q", provider)}
 	}
@@ -280,7 +281,13 @@ func (codexAgentBackend) Capabilities() providerCapabilities {
 }
 
 func (codexAgentBackend) StartAgent(agentStartRequest) (*agentStart, error) {
-	return nil, experimentalCapability(ProviderCodex, "session", "persistent Session mode requires the app-server live contract spike to complete")
+	// An unconditional refusal, deliberately not a matrix lookup. 🎯T4.5
+	// has not wired a Codex app-server session, so this backend has
+	// nothing to return no matter what the published claim says — and a
+	// matrix-derived error would go nil the moment that claim flips,
+	// handing startWithBackend a nil *agentStart to dereference. Whoever
+	// lands 🎯T4.5 must replace this body, not just the claim.
+	return nil, experimentalCapability(ProviderCodex, CapabilitySession, codexSessionReason)
 }
 
 func (grokAgentBackend) Capabilities() providerCapabilities {
@@ -330,11 +337,14 @@ func claudeAgentOps() agentOps {
 // Session; Grok uses ACP over `grok agent stdio`; Codex Session remains
 // experimental and fails closed.
 func Start(cfg Config) (*Agent, error) {
-	if cfg.Provider == ProviderCodex {
-		return nil, experimentalCapability(ProviderCodex, "session", "persistent Session mode requires the app-server live contract spike to complete")
-	}
-	if cfg.Provider == ProviderBedrock {
-		return nil, unsupportedCapability(ProviderBedrock, "session", "Bedrock v1 is Task-only (ConverseStream); Session/tmux is not supported")
+	// Gate on the published capability matrix rather than a per-provider
+	// branch list, so Start cannot drift into offering a session claudia
+	// has not claimed. Unknown providers still fall through to the
+	// backend's own "unknown provider" error.
+	if _, known := providerCapabilityClaims[cfg.Provider]; known || cfg.Provider == "" {
+		if err := CheckCapability(cfg.Provider, CapabilitySession); err != nil {
+			return nil, err
+		}
 	}
 	return startWithBackend(cfg, agentBackendForProvider(cfg.Provider))
 }
@@ -431,6 +441,12 @@ func startWithBackend(cfg Config, backend agentBackend) (*Agent, error) {
 	})
 	if err != nil {
 		return nil, err
+	}
+	// A backend that returns neither a session nor an error is a bug in
+	// that backend, but the cost of trusting it is a nil dereference
+	// several lines below, well away from the cause.
+	if start == nil {
+		return nil, fmt.Errorf("%s agent backend returned no session and no error", provider)
 	}
 	if start.SessionID != "" {
 		a.sessionID = start.SessionID
@@ -891,8 +907,25 @@ func (a *Agent) Usage() Usage {
 	return a.usage
 }
 
+// Model returns the model the backend resolved for this session, taken from
+// the most recent event that carried a model id (Claude: assistant
+// message.model; Codex app-server: thread/start result.model), e.g.
+// "claude-opus-5". It is empty until the first such event. Compare it against
+// [Config.Model] to detect silent fallback: an alias such as "opus" resolves
+// to its full id here. An unusable model surfaces as "<synthetic>" with
+// [Event.IsError] set — [Agent.WaitForResponse] returns that as a descriptive
+// error rather than a normal reply.
+func (a *Agent) Model() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.model
+}
+
 func (a *Agent) publishEvent(ev Event) {
 	a.mu.Lock()
+	if ev.Model != "" {
+		a.model = ev.Model
+	}
 	if ev.Usage.InputTokens > 0 || ev.Usage.OutputTokens > 0 ||
 		ev.Usage.CacheCreationInputTokens > 0 || ev.Usage.CacheReadInputTokens > 0 {
 		a.usage.InputTokens += ev.Usage.InputTokens
@@ -942,26 +975,67 @@ func (a *Agent) EventSubscriberCount() int {
 // paused for tool results and will emit further assistant events
 // as the turn continues, and those events will keep the settle
 // timer from firing.
+//
+// Fail-loud (🎯T16): when an event has [Event.IsError] (e.g. Claude
+// model_not_found with model "<synthetic>", or a Codex failed turn),
+// WaitForResponse returns a descriptive error immediately — never
+// treating the failure text as a normal reply and never hanging until
+// the caller's context times out.
 func (a *Agent) WaitForResponse(ctx context.Context) (string, error) {
-	ch := make(chan string, 1)
+	type outcome struct {
+		text string
+		err  error
+	}
+	ch := make(chan outcome, 1)
 	var (
 		mu           sync.Mutex
 		text         strings.Builder
 		seenTerminal bool
 		settleTimer  *time.Timer
+		emitted      bool
 	)
 
-	emit := func() {
+	emitOnce := func(out outcome) {
 		mu.Lock()
-		result := text.String()
+		if emitted {
+			mu.Unlock()
+			return
+		}
+		emitted = true
+		if settleTimer != nil {
+			settleTimer.Stop()
+		}
 		mu.Unlock()
 		select {
-		case ch <- result:
+		case ch <- out:
+		default:
+		}
+	}
+
+	emitOK := func() {
+		mu.Lock()
+		result := text.String()
+		if emitted {
+			mu.Unlock()
+			return
+		}
+		emitted = true
+		mu.Unlock()
+		select {
+		case ch <- outcome{text: result}:
 		default:
 		}
 	}
 
 	token := a.SubscribeEvents(func(ev Event) {
+		if ev.IsError {
+			msg := strings.TrimSpace(ev.Text)
+			if msg == "" {
+				msg = "agent turn failed"
+			}
+			emitOnce(outcome{err: errors.New(msg)})
+			return
+		}
 		if ev.Type != "assistant" {
 			return
 		}
@@ -981,7 +1055,7 @@ func (a *Agent) WaitForResponse(ctx context.Context) (string, error) {
 			if settleTimer != nil {
 				settleTimer.Stop()
 			}
-			settleTimer = time.AfterFunc(waitSettleDuration, emit)
+			settleTimer = time.AfterFunc(waitSettleDuration, emitOK)
 		}
 		mu.Unlock()
 	})
@@ -998,8 +1072,8 @@ func (a *Agent) WaitForResponse(ctx context.Context) (string, error) {
 	select {
 	case <-ctx.Done():
 		return "", ctx.Err()
-	case result := <-ch:
-		return result, nil
+	case out := <-ch:
+		return out.text, out.err
 	}
 }
 
@@ -1054,14 +1128,14 @@ func (a *Agent) Stop() {
 // [RewindSession]: tool-result entries are not counted as turns, so a rewind
 // never lands mid-tool-use, and the pre-rewind transcript is backed up.
 func (a *Agent) Rewind(n int, cfg Config) (*Agent, error) {
-	if a.provider == ProviderCodex || cfg.Provider == ProviderCodex {
-		return nil, unsupportedCapability(ProviderCodex, "rewind", "Codex rewind requires a public app-server fork/resume contract; private transcript truncation is forbidden")
-	}
-	if a.provider == ProviderGrok || cfg.Provider == ProviderGrok {
-		return nil, unsupportedCapability(ProviderGrok, "rewind", "Grok rewind requires a public ACP/session API; private session-file truncation is forbidden")
-	}
-	if a.provider == ProviderBedrock || cfg.Provider == ProviderBedrock {
-		return nil, unsupportedCapability(ProviderBedrock, "rewind", "Bedrock v1 is Task-only and has no Session transcript to rewind")
+	// Either provider naming a non-Claude runtime is enough to refuse:
+	// rewinding means truncating a Claude-shaped JSONL transcript, which
+	// is meaningless — and, for providers whose state is private,
+	// forbidden — anywhere else.
+	for _, provider := range []Provider{a.provider, cfg.Provider} {
+		if err := CheckCapability(provider, CapabilityRewind); err != nil {
+			return nil, err
+		}
 	}
 	a.Stop()
 	if _, err := rewindJSONL(a.jsonlPath, n); err != nil {
