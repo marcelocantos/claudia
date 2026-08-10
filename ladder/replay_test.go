@@ -62,7 +62,7 @@ func replayAt(t *testing.T, l *ladder.Ladder, v *ladder.Version) *ladder.ReplayR
 func TestReplayNeedsAPinnedVersionAndAWorkJudgement(t *testing.T) {
 	f := newFixture()
 	l := ladder.New(f.modelRung(t))
-	s := ladder.NewStore(nil)
+	s := mustStore(t, nil)
 
 	if _, err := ladder.Replay(context.Background(), &ladder.ReplayArgs{
 		Ladder: l, Corpus: corpus(), Delivered: delivered,
@@ -80,7 +80,7 @@ func TestReplayNeedsAPinnedVersionAndAWorkJudgement(t *testing.T) {
 // case still escalates. Cheaper, with delivered work untouched.
 func TestGoodPromotionIsCheaperWithoutLosingWork(t *testing.T) {
 	f := newFixture()
-	store := ladder.NewStore(nil)
+	store := mustStore(t, nil)
 
 	before := replayAt(t, ladder.New(f.modelRung(t)), store.Current())
 	if before.Stats.ModelShare() != 1 {
@@ -127,7 +127,7 @@ func TestGoodPromotionIsCheaperWithoutLosingWork(t *testing.T) {
 // answering the case that needed judgement.
 func TestGreedyRulePresentsAsASavingAndIsCaught(t *testing.T) {
 	f := newFixture()
-	store := ladder.NewStore(nil)
+	store := mustStore(t, nil)
 
 	// The baseline is a ladder that ALREADY has a sound rule, because
 	// the escalation-rate signal only means anything within a fixed
@@ -182,7 +182,7 @@ func TestGreedyRulePresentsAsASavingAndIsCaught(t *testing.T) {
 
 func TestComparisonRefusesMeaninglessPairs(t *testing.T) {
 	f := newFixture()
-	store := ladder.NewStore(nil)
+	store := mustStore(t, nil)
 	rep := replayAt(t, ladder.New(f.modelRung(t)), store.Current())
 
 	if _, err := ladder.CompareReplays(rep, rep); err == nil {

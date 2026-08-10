@@ -188,8 +188,38 @@ type Store struct {
 	versions  []*Version
 }
 
-// NewStore returns an empty store at version 0.
-func NewStore(thresholds *Thresholds) *Store {
+// StoreConfig configures a [Store].
+type StoreConfig struct {
+	// Thresholds gate promotion. Nil uses [ProductionThresholds].
+	Thresholds *Thresholds
+
+	// Seed are rules learned in an earlier run of the stack.
+	//
+	// A seeded store is INDISTINGUISHABLE from one that learned the
+	// same rules: restoring is not a special mode and takes no separate
+	// code path, so there is no second behaviour to keep in step.
+	Seed []Recalled
+
+	// There is deliberately no change callback. Rules move only during a
+	// consolidation pass the CONSUMER schedules — that is what the Pass
+	// gate on Install enforces — so the consumer already knows when the
+	// set changed and can Recall it then. A callback would imply changes
+	// arriving at unpredictable moments, which is exactly what offline
+	// consolidation rules out.
+}
+
+// NewStore returns a store, optionally seeded with rules from an earlier
+// run.
+//
+// It refuses a seed it cannot use rather than starting empty, because an
+// empty memory is indistinguishable from one that never learned
+// anything, and a ladder in that state quietly reverts to waking a model
+// for everything while reporting perfect health.
+func NewStore(cfg *StoreConfig) (*Store, error) {
+	if cfg == nil {
+		cfg = &StoreConfig{}
+	}
+	thresholds := cfg.Thresholds
 	if thresholds == nil {
 		thresholds = ProductionThresholds()
 	}
@@ -198,8 +228,61 @@ func NewStore(thresholds *Thresholds) *Store {
 		entries:    make(map[string]Entry),
 		proposals:  make(map[string]Proposal),
 	}
-	s.versions = []*Version{{N: 0, Change: "empty"}}
-	return s
+
+	for i, r := range cfg.Seed {
+		if r.RuleID == "" {
+			return nil, fmt.Errorf("ladder: seed rule %d has no id", i)
+		}
+		if _, dup := s.entries[r.RuleID]; dup {
+			return nil, fmt.Errorf("ladder: seed names rule %q twice", r.RuleID)
+		}
+		s.entries[r.RuleID] = Entry{
+			RuleID:          r.RuleID,
+			Class:           r.Class,
+			Description:     r.Description,
+			Rule:            r.Rule,
+			Stage:           r.Stage,
+			Evidence:        r.Evidence,
+			ConsistencyOnly: r.ConsistencyOnly,
+		}
+	}
+
+	s.versions = []*Version{{N: 0, Change: "seeded"}}
+	if len(cfg.Seed) > 0 {
+		s.versions[0].Entries = s.sortedEntries()
+	}
+	return s, nil
+}
+
+// Recall returns the whole rule set in serialisable form, which is what
+// a consumer saves.
+func (s *Store) Recall() ([]Recalled, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.recall()
+}
+
+func (s *Store) recall() ([]Recalled, error) {
+	out := make([]Recalled, 0, len(s.entries))
+	for _, e := range s.sortedEntries() {
+		r, err := recalledFrom(e)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, nil
+}
+
+// sortedEntries returns the entries in rule-ID order. Caller holds the
+// lock.
+func (s *Store) sortedEntries() []Entry {
+	entries := make([]Entry, 0, len(s.entries))
+	for _, e := range s.entries {
+		entries = append(entries, e)
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].RuleID < entries[j].RuleID })
+	return entries
 }
 
 // Propose records a proposal without installing it.
@@ -368,13 +451,7 @@ func (s *Store) Revoke(ruleID, reason string) (*Version, error) {
 // commit snapshots the current entries as a new immutable version. The
 // caller holds the lock.
 func (s *Store) commit(change string) *Version {
-	entries := make([]Entry, 0, len(s.entries))
-	for _, e := range s.entries {
-		entries = append(entries, e)
-	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].RuleID < entries[j].RuleID })
-
-	v := &Version{N: len(s.versions), Entries: entries, Change: change}
+	v := &Version{N: len(s.versions), Entries: s.sortedEntries(), Change: change}
 	s.versions = append(s.versions, v)
 	return v
 }

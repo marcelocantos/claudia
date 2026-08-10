@@ -10,6 +10,16 @@ import (
 	"github.com/marcelocantos/claudia/ladder"
 )
 
+// mustStore builds a store or fails the test.
+func mustStore(t *testing.T, cfg *ladder.StoreConfig) *ladder.Store {
+	t.Helper()
+	s, err := ladder.NewStore(cfg)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	return s
+}
+
 func goodEvidence() ladder.Evidence {
 	return ladder.Evidence{Runs: 60, Identical: 60, TestsPass: true, Corrections: 5}
 }
@@ -29,7 +39,7 @@ func propose(t *testing.T, s *ladder.Store, id, by, pass string, ev ladder.Evide
 }
 
 func TestProposerMayNotInstallItsOwnRule(t *testing.T) {
-	s := ladder.NewStore(nil)
+	s := mustStore(t, nil)
 	propose(t, s, "r1", "pattern-layer", "pass-1", goodEvidence())
 
 	_, err := s.Install(&ladder.InstallArgs{
@@ -54,7 +64,7 @@ func TestProposerMayNotInstallItsOwnRule(t *testing.T) {
 }
 
 func TestInstallCannotHappenInThePassThatProposed(t *testing.T) {
-	s := ladder.NewStore(nil)
+	s := mustStore(t, nil)
 	propose(t, s, "r1", "worker", "pass-1", goodEvidence())
 
 	_, err := s.Install(&ladder.InstallArgs{
@@ -93,7 +103,7 @@ func TestPromotionGatesOnEvidence(t *testing.T) {
 
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
-			s := ladder.NewStore(nil)
+			s := mustStore(t, nil)
 			propose(t, s, "r", "proposer", "p1", tc.ev)
 			_, err := s.Install(&ladder.InstallArgs{ProposalID: "r", Installer: "other", Pass: "p2", Stage: tc.stage})
 			if tc.ok && err != nil {
@@ -111,7 +121,7 @@ func TestPromotionGatesOnEvidence(t *testing.T) {
 }
 
 func TestConsistencyWithoutCorrectnessIsRecordedNotHidden(t *testing.T) {
-	s := ladder.NewStore(nil)
+	s := mustStore(t, nil)
 
 	// Repetition alone. Consistency proves a rule stable, never right —
 	// a systematically wrong resolution promotes just as smoothly.
@@ -135,7 +145,7 @@ func TestConsistencyWithoutCorrectnessIsRecordedNotHidden(t *testing.T) {
 }
 
 func TestDemotionNeedsNoEvidenceAndRevocationCostsWhatPromotionCost(t *testing.T) {
-	s := ladder.NewStore(nil)
+	s := mustStore(t, nil)
 	propose(t, s, "r", "proposer", "p1", goodEvidence())
 	installed, err := s.Install(&ladder.InstallArgs{ProposalID: "r", Installer: "other", Pass: "p2", Stage: ladder.StageDeterministic})
 	if err != nil {
@@ -177,7 +187,7 @@ func TestDemotionNeedsNoEvidenceAndRevocationCostsWhatPromotionCost(t *testing.T
 }
 
 func TestVersionsArePinnedImmutableAndRollbackIsItselfAnEvent(t *testing.T) {
-	s := ladder.NewStore(nil)
+	s := mustStore(t, nil)
 	propose(t, s, "r", "proposer", "p1", goodEvidence())
 	installed, err := s.Install(&ladder.InstallArgs{ProposalID: "r", Installer: "other", Pass: "p2", Stage: ladder.StageDeterministic})
 	if err != nil {
@@ -234,7 +244,7 @@ func TestVersionsArePinnedImmutableAndRollbackIsItselfAnEvent(t *testing.T) {
 }
 
 func TestAblateLeavesTheStoreAlone(t *testing.T) {
-	s := ladder.NewStore(nil)
+	s := mustStore(t, nil)
 	for _, id := range []string{"a", "b"} {
 		propose(t, s, id, "proposer", "p1", goodEvidence())
 		if _, err := s.Install(&ladder.InstallArgs{ProposalID: id, Installer: "other", Pass: "p2", Stage: ladder.StageDeterministic}); err != nil {
@@ -252,7 +262,7 @@ func TestAblateLeavesTheStoreAlone(t *testing.T) {
 }
 
 func TestProposalsMustCarryWhatMakesThemAuditable(t *testing.T) {
-	s := ladder.NewStore(nil)
+	s := mustStore(t, nil)
 	base := ladder.Proposal{ID: "r", Description: "d", ProposedBy: "x", Pass: "p", Evidence: goodEvidence()}
 
 	missing := map[string]func(p *ladder.Proposal){

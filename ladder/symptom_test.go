@@ -22,7 +22,7 @@ type scanFixture struct {
 func newScanFixture(t *testing.T) *scanFixture {
 	t.Helper()
 	f := newFixture()
-	store := ladder.NewStore(nil)
+	store := mustStore(t, nil)
 
 	install := func(id string, rule ladder.RuleDef, ev ladder.Evidence) {
 		t.Helper()

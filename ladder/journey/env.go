@@ -79,7 +79,11 @@ type Env struct {
 // NewEnv builds an isolated environment.
 func NewEnv(t *testing.T) *Env {
 	t.Helper()
-	e := &Env{t: t, Reg: ladder.NewRegistry(), Store: ladder.NewStore(nil)}
+	store, err := ladder.NewStore(nil)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	e := &Env{t: t, Reg: ladder.NewRegistry(), Store: store}
 
 	e.Reap = e.Reg.Action(&ladder.ActionDef{
 		Name:        "agent.reap",
