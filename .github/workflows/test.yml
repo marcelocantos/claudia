@@ -47,3 +47,20 @@ jobs:
       # an Anthropic key or the claude binary.
       - name: Test
         run: go test -race -count=1 ./...
+
+  # T29 oracle: STABILITY.md must enumerate exactly the public surface of the
+  # release tag its "Snapshot as of:" line names. Separate job because it needs
+  # the full tag history (fetch-depth 0) that the test matrix does not.
+  stability-surface:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.x'
+
+      - name: Check STABILITY.md against the snapshot tag's public surface
+        run: make verify-stability
