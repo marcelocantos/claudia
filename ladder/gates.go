@@ -134,7 +134,76 @@ var (
 
 	// ErrInsufficientEvidence reports a promotion below threshold.
 	ErrInsufficientEvidence = errors.New("ladder: evidence does not meet the threshold for this transition")
+
+	// ErrAlreadyAtAgent reports a demotion of a rule that is already at
+	// the bottom. It is typed because a consumer responds to it
+	// differently from a broken demotion: the breaker it was trying to
+	// open is open already.
+	ErrAlreadyAtAgent = errors.New("ladder: rule is already at the agent stage")
+
+	// ErrUnknownFailure reports a failure class claudia does not know.
+	// The set is closed on purpose: a runtime that accepted free-form
+	// failure kinds would be holding the consumer's taxonomy, and the
+	// circuit breaker would fire on whatever the caller felt like
+	// calling loud.
+	ErrUnknownFailure = errors.New("ladder: unknown failure class")
 )
+
+// Failure is a loud failure observed while a promoted rule was in force.
+//
+// The set is closed and short, and it is the design's list rather than a
+// convenience: execution error, safety violation and acceptance-test
+// regression are the three failures loud enough that demotion is not a
+// judgement call. [FailureExternal] is the fourth entry point, and it
+// exists because the highest-quality correction available to a consumer
+// arrives from a human — a runtime that could only infer demotion would
+// be discarding the best signal it will ever get.
+//
+// Claudia cannot classify a consumer's failure for it: it does not run
+// the rule bodies and would be guessing at what counts. What it does
+// guarantee is that once a failure is reported under one of these
+// classes, demotion follows with no evidence bar and no discretion. The
+// classification is the consumer's; the response is not.
+type Failure string
+
+const (
+	// FailureExecution is a rule that errored when it ran.
+	FailureExecution Failure = "execution_error"
+	// FailureSafety is a safety violation observed under the rule.
+	FailureSafety Failure = "safety_violation"
+	// FailureAcceptance is the rule's own acceptance tests regressing.
+	FailureAcceptance Failure = "acceptance_regression"
+	// FailureExternal is a demotion a consumer supplied directly —
+	// typically an owner's correction, which no amount of observation
+	// would have produced.
+	FailureExternal Failure = "external_signal"
+)
+
+// Valid reports whether f is a failure class claudia knows.
+func (f Failure) Valid() bool {
+	switch f {
+	case FailureExecution, FailureSafety, FailureAcceptance, FailureExternal:
+		return true
+	}
+	return false
+}
+
+// Demotion is what the circuit breaker did, returned so a consumer can
+// see the movement rather than re-reading the store to infer it.
+type Demotion struct {
+	RuleID string
+	// From and To are the stages either side of the demotion.
+	From, To Stage
+	// Failure is what tripped it, carried into the version history so a
+	// rule that fell explains why without anyone reconstructing the pass
+	// it fell in.
+	Failure Failure
+	Reason  string
+}
+
+func (d *Demotion) String() string {
+	return fmt.Sprintf("%s: %s → %s on %s (%s)", d.RuleID, d.From, d.To, d.Failure, d.Reason)
+}
 
 func (rs *RuleSet) gate(e Evidence, stage Stage) error {
 	if e.SafetyViolations > 0 {

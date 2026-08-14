@@ -37,6 +37,7 @@ type RuleSet struct {
 	mu        sync.RWMutex
 	rules     map[string]Recalled
 	proposals map[string]Proposal
+	history   []Version
 }
 
 // RuleSetConfig configures a [RuleSet].
@@ -78,6 +79,11 @@ func NewRuleSet(cfg *RuleSetConfig) (*RuleSet, error) {
 			return nil, fmt.Errorf("ladder: seed names rule %q twice", r.RuleID)
 		}
 		rs.rules[r.RuleID] = r
+	}
+	// A seeded set is a version like any other, so a store restored from
+	// an earlier run has a pin to hand before it has learned anything.
+	if err := rs.commit(VerbSeed, "", "seeded"); err != nil {
+		return nil, err
 	}
 	return rs, nil
 }
@@ -237,33 +243,65 @@ func (rs *RuleSet) Install(args *InstallArgs) error {
 	}
 	rs.rules[p.ID] = r
 	delete(rs.proposals, p.ID)
-	return nil
+	return rs.commit(VerbInstall, p.ID, fmt.Sprintf("installed at %s by %s in pass %s", args.Stage, args.Installer, args.Pass))
 }
 
-// Demote moves a rule down a stage. It is the circuit breaker: an
-// execution failure, a safety violation, an acceptance-test regression
-// or an owner's correction takes a rule back toward the model, which is
-// expensive and correct.
+// Fail reports a loud failure against a rule that is in force, and
+// demotes it.
 //
-// Demotion needs no evidence bar. Stopping is always allowed.
-func (rs *RuleSet) Demote(ruleID, reason string) error {
+// This is the circuit breaker, and it is bookkeeping rather than policy.
+// Claudia does not decide whether a failure was loud — it does not run
+// rule bodies and would be guessing — but once a consumer reports one
+// under a class the design names, the demotion is automatic: no evidence
+// bar, no threshold, no discretion. Stopping is always allowed, so there
+// is nothing here for a cost-optimising caller to argue with.
+//
+// [FailureExternal] is the same act with human provenance, and it takes
+// the same path deliberately: an externally supplied demotion that
+// behaved differently from an observed one would be a second mechanism to
+// keep in step with the first.
+func (rs *RuleSet) Fail(ruleID string, f Failure, reason string) (*Demotion, error) {
+	if !f.Valid() {
+		return nil, fmt.Errorf("%w: %q", ErrUnknownFailure, f)
+	}
+	if reason == "" {
+		return nil, fmt.Errorf("ladder: demoting %q needs a reason — a rule that fell for no recorded cause cannot be audited later", ruleID)
+	}
+
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
+	return rs.demote(ruleID, f, reason)
+}
 
+// Demote moves a rule down a stage on an externally supplied signal —
+// an owner's correction, most often, which no amount of observation
+// would have produced.
+//
+// It is [Fail] with [FailureExternal] and nothing else.
+func (rs *RuleSet) Demote(ruleID, reason string) error {
+	_, err := rs.Fail(ruleID, FailureExternal, reason)
+	return err
+}
+
+// demote moves one rule down a stage and commits the version. Caller
+// holds the write lock.
+func (rs *RuleSet) demote(ruleID string, f Failure, reason string) (*Demotion, error) {
 	r, ok := rs.rules[ruleID]
 	if !ok {
-		return fmt.Errorf("ladder: no rule %q", ruleID)
+		return nil, fmt.Errorf("ladder: no rule %q", ruleID)
 	}
+	d := &Demotion{RuleID: ruleID, From: r.Stage, Failure: f, Reason: reason}
 	switch r.Stage {
 	case StageDeterministic:
 		r.Stage = StageHybrid
 	case StageHybrid:
 		r.Stage = StageAgent
 	case StageAgent:
-		return fmt.Errorf("ladder: rule %q is already at %s", ruleID, StageAgent)
+		return nil, fmt.Errorf("%w: %q", ErrAlreadyAtAgent, ruleID)
 	}
+	d.To = r.Stage
 	rs.rules[ruleID] = r
-	return nil
+	return d, rs.commit(VerbDemote, ruleID, fmt.Sprintf("%s: %s", f, reason))
 }
 
 // Forget removes a rule.
@@ -282,7 +320,7 @@ func (rs *RuleSet) Forget(ruleID, reason string) error {
 		return fmt.Errorf("ladder: no rule %q", ruleID)
 	}
 	delete(rs.rules, ruleID)
-	return nil
+	return rs.commit(VerbForget, ruleID, reason)
 }
 
 // Attachment is one stack's validated view of a rule set.

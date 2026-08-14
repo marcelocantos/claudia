@@ -120,6 +120,144 @@ func TestPromotionGatesOnEvidence(t *testing.T) {
 	}
 }
 
+// Thresholds are CONFIGURATION, not constants. Claudia has no opinion
+// about how much evidence is enough, because that depends on what the
+// decision costs when it is wrong, which is the consumer's to know.
+func TestThresholdsAreTheConsumersAndTheDefaultsAreOnlyOffered(t *testing.T) {
+	// Evidence that the production defaults refuse outright.
+	thin := ladder.Evidence{Runs: 3, Identical: 3, TestsPass: true, Corrections: 1}
+
+	strict, err := ladder.NewRuleSet(&ladder.RuleSetConfig{Flavour: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	propose(t, strict, "r", "proposer", "p1", thin)
+	if err := strict.Install(&ladder.InstallArgs{
+		ProposalID: "r", Installer: "other", Pass: "p2", Stage: ladder.StageDeterministic,
+	}); !errors.Is(err, ladder.ErrInsufficientEvidence) {
+		t.Fatalf("err = %v, want ErrInsufficientEvidence under the offered defaults", err)
+	}
+
+	// A consumer whose decisions are cheap to get wrong sets its own bar,
+	// and the same evidence is then enough. Nothing about the gate is
+	// compiled in.
+	lax, err := ladder.NewRuleSet(&ladder.RuleSetConfig{
+		Flavour: "test",
+		Thresholds: &ladder.Thresholds{
+			AgentToHybridRuns:                1,
+			AgentToHybridConsistency:         0.5,
+			HybridToDeterministicRuns:        3,
+			HybridToDeterministicConsistency: 0.75,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	propose(t, lax, "r", "proposer", "p1", thin)
+	if err := lax.Install(&ladder.InstallArgs{
+		ProposalID: "r", Installer: "other", Pass: "p2", Stage: ladder.StageDeterministic,
+	}); err != nil {
+		t.Fatalf("the consumer's own thresholds were not honoured: %v", err)
+	}
+
+	// A consumer may also tighten past the defaults, which is the point
+	// of them being configuration rather than a floor.
+	tight, err := ladder.NewRuleSet(&ladder.RuleSetConfig{
+		Flavour:    "test",
+		Thresholds: &ladder.Thresholds{HybridToDeterministicRuns: 500, HybridToDeterministicConsistency: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	propose(t, tight, "r", "proposer", "p1", goodEvidence())
+	if err := tight.Install(&ladder.InstallArgs{
+		ProposalID: "r", Installer: "other", Pass: "p2", Stage: ladder.StageDeterministic,
+	}); !errors.Is(err, ladder.ErrInsufficientEvidence) {
+		t.Errorf("err = %v, want ErrInsufficientEvidence — a tightened bar was ignored", err)
+	}
+
+	// The offered defaults are the published ones, and they are a value
+	// the consumer can take, edit or discard.
+	def := ladder.ProductionThresholds()
+	if def.AgentToHybridRuns != 10 || def.AgentToHybridConsistency != 0.90 ||
+		def.HybridToDeterministicRuns != 50 || def.HybridToDeterministicConsistency != 0.99 {
+		t.Errorf("ProductionThresholds() = %+v, want the arXiv 2607.07052 gates", def)
+	}
+	def.AgentToHybridRuns = 1
+	if ladder.ProductionThresholds().AgentToHybridRuns != 10 {
+		t.Error("editing the returned defaults changed them for the next caller")
+	}
+}
+
+// The circuit breaker. A loud failure takes a rule back toward the
+// model, which is expensive and correct, with no evidence bar and no
+// discretion — and an externally supplied signal takes the same path,
+// because the best correction a consumer has comes from a human.
+func TestALoudFailureDemotesAndSoDoesAnExternalSignal(t *testing.T) {
+	loud := []ladder.Failure{ladder.FailureExecution, ladder.FailureSafety, ladder.FailureAcceptance, ladder.FailureExternal}
+
+	for _, f := range loud {
+		t.Run(string(f), func(t *testing.T) {
+			s := mustRuleSet(t, nil)
+			propose(t, s, "r", "proposer", "p1", goodEvidence())
+			if err := s.Install(&ladder.InstallArgs{
+				ProposalID: "r", Installer: "other", Pass: "p2", Stage: ladder.StageDeterministic,
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			d, err := s.Fail("r", f, "observed in production")
+			if err != nil {
+				t.Fatalf("Fail(%s): %v", f, err)
+			}
+			if d.From != ladder.StageDeterministic || d.To != ladder.StageHybrid {
+				t.Errorf("demotion = %s, want deterministic → hybrid", d)
+			}
+			if d.Failure != f {
+				t.Errorf("demotion attributed to %q, want %q", d.Failure, f)
+			}
+			if e, _ := s.Lookup("r"); e.Stage != ladder.StageHybrid {
+				t.Errorf("stage = %s, want hybrid", e.Stage)
+			}
+
+			// Down to the model, and no further: the breaker cannot open
+			// twice, and says so with an error a consumer can tell from a
+			// broken store.
+			if _, err := s.Fail("r", f, "again"); err != nil {
+				t.Fatalf("second demotion refused: %v", err)
+			}
+			if _, err := s.Fail("r", f, "and again"); !errors.Is(err, ladder.ErrAlreadyAtAgent) {
+				t.Errorf("err = %v, want ErrAlreadyAtAgent", err)
+			}
+		})
+	}
+}
+
+// Claudia does not hold the consumer's failure taxonomy, and it does not
+// accept an unauditable demotion either.
+func TestTheBreakerRefusesWhatItCannotAccountFor(t *testing.T) {
+	s := mustRuleSet(t, nil)
+	propose(t, s, "r", "proposer", "p1", goodEvidence())
+	if err := s.Install(&ladder.InstallArgs{
+		ProposalID: "r", Installer: "other", Pass: "p2", Stage: ladder.StageDeterministic,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.Fail("r", ladder.Failure("felt wrong"), "vibes"); !errors.Is(err, ladder.ErrUnknownFailure) {
+		t.Errorf("err = %v, want ErrUnknownFailure", err)
+	}
+	if _, err := s.Fail("r", ladder.FailureSafety, ""); err == nil {
+		t.Error("a demotion with no recorded cause was accepted")
+	}
+	if _, err := s.Fail("absent", ladder.FailureSafety, "reason"); err == nil {
+		t.Error("a failure was recorded against a rule that does not exist")
+	}
+	if e, _ := s.Lookup("r"); e.Stage != ladder.StageDeterministic {
+		t.Errorf("stage = %s; a refused demotion still moved the rule", e.Stage)
+	}
+}
+
 func TestConsistencyWithoutCorrectnessIsRecordedNotHidden(t *testing.T) {
 	s := mustRuleSet(t, nil)
 
