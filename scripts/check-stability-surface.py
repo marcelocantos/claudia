@@ -11,7 +11,11 @@ That direction matters: a document checked against itself always passes.
   C. no malformed table rows
   D. every row of a "| … | Status |" table carries a Stable / Needs review /
      Fluid assessment
-  E. the per-package counts in "Surface item count" match the derived surface
+  E. every exported struct field is named too — fields are surface, and go
+     doc's top-level listing alone would let one disappear silently
+  F. every environment variable the public packages read is named. go doc
+     cannot see these, so they come from the tag's source
+  G. the counts the document states about itself match the derived surface
 
 Exits non-zero on any violation, so it can be run under a gate runner or CI.
 
@@ -46,6 +50,7 @@ def derive_surface(work, pkgs):
     the tables but not counted as top-level items.
     """
     items = []                      # (pkg, kind, owner, name)
+    fields = []                     # (pkg, type, field)
     names = set()                   # every exported identifier, fields included
 
     for pkg in pkgs:
@@ -55,11 +60,11 @@ def derive_surface(work, pkgs):
         ).stdout
 
         in_group = None             # "const" / "var" while inside a ( … ) block
-        in_body = False             # inside a type's struct/interface body
+        in_body = None              # struct type name while inside its body
         for line in out.splitlines():
             if in_group or in_body:
                 if line.startswith(")") or line.startswith("}"):
-                    in_group, in_body = None, False
+                    in_group, in_body = None, None
                     continue
                 # `Name, Other Type = value` or a struct field `Name Type`
                 head = re.match(r"^\t([A-Z]\w*(?:,\s*[A-Z]\w*)*)\s+\S", line)
@@ -68,6 +73,8 @@ def derive_surface(work, pkgs):
                         names.add(name)
                         if in_group:
                             items.append((pkg, in_group, None, name))
+                        else:
+                            fields.append((pkg, in_body, name))
                 continue
 
             if line in ("const (", "var ("):
@@ -85,7 +92,8 @@ def derive_surface(work, pkgs):
             if ty:
                 items.append((pkg, "type", None, ty.group(1)))
                 names.add(ty.group(1))
-                in_body = ty.group(2).rstrip().endswith("{")
+                if ty.group(2).rstrip().endswith("{"):
+                    in_body = ty.group(1)
                 continue
 
             cv = re.match(r"^(const|var) ([A-Z]\w*)", line)
@@ -93,7 +101,27 @@ def derive_surface(work, pkgs):
                 items.append((pkg, cv.group(1), None, cv.group(2)))
                 names.add(cv.group(2))
 
-    return items, names
+    return items, fields, names
+
+
+def derive_env_vars(work, pkgs):
+    """Environment variable names read by the public packages.
+
+    `go doc` cannot see these — they are string literals, usually bound to an
+    unexported const — so they are read from the source of the same worktree.
+    All-caps underscore literals in Go are env names by convention, and in this
+    module the set is exactly that: no other literal matches the shape.
+    Test files are excluded; a test-harness switch is not runtime surface.
+    """
+    lit = re.compile(r'"([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)"')
+    found = set()
+    for pkg in pkgs:
+        d = os.path.join(work, pkg)
+        for name in os.listdir(d):
+            if not name.endswith(".go") or name.endswith("_test.go"):
+                continue
+            found.update(lit.findall(open(os.path.join(d, name)).read()))
+    return found
 
 
 def tables(text):
@@ -139,7 +167,8 @@ def main():
             if os.path.isdir(d) and any(f.endswith(".go") for f in os.listdir(d)):
                 pkgs.append("./" + name)
         print("public packages:", " ".join(pkgs))
-        items, names = derive_surface(work, pkgs)
+        items, fields, names = derive_surface(work, pkgs)
+        env_vars = derive_env_vars(work, pkgs)
     finally:
         subprocess.run(["git", "worktree", "remove", "--force", work],
                        cwd=repo, capture_output=True)
@@ -195,15 +224,31 @@ def main():
         print(f"   UNASSESSED {item} -> {cell!r} (line {lineno})")
     fails += len(unassessed)
 
-    # E. the counts the document states about itself.
+    missing_fields = [f"{p} {t}.{n}" for p, t, n in fields if n not in ticked]
+    print(f"E. exported struct fields: {len(fields)}   "
+          f"not named in STABILITY.md: {len(missing_fields)}")
+    for x in missing_fields:
+        print("   MISSING FIELD", x)
+    fails += len(missing_fields)
+
+    missing_env = sorted(e for e in env_vars if e not in ticked)
+    print(f"F. env vars read by public packages: {len(env_vars)}   "
+          f"not named in STABILITY.md: {len(missing_env)}")
+    for e in missing_env:
+        print("   MISSING ENV", e)
+    fails += len(missing_env)
+
+    # G. the counts the document states about itself.
     per_pkg = {}
     for pkg, _, _, _ in items:
         per_pkg[pkg] = per_pkg.get(pkg, 0) + 1
     claimed = re.search(
         r"^(\d+) top-level items at " + re.escape(tag) + r" — (.+?)— counting",
         text, re.M | re.S)
-    if not claimed:
-        print("E. FAIL: no 'N top-level items at <tag> — …' sentence found")
+    with_fields = re.search(r"With fields, (\d+)\.", text)
+    if not claimed or not with_fields:
+        print("G. FAIL: no 'N top-level items at <tag> — …' / "
+              "'With fields, N.' sentence found")
         fails += 1
     else:
         stated_total = int(claimed.group(1))
@@ -213,11 +258,14 @@ def main():
             stated["." if name == "claudia" else "./" + name.split("/")[1]] = int(count)
         bad = ([] if stated_total == len(items)
                else [f"total {stated_total} != derived {len(items)}"])
+        if int(with_fields.group(1)) != len(items) + len(fields):
+            bad.append(f"with fields {with_fields.group(1)} != derived "
+                       f"{len(items) + len(fields)}")
         for pkg in sorted(set(stated) | set(per_pkg)):
             if stated.get(pkg) != per_pkg.get(pkg):
                 bad.append(f"{pkg}: stated {stated.get(pkg)} != derived "
                            f"{per_pkg.get(pkg)}")
-        print(f"E. surface counts: {len(bad)} mismatch(es) "
+        print(f"G. surface counts: {len(bad)} mismatch(es) "
               f"(derived {len(items)}: "
               f"{', '.join(f'{k}={v}' for k, v in sorted(per_pkg.items()))})")
         for b in bad:

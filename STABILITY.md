@@ -33,9 +33,10 @@ listed alphabetically within each table so the list can be diffed against
 
 `make verify-stability` (CI job `stability-surface`) re-derives the surface from
 a clean worktree of the snapshot tag and fails if this document names an item
-the tag does not have, omits one it does, leaves a row unassessed, or states a
-count that does not match. The document cannot drift silently from the release
-it claims to describe.
+the tag does not have, omits one it does — type, function, method, constant,
+variable, struct field, or environment variable — leaves a row unassessed, or
+states a count that does not match. The document cannot drift silently from the
+release it claims to describe.
 
 ### Package `github.com/marcelocantos/claudia`
 
