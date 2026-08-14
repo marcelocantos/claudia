@@ -35,9 +35,10 @@ func workPhase(t *testing.T, j ladder.Journal, fingerprint string, stacks []stri
 func newPass(t *testing.T, f *fixture, j ladder.Journal, rs *ladder.RuleSet) *ladder.ConsolidationPass {
 	t.Helper()
 	return &ladder.ConsolidationPass{
-		Rules:   rs,
-		Journal: j,
-		Scope:   f.scope(t, "pattern", nil, []ladder.Action{f.reap}),
+		Rules:       rs,
+		Journal:     j,
+		Scope:       f.scope(t, "pattern", nil, []ladder.Action{f.reap}),
+		ModelLayers: []string{"model"},
 	}
 }
 
@@ -52,7 +53,7 @@ func findCandidate(cands []ladder.Candidate, kind, class string) *ladder.Candida
 
 func TestConsolidateProposesAndInstallsNothing(t *testing.T) {
 	f := newFixture()
-	rs, err := ladder.NewRuleSet("po-flavour", nil)
+	rs, err := ladder.NewRuleSet(&ladder.RuleSetConfig{Flavour: "po-flavour"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +92,7 @@ func TestConsolidateProposesAndInstallsNothing(t *testing.T) {
 // candidate can look excellent on the pool and be wrong for a member.
 func TestPooledEvidenceMustHoldPerStack(t *testing.T) {
 	f := newFixture()
-	rs, _ := ladder.NewRuleSet("po-flavour", nil)
+	rs, _ := ladder.NewRuleSet(&ladder.RuleSetConfig{Flavour: "po-flavour"})
 	fp, _ := rs.Fingerprint()
 
 	j := ladder.NewMemoryJournal(0)
@@ -122,7 +123,7 @@ func TestPooledEvidenceMustHoldPerStack(t *testing.T) {
 
 func TestCandidateExceedingScopeIsBlockedNotProposed(t *testing.T) {
 	f := newFixture()
-	rs, _ := ladder.NewRuleSet("po-flavour", nil)
+	rs, _ := ladder.NewRuleSet(&ladder.RuleSetConfig{Flavour: "po-flavour"})
 	fp, _ := rs.Fingerprint()
 
 	j := ladder.NewMemoryJournal(0)
@@ -147,7 +148,7 @@ func TestCandidateExceedingScopeIsBlockedNotProposed(t *testing.T) {
 
 func TestConsolidationProposesRemovalsNotOnlyAdditions(t *testing.T) {
 	f := newFixture()
-	rs, _ := ladder.NewRuleSet("po-flavour", []ladder.Recalled{learned("stale", "worker.vanished", goodEvidence())})
+	rs, _ := ladder.NewRuleSet(&ladder.RuleSetConfig{Flavour: "po-flavour", Seed: []ladder.Recalled{learned("stale", "worker.vanished", goodEvidence())}})
 	j := ladder.NewMemoryJournal(0)
 
 	pass := newPass(t, f, j, rs)
@@ -173,7 +174,7 @@ func TestConsolidationProposesRemovalsNotOnlyAdditions(t *testing.T) {
 
 func TestEpisodesFromAnotherRuleSetAndUnjudgedOnesAreNotEvidence(t *testing.T) {
 	f := newFixture()
-	rs, _ := ladder.NewRuleSet("po-flavour", nil)
+	rs, _ := ladder.NewRuleSet(&ladder.RuleSetConfig{Flavour: "po-flavour"})
 	fp, _ := rs.Fingerprint()
 	j := ladder.NewMemoryJournal(0)
 
@@ -202,14 +203,15 @@ func TestEpisodesFromAnotherRuleSetAndUnjudgedOnesAreNotEvidence(t *testing.T) {
 
 func TestConsolidateRefusesWithoutWhatItCannotInfer(t *testing.T) {
 	f := newFixture()
-	rs, _ := ladder.NewRuleSet("f", nil)
+	rs, _ := ladder.NewRuleSet(&ladder.RuleSetConfig{Flavour: "f"})
 	j := ladder.NewMemoryJournal(0)
 	ctx := context.Background()
 
 	for name, br := range map[string]func(*ladder.ConsolidationPass){
-		"no rules":   func(p *ladder.ConsolidationPass) { p.Rules = nil },
-		"no journal": func(p *ladder.ConsolidationPass) { p.Journal = nil },
-		"no scope":   func(p *ladder.ConsolidationPass) { p.Scope = nil },
+		"no rules":        func(p *ladder.ConsolidationPass) { p.Rules = nil },
+		"no journal":      func(p *ladder.ConsolidationPass) { p.Journal = nil },
+		"no scope":        func(p *ladder.ConsolidationPass) { p.Scope = nil },
+		"no model layers": func(p *ladder.ConsolidationPass) { p.ModelLayers = nil },
 	} {
 		t.Run(name, func(t *testing.T) {
 			pass := newPass(t, f, j, rs)

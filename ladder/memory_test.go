@@ -79,10 +79,10 @@ func TestFingerprintTracksContentAndNothingElse(t *testing.T) {
 }
 
 func TestSeededMemoryRoundTripsThroughYAML(t *testing.T) {
-	original, err := ladder.NewRuleSet("po-flavour", []ladder.Recalled{
+	original, err := ladder.NewRuleSet(&ladder.RuleSetConfig{Flavour: "po-flavour", Seed: []ladder.Recalled{
 		learned("reap-finished", "worker.finished", goodEvidence()),
 		learned("nudge-idle", "worker.idle", goodEvidence()),
-	})
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +93,7 @@ func TestSeededMemoryRoundTripsThroughYAML(t *testing.T) {
 	}
 
 	// A stack restarting picks the file back up.
-	restored, err := ladder.LoadRuleSet("po-flavour", saved)
+	restored, err := ladder.LoadRuleSet("po-flavour", saved, nil)
 	if err != nil {
 		t.Fatalf("LoadRuleSet: %v", err)
 	}
@@ -125,16 +125,16 @@ func TestMalformedRulesRefuseRatherThanStartingEmpty(t *testing.T) {
 		"wrong top": "rule_id: r\n",
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := ladder.LoadRuleSet("f", []byte(data)); err == nil {
+			if _, err := ladder.LoadRuleSet("f", []byte(data), nil); err == nil {
 				t.Error("malformed input loaded as an empty memory")
 			}
 		})
 	}
 
-	if _, err := ladder.NewRuleSet("", nil); err == nil {
+	if _, err := ladder.NewRuleSet(&ladder.RuleSetConfig{}); err == nil {
 		t.Error("a rule set with no flavour was accepted")
 	}
-	if _, err := ladder.NewRuleSet("f", []ladder.Recalled{learned("dup", "c", goodEvidence()), learned("dup", "c", goodEvidence())}); err == nil {
+	if _, err := ladder.NewRuleSet(&ladder.RuleSetConfig{Flavour: "f", Seed: []ladder.Recalled{learned("dup", "c", goodEvidence()), learned("dup", "c", goodEvidence())}}); err == nil {
 		t.Error("a seed naming one rule twice was accepted")
 	}
 }
@@ -144,9 +144,9 @@ func TestMalformedRulesRefuseRatherThanStartingEmpty(t *testing.T) {
 // refused in the other.
 func TestAttachValidatesPerStackNotOncePerSet(t *testing.T) {
 	f := newFixture()
-	shared, err := ladder.NewRuleSet("po-flavour", []ladder.Recalled{
+	shared, err := ladder.NewRuleSet(&ladder.RuleSetConfig{Flavour: "po-flavour", Seed: []ladder.Recalled{
 		learned("spawn-replacement", "worker.finished", goodEvidence()),
-	})
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +175,7 @@ func TestAttachValidatesPerStackNotOncePerSet(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := att.Fingerprint
-	if err := shared.Apply([]ladder.Recalled{learned("something-else", "c", goodEvidence())}); err != nil {
+	if err := shared.Forget("spawn-replacement", "superseded"); err != nil {
 		t.Fatal(err)
 	}
 	if att.Fingerprint != before || len(att.Rules) != 1 || att.Rules[0].RuleID != "spawn-replacement" {

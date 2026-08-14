@@ -44,11 +44,11 @@ func delivered(req *ladder.Request, res *ladder.Result) bool {
 	return true
 }
 
-func replayAt(t *testing.T, l *ladder.Ladder, v *ladder.Version) *ladder.ReplayReport {
+func replayAt(t *testing.T, l *ladder.Ladder, fingerprint string) *ladder.ReplayReport {
 	t.Helper()
 	rep, err := ladder.Replay(context.Background(), &ladder.ReplayArgs{
 		Ladder:      l,
-		Pinned:      v,
+		Fingerprint: fingerprint,
 		Corpus:      corpus(),
 		ModelLayers: []string{"model"},
 		Delivered:   delivered,
@@ -59,18 +59,17 @@ func replayAt(t *testing.T, l *ladder.Ladder, v *ladder.Version) *ladder.ReplayR
 	return rep
 }
 
-func TestReplayNeedsAPinnedVersionAndAWorkJudgement(t *testing.T) {
+func TestReplayNeedsAnIdentifiedRuleSetAndAWorkJudgement(t *testing.T) {
 	f := newFixture()
 	l := ladder.New(f.modelRung(t))
-	s := mustStore(t, nil)
 
 	if _, err := ladder.Replay(context.Background(), &ladder.ReplayArgs{
 		Ladder: l, Corpus: corpus(), Delivered: delivered,
 	}); err == nil {
-		t.Error("an unpinned replay was accepted; it would be measuring a moving target")
+		t.Error("an unidentified replay was accepted; it would be measuring a moving target")
 	}
 	if _, err := ladder.Replay(context.Background(), &ladder.ReplayArgs{
-		Ladder: l, Pinned: s.Current(), Corpus: corpus(),
+		Ladder: l, Fingerprint: "sha256:empty", Corpus: corpus(),
 	}); err == nil {
 		t.Error("a replay measuring cost with no delivered-work judgement was accepted")
 	}
@@ -80,18 +79,21 @@ func TestReplayNeedsAPinnedVersionAndAWorkJudgement(t *testing.T) {
 // case still escalates. Cheaper, with delivered work untouched.
 func TestGoodPromotionIsCheaperWithoutLosingWork(t *testing.T) {
 	f := newFixture()
-	store := mustStore(t, nil)
+	rs := mustRuleSet(t, nil)
 
-	before := replayAt(t, ladder.New(f.modelRung(t)), store.Current())
+	before := replayAt(t, ladder.New(f.modelRung(t)), "sha256:empty")
 	if before.Stats.ModelShare() != 1 {
 		t.Fatalf("baseline model share = %.2f, want 1", before.Stats.ModelShare())
 	}
 
 	// Install a rule covering only the routine case.
-	propose(t, store, "reap-finished", "proposer", "p1", goodEvidence())
-	v, err := store.Install(&ladder.InstallArgs{
+	propose(t, rs, "reap-finished", "proposer", "p1", goodEvidence())
+	if err := rs.Install(&ladder.InstallArgs{
 		ProposalID: "reap-finished", Installer: "consolidator", Pass: "p2", Stage: ladder.StageDeterministic,
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	v, err := rs.Fingerprint()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +129,7 @@ func TestGoodPromotionIsCheaperWithoutLosingWork(t *testing.T) {
 // answering the case that needed judgement.
 func TestGreedyRulePresentsAsASavingAndIsCaught(t *testing.T) {
 	f := newFixture()
-	store := mustStore(t, nil)
+	rs := mustRuleSet(t, nil)
 
 	// The baseline is a ladder that ALREADY has a sound rule, because
 	// the escalation-rate signal only means anything within a fixed
@@ -140,12 +142,15 @@ func TestGreedyRulePresentsAsASavingAndIsCaught(t *testing.T) {
 		When:   []ladder.Predicate{{Field: "kind", Kind: ladder.Equals, Value: "worker.finished"}},
 		Answer: "reaped",
 	}})
-	before := replayAt(t, ladder.New(narrow, f.modelRung(t)), store.Current())
+	before := replayAt(t, ladder.New(narrow, f.modelRung(t)), "sha256:empty")
 
-	propose(t, store, "handle-everything", "proposer", "p1", goodEvidence())
-	v, err := store.Install(&ladder.InstallArgs{
+	propose(t, rs, "handle-everything", "proposer", "p1", goodEvidence())
+	if err := rs.Install(&ladder.InstallArgs{
 		ProposalID: "handle-everything", Installer: "consolidator", Pass: "p2", Stage: ladder.StageDeterministic,
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	v, err := rs.Fingerprint()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,15 +187,14 @@ func TestGreedyRulePresentsAsASavingAndIsCaught(t *testing.T) {
 
 func TestComparisonRefusesMeaninglessPairs(t *testing.T) {
 	f := newFixture()
-	store := mustStore(t, nil)
-	rep := replayAt(t, ladder.New(f.modelRung(t)), store.Current())
+	rep := replayAt(t, ladder.New(f.modelRung(t)), "sha256:empty")
 
 	if _, err := ladder.CompareReplays(rep, rep); err == nil {
-		t.Error("a report was compared against itself; a version always looks stable against itself")
+		t.Error("a report was compared against itself; a rule set always looks stable against itself")
 	}
 
 	short, err := ladder.Replay(context.Background(), &ladder.ReplayArgs{
-		Ladder: ladder.New(f.modelRung(t)), Pinned: &ladder.Version{N: 99},
+		Ladder: ladder.New(f.modelRung(t)), Fingerprint: "sha256:different",
 		Corpus: corpus()[:3], ModelLayers: []string{"model"}, Delivered: delivered,
 	})
 	if err != nil {

@@ -103,25 +103,25 @@ func Fingerprint(rules []Recalled) (string, error) {
 	return "sha256:" + hex.EncodeToString(sum[:12]), nil
 }
 
-// recalledFrom converts an installed entry to its serialisable form.
-func recalledFrom(e Entry) (Recalled, error) {
+// recalledFrom converts an accepted proposal into its serialisable
+// form. Marshal-then-reparse is how an arbitrary body becomes a node
+// claudia can carry without understanding it.
+func recalledFrom(p *Proposal, stage Stage) (Recalled, error) {
 	r := Recalled{
-		RuleID:          e.RuleID,
-		Class:           e.Class,
-		Description:     e.Description,
-		Stage:           e.Stage,
-		ConsistencyOnly: e.ConsistencyOnly,
-		Evidence:        e.Evidence,
+		RuleID:          p.ID,
+		Class:           p.Class,
+		Description:     p.Description,
+		Stage:           stage,
+		ConsistencyOnly: p.Evidence.ConsistencyOnly(),
+		Evidence:        p.Evidence,
 	}
-	// Marshal then re-parse, which is how an arbitrary body becomes a
-	// node claudia can carry without understanding.
-	body, err := yaml.Marshal(e.Rule)
+	body, err := yaml.Marshal(p.Rule)
 	if err != nil {
-		return Recalled{}, fmt.Errorf("ladder: marshalling body of rule %q: %w", e.RuleID, err)
+		return Recalled{}, fmt.Errorf("ladder: marshalling body of rule %q: %w", p.ID, err)
 	}
 	var node yaml.Node
 	if err := yaml.Unmarshal(body, &node); err != nil {
-		return Recalled{}, fmt.Errorf("ladder: re-parsing body of rule %q: %w", e.RuleID, err)
+		return Recalled{}, fmt.Errorf("ladder: re-parsing body of rule %q: %w", p.ID, err)
 	}
 	// yaml.Unmarshal wraps everything in a document node; carry the
 	// content so the emitted form nests correctly.

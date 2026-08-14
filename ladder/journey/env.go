@@ -57,7 +57,7 @@ import (
 type Env struct {
 	t     *testing.T
 	Reg   *ladder.Registry
-	Store *ladder.Store
+	Rules *ladder.RuleSet
 
 	Reap   ladder.Action
 	Status ladder.Read
@@ -79,11 +79,11 @@ type Env struct {
 // NewEnv builds an isolated environment.
 func NewEnv(t *testing.T) *Env {
 	t.Helper()
-	store, err := ladder.NewStore(nil)
+	rules, err := ladder.NewRuleSet(&ladder.RuleSetConfig{Flavour: "journey"})
 	if err != nil {
-		t.Fatalf("NewStore: %v", err)
+		t.Fatalf("NewRuleSet: %v", err)
 	}
-	e := &Env{t: t, Reg: ladder.NewRegistry(), Store: store}
+	e := &Env{t: t, Reg: ladder.NewRegistry(), Rules: rules}
 
 	e.Reap = e.Reg.Action(&ladder.ActionDef{
 		Name:        "agent.reap",
@@ -190,23 +190,26 @@ func Delivered(req *ladder.Request, res *ladder.Result) bool {
 	return true
 }
 
-// RulesAt returns the rules installed at a store version, so a ladder
-// can be rebuilt exactly as it stood then.
-func RulesAt(v *ladder.Version) []ladder.RuleDef {
+// RulesAt decodes a rule set's opaque bodies back into rule
+// definitions. This is the consumer side of the codec boundary: claudia
+// carries a body it does not understand, and the consumer decodes it.
+func RulesAt(recalled []ladder.Recalled) []ladder.RuleDef {
 	var rules []ladder.RuleDef
-	for _, e := range v.Entries {
-		if def, ok := e.Rule.(ladder.RuleDef); ok {
-			rules = append(rules, def)
+	for i := range recalled {
+		var def ladder.RuleDef
+		if err := recalled[i].Decode(&def); err != nil {
+			continue
 		}
+		rules = append(rules, def)
 	}
 	return rules
 }
 
 // LadderAt builds the ladder as it stood at a store version: a pattern
 // rung holding that version's rules, below the scripted model rung.
-func (e *Env) LadderAt(v *ladder.Version) *ladder.Ladder {
+func (e *Env) LadderAt(recalled []ladder.Recalled) *ladder.Ladder {
 	e.t.Helper()
-	rules := RulesAt(v)
+	rules := RulesAt(recalled)
 	if len(rules) == 0 {
 		return ladder.New(e.ModelRung())
 	}
@@ -216,23 +219,27 @@ func (e *Env) LadderAt(v *ladder.Version) *ladder.Ladder {
 		Rules:  rules,
 	})
 	if err != nil {
-		e.t.Fatalf("NewPatternLayer at v%d: %v", v.N, err)
+		e.t.Fatalf("NewPatternLayer: %v", err)
 	}
 	return ladder.New(pattern, e.ModelRung())
 }
 
 // ReplayAt runs the corpus through the ladder as it stood at a version.
-func (e *Env) ReplayAt(v *ladder.Version) *ladder.ReplayReport {
+func (e *Env) ReplayAt(recalled []ladder.Recalled) *ladder.ReplayReport {
 	e.t.Helper()
+	fp, err := ladder.Fingerprint(recalled)
+	if err != nil {
+		e.t.Fatal(err)
+	}
 	rep, err := ladder.Replay(context.Background(), &ladder.ReplayArgs{
-		Ladder:      e.LadderAt(v),
-		Pinned:      v,
+		Ladder:      e.LadderAt(recalled),
+		Fingerprint: fp,
 		Corpus:      e.Corpus(),
 		ModelLayers: []string{"model"},
 		Delivered:   Delivered,
 	})
 	if err != nil {
-		e.t.Fatalf("Replay at v%d: %v", v.N, err)
+		e.t.Fatalf("Replay: %v", err)
 	}
 	return rep
 }
@@ -275,9 +282,9 @@ func (e *Env) Observe(l *ladder.Ladder, class string, want int) ladder.Evidence 
 // Install runs a full consolidation: propose in one pass, install in the
 // next. The two-pass shape is not ceremony — the runtime refuses an
 // install in the pass that raised the proposal.
-func (e *Env) Install(ruleID string, rule ladder.RuleDef, ev ladder.Evidence, stage ladder.Stage) *ladder.Version {
+func (e *Env) Install(ruleID string, rule ladder.RuleDef, ev ladder.Evidence, stage ladder.Stage) []ladder.Recalled {
 	e.t.Helper()
-	if err := e.Store.Propose(&ladder.Proposal{
+	if err := e.Rules.Propose(&ladder.Proposal{
 		ID:          ruleID,
 		Class:       "worker.finished",
 		Description: rule.Description,
@@ -288,11 +295,10 @@ func (e *Env) Install(ruleID string, rule ladder.RuleDef, ev ladder.Evidence, st
 	}); err != nil {
 		e.t.Fatalf("Propose(%s): %v", ruleID, err)
 	}
-	v, err := e.Store.Install(&ladder.InstallArgs{
+	if err := e.Rules.Install(&ladder.InstallArgs{
 		ProposalID: ruleID, Installer: "consolidation-pass", Pass: "consolidate", Stage: stage,
-	})
-	if err != nil {
+	}); err != nil {
 		e.t.Fatalf("Install(%s): %v", ruleID, err)
 	}
-	return v
+	return e.Rules.Rules()
 }

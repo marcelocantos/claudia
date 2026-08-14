@@ -76,12 +76,12 @@ func (s Symptom) String() string {
 
 // SymptomScan configures [Scan].
 type SymptomScan struct {
-	Store *Store
+	Rules *RuleSet
 
 	// Build makes a ladder from a set of store entries. Claudia does
 	// not interpret rules, so replaying an ablated world needs the
 	// consumer to say how its entries become rungs.
-	Build func(entries []Entry) (*Ladder, error)
+	Build func(rules []Recalled) (*Ladder, error)
 
 	// Corpus is the recorded request mix to scan against.
 	Corpus []*Request
@@ -116,8 +116,8 @@ func Scan(ctx context.Context, args *SymptomScan) ([]Symptom, error) {
 	switch {
 	case args == nil:
 		return nil, fmt.Errorf("ladder: nil SymptomScan")
-	case args.Store == nil:
-		return nil, fmt.Errorf("ladder: scan needs a Store")
+	case args.Rules == nil:
+		return nil, fmt.Errorf("ladder: scan needs a rule set")
 	case args.Build == nil:
 		return nil, fmt.Errorf("ladder: scan needs a Build — claudia does not interpret rules")
 	case args.Delivered == nil:
@@ -129,15 +129,19 @@ func Scan(ctx context.Context, args *SymptomScan) ([]Symptom, error) {
 		collapse = 0.5
 	}
 
-	current := args.Store.Current()
-	baseReport, baseFired, err := args.replay(ctx, current.Entries, current.N)
+	current := args.Rules.Rules()
+	fp, err := args.Rules.Fingerprint()
+	if err != nil {
+		return nil, err
+	}
+	baseReport, baseFired, err := args.replay(ctx, current, fp)
 	if err != nil {
 		return nil, err
 	}
 
 	var out []Symptom
 
-	for _, entry := range current.Entries {
+	for _, entry := range current {
 		if baseFired[entry.RuleID] == 0 {
 			out = append(out, Symptom{
 				Kind:   SymptomNeverFired,
@@ -166,7 +170,7 @@ func Scan(ctx context.Context, args *SymptomScan) ([]Symptom, error) {
 
 		// The ablation pass: replay the corpus with this rule removed
 		// and see whether anything moves.
-		ablatedReport, _, err := args.replay(ctx, args.Store.Ablate(entry.RuleID), current.N+1)
+		ablatedReport, _, err := args.replay(ctx, args.Rules.Ablate(entry.RuleID), fp+"-ablated")
 		if err != nil {
 			return nil, err
 		}
@@ -225,8 +229,8 @@ func Scan(ctx context.Context, args *SymptomScan) ([]Symptom, error) {
 
 // replay runs the corpus against a candidate set of entries and reports
 // both the aggregate and which rules fired.
-func (args *SymptomScan) replay(ctx context.Context, entries []Entry, version int) (*ReplayReport, map[string]int, error) {
-	l, err := args.Build(entries)
+func (args *SymptomScan) replay(ctx context.Context, rules []Recalled, fingerprint string) (*ReplayReport, map[string]int, error) {
+	l, err := args.Build(rules)
 	if err != nil {
 		return nil, nil, fmt.Errorf("ladder: building a ladder for the scan: %w", err)
 	}
@@ -250,7 +254,7 @@ func (args *SymptomScan) replay(ctx context.Context, entries []Entry, version in
 		})
 	}
 
-	report := &ReplayReport{Version: version, Stats: meter.Totals(), PerClass: make(map[string]ClassStats)}
+	report := &ReplayReport{Fingerprint: fingerprint, Stats: meter.Totals(), PerClass: make(map[string]ClassStats)}
 	for _, kind := range meter.Classes() {
 		report.PerClass[kind] = meter.Class(kind)
 	}

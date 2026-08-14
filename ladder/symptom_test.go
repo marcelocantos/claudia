@@ -15,24 +15,24 @@ import (
 // no longer occurs, then scans.
 type scanFixture struct {
 	f     *fixture
-	store *ladder.Store
+	rules *ladder.RuleSet
 	args  *ladder.SymptomScan
 }
 
 func newScanFixture(t *testing.T) *scanFixture {
 	t.Helper()
 	f := newFixture()
-	store := mustStore(t, nil)
+	rules := mustRuleSet(t, nil)
 
 	install := func(id string, rule ladder.RuleDef, ev ladder.Evidence) {
 		t.Helper()
-		if err := store.Propose(&ladder.Proposal{
+		if err := rules.Propose(&ladder.Proposal{
 			ID: id, Class: "worker.finished", Description: rule.Description,
 			Rule: rule, ProposedBy: "work", Pass: "p1", Evidence: ev,
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := store.Install(&ladder.InstallArgs{
+		if err := rules.Install(&ladder.InstallArgs{
 			ProposalID: id, Installer: "consolidate", Pass: "p2", Stage: ladder.StageDeterministic,
 		}); err != nil {
 			t.Fatal(err)
@@ -54,18 +54,20 @@ func newScanFixture(t *testing.T) *scanFixture {
 		Answer: "gone",
 	}, ladder.Evidence{Runs: 60, Identical: 60, TestsPass: true})
 
-	sf := &scanFixture{f: f, store: store}
+	sf := &scanFixture{f: f, rules: rules}
 	sf.args = &ladder.SymptomScan{
-		Store:       store,
+		Rules:       rules,
 		Corpus:      corpus(),
 		ModelLayers: []string{"model"},
 		Delivered:   delivered,
-		Build: func(entries []ladder.Entry) (*ladder.Ladder, error) {
+		Build: func(recalled []ladder.Recalled) (*ladder.Ladder, error) {
 			var rules []ladder.RuleDef
-			for _, e := range entries {
-				if def, ok := e.Rule.(ladder.RuleDef); ok {
-					rules = append(rules, def)
+			for i := range recalled {
+				var def ladder.RuleDef
+				if err := recalled[i].Decode(&def); err != nil {
+					return nil, err
 				}
+				rules = append(rules, def)
 			}
 			if len(rules) == 0 {
 				return ladder.New(f.modelRung(t)), nil
@@ -133,21 +135,27 @@ func TestScanSeparatesInertFromLoadBearing(t *testing.T) {
 
 func TestScanReportsAndNeverActs(t *testing.T) {
 	sf := newScanFixture(t)
-	before := sf.store.Current()
+	before, err := sf.rules.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if _, err := ladder.Scan(context.Background(), sf.args); err != nil {
 		t.Fatal(err)
 	}
 
-	// The store is exactly as it was. Symptoms are observations, never
-	// conclusions: the runtime does not revoke a rule because one
+	// The rule set is exactly as it was. Symptoms are observations,
+	// never conclusions: the runtime does not revoke a rule because one
 	// looked stale.
-	after := sf.store.Current()
-	if after.N != before.N {
-		t.Errorf("the scan changed the store from v%d to v%d", before.N, after.N)
+	after, err := sf.rules.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
 	}
-	if len(after.Entries) != 2 {
-		t.Errorf("the scan removed a rule: %d entries remain", len(after.Entries))
+	if after != before {
+		t.Errorf("the scan changed the rule set: %s → %s", before, after)
+	}
+	if len(sf.rules.Rules()) != 2 {
+		t.Errorf("the scan removed a rule: %d remain", len(sf.rules.Rules()))
 	}
 }
 
@@ -160,7 +168,7 @@ func TestScanSurfacesContradictionAndEscalationCollapse(t *testing.T) {
 
 	// A baseline where the class escalated far more than it does now.
 	sf.args.Baseline = &ladder.ReplayReport{
-		Version: 0,
+		Fingerprint: "sha256:baseline",
 		PerClass: map[string]ladder.ClassStats{
 			"worker.finished": {Requests: 40, Escalated: 40, AnsweredBy: map[string]int{"model": 40}},
 		},
@@ -211,7 +219,7 @@ func TestScanRefusesToRunWithoutWhatItCannotInfer(t *testing.T) {
 	ctx := context.Background()
 
 	cases := map[string]func(*ladder.SymptomScan){
-		"no store":     func(a *ladder.SymptomScan) { a.Store = nil },
+		"no rules":     func(a *ladder.SymptomScan) { a.Rules = nil },
 		"no build":     func(a *ladder.SymptomScan) { a.Build = nil },
 		"no delivered": func(a *ladder.SymptomScan) { a.Delivered = nil },
 	}

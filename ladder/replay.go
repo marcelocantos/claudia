@@ -13,13 +13,14 @@ type ReplayArgs struct {
 	// Ladder to replay through.
 	Ladder *Ladder
 
-	// Pinned is the store version this run is measured against.
+	// Fingerprint identifies the rule set this run is measured against.
 	//
 	// It is required. Behaviour is history-dependent once rules
-	// accumulate, so a replay that does not pin a version is silently
-	// measuring a moving target and its numbers cannot be compared with
-	// anything.
-	Pinned *Version
+	// accumulate, so a replay against an unidentified rule set is
+	// silently measuring a moving target and its numbers cannot be
+	// compared with anything. A content hash rather than a position,
+	// because once memory outlives the process a counter means nothing.
+	Fingerprint string
 
 	// Corpus is the recorded requests, in order.
 	Corpus []*Request
@@ -38,10 +39,10 @@ type ReplayArgs struct {
 
 // ReplayReport is what one replay observed.
 type ReplayReport struct {
-	// Version is the pinned store version, carried so a report cannot
-	// be compared against one from a different world by accident.
-	Version int
-	Stats   ClassStats
+	// Fingerprint is the rule set this ran against, carried so a report
+	// cannot be compared against one from a different world by accident.
+	Fingerprint string
+	Stats       ClassStats
 	// PerClass breaks the same numbers down by request class.
 	PerClass map[string]ClassStats
 }
@@ -54,8 +55,8 @@ func Replay(ctx context.Context, args *ReplayArgs) (*ReplayReport, error) {
 		return nil, fmt.Errorf("ladder: nil ReplayArgs")
 	case args.Ladder == nil:
 		return nil, fmt.Errorf("ladder: replay needs a Ladder")
-	case args.Pinned == nil:
-		return nil, fmt.Errorf("ladder: replay needs a pinned store version — an unpinned replay measures a moving target")
+	case args.Fingerprint == "":
+		return nil, fmt.Errorf("ladder: replay needs the fingerprint of the rule set it runs against — an unidentified replay measures a moving target")
 	case args.Delivered == nil:
 		return nil, fmt.Errorf("ladder: replay needs a Delivered judgement — measuring cost with nothing to weigh it against is the failure mode, not the metric")
 	}
@@ -78,9 +79,9 @@ func Replay(ctx context.Context, args *ReplayArgs) (*ReplayReport, error) {
 	}
 
 	report := &ReplayReport{
-		Version:  args.Pinned.N,
-		Stats:    meter.Totals(),
-		PerClass: make(map[string]ClassStats),
+		Fingerprint: args.Fingerprint,
+		Stats:       meter.Totals(),
+		PerClass:    make(map[string]ClassStats),
 	}
 	for _, kind := range meter.Classes() {
 		report.PerClass[kind] = meter.Class(kind)
@@ -91,7 +92,7 @@ func Replay(ctx context.Context, args *ReplayArgs) (*ReplayReport, error) {
 // ReplayComparison is the verdict on two replays over the same corpus at
 // different store versions.
 type ReplayComparison struct {
-	Before, After int
+	Before, After string
 
 	// ModelShareDelta is negative when fewer requests reached a model.
 	ModelShareDelta float64
@@ -128,7 +129,7 @@ func (c *ReplayComparison) Summary() string {
 	case c.DeliveredShareDelta < 0:
 		verdict = "delivered work fell without any saving"
 	}
-	return fmt.Sprintf("v%d→v%d: model share %+.3f, delivered %+.3f, escalation %+.3f — %s",
+	return fmt.Sprintf("%s→%s: model share %+.3f, delivered %+.3f, escalation %+.3f — %s",
 		c.Before, c.After, c.ModelShareDelta, c.DeliveredShareDelta, c.EscalationRateDelta, verdict)
 }
 
@@ -142,8 +143,8 @@ func CompareReplays(before, after *ReplayReport) (*ReplayComparison, error) {
 	if before == nil || after == nil {
 		return nil, fmt.Errorf("ladder: both reports are required")
 	}
-	if before.Version == after.Version {
-		return nil, fmt.Errorf("ladder: both reports are at version %d; there is nothing to compare", before.Version)
+	if before.Fingerprint == after.Fingerprint {
+		return nil, fmt.Errorf("ladder: both reports are at %s; there is nothing to compare", before.Fingerprint)
 	}
 	if before.Stats.Requests != after.Stats.Requests {
 		return nil, fmt.Errorf("ladder: %d requests before and %d after — the corpus must be the same, or the deltas mean nothing",
@@ -151,8 +152,8 @@ func CompareReplays(before, after *ReplayReport) (*ReplayComparison, error) {
 	}
 
 	c := &ReplayComparison{
-		Before:              before.Version,
-		After:               after.Version,
+		Before:              before.Fingerprint,
+		After:               after.Fingerprint,
 		ModelShareDelta:     after.Stats.ModelShare() - before.Stats.ModelShare(),
 		DeliveredShareDelta: after.Stats.DeliveredShare() - before.Stats.DeliveredShare(),
 		EscalationRateDelta: after.Stats.EscalationRate() - before.Stats.EscalationRate(),

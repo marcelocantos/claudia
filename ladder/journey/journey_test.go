@@ -51,7 +51,7 @@ func TestJourneySilentOmissionIsCaught(t *testing.T) {
 	// Now a greedier rule is promoted on evidence that looks perfect,
 	// because in a deterministic world it is.
 	e.Install("handle-everything", greedyRule(), sound, ladder.StageDeterministic)
-	after := e.ReplayAt(e.Store.Current())
+	after := e.ReplayAt(e.Rules.Rules())
 
 	cmp, err := ladder.CompareReplays(before, after)
 	if err != nil {
@@ -84,7 +84,7 @@ func TestJourneySilentOmissionIsCaught(t *testing.T) {
 // Journey 1: a repeated decision crystallises, and the saving is real.
 func TestJourneyCrystallisation(t *testing.T) {
 	e := NewEnv(t)
-	baseline := e.ReplayAt(e.Store.Current())
+	baseline := e.ReplayAt(e.Rules.Rules())
 	if baseline.Stats.ModelShare() != 1 {
 		t.Fatalf("baseline model share = %.3f, want 1", baseline.Stats.ModelShare())
 	}
@@ -150,11 +150,10 @@ func TestJourneyCircuitBreaker(t *testing.T) {
 
 	// Demotion is the circuit breaker and needs no evidence: stopping
 	// is always allowed.
-	demoted, err := e.Store.Demote("reap-finished", "upstream renamed the event")
-	if err != nil {
+	if err := e.Rules.Demote("reap-finished", "upstream renamed the event"); err != nil {
 		t.Fatalf("Demote: %v", err)
 	}
-	if entry, _ := demoted.Lookup("reap-finished"); entry.Stage != ladder.StageHybrid {
+	if entry, _ := e.Rules.Lookup("reap-finished"); entry.Stage != ladder.StageHybrid {
 		t.Errorf("stage = %s, want hybrid", entry.Stage)
 	}
 }
@@ -181,8 +180,7 @@ func TestJourneyQuietObsolescence(t *testing.T) {
 	// Ablation is the detector: replay with the rule removed and see
 	// whether anything changes. You cannot observe the escalation that
 	// did not happen, but you can observe whether a rule does anything.
-	ablated := &ladder.Version{N: withInert.N + 1000, Entries: e.Store.Ablate("reap-retired-event")}
-	without := e.ReplayAt(ablated)
+	without := e.ReplayAt(e.Rules.Ablate("reap-retired-event"))
 
 	cmp, err := ladder.CompareReplays(live, without)
 	if err != nil {
@@ -197,8 +195,7 @@ func TestJourneyQuietObsolescence(t *testing.T) {
 	// rule is load-bearing — otherwise an ablation that removed nothing
 	// would look exactly like this and the detector would be inert
 	// itself.
-	loadBearing := &ladder.Version{N: withInert.N + 2000, Entries: e.Store.Ablate("reap-finished")}
-	withoutLive := e.ReplayAt(loadBearing)
+	withoutLive := e.ReplayAt(e.Rules.Ablate("reap-finished"))
 	liveCmp, err := ladder.CompareReplays(live, withoutLive)
 	if err != nil {
 		t.Fatal(err)
@@ -224,11 +221,10 @@ func TestJourneyQuietObsolescence(t *testing.T) {
 
 	// Revoking costs exactly what installing cost, and behaviour is
 	// unchanged — which is what makes routine revocation safe.
-	revoked, err := e.Store.Revoke("reap-retired-event", "inert against the corpus")
-	if err != nil {
-		t.Fatalf("Revoke: %v", err)
+	if err := e.Rules.Forget("reap-retired-event", "inert against the corpus"); err != nil {
+		t.Fatalf("Forget: %v", err)
 	}
-	final := e.ReplayAt(revoked)
+	final := e.ReplayAt(e.Rules.Rules())
 	if final.Stats.ModelShare() != live.Stats.ModelShare() || final.Stats.DeliveredShare() != live.Stats.DeliveredShare() {
 		t.Error("revoking an inert rule changed behaviour")
 	}
@@ -240,7 +236,7 @@ func TestJourneyConsolidationDiscipline(t *testing.T) {
 	e := NewEnv(t)
 	ev := e.Observe(ladder.New(e.ModelRung()), "worker.finished", 50)
 
-	if err := e.Store.Propose(&ladder.Proposal{
+	if err := e.Rules.Propose(&ladder.Proposal{
 		ID: "reap-finished", Class: "worker.finished", Description: "d",
 		Rule: narrowRule("worker.finished"), ProposedBy: "working-pass", Pass: "work", Evidence: ev,
 	}); err != nil {
@@ -249,30 +245,30 @@ func TestJourneyConsolidationDiscipline(t *testing.T) {
 
 	// The pass that raised the proposal cannot install it, however good
 	// the evidence looks from inside that pass.
-	if _, err := e.Store.Install(&ladder.InstallArgs{
+	if err := e.Rules.Install(&ladder.InstallArgs{
 		ProposalID: "reap-finished", Installer: "consolidation-pass", Pass: "work", Stage: ladder.StageDeterministic,
 	}); err == nil {
 		t.Error("a proposal was installed in the pass that raised it")
 	}
 
-	baseline := e.ReplayAt(e.Store.Current())
-	installed, err := e.Store.Install(&ladder.InstallArgs{
+	baseline := e.ReplayAt(e.Rules.Rules())
+	if err := e.Rules.Install(&ladder.InstallArgs{
 		ProposalID: "reap-finished", Installer: "consolidation-pass", Pass: "consolidate", Stage: ladder.StageDeterministic,
-	})
-	if err != nil {
+	}); err != nil {
 		t.Fatalf("install in a later pass refused: %v", err)
 	}
-	promoted := e.ReplayAt(installed)
+	promoted := e.ReplayAt(e.Rules.Rules())
 	if promoted.Stats.ModelShare() >= baseline.Stats.ModelShare() {
 		t.Fatal("the install had no effect")
 	}
 
-	// Rolling back restores the earlier world exactly.
-	back, err := e.Store.Rollback(baseline.Version)
-	if err != nil {
-		t.Fatalf("Rollback: %v", err)
+	// Forgetting restores the earlier world exactly — which is the
+	// property that makes routine revocation safe, now that there is no
+	// version history to roll back to.
+	if err := e.Rules.Forget("reap-finished", "undoing the promotion"); err != nil {
+		t.Fatalf("Forget: %v", err)
 	}
-	restored := e.ReplayAt(back)
+	restored := e.ReplayAt(e.Rules.Rules())
 	if restored.Stats.ModelShare() != baseline.Stats.ModelShare() {
 		t.Errorf("rollback model share %.3f, baseline %.3f", restored.Stats.ModelShare(), baseline.Stats.ModelShare())
 	}
@@ -376,7 +372,7 @@ func TestJourneyAuthorityHoldsUnderPromotion(t *testing.T) {
 		Action:      "agent.spawn",
 	}
 	v := e.Install("spawn-on-finish", overreach, ev, ladder.StageDeterministic)
-	if _, ok := v.Lookup("spawn-on-finish"); !ok {
+	if _, ok := e.Rules.Lookup("spawn-on-finish"); !ok {
 		t.Fatal("the store refused a rule on authority grounds; that is not its job")
 	}
 

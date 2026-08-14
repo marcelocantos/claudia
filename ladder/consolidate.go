@@ -6,6 +6,7 @@ package ladder
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 )
 
@@ -61,6 +62,16 @@ type ConsolidationPass struct {
 	// an action outside it is blocked rather than proposed.
 	Scope *Scope
 
+	// ModelLayers names the model-backed rungs.
+	//
+	// It is REQUIRED, because only a class a model is still answering is
+	// worth crystallising, and claudia cannot infer which rungs are
+	// models — a rung is an interface, and what sits behind it is the
+	// consumer's business. An earlier version guessed by testing whether
+	// the answering verdict carried a rule id, which is wrong the moment
+	// a model rung stamps one.
+	ModelLayers []string
+
 	// Thresholds gate promotion. Nil uses [ProductionThresholds].
 	Thresholds *Thresholds
 
@@ -97,6 +108,8 @@ func Consolidate(ctx context.Context, pass *ConsolidationPass) ([]Candidate, err
 		return nil, fmt.Errorf("ladder: consolidation needs a journal — there is nothing to learn from without episodes")
 	case pass.Scope == nil:
 		return nil, fmt.Errorf("ladder: consolidation needs the scope candidates must run under")
+	case len(pass.ModelLayers) == 0:
+		return nil, fmt.Errorf("ladder: consolidation needs ModelLayers — only a class a model still answers is worth crystallising, and claudia cannot infer which rungs are models")
 	}
 
 	thresholds := pass.Thresholds
@@ -144,7 +157,7 @@ func Consolidate(ctx context.Context, pass *ConsolidationPass) ([]Candidate, err
 		if ep.Outcome.Correction {
 			e.CorrectionsAgainst++
 		}
-		if ep.Rule == "" {
+		if slices.Contains(pass.ModelLayers, ep.AnsweredBy) {
 			answeredByModel[ep.Kind]++
 		}
 

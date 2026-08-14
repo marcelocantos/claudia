@@ -5,11 +5,12 @@ package ladder
 
 import (
 	"fmt"
+	"sort"
 	"sync"
 )
 
 // RuleSet is procedural memory for one FLAVOUR of agent: what stacks of
-// that kind have learned to do.
+// that kind have learned to do, and the gates that govern learning it.
 //
 // It is independent of any stack. Several stacks of a flavour attach the
 // same set, which is what pools their evidence — a fifty-run promotion
@@ -21,36 +22,63 @@ import (
 // orthogonal accesses behind one lock; and losing a rule set is amnesia
 // while losing a journal costs only future opportunity, so a retention
 // policy on episodes must never be able to eat rules.
+//
+// There is ONE rule container. An earlier draft had a separate store for
+// learning and a rule set for attaching, and the two halves of the
+// evolution loop then took different types — symptoms came out of one
+// and candidates went into the other, joined by nothing.
 type RuleSet struct {
 	// Flavour names the kind of agent these rules belong to. It appears
 	// in journal records so pooled evidence stays attributable.
 	Flavour string
 
-	mu    sync.RWMutex
-	rules []Recalled
+	thresholds *Thresholds
+
+	mu        sync.RWMutex
+	rules     map[string]Recalled
+	proposals map[string]Proposal
 }
 
-// NewRuleSet builds a rule set for a flavour, seeded with rules from an
-// earlier run.
-//
-// A seeded set is INDISTINGUISHABLE from one that learned the same
-// rules: restoring takes no separate code path, so there is no second
-// behaviour to keep in step.
-func NewRuleSet(flavour string, seed []Recalled) (*RuleSet, error) {
-	if flavour == "" {
+// RuleSetConfig configures a [RuleSet].
+type RuleSetConfig struct {
+	// Flavour is required: pooled evidence must stay attributable.
+	Flavour string
+
+	// Seed are rules learned in an earlier run of the stack. A seeded
+	// set is INDISTINGUISHABLE from one that learned the same rules —
+	// restoring takes no separate code path, so there is no second
+	// behaviour to keep in step.
+	Seed []Recalled
+
+	// Thresholds gate promotion. Nil uses [ProductionThresholds].
+	Thresholds *Thresholds
+}
+
+// NewRuleSet builds a rule set, optionally seeded from an earlier run.
+func NewRuleSet(cfg *RuleSetConfig) (*RuleSet, error) {
+	if cfg == nil || cfg.Flavour == "" {
 		return nil, fmt.Errorf("ladder: a rule set needs a flavour — pooled evidence must stay attributable")
 	}
-	seen := make(map[string]bool, len(seed))
-	for i, r := range seed {
+	thresholds := cfg.Thresholds
+	if thresholds == nil {
+		thresholds = ProductionThresholds()
+	}
+
+	rs := &RuleSet{
+		Flavour:    cfg.Flavour,
+		thresholds: thresholds,
+		rules:      make(map[string]Recalled, len(cfg.Seed)),
+		proposals:  make(map[string]Proposal),
+	}
+	for i, r := range cfg.Seed {
 		if r.RuleID == "" {
 			return nil, fmt.Errorf("ladder: seed rule %d has no id", i)
 		}
-		if seen[r.RuleID] {
+		if _, dup := rs.rules[r.RuleID]; dup {
 			return nil, fmt.Errorf("ladder: seed names rule %q twice", r.RuleID)
 		}
-		seen[r.RuleID] = true
+		rs.rules[r.RuleID] = r
 	}
-	rs := &RuleSet{Flavour: flavour, rules: append([]Recalled(nil), seed...)}
 	return rs, nil
 }
 
@@ -60,34 +88,201 @@ func NewRuleSet(flavour string, seed []Recalled) (*RuleSet, error) {
 // empty memory is indistinguishable from one that never learned
 // anything, and a ladder in that state quietly reverts to waking a model
 // for everything while reporting perfect health.
-func LoadRuleSet(flavour string, data []byte) (*RuleSet, error) {
+func LoadRuleSet(flavour string, data []byte, thresholds *Thresholds) (*RuleSet, error) {
 	rules, err := UnmarshalRules(data)
 	if err != nil {
 		return nil, err
 	}
-	return NewRuleSet(flavour, rules)
+	return NewRuleSet(&RuleSetConfig{Flavour: flavour, Seed: rules, Thresholds: thresholds})
 }
 
 // Save renders the rule set as deterministic YAML for the consumer to
 // store. Claudia never writes a file.
 func (rs *RuleSet) Save() ([]byte, error) {
-	rs.mu.RLock()
-	defer rs.mu.RUnlock()
-	return MarshalRules(rs.rules)
+	return MarshalRules(rs.Rules())
 }
 
-// Rules returns a copy of the current rule set.
+// Rules returns the current rule set, sorted by rule id.
 func (rs *RuleSet) Rules() []Recalled {
 	rs.mu.RLock()
 	defer rs.mu.RUnlock()
-	return append([]Recalled(nil), rs.rules...)
+	return rs.sorted()
+}
+
+// sorted returns the rules in id order. Caller holds the lock.
+func (rs *RuleSet) sorted() []Recalled {
+	out := make([]Recalled, 0, len(rs.rules))
+	for _, r := range rs.rules {
+		out = append(out, r)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].RuleID < out[j].RuleID })
+	return out
+}
+
+// Lookup returns one rule.
+func (rs *RuleSet) Lookup(ruleID string) (Recalled, bool) {
+	rs.mu.RLock()
+	defer rs.mu.RUnlock()
+	r, ok := rs.rules[ruleID]
+	return r, ok
 }
 
 // Fingerprint identifies the current contents.
 func (rs *RuleSet) Fingerprint() (string, error) {
+	return Fingerprint(rs.Rules())
+}
+
+// Ablate returns the rule set with one rule removed, WITHOUT changing
+// it.
+//
+// This is the input to the strongest detector available for a rule that
+// has quietly stopped mattering: replay a corpus against this and see
+// whether anything changes. You cannot observe the escalation that did
+// not happen, but you can observe whether a rule does anything at all.
+func (rs *RuleSet) Ablate(ruleID string) []Recalled {
 	rs.mu.RLock()
 	defer rs.mu.RUnlock()
-	return Fingerprint(rs.rules)
+
+	out := make([]Recalled, 0, len(rs.rules))
+	for _, r := range rs.sorted() {
+		if r.RuleID != ruleID {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// Propose records a proposal without installing it.
+func (rs *RuleSet) Propose(p *Proposal) error {
+	switch {
+	case p == nil || p.ID == "":
+		return fmt.Errorf("ladder: proposal needs an ID")
+	case p.ProposedBy == "":
+		return fmt.Errorf("ladder: proposal %q needs a proposer", p.ID)
+	case p.Pass == "":
+		return fmt.Errorf("ladder: proposal %q needs a pass", p.ID)
+	case p.Description == "":
+		return fmt.Errorf("ladder: proposal %q needs a description — a rule nobody can describe cannot explain itself later", p.ID)
+	}
+
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	if _, dup := rs.proposals[p.ID]; dup {
+		return fmt.Errorf("ladder: proposal %q already raised", p.ID)
+	}
+	rs.proposals[p.ID] = *p
+	return nil
+}
+
+// Proposals returns the outstanding proposal IDs, sorted.
+func (rs *RuleSet) Proposals() []string {
+	rs.mu.RLock()
+	defer rs.mu.RUnlock()
+	ids := make([]string, 0, len(rs.proposals))
+	for id := range rs.proposals {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// InstallArgs are the parameters of an install.
+type InstallArgs struct {
+	ProposalID string
+	// Installer is who is installing, checked against the proposer.
+	Installer string
+	// Pass is the consolidation pass doing the installing, checked
+	// against the pass that raised the proposal.
+	Pass string
+	// Stage the rule is being installed at.
+	Stage Stage
+}
+
+// Install promotes a proposal into the rule set, subject to every gate.
+//
+// The gates are deliberately separate checks with distinct errors,
+// because they fail for different reasons and a consumer responds to
+// them differently.
+func (rs *RuleSet) Install(args *InstallArgs) error {
+	if args == nil {
+		return fmt.Errorf("ladder: nil InstallArgs")
+	}
+
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+
+	p, ok := rs.proposals[args.ProposalID]
+	if !ok {
+		return fmt.Errorf("ladder: no proposal %q", args.ProposalID)
+	}
+	if args.Installer == "" {
+		return fmt.Errorf("ladder: install needs an installer")
+	}
+	if args.Installer == p.ProposedBy {
+		return fmt.Errorf("%w: %q", ErrSelfInstall, p.ProposedBy)
+	}
+	if args.Pass == "" {
+		return fmt.Errorf("ladder: install needs a pass")
+	}
+	if args.Pass == p.Pass {
+		return fmt.Errorf("%w: %q", ErrSamePass, p.Pass)
+	}
+	if err := rs.gate(p.Evidence, args.Stage); err != nil {
+		return err
+	}
+
+	r, err := recalledFrom(&p, args.Stage)
+	if err != nil {
+		return err
+	}
+	rs.rules[p.ID] = r
+	delete(rs.proposals, p.ID)
+	return nil
+}
+
+// Demote moves a rule down a stage. It is the circuit breaker: an
+// execution failure, a safety violation, an acceptance-test regression
+// or an owner's correction takes a rule back toward the model, which is
+// expensive and correct.
+//
+// Demotion needs no evidence bar. Stopping is always allowed.
+func (rs *RuleSet) Demote(ruleID, reason string) error {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+
+	r, ok := rs.rules[ruleID]
+	if !ok {
+		return fmt.Errorf("ladder: no rule %q", ruleID)
+	}
+	switch r.Stage {
+	case StageDeterministic:
+		r.Stage = StageHybrid
+	case StageHybrid:
+		r.Stage = StageAgent
+	case StageAgent:
+		return fmt.Errorf("ladder: rule %q is already at %s", ruleID, StageAgent)
+	}
+	rs.rules[ruleID] = r
+	return nil
+}
+
+// Forget removes a rule.
+//
+// It costs exactly what installing cost: the same call shape, the same
+// audit shape, and no extra evidence bar. That symmetry is deliberate
+// and is the one place this design refuses to imitate its own
+// inspiration — in motor learning unlearning is more expensive than
+// learning, and a memory that inherited that asymmetry would accumulate
+// rigidity by construction.
+func (rs *RuleSet) Forget(ruleID, reason string) error {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+
+	if _, ok := rs.rules[ruleID]; !ok {
+		return fmt.Errorf("ladder: no rule %q", ruleID)
+	}
+	delete(rs.rules, ruleID)
+	return nil
 }
 
 // Attachment is one stack's validated view of a rule set.
@@ -122,10 +317,7 @@ func (rs *RuleSet) Attach(scope *Scope, actionsOf func(r *Recalled) ([]string, e
 	if scope == nil {
 		return nil, fmt.Errorf("ladder: attaching a rule set needs a scope")
 	}
-
-	rs.mu.RLock()
-	rules := append([]Recalled(nil), rs.rules...)
-	rs.mu.RUnlock()
+	rules := rs.Rules()
 
 	if actionsOf != nil {
 		for i := range rules {
@@ -146,24 +338,4 @@ func (rs *RuleSet) Attach(scope *Scope, actionsOf func(r *Recalled) ([]string, e
 		return nil, err
 	}
 	return &Attachment{Flavour: rs.Flavour, Fingerprint: fp, Rules: rules, scope: scope}, nil
-}
-
-// Apply replaces the rule set's contents, which is what a consolidation
-// pass produces. Attached stacks are unaffected until they attach again.
-func (rs *RuleSet) Apply(rules []Recalled) error {
-	seen := make(map[string]bool, len(rules))
-	for i, r := range rules {
-		if r.RuleID == "" {
-			return fmt.Errorf("ladder: rule %d has no id", i)
-		}
-		if seen[r.RuleID] {
-			return fmt.Errorf("ladder: rule %q appears twice", r.RuleID)
-		}
-		seen[r.RuleID] = true
-	}
-
-	rs.mu.Lock()
-	defer rs.mu.Unlock()
-	rs.rules = append([]Recalled(nil), rules...)
-	return nil
 }
