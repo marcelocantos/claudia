@@ -41,8 +41,19 @@ const (
 // "[Pasted text #N" form; "paste again to expand" alone is a weaker
 // residual that may linger in the viewport.
 var (
-	pastedTextChip     = regexp.MustCompile(`(?i)\[Pasted\s*text\s*#\d+`)
-	pasteExpandHint    = regexp.MustCompile(`(?i)paste\s+again\s+to\s+expand`)
+	pastedTextChip  = regexp.MustCompile(`(?i)\[Pasted\s*text\s*#\d+`)
+	pasteExpandHint = regexp.MustCompile(`(?i)paste\s+again\s+to\s+expand`)
+	// spinnerLine matches Claude Code's activity line — one of its cycling
+	// spinner glyphs, then the gerund it is currently showing, ending in an
+	// ellipsis ("✶ Pollinating…"). Naming a single glyph is not enough: the
+	// CLI rotates through the whole set, and early in a turn the line
+	// carries neither a timer nor a token count, while the footer row that
+	// usually says "esc to interrupt" can be displaced by the paste hint.
+	// A frame in exactly that state — spinner up, composer drained — was
+	// reported as "composer empty after paste (brief never reached pane)"
+	// for a payload the agent had already taken up (🎯T28 live capture,
+	// testdata/frame_daily_spinner_empty_composer.txt).
+	spinnerLine        = regexp.MustCompile(`(?m)^[^\S\n]*[·✢✳∗✱✲✳✴✵✶✷✸✹✺✻✽❋*][^\S\n]+\S[^\n]*…`)
 	turnInProgressHint = regexp.MustCompile(`(?i)(burrowing|thinking|esc to interrupt|cooking|blanching|still thinking|✳|running stop|tokens)`)
 	// queuedMessagesHint is Claude Code's ghost hint in an otherwise
 	// empty composer, drawn only while at least one message is queued
@@ -88,7 +99,8 @@ func composerHoldsUnsubmitted(frame []byte) bool {
 // MatchTurnInProgress reports Claude Code actively running a turn
 // (spinner / thinking chrome), independent of the idle composer pattern.
 func MatchTurnInProgress(frame []byte) bool {
-	return turnInProgressHint.Match(trimTrailingSpace(frame))
+	f := trimTrailingSpace(frame)
+	return turnInProgressHint.Match(f) || spinnerLine.Match(f)
 }
 
 // SendKeys delivers msg to the target window and submits the turn.
