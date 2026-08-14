@@ -37,7 +37,6 @@ type RuleSet struct {
 	mu        sync.RWMutex
 	rules     map[string]Recalled
 	proposals map[string]Proposal
-	history   []Version
 }
 
 // RuleSetConfig configures a [RuleSet].
@@ -79,11 +78,6 @@ func NewRuleSet(cfg *RuleSetConfig) (*RuleSet, error) {
 			return nil, fmt.Errorf("ladder: seed names rule %q twice", r.RuleID)
 		}
 		rs.rules[r.RuleID] = r
-	}
-	// A seeded set is a version like any other, so a store restored from
-	// an earlier run has a pin to hand before it has learned anything.
-	if err := rs.commit(VerbSeed, "", "seeded"); err != nil {
-		return nil, err
 	}
 	return rs, nil
 }
@@ -243,7 +237,7 @@ func (rs *RuleSet) Install(args *InstallArgs) error {
 	}
 	rs.rules[p.ID] = r
 	delete(rs.proposals, p.ID)
-	return rs.commit(VerbInstall, p.ID, fmt.Sprintf("installed at %s by %s in pass %s", args.Stage, args.Installer, args.Pass))
+	return nil
 }
 
 // Fail reports a loud failure against a rule that is in force, and
@@ -283,8 +277,7 @@ func (rs *RuleSet) Demote(ruleID, reason string) error {
 	return err
 }
 
-// demote moves one rule down a stage and commits the version. Caller
-// holds the write lock.
+// demote moves one rule down a stage. Caller holds the write lock.
 func (rs *RuleSet) demote(ruleID string, f Failure, reason string) (*Demotion, error) {
 	r, ok := rs.rules[ruleID]
 	if !ok {
@@ -301,7 +294,7 @@ func (rs *RuleSet) demote(ruleID string, f Failure, reason string) (*Demotion, e
 	}
 	d.To = r.Stage
 	rs.rules[ruleID] = r
-	return d, rs.commit(VerbDemote, ruleID, fmt.Sprintf("%s: %s", f, reason))
+	return d, nil
 }
 
 // Forget removes a rule.
@@ -320,7 +313,7 @@ func (rs *RuleSet) Forget(ruleID, reason string) error {
 		return fmt.Errorf("ladder: no rule %q", ruleID)
 	}
 	delete(rs.rules, ruleID)
-	return rs.commit(VerbForget, ruleID, reason)
+	return nil
 }
 
 // Attachment is one stack's validated view of a rule set.

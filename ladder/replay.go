@@ -47,8 +47,8 @@ type ReplayReport struct {
 	PerClass map[string]ClassStats
 }
 
-// Replay runs a recorded corpus through a ladder against a pinned store
-// version and reports which rung would have answered each request.
+// Replay runs a recorded corpus through a ladder against a pinned rule
+// set and reports which rung would have answered each request.
 func Replay(ctx context.Context, args *ReplayArgs) (*ReplayReport, error) {
 	switch {
 	case args == nil:
@@ -89,8 +89,8 @@ func Replay(ctx context.Context, args *ReplayArgs) (*ReplayReport, error) {
 	return report, nil
 }
 
-// ReplayComparison is the verdict on two replays over the same corpus at
-// different store versions.
+// ReplayComparison is the verdict on two replays over the same corpus
+// against different rule sets.
 type ReplayComparison struct {
 	Before, After string
 
@@ -136,7 +136,7 @@ func (c *ReplayComparison) Summary() string {
 // CompareReplays weighs two replays of the same corpus against each
 // other.
 //
-// It refuses to compare a report against itself, because a version
+// It refuses to compare a report against itself, because a rule set
 // compared with itself always looks stable and would make the oracle
 // trivially satisfiable.
 func CompareReplays(before, after *ReplayReport) (*ReplayComparison, error) {

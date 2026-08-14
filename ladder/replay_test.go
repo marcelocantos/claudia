@@ -59,6 +59,18 @@ func replayAt(t *testing.T, l *ladder.Ladder, fingerprint string) *ladder.Replay
 	return rep
 }
 
+// emptyFingerprint is the identity of a rule set that has learned
+// nothing — computed rather than written down, so a baseline replay is
+// labelled with the fingerprint the runtime would actually produce.
+func emptyFingerprint(t *testing.T) string {
+	t.Helper()
+	fp, err := ladder.Fingerprint(nil)
+	if err != nil {
+		t.Fatalf("Fingerprint: %v", err)
+	}
+	return fp
+}
+
 func TestReplayNeedsAnIdentifiedRuleSetAndAWorkJudgement(t *testing.T) {
 	f := newFixture()
 	l := ladder.New(f.modelRung(t))
@@ -69,7 +81,7 @@ func TestReplayNeedsAnIdentifiedRuleSetAndAWorkJudgement(t *testing.T) {
 		t.Error("an unidentified replay was accepted; it would be measuring a moving target")
 	}
 	if _, err := ladder.Replay(context.Background(), &ladder.ReplayArgs{
-		Ladder: l, Fingerprint: "sha256:empty", Corpus: corpus(),
+		Ladder: l, Fingerprint: emptyFingerprint(t), Corpus: corpus(),
 	}); err == nil {
 		t.Error("a replay measuring cost with no delivered-work judgement was accepted")
 	}
@@ -81,7 +93,7 @@ func TestGoodPromotionIsCheaperWithoutLosingWork(t *testing.T) {
 	f := newFixture()
 	rs := mustRuleSet(t, nil)
 
-	before := replayAt(t, ladder.New(f.modelRung(t)), "sha256:empty")
+	before := replayAt(t, ladder.New(f.modelRung(t)), emptyFingerprint(t))
 	if before.Stats.ModelShare() != 1 {
 		t.Fatalf("baseline model share = %.2f, want 1", before.Stats.ModelShare())
 	}
@@ -135,14 +147,14 @@ func TestGreedyRulePresentsAsASavingAndIsCaught(t *testing.T) {
 	// the escalation-rate signal only means anything within a fixed
 	// ladder shape: a one-rung ladder cannot escalate, so comparing
 	// against it would show no collapse however greedy the new rule is.
-	// What is being measured here is a rule set getting greedier across
-	// store versions, which is the shape the real failure takes.
+	// What is being measured here is a rule set getting greedier from one
+	// revision to the next, which is the shape the real failure takes.
 	narrow := f.patternLayer(t, []ladder.RuleDef{{
 		ID: "reap-finished", Description: "retire a finished worker",
 		When:   []ladder.Predicate{{Field: "kind", Kind: ladder.Equals, Value: "worker.finished"}},
 		Answer: "reaped",
 	}})
-	before := replayAt(t, ladder.New(narrow, f.modelRung(t)), "sha256:empty")
+	before := replayAt(t, ladder.New(narrow, f.modelRung(t)), emptyFingerprint(t))
 
 	propose(t, rs, "handle-everything", "proposer", "p1", goodEvidence())
 	if err := rs.Install(&ladder.InstallArgs{
@@ -187,7 +199,7 @@ func TestGreedyRulePresentsAsASavingAndIsCaught(t *testing.T) {
 
 func TestComparisonRefusesMeaninglessPairs(t *testing.T) {
 	f := newFixture()
-	rep := replayAt(t, ladder.New(f.modelRung(t)), "sha256:empty")
+	rep := replayAt(t, ladder.New(f.modelRung(t)), emptyFingerprint(t))
 
 	if _, err := ladder.CompareReplays(rep, rep); err == nil {
 		t.Error("a report was compared against itself; a rule set always looks stable against itself")
