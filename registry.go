@@ -203,11 +203,6 @@ func (r *Registry) Launch(name string) (*Agent, error) {
 		return nil, fmt.Errorf("agent %q not registered", name)
 	}
 
-	// Sessions are durable; leftover processes are not. A window still
-	// running from a previous consumer is reaped so Start cannot create
-	// a second process for the same conversation (🎯T34).
-	reapSessionWindows(def)
-
 	// Prefer mcp.claudia.json: a file the Grok CLI does not scan. Entries
 	// in cwd/.mcp.json are cross-referenced by the CLI and classified as
 	// repo-local, which silently gates them behind folder trust — the
@@ -351,7 +346,7 @@ func (r *Registry) Adopt(name string) (*Agent, error) {
 }
 
 // AdoptOrLaunch tries [Registry.Adopt] and falls back to [Registry.Launch]
-// when no process remains. Upgrade boot uses this; drain boot uses Launch.
+// when no process remains. Only the upgrade boot uses this.
 func (r *Registry) AdoptOrLaunch(name string) (*Agent, error) {
 	proc, err := r.Adopt(name)
 	if err == nil {
@@ -485,7 +480,8 @@ func (r *Registry) StartAll() {
 }
 
 // StartAllPreferAdopt is the upgrade-boot counterpart of [Registry.StartAll]:
-// reuse a leftover process when one exists, otherwise Launch.
+// reuse a leftover process when one exists, otherwise Launch. Ordinary
+// start never reaps; a leak stays visible as extra processes.
 func (r *Registry) StartAllPreferAdopt() {
 	r.mu.Lock()
 	names := make([]string, 0)

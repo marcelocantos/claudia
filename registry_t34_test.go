@@ -100,9 +100,9 @@ func TestStopKillsWindowWithoutHandle(t *testing.T) {
 	}
 }
 
-// TestLaunchRecreatesRatherThanAdopts: a leftover window for the
-// session is killed, then a new process is spawned. Count stays 1.
-func TestLaunchRecreatesRatherThanAdopts(t *testing.T) {
+// TestLaunchDoesNotReapLeftovers: ordinary start creates. A leftover
+// from a leaky previous exit stays up so the leak is visible.
+func TestLaunchDoesNotReapLeftovers(t *testing.T) {
 	isolateTmux(t)
 	stubClaude(t)
 
@@ -132,18 +132,17 @@ func TestLaunchRecreatesRatherThanAdopts(t *testing.T) {
 	}
 	t.Cleanup(func() { r.Stop("worker") })
 
-	if tmuxagent.IsWindowAlive(old) {
-		t.Fatal("Launch adopted the leftover window instead of reaping it")
+	if !tmuxagent.IsWindowAlive(old) {
+		t.Fatal("Launch reaped a leftover window; leaks must stay visible")
 	}
-	if got := sessionWindows(t, sid); len(got) != 1 {
-		t.Fatalf("windows for session after Launch: %v, want exactly 1", got)
+	if got := sessionWindows(t, sid); len(got) != 2 {
+		t.Fatalf("windows after Launch: %v, want leftover + new", got)
 	}
 }
 
-// TestRestartStartAllStopAllLeavesZero is the 🎯T34 CI oracle:
-// crash the consumer (drop the Registry), rematerialise from disk,
-// then StopAll. Nothing survives.
-func TestRestartStartAllStopAllLeavesZero(t *testing.T) {
+// TestStopAllKillsWhatThisProcessStarted is the drain-exit oracle:
+// StartAll then StopAll leaves no window this process created.
+func TestStopAllKillsWhatThisProcessStarted(t *testing.T) {
 	isolateTmux(t)
 	stubClaude(t)
 
@@ -169,19 +168,7 @@ func TestRestartStartAllStopAllLeavesZero(t *testing.T) {
 		}
 	}
 	r.StartAll()
-	// Crash: drop r without StopAll. Windows stay up.
-
-	r2, err := NewRegistry(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	r2.StartAll()
-	for _, sid := range sids {
-		if got := sessionWindows(t, sid); len(got) != 1 {
-			t.Fatalf("after rematerialise, session %s has %v, want 1", sid, got)
-		}
-	}
-	r2.StopAll()
+	r.StopAll()
 
 	for _, sid := range sids {
 		if got := sessionWindows(t, sid); len(got) != 0 {
