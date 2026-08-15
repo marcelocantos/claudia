@@ -46,6 +46,16 @@ const (
 	// switch. Where claudia does not bind it, the provider default
 	// applies and claudia can neither guarantee nor forbid web access.
 	CapabilityWebSearch Capability = "web_search"
+	// CapabilitySandboxPolicy is honouring TaskConfig.SandboxMode /
+	// TaskConfig.ApprovalPolicy — the Codex-native sandbox and approval
+	// settings. Deliberately distinct from CapabilityPermissionMode:
+	// these are Codex's own controls, not Claude's, and no translation
+	// between the two has been proven.
+	CapabilitySandboxPolicy Capability = "sandbox_policy"
+	// CapabilityExtraArgs is passing Config.ExtraArgs through to the
+	// provider process verbatim. A provider claudia does not launch as a
+	// CLI with caller-supplied argv cannot honour it.
+	CapabilityExtraArgs Capability = "extra_args"
 )
 
 // CapabilityStatus classifies how far claudia supports one [Capability]
@@ -121,6 +131,8 @@ func reportedCapabilities() []Capability {
 		CapabilityToolRestrictions,
 		CapabilityImageInput,
 		CapabilityWebSearch,
+		CapabilitySandboxPolicy,
+		CapabilityExtraArgs,
 	}
 }
 
@@ -171,6 +183,14 @@ var providerCapabilityClaims = map[Provider]map[Capability]capabilityClaim{
 			status: CapabilityUnsupported,
 			reason: "Ollama has no web-search switch for claudia to bind",
 		},
+		CapabilitySandboxPolicy: {
+			status: CapabilityUnsupported,
+			reason: sandboxPolicyIsCodexOnlyReason,
+		},
+		CapabilityExtraArgs: {
+			status: CapabilityUnsupported,
+			reason: "the Ollama path is an HTTP request, not a process claudia launches, so there is no argv to extend",
+		},
 	},
 	ProviderClaude: {
 		CapabilityTask:             {status: CapabilitySupported},
@@ -187,6 +207,11 @@ var providerCapabilityClaims = map[Provider]map[Capability]capabilityClaim{
 			reason: "claudia has no API for attaching images to a prompt on any provider",
 		},
 		CapabilityWebSearch: {status: CapabilitySupported},
+		CapabilitySandboxPolicy: {
+			status: CapabilityUnsupported,
+			reason: sandboxPolicyIsCodexOnlyReason,
+		},
+		CapabilityExtraArgs: {status: CapabilitySupported},
 	},
 	ProviderCodex: {
 		CapabilityTask:    {status: CapabilitySupported},
@@ -218,6 +243,11 @@ var providerCapabilityClaims = map[Provider]map[Capability]capabilityClaim{
 			status: CapabilityUnsupported,
 			reason: "claudia does not bind Codex's --search flag, so web access is left at the Codex default and cannot be guaranteed or forbidden",
 		},
+		CapabilitySandboxPolicy: {status: CapabilitySupported},
+		CapabilityExtraArgs: {
+			status: CapabilityUnsupported,
+			reason: "Config.ExtraArgs is a Session-mode field and Codex Session is not wired; the Codex Task path builds its argv from typed fields only",
+		},
 	},
 	ProviderGrok: {
 		CapabilityTask:    {status: CapabilitySupported},
@@ -248,6 +278,14 @@ var providerCapabilityClaims = map[Provider]map[Capability]capabilityClaim{
 		CapabilityWebSearch: {
 			status: CapabilityUnsupported,
 			reason: "claudia does not bind a Grok web-search switch, so web access is left at the Grok default",
+		},
+		CapabilitySandboxPolicy: {
+			status: CapabilityUnsupported,
+			reason: sandboxPolicyIsCodexOnlyReason,
+		},
+		CapabilityExtraArgs: {
+			status: CapabilityUnsupported,
+			reason: grokExtraArgsReason,
 		},
 	},
 	ProviderBedrock: {
@@ -286,6 +324,14 @@ var providerCapabilityClaims = map[Provider]map[Capability]capabilityClaim{
 			status: CapabilityUnsupported,
 			reason: "ConverseStream has no claudia-bound web-search tool",
 		},
+		CapabilitySandboxPolicy: {
+			status: CapabilityUnsupported,
+			reason: sandboxPolicyIsCodexOnlyReason,
+		},
+		CapabilityExtraArgs: {
+			status: CapabilityUnsupported,
+			reason: "Bedrock v1 is an API call, not a process claudia launches, so there is no argv to extend",
+		},
 	},
 }
 
@@ -309,7 +355,38 @@ const (
 	grokToolRestrictionsUnwiredReason = "the Grok tool_restrictions claim was flipped to supported, but grokTaskArgs still emits no --deny or --disallowed-tools argument, so the restriction would be dropped; wire the translation before changing the claim"
 	bedrockSessionReason              = "Bedrock v1 is Task-only (ConverseStream); Session/tmux is not supported"
 	bedrockRewindReason               = "Bedrock v1 is Task-only and has no Session transcript to rewind"
+	// SandboxMode and ApprovalPolicy name `codex exec` flags. Every other
+	// provider used to take them, drop them on the floor and run anyway —
+	// a caller who asked for a read-only sandbox got an unrestricted one
+	// and no signal. Nothing here claims the other providers lack an
+	// isolation story; it claims claudia has not proven a translation, so
+	// it refuses rather than pretending.
+	//nolint:lll // one sentence, kept whole for the error message.
+	sandboxPolicyIsCodexOnlyReason = "SandboxMode and ApprovalPolicy are `codex exec` flags with no proven equivalent here; claudia refuses rather than running with the sandbox the caller asked for silently dropped"
+	//nolint:lll // one sentence, kept whole for the error message.
+	grokExtraArgsReason = "claudia drives Grok Session over ACP on a fixed `grok agent … stdio`/`serve` command line, so caller argv has nowhere to go"
+	//nolint:lll // one sentence, kept whole for the error message.
+	grokSessionToolRestrictionsUnwiredReason = "the Grok tool_restrictions claim was flipped to supported, but the Grok Session path still emits no --deny or --disallowed-tools argument, so the restriction would be dropped; wire the translation before changing the claim"
+	//nolint:lll // one sentence, kept whole for the error message.
+	grokPermissionModeReason = "Grok Session hardcodes ACP always-approve/yoloMode; a PermissionMode other than bypassPermissions would be dropped, leaving an agent more permissive than the caller asked for"
 )
+
+// capabilityRefusal is the error a provider path returns to a caller who
+// set a request field that path cannot honour.
+//
+// It survives its own success condition. [CheckCapability] returns nil the
+// moment a claim flips to supported, and a path that handed that nil back
+// as its error would return (nil, nil) — no run, no error, and the caller
+// left with exactly the behaviour they asked not to have. 399b1c8 found
+// that shape by mutating a claim, so the fallback keeps the refusal alive
+// with a reason naming what is still unwired: the claim and the code that
+// materialises the request have to move together.
+func capabilityRefusal(provider Provider, capability Capability, unwiredReason string) error {
+	if err := CheckCapability(provider, capability); err != nil {
+		return err
+	}
+	return unsupportedCapability(provider, capability, unwiredReason)
+}
 
 // providerCapabilityClaim resolves one claim, failing closed. An unknown
 // provider or an unclaimed capability reports unsupported rather than

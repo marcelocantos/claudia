@@ -58,6 +58,12 @@ func TestCodexCapabilityMatrixIsExplicit(t *testing.T) {
 		CapabilityToolRestrictions: CapabilityUnsupported,
 		CapabilityImageInput:       CapabilityUnsupported,
 		CapabilityWebSearch:        CapabilityUnsupported,
+		// 🎯T24: sandbox_policy is the one capability Codex has and
+		// Claude does not — SandboxMode/ApprovalPolicy are `codex exec`
+		// flags, and every other provider now refuses them instead of
+		// dropping them.
+		CapabilitySandboxPolicy: CapabilitySupported,
+		CapabilityExtraArgs:     CapabilityUnsupported,
 	}
 	got := ProviderCapabilityMatrix(ProviderCodex)
 	if len(got) != len(want) {
@@ -91,6 +97,7 @@ func TestCodexCapabilityGapsVersusClaude(t *testing.T) {
 		CapabilityPermissionMode,
 		CapabilityToolRestrictions,
 		CapabilityWebSearch,
+		CapabilityExtraArgs,
 	}
 	for _, capability := range wantGaps {
 		if ProviderCapabilityStatus(ProviderClaude, capability) != CapabilitySupported {

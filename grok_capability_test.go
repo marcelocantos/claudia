@@ -30,6 +30,8 @@ func TestGrokCapabilityMatrixIsExplicit(t *testing.T) {
 		CapabilityToolRestrictions: CapabilityUnsupported,
 		CapabilityImageInput:       CapabilityUnsupported,
 		CapabilityWebSearch:        CapabilityUnsupported,
+		CapabilitySandboxPolicy:    CapabilityUnsupported,
+		CapabilityExtraArgs:        CapabilityUnsupported,
 	}
 	got := ProviderCapabilityMatrix(ProviderGrok)
 	if len(got) != len(want) {
