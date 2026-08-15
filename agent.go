@@ -515,11 +515,10 @@ func startWithBackend(cfg Config, backend agentBackend) (*Agent, error) {
 	return a, nil
 }
 
-func (claudeAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
-	if err := checkTmux(); err != nil {
-		return nil, err
-	}
-
+// claudeAgentArgs builds the argv for a tmux-backed Claude Code session.
+// Kept separate from StartAgent so the request-field audit can materialise
+// the request without a tmux server (see capability_audit_test.go).
+func claudeAgentArgs(req agentStartRequest) []string {
 	args := []string{
 		"--permission-mode", req.Config.PermissionMode,
 		"--disallowedTools", req.DisallowedTools,
@@ -535,7 +534,15 @@ func (claudeAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error)
 	if req.Config.Model != "" {
 		args = append(args, "--model", req.Config.Model)
 	}
-	args = append(args, req.Config.ExtraArgs...)
+	return append(args, req.Config.ExtraArgs...)
+}
+
+func (claudeAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
+	if err := checkTmux(); err != nil {
+		return nil, err
+	}
+
+	args := claudeAgentArgs(req)
 
 	windowName := "claudia-" + req.SessionID[:8]
 	claudeBin, err := resolveClaudeBin()
@@ -566,21 +573,85 @@ func (claudeAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error)
 	}, nil
 }
 
-// startGrokAgent launches Grok Build over ACP. Default is parent-owned
-// `grok agent stdio`. Connect-mode (Config.GrokConnect / CLAUDIA_GROK_CONNECT
-// / ConnectURL) uses detached `grok agent serve` + WebSocket so the agent
-// process survives consumer restart (jevons 🎯T40).
-func startGrokAgent(req agentStartRequest) (*agentStart, error) {
-	bin, err := resolveGrokBin()
-	if err != nil {
-		return nil, err
-	}
+// grokSessionPlan is everything the Grok Session path derives from a
+// start request before it launches anything. Splitting it out lets the
+// request-field audit materialise the request without a grok binary, so
+// a field that stops reaching the process is caught by a test rather than
+// by whoever notices the behaviour missing.
+type grokSessionPlan struct {
+	// Args is the argv after the grok binary.
+	Args    []string
+	WorkDir string
+	Model   string
+	// PreferSessionID is the id offered to session/load; empty means
+	// session/new.
+	PreferSessionID string
+	RequireResume   bool
+	MCPServers      []any
+	Connect         bool
+}
 
+func planGrokSession(req agentStartRequest) grokSessionPlan {
 	// Prefer caller SessionID when resuming; empty means session/new.
 	preferID := ""
 	if req.Resuming || req.Config.SessionID != "" {
 		preferID = req.SessionID
 	}
+	connect := grokConnectEnabled(req.Config)
+	return grokSessionPlan{
+		Args:            grokACPArgs(req.Config.Model, connect),
+		WorkDir:         req.WorkDir,
+		Model:           req.Config.Model,
+		PreferSessionID: preferID,
+		RequireResume:   req.Config.RequireResume,
+		MCPServers:      acpMCPServers(req.Config.MCPConfig),
+		Connect:         connect,
+	}
+}
+
+// grokSessionPrecheck refuses a start request carrying a field the Grok
+// Session path cannot honour.
+//
+// 🎯T24: all three used to be dropped in silence. DisallowTools is the
+// same fail-open 🎯T23 closed for Grok Task — Config.DisallowTools never
+// reached the ACP client, so a caller who stripped tools from an agent got
+// one with every tool present. PermissionMode is worse in kind, because
+// the value that survives is the most permissive one: the path hardcodes
+// always-approve/yoloMode, so asking for "plan" or "acceptEdits" produced
+// an agent that approved everything.
+func grokSessionPrecheck(req agentStartRequest) error {
+	if len(req.Config.DisallowTools) > 0 {
+		return capabilityRefusal(ProviderGrok, CapabilityToolRestrictions,
+			grokSessionToolRestrictionsUnwiredReason)
+	}
+	// startWithBackend defaults an empty PermissionMode to
+	// bypassPermissions, which is what the path already does, so only a
+	// caller asking for something stricter is refused.
+	if mode := req.Config.PermissionMode; mode != "" && mode != "bypassPermissions" {
+		return capabilityRefusal(ProviderGrok, CapabilityPermissionMode, grokPermissionModeReason)
+	}
+	if len(req.Config.ExtraArgs) > 0 {
+		return capabilityRefusal(ProviderGrok, CapabilityExtraArgs, grokExtraArgsReason)
+	}
+	return nil
+}
+
+// startGrokAgent launches Grok Build over ACP. Default is parent-owned
+// `grok agent stdio`. Connect-mode (Config.GrokConnect / CLAUDIA_GROK_CONNECT
+// / ConnectURL) uses detached `grok agent serve` + WebSocket so the agent
+// process survives consumer restart (jevons 🎯T40).
+func startGrokAgent(req agentStartRequest) (*agentStart, error) {
+	if err := grokSessionPrecheck(req); err != nil {
+		return nil, err
+	}
+
+	bin, err := resolveGrokBin()
+	if err != nil {
+		return nil, err
+	}
+
+	plan := planGrokSession(req)
+	preferID := plan.PreferSessionID
 
 	// Client is closed via ops.stop. publishEvent is wired once Agent exists;
 	// we stash a pointer-to-func that Start fills after construction by
@@ -600,10 +671,10 @@ func startGrokAgent(req agentStartRequest) (*agentStart, error) {
 	}
 
 	var client *grokACPClient
-	if grokConnectEnabled(req.Config) {
-		client, err = startGrokACPConnect(bin, req.WorkDir, req.Config.Model, preferID, req.Config.RequireResume, acpMCPServers(req.Config.MCPConfig), req.Config, onEvent, onClose)
+	if plan.Connect {
+		client, err = startGrokACPConnect(bin, plan.WorkDir, plan.Model, preferID, plan.RequireResume, plan.MCPServers, req.Config, onEvent, onClose)
 	} else {
-		client, err = startGrokACP(bin, req.WorkDir, req.Config.Model, preferID, req.Config.RequireResume, acpMCPServers(req.Config.MCPConfig), onEvent, onClose)
+		client, err = startGrokACP(bin, plan.WorkDir, plan.Model, preferID, plan.RequireResume, plan.MCPServers, onEvent, onClose)
 	}
 	if err != nil {
 		return nil, err
