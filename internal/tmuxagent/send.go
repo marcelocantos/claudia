@@ -17,6 +17,18 @@ import (
 // Large literal send-keys floods land as Claude Code's collapsed
 // "[Pasted text #N +X lines] / paste again to expand" chips; a single
 // trailing CR often never submits the turn (🎯T305 Failure B).
+//
+// This is a ROUTING threshold, not a size limit, and SendKeys has no
+// maximum submittable size: a caller does not need to chunk (🎯T30). The
+// bound the paste branch is proven to on the live path is 6400 bytes in
+// one send, both into an idle composer and mid-turn — see
+// TestT30LargePayloadSubmitsOnRealPath in the root package, and
+// TestT30LiveReproSendSucceeds for the captured frames. What made size
+// look like a limit was classification, not tmux or the CLI: the paste
+// branch is the only one that produces a collapsed chip and the
+// lingering "paste again to expand" footer, and both defects 🎯T30 and
+// 🎯T28 closed were misreadings of that UI, so exactly the sends big
+// enough to be pasted were the sends reported as failures.
 const pasteBlockThreshold = 400
 
 const (
@@ -160,6 +172,11 @@ func sendKeysWith(d sendDriver, msg string) error {
 		return err
 	}
 
+	// landed records that this send's payload was SEEN in the composer
+	// before Enter. It is the difference between an empty box that never
+	// received the brief and an empty box the brief left when it
+	// submitted, which is the whole of 🎯T30 (see ensureSubmitted).
+	landed := false
 	if msg != "" {
 		if useBracketedPaste(msg) {
 			if err := d.pasteBuffer(msg); err != nil {
@@ -169,6 +186,7 @@ func sendKeysWith(d sendDriver, msg string) error {
 			if err := waitContentLanded(d, contentLandTimeout); err != nil {
 				return err
 			}
+			landed = true
 		} else {
 			if err := d.typeLiteral(msg); err != nil {
 				return err
@@ -182,7 +200,7 @@ func sendKeysWith(d sendDriver, msg string) error {
 	if msg == "" {
 		return nil
 	}
-	return ensureSubmitted(d)
+	return ensureSubmitted(d, landed)
 }
 
 // useBracketedPaste chooses the paste-buffer path for multi-line or
@@ -333,11 +351,25 @@ func waitContentLanded(d sendDriver, timeout time.Duration) error {
 
 // ensureSubmitted re-presses Enter while the composer still holds an
 // unsubmitted brief (paste chip or typed text). Returns nil only on
-// positive evidence that the brief left the composer — a running turn
-// with nothing held back, or the queued-messages hint (🎯T28). Errors if
-// the chip/text remains or the composer is empty after paste (brief
-// never landed).
-func ensureSubmitted(d sendDriver) error {
+// positive evidence that THIS send's payload left the composer: a
+// running turn with nothing held back, the queued-messages hint
+// (🎯T28), or the box the payload was seen in going empty under our own
+// Enter (🎯T30, below). Errors if the chip/text remains, or if the
+// composer is empty for a payload that was never seen landing.
+//
+// landed says the caller already watched this payload render in the box
+// (waitContentLanded's postcondition on the paste branch). Without it
+// the loop starts blind — sawContent false — and reads the empty box a
+// successfully submitted paste leaves behind as "brief never reached
+// pane", failing a send whose payload the model has already answered.
+// That is 🎯T30's false refusal, and it is size-selective in the way the
+// target describes: only a payload at or above pasteBlockThreshold takes
+// the bracketed-paste branch that vacates the box under one Enter, so
+// sub-threshold sends pass and every finish-report-sized one is refused.
+// Live evidence, one send apart, replayed by
+// TestT30LiveReproSendSucceeds: testdata/frame_t30_chip_before_enter.txt
+// and testdata/frame_t30_spinner_drained_after_enter.txt.
+func ensureSubmitted(d sendDriver, landed bool) error {
 	if d.capture == nil {
 		return nil
 	}
@@ -346,7 +378,7 @@ func ensureSubmitted(d sendDriver) error {
 	}
 	var last []byte
 	var lastState composerState
-	sawContent := false
+	sawContent := landed
 	for press := 0; press < maxSubmitPresses; press++ {
 		d.sleep(submitSettle)
 		frame, err := d.capture()
@@ -386,11 +418,14 @@ func ensureSubmitted(d sendDriver) error {
 			if !sawContent {
 				return fmt.Errorf("turn not submitted: composer empty after paste (brief never reached pane)")
 			}
-			// Content was seen then cleared without working chrome —
-			// keep pressing Enter a few more times.
-			if press+1 < maxSubmitPresses {
-				_ = d.sendEnter()
-			}
+			// The payload was in this box and is not any more, and the
+			// only key we sent was Enter: it was submitted (🎯T30). This
+			// is evidence about OUR payload, not about chrome that might
+			// belong to another turn, so it is safe where the chrome-first
+			// rule 🎯T28 removed was not. Pressing Enter again here is what
+			// burned the whole bound and turned a delivered brief into
+			// "turn not submitted".
+			return nil
 		default:
 			if press+1 < maxSubmitPresses {
 				_ = d.sendEnter()

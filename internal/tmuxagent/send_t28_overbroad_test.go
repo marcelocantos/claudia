@@ -84,7 +84,9 @@ func TestT28DailyDeliveredFramesReportSuccess(t *testing.T) {
 				func(string) error { return nil },
 				func(string) error { return nil },
 			)
-			if err := ensureSubmitted(d); err != nil {
+			// landed=true: waitContentLanded's postcondition on the paste
+			// branch — the payload was seen in the box before Enter (🎯T30).
+			if err := ensureSubmitted(d, true); err != nil {
 				t.Fatalf("Send failed on a payload that reached the agent: %v", err)
 			}
 			if *enters != 0 {

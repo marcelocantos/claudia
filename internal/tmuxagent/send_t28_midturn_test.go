@@ -124,7 +124,9 @@ func TestT28QueuedPayloadReportsSuccess(t *testing.T) {
 		func(string) error { return nil },
 		func(string) error { return nil },
 	)
-	if err := ensureSubmitted(d); err != nil {
+	// landed=true: the payload rendered in the box before Enter, which is
+	// waitContentLanded's postcondition on the paste branch (🎯T30).
+	if err := ensureSubmitted(d, true); err != nil {
 		t.Fatalf("Send failed on a payload the CLI itself reports as queued: %v", err)
 	}
 	if *enters != 0 {
