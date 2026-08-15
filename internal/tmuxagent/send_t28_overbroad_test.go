@@ -96,6 +96,44 @@ func TestT28DailyDeliveredFramesReportSuccess(t *testing.T) {
 	}
 }
 
+// TestT28DeliveredFramesReportSuccessWithoutLandedEvidence is the same
+// caller-visible contract on the path where 🎯T30's guard cannot help:
+// turn chrome is positive submit evidence IN ITS OWN RIGHT, whether or
+// not this send watched its payload land in the box first.
+//
+// landed=false is not a synthetic state. sendKeysWith sets it only on the
+// bracketed-paste branch (send.go:189); every message that does NOT take
+// that branch is typed literally (send.go:191) and reaches ensureSubmitted
+// with landed=false. Small single-line sends — the fleet's most common —
+// are exactly that path.
+//
+// This matters for the regression net, not just for coverage. With
+// landed=true, sawContent starts true, so 🎯T30's composerEmptyIdle branch
+// returns nil for these frames even if the 🎯T28 classification is broken:
+// it masks the failure that TestT28DailyDeliveredFramesReportSuccess was
+// written to catch. Reverting the spinnerLine disjunct in
+// MatchTurnInProgress leaves that test GREEN and this one RED, which is
+// the 🎯T28 over-broadness mutation the acceptance asks to be kept live.
+func TestT28DeliveredFramesReportSuccessWithoutLandedEvidence(t *testing.T) {
+	t.Parallel()
+	for _, tc := range t28DailyDeliveredFrames {
+		t.Run(tc.name, func(t *testing.T) {
+			frame := loadFrame(t, tc.name)
+			d, enters := hermeticDriver(
+				func() ([]byte, error) { return frame, nil },
+				func(string) error { return nil },
+				func(string) error { return nil },
+			)
+			if err := ensureSubmitted(d, false); err != nil {
+				t.Fatalf("Send failed on a payload that reached the agent, with no landed evidence to fall back on: %v", err)
+			}
+			if *enters != 0 {
+				t.Errorf("enters=%d, want 0: a delivered payload must not be hammered with more Enters", *enters)
+			}
+		})
+	}
+}
+
 // TestT28PreFixPredicateFiredOnDeliveredFrames documents the mechanism
 // the daily path was still running (claudia pinned at b995fdd, 44
 // minutes before the 🎯T28 fix): "the box is drawn" rather than "the box
