@@ -12,6 +12,8 @@ import (
 	"sync"
 
 	"github.com/google/uuid"
+
+	"github.com/marcelocantos/claudia/internal/tmuxagent"
 )
 
 // AgentDef is the persistent definition of a named agent stored in a [Registry].
@@ -159,6 +161,8 @@ func (r *Registry) Remove(name string) error {
 	if proc, ok := r.procs[name]; ok {
 		proc.Stop()
 		delete(r.procs, name)
+	} else if def, ok := r.agents[name]; ok {
+		reapSessionWindows(def)
 	}
 	delete(r.agents, name)
 	return r.save()
@@ -194,6 +198,11 @@ func (r *Registry) Launch(name string) (*Agent, error) {
 	if !ok {
 		return nil, fmt.Errorf("agent %q not registered", name)
 	}
+
+	// Sessions are durable; leftover processes are not. A window still
+	// running from a previous consumer is reaped so Start cannot create
+	// a second process for the same conversation (🎯T34).
+	reapSessionWindows(def)
 
 	// Prefer mcp.claudia.json: a file the Grok CLI does not scan. Entries
 	// in cwd/.mcp.json are cross-referenced by the CLI and classified as
@@ -311,6 +320,12 @@ func (r *Registry) Stop(name string) {
 		proc.Stop()
 		delete(r.procs, name)
 		slog.Info("agent stopped", "name", name)
+	} else if def, ok := r.agents[name]; ok {
+		// After a consumer restart procs is empty. The window is still
+		// findable by session id; killing it is what makes Stop a real
+		// cleanup rather than a silent no-op (🎯T34).
+		reapSessionWindows(def)
+		slog.Info("agent stopped", "name", name, "via", "session-window")
 	}
 	if def, ok := r.agents[name]; ok {
 		if def.ConnectURL != "" || def.ConnectPID != 0 {
@@ -370,17 +385,31 @@ func (r *Registry) StartAll() {
 	}
 }
 
-// StopAll stops all running agents.
+// StopAll stops every registered agent, including those whose handles
+// were lost when the previous consumer died. Walking defs rather than
+// procs is what makes a clean jevonsd exit reap the fleet (🎯T34).
 func (r *Registry) StopAll() {
 	r.mu.Lock()
-	names := make([]string, 0, len(r.procs))
-	for name := range r.procs {
+	names := make([]string, 0, len(r.agents))
+	for name := range r.agents {
 		names = append(names, name)
 	}
 	r.mu.Unlock()
 
 	for _, name := range names {
 		r.Stop(name)
+	}
+}
+
+// reapSessionWindows kills leftover Claude tmux windows for def's
+// session. Grok connect-mode processes are reached via ConnectPID on
+// the next Launch, not here.
+func reapSessionWindows(def *AgentDef) {
+	if def == nil || !isClaudeProvider(def.Provider) || def.SessionID == "" {
+		return
+	}
+	if err := tmuxagent.KillWindowsForSession(def.SessionID); err != nil {
+		slog.Warn("reap session windows", "name", def.Name, "session", def.SessionID, "err", err)
 	}
 }
 
