@@ -1,0 +1,1 @@
+{"v":1,"type":"error","id":"r7","body":{"code":"unsupported_version","message":"wire version 2 is not supported","field":"v","value":"2","supported_versions":[1]}}
