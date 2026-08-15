@@ -5,6 +5,7 @@ package claudia
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -172,6 +173,9 @@ func (r *Registry) Remove(name string) error {
 // Production points at [Start]; hermetic tests may override it.
 var registryStart = Start
 
+// registryAdopt is the Session entrypoint used by [Registry.Adopt].
+var registryAdopt = Adopt
+
 // Launch starts the registered agent named name and returns it. If the agent
 // is already running and alive, the existing [Agent] is returned without
 // spawning a new process. It returns an error if name is not registered.
@@ -260,8 +264,103 @@ func (r *Registry) Launch(name string) (*Agent, error) {
 	r.procs[name] = proc
 	slog.Info("agent started", "name", name, "provider", def.Provider, "session", proc.SessionID(),
 		"connect_pid", proc.PID(), "connect_url_set", proc.ConnectURL() != "",
+		"window", proc.WindowID(),
 		"materialized", def.Materialized)
 	return proc, nil
+}
+
+// Adopt rebuilds a handle for a still-running process. It does not
+// spawn and does not reap. Drain boot uses [Registry.Launch]; upgrade
+// boot uses [Registry.AdoptOrLaunch].
+func (r *Registry) Adopt(name string) (*Agent, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if proc, ok := r.procs[name]; ok && proc.Alive() {
+		return proc, nil
+	}
+
+	def, ok := r.agents[name]
+	if !ok {
+		return nil, fmt.Errorf("agent %q not registered", name)
+	}
+
+	mcpConfig := filepath.Join(def.WorkDir, "mcp.claudia.json")
+	if _, err := os.Stat(mcpConfig); err != nil {
+		mcpConfig = filepath.Join(def.WorkDir, ".mcp.json")
+		if _, err := os.Stat(mcpConfig); err != nil {
+			mcpConfig = ""
+		}
+	}
+
+	cfg := Config{
+		Provider:      def.Provider,
+		WorkDir:       def.WorkDir,
+		SessionID:     def.SessionID,
+		RequireResume: def.Materialized,
+		Model:         def.Model,
+		DisallowTools: def.DisallowTools,
+		MCPConfig:     mcpConfig,
+		GrokConnect:   def.GrokConnect || def.ConnectURL != "",
+		ConnectURL:    def.ConnectURL,
+		ConnectPID:    def.ConnectPID,
+	}
+
+	var proc *Agent
+	var err error
+	switch {
+	case isClaudeProvider(def.Provider):
+		proc, err = registryAdopt(cfg)
+	case def.ConnectURL != "" || def.ConnectPID > 0:
+		// Grok connect-mode: Start dials the existing serve.
+		proc, err = registryStart(cfg)
+	default:
+		err = fmt.Errorf("%w: %s", ErrNoSessionWindow, def.SessionID)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	changed := false
+	if sid := proc.SessionID(); sid != "" && sid != def.SessionID {
+		def.SessionID = sid
+		changed = true
+	}
+	if u := proc.ConnectURL(); u != def.ConnectURL {
+		def.ConnectURL = u
+		changed = true
+	}
+	if p := proc.PID(); p != def.ConnectPID {
+		def.ConnectPID = p
+		changed = true
+	}
+	if !def.Materialized && claudeSessionEvidence(def.Provider, def.SessionID, def.WorkDir) {
+		def.Materialized = true
+		changed = true
+	}
+	if changed {
+		if err := r.save(); err != nil {
+			slog.Warn("persist agent def after adopt", "name", name, "err", err)
+		}
+	}
+
+	r.procs[name] = proc
+	slog.Info("agent adopted", "name", name, "provider", def.Provider, "session", proc.SessionID(),
+		"connect_pid", proc.PID(), "window", proc.WindowID())
+	return proc, nil
+}
+
+// AdoptOrLaunch tries [Registry.Adopt] and falls back to [Registry.Launch]
+// when no process remains. Upgrade boot uses this; drain boot uses Launch.
+func (r *Registry) AdoptOrLaunch(name string) (*Agent, error) {
+	proc, err := r.Adopt(name)
+	if err == nil {
+		return proc, nil
+	}
+	if !errors.Is(err, ErrNoSessionWindow) {
+		slog.Warn("adopt failed; falling back to launch", "agent", name, "err", err)
+	}
+	return r.Launch(name)
 }
 
 // MarkMaterialized records that name has hosted a real conversation and
@@ -380,6 +479,25 @@ func (r *Registry) StartAll() {
 
 	for _, name := range names {
 		if _, err := r.Launch(name); err != nil {
+			slog.Error("auto-start failed", "agent", name, "err", err)
+		}
+	}
+}
+
+// StartAllPreferAdopt is the upgrade-boot counterpart of [Registry.StartAll]:
+// reuse a leftover process when one exists, otherwise Launch.
+func (r *Registry) StartAllPreferAdopt() {
+	r.mu.Lock()
+	names := make([]string, 0)
+	for name, def := range r.agents {
+		if def.AutoStart {
+			names = append(names, name)
+		}
+	}
+	r.mu.Unlock()
+
+	for _, name := range names {
+		if _, err := r.AdoptOrLaunch(name); err != nil {
 			slog.Error("auto-start failed", "agent", name, "err", err)
 		}
 	}

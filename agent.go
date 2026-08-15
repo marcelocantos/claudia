@@ -544,7 +544,7 @@ func (claudeAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error)
 
 	args := claudeAgentArgs(req)
 
-	windowName := "claudia-" + req.SessionID[:8]
+	windowName := tmuxagent.SessionWindowName(req.SessionID)
 	claudeBin, err := resolveClaudeBin()
 	if err != nil {
 		return nil, err
@@ -554,12 +554,74 @@ func (claudeAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error)
 		return nil, fmt.Errorf("tmux spawn: %w", err)
 	}
 
-	ctrl, err := tmuxagent.DialControl(windowID)
+	start, err := attachClaudeWindow(windowID)
 	if err != nil {
 		tmuxagent.KillWindow(windowID)
+		return nil, err
+	}
+	return start, nil
+}
+
+// ErrNoSessionWindow is returned by [Adopt] when no live tmux window
+// belongs to the session. Callers that want drain semantics fall back
+// to [Start]; upgrade callers treat it as "this agent actually exited."
+var ErrNoSessionWindow = errors.New("no live tmux window for session")
+
+// Adopt rebuilds an [Agent] handle for a still-running Claude tmux
+// window (or a Grok connect-mode serve). It does not spawn. Missing
+// process is [ErrNoSessionWindow], not a silent Start.
+func Adopt(cfg Config) (*Agent, error) {
+	provider := cfg.Provider
+	if provider == "" {
+		provider = ProviderClaude
+	}
+	if _, known := providerCapabilityClaims[provider]; known || cfg.Provider == "" {
+		if err := CheckCapability(cfg.Provider, CapabilitySession); err != nil {
+			return nil, err
+		}
+	}
+	if provider == ProviderGrok && (cfg.ConnectURL != "" || cfg.ConnectPID > 0) {
+		// Grok reuse is Start with a live connect endpoint; it dials,
+		// it does not mint a serve process.
+		return Start(cfg)
+	}
+	if provider != ProviderClaude && cfg.Provider != "" {
+		return nil, fmt.Errorf("%w: provider %s has no adopt path", ErrNoSessionWindow, provider)
+	}
+	return startWithBackend(cfg, adoptClaudeBackend{})
+}
+
+type adoptClaudeBackend struct{}
+
+func (adoptClaudeBackend) Capabilities() providerCapabilities {
+	return claudeProviderCapabilities()
+}
+
+func (adoptClaudeBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
+	if err := checkTmux(); err != nil {
+		return nil, err
+	}
+	if req.SessionID == "" {
+		return nil, ErrNoSessionWindow
+	}
+	ids, err := tmuxagent.WindowsForSession(req.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return nil, fmt.Errorf("%w: %s", ErrNoSessionWindow, req.SessionID)
+	}
+	return attachClaudeWindow(ids[0])
+}
+
+func attachClaudeWindow(windowID string) (*agentStart, error) {
+	if !tmuxagent.IsWindowAlive(windowID) {
+		return nil, fmt.Errorf("%w: window %s gone", ErrNoSessionWindow, windowID)
+	}
+	ctrl, err := tmuxagent.DialControl(windowID)
+	if err != nil {
 		return nil, fmt.Errorf("tmux control-mode: %w", err)
 	}
-
 	return &agentStart{
 		WindowID:             windowID,
 		Control:              ctrl,
@@ -567,7 +629,6 @@ func (claudeAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error)
 		TailJSONL:            true,
 		StoreSessionInWindow: true,
 		DetectReady: func(a *Agent) {
-			// Poll loop must not block Start.
 			go a.detectReady()
 		},
 	}, nil
@@ -768,6 +829,10 @@ func Run(ctx context.Context, prompt string, cfg Config) (string, error) {
 
 // SessionID returns the Claude Code session ID.
 func (a *Agent) SessionID() string { return a.sessionID }
+
+// WindowID returns the tmux window id (e.g. "@3") for a Claude
+// session, or "" when this agent is not tmux-backed.
+func (a *Agent) WindowID() string { return a.tmuxWindowID }
 
 // JSONLPath returns the path to the session JSONL file.
 func (a *Agent) JSONLPath() string { return a.jsonlPath }

@@ -4,6 +4,7 @@
 package claudia
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -186,5 +187,99 @@ func TestRestartStartAllStopAllLeavesZero(t *testing.T) {
 		if got := sessionWindows(t, sid); len(got) != 0 {
 			t.Fatalf("after StopAll, session %s still has %v", sid, got)
 		}
+	}
+}
+
+// TestAdoptReusesWindow: upgrade boot. Drop the Registry, Adopt, same
+// window, count stays 1.
+func TestAdoptReusesWindow(t *testing.T) {
+	isolateTmux(t)
+	stubClaude(t)
+
+	path := filepath.Join(t.TempDir(), "agents.json")
+	r, err := NewRegistry(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sid := "cccccccc-dddd-eeee-ffff-000000000001"
+	if err := r.Register(AgentDef{
+		Name:      "keep",
+		WorkDir:   t.TempDir(),
+		SessionID: sid,
+		AutoStart: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	first, err := r.Launch("keep")
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	old := first.WindowID()
+	if old == "" {
+		t.Fatal("Launch did not record a window id")
+	}
+
+	r2, err := NewRegistry(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := r2.Adopt("keep")
+	if err != nil {
+		t.Fatalf("Adopt: %v", err)
+	}
+	t.Cleanup(func() { r2.Stop("keep") })
+	if second.WindowID() != old {
+		t.Fatalf("Adopt window %q, want leftover %q", second.WindowID(), old)
+	}
+	if got := sessionWindows(t, sid); len(got) != 1 || got[0] != old {
+		t.Fatalf("windows after Adopt: %v, want [%s]", got, old)
+	}
+}
+
+func TestAdoptFailsWhenGone(t *testing.T) {
+	isolateTmux(t)
+	r, err := NewRegistry(filepath.Join(t.TempDir(), "agents.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Register(AgentDef{
+		Name:      "gone",
+		WorkDir:   t.TempDir(),
+		SessionID: "dddddddd-eeee-ffff-0000-111111111111",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = r.Adopt("gone")
+	if !errors.Is(err, ErrNoSessionWindow) {
+		t.Fatalf("Adopt missing window: %v", err)
+	}
+}
+
+func TestAdoptOrLaunchFallsBackToLaunch(t *testing.T) {
+	isolateTmux(t)
+	stubClaude(t)
+	r, err := NewRegistry(filepath.Join(t.TempDir(), "agents.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sid := "eeeeeeee-ffff-0000-1111-222222222222"
+	if err := r.Register(AgentDef{
+		Name:      "fresh",
+		WorkDir:   t.TempDir(),
+		SessionID: sid,
+		AutoStart: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	a, err := r.AdoptOrLaunch("fresh")
+	if err != nil {
+		t.Fatalf("AdoptOrLaunch: %v", err)
+	}
+	t.Cleanup(func() { r.Stop("fresh") })
+	if a.WindowID() == "" {
+		t.Fatal("fallback Launch produced no window")
+	}
+	if got := sessionWindows(t, sid); len(got) != 1 {
+		t.Fatalf("windows: %v", got)
 	}
 }
