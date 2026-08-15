@@ -80,13 +80,26 @@ type acpRPCMessage struct {
 // model is optional. sessionID and requireResume control resume behaviour;
 // see openSession. mcpServers are attached on session/new (Grok CLI
 // attaches tools only there — not on session/load).
-func startGrokACP(bin string, workDir, model, sessionID string, requireResume bool, mcpServers []any, onEvent func(Event), onClose func()) (*grokACPClient, error) {
-	args := []string{"agent", "--always-approve", "stdio"}
+// grokACPArgs builds the argv `grok agent` is launched with, up to and
+// including the mode word. Connect mode appends its own --bind/--secret,
+// which are minted per launch and so cannot live here.
+//
+// Flags on `grok agent` apply to every mode and must precede the mode
+// word — a --model after "stdio" is parsed as a flag of the mode, not the
+// agent, and is ignored.
+func grokACPArgs(model string, connect bool) []string {
+	args := []string{"agent", "--always-approve"}
 	if model != "" {
-		// Flags on `grok agent` apply to every mode; pass before stdio.
-		args = []string{"agent", "--always-approve", "--model", model, "stdio"}
+		args = append(args, "--model", model)
 	}
-	cmd := exec.Command(bin, args...)
+	if connect {
+		return append(args, "serve")
+	}
+	return append(args, "stdio")
+}
+
+func startGrokACP(bin string, workDir, model, sessionID string, requireResume bool, mcpServers []any, onEvent func(Event), onClose func()) (*grokACPClient, error) {
+	cmd := exec.Command(bin, grokACPArgs(model, false)...)
 	cmd.Dir = workDir
 
 	stdin, err := cmd.StdinPipe()
