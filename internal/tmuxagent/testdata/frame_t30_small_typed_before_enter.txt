@@ -1,0 +1,24 @@
+
+ ▐▛███▜▌   Claude Code v2.1.233
+▝▜█████▛▘  Opus 5 (1M context) with high effort · Claude Max
+  ▘▘ ▝▝    ~/work/github.com/marcelocantos/claudia
+
+
+
+
+
+
+
+
+
+
+
+                                                     ctrl+g to edit in Codewait
+────────────────────────────────────────────────────────────────────────────────
+❯ T30SEND710062000 — delivery probe for 🎯T30. Reply with exactly
+  T30SEND710062000-ACK and nothing else.
+  This paragraph pads the payload to the size a real finish report reaches.
+  This paragraph pads the payload to the size a real finish report reaches.
+  This paragraph pads the payload to the size a
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle)                             /rc
