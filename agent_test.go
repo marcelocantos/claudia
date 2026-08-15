@@ -272,13 +272,14 @@ func TestStartUsesInjectedBackendLifecycle(t *testing.T) {
 			_, termCh := agent.SubscribeTerminal()
 			defer agent.UnsubscribeTerminal(termCh)
 			backend.control.bytes <- []byte("terminal")
-			select {
-			case got := <-termCh:
-				if string(got) != "terminal" {
-					t.Errorf("terminal bytes = %q, want terminal", got)
-				}
-			case <-time.After(time.Second):
-				t.Fatal("terminal bytes were not routed through Agent")
+			// Plain receive, no arm: "the bytes are routed" is a causal
+			// property of Agent, and a 1s arm asserted instead that the
+			// routing goroutine gets scheduled within a second — a claim
+			// about the machine that fleet load falsifies (🎯T31). Routing
+			// that never happens now hangs until `go test -timeout`, which
+			// dumps the goroutine actually stuck.
+			if got := <-termCh; string(got) != "terminal" {
+				t.Errorf("terminal bytes = %q, want terminal", got)
 			}
 
 			agent.Stop()
@@ -560,36 +561,27 @@ func TestAgentSendAndWaitForResponse(t *testing.T) {
 // dispatch function that the test can call to deliver events.
 //
 // Start WaitForResponse in a goroutine first, then use dispatch() to
-// feed events, then read from the result channel. The fixture polls
-// briefly for the handler to be installed before dispatch is safe —
-// WaitForResponse is the thing under test, not the dispatch plumbing.
+// feed events, then read from the result channel. The fixture waits for
+// the handler to be installed before dispatch is safe — WaitForResponse
+// is the thing under test, not the dispatch plumbing.
+//
+// That wait is signal-driven: it watches the subscriber map, which is the
+// thing dispatch actually needs, and has no deadline. The 200ms budget it
+// replaces asserted that goroutine scheduling latency stays under 200ms —
+// a claim about the machine, and one that fleet load falsifies (🎯T31).
 func waitForResponseFixture(t *testing.T) (*Agent, func(Event)) {
 	t.Helper()
 	a := &Agent{eventSubs: make(map[int64]EventFunc)}
 	dispatch := func(ev Event) {
-		// Wait for WaitForResponse to install its subscriber before
-		// delivering the first event, otherwise the dispatch is a
-		// no-op. 200ms is comfortably more than the goroutine
-		// scheduling latency.
-		deadline := time.Now().Add(200 * time.Millisecond)
-		for {
-			a.mu.Lock()
-			n := len(a.eventSubs)
-			subs := make([]EventFunc, 0, n)
-			for _, fn := range a.eventSubs {
-				subs = append(subs, fn)
-			}
-			a.mu.Unlock()
-			if n > 0 {
-				for _, fn := range subs {
-					fn(ev)
-				}
-				return
-			}
-			if time.Now().After(deadline) {
-				t.Fatal("WaitForResponse handler never installed")
-			}
-			time.Sleep(5 * time.Millisecond)
+		waitForEventSubscribers(t, a, 1)
+		a.mu.Lock()
+		subs := make([]EventFunc, 0, len(a.eventSubs))
+		for _, fn := range a.eventSubs {
+			subs = append(subs, fn)
+		}
+		a.mu.Unlock()
+		for _, fn := range subs {
+			fn(ev)
 		}
 	}
 	return a, dispatch
@@ -602,8 +594,11 @@ func TestWaitForResponseSingleTerminalEvent(t *testing.T) {
 		text string
 		err  error
 	}, 1)
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	// t.Context() and a plain receive: neither the 2s budget nor the 1s arm
+	// was an assertion about the product, and both drew RED under load
+	// (🎯T31). "Must return after terminal event + settle window" is now
+	// enforced by `go test -timeout`, which names the parked goroutine.
+	ctx := t.Context()
 	go func() {
 		text, err := a.WaitForResponse(ctx)
 		done <- struct {
@@ -614,16 +609,12 @@ func TestWaitForResponseSingleTerminalEvent(t *testing.T) {
 
 	dispatch(Event{Type: "assistant", Text: "hello world", StopReason: "end_turn"})
 
-	select {
-	case r := <-done:
-		if r.err != nil {
-			t.Fatalf("err = %v", r.err)
-		}
-		if r.text != "hello world" {
-			t.Errorf("text = %q, want %q", r.text, "hello world")
-		}
-	case <-time.After(1 * time.Second):
-		t.Fatal("WaitForResponse did not return after terminal event + settle window")
+	r := <-done
+	if r.err != nil {
+		t.Fatalf("err = %v", r.err)
+	}
+	if r.text != "hello world" {
+		t.Errorf("text = %q, want %q", r.text, "hello world")
 	}
 }
 
@@ -633,71 +624,87 @@ func TestWaitForResponseSingleTerminalEvent(t *testing.T) {
 // within a few milliseconds of each other. The old implementation
 // resolved on the first terminal event (thinking, empty) and lost
 // the subsequent text block.
+// The ~45ms gap is a precondition, not an assertion: the scenario is only
+// exercised if the second block lands inside the settle window. A loaded
+// scheduler that overshoots the window never presented the product with the
+// case under test, so the attempt is retried rather than scored (🎯T31).
 func TestWaitForResponseThinkingThenText(t *testing.T) {
-	a, dispatch := waitForResponseFixture(t)
+	for attempt := 1; ; attempt++ {
+		a, dispatch := waitForResponseFixture(t)
 
-	done := make(chan struct {
-		text string
-		err  error
-	}, 1)
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	go func() {
-		text, err := a.WaitForResponse(ctx)
-		done <- struct {
+		done := make(chan struct {
 			text string
 			err  error
-		}{text, err}
-	}()
+		}, 1)
+		ctx := t.Context()
+		go func() {
+			text, err := a.WaitForResponse(ctx)
+			done <- struct {
+				text string
+				err  error
+			}{text, err}
+		}()
 
-	dispatch(Event{Type: "assistant", Text: "", StopReason: "end_turn"})
-	time.Sleep(50 * time.Millisecond) // simulate Claude Code's ~45ms gap
-	dispatch(Event{Type: "assistant", Text: "ok", StopReason: "end_turn"})
+		dispatch(Event{Type: "assistant", Text: "", StopReason: "end_turn"})
+		gap := timedGap(50 * time.Millisecond) // simulate Claude Code's ~45ms gap
+		dispatch(Event{Type: "assistant", Text: "ok", StopReason: "end_turn"})
 
-	select {
-	case r := <-done:
+		r := <-done
+		if gap >= waitSettleDuration {
+			t.Logf("attempt %d: scheduler stretched the %v gap to %v, past the %v settle window — the two blocks were never in the same turn, so this attempt tested nothing; retrying",
+				attempt, 50*time.Millisecond, gap, waitSettleDuration)
+			continue
+		}
 		if r.text != "ok" {
 			t.Errorf("text = %q, want %q (settle timer dropped the text block)", r.text, "ok")
 		}
-	case <-time.After(1 * time.Second):
-		t.Fatal("WaitForResponse did not return")
+		return
 	}
 }
 
 func TestWaitForResponseResetsSettleTimer(t *testing.T) {
-	a, dispatch := waitForResponseFixture(t)
+	// Half the window rather than window-minus-50ms: the reset is proven by
+	// any gap inside the window, and the wider margin means only a scheduler
+	// that stalls for an entire window can void an attempt. Voided attempts
+	// retry — the product is never scored on a turn it never saw (🎯T31).
+	const gapTarget = waitSettleDuration / 2
 
-	done := make(chan struct {
-		text string
-		err  error
-	}, 1)
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	go func() {
-		text, err := a.WaitForResponse(ctx)
-		done <- struct {
+	for attempt := 1; ; attempt++ {
+		a, dispatch := waitForResponseFixture(t)
+
+		done := make(chan struct {
 			text string
 			err  error
-		}{text, err}
-	}()
+		}, 1)
+		ctx := t.Context()
+		go func() {
+			text, err := a.WaitForResponse(ctx)
+			done <- struct {
+				text string
+				err  error
+			}{text, err}
+		}()
 
-	// First terminal event starts the settle timer at t=0.
-	dispatch(Event{Type: "assistant", Text: "one", StopReason: "end_turn"})
-	// Wait most of the settle window, then deliver another event — this
-	// must reset the timer so the third event still gets accumulated.
-	time.Sleep(waitSettleDuration - 50*time.Millisecond)
-	dispatch(Event{Type: "assistant", Text: "two", StopReason: "end_turn"})
-	time.Sleep(waitSettleDuration - 50*time.Millisecond)
-	dispatch(Event{Type: "assistant", Text: "three", StopReason: "end_turn"})
+		// First terminal event starts the settle timer at t=0.
+		dispatch(Event{Type: "assistant", Text: "one", StopReason: "end_turn"})
+		// Wait part of the settle window, then deliver another event — this
+		// must reset the timer so the third event still gets accumulated.
+		first := timedGap(gapTarget)
+		dispatch(Event{Type: "assistant", Text: "two", StopReason: "end_turn"})
+		second := timedGap(gapTarget)
+		dispatch(Event{Type: "assistant", Text: "three", StopReason: "end_turn"})
 
-	select {
-	case r := <-done:
+		r := <-done
+		if first >= waitSettleDuration || second >= waitSettleDuration {
+			t.Logf("attempt %d: scheduler stretched a %v gap past the %v window (%v, %v) — the window expired on its own, so no reset was exercised; retrying",
+				attempt, gapTarget, waitSettleDuration, first, second)
+			continue
+		}
 		want := "one\ntwo\nthree"
 		if r.text != want {
 			t.Errorf("text = %q, want %q", r.text, want)
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("WaitForResponse did not return")
+		return
 	}
 }
 
@@ -708,8 +715,7 @@ func TestWaitForResponseIgnoresNonAssistantEvents(t *testing.T) {
 		text string
 		err  error
 	}, 1)
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx := t.Context()
 	go func() {
 		text, err := a.WaitForResponse(ctx)
 		done <- struct {
@@ -725,6 +731,10 @@ func TestWaitForResponseIgnoresNonAssistantEvents(t *testing.T) {
 
 	// Verify WaitForResponse has NOT returned yet (no assistant event
 	// with terminal stop has been seen).
+	//
+	// This clock is kept, and is the one shape 🎯T31 allows: expiry is the
+	// PASS. It gives a wrongly-armed settle timer a full window plus slack to
+	// fire, so load can only make the check more patient, never RED.
 	select {
 	case r := <-done:
 		t.Fatalf("WaitForResponse returned prematurely with text=%q err=%v", r.text, r.err)
@@ -735,13 +745,9 @@ func TestWaitForResponseIgnoresNonAssistantEvents(t *testing.T) {
 	// Now deliver the real turn.
 	dispatch(Event{Type: "assistant", Text: "final", StopReason: "end_turn"})
 
-	select {
-	case r := <-done:
-		if r.text != "final" {
-			t.Errorf("text = %q, want final", r.text)
-		}
-	case <-time.After(1 * time.Second):
-		t.Fatal("WaitForResponse did not return after real turn")
+	r := <-done
+	if r.text != "final" {
+		t.Errorf("text = %q, want final", r.text)
 	}
 }
 
@@ -755,8 +761,7 @@ func TestWaitForResponseToolUseNotTerminal(t *testing.T) {
 		text string
 		err  error
 	}, 1)
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx := t.Context()
 	go func() {
 		text, err := a.WaitForResponse(ctx)
 		done <- struct {
@@ -769,6 +774,9 @@ func TestWaitForResponseToolUseNotTerminal(t *testing.T) {
 	// pauses for tool results), followed by a real response after
 	// the tool result comes back.
 	dispatch(Event{Type: "assistant", Text: "let me check", StopReason: "tool_use"})
+	// A kept clock of the shape 🎯T31 allows: elapsing is the PASS. It gives a
+	// wrongly-started settle timer a full window plus slack to resolve, so an
+	// overshoot under load only makes the check more patient, never RED.
 	time.Sleep(waitSettleDuration + 100*time.Millisecond)
 
 	// WaitForResponse must NOT have returned yet — tool_use is not
@@ -783,14 +791,10 @@ func TestWaitForResponseToolUseNotTerminal(t *testing.T) {
 	dispatch(Event{Type: "user"})
 	dispatch(Event{Type: "assistant", Text: "done", StopReason: "end_turn"})
 
-	select {
-	case r := <-done:
-		want := "let me check\ndone"
-		if r.text != want {
-			t.Errorf("text = %q, want %q", r.text, want)
-		}
-	case <-time.After(1 * time.Second):
-		t.Fatal("WaitForResponse did not return")
+	r := <-done
+	want := "let me check\ndone"
+	if r.text != want {
+		t.Errorf("text = %q, want %q", r.text, want)
 	}
 }
 

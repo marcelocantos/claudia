@@ -41,8 +41,8 @@ func TestHermeticTaskRunClaudeToolUse(t *testing.T) {
 		Provider: ProviderClaude,
 		WorkDir:  t.TempDir(),
 	})
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	// t.Context(): cleanup without a clock that can decide a verdict (🎯T31).
+	ctx := t.Context()
 	events, err := task.Run(ctx, "list files")
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -94,8 +94,8 @@ func TestHermeticTaskRunClaudeCostOnSuccess(t *testing.T) {
 		Provider: ProviderClaude,
 		WorkDir:  t.TempDir(),
 	})
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	// t.Context(): cleanup without a clock that can decide a verdict (🎯T31).
+	ctx := t.Context()
 	events, err := task.Run(ctx, "summarize")
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -130,8 +130,8 @@ func TestHermeticTaskRunClaudeResumeArgs(t *testing.T) {
 		WorkDir:  t.TempDir(),
 		ClaudeID: "prior-session-xyz",
 	})
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	// t.Context(): cleanup without a clock that can decide a verdict (🎯T31).
+	ctx := t.Context()
 	events, err := task.Run(ctx, "continue please")
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -173,32 +173,25 @@ func TestHermeticTaskCancelSendsSIGINT(t *testing.T) {
 		Provider: ProviderClaude,
 		WorkDir:  t.TempDir(),
 	})
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+	// t.Context(), not WithTimeout: cleanup still kills the fake at test end,
+	// but no clock can expire mid-test and turn load into RED (🎯T31).
+	ctx := t.Context()
 	events, err := task.Run(ctx, "hang please")
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
-	// Wait for init (ClaudeID) — proves the fake installed its handler and
-	// entered the hang phase. Fixed sleeps race under -race (🎯T17).
-	drained := make(chan struct{})
-	go func() {
-		defer close(drained)
-		for range events {
-		}
-	}()
-	waitHermeticTaskReady(t, task)
+	// Wait for init — proves the fake installed its handler and entered the
+	// hang phase. Fixed sleeps race under -race (🎯T17); a readiness deadline
+	// races under fleet load (🎯T31). The stream itself is the signal.
+	watch := watchHermeticTask(events)
+	watch.waitReady(t)
 	if err := task.Cancel(); err != nil {
 		t.Fatalf("Cancel: %v", err)
 	}
 
 	// Channel must close after SIGINT (fake exits 0 on INT).
-	select {
-	case <-drained:
-	case <-time.After(5 * time.Second):
-		t.Fatal("events channel did not close after Cancel")
-	}
+	watch.waitDrained()
 }
 
 func TestHermeticTaskStopCancelsInFlight(t *testing.T) {
@@ -213,31 +206,22 @@ func TestHermeticTaskStopCancelsInFlight(t *testing.T) {
 		Provider: ProviderClaude,
 		WorkDir:  t.TempDir(),
 	})
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+	// t.Context(), not WithTimeout — see TestHermeticTaskCancelSendsSIGINT (🎯T31).
+	ctx := t.Context()
 	events, err := task.Run(ctx, "hang please")
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
-	drained := make(chan struct{})
-	go func() {
-		defer close(drained)
-		for range events {
-		}
-	}()
-	waitHermeticTaskReady(t, task)
+	watch := watchHermeticTask(events)
+	watch.waitReady(t)
 	task.Stop()
 	if task.Status() != TaskStatusStopped {
 		t.Fatalf("Status = %q, want stopped", task.Status())
 	}
 
 	// Drain must finish (context cancel kills process group / CommandContext child).
-	select {
-	case <-drained:
-	case <-time.After(5 * time.Second):
-		t.Fatal("events did not drain after Stop")
-	}
+	watch.waitDrained()
 
 	// Subsequent Run is rejected.
 	if _, err := task.Run(context.Background(), "again"); err == nil {
@@ -245,20 +229,10 @@ func TestHermeticTaskStopCancelsInFlight(t *testing.T) {
 	}
 }
 
-// waitHermeticTaskReady blocks until the hermetic fake has emitted init
-// (ClaudeID set). Load-bearing readiness for Cancel/Stop: the slow fake
-// installs its SIGINT handler before printing init.
-func waitHermeticTaskReady(t *testing.T, task *Task) {
-	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if task.ClaudeID() != "" {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatal("hermetic task never became ready (no TaskEventInit / ClaudeID)")
-}
+// Readiness for Cancel/Stop now lives in hermeticTaskWatch
+// (hermetic_wait_test.go). The deadline-polling waitHermeticTaskReady it
+// replaces is what 🎯T31 removed: it decided the verdict by wall clock, so
+// fleet load — not the product — chose the colour.
 
 func TestHermeticClaudeRequireResumeFailsClosed(t *testing.T) {
 	tmpHome := t.TempDir()
@@ -395,8 +369,8 @@ func TestHermeticClaudeSessionJSONLTail(t *testing.T) {
 		text string
 		err  error
 	}, 1)
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
+	// t.Context(): the 3s budget was a verdict input, not cleanup (🎯T31).
+	ctx := t.Context()
 	go func() {
 		text, err := agent.WaitForResponse(ctx)
 		done <- struct {
@@ -405,23 +379,21 @@ func TestHermeticClaudeSessionJSONLTail(t *testing.T) {
 		}{text, err}
 	}()
 
-	// Wait for WaitForResponse subscriber, then append a terminal assistant event.
-	time.Sleep(50 * time.Millisecond)
+	// The event is only observed if the subscriber is already installed, so
+	// wait for the subscriber itself rather than sleeping 50ms and hoping —
+	// under load that sleep expires before the goroutine is scheduled (🎯T31).
+	waitForEventSubscribers(t, agent, 1)
 	line := `{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"tail hello"}],"stop_reason":"end_turn"},"usage":{"input_tokens":1,"output_tokens":2}}` + "\n"
 	if err := os.WriteFile(jsonlPath, []byte(line), 0o644); err != nil {
 		t.Fatalf("WriteFile JSONL: %v", err)
 	}
 
-	select {
-	case r := <-done:
-		if r.err != nil {
-			t.Fatalf("WaitForResponse: %v", r.err)
-		}
-		if r.text != "tail hello" {
-			t.Errorf("text = %q, want tail hello", r.text)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("WaitForResponse did not observe JSONL tail event")
+	r := <-done
+	if r.err != nil {
+		t.Fatalf("WaitForResponse: %v", r.err)
+	}
+	if r.text != "tail hello" {
+		t.Errorf("text = %q, want tail hello", r.text)
 	}
 
 	u := agent.Usage()
