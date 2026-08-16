@@ -388,6 +388,10 @@ func (t *Task) Run(ctx context.Context, prompt string) (<-chan TaskEvent, error)
 	t.status = TaskStatusRunning
 	t.mu.Unlock()
 
+	if usingBroker() {
+		considerBroker()
+	}
+
 	cmdCtx, cancel := context.WithCancel(ctx)
 
 	t.mu.Lock()

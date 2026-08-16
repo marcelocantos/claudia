@@ -346,7 +346,7 @@ func Start(cfg Config) (*Agent, error) {
 			return nil, err
 		}
 	}
-	return startWithBackend(cfg, agentBackendForProvider(cfg.Provider))
+	return startConsideringBroker(cfg, agentBackendForProvider(cfg.Provider))
 }
 
 func startWithBackend(cfg Config, backend agentBackend) (*Agent, error) {

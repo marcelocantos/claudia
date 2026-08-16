@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 // The broker's socket transport (🎯T2.1): binding, dialing, and the
@@ -148,6 +149,24 @@ func (c *Conn) ReadLine() ([]byte, error) {
 	}
 }
 
+// ReadRequest reads and parses one client → broker message.
+func (c *Conn) ReadRequest() (*Request, error) {
+	line, err := c.ReadLine()
+	if err != nil {
+		return nil, err
+	}
+	return ParseRequest(line)
+}
+
+// ReadResponse reads and parses one broker → client message.
+func (c *Conn) ReadResponse() (*Response, error) {
+	line, err := c.ReadLine()
+	if err != nil {
+		return nil, err
+	}
+	return ParseResponse(line)
+}
+
 // WriteRequest encodes and sends one client → broker message.
 func (c *Conn) WriteRequest(r *Request) error {
 	line, err := r.Encode()
@@ -165,6 +184,9 @@ func (c *Conn) WriteResponse(r *Response) error {
 	}
 	return c.writeLine(line)
 }
+
+// SetDeadline sets the read and write deadlines on the underlying connection.
+func (c *Conn) SetDeadline(t time.Time) error { return c.net.SetDeadline(t) }
 
 // writeLine frames and writes one message.
 func (c *Conn) writeLine(line []byte) error {
