@@ -412,8 +412,8 @@ byte log. Rewind via private session files is unsupported
 (`CapabilityUnsupported`). Resume uses ACP `session/load` when
 `Config.SessionID` is set. `RequireResume` fail-closes on load
 failure and never mints a replacement id, including when MCP is
-configured. Without `RequireResume`, an unmaterialized id may fall
-through to `session/new` (first-mint rotation when MCP is set).
+configured. `MCPConfig` does not skip load. Without `RequireResume`,
+an unmaterialized id may fall through to `session/new`.
 
 **Permission mode and tool restrictions are both unsupported, and
 `Task.Run` refuses rather than drops.** Task mode hardcodes

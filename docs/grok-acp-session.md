@@ -46,24 +46,28 @@ uses its own tools.
 requires clients to pass `mcpServers` on `session/new`, `session/load`, and
 `session/resume`, and agents **MUST** reconnect to those servers on load/resume.
 
-**Grok CLI is the bug.** Observed (2026-07-18, jevons): `grok agent stdio`
-attaches `mcpServers` on `session/new` but **silently ignores** them on
-`session/load`. A resumed session therefore drops host-supplied MCP tools
-(e.g. “Tool not found” for jevons MCP).
+**Two tool channels, not one.** A 2026-07-18 jevons observation (resumed
+overseer toolless) was first read as “Grok ignores `mcpServers` on
+`session/load`.” A 2026-07-26 live check (jevons 🎯T58) split that:
 
-claudia’s policy (when `Config.MCPConfig` yields a non-empty server list):
+| Channel | On `session/load` |
+| --- | --- |
+| User-scoped `~/.grok/config.toml` | **Attaches.** Proven: same session id, tools callable. |
+| ACP request field `mcpServers` (from `Config.MCPConfig`) | Still sent on load. Whether the CLI honours that field is unverified; it is not a reason to skip load. |
+
+claudia’s policy is therefore the same with or without `MCPConfig`:
 
 | Situation | Behaviour |
 | --- | --- |
-| MCP + `RequireResume` (materialized) | **Fail-closed:** never `session/new`. Try `session/load`. Load failure is an error; load success keeps the same session id. Tools are not a license to remint (🎯T35). |
-| MCP + no `RequireResume` (unmaterialized / first mint) | **Rotate:** skip `session/load`, `session/new` with tools → new session id. Only way to attach tools on first mint under today's Grok CLI. |
-| No MCP, `SessionID` set | Unchanged `session/load` / fail-closed / fall-through rules |
+| `SessionID` set | Always `session/load`. `mcpServers` included when `MCPConfig` is set. |
+| Load fails + `RequireResume` | Error. Never `session/new` (🎯T35). |
+| Load fails, no `RequireResume` | Fall through to `session/new` (unmaterialized / first mint). |
+| No `SessionID` | `session/new`. |
 
-`RequireResume` cannot preserve both the same session id **and** tools until
-Grok fixes load. claudia fails closed rather than minting a replacement
-session to keep tools. Hosts that need durable chat across a first-mint
-rotation still own a journal (e.g. jevons `chatlog`) and `Send` a recap
-after attach.
+Hosts that need durable tools on resume register them user-scoped (jevons:
+`ensureGrokMCPServer` → `config.toml`) and do **not** skip load. File-based
+`MCPConfig` is the extra session-scoped list on the ACP wire, not a rotate
+switch.
 
 ### Explicit gaps
 
@@ -73,7 +77,7 @@ after attach.
 | Term log / terminal bytes | Unsupported |
 | Rewind | Unsupported (no private `~/.grok/sessions` rewrite) |
 | Pool Acquire | Not wired for Grok ACP (Claude tmux pool only) |
-| Same-id resume **with** MCP tools | Blocked by Grok CLI until load honours `mcpServers`. claudia fail-closes rather than reminting. |
+| Same-id resume **with** tools | Load the id. User-scoped `config.toml` tools survive. ACP `mcpServers` are still passed; not a remint trigger. |
 
 ### Maturity risk
 
@@ -93,5 +97,6 @@ those without a documented, versioned contract.
   `TestHermeticGrokRequireResumeWithMCPFailsClosed`,
   `TestHermeticGrokRequireResumeWithMCPKeepsSessionID`,
   `TestHermeticGrokLoadFallsThroughForMintedID`,
-  `TestHermeticGrokTooledResumeRotates` (first mint only)  
+  `TestHermeticGrokTooledUnmaterializedLoads`,
+  `TestHermeticGrokTooledUnmaterializedFallsThrough`  
 - Live (optional): real `grok agent stdio` via installed CLI and auth  

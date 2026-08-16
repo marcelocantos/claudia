@@ -272,10 +272,38 @@ func TestHermeticGrokLoadFallsThroughForMintedID(t *testing.T) {
 	}
 }
 
-// First-mint with MCP and no RequireResume still rotates to session/new:
-// that is the only way to attach tools under today's Grok CLI. Fake
-// rejects load so a mistaken load path would fail Start.
-func TestHermeticGrokTooledResumeRotates(t *testing.T) {
+// MCPConfig is not a license to skip session/load. An unmaterialized
+// id whose load succeeds keeps that id; tools are not a reason to remint.
+func TestHermeticGrokTooledUnmaterializedLoads(t *testing.T) {
+	bin := writeFakeGrokACP(t)
+	t.Setenv("GROK_BIN", bin)
+
+	dir := t.TempDir()
+	mcpPath := filepath.Join(dir, ".mcp.json")
+	if err := os.WriteFile(mcpPath, []byte(`{"mcpServers":{"x":{"type":"http","url":"http://127.0.0.1:9/mcp"}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	const wantID = "sess-old-tooled"
+	agent, err := Start(Config{
+		Provider:    ProviderGrok,
+		WorkDir:     dir,
+		SessionID:   wantID,
+		MCPConfig:   mcpPath,
+		TermLogPath: "-",
+	})
+	if err != nil {
+		t.Fatalf("Start should load the existing session: %v", err)
+	}
+	defer agent.Stop()
+	if agent.SessionID() != wantID {
+		t.Fatalf("session id %q, want %q (MCPConfig must not skip load)", agent.SessionID(), wantID)
+	}
+}
+
+// Load failure + MCP + no RequireResume still falls through to session/new,
+// the same as the untooled unmaterialized path.
+func TestHermeticGrokTooledUnmaterializedFallsThrough(t *testing.T) {
 	bin := writeFakeGrokACP(t)
 	t.Setenv("GROK_BIN", bin)
 	t.Setenv("FAKE_ACP_REJECT_LOAD", "1")
@@ -294,11 +322,11 @@ func TestHermeticGrokTooledResumeRotates(t *testing.T) {
 		TermLogPath: "-",
 	})
 	if err != nil {
-		t.Fatalf("Start should rotate to session/new with tools: %v", err)
+		t.Fatalf("Start should mint after a failed load: %v", err)
 	}
 	defer agent.Stop()
 	if agent.SessionID() == "sess-old-tooled" {
-		t.Fatal("expected new session id after tooled rotation")
+		t.Fatal("fake rejected load but id unchanged — fallback did not run")
 	}
 	if agent.SessionID() == "" {
 		t.Fatal("empty session id")
