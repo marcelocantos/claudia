@@ -67,7 +67,36 @@ func (bedrockTaskBackend) Capabilities() providerCapabilities {
 	return bedrockProviderCapabilities()
 }
 
+// bedrockTaskPrecheck refuses a request carrying a field ConverseStream
+// cannot honour.
+//
+// 🎯T24: every one of these used to be dropped on the floor. DisallowTools
+// is the worst of them — the published matrix says Bedrock cannot restrict
+// tools, and the path ran anyway, so a caller who stripped Bash from a
+// summariser got the same fail-open 🎯T4.6 closed for Codex and 🎯T23 for
+// Grok, one provider further along.
+func bedrockTaskPrecheck(req taskRunRequest) error {
+	if len(req.DisallowTools) > 0 {
+		return capabilityRefusal(ProviderBedrock, CapabilityToolRestrictions,
+			"the Bedrock tool_restrictions claim was flipped to supported, but buildBedrockConverseInput still sends no toolConfig")
+	}
+	if req.SandboxMode != "" || req.ApprovalPolicy != "" {
+		return capabilityRefusal(ProviderBedrock, CapabilitySandboxPolicy,
+			"the Bedrock sandbox_policy claim was flipped to supported, but ConverseStream is still called with no sandbox or approval setting")
+	}
+	if req.SessionID != "" {
+		// ConverseStream is stateless: the id would be dropped and the
+		// caller would believe a conversation was being continued.
+		return capabilityRefusal(ProviderBedrock, CapabilityResume,
+			"the Bedrock resume claim was flipped to supported, but ConverseStream is still sent a single user message with no prior turns")
+	}
+	return nil
+}
+
 func (b bedrockTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*taskRun, error) {
+	if err := bedrockTaskPrecheck(req); err != nil {
+		return nil, err
+	}
 	settings, err := resolveBedrockSettings(os.Getenv, req.Model)
 	if err != nil {
 		return nil, err

@@ -37,18 +37,27 @@ func (c *virtualClock) read() time.Time { return c.t }
 //	                              so this is diagnosed as composerTyped
 //	                              rather than merely composerUnrecognised.
 //	frame_turn_in_progress.txt    a genuinely running turn ("esc to
-//	                              interrupt") with the box at the tail.
-//	frame_queued_during_turn.txt  a running turn ("✽ Mustering… ↓ 5.0k
-//	                              tokens") with a queued multi-line message
-//	                              in the composer — turn chrome decides the
-//	                              verdict, box or no box.
-//	frame_scrolled_during_turn.txt a running turn ("· Grooving… ↓ 5.6k
-//	                              tokens") with a wrapped brief in the box
-//	                              below the scrolled output.
+//	                              interrupt") whose box holds Claude Code's
+//	                              queued-messages hint — the composer is
+//	                              empty of anything unsubmitted.
 //
-// The last three are the over-broadness guard: a fix that simply refuses
-// every frame without the idle box would break them, and with them every
-// legitimately non-idle UI and every fast turn.
+// frame_turn_in_progress.txt is the over-broadness guard: a fix that
+// simply refuses every frame without an empty idle box would break it,
+// and with it every legitimately non-idle UI and every fast turn.
+//
+// 🎯T28 correction: two frames captured in the same batch were labelled
+// "queued message during turn" / "composer scrolled during turn" and
+// asserted as working — the over-broadness guard for 🎯T21. They are in
+// fact the 🎯T28 failure caught on camera a day before it was filed: a
+// worker brief sitting in the composer of an agent whose PREVIOUS turn
+// is still running. Claude Code vacates the composer the instant a
+// message queues and draws "Press up to edit queued messages" in its
+// place (frame_turn_in_progress.txt, same batch and same CLI build,
+// shows exactly that; so does the 🎯T28 live probe capture
+// frame_queued_hint_during_turn.txt), so text in the box is text that
+// never queued. They are renamed frame_brief_stuck_during_turn.txt and
+// frame_brief_stuck_scrolled.txt and exercised as failures in
+// send_t28_midturn_test.go.
 func loadFrame(t *testing.T, name string) []byte {
 	t.Helper()
 	b, err := os.ReadFile("testdata/" + name)
@@ -95,10 +104,11 @@ func TestClassifyComposerRequiresPositiveTurnEvidence(t *testing.T) {
 		{"mid-redraw, no composer and no chrome", []byte(midRedrawFrame), composerUnrecognised},
 		{"post-Enter gap before spinner", []byte(postEnterGapFrame), composerUnrecognised},
 		{"startup splash (dead composer)", []byte(startupSplashFrame), composerUnrecognised},
-		// Must still be working: real turn evidence, idle box or not.
-		{"turn in progress (real capture)", loadFrame(t, "frame_turn_in_progress.txt"), composerWorking},
-		{"queued message during turn (real capture)", loadFrame(t, "frame_queued_during_turn.txt"), composerWorking},
-		{"composer scrolled during turn (real capture)", loadFrame(t, "frame_scrolled_during_turn.txt"), composerWorking},
+		// Must still count as submitted: real turn evidence with nothing
+		// held back in the composer.
+		{"turn in progress (real capture)", loadFrame(t, "frame_turn_in_progress.txt"), composerQueued},
+		{"queued mid-turn payload (real capture)", loadFrame(t, "frame_queued_hint_during_turn.txt"), composerQueued},
+		{"chrome with no composer at the tail", []byte(workingFrame), composerWorking},
 		// Unchanged classifications.
 		{"idle empty composer", []byte(liveComposerFrame), composerEmptyIdle},
 		{"typed but not submitted", []byte(typedNotSubmittedFrame), composerTyped},
@@ -173,8 +183,7 @@ func TestSendKeysAcceptsRealTurnEvidence(t *testing.T) {
 	t.Parallel()
 	for _, name := range []string{
 		"frame_turn_in_progress.txt",
-		"frame_queued_during_turn.txt",
-		"frame_scrolled_during_turn.txt",
+		"frame_queued_hint_during_turn.txt",
 	} {
 		t.Run(name, func(t *testing.T) {
 			frame := loadFrame(t, name)

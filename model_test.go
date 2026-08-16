@@ -104,8 +104,9 @@ func TestParseTaskModelNotFoundFixture(t *testing.T) {
 
 func TestWaitForResponseModelNotFoundIsLoud(t *testing.T) {
 	a := &Agent{eventSubs: make(map[int64]EventFunc)}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	// t.Context(): the 2s budget decided the verdict, and the 200ms subscriber
+	// deadline below decided it twice over (🎯T31). Both are now signals.
+	ctx := t.Context()
 
 	type result struct {
 		text string
@@ -117,36 +118,23 @@ func TestWaitForResponseModelNotFoundIsLoud(t *testing.T) {
 		ch <- result{text, err}
 	}()
 
-	deadline := time.Now().Add(200 * time.Millisecond)
-	for {
-		a.mu.Lock()
-		n := len(a.eventSubs)
-		a.mu.Unlock()
-		if n > 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("WaitForResponse handler never installed")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	waitForEventSubscribers(t, a, 1)
 
 	line := `{"type":"assistant","message":{"model":"<synthetic>","stop_reason":"stop_sequence","content":[{"type":"text","text":"There's an issue with the selected model (definitely-not-a-real-model-xyzzy)."}]},"error":"model_not_found","is_api_error_message":true}`
 	a.publishEvent(parseEvent(line))
 
-	select {
-	case r := <-ch:
-		if r.err == nil {
-			t.Fatalf("WaitForResponse must return error, got text=%q", r.text)
-		}
-		if !strings.Contains(r.err.Error(), "definitely-not-a-real-model-xyzzy") {
-			t.Fatalf("error must name the model, got %v", r.err)
-		}
-		if a.Model() != "<synthetic>" {
-			t.Fatalf("Agent.Model() = %q, want <synthetic>", a.Model())
-		}
-	case <-ctx.Done():
-		t.Fatal("WaitForResponse hung on model_not_found — must fail loud, not timeout")
+	// "Must fail loud, not hang" is still asserted, but by `go test -timeout`
+	// rather than by a 2s arm: a hang now dumps the goroutine parked inside
+	// WaitForResponse, which names the defect the arm could only guess at.
+	r := <-ch
+	if r.err == nil {
+		t.Fatalf("WaitForResponse must return error, got text=%q", r.text)
+	}
+	if !strings.Contains(r.err.Error(), "definitely-not-a-real-model-xyzzy") {
+		t.Fatalf("error must name the model, got %v", r.err)
+	}
+	if a.Model() != "<synthetic>" {
+		t.Fatalf("Agent.Model() = %q, want <synthetic>", a.Model())
 	}
 }
 
@@ -211,8 +199,9 @@ func TestHermeticBedrockTaskReportsResolvedModel(t *testing.T) {
 		Model:    "anthropic.claude-test-id",
 	}, bedrockTaskBackend{streamer: fake})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	// t.Context(): the 5s budget could expire mid-drain and report "no init"
+	// for a fake that had simply not been scheduled yet (🎯T31).
+	ctx := t.Context()
 	ch, err := task.Run(ctx, "hi")
 	if err != nil {
 		t.Fatal(err)

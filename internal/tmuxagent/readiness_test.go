@@ -245,10 +245,10 @@ func TestMatchReadyRecognisesMultiLineComposer(t *testing.T) {
 	for _, name := range []string{
 		// The bug itself: a spawned worker's brief, unsubmitted, no chrome.
 		"frame_unsubmitted_brief.txt",
-		// A turn is running and the operator has queued a multi-row
-		// message; the box is live and accepting more input.
-		"frame_queued_during_turn.txt",
-		"frame_scrolled_during_turn.txt",
+		// A turn is running and a multi-row brief is sitting in the box
+		// unsubmitted (🎯T28); the box is live and accepting more input.
+		"frame_brief_stuck_during_turn.txt",
+		"frame_brief_stuck_scrolled.txt",
 	} {
 		t.Run(name, func(t *testing.T) {
 			frame := loadFrame(t, name)

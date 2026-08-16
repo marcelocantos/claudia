@@ -1,0 +1,1 @@
+{"v":1,"type":"spawn","id":"r2","body":{"provider":"claude","mode":"task","model":"claude-opus-5","intent":"batch","workdir":"/w/repo"}}

@@ -1,0 +1,24 @@
+❯ Without using any tools, write a detailed 3000-word essay about the number
+  seven, in many short paragraphs.
+
+· Osmosing… (8s · thinking with high effort)
+
+  ❯ T28MIDTURNPAYLOAD — mid-turn probe for T28. Reply with exactly T28PONG.
+
+    This paragraph pads the payload so the send path takes the
+    bracketed-paste branch.
+    This paragraph pads the payload so the send path takes the
+    bracketed-paste branch.
+    This paragraph pads the payload so the send path takes the
+    bracketed-paste branch.
+    This paragraph pads the payload so the send path takes the
+    bracketed-paste branch.
+    This paragraph pads the payload so the send path takes the
+    bracketed-paste branch.
+
+    T28MIDTURNPAYLOAD — reply with exactly T28PONG and nothing else.
+                                                               ● high · /effort
+────────────────────────────────────────────────────────────────────────────────
+❯ Press up to edit queued messages
+────────────────────────────────────────────────────────────────────────────────
+  paste again to expand                                                     /rc

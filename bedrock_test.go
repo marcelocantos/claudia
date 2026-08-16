@@ -230,8 +230,11 @@ func TestHermeticBedrockTaskRunStream(t *testing.T) {
 		Model:    "anthropic.claude-test",
 	}, bedrockTaskBackend{streamer: fake})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	// t.Context(): the deadline bounded process cleanup, but its expiry
+	// produced a failing assertion — so under load the constant, not the
+	// product, decided the verdict. t.Context() cleans up just as well and
+	// cannot fire early; a genuine hang is `go test -timeout`'s job (🎯T31).
+	ctx := t.Context()
 	ch, err := task.Run(ctx, "Say hello")
 	if err != nil {
 		t.Fatal(err)
@@ -357,16 +360,12 @@ func TestHermeticBedrockTaskCancel(t *testing.T) {
 	if err := task.Cancel(); err != nil {
 		t.Fatal(err)
 	}
-	// Channel should close promptly after cancel.
-	select {
-	case _, ok := <-ch:
-		if ok {
-			// drain
-			for range ch {
-			}
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("events channel did not close after Cancel")
+	// The channel must close after cancel. Draining it is the whole assertion,
+	// with no arm: "promptly" was never the contract, and a 2s arm asserted
+	// that this machine schedules the streamer goroutine within two seconds
+	// (🎯T31). A cancel that never lands now hangs until `go test -timeout`,
+	// which prints the goroutine still holding the stream.
+	for range ch {
 	}
 }
 

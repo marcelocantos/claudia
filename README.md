@@ -1,15 +1,16 @@
 # claudia
 
-Go library for embedding [Claude Code](https://claude.com/claude-code)
-agents in any program.
+Go library for embedding [Claude Code](https://claude.com/claude-code),
+[Grok](https://x.ai/cli), Codex, and Bedrock agents in any program.
 
-claudia wraps the `claude` CLI in two complementary modes, so you can
-drive Claude Code from a Go process without re-implementing PTY
-handling, JSONL transcript tailing, or session lifecycle management.
+claudia wraps each provider's CLI or API in two complementary modes
+(Task and Session), so you can drive an agent from a Go process without
+re-implementing PTY handling, JSONL transcript tailing, or session
+lifecycle.
 
 ## Requirements
 
-- Go 1.21+
+- Go 1.26+
 - `claude` CLI installed (on `$PATH`, in a known install dir like `~/.local/bin`, or pointed at via the `CLAUDE_BIN` env var)
 - tmux 3.0+ (`brew install tmux` / `apt install tmux` / `dnf install tmux`)
 - macOS or Linux (Windows is not supported; WSL works)
@@ -128,6 +129,10 @@ task := claudia.NewTask(claudia.TaskConfig{
 Bedrock live tests are opt-in (`CLAUDIA_BEDROCK_LIVE=1`) and need work-account
 credentials plus model access (see docs/bedrock-work-account.md).
 
+**Ollama Task mode** (`ProviderOllama`) calls a local `/api/generate`
+endpoint. Override with `CLAUDIA_OLLAMA_ENDPOINT` / `CLAUDIA_OLLAMA_MODEL`.
+Session, resume, and tools fail closed. Cost is latency, not tokens.
+
 ### Session mode — persistent conversations
 
 Spawns `claude` inside a tmux window on a dedicated claudia tmux server
@@ -153,11 +158,12 @@ if err != nil {
 }
 defer agent.Stop()
 
-agent.OnEvent(func(ev claudia.Event) {
+tok := agent.SubscribeEvents(func(ev claudia.Event) {
     if ev.Type == "assistant" {
         fmt.Println(ev.Text)
     }
 })
+defer agent.UnsubscribeEvents(tok)
 
 if err := agent.Send("What does this repo do?"); err != nil {
     log.Fatal(err)
@@ -259,9 +265,8 @@ new consumer process can reconnect to an existing window (via
 `Acquire` with a matching pool key) or observe its transcript via the
 JSONL file that Claude Code writes to `~/.claude/projects/`.
 
-`cmd/claudiad` in this repo is an experimental session-chain tracker
-(🎯T1.3 sidecar) and is separate from the tmux server. It is not
-required for normal operation.
+Session-id chains across resume/rotate are filesystem-backed via
+`RegisterChain` / `LookupChain`. There is no `claudiad` daemon.
 
 ## grok subpackage
 

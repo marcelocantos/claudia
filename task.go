@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -387,6 +388,10 @@ func (t *Task) Run(ctx context.Context, prompt string) (<-chan TaskEvent, error)
 	t.status = TaskStatusRunning
 	t.mu.Unlock()
 
+	if usingBroker() {
+		considerBroker()
+	}
+
 	cmdCtx, cancel := context.WithCancel(ctx)
 
 	t.mu.Lock()
@@ -495,7 +500,56 @@ func (t *Task) recordTaskEvent(ev TaskEvent) {
 	}
 }
 
-func (claudeTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*taskRun, error) {
+// forwardTaskStream reads NDJSON lines from r, hands each raw line to
+// rawLog, and publishes the parsed events on ch until r is exhausted or
+// ctx is cancelled. Blank lines are skipped; the byte slice handed to
+// rawLog and parse is the scanner's, valid only for that iteration.
+//
+// It is the one place every process-backed provider honours the caller's
+// RawLog callback, which is also what lets the request-field audit prove
+// RawLog is honoured without spawning a process: the audit feeds a
+// synthetic wire line through this function rather than asserting that
+// somebody remembered to call it.
+func forwardTaskStream(
+	ctx context.Context,
+	r io.Reader,
+	parse func([]byte) []TaskEvent,
+	rawLog RawLogFunc,
+	ch chan<- TaskEvent,
+) {
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		if rawLog != nil {
+			rawLog(line)
+		}
+		for _, ev := range parse(line) {
+			select {
+			case ch <- ev:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}
+}
+
+// claudeTaskPrecheck refuses a request carrying a field the Claude Task
+// path cannot honour, before anything is spawned. Every provider path has
+// one; together they are what the request-field audit
+// (TestProviderPathsHonourOrRefuseEveryRequestField) probes.
+func claudeTaskPrecheck(req taskRunRequest) error {
+	if req.SandboxMode != "" || req.ApprovalPolicy != "" {
+		return capabilityRefusal(ProviderClaude, CapabilitySandboxPolicy,
+			"the Claude tool_restrictions claim covers --disallowedTools only; claudeTaskArgs emits no sandbox or approval flag")
+	}
+	return nil
+}
+
+func claudeTaskArgs(req taskRunRequest) []string {
 	args := []string{
 		"-p",
 		"--verbose",
@@ -514,7 +568,14 @@ func (claudeTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*task
 	if req.Model != "" {
 		args = append(args, "--model", req.Model)
 	}
-	args = append(args, req.Prompt)
+	return append(args, req.Prompt)
+}
+
+func (claudeTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*taskRun, error) {
+	if err := claudeTaskPrecheck(req); err != nil {
+		return nil, err
+	}
+	args := claudeTaskArgs(req)
 
 	slog.Debug("spawning claude task", "args", args)
 
@@ -562,26 +623,7 @@ func (claudeTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*task
 				slog.Debug("claude process exited cleanly")
 			}
 		}()
-
-		scanner := bufio.NewScanner(stdout)
-		scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
-
-		for scanner.Scan() {
-			line := scanner.Bytes()
-			if len(line) == 0 {
-				continue
-			}
-			if req.RawLog != nil {
-				req.RawLog(line)
-			}
-			for _, ev := range ParseTaskLine(line) {
-				select {
-				case ch <- ev:
-				case <-ctx.Done():
-					return
-				}
-			}
-		}
+		forwardTaskStream(ctx, stdout, ParseTaskLine, req.RawLog, ch)
 	}()
 
 	return &taskRun{
@@ -590,14 +632,25 @@ func (claudeTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*task
 	}, nil
 }
 
-func (codexTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*taskRun, error) {
-	// 🎯T4.6: `codex exec` has no per-tool disallow flag, so a caller who
-	// asks for tool restrictions and gets a run anyway has been silently
-	// handed a fully-armed agent. That is the exact shape of the incident
-	// BaseDisallowedTools documents. Refuse before spawning rather than
-	// dropping the request on the floor.
+// codexTaskPrecheck refuses a request carrying a field `codex exec`
+// cannot honour.
+//
+// 🎯T4.6: `codex exec` has no per-tool disallow flag, so a caller who asks
+// for tool restrictions and gets a run anyway has been silently handed a
+// fully-armed agent. That is the exact shape of the incident
+// BaseDisallowedTools documents. Refuse before spawning rather than
+// dropping the request on the floor.
+func codexTaskPrecheck(req taskRunRequest) error {
 	if len(req.DisallowTools) > 0 {
-		return nil, CheckCapability(ProviderCodex, CapabilityToolRestrictions)
+		return capabilityRefusal(ProviderCodex, CapabilityToolRestrictions,
+			"the Codex tool_restrictions claim was flipped to supported, but codexTaskArgs still emits no per-tool disallow flag")
+	}
+	return nil
+}
+
+func (codexTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*taskRun, error) {
+	if err := codexTaskPrecheck(req); err != nil {
+		return nil, err
 	}
 
 	// 🎯T14.1: refuse to spawn on API-key / missing OAuth so Task mode never
@@ -659,24 +712,7 @@ func (codexTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*taskR
 		}()
 
 		parser := codexTaskParser{}
-		scanner := bufio.NewScanner(stdout)
-		scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
-		for scanner.Scan() {
-			line := scanner.Bytes()
-			if len(line) == 0 {
-				continue
-			}
-			if req.RawLog != nil {
-				req.RawLog(line)
-			}
-			for _, ev := range parser.Parse(line) {
-				select {
-				case ch <- ev:
-				case <-ctx.Done():
-					return
-				}
-			}
-		}
+		forwardTaskStream(ctx, stdout, parser.Parse, req.RawLog, ch)
 	}()
 
 	return &taskRun{
@@ -708,28 +744,42 @@ func codexTaskArgs(req taskRunRequest) []string {
 	return args
 }
 
-func (grokTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*taskRun, error) {
-	// 🎯T23: the fail-open defect 🎯T4.6 closed for Codex, one provider
-	// over. grokTaskArgs never consulted req.DisallowTools, so a caller
-	// who stripped Bash, Write and WebFetch from a summariser got a
-	// fully-armed agent and no signal that anything had been ignored —
-	// the incident BaseDisallowedTools documents.
-	//
-	// Unlike `codex exec`, grok is not missing the machinery: `--deny
-	// <RULE>` gates invocations (`Bash(...)`, `Write(...)`,
-	// `WebFetch(...)`, … — Claude's own `Bash(cmd:*)` syntax is accepted)
-	// and `--disallowed-tools <IDS>` removes built-in tools outright. The
-	// refusal is about what claudia can prove, not what grok can do: Task
-	// hardcodes --permission-mode bypassPermissions, which grok resolves
-	// by appending a catch-all allow rule, and grok accepts a tool name it
-	// does not recognise without complaint. Emitting an untested
-	// translation would restore the silent drop while publishing a green
-	// claim on top of it, which is strictly worse than refusing. See
-	// docs/grok-provider-oracle-map.md for the live oracle that would
-	// settle it.
+// grokTaskPrecheck refuses a request carrying a field the Grok Task path
+// cannot honour.
+//
+// 🎯T23: the fail-open defect 🎯T4.6 closed for Codex, one provider
+// over. grokTaskArgs never consulted req.DisallowTools, so a caller
+// who stripped Bash, Write and WebFetch from a summariser got a
+// fully-armed agent and no signal that anything had been ignored —
+// the incident BaseDisallowedTools documents.
+//
+// Unlike `codex exec`, grok is not missing the machinery: `--deny
+// <RULE>` gates invocations (`Bash(...)`, `Write(...)`,
+// `WebFetch(...)`, … — Claude's own `Bash(cmd:*)` syntax is accepted)
+// and `--disallowed-tools <IDS>` removes built-in tools outright. The
+// refusal is about what claudia can prove, not what grok can do: Task
+// hardcodes --permission-mode bypassPermissions, which grok resolves
+// by appending a catch-all allow rule, and grok accepts a tool name it
+// does not recognise without complaint. Emitting an untested
+// translation would restore the silent drop while publishing a green
+// claim on top of it, which is strictly worse than refusing. See
+// docs/grok-provider-oracle-map.md for the live oracle that would
+// settle it.
+func grokTaskPrecheck(req taskRunRequest) error {
 	if len(req.DisallowTools) > 0 {
-		return nil, grokToolRestrictionRefusal(
+		return grokToolRestrictionRefusal(
 			CheckCapability(ProviderGrok, CapabilityToolRestrictions))
+	}
+	if req.SandboxMode != "" || req.ApprovalPolicy != "" {
+		return capabilityRefusal(ProviderGrok, CapabilitySandboxPolicy,
+			"the Grok sandbox_policy claim was flipped to supported, but grokTaskArgs still emits no sandbox or approval flag")
+	}
+	return nil
+}
+
+func (grokTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*taskRun, error) {
+	if err := grokTaskPrecheck(req); err != nil {
+		return nil, err
 	}
 
 	grokBin, err := resolveGrokBin()
@@ -778,24 +828,7 @@ func (grokTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*taskRu
 		}()
 
 		parser := grokTaskParser{}
-		scanner := bufio.NewScanner(stdout)
-		scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
-		for scanner.Scan() {
-			line := scanner.Bytes()
-			if len(line) == 0 {
-				continue
-			}
-			if req.RawLog != nil {
-				req.RawLog(line)
-			}
-			for _, ev := range parser.Parse(line) {
-				select {
-				case ch <- ev:
-				case <-ctx.Done():
-					return
-				}
-			}
-		}
+		forwardTaskStream(ctx, stdout, parser.Parse, req.RawLog, ch)
 	}()
 
 	return &taskRun{

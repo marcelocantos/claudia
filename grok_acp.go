@@ -74,19 +74,31 @@ type acpRPCMessage struct {
 	} `json:"error,omitempty"`
 }
 
+// grokACPArgs builds the argv `grok agent` is launched with, up to and
+// including the mode word. Connect mode appends its own --bind/--secret,
+// which are minted per launch and so cannot live here.
+//
+// Flags on `grok agent` apply to every mode and must precede the mode
+// word — a --model after "stdio" is parsed as a flag of the mode, not the
+// agent, and is ignored.
+func grokACPArgs(model string, connect bool) []string {
+	args := []string{"agent", "--always-approve"}
+	if model != "" {
+		args = append(args, "--model", model)
+	}
+	if connect {
+		return append(args, "serve")
+	}
+	return append(args, "stdio")
+}
+
 // startGrokACP spawns bin (typically the grok CLI) with ACP stdio args,
 // performs initialize + session setup, and returns a ready client.
 //
-// model is optional. sessionID and requireResume control resume behaviour;
-// see openSession. mcpServers are attached on session/new (Grok CLI
-// attaches tools only there — not on session/load).
+// sessionID and requireResume control resume; see openSession. mcpServers
+// are passed on both session/new and session/load.
 func startGrokACP(bin string, workDir, model, sessionID string, requireResume bool, mcpServers []any, onEvent func(Event), onClose func()) (*grokACPClient, error) {
-	args := []string{"agent", "--always-approve", "stdio"}
-	if model != "" {
-		// Flags on `grok agent` apply to every mode; pass before stdio.
-		args = []string{"agent", "--always-approve", "--model", model, "stdio"}
-	}
-	cmd := exec.Command(bin, args...)
+	cmd := exec.Command(bin, grokACPArgs(model, false)...)
 	cmd.Dir = workDir
 
 	stdin, err := cmd.StdinPipe()
@@ -427,28 +439,14 @@ func (c *grokACPClient) openSession(workDir, preferSessionID string, requireResu
 	if mcpServers == nil {
 		mcpServers = []any{}
 	}
-	tooled := len(mcpServers) > 0
 
-	// Grok CLI bug (not ACP): ACP requires Agents to reconnect MCP on
-	// session/load and session/resume, but Grok attaches mcpServers only
-	// on session/new and silently ignores them on session/load (observed
-	// 2026-07-18 in jevons: resumed overseer ran with zero tools). See
-	// docs/grok-acp-session.md § Resume and MCP.
-	//
-	// Policy when tools are configured: always session/new with mcpServers
-	// (rotation). Same-id load cannot keep tools under today's Grok CLI.
-	// Hosts that need continuity inject a recap after Start; Registry
-	// already persists SessionID when it changes after launch.
-	// RequireResume is overridden here — keeping the old id would mean a
-	// toolless agent, which is worse than a rotated id.
-	if preferSessionID != "" && tooled {
-		slog.Info("grok acp: rotating session for tools",
-			"prior_session", preferSessionID,
-			"require_resume", requireResume,
-			"reason", "Grok CLI ignores mcpServers on session/load")
-		return c.createSession(workDir, mcpServers)
-	}
-
+	// One rule, with or without MCPConfig: a SessionID is offered to
+	// session/load. Load failure + RequireResume is an error (never mint).
+	// Load failure without RequireResume may fall through to session/new.
+	// Skipping load to "keep tools" was a misapprehension — user-scoped
+	// ~/.grok/config.toml attaches on both new and load (jevons 🎯T58);
+	// the ACP mcpServers field is still sent on load in case the CLI
+	// honours it. See docs/grok-acp-session.md.
 	if preferSessionID != "" {
 		err := c.loadSession(preferSessionID, workDir, mcpServers)
 		if err == nil {
@@ -778,9 +776,9 @@ func (c *grokACPClient) write(v any) error {
 
 // acpMCPServers converts a Claude-style .mcp.json file (the format
 // Config.MCPConfig points at: {"mcpServers":{name:{...}}}) into the ACP
-// session mcpServers array. grok agent stdio loads MCP servers ONLY from
-// this session parameter — it reads neither ~/.grok/config.toml nor a
-// cwd .mcp.json — so an agent launched without it has no tools at all.
+// session mcpServers array. The CLI also attaches user-scoped servers
+// from ~/.grok/config.toml on both session/new and session/load; this
+// file is the extra, session-scoped list the host wants on the wire.
 // HTTP entries map to ACP's http variant; stdio entries map to the
 // command variant. A missing/unreadable/empty file yields nil (no MCP).
 func acpMCPServers(mcpConfigPath string) []any {

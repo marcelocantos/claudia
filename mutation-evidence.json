@@ -1,0 +1,133 @@
+{
+  "_readme": [
+    "Mutation evidence a target's acceptance quotes, kept executable (🎯T32).",
+    "",
+    "A target's acceptance says 'reintroducing X makes test T RED'. That sentence",
+    "is quoted once, in a commit message, and then never re-run. Any later commit",
+    "that changes T's inputs can retire the evidence without turning anything red:",
+    "🎯T30's 8c5e04a added a `landed` argument to ensureSubmitted and passed",
+    "landed=true at 🎯T28's call sites, which was correct for the branch it modelled",
+    "and weakened no assertion — but it made 🎯T28's over-broadness mutation stop",
+    "biting TestT28DailyDeliveredFramesReportSuccess. Every suite stayed green.",
+    "",
+    "This file is the machine-readable form of those sentences, and",
+    "scripts/check-mutation-evidence.py re-derives them: `make verify-mutation-evidence`,",
+    "run in CI. Each entry names the target, the mutation as an anchored source edit,",
+    "and the tests that must go RED (and the ones that must stay GREEN) under it.",
+    "",
+    "The same Makefile target also runs the check with --prove-teeth, which is what",
+    "keeps THIS check from becoming the next unwired oracle: an entry may declare a",
+    "`decay`, and --prove-teeth asserts that applying it leaves every suite green",
+    "(so CI sees nothing) while making a `red` test survive the mutation (so this",
+    "check, and only this check, goes red).",
+    "",
+    "TO ADD AN ENTRY when you quote mutation evidence in a commit body:",
+    "  target    the target whose acceptance quotes it",
+    "  mutation  a stable id for this mutation, unique within the target",
+    "  what      one line: what the mutation reintroduces or removes",
+    "  quoted_by the commit whose message quotes this evidence",
+    "  package   the Go package the tests live in",
+    "  edits     [{file, find, replace}] — `find` must occur EXACTLY ONCE in file.",
+    "            Anchor text, not a diff hunk: a hunk decays on the first refactor",
+    "            of its context. When the anchor stops matching the check goes RED",
+    "            and says so, which is the point — the mutation must be re-derived",
+    "            by a human, never silently skipped.",
+    "  tests     [{name, expect}] — name is a `go test` path, so a subtest is",
+    "            'TestX/subtest_name'. expect is 'red' (the mutation must kill it)",
+    "            or 'green' (it must survive — that is how a commit body's",
+    "            'fixture Y stays green under this mutation, so the two cover",
+    "            distinct mechanisms' claim stays true).",
+    "  decay     optional {what, models, edits} — an edit to the TESTS' inputs,",
+    "            modelled on a real commit, that disarms this evidence without",
+    "            turning any suite red. --prove-teeth applies it and requires",
+    "            exactly that: green everywhere on its own, and a `red` test",
+    "            surviving the mutation once both are applied. Worth declaring",
+    "            for any entry whose evidence has decayed once already.",
+    "  note      optional prose: provenance, or what decayed here before."
+  ],
+  "entries": [
+    {
+      "target": "T28",
+      "mutation": "swallow-at-agent-send",
+      "what": "Agent.Send drops the provider's error and returns nil, the swallow that made a lost submit invisible above agent.go",
+      "quoted_by": "2017074",
+      "package": ".",
+      "edits": [
+        {
+          "file": "agent.go",
+          "find": "\treturn a.ops.send(a, msg)\n",
+          "replace": "\t_ = a.ops.send(a, msg)\n\treturn nil\n"
+        }
+      ],
+      "tests": [
+        {"name": "TestSendPropagatesProviderSendFailure", "expect": "red"}
+      ],
+      "note": "2017074 also quoted TestClaudeSendReportsUnsubmittedTurnThroughRealTmux against this mutation. It is not listed here because it skips without tmux and a skipped test is not evidence; the hermetic one holds the contract in every environment."
+    },
+    {
+      "target": "T28",
+      "mutation": "overbroad-spinner-line",
+      "what": "MatchTurnInProgress forgets Claude Code's activity line, so a running turn with a drained composer reads as no chrome at all",
+      "quoted_by": "aa71680",
+      "package": "./internal/tmuxagent",
+      "edits": [
+        {
+          "file": "internal/tmuxagent/send.go",
+          "find": "\treturn turnInProgressHint.Match(f) || spinnerLine.Match(f)\n",
+          "replace": "\treturn turnInProgressHint.Match(f)\n"
+        }
+      ],
+      "tests": [
+        {"name": "TestT28DailyDeliveredFramesAreNotPasteChips/frame_daily_spinner_empty_composer.txt", "expect": "red"},
+        {"name": "TestT28DeliveredFramesReportSuccessWithoutLandedEvidence/frame_daily_spinner_empty_composer.txt", "expect": "red"},
+        {"name": "TestT28DeliveredFramesReportSuccessWithoutLandedEvidence/frame_daily_queued_expand_hint.txt", "expect": "green"}
+      ],
+      "decay": {
+        "what": "the Send-level call site passes landed=true, so sawContent starts true and 🎯T30's composerEmptyIdle branch returns nil before the 🎯T28 classification is consulted at all",
+        "models": "8c5e04a, which did this to TestT28DailyDeliveredFramesReportSuccess: correct for the paste branch that test models, no assertion weakened, every suite green, and the caller-visible half of 🎯T28's evidence gone",
+        "edits": [
+          {
+            "file": "internal/tmuxagent/send_t28_overbroad_test.go",
+            "find": "\t\t\tif err := ensureSubmitted(d, false); err != nil {\n",
+            "replace": "\t\t\tif err := ensureSubmitted(d, true); err != nil {\n"
+          }
+        ]
+      },
+      "note": "This is the entry 🎯T32 was filed over. aa71680 quoted TestT28DailyDeliveredFramesReportSuccess/frame_daily_spinner_empty_composer.txt as the caller-visible RED half. 8c5e04a passed landed=true at that call site and the subtest went green under the mutation, leaving only the classifier half biting; 9944f39 restored the contract on the landed=false path as TestT28DeliveredFramesReportSuccessWithoutLandedEvidence, which is what this entry names. The green expectation is aa71680's own distinctness claim: the queued frame is the half 2017074 already closed, so the two fixtures cover different mechanisms rather than doubling up."
+    },
+    {
+      "target": "T28",
+      "mutation": "overbroad-queued-hint",
+      "what": "classifyComposer forgets Claude Code's queued-messages hint, so a payload accepted behind a running turn stops counting as submitted",
+      "quoted_by": "2017074",
+      "package": "./internal/tmuxagent",
+      "edits": [
+        {
+          "file": "internal/tmuxagent/send.go",
+          "find": "\tcase queuedMessagesHint.Match(body):\n\t\treturn composerQueued\n",
+          "replace": ""
+        }
+      ],
+      "tests": [
+        {"name": "TestT28QueuedPayloadReportsSuccess", "expect": "red"}
+      ]
+    },
+    {
+      "target": "T28",
+      "mutation": "overbroad-drawn-not-held",
+      "what": "MatchUnsubmittedPaste asks whether the composer was DRAWN rather than whether it HOLDS anything, the pre-fix predicate that reported delivered sends as stuck chips",
+      "quoted_by": "2017074",
+      "package": "./internal/tmuxagent",
+      "edits": [
+        {
+          "file": "internal/tmuxagent/send.go",
+          "find": "\treturn pasteExpandHint.Match(f) && composerHoldsUnsubmitted(frame)\n",
+          "replace": "\treturn pasteExpandHint.Match(f)\n"
+        }
+      ],
+      "tests": [
+        {"name": "TestSendKeysAcceptsRealTurnEvidence", "expect": "red"}
+      ]
+    }
+  ]
+}

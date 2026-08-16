@@ -5,10 +5,12 @@ CLI studied: Grok Build stable (docs under `~/.grok/docs/`, sessions under `~/.g
 
 ## Why consider this
 
-ACP Session mode (`grok agent stdio`) is a clean control plane, but **Grok ignores
-`mcpServers` on `session/load`** (CLI bug; ACP requires reconnect). Non-ACP
-`--resume` reloads MCP from config discovery and keeps tools. A tmux + TUI
-driver would match Claude’s substrate for durable multi-turn with tools.
+ACP Session mode (`grok agent stdio`) is a clean control plane. A 2026-07
+spike treated **ACP `mcpServers` on `session/load`** as ignored (CLI bug)
+and noted that TUI `--resume` reloads MCP from config discovery. Later
+(jevons 🎯T58) user-scoped `~/.grok/config.toml` was shown to attach on
+ACP load as well; this document is a historical spike, not current policy
+(see [grok-acp-session.md](grok-acp-session.md)).
 
 ## Executive summary
 

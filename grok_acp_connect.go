@@ -122,11 +122,7 @@ func spawnDetachedGrokServe(bin, model string) (*grokServeEndpoint, error) {
 		return nil, fmt.Errorf("grok serve secret: %w", err)
 	}
 	bind := fmt.Sprintf("127.0.0.1:%d", port)
-	args := []string{"agent", "--always-approve"}
-	if model != "" {
-		args = append(args, "--model", model)
-	}
-	args = append(args, "serve", "--bind", bind, "--secret", secret)
+	args := append(grokACPArgs(model, true), "--bind", bind, "--secret", secret)
 
 	cmd := exec.Command(bin, args...)
 	// Detach: new session so SIGHUP on consumer death does not kill serve.

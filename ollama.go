@@ -74,21 +74,37 @@ type ollamaChunk struct {
 	TotalDuration   int64  `json:"total_duration"`
 }
 
+// ollamaTaskPrecheck refuses a request carrying a field /api/generate
+// cannot honour. Fail closed rather than silently ignoring something the
+// caller asked for: a one-shot generate call has no tools to restrict, no
+// sandbox to configure and no session to resume, and a caller who set any
+// of those was relying on behaviour they would not have got.
+func ollamaTaskPrecheck(req taskRunRequest) error {
+	if len(req.DisallowTools) > 0 {
+		return capabilityRefusal(ProviderOllama, CapabilityToolRestrictions,
+			"the Ollama tool_restrictions claim was flipped to supported, but /api/generate is still called with no tool configuration")
+	}
+	if req.SandboxMode != "" || req.ApprovalPolicy != "" {
+		return capabilityRefusal(ProviderOllama, CapabilitySandboxPolicy,
+			"the Ollama sandbox_policy claim was flipped to supported, but /api/generate is still called with no sandbox or approval setting")
+	}
+	if req.SessionID != "" {
+		// A caller passing a session id is asking for continuity. The
+		// generate endpoint carries none, so every run would start cold
+		// while the caller believed the conversation was being continued.
+		return capabilityRefusal(ProviderOllama, CapabilityResume,
+			"the Ollama resume claim was flipped to supported, but the request body still carries no conversation state")
+	}
+	return nil
+}
+
 func (b ollamaTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*taskRun, error) {
+	if err := ollamaTaskPrecheck(req); err != nil {
+		return nil, err
+	}
 	settings, err := resolveOllamaSettings(os.Getenv, req.Model)
 	if err != nil {
 		return nil, err
-	}
-	if len(req.DisallowTools) > 0 {
-		// Fail closed rather than silently ignoring a restriction the
-		// caller asked for. Ollama's generate endpoint runs no tools at
-		// all, so there is nothing to restrict and nothing to honour.
-		return nil, &CapabilityError{
-			Provider:   ProviderOllama,
-			Capability: CapabilityToolRestrictions,
-			Status:     CapabilityUnsupported,
-			Reason:     providerCapabilityClaim(ProviderOllama, CapabilityToolRestrictions).reason,
-		}
 	}
 
 	body, err := json.Marshal(ollamaGenerateRequest{Model: settings.Model, Prompt: req.Prompt, Stream: true})

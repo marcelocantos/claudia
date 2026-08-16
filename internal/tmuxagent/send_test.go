@@ -192,7 +192,9 @@ func TestSendKeysErrorsWhenComposerEmptyAfterPaste(t *testing.T) {
 func TestSendKeysWaitsForConnectingThenPastes(t *testing.T) {
 	t.Parallel()
 	var pasted string
-	frames := []string{connectingFrame, connectingFrame, pasteChipFrame, workingFrame}
+	// The chip must be on the pane for waitContentLanded to see the paste
+	// land; the running-turn frame that follows confirms the submit.
+	frames := []string{connectingFrame, connectingFrame, pasteChipFrame, pasteChipFrame, workingFrame}
 	i := 0
 	d, _ := hermeticDriver(
 		func() ([]byte, error) {

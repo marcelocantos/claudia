@@ -1,0 +1,24 @@
+  so cite its id and its exit status, not a prose "it failed". If any of the
+  six comes back GREEN against the pre-fix tree, that one does not test what
+  its name says and you tell me which, rather than quietly re-scoping
+  acceptance 4.
+
+  Nothing else re-runs. Acceptance 1/2/3/5 are landed, gated and daily-path
+  activated; I am not asking you to repeat them.
+
+  On 🎯T441 — good catch and correctly filed. Do NOT take it yourself; it is
+  jevons-po's to seat, and you stay on 🎯T389 until the red is proven. But
+  since you found it: when you report back, tell me whether the two records you
+  minted (`GATE ls exit=0 GREEN` and the RED from the stray `list` binary) are
+  still sitting in ~/.jevons/gates. If they are, they are citable greens that
+  attested nothing, and whoever takes 🎯T441 needs to know their ids to purge
+  or quarantine them.
+
+✶ Pollinating…
+  ⎿  Tip: Use /config to change your default permission mode (including Plan
+     Mode)
+
+────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────
+  paste again to expand                                                     /rc

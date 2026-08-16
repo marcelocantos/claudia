@@ -6,17 +6,17 @@ package claudia
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
 	"testing"
-	"time"
 )
 
-const (
-	fakeCodexAppServerTestTimeout       = 2 * time.Second
-	fakeCodexAppServerSubscriberMinimum = 2
-)
+// fakeCodexAppServerTestTimeout is deliberately absent: the 2s budget it
+// named decided verdicts by wall clock, and 🎯T31 replaced every use with a
+// signal (the subscriber count, the reply channel) or with `go test -timeout`.
+const fakeCodexAppServerSubscriberMinimum = 2
 
 func TestParseCodexAppServerSuccessFixture(t *testing.T) {
 	var threadID, turnID, command, finalText string
@@ -562,8 +562,10 @@ func TestFakeCodexAppServerLifecycle(t *testing.T) {
 	})
 	defer agent.UnsubscribeEvents(token)
 
-	ctx, cancel := context.WithTimeout(context.Background(), fakeCodexAppServerTestTimeout)
-	defer cancel()
+	// t.Context(): cleanup, not a verdict clock (🎯T31). The fake answers as
+	// fast as the scheduler allows; a busy machine must make this slower, not
+	// RED.
+	ctx := t.Context()
 	replyCh := make(chan string, 1)
 	errCh := make(chan error, 1)
 	go func() {
@@ -580,6 +582,9 @@ func TestFakeCodexAppServerLifecycle(t *testing.T) {
 	}
 	close(backend.allowEvents)
 
+	// No timeout arm: WaitForResponse either answers or errors. A hang is a
+	// real defect and belongs to `go test -timeout`, which names the stuck
+	// goroutine — a 2s arm only named this select (🎯T31).
 	select {
 	case err := <-errCh:
 		t.Fatalf("WaitForResponse: %v", err)
@@ -587,8 +592,6 @@ func TestFakeCodexAppServerLifecycle(t *testing.T) {
 		if reply != "Final answer." {
 			t.Fatalf("reply = %q, want Final answer.", reply)
 		}
-	case <-ctx.Done():
-		t.Fatal(ctx.Err())
 	}
 
 	usage := agent.Usage()
@@ -615,22 +618,19 @@ func TestFakeCodexAppServerLifecycle(t *testing.T) {
 	}
 }
 
+// waitForEventSubscribers blocks until at least want subscribers are
+// installed. The deadline it used to carry decided the verdict by wall clock:
+// a loaded machine that had not yet scheduled the WaitForResponse goroutine
+// drew RED for a product that was fine (🎯T31). A slow machine now makes this
+// slower, never RED; a subscriber that is never installed hangs until
+// `go test -timeout` names the goroutine that failed to run.
 func waitForEventSubscribers(t *testing.T, agent *Agent, want int) {
 	t.Helper()
-	deadline := time.Now().Add(fakeCodexAppServerTestTimeout)
-	for time.Now().Before(deadline) {
+	waitForCond(t, fmt.Sprintf("%d event subscriber(s) installed", want), func() bool {
 		agent.mu.Lock()
-		got := len(agent.eventSubs)
-		agent.mu.Unlock()
-		if got >= want {
-			return
-		}
-		time.Sleep(time.Millisecond)
-	}
-	agent.mu.Lock()
-	got := len(agent.eventSubs)
-	agent.mu.Unlock()
-	t.Fatalf("event subscribers = %d, want at least %d", got, want)
+		defer agent.mu.Unlock()
+		return len(agent.eventSubs) >= want
+	})
 }
 
 func TestFakeCodexAppServerInterruptLifecycle(t *testing.T) {

@@ -62,8 +62,11 @@ func TestHermeticGrokSessionStartSendWait(t *testing.T) {
 		t.Fatal("agent not alive")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	// t.Context(): the deadline bounded process cleanup, but its expiry
+	// produced a failing assertion — so under load the constant, not the
+	// product, decided the verdict. t.Context() cleans up just as well and
+	// cannot fire early; a genuine hang is `go test -timeout`'s job (🎯T31).
+	ctx := t.Context()
 
 	// Subscribe before Send (same pattern as Run).
 	type outcome struct {
@@ -119,8 +122,8 @@ func TestHermeticGrokBashPermissionOptionID(t *testing.T) {
 	}
 	defer agent.Stop()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	// t.Context(), not a deadline that can decide the verdict (🎯T31).
+	ctx := t.Context()
 
 	type outcome struct {
 		text string
@@ -154,8 +157,8 @@ func TestHermeticGrokSessionRunHelper(t *testing.T) {
 	bin := writeFakeGrokACP(t)
 	t.Setenv("GROK_BIN", bin)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	// t.Context(), not a deadline that can decide the verdict (🎯T31).
+	ctx := t.Context()
 	text, err := Run(ctx, "Reply with exactly: pong", Config{
 		Provider:    ProviderGrok,
 		WorkDir:     t.TempDir(),
@@ -269,10 +272,38 @@ func TestHermeticGrokLoadFallsThroughForMintedID(t *testing.T) {
 	}
 }
 
-// With MCP configured, resume must rotate (session/new) rather than load —
-// Grok ignores mcpServers on session/load. Fake rejects load so a mistaken
-// load path would fail Start; rotation must succeed with a new id.
-func TestHermeticGrokTooledResumeRotates(t *testing.T) {
+// MCPConfig is not a license to skip session/load. An unmaterialized
+// id whose load succeeds keeps that id; tools are not a reason to remint.
+func TestHermeticGrokTooledUnmaterializedLoads(t *testing.T) {
+	bin := writeFakeGrokACP(t)
+	t.Setenv("GROK_BIN", bin)
+
+	dir := t.TempDir()
+	mcpPath := filepath.Join(dir, ".mcp.json")
+	if err := os.WriteFile(mcpPath, []byte(`{"mcpServers":{"x":{"type":"http","url":"http://127.0.0.1:9/mcp"}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	const wantID = "sess-old-tooled"
+	agent, err := Start(Config{
+		Provider:    ProviderGrok,
+		WorkDir:     dir,
+		SessionID:   wantID,
+		MCPConfig:   mcpPath,
+		TermLogPath: "-",
+	})
+	if err != nil {
+		t.Fatalf("Start should load the existing session: %v", err)
+	}
+	defer agent.Stop()
+	if agent.SessionID() != wantID {
+		t.Fatalf("session id %q, want %q (MCPConfig must not skip load)", agent.SessionID(), wantID)
+	}
+}
+
+// Load failure + MCP + no RequireResume still falls through to session/new,
+// the same as the untooled unmaterialized path.
+func TestHermeticGrokTooledUnmaterializedFallsThrough(t *testing.T) {
 	bin := writeFakeGrokACP(t)
 	t.Setenv("GROK_BIN", bin)
 	t.Setenv("FAKE_ACP_REJECT_LOAD", "1")
@@ -291,20 +322,21 @@ func TestHermeticGrokTooledResumeRotates(t *testing.T) {
 		TermLogPath: "-",
 	})
 	if err != nil {
-		t.Fatalf("Start should rotate to session/new with tools: %v", err)
+		t.Fatalf("Start should mint after a failed load: %v", err)
 	}
 	defer agent.Stop()
 	if agent.SessionID() == "sess-old-tooled" {
-		t.Fatal("expected new session id after tooled rotation")
+		t.Fatal("fake rejected load but id unchanged — fallback did not run")
 	}
 	if agent.SessionID() == "" {
 		t.Fatal("empty session id")
 	}
 }
 
-// RequireResume + MCP still rotates (tools over same-id load). Hosts that
-// track SessionID (Registry) pick up the new id after Start.
-func TestHermeticGrokRequireResumeWithMCPStillRotates(t *testing.T) {
+// 🎯T35: a materialized tooled resume must not remint. Fake rejects load
+// so the old rotate-to-keep-tools path would succeed with a new id;
+// fail-closed must error and leave the caller's session id untouched.
+func TestHermeticGrokRequireResumeWithMCPFailsClosed(t *testing.T) {
 	bin := writeFakeGrokACP(t)
 	t.Setenv("GROK_BIN", bin)
 	t.Setenv("FAKE_ACP_REJECT_LOAD", "1")
@@ -315,20 +347,52 @@ func TestHermeticGrokRequireResumeWithMCPStillRotates(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	const wantID = "sess-exists"
 	agent, err := Start(Config{
 		Provider:      ProviderGrok,
 		WorkDir:       dir,
-		SessionID:     "sess-exists",
+		SessionID:     wantID,
+		RequireResume: true,
+		MCPConfig:     mcpPath,
+		TermLogPath:   "-",
+	})
+	if err == nil {
+		got := agent.SessionID()
+		agent.Stop()
+		t.Fatalf("Start reminted session %q under RequireResume+MCP; want error, same id %q", got, wantID)
+	}
+	if !strings.Contains(err.Error(), "refusing to mint a replacement session") {
+		t.Fatalf("error %q lacks the fail-closed explanation", err)
+	}
+}
+
+// 🎯T35: when session/load succeeds, a materialized tooled resume keeps
+// the same id. Rotation would mint sess-fake-acp-1.
+func TestHermeticGrokRequireResumeWithMCPKeepsSessionID(t *testing.T) {
+	bin := writeFakeGrokACP(t)
+	t.Setenv("GROK_BIN", bin)
+
+	dir := t.TempDir()
+	mcpPath := filepath.Join(dir, ".mcp.json")
+	if err := os.WriteFile(mcpPath, []byte(`{"mcpServers":{"x":{"type":"http","url":"http://127.0.0.1:9/mcp"}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	const wantID = "sess-exists"
+	agent, err := Start(Config{
+		Provider:      ProviderGrok,
+		WorkDir:       dir,
+		SessionID:     wantID,
 		RequireResume: true,
 		MCPConfig:     mcpPath,
 		TermLogPath:   "-",
 	})
 	if err != nil {
-		t.Fatalf("Start should rotate with tools even under RequireResume: %v", err)
+		t.Fatalf("Start should load the existing session: %v", err)
 	}
 	defer agent.Stop()
-	if agent.SessionID() == "sess-exists" {
-		t.Fatal("expected rotated session id when MCP is configured")
+	if agent.SessionID() != wantID {
+		t.Fatalf("session id %q, want %q (tooled resume must not remint)", agent.SessionID(), wantID)
 	}
 }
 

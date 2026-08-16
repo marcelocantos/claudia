@@ -1,0 +1,24 @@
+    Daily-path evidence (T188/T194): the daily daemon on :13705 already
+    serves the new asset — /scripts/fleet_selection.js → 200 and its sha256
+    is byte-identical to `git show 8f25010:web/scripts/fleet_selection.js`
+    (78812bae84d4…), and the served index.html carries the wiring (script tag
+    at 1525, backgroundMayMove at 5713, resolveSelection at 5985). So no
+    restart is owed. The one irreducible residual is criterion 1's
+    "indefinitely": the owner opening two asides, selecting the second, and
+    watching it stay — decidable only by them, on a hard reload.
+
+    One thing you should not read as mine: `go test ./scripts/docratchet/...`
+    at HEAD went RED once on TestRestartThrashPolicy (gate cde5b3e4,
+    "changed build inside the window did not report waiting"). It is a flake
+    in that test's timing, not a regression — GREEN at 244ef6c before my
+    commit (71991bb7), GREEN at 8f25010 itself (9062a475), and GREEN at the
+    identical HEAD worktree on retry (75a7deeb). My commit touches only web
+    assets, the Makefile and embed.go, nothing the T218 ratchet reads. Filed
+    as 🎯T442 rather than left as a retry habit — a ratchet that reds for
+    reasons other than the code it guards trains readers to retry instead of
+    read, which is how a real regression gets waved past.
+
+────────────────────────────────────────────────────────────────────────────────
+❯ Press up to edit queued messages
+────────────────────────────────────────────────────────────────────────────────
+  paste again to expand                                                     /rc

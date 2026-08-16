@@ -1,0 +1,1 @@
+{"v":1,"type":"status_result","id":"r5","body":{"protocol_version":1,"active_agents":1,"warm_pool":0,"sessions":[{"session_id":"s-1","provider":"claude","mode":"session","model":"claude-opus-5","intent":"auto","workdir":"/w","pid":4242,"warm":false}]}}

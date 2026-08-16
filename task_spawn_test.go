@@ -4,14 +4,12 @@
 package claudia
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 )
 
 // writeFakeCLI writes an executable that prints fixturePath to stdout and
@@ -65,8 +63,11 @@ func TestHermeticTaskRunClaudeSpawn(t *testing.T) {
 		t.Fatalf("backend = %T, want claudeTaskBackend", task.backend)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	// t.Context(): the deadline bounded process cleanup, but its expiry
+	// produced a failing assertion — so under load the constant, not the
+	// product, decided the verdict. t.Context() cleans up just as well and
+	// cannot fire early; a genuine hang is `go test -timeout`'s job (🎯T31).
+	ctx := t.Context()
 	events, err := task.Run(ctx, "summarize")
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -115,8 +116,8 @@ func TestHermeticTaskRunClaudeErrorEvent(t *testing.T) {
 		Provider: ProviderClaude,
 		WorkDir:  t.TempDir(),
 	})
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	// t.Context(), not a deadline that can decide the verdict (🎯T31).
+	ctx := t.Context()
 	events, err := task.Run(ctx, "fail please")
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -159,8 +160,8 @@ func TestHermeticTaskRunCodexSpawn(t *testing.T) {
 		t.Fatalf("backend = %T, want codexTaskBackend", task.backend)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	// t.Context(), not a deadline that can decide the verdict (🎯T31).
+	ctx := t.Context()
 	events, err := task.Run(ctx, "summarize")
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -207,8 +208,8 @@ func TestHermeticTaskRunGrokSpawn(t *testing.T) {
 		t.Fatalf("backend = %T, want grokTaskBackend", task.backend)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	// t.Context(), not a deadline that can decide the verdict (🎯T31).
+	ctx := t.Context()
 	events, err := task.Run(ctx, "summarize")
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -264,8 +265,8 @@ func TestHermeticTaskRunNonExecutableBinary(t *testing.T) {
 				Provider: tc.provider,
 				WorkDir:  t.TempDir(),
 			})
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
+			// t.Context(), not a deadline that can decide the verdict (🎯T31).
+			ctx := t.Context()
 			_, err := task.Run(ctx, "hi")
 			if err == nil {
 				t.Fatal("Run returned nil error for non-executable binary path")

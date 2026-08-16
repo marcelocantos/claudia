@@ -1,0 +1,24 @@
+⏺ Evidence dumped. Note the two captured frames show empty composers with /rc
+  still in the status line — payload never landed. Now the code.
+
+  Ran 4 shell commands
+
+⏺ tmuxagent's sendKeysWith looks correct. The question is whether the claude
+  provider's ops.send actually goes through it, and whether the start-prompt
+  path uses Agent.Send at all.
+
+  Searching for 4 patterns, running 3 shell commands…
+  ⎿  $ sed -n '250,400p' agent.go
+
+✽ Julienning… (1m 17s · ↓ 2.7k tokens · thinking some more with high effort)
+
+────────────────────────────────────────────────────────────────────────────────
+❯ or turn end) before you build anything on this timeline. If it is written at
+  turn end, my repro collapses into the T417 phantom class and you should say
+  so plainly.
+
+  Delivery oracle for your own work: the transcript is not trustworthy. Use
+  pane frames.
+
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle)                             /rc
