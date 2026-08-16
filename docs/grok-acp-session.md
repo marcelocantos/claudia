@@ -55,13 +55,14 @@ claudia’s policy (when `Config.MCPConfig` yields a non-empty server list):
 
 | Situation | Behaviour |
 | --- | --- |
-| MCP configured (any `SessionID` / `RequireResume`) | **Rotate:** skip `session/load`, `session/new` with tools → **new session id**. |
+| MCP + `RequireResume` (materialized) | **Fail-closed:** never `session/new`. Try `session/load`. Load failure is an error; load success keeps the same session id. Tools are not a license to remint (🎯T35). |
+| MCP + no `RequireResume` (unmaterialized / first mint) | **Rotate:** skip `session/load`, `session/new` with tools → new session id. Only way to attach tools on first mint under today's Grok CLI. |
 | No MCP, `SessionID` set | Unchanged `session/load` / fail-closed / fall-through rules |
 
 `RequireResume` cannot preserve both the same session id **and** tools until
-Grok fixes load; with MCP, claudia prefers tools and returns a new id
-(Registry already persists id changes). Hosts that need both durable chat
-and tools should own a journal (e.g. jevons `chatlog`) and `Send` a recap
+Grok fixes load. claudia fails closed rather than minting a replacement
+session to keep tools. Hosts that need durable chat across a first-mint
+rotation still own a journal (e.g. jevons `chatlog`) and `Send` a recap
 after attach.
 
 ### Explicit gaps
@@ -72,7 +73,7 @@ after attach.
 | Term log / terminal bytes | Unsupported |
 | Rewind | Unsupported (no private `~/.grok/sessions` rewrite) |
 | Pool Acquire | Not wired for Grok ACP (Claude tmux pool only) |
-| Same-id resume **with** MCP | Blocked by Grok CLI until load honours `mcpServers` |
+| Same-id resume **with** MCP tools | Blocked by Grok CLI until load honours `mcpServers`. claudia fail-closes rather than reminting. |
 
 ### Maturity risk
 
@@ -88,4 +89,9 @@ those without a documented, versioned contract.
 ### Oracles
 
 - Hermetic: `testdata/grok/acp/fake_acp.py` + `TestHermeticGrokSession*`  
+- Resume identity (🎯T35): `TestHermeticGrokLoadFailsClosedWhenRequireResume`,
+  `TestHermeticGrokRequireResumeWithMCPFailsClosed`,
+  `TestHermeticGrokRequireResumeWithMCPKeepsSessionID`,
+  `TestHermeticGrokLoadFallsThroughForMintedID`,
+  `TestHermeticGrokTooledResumeRotates` (first mint only)  
 - Live (optional): real `grok agent stdio` via installed CLI and auth  

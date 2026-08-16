@@ -112,11 +112,14 @@ _ = reg.Register(claudia.AgentDef{
 agent, err := reg.Launch("helper")
 ```
 
-Pass `SessionID` to attempt `session/load` when **no** `MCPConfig` is set
-(falls back to `session/new` if load fails). With `MCPConfig`, claudia
-**always** opens a fresh `session/new` with tools — Grok’s CLI ignores
-`mcpServers` on `session/load` (ACP requires reconnect; Grok does not).
-Adopt the returned `SessionID` and inject a recap if you need history.
+Pass `SessionID` to attempt `session/load`. A materialized resume
+(`RequireResume`) never mints a replacement session: load failure is an
+error, including when `MCPConfig` is set. Grok’s CLI still ignores
+`mcpServers` on `session/load` (ACP requires reconnect; Grok does not);
+claudia fails closed rather than rotating to keep tools. Without
+`RequireResume`, an unmaterialized id plus MCP still opens `session/new`
+with tools (first-mint rotation). Adopt that new `SessionID` and inject
+a recap if you need history.
 Permissions are auto-approved (`--always-approve`). Rewind remains
 `CapabilityUnsupported`; do not truncate private Grok session files.
 
