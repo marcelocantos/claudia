@@ -148,6 +148,8 @@ func startFakeACPServe(t *testing.T) (url string, shutdown func()) {
 	port := ln.Addr().(*net.TCPAddr).Port
 	u := "ws://127.0.0.1:" + strconv.Itoa(port) + "/ws?server-key=test"
 	return u, func() {
+		// Cleanup bound: Shutdown must not hang teardown. Expiry here
+		// cannot fail an assertion (🎯T31).
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
 		_ = srv.Shutdown(ctx)
