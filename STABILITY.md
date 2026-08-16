@@ -14,9 +14,9 @@ that contract takes effect.
 
 Snapshot as of: v0.21.0 (tagged 2026-08-10).
 
-> **Present at HEAD, not yet released:** the `ladder` tiered-cognition
-> packages and `ProviderOllama` landed after v0.21.0. The snapshot tracks
-> releases, so they are enumerated by the release that ships them, not here.
+> **Present at HEAD, not yet released:** `ProviderOllama` landed after
+> v0.21.0. The snapshot tracks releases, so it is enumerated by the
+> release that ships it, not here.
 
 ## Interaction surface
 

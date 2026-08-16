@@ -28,6 +28,4 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.38.3 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.45.3 // indirect
 	github.com/aws/smithy-go v1.27.6 // indirect
-	go.starlark.net v0.0.0-20260613233743-8ba36ccb83fb // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
