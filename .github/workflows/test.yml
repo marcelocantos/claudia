@@ -64,3 +64,30 @@ jobs:
 
       - name: Check STABILITY.md against the snapshot tag's public surface
         run: make verify-stability
+
+  # T32 oracle: the mutation evidence quoted in the acceptance of a converging
+  # or achieved target must still bite. The check applies each mutation named in
+  # mutation-evidence.json in a throwaway worktree of this revision and requires
+  # the named tests to go RED — so a commit that edits those tests' call sites
+  # (adding an argument, changing a fixture, relaxing a precondition) fails here
+  # instead of passing while the evidence is silently disarmed. That is exactly
+  # what 8c5e04a did to T28's, with every suite green.
+  #
+  # --prove-teeth runs alongside: it applies the decay each entry declares and
+  # requires it to leave the suites green while turning THIS check red. An
+  # oracle nothing can be shown to fail is not an oracle.
+  mutation-evidence:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.x'
+
+      # The evidence lives in hermetic tests (frame fixtures and fake drivers),
+      # so no tmux and no claude binary are needed here — but a test that SKIPS
+      # is not evidence, and the check says so rather than reading the skip as a
+      # kill.
+      - name: Re-derive quoted mutation evidence
+        run: make verify-mutation-evidence
