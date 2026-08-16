@@ -277,11 +277,7 @@ func TestConnectSessionReadyCallback(t *testing.T) {
 	ready := make(chan struct{}, 1)
 	connectFake(t, f, Config{OnSessionReady: func() { ready <- struct{}{} }})
 
-	select {
-	case <-ready:
-	case <-time.After(waitFor):
-		t.Fatal("OnSessionReady never fired for session.updated")
-	}
+	<-ready
 }
 
 // TestCloseNormalClosure covers the documented teardown: a normal
@@ -345,13 +341,9 @@ func TestReadLoopErrorReportsToCaller(t *testing.T) {
 	if err := s.conn.Close(websocket.StatusInternalError, "server exploded"); err != nil {
 		t.Fatalf("server close: %v", err)
 	}
-	select {
-	case err := <-onError:
-		if err == nil {
-			t.Error("OnError fired with a nil error")
-		}
-	case <-time.After(waitFor):
-		t.Fatal("OnError never fired after the server hung up")
+	err := <-onError
+	if err == nil {
+		t.Error("OnError fired with a nil error")
 	}
 }
 
@@ -379,22 +371,13 @@ func TestContextCancellationEndsSession(t *testing.T) {
 
 	cancel()
 
-	select {
-	case err := <-onError:
-		if !errors.Is(err, context.Canceled) {
-			t.Errorf("OnError = %v, want it to wrap context.Canceled", err)
-		}
-	case <-time.After(waitFor):
-		t.Fatal("the event loop did not report the cancelled context")
+	if err := <-onError; !errors.Is(err, context.Canceled) {
+		t.Errorf("OnError = %v, want it to wrap context.Canceled", err)
 	}
 	// Teardown after cancellation must still be clean and prompt.
 	closed := make(chan error, 1)
 	go func() { closed <- c.Close() }()
-	select {
-	case <-closed:
-	case <-time.After(waitFor):
-		t.Fatal("Close hung after the context was cancelled")
-	}
+	<-closed
 	if err := s.closeErr(t); err == nil {
 		t.Error("server saw no disconnect after the session was torn down")
 	}

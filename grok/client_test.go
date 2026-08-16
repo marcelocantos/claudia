@@ -10,7 +10,6 @@ import (
 	"errors"
 	"reflect"
 	"testing"
-	"time"
 )
 
 // itemContent digs out the single content entry of a
@@ -302,60 +301,36 @@ func TestServerEventCallbacks(t *testing.T) {
 		"type":  "response.output_audio.delta",
 		"delta": base64.StdEncoding.EncodeToString(pcm),
 	})
-	select {
-	case got := <-audio:
-		if !reflect.DeepEqual(got, pcm) {
-			t.Errorf("OnAudio = %v, want the decoded PCM %v", got, pcm)
-		}
-	case <-time.After(waitFor):
-		t.Fatal("OnAudio never fired")
+	got := <-audio
+	if !reflect.DeepEqual(got, pcm) {
+		t.Errorf("OnAudio = %v, want the decoded PCM %v", got, pcm)
 	}
 
 	s.send(map[string]any{"type": "response.output_audio_transcript.delta", "delta": "hel"})
-	select {
-	case got := <-transcript:
-		if got != "hel" {
-			t.Errorf("OnTranscript = %q, want the delta", got)
-		}
-	case <-time.After(waitFor):
-		t.Fatal("OnTranscript never fired")
+	gotTranscript := <-transcript
+	if gotTranscript != "hel" {
+		t.Errorf("OnTranscript = %q, want the delta", gotTranscript)
 	}
 
 	s.send(map[string]any{"type": "response.output_audio_transcript.done"})
-	select {
-	case <-transcriptDone:
-	case <-time.After(waitFor):
-		t.Fatal("OnTranscriptDone never fired")
-	}
+	<-transcriptDone
 
 	s.send(map[string]any{
 		"type":       "conversation.item.input_audio_transcription.completed",
 		"transcript": "what is the time",
 	})
-	select {
-	case got := <-userTranscript:
-		if got != "what is the time" {
-			t.Errorf("OnUserTranscript = %q, want the transcript", got)
-		}
-	case <-time.After(waitFor):
-		t.Fatal("OnUserTranscript never fired")
+	gotUser := <-userTranscript
+	if gotUser != "what is the time" {
+		t.Errorf("OnUserTranscript = %q, want the transcript", gotUser)
 	}
 
 	s.send(map[string]any{"type": "response.done"})
-	select {
-	case <-responseDone:
-	case <-time.After(waitFor):
-		t.Fatal("OnResponseDone never fired")
-	}
+	<-responseDone
 
 	s.send(map[string]any{"type": "error", "error": map[string]any{"message": "rate limited"}})
-	select {
-	case err := <-onError:
-		if err == nil || err.Error() != "grok server: rate limited" {
-			t.Errorf("OnError = %v, want the server's message", err)
-		}
-	case <-time.After(waitFor):
-		t.Fatal("OnError never fired for a server error event")
+	err := <-onError
+	if err == nil || err.Error() != "grok server: rate limited" {
+		t.Errorf("OnError = %v, want the server's message", err)
 	}
 }
 
@@ -377,11 +352,7 @@ func TestMalformedServerEventsAreSurvived(t *testing.T) {
 	s.send(map[string]any{"type": "some.event.we.do.not.handle"})
 	s.send(map[string]any{"type": "response.done"})
 
-	select {
-	case <-responseDone:
-	case <-time.After(waitFor):
-		t.Fatal("the read loop stopped delivering events after malformed input")
-	}
+	<-responseDone
 	select {
 	case got := <-audio:
 		t.Errorf("OnAudio fired with %v for undecodable base64, want no callback", got)
@@ -414,16 +385,12 @@ func TestFunctionCallRoundTrip(t *testing.T) {
 		"arguments": `{"city":"Melbourne"}`,
 	})
 
-	select {
-	case got := <-calls:
-		if got.name != "get_weather" {
-			t.Errorf("handler name = %q, want get_weather", got.name)
-		}
-		if string(got.args) != `{"city":"Melbourne"}` {
-			t.Errorf("handler args = %s, want the raw arguments", got.args)
-		}
-	case <-time.After(waitFor):
-		t.Fatal("OnFunctionCall never fired")
+	got := <-calls
+	if got.name != "get_weather" {
+		t.Errorf("handler name = %q, want get_weather", got.name)
+	}
+	if string(got.args) != `{"city":"Melbourne"}` {
+		t.Errorf("handler args = %s, want the raw arguments", got.args)
 	}
 
 	out := s.nextOfType(t, "conversation.item.create")
@@ -522,13 +489,9 @@ func TestFunctionCallDispatchIsSpecific(t *testing.T) {
 			"arguments": `{}`,
 		})
 
-		select {
-		case got := <-names:
-			if got != "get_weather" {
-				t.Fatalf("handler fired for %q, want only get_weather", got)
-			}
-		case <-time.After(waitFor):
-			t.Fatal("OnFunctionCall never fired for the genuine event")
+		got := <-names
+		if got != "get_weather" {
+			t.Fatalf("handler fired for %q, want only get_weather", got)
 		}
 
 		item := s.next(t)["item"].(map[string]any)

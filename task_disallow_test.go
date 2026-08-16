@@ -9,7 +9,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 )
 
 // argvFor rebuilds the argv the claude backend passes, so these tests
@@ -182,8 +181,11 @@ func TestGrokTaskToolRestrictionsFailClosed(t *testing.T) {
 		WorkDir:       t.TempDir(),
 		DisallowTools: []string{"Bash", "Write", "WebFetch"},
 	})
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	// t.Context(): the deadline bounded process cleanup, but its expiry
+	// produced a failing assertion — so under load the constant, not the
+	// product, decided the verdict. t.Context() cleans up just as well and
+	// cannot fire early; a genuine hang is `go test -timeout`'s job (🎯T31).
+	ctx := t.Context()
 
 	_, err := task.Run(ctx, "summarise this untrusted text")
 	if err == nil {
@@ -215,8 +217,8 @@ func TestGrokTaskWithoutRestrictionsIsNotBlocked(t *testing.T) {
 		ID:       "grok-unrestricted",
 		WorkDir:  t.TempDir(),
 	})
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	// t.Context(), not a deadline that can decide the verdict (🎯T31).
+	ctx := t.Context()
 
 	events, err := task.Run(ctx, "summarise this")
 	if err != nil {

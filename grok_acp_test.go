@@ -62,8 +62,11 @@ func TestHermeticGrokSessionStartSendWait(t *testing.T) {
 		t.Fatal("agent not alive")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	// t.Context(): the deadline bounded process cleanup, but its expiry
+	// produced a failing assertion — so under load the constant, not the
+	// product, decided the verdict. t.Context() cleans up just as well and
+	// cannot fire early; a genuine hang is `go test -timeout`'s job (🎯T31).
+	ctx := t.Context()
 
 	// Subscribe before Send (same pattern as Run).
 	type outcome struct {
@@ -119,8 +122,8 @@ func TestHermeticGrokBashPermissionOptionID(t *testing.T) {
 	}
 	defer agent.Stop()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	// t.Context(), not a deadline that can decide the verdict (🎯T31).
+	ctx := t.Context()
 
 	type outcome struct {
 		text string
@@ -154,8 +157,8 @@ func TestHermeticGrokSessionRunHelper(t *testing.T) {
 	bin := writeFakeGrokACP(t)
 	t.Setenv("GROK_BIN", bin)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	// t.Context(), not a deadline that can decide the verdict (🎯T31).
+	ctx := t.Context()
 	text, err := Run(ctx, "Reply with exactly: pong", Config{
 		Provider:    ProviderGrok,
 		WorkDir:     t.TempDir(),

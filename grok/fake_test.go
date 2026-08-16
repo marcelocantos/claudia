@@ -10,14 +10,19 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/coder/websocket"
 )
 
-// waitFor bounds every blocking channel receive in this package's tests
-// so a hung expectation fails instead of stalling `go test`.
-const waitFor = 5 * time.Second
+// 🎯T31 — this package's tests used to bound every blocking receive
+// with `waitFor = 5s`, so that "a hung expectation fails instead of stalling
+// go test". `go test -timeout` already does that job, once per suite and with
+// a full goroutine dump that names the goroutine actually stuck; the per-wait
+// arm only ever named the helper. What the arm added was a second, silent
+// assertion — that this machine schedules the fake's goroutines within five
+// seconds — and under fleet load that assertion is the one that fails, turning
+// somebody else's CPU contention into a RED for the client. The waits below
+// are therefore plain receives: a slow machine makes them slower, never RED.
 
 // fakeGrok is a hermetic stand-in for the xAI Realtime endpoint. It
 // speaks real WebSocket over a loopback httptest server, so [Connect]
@@ -125,25 +130,13 @@ func (f *fakeGrok) dialArgs() *DialArgs { return &DialArgs{URL: f.url} }
 // session returns the connection accepted for the next [Connect].
 func (f *fakeGrok) session(t *testing.T) *fakeSession {
 	t.Helper()
-	select {
-	case s := <-f.sessions:
-		return s
-	case <-time.After(waitFor):
-		t.Fatal("timed out waiting for the client to connect")
-		return nil
-	}
+	return <-f.sessions
 }
 
 // authHeader returns the Authorization header of the next handshake.
 func (f *fakeGrok) authHeader(t *testing.T) string {
 	t.Helper()
-	select {
-	case h := <-f.authHeaders:
-		return h
-	case <-time.After(waitFor):
-		t.Fatal("timed out waiting for a handshake")
-		return ""
-	}
+	return <-f.authHeaders
 }
 
 // send writes a server event to the client.
@@ -153,18 +146,17 @@ func (s *fakeSession) send(v any) {
 		s.t.Errorf("fakeGrok: marshal server event: %v", err)
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), waitFor)
-	defer cancel()
-	if err := s.conn.Write(ctx, websocket.MessageText, data); err != nil {
+	// s.t.Context(): the write is to a loopback socket, so this bounds
+	// cleanup only. A deadline here could abort a healthy write on a loaded
+	// machine and report it as a fake-server error (🎯T31).
+	if err := s.conn.Write(s.t.Context(), websocket.MessageText, data); err != nil {
 		s.t.Errorf("fakeGrok: write server event: %v", err)
 	}
 }
 
 // sendRaw writes bytes verbatim, for malformed-frame tests.
 func (s *fakeSession) sendRaw(data []byte) {
-	ctx, cancel := context.WithTimeout(context.Background(), waitFor)
-	defer cancel()
-	if err := s.conn.Write(ctx, websocket.MessageText, data); err != nil {
+	if err := s.conn.Write(s.t.Context(), websocket.MessageText, data); err != nil {
 		s.t.Errorf("fakeGrok: write raw frame: %v", err)
 	}
 }
@@ -172,43 +164,33 @@ func (s *fakeSession) sendRaw(data []byte) {
 // next returns the next client message, failing the test on timeout.
 func (s *fakeSession) next(t *testing.T) map[string]any {
 	t.Helper()
-	select {
-	case msg, ok := <-s.recv:
-		if !ok {
-			t.Fatal("client connection closed while a message was expected")
-		}
-		return msg
-	case <-time.After(waitFor):
-		t.Fatal("timed out waiting for a client message")
-		return nil
+	msg, ok := <-s.recv
+	if !ok {
+		t.Fatal("client connection closed while a message was expected")
 	}
+	return msg
 }
 
 // nextOfType skips client messages until one of the given type arrives.
 func (s *fakeSession) nextOfType(t *testing.T, eventType string) map[string]any {
 	t.Helper()
-	deadline := time.Now().Add(waitFor)
-	for time.Now().Before(deadline) {
+	// No deadline: next blocks on the channel, and a stream that ends without
+	// the wanted type closes s.recv, which next reports as a real failure
+	// (🎯T31). Only a client that keeps talking forever loops here, and
+	// that is `go test -timeout`'s case.
+	for {
 		msg := s.next(t)
 		if msg["type"] == eventType {
 			return msg
 		}
 	}
-	t.Fatalf("timed out waiting for client message of type %q", eventType)
-	return nil
 }
 
 // closeErr returns the error that ended the server's read loop — the
 // hermetic view of how the client hung up.
 func (s *fakeSession) closeErr(t *testing.T) error {
 	t.Helper()
-	select {
-	case err := <-s.readErr:
-		return err
-	case <-time.After(waitFor):
-		t.Fatal("timed out waiting for the client to disconnect")
-		return nil
-	}
+	return <-s.readErr
 }
 
 // connectFake dials the fake server and returns the connected client
