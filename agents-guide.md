@@ -1,9 +1,18 @@
 # claudia — agents guide
 
 `github.com/marcelocantos/claudia` is a Go library for embedding
-Claude Code sessions in your program. If you're helping a user
-integrate it, read this whole document first — the design is small
-but has non-obvious constraints.
+Claude, Grok, Codex, Bedrock, and Ollama agents in your program.
+
+```
+go get github.com/marcelocantos/claudia
+```
+
+```go
+import "github.com/marcelocantos/claudia"
+```
+
+If you're helping a user integrate it, read this whole document first —
+the design is small but has non-obvious constraints.
 
 ## Pick the right mode
 
@@ -255,7 +264,7 @@ token := agent.SubscribeEvents(func(ev claudia.Event) {
 })
 defer agent.UnsubscribeEvents(token)
 
-agent.Send("prompt")  // Enter key appended; newlines inside msg are preserved as multi-line input
+agent.Send("prompt")  // short text is typed; large payloads are pasted. Extra Enters until the composer leaves idle. Failure is `turn not submitted: composer state=…` — never a silent "keys sent".
 reply, err := agent.WaitForResponse(ctx)  // blocks until the turn's terminal stop_reason
 ```
 
@@ -357,8 +366,11 @@ manages their processes. Useful when the host program needs to:
 - Rename or reassign agents without losing session history
 
 Construct with `NewRegistry(path)`, then `Register` / `EnsureAgent`
-to add definitions and `Launch` / `StartAll` to launch them. If the
-host program owns a single short-lived agent, skip the Registry.
+to add definitions and `Launch` / `StartAll` to launch them. `Launch`
+never reaps leftover windows (a leak stays visible). `Adopt` /
+`AdoptOrLaunch` / `StartAllPreferAdopt` reuse a leftover window
+without spawning or reaping. Drain is `StopAll`. If the host program
+owns a single short-lived agent, skip the Registry.
 
 ## Gotchas
 
@@ -421,6 +433,11 @@ host program owns a single short-lived agent, skip the Registry.
    task carrying `DisallowTools` is refused outright rather than run
    with the restriction dropped (see the matrix above).
 
+   The same rule applies to every caller-supplied field: a path that
+   cannot honour it returns `*CapabilityError` (Grok Session also
+   refuses non-bypass `PermissionMode` and `ExtraArgs`). There is no
+   silent drop.
+
    The two refusals have different causes, and the published reasons
    say which. `codex exec` has no per-tool disallow flag at all. `grok`
    does — `--deny <RULE>` gates invocations and `--disallowed-tools
@@ -450,10 +467,10 @@ host program owns a single short-lived agent, skip the Registry.
    = "-"`) or if a write error silently halted the log mid-session. Check
    the return value rather than caching the path from `Config`.
 
-5. **`WaitForResponse` replaces the event handler.** It installs its
-   own callback (chaining to the previous one) and restores the old
-   one on return. Don't stack multiple `WaitForResponse` calls
-   concurrently on the same agent.
+5. **Don't stack `WaitForResponse` concurrently on the same agent.**
+   It subscribes its own event listener and unsubscribes on return;
+   it does not replace other subscribers. Concurrent waits on one
+   Agent still race on "whose turn ended."
 
 6. **Both modes strip `CLAUDECODE`.** When a Go program running
    under Claude Code spawns a nested `claude`, claudia removes the
@@ -487,14 +504,10 @@ fmt.Println(agent.AttachCommand())
 Run that command from a terminal to watch the live Claude Code TUI.
 This is the primary debugging tool when an agent is misbehaving.
 
-### Session-chain tracker (cmd/claudiad)
+### Session-chain tracker
 
-`cmd/claudiad` is an experimental sidecar (🎯T1.3, not yet fully
-shipped) that tracks session chains across `/clear` rollovers.
-It is separate from the tmux server and is not required for normal
-library operation. `LookupChain` and `ErrDaemonUnavailable` were
-removed in the daemon pivot — session-chain lookup will be
-filesystem-backed when 🎯T1.3 ships.
+`RegisterChain` / `LookupChain` persist session-id chains on the
+filesystem. There is no `claudiad` sidecar.
 
 ## grok subpackage
 
