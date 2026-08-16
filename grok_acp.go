@@ -79,7 +79,8 @@ type acpRPCMessage struct {
 //
 // model is optional. sessionID and requireResume control resume behaviour;
 // see openSession. mcpServers are attached on session/new (Grok CLI
-// attaches tools only there — not on session/load).
+// attaches tools only there — not on session/load). A materialized
+// resume never remints to work around that.
 // grokACPArgs builds the argv `grok agent` is launched with, up to and
 // including the mode word. Connect mode appends its own --bind/--secret,
 // which are minted per launch and so cannot live here.
@@ -448,16 +449,13 @@ func (c *grokACPClient) openSession(workDir, preferSessionID string, requireResu
 	// 2026-07-18 in jevons: resumed overseer ran with zero tools). See
 	// docs/grok-acp-session.md § Resume and MCP.
 	//
-	// Policy when tools are configured: always session/new with mcpServers
-	// (rotation). Same-id load cannot keep tools under today's Grok CLI.
-	// Hosts that need continuity inject a recap after Start; Registry
-	// already persists SessionID when it changes after launch.
-	// RequireResume is overridden here — keeping the old id would mean a
-	// toolless agent, which is worse than a rotated id.
-	if preferSessionID != "" && tooled {
+	// First mint only (unmaterialized id, RequireResume=false): rotate to
+	// session/new so the new conversation has tools. A materialized
+	// resume must not remint to keep tools — load, and fail closed if
+	// load fails (🎯T35).
+	if preferSessionID != "" && tooled && !requireResume {
 		slog.Info("grok acp: rotating session for tools",
 			"prior_session", preferSessionID,
-			"require_resume", requireResume,
 			"reason", "Grok CLI ignores mcpServers on session/load")
 		return c.createSession(workDir, mcpServers)
 	}

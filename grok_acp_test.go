@@ -272,9 +272,9 @@ func TestHermeticGrokLoadFallsThroughForMintedID(t *testing.T) {
 	}
 }
 
-// With MCP configured, resume must rotate (session/new) rather than load —
-// Grok ignores mcpServers on session/load. Fake rejects load so a mistaken
-// load path would fail Start; rotation must succeed with a new id.
+// First-mint with MCP and no RequireResume still rotates to session/new:
+// that is the only way to attach tools under today's Grok CLI. Fake
+// rejects load so a mistaken load path would fail Start.
 func TestHermeticGrokTooledResumeRotates(t *testing.T) {
 	bin := writeFakeGrokACP(t)
 	t.Setenv("GROK_BIN", bin)
@@ -305,9 +305,10 @@ func TestHermeticGrokTooledResumeRotates(t *testing.T) {
 	}
 }
 
-// RequireResume + MCP still rotates (tools over same-id load). Hosts that
-// track SessionID (Registry) pick up the new id after Start.
-func TestHermeticGrokRequireResumeWithMCPStillRotates(t *testing.T) {
+// 🎯T35: a materialized tooled resume must not remint. Fake rejects load
+// so the old rotate-to-keep-tools path would succeed with a new id;
+// fail-closed must error and leave the caller's session id untouched.
+func TestHermeticGrokRequireResumeWithMCPFailsClosed(t *testing.T) {
 	bin := writeFakeGrokACP(t)
 	t.Setenv("GROK_BIN", bin)
 	t.Setenv("FAKE_ACP_REJECT_LOAD", "1")
@@ -318,20 +319,52 @@ func TestHermeticGrokRequireResumeWithMCPStillRotates(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	const wantID = "sess-exists"
 	agent, err := Start(Config{
 		Provider:      ProviderGrok,
 		WorkDir:       dir,
-		SessionID:     "sess-exists",
+		SessionID:     wantID,
+		RequireResume: true,
+		MCPConfig:     mcpPath,
+		TermLogPath:   "-",
+	})
+	if err == nil {
+		got := agent.SessionID()
+		agent.Stop()
+		t.Fatalf("Start reminted session %q under RequireResume+MCP; want error, same id %q", got, wantID)
+	}
+	if !strings.Contains(err.Error(), "refusing to mint a replacement session") {
+		t.Fatalf("error %q lacks the fail-closed explanation", err)
+	}
+}
+
+// 🎯T35: when session/load succeeds, a materialized tooled resume keeps
+// the same id. Rotation would mint sess-fake-acp-1.
+func TestHermeticGrokRequireResumeWithMCPKeepsSessionID(t *testing.T) {
+	bin := writeFakeGrokACP(t)
+	t.Setenv("GROK_BIN", bin)
+
+	dir := t.TempDir()
+	mcpPath := filepath.Join(dir, ".mcp.json")
+	if err := os.WriteFile(mcpPath, []byte(`{"mcpServers":{"x":{"type":"http","url":"http://127.0.0.1:9/mcp"}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	const wantID = "sess-exists"
+	agent, err := Start(Config{
+		Provider:      ProviderGrok,
+		WorkDir:       dir,
+		SessionID:     wantID,
 		RequireResume: true,
 		MCPConfig:     mcpPath,
 		TermLogPath:   "-",
 	})
 	if err != nil {
-		t.Fatalf("Start should rotate with tools even under RequireResume: %v", err)
+		t.Fatalf("Start should load the existing session: %v", err)
 	}
 	defer agent.Stop()
-	if agent.SessionID() == "sess-exists" {
-		t.Fatal("expected rotated session id when MCP is configured")
+	if agent.SessionID() != wantID {
+		t.Fatalf("session id %q, want %q (tooled resume must not remint)", agent.SessionID(), wantID)
 	}
 }
 
