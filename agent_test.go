@@ -324,8 +324,8 @@ func TestStartCodexSessionUsesAppServer(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 	defer agent.Stop()
-	if !strings.HasPrefix(agent.SessionID(), "thr_") {
-		t.Fatalf("SessionID = %q", agent.SessionID())
+	if agent.SessionID() == "" {
+		t.Fatal("empty SessionID after Codex Start")
 	}
 }
 

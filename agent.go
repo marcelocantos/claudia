@@ -369,7 +369,10 @@ func startWithBackend(cfg Config, backend agentBackend) (*Agent, error) {
 	}
 
 	sessionID := cfg.SessionID
-	if sessionID == "" {
+	// Codex Session identity is the app-server thread id, assigned on
+	// thread/start. Minting a UUID here would make the first Start try
+	// to resume a fake id, and the live CLI does not use a thr_ prefix.
+	if sessionID == "" && provider != ProviderCodex {
 		sessionID = uuid.New().String()
 	}
 	jsonlPath := SessionJSONLPath(sessionID, workDir)

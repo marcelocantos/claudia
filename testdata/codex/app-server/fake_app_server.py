@@ -54,7 +54,8 @@ def main() -> None:
             emit({"method": "thread/started", "params": {"thread": {"id": thread_id}}})
         elif method == "thread/resume":
             tid = params.get("threadId") or ""
-            if REJECT_RESUME or not str(tid).startswith("thr_"):
+            known = os.environ.get("FAKE_CODEX_RESUME_ID", "")
+            if REJECT_RESUME or not (str(tid).startswith("thr_") or (known and tid == known)):
                 emit(
                     {
                         "id": mid,

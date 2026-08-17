@@ -381,7 +381,7 @@ func sessionMaterialises(provider Provider, field string) bool {
 		case "Model":
 			return p.Model == req.Config.Model
 		case "SessionID":
-			return looksLikeCodexThreadID(req.SessionID) || req.SessionID != ""
+			return req.SessionID != ""
 		case "RequireResume":
 			return req.Config.RequireResume
 		default:

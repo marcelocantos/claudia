@@ -264,7 +264,9 @@ func (c *codexAppServerClient) initialize() error {
 }
 
 func (c *codexAppServerClient) openThread(workDir, model, sessionID string, requireResume bool) error {
-	tryResume := sessionID != "" && (requireResume || looksLikeCodexThreadID(sessionID))
+	// Any caller-supplied id is a resume candidate. Live Codex thread
+	// ids are not thr_-prefixed (2026-08-17: 01a00f11-… ULIDs).
+	tryResume := sessionID != ""
 	if tryResume {
 		line, err := c.request(codexAppServerThreadResume(0, codexAppServerThreadIDParams{
 			ThreadID:       sessionID,
@@ -318,10 +320,6 @@ func (c *codexAppServerClient) applyThreadResult(line []byte, fallbackID string)
 	if fallbackID != "" {
 		c.threadID = fallbackID
 	}
-}
-
-func looksLikeCodexThreadID(id string) bool {
-	return len(id) >= 4 && id[:4] == "thr_"
 }
 
 func (c *codexAppServerClient) Prompt(text string) error {

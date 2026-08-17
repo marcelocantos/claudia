@@ -4,6 +4,7 @@
 package claudia
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -59,8 +60,8 @@ func TestHermeticCodexSessionStartSendWait(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 	defer agent.Stop()
-	if !strings.HasPrefix(agent.SessionID(), "thr_") {
-		t.Fatalf("SessionID = %q, want a Codex thread id", agent.SessionID())
+	if agent.SessionID() == "" {
+		t.Fatal("empty SessionID after thread/start")
 	}
 	if got := agent.AttachCommand(); got != "" {
 		t.Fatalf("AttachCommand = %q, want empty", got)
@@ -162,8 +163,31 @@ func TestHermeticCodexUnmaterializedFallsThrough(t *testing.T) {
 	if agent.SessionID() == "not-a-thread" {
 		t.Fatal("unmaterialized id was not replaced by thread/start")
 	}
-	if !strings.HasPrefix(agent.SessionID(), "thr_") {
-		t.Fatalf("SessionID = %q", agent.SessionID())
+	if agent.SessionID() == "" {
+		t.Fatal("empty SessionID after fall-through mint")
+	}
+}
+
+func TestHermeticCodexResumesNonThrPrefix(t *testing.T) {
+	bin := writeFakeCodexAppServer(t)
+	t.Setenv("CODEX_BIN", bin)
+	const want = "01a00f11-547e-7a32-a284-b5832f3697db"
+	t.Setenv("FAKE_CODEX_RESUME_ID", want)
+	writeFakeCodexSubscriptionAuth(t)
+
+	agent, err := Start(Config{
+		Provider:      ProviderCodex,
+		WorkDir:       t.TempDir(),
+		SessionID:     want,
+		RequireResume: true,
+		TermLogPath:   "-",
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer agent.Stop()
+	if agent.SessionID() != want {
+		t.Fatalf("SessionID = %q, want %q", agent.SessionID(), want)
 	}
 }
 
@@ -175,19 +199,47 @@ func TestCodexSessionLiveSmoke(t *testing.T) {
 		t.Skipf("codex binary not found: %v", err)
 	}
 
-	agent, err := Start(Config{
+	workDir := t.TempDir()
+	first, err := Start(Config{
 		Provider:    ProviderCodex,
-		WorkDir:     t.TempDir(),
+		WorkDir:     workDir,
 		TermLogPath: "-",
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer agent.Stop()
-	if agent.SessionID() == "" {
+	threadID := first.SessionID()
+	if threadID == "" {
+		first.Stop()
 		t.Fatal("empty thread id")
 	}
+	if err := liveCodexTurn(t, first, "Reply with exactly: ok"); err != nil {
+		first.Stop()
+		t.Fatal(err)
+	}
+	first.Stop()
 
+	second, err := Start(Config{
+		Provider:      ProviderCodex,
+		WorkDir:       workDir,
+		SessionID:     threadID,
+		RequireResume: true,
+		TermLogPath:   "-",
+	})
+	if err != nil {
+		t.Fatalf("resume Start: %v", err)
+	}
+	defer second.Stop()
+	if second.SessionID() != threadID {
+		t.Fatalf("resumed SessionID = %q, want %q", second.SessionID(), threadID)
+	}
+	if err := liveCodexTurn(t, second, "Reply with exactly: ok"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func liveCodexTurn(t *testing.T, agent *Agent, prompt string) error {
+	t.Helper()
 	ctx := t.Context()
 	errCh := make(chan error, 1)
 	replyCh := make(chan string, 1)
@@ -200,16 +252,17 @@ func TestCodexSessionLiveSmoke(t *testing.T) {
 		replyCh <- s
 	}()
 	waitForEventSubscribers(t, agent, 1)
-	if err := agent.Send("Reply with exactly: ok"); err != nil {
-		t.Fatalf("Send: %v", err)
+	if err := agent.Send(prompt); err != nil {
+		return err
 	}
 	select {
 	case e := <-errCh:
-		t.Fatalf("WaitForResponse: %v", e)
+		return e
 	case s := <-replyCh:
 		if s == "" {
-			t.Fatal("empty reply")
+			return fmt.Errorf("empty reply")
 		}
+		return nil
 	}
 }
 
