@@ -61,6 +61,7 @@ func LiveGates() []string {
 		"CLAUDIA_BEDROCK_LIVE",
 		"CLAUDIA_CODEX_LIVE",
 		"CLAUDIA_GROK_LIVE",
+		"CLAUDIA_OLLAMA_LIVE",
 	}
 }
 

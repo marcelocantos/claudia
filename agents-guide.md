@@ -520,35 +520,38 @@ Otherwise, ignore it.
 
 ## Testing
 
-The test suite has two tiers:
+The test suite has two tiers.
 
-**Hermetic tests** run anywhere — no `claude` binary, no Anthropic
-credentials, no API cost. They cover event parsing, WaitForResponse
-settle semantics, terminal-log path derivation, readiness detection,
-and the full tmux control-mode mock machinery. CI runs these on every
-push, on both macOS and Linux.
+**Hermetic tests are the default.** They run anywhere — no provider
+binary, no credentials, no API cost. CI runs `go test -race -count=1
+./...` on every push. Use them for parsers, capability refusals,
+lifecycle, and anything a fake peer can decide.
 
-**Live tests** are env-gated and require the matching CLI binary:
+**Live tests are for backend changes.** When you change how a provider
+is spawned or spoken to (`Start`, `Task.Run`, app-server/ACP/exec
+framing, binary discovery, auth preflight), run the real-world smoke
+for that backend. Do not use live tests as the everyday suite, and do
+not retire a target on live smoke alone.
 
-| Gate | Provider | Examples |
-|------|----------|----------|
-| `CLAUDIA_LIVE=1` | Claude | Agent send/receive, pool, `TestTaskRunSmoke` |
-| `CLAUDIA_CODEX_LIVE=1` | Codex | `TestCodexTaskRunSmoke` |
-| `CLAUDIA_GROK_LIVE=1` | Grok Build CLI | `TestGrokTaskRunSmoke` |
-| `CLAUDIA_BEDROCK_LIVE=1` | AWS Bedrock | `TestBedrockTaskLiveSmoke` |
-
-CI does **not** set these — live runs need local auth and may spend
-API credit. Bedrock needs work-account AWS credentials and model access
-([docs/bedrock-work-account.md](docs/bedrock-work-account.md)).
-
-The canonical pre-release validation command (run locally before
-tagging a release):
+| Gate | Surfaces | Named smokes |
+|------|----------|--------------|
+| `CLAUDIA_LIVE=1` | Claude Task + Session | `TestTaskRunSmoke`, `TestAgentSendAndWaitForResponse` |
+| `CLAUDIA_GROK_LIVE=1` | Grok Task + Session | `TestGrokTaskRunSmoke`, `TestGrokSessionLiveSmoke` |
+| `CLAUDIA_CODEX_LIVE=1` | Codex Task + Session | `TestCodexTaskRunSmoke`, `TestCodexSessionLiveSmoke` |
+| `CLAUDIA_BEDROCK_LIVE=1` | Bedrock Task | `TestBedrockTaskLiveSmoke` |
+| `CLAUDIA_OLLAMA_LIVE=1` | Ollama Task | `TestOllamaTaskLiveSmoke` (needs `CLAUDIA_OLLAMA_MODEL`) |
 
 ```sh
-CLAUDIA_LIVE=1 go test -race -count=1 ./...
-# optional provider smokes when those CLIs/APIs are installed and authed:
-# CLAUDIA_CODEX_LIVE=1 CLAUDIA_GROK_LIVE=1 CLAUDIA_BEDROCK_LIVE=1 go test -race -count=1 ./...
+# one backend you just touched
+CLAUDIA_CODEX_LIVE=1 make live
+
+# every backend you have authed locally
+CLAUDIA_LIVE=1 CLAUDIA_GROK_LIVE=1 CLAUDIA_CODEX_LIVE=1 \
+  CLAUDIA_BEDROCK_LIVE=1 CLAUDIA_OLLAMA_LIVE=1 make live
 ```
+
+Unset gates skip. CI does not set any of them. Bedrock needs
+work-account AWS credentials ([docs/bedrock-work-account.md](docs/bedrock-work-account.md)).
 
 ## Stability
 
