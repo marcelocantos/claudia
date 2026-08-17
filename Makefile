@@ -40,6 +40,18 @@ verify-mutation-evidence:
 	@scripts/check-mutation-evidence.py
 	@scripts/check-mutation-evidence.py --prove-teeth
 
+# Real-world backend smokes. Hermetic `go test` is the default; run this
+# when changing a provider backend (spawn, protocol, Start/Send/Task.Run).
+# Each test skips unless its gate is set, so unset providers cost nothing.
+# Claude: CLAUDIA_LIVE=1
+# Grok:   CLAUDIA_GROK_LIVE=1
+# Codex:  CLAUDIA_CODEX_LIVE=1
+# Bedrock: CLAUDIA_BEDROCK_LIVE=1
+# Ollama: CLAUDIA_OLLAMA_LIVE=1 (and CLAUDIA_OLLAMA_MODEL)
+.PHONY: live
+live:
+	go test -count=1 -timeout 15m -run 'TestTaskRunSmoke|TestAgentSendAndWaitForResponse|TestGrokTaskRunSmoke|TestGrokSessionLiveSmoke|TestCodexTaskRunSmoke|TestCodexSessionLiveSmoke|TestBedrockTaskLiveSmoke|TestOllamaTaskLiveSmoke' .
+
 # Model-check the broker lifecycle spec (T2.0/T2.8 oracle). The correct config
 # must be green AND every fault-injection mutant must be caught — a spec that
 # stays green on known-broken code is toothless. Requires Java + tla2tools.jar

@@ -57,13 +57,12 @@ subscription OAuth (`auth_mode=chatgpt` with a non-empty access token in
 fails closed when the path would use API-key / `OPENAI_API_KEY` per-token
 billing. See [docs/codex-subscription-spike.md](docs/codex-subscription-spike.md).
 
-Codex persistent Session mode is experimental and currently fails
-closed. `Start(claudia.Config{Provider: claudia.ProviderCodex})`
-returns `*claudia.CapabilityError` with `Status ==
-claudia.CapabilityExperimental`. Codex rewind, tmux attach, and
-terminal logs are unsupported until a public Codex app-server contract
-proves equivalent behavior; do not implement them by editing private
-Codex storage or by driving the Codex TUI in tmux.
+Codex persistent Session mode uses `codex app-server` over stdio
+(thread/start, turn/start, thread/resume). `SessionID` is the Codex
+thread id (`thr_…`). `RequireResume` fail-closes if `thread/resume`
+fails. Rewind, tmux attach, and terminal logs stay unsupported; do
+not implement them by editing private Codex storage or driving the
+Codex TUI.
 
 ### Grok Build CLI provider (Task mode)
 
@@ -403,7 +402,7 @@ owns a single short-lived agent, skip the Registry.
    | Task prompts | Supported | Supported via `codex exec --json` | Supported via `grok -p --output-format streaming-json` |
    | Task resume | Supported | Supported via `codex exec resume --json` | Supported via `--resume` |
    | Task usage / cost | Supported | Tokens yes; cost unavailable | Not on streaming-json (no tool_use/cost events); SuperGrok `/usage` panel has no public API ([docs/grok-usage-billing.md](docs/grok-usage-billing.md)) |
-   | Persistent Session | Supported | Experimental fail-closed | Supported via ACP (`grok agent stdio`) |
+   | Persistent Session | Supported | Supported via `codex app-server` | Supported via ACP (`grok agent stdio`) |
    | Rewind | Supported | Unsupported without public fork/resume proof | Unsupported (no private session-file rewrite) |
    | tmux attach | Supported | Unsupported | Unsupported (ACP is process-local; AttachCommand empty) |
    | Terminal byte log | Supported | Unsupported | Unsupported |
@@ -521,35 +520,38 @@ Otherwise, ignore it.
 
 ## Testing
 
-The test suite has two tiers:
+The test suite has two tiers.
 
-**Hermetic tests** run anywhere — no `claude` binary, no Anthropic
-credentials, no API cost. They cover event parsing, WaitForResponse
-settle semantics, terminal-log path derivation, readiness detection,
-and the full tmux control-mode mock machinery. CI runs these on every
-push, on both macOS and Linux.
+**Hermetic tests are the default.** They run anywhere — no provider
+binary, no credentials, no API cost. CI runs `go test -race -count=1
+./...` on every push. Use them for parsers, capability refusals,
+lifecycle, and anything a fake peer can decide.
 
-**Live tests** are env-gated and require the matching CLI binary:
+**Live tests are for backend changes.** When you change how a provider
+is spawned or spoken to (`Start`, `Task.Run`, app-server/ACP/exec
+framing, binary discovery, auth preflight), run the real-world smoke
+for that backend. Do not use live tests as the everyday suite, and do
+not retire a target on live smoke alone.
 
-| Gate | Provider | Examples |
-|------|----------|----------|
-| `CLAUDIA_LIVE=1` | Claude | Agent send/receive, pool, `TestTaskRunSmoke` |
-| `CLAUDIA_CODEX_LIVE=1` | Codex | `TestCodexTaskRunSmoke` |
-| `CLAUDIA_GROK_LIVE=1` | Grok Build CLI | `TestGrokTaskRunSmoke` |
-| `CLAUDIA_BEDROCK_LIVE=1` | AWS Bedrock | `TestBedrockTaskLiveSmoke` |
-
-CI does **not** set these — live runs need local auth and may spend
-API credit. Bedrock needs work-account AWS credentials and model access
-([docs/bedrock-work-account.md](docs/bedrock-work-account.md)).
-
-The canonical pre-release validation command (run locally before
-tagging a release):
+| Gate | Surfaces | Named smokes |
+|------|----------|--------------|
+| `CLAUDIA_LIVE=1` | Claude Task + Session | `TestTaskRunSmoke`, `TestAgentSendAndWaitForResponse` |
+| `CLAUDIA_GROK_LIVE=1` | Grok Task + Session | `TestGrokTaskRunSmoke`, `TestGrokSessionLiveSmoke` |
+| `CLAUDIA_CODEX_LIVE=1` | Codex Task + Session | `TestCodexTaskRunSmoke`, `TestCodexSessionLiveSmoke` |
+| `CLAUDIA_BEDROCK_LIVE=1` | Bedrock Task | `TestBedrockTaskLiveSmoke` |
+| `CLAUDIA_OLLAMA_LIVE=1` | Ollama Task | `TestOllamaTaskLiveSmoke` (needs `CLAUDIA_OLLAMA_MODEL`) |
 
 ```sh
-CLAUDIA_LIVE=1 go test -race -count=1 ./...
-# optional provider smokes when those CLIs/APIs are installed and authed:
-# CLAUDIA_CODEX_LIVE=1 CLAUDIA_GROK_LIVE=1 CLAUDIA_BEDROCK_LIVE=1 go test -race -count=1 ./...
+# one backend you just touched
+CLAUDIA_CODEX_LIVE=1 make live
+
+# every backend you have authed locally
+CLAUDIA_LIVE=1 CLAUDIA_GROK_LIVE=1 CLAUDIA_CODEX_LIVE=1 \
+  CLAUDIA_BEDROCK_LIVE=1 CLAUDIA_OLLAMA_LIVE=1 make live
 ```
+
+Unset gates skip. CI does not set any of them. Bedrock needs
+work-account AWS credentials ([docs/bedrock-work-account.md](docs/bedrock-work-account.md)).
 
 ## Stability
 

@@ -157,7 +157,8 @@ func parseCodexAppServerLine(line []byte) (codexAppServerEvent, bool, error) {
 		} `json:"error"`
 		Result *struct {
 			Thread *struct {
-				ID string `json:"id"`
+				ID        string `json:"id"`
+				SessionID string `json:"sessionId"`
 			} `json:"thread"`
 			// Model is the resolved model id on thread/start (sibling of thread).
 			Model          string `json:"model"`
@@ -177,7 +178,8 @@ func parseCodexAppServerLine(line []byte) (codexAppServerEvent, bool, error) {
 			ItemID   string `json:"itemId"`
 			Delta    string `json:"delta"`
 			Thread   *struct {
-				ID string `json:"id"`
+				ID        string `json:"id"`
+				SessionID string `json:"sessionId"`
 			} `json:"thread"`
 			Turn *struct {
 				ID     string `json:"id"`
@@ -235,6 +237,9 @@ func parseCodexAppServerLine(line []byte) (codexAppServerEvent, bool, error) {
 		if msg.Result.Thread != nil {
 			ev.Method = "thread/start"
 			ev.ThreadID = msg.Result.Thread.ID
+			if ev.ThreadID == "" {
+				ev.ThreadID = msg.Result.Thread.SessionID
+			}
 			return ev, true, nil
 		}
 		if msg.Result.Turn != nil {
@@ -258,6 +263,9 @@ func parseCodexAppServerLine(line []byte) (codexAppServerEvent, bool, error) {
 	}
 	if msg.Params.Thread != nil {
 		ev.ThreadID = msg.Params.Thread.ID
+		if ev.ThreadID == "" {
+			ev.ThreadID = msg.Params.Thread.SessionID
+		}
 	}
 	if msg.Params.Turn != nil {
 		ev.TurnID = msg.Params.Turn.ID

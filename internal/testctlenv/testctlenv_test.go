@@ -26,6 +26,7 @@ func TestRegistryMembershipPinned(t *testing.T) {
 		"CLAUDIA_BEDROCK_LIVE",
 		"CLAUDIA_CODEX_LIVE",
 		"CLAUDIA_GROK_LIVE",
+		"CLAUDIA_OLLAMA_LIVE",
 	}
 	// Configuration an agent legitimately needs. Stripping any of
 	// these breaks the agent instead of protecting it.

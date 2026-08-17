@@ -27,7 +27,7 @@ voice client in package `claudia/grok`. Session mode uses ACP over
 **Codex Task mode** ships via `ProviderCodex`. The resolver checks
 `CODEX_BIN`, then `codex` on `$PATH`, then known install locations
 including `/Applications/Codex.app/Contents/Resources/codex`. Codex
-Session mode remains experimental (fail-closed).
+Session mode uses `codex app-server` JSON-RPC (not tmux).
 
 **AWS Bedrock Task mode** ships via `ProviderBedrock` — Anthropic Claude
 models through Bedrock **ConverseStream** (API path; no local `claude`
@@ -201,11 +201,9 @@ It runs `grok agent --always-approve stdio`, speaks ACP JSON-RPC, and
 supports `Send` / `WaitForResponse` / `Interrupt` / `Stop`. There is no
 tmux attach window. Rewind remains unsupported (`CapabilityUnsupported`).
 
-`Config{Provider: claudia.ProviderCodex}` returns
-`*claudia.CapabilityError` with status `claudia.CapabilityExperimental`
-until a public app-server turn contract is proven. claudia does not
-scrape private session files or apply Claude transcript rewind rules to
-non-Claude providers.
+`Config{Provider: claudia.ProviderCodex}` starts `codex app-server` over
+stdio (thread/turn JSON-RPC). There is no tmux attach window. Rewind
+remains unsupported. claudia does not scrape private Codex session files.
 
 Provider gaps are published, not discovered at runtime. Every capability
 claudia reports on carries an explicit `supported` / `unsupported` /

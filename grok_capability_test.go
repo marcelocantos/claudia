@@ -19,9 +19,8 @@ func TestGrokCapabilityMatrixIsExplicit(t *testing.T) {
 		CapabilityTask:    CapabilitySupported,
 		CapabilityResume:  CapabilitySupported,
 		CapabilitySession: CapabilitySupported,
-		// Session is supported on Grok and experimental on Codex: ACP is
-		// a public contract claudia already drives, so the two providers
-		// are not interchangeable and the matrix must not flatten them.
+		// Session is supported on Grok (ACP) and Codex (app-server).
+		// The transports differ; the matrix must not flatten them.
 		CapabilityRewind:           CapabilityUnsupported,
 		CapabilityCost:             CapabilityUnsupported,
 		CapabilityTmuxAttach:       CapabilityUnsupported,

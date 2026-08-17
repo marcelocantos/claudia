@@ -2,7 +2,7 @@
 
 Status: **proven for 🎯T4.4** (2026-08-09). Live stdio turn + resume/fork/archive/interrupt
 captured against `codex-cli 0.146.0-alpha.9.2`. Hermetic oracles parse redacted fixtures;
-production Session mode (🎯T4.5) may now depend on this public contract (not private files).
+production Session mode (🎯T4.5) is wired to this public contract (not private files).
 
 ## Public Contract
 
@@ -127,8 +127,10 @@ names need re-checking.
   missing methods.
 
 **Fallback:** Codex Task mode via `codex exec --json` remains available.
-ProviderCodex Session mode reports typed experimental/unsupported capability
-errors rather than scraping private Codex session files or driving the TUI.
+ProviderCodex Session mode is wired to this contract (`Start` / `Send` /
+`WaitForResponse` / `Interrupt`). Unsupported surfaces (rewind, tmux,
+term log) still return typed `CapabilityError`s rather than scraping
+private Codex session files or driving the TUI.
 
 ## Private storage
 

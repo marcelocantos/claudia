@@ -54,7 +54,7 @@ Public capability claim (`claudeProviderCapabilities`):
 | Cost capability claim | Capabilities struct + Task result | `claudeProviderCapabilities().Cost` + result fixture cost fields | Live billing residual | Hermetic for Task USD; Session has usage not USD (documented) |
 | Tmux attach / terminal bytes | Ops + SubscribeTerminal | Fake lifecycle routes terminal bytes; attach command shape | Live `tmux attach` residual | Hermetic ops; live attach residual |
 | Pool / Registry participation | Unit + live pool | Registry persistence tests; pool live-gated | Pool acquire live residual | Registry hermetic; pool mostly live |
-| Codex/Grok gaps stay fail-closed (Claude contrast) | Negative capability | Codex session experimental; Grok rewind unsupported | None | Hermetic |
+| Codex/Grok gaps stay fail-closed (Claude contrast) | Negative capability | Codex rewind unsupported; Grok rewind unsupported | None | Hermetic |
 
 ## Required golden fixtures
 
