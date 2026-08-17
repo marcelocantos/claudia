@@ -127,8 +127,10 @@ names need re-checking.
   missing methods.
 
 **Fallback:** Codex Task mode via `codex exec --json` remains available.
-ProviderCodex Session mode reports typed experimental/unsupported capability
-errors rather than scraping private Codex session files or driving the TUI.
+ProviderCodex Session mode is wired to this contract (`Start` / `Send` /
+`WaitForResponse` / `Interrupt`). Unsupported surfaces (rewind, tmux,
+term log) still return typed `CapabilityError`s rather than scraping
+private Codex session files or driving the TUI.
 
 ## Private storage
 
