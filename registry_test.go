@@ -179,6 +179,8 @@ func TestLaunchPassesProvider(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	writeFakeCodexSubscriptionAuth(t)
+	t.Setenv("CODEX_BIN", writeFakeCodexAppServer(t))
 	if err := r.Register(AgentDef{
 		Name:      "codex-sess",
 		WorkDir:   t.TempDir(),
@@ -187,16 +189,13 @@ func TestLaunchPassesProvider(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	_, err = r.Launch("codex-sess")
-	if err == nil {
-		t.Fatal("Launch with ProviderCodex returned nil error; want experimental CapabilityError")
+	agent, err := r.Launch("codex-sess")
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
 	}
-	capErr, ok := err.(*CapabilityError)
-	if !ok {
-		t.Fatalf("err type %T, want *CapabilityError: %v", err, err)
-	}
-	if capErr.Provider != ProviderCodex || capErr.Capability != "session" {
-		t.Fatalf("CapabilityError = %+v, want ProviderCodex session", capErr)
+	defer agent.Stop()
+	if agent == nil {
+		t.Fatal("Launch returned nil agent")
 	}
 }
 

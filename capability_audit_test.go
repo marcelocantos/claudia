@@ -149,6 +149,23 @@ var sessionFieldFates = map[Provider]map[string]fieldDecl{
 		"ConnectURL":     {fateConsumed, ""},
 		"ConnectPID":     {fateLocal, "recorded for Adopt/Alive; Start itself keys off ConnectURL / GrokConnect"},
 	},
+	ProviderCodex: {
+		"Provider":       {fateLocal, "selects this path"},
+		"WorkDir":        {fateConsumed, ""},
+		"SessionID":      {fateConsumed, ""},
+		"RequireResume":  {fateConsumed, ""},
+		"Model":          {fateConsumed, ""},
+		"PermissionMode": {fateRefused, "Codex sandbox/approval are not Claude PermissionMode"},
+		"MCPConfig":      {fateIgnored, "app-server thread/start has no MCPConfig field"},
+		"DisallowTools":  {fateRefused, "codex exec / app-server have no per-tool disallow flag"},
+		"ExtraArgs":      {fateRefused, "typed app-server fields only"},
+		"TermLogPath":    {fateLocal, "host-side log path; app-server is not a PTY"},
+		"PoolPolicy":     {fateLocal, "Acquire policy; Start does not consult it"},
+		"PoolCap":        {fateLocal, "Acquire cap; Start does not consult it"},
+		"GrokConnect":    {fateIgnored, "Grok serve-mode switch; Codex Session is app-server stdio"},
+		"ConnectURL":     {fateIgnored, "Grok reattach URL"},
+		"ConnectPID":     {fateIgnored, "Grok serve PID"},
+	},
 }
 
 func exportedFields(t reflect.Type) []string {
@@ -356,6 +373,20 @@ func sessionStartRequest(field string) agentStartRequest {
 func sessionMaterialises(provider Provider, field string) bool {
 	req := sessionStartRequest(field)
 	switch provider {
+	case ProviderCodex:
+		p := codexThreadStartParams(req)
+		switch field {
+		case "WorkDir":
+			return p.CWD == req.WorkDir
+		case "Model":
+			return p.Model == req.Config.Model
+		case "SessionID":
+			return looksLikeCodexThreadID(req.SessionID) || req.SessionID != ""
+		case "RequireResume":
+			return req.Config.RequireResume
+		default:
+			return false
+		}
 	case ProviderClaude:
 		switch field {
 		case "WorkDir":
@@ -411,6 +442,8 @@ func sessionPrecheck(provider Provider, req agentStartRequest) error {
 	switch provider {
 	case ProviderGrok:
 		return grokSessionPrecheck(req)
+	case ProviderCodex:
+		return codexSessionPrecheck(req)
 	default:
 		return nil
 	}

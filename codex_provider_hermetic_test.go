@@ -15,27 +15,16 @@ import (
 // Live residual stays under CLAUDIA_CODEX_LIVE=1 (TestCodexTaskRunSmoke).
 
 func TestCodexProviderCapabilitiesClaimed(t *testing.T) {
-	want := providerCapabilities{
-		Task:   true,
-		Resume: true,
-		// Session remains experimental fail-closed on production Start until
-		// the app-server live contract (T4.4) lands. Rewind/cost/tmux/log are
-		// unsupported on the public Codex surface we bind today.
+	taskWant := providerCapabilities{Task: true, Resume: true}
+	if got := (codexTaskBackend{}).Capabilities(); got != taskWant {
+		t.Errorf("codexTaskBackend capabilities = %+v, want %+v", got, taskWant)
 	}
-	if got := (codexTaskBackend{}).Capabilities(); got != want {
-		t.Errorf("codexTaskBackend capabilities = %+v, want %+v", got, want)
+	agentWant := providerCapabilities{Task: true, Resume: true, Session: true}
+	if got := (codexAgentBackend{}).Capabilities(); got != agentWant {
+		t.Errorf("codexAgentBackend capabilities = %+v, want %+v", got, agentWant)
 	}
-	if got := (codexAgentBackend{}).Capabilities(); got != want {
-		t.Errorf("codexAgentBackend capabilities = %+v, want %+v", got, want)
-	}
-	if want.Session || want.Rewind || want.Cost || want.TmuxAttach || want.TerminalBytes {
-		t.Fatal("codex claim must not advertise Session/Rewind/Cost/Tmux/TerminalBytes")
-	}
-	// The experimental downgrade 🎯T4.6 asks for: Session is not merely
-	// "off", it is publicly reported as experimental, which is a weaker
-	// claim than supported and a stronger one than unsupported.
-	if got := ProviderCapabilityStatus(ProviderCodex, CapabilitySession); got != CapabilityExperimental {
-		t.Errorf("codex session status = %q, want %q", got, CapabilityExperimental)
+	if got := ProviderCapabilityStatus(ProviderCodex, CapabilitySession); got != CapabilitySupported {
+		t.Errorf("codex session status = %q, want %q", got, CapabilitySupported)
 	}
 }
 
@@ -45,11 +34,9 @@ func TestCodexProviderCapabilitiesClaimed(t *testing.T) {
 // discovered by a user at runtime instead of read off the matrix.
 func TestCodexCapabilityMatrixIsExplicit(t *testing.T) {
 	want := map[Capability]CapabilityStatus{
-		CapabilityTask:    CapabilitySupported,
-		CapabilityResume:  CapabilitySupported,
-		CapabilitySession: CapabilityExperimental,
-		// 🎯T4.5 has not landed. Production Session Start must stay
-		// fail-closed; "supported" here would be a lie with teeth.
+		CapabilityTask:             CapabilitySupported,
+		CapabilityResume:           CapabilitySupported,
+		CapabilitySession:          CapabilitySupported,
 		CapabilityRewind:           CapabilityUnsupported,
 		CapabilityCost:             CapabilityUnsupported,
 		CapabilityTmuxAttach:       CapabilityUnsupported,
@@ -89,7 +76,6 @@ func TestCodexCapabilityMatrixIsExplicit(t *testing.T) {
 // than inheriting Claude's answer.
 func TestCodexCapabilityGapsVersusClaude(t *testing.T) {
 	wantGaps := []Capability{
-		CapabilitySession,
 		CapabilityRewind,
 		CapabilityCost,
 		CapabilityTmuxAttach,
@@ -137,19 +123,22 @@ func TestCodexCapabilityGapsVersusClaude(t *testing.T) {
 // claimed-but-unwired) capability is exactly the fake parity 🎯T4.6
 // exists to prevent.
 func TestCodexCapabilityMatrixMatchesBackendClaims(t *testing.T) {
-	backends := map[string]providerCapabilities{
-		"codexTaskBackend":  (codexTaskBackend{}).Capabilities(),
-		"codexAgentBackend": (codexAgentBackend{}).Capabilities(),
+	task := (codexTaskBackend{}).Capabilities()
+	agent := (codexAgentBackend{}).Capabilities()
+	wired := providerCapabilities{
+		Task:    task.Task || agent.Task,
+		Session: task.Session || agent.Session,
+		Resume:  task.Resume || agent.Resume,
+		Rewind:  task.Rewind || agent.Rewind,
+		Cost:    task.Cost || agent.Cost,
 	}
-	for name, caps := range backends {
-		for capability, wired := range backendCapabilityNames(caps) {
-			status := ProviderCapabilityStatus(ProviderCodex, capability)
-			if wired && status != CapabilitySupported {
-				t.Errorf("%s wires %s but the matrix says %q", name, capability, status)
-			}
-			if !wired && status == CapabilitySupported {
-				t.Errorf("%s does not wire %s but the matrix claims supported", name, capability)
-			}
+	for capability, on := range backendCapabilityNames(wired) {
+		status := ProviderCapabilityStatus(ProviderCodex, capability)
+		if on && status != CapabilitySupported {
+			t.Errorf("a Codex backend wires %s but the matrix says %q", capability, status)
+		}
+		if !on && status == CapabilitySupported {
+			t.Errorf("no Codex backend wires %s but the matrix claims supported", capability)
 		}
 	}
 }

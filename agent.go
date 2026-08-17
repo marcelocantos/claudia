@@ -56,8 +56,7 @@ import (
 type Config struct {
 	// Provider selects the runtime backing this agent. Empty means
 	// ProviderClaude. ProviderGrok uses ACP over `grok agent stdio`.
-	// ProviderCodex Session mode is experimental and currently fails
-	// closed until the app-server contract is proven.
+	// ProviderCodex Session mode uses `codex app-server` JSON-RPC.
 	Provider Provider
 
 	// WorkDir is the working directory for the Claude Code process.
@@ -275,19 +274,14 @@ func (claudeAgentBackend) Capabilities() providerCapabilities {
 
 func (codexAgentBackend) Capabilities() providerCapabilities {
 	return providerCapabilities{
-		Task:   true,
-		Resume: true,
+		Task:    true,
+		Resume:  true,
+		Session: true,
 	}
 }
 
-func (codexAgentBackend) StartAgent(agentStartRequest) (*agentStart, error) {
-	// An unconditional refusal, deliberately not a matrix lookup. 🎯T4.5
-	// has not wired a Codex app-server session, so this backend has
-	// nothing to return no matter what the published claim says — and a
-	// matrix-derived error would go nil the moment that claim flips,
-	// handing startWithBackend a nil *agentStart to dereference. Whoever
-	// lands 🎯T4.5 must replace this body, not just the claim.
-	return nil, experimentalCapability(ProviderCodex, CapabilitySession, codexSessionReason)
+func (codexAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
+	return startCodexAgent(req)
 }
 
 func (grokAgentBackend) Capabilities() providerCapabilities {
@@ -334,8 +328,8 @@ func claudeAgentOps() agentOps {
 }
 
 // Start spawns a new agent for cfg.Provider. Claude uses a tmux-backed
-// Session; Grok uses ACP over `grok agent stdio`; Codex Session remains
-// experimental and fails closed.
+// Session; Grok uses ACP over `grok agent stdio`; Codex uses
+// `codex app-server` JSON-RPC.
 func Start(cfg Config) (*Agent, error) {
 	// Gate on the published capability matrix rather than a per-provider
 	// branch list, so Start cannot drift into offering a session claudia
@@ -695,6 +689,82 @@ func grokSessionPrecheck(req agentStartRequest) error {
 		return capabilityRefusal(ProviderGrok, CapabilityExtraArgs, grokExtraArgsReason)
 	}
 	return nil
+}
+
+func codexSessionPrecheck(req agentStartRequest) error {
+	if len(req.Config.DisallowTools) > 0 {
+		return capabilityRefusal(ProviderCodex, CapabilityToolRestrictions, codexToolRestrictionsReason)
+	}
+	if mode := req.Config.PermissionMode; mode != "" && mode != "bypassPermissions" {
+		return capabilityRefusal(ProviderCodex, CapabilityPermissionMode,
+			"Codex sandbox/approval flags are Codex-native and are not proven equivalent to Claude PermissionMode")
+	}
+	if len(req.Config.ExtraArgs) > 0 {
+		return capabilityRefusal(ProviderCodex, CapabilityExtraArgs,
+			"Codex Session speaks typed app-server fields; Config.ExtraArgs have nowhere to go")
+	}
+	return nil
+}
+
+func startCodexAgent(req agentStartRequest) (*agentStart, error) {
+	if err := codexSessionPrecheck(req); err != nil {
+		return nil, err
+	}
+	if _, err := ensureCodexSubscriptionAuth(nil); err != nil {
+		return nil, err
+	}
+	bin, err := resolveCodexBin()
+	if err != nil {
+		return nil, err
+	}
+
+	var agentRef atomic.Pointer[Agent]
+	onEvent := func(ev Event) {
+		if a := agentRef.Load(); a != nil {
+			a.publishEvent(ev)
+		}
+	}
+	onClose := func() {
+		if a := agentRef.Load(); a != nil {
+			a.mu.Lock()
+			a.alive = false
+			a.mu.Unlock()
+		}
+	}
+
+	client, err := startCodexAppServer(bin, req.WorkDir, req.Config.Model, req.SessionID, req.Config.RequireResume, onEvent, onClose)
+	if err != nil {
+		return nil, err
+	}
+	sid := client.ThreadID()
+	ops := agentOps{
+		attachCommand: func(*Agent) string { return "" },
+		interrupt: func(*Agent) error {
+			return client.Interrupt()
+		},
+		send: func(_ *Agent, msg string) error {
+			return client.Prompt(msg)
+		},
+		stop: func(*Agent) {
+			client.Close()
+		},
+		promptInFlight: func(*Agent) bool {
+			return client.promptInFlight()
+		},
+	}
+	return &agentStart{
+		WindowID:  "codex-app-server-" + sid,
+		Ops:       ops,
+		TailJSONL: false,
+		SessionID: sid,
+		DetectReady: func(a *Agent) {
+			agentRef.Store(a)
+			if m := client.Model(); m != "" {
+				a.publishEvent(Event{Type: "system", Model: m})
+			}
+			close(a.ready)
+		},
+	}, nil
 }
 
 // startGrokAgent launches Grok Build over ACP. Default is parent-owned

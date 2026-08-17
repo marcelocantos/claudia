@@ -352,13 +352,11 @@ surface today is Task mode through `codex exec --json`, selected by
 `TaskConfig.Provider = ProviderCodex`. Token usage maps into `Usage`,
 but Codex Task mode does not currently report cost in `CostUSD`.
 
-Persistent Codex Session mode is not implemented yet. `Start` with
-`Config.Provider = ProviderCodex` fails closed with `*CapabilityError`
-and `Status == CapabilityExperimental` until the public app-server
-thread/turn contract is proven. Codex rewind, tmux attach, terminal
-byte logs, and Claude-style transcript manipulation are unsupported;
-callers should expect `CapabilityError` rather than silent Claude
-fallback semantics.
+Persistent Codex Session mode uses `codex app-server` JSON-RPC
+(`Start` / `Send` / `WaitForResponse` / `Interrupt`). `SessionID` is
+the thread id. Codex rewind, tmux attach, terminal byte logs, and
+Claude-style transcript manipulation remain unsupported; callers
+should expect `CapabilityError` rather than silent Claude fallback.
 
 The per-capability rationale claudia publishes for Codex:
 
@@ -366,7 +364,7 @@ The per-capability rationale claudia publishes for Codex:
 |---|---|---|
 | `CapabilityTask` | Supported | `codex exec --json` |
 | `CapabilityResume` | Supported | `codex exec resume --json` |
-| `CapabilitySession` | **Experimental** | app-server live contract not yet wired into production `Start` |
+| `CapabilitySession` | Supported | `codex app-server` thread/turn JSON-RPC |
 | `CapabilityRewind` | Unsupported | needs a public fork/resume contract; private transcript truncation is forbidden |
 | `CapabilityCost` | Unsupported | tokens are reported, monetary cost is not; `CostUSD` stays zero |
 | `CapabilityTmuxAttach` | Unsupported | claudia does not drive the Codex TUI in tmux |

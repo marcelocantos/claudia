@@ -216,7 +216,7 @@ var providerCapabilityClaims = map[Provider]map[Capability]capabilityClaim{
 	ProviderCodex: {
 		CapabilityTask:    {status: CapabilitySupported},
 		CapabilityResume:  {status: CapabilitySupported},
-		CapabilitySession: {status: CapabilityExperimental, reason: codexSessionReason},
+		CapabilitySession: {status: CapabilitySupported},
 		CapabilityRewind:  {status: CapabilityUnsupported, reason: codexRewindReason},
 		CapabilityCost: {
 			status: CapabilityUnsupported,
@@ -228,7 +228,7 @@ var providerCapabilityClaims = map[Provider]map[Capability]capabilityClaim{
 		},
 		CapabilityTerminalLog: {
 			status: CapabilityUnsupported,
-			reason: "Codex Task mode consumes a JSON stream, not a PTY, so there are no rendered terminal bytes to log",
+			reason: "Codex Session is app-server JSON-RPC, not a PTY, so there are no rendered terminal bytes to log",
 		},
 		CapabilityPermissionMode: {
 			status: CapabilityUnsupported,
@@ -246,7 +246,7 @@ var providerCapabilityClaims = map[Provider]map[Capability]capabilityClaim{
 		CapabilitySandboxPolicy: {status: CapabilitySupported},
 		CapabilityExtraArgs: {
 			status: CapabilityUnsupported,
-			reason: "Config.ExtraArgs is a Session-mode field and Codex Session is not wired; the Codex Task path builds its argv from typed fields only",
+			reason: "Codex Session speaks typed app-server fields; Config.ExtraArgs have nowhere to go",
 		},
 	},
 	ProviderGrok: {
@@ -339,8 +339,7 @@ var providerCapabilityClaims = map[Provider]map[Capability]capabilityClaim{
 // that surface them, so the error a caller sees and the matrix a caller
 // queries cannot drift apart.
 const (
-	codexSessionReason = "persistent Session mode requires the app-server live contract spike to complete"
-	codexRewindReason  = "Codex rewind requires a public app-server fork/resume contract; private transcript truncation is forbidden"
+	codexRewindReason = "Codex rewind requires a public app-server fork/resume contract; private transcript truncation is forbidden"
 	//nolint:lll // one sentence, kept whole for the error message.
 	codexToolRestrictionsReason = "codex exec has no per-tool disallow flag; running the task would silently ignore DisallowTools and leave every tool enabled"
 	grokRewindReason            = "Grok rewind requires a public ACP/session API; private session-file truncation is forbidden"

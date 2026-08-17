@@ -316,33 +316,16 @@ func TestStartUsesInjectedBackendLifecycle(t *testing.T) {
 	}
 }
 
-func TestStartCodexSessionFailsWithCapabilityError(t *testing.T) {
-	// 🎯T4.5 has not landed, so production Codex Session Start must stay
-	// experimental and fail closed.
-	state := t.TempDir()
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("XDG_STATE_HOME", state)
-
-	_, err := Start(Config{Provider: ProviderCodex, WorkDir: t.TempDir()})
-	if err == nil {
-		t.Fatal("Start with ProviderCodex returned nil error")
+func TestStartCodexSessionUsesAppServer(t *testing.T) {
+	writeFakeCodexSubscriptionAuth(t)
+	t.Setenv("CODEX_BIN", writeFakeCodexAppServer(t))
+	agent, err := Start(Config{Provider: ProviderCodex, WorkDir: t.TempDir(), TermLogPath: "-"})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
 	}
-	var capErr *CapabilityError
-	if !errors.As(err, &capErr) {
-		t.Fatalf("error = %T %v, want CapabilityError", err, err)
-	}
-	if capErr.Provider != ProviderCodex || capErr.Capability != "session" || capErr.Status != CapabilityExperimental {
-		t.Errorf("CapabilityError = %+v", capErr)
-	}
-
-	// Refusing late is not refusing. startWithBackend mkdirs and opens
-	// the terminal log before it ever reaches the backend, so a Start
-	// that only fails once the backend is asked leaves a session's
-	// worth of state on disk for a session that was never allowed to
-	// exist. Assert the gate fires before any of that.
-	if entries, err := os.ReadDir(filepath.Join(state, "claudia")); err == nil && len(entries) > 0 {
-		t.Errorf("refused Codex Start left %d state entries under %s; the capability gate ran too late",
-			len(entries), filepath.Join(state, "claudia"))
+	defer agent.Stop()
+	if !strings.HasPrefix(agent.SessionID(), "thr_") {
+		t.Fatalf("SessionID = %q", agent.SessionID())
 	}
 }
 

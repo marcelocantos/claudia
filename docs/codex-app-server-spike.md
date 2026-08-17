@@ -2,7 +2,7 @@
 
 Status: **proven for 🎯T4.4** (2026-08-09). Live stdio turn + resume/fork/archive/interrupt
 captured against `codex-cli 0.146.0-alpha.9.2`. Hermetic oracles parse redacted fixtures;
-production Session mode (🎯T4.5) may now depend on this public contract (not private files).
+production Session mode (🎯T4.5) is wired to this public contract (not private files).
 
 ## Public Contract
 

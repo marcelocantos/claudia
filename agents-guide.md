@@ -57,13 +57,12 @@ subscription OAuth (`auth_mode=chatgpt` with a non-empty access token in
 fails closed when the path would use API-key / `OPENAI_API_KEY` per-token
 billing. See [docs/codex-subscription-spike.md](docs/codex-subscription-spike.md).
 
-Codex persistent Session mode is experimental and currently fails
-closed. `Start(claudia.Config{Provider: claudia.ProviderCodex})`
-returns `*claudia.CapabilityError` with `Status ==
-claudia.CapabilityExperimental`. Codex rewind, tmux attach, and
-terminal logs are unsupported until a public Codex app-server contract
-proves equivalent behavior; do not implement them by editing private
-Codex storage or by driving the Codex TUI in tmux.
+Codex persistent Session mode uses `codex app-server` over stdio
+(thread/start, turn/start, thread/resume). `SessionID` is the Codex
+thread id (`thr_…`). `RequireResume` fail-closes if `thread/resume`
+fails. Rewind, tmux attach, and terminal logs stay unsupported; do
+not implement them by editing private Codex storage or driving the
+Codex TUI.
 
 ### Grok Build CLI provider (Task mode)
 
@@ -403,7 +402,7 @@ owns a single short-lived agent, skip the Registry.
    | Task prompts | Supported | Supported via `codex exec --json` | Supported via `grok -p --output-format streaming-json` |
    | Task resume | Supported | Supported via `codex exec resume --json` | Supported via `--resume` |
    | Task usage / cost | Supported | Tokens yes; cost unavailable | Not on streaming-json (no tool_use/cost events); SuperGrok `/usage` panel has no public API ([docs/grok-usage-billing.md](docs/grok-usage-billing.md)) |
-   | Persistent Session | Supported | Experimental fail-closed | Supported via ACP (`grok agent stdio`) |
+   | Persistent Session | Supported | Supported via `codex app-server` | Supported via ACP (`grok agent stdio`) |
    | Rewind | Supported | Unsupported without public fork/resume proof | Unsupported (no private session-file rewrite) |
    | tmux attach | Supported | Unsupported | Unsupported (ACP is process-local; AttachCommand empty) |
    | Terminal byte log | Supported | Unsupported | Unsupported |

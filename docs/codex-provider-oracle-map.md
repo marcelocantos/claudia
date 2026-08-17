@@ -5,7 +5,7 @@ Status: **sealed** for 🎯T4.8 (machine checks green on local master).
 Codex provider work is mostly new-code oracle mode with two public-contract seams:
 
 - `codex exec --json` for Task mode.
-- `codex app-server` JSON-RPC for persistent Session mode (🎯T4.4 contract proven 2026-08-09; production Start still experimental until 🎯T4.5 wires it).
+- `codex app-server` JSON-RPC for persistent Session mode (🎯T4.4 contract; 🎯T4.5 production `Start`).
 
 Live Codex runs are smoke/regression only. They do not retire targets by themselves. A target retires when hermetic fixtures, fakes, and fault checks prove the mapping and lifecycle behavior.
 
@@ -29,7 +29,7 @@ Live residual (never sole retirement evidence): `CLAUDIA_CODEX_LIVE=1` → `Test
 | 🎯T4.2 Codex binary discovery | Deterministic resolver | Resolver tests inject env, PATH lookup, app-bundle candidates, missing-binary failure. | Optional manual install sanity | Hermetic sealed |
 | 🎯T4.3 Codex Task mode | Public CLI fixture parser + hermetic spawn | Golden `codex exec --json` fixtures + `TestCodexTaskParser*` + `TestCodexTaskSuccessOracleRejectsFaults` + `TestHermeticTaskRunCodexSpawn`. | `CLAUDIA_CODEX_LIVE=1` smoke only | Hermetic sealed |
 | 🎯T4.4 app-server contract spike | Public protocol fixture/schema | Golden fixtures (`success`/`failure`/`interrupted`/`unsupported`/`thread-start`/`live-turn`/`lifecycle`) + `TestParseCodexAppServer*` + request builders + private-storage scan. Spike: [codex-app-server-spike.md](codex-app-server-spike.md). | Live 2026-08-09 capture on codex-cli 0.146.0-alpha.9.2 (turn + resume/fork/archive/interrupt) | **Sealed** (live + hermetic) |
-| 🎯T4.5 Codex Session mode | Fake app-server lifecycle | `TestFakeCodexAppServerLifecycle`, `TestFakeCodexAppServerInterruptLifecycle` (Start/Send/Wait/Subscribe/Interrupt/raw/usage/attach-log fail-closed). Production `ProviderCodex` Session Start remains experimental fail-closed. | Gated live app-server smoke only | Fake harness sealed |
+| 🎯T4.5 Codex Session mode | Fake + production Start | `TestHermeticCodexSessionStartSendWait`, `TestHermeticCodexRequireResumeFailsClosed`, `TestFakeCodexAppServerLifecycle`. Production `Start` speaks `codex app-server`. | `CLAUDIA_CODEX_LIVE=1` Session smoke | Wired |
 | 🎯T4.6 capability gaps | Negative capability oracle | Matrix: `TestCodexCapabilityMatrixIsExplicit`, `TestCodexCapabilityGapsVersusClaude`, `TestCodexCapabilityMatrixMatchesBackendClaims`, `TestProviderCapabilityMatrixIsTotal`, `TestCheckCapabilityFailsClosed`, `TestCodexProviderCapabilitiesClaimed`. Fail-closed call sites: `TestStartCodexSessionFailsWithCapabilityError`, `TestCodexRewindFailsWithCapabilityError`, `TestAgentMissingOperationFailsWithCapabilityError`, `TestCodexTaskToolRestrictionsFailClosed`, `TestCodexTaskWithoutRestrictionsIsNotBlocked`, `TestCodexTaskArgsCarryNoToolRestrictionFlags`, attach/log empty on fake. | Human review of accepted gaps | Hermetic sealed |
 | 🎯T4.7 docs/release gate | Documentation consistency | README, agents-guide.md, STABILITY.md, release notes share one support matrix (blocked on code targets + this map). | Release checklist only | Map ready; release gate waits on T4.x code |
 | 🎯T4.8 verification choke | Oracle-first map + assets | This document + fixture inventory + fault oracles below. | Live never sole evidence | **Sealed** |
