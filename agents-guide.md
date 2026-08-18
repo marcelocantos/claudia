@@ -153,6 +153,12 @@ Grok ACP `mcpServers`). Codex Session has no `thread/start` MCP field —
 `LoadMCPArgs` / `EnsureMCPArgs` so they never touch the daily files.
 Bedrock and Ollama have no MCP ensure path.
 
+HTTP MCP OAuth (🎯T42): `ProbeMCP` classifies a URL as `open`,
+`static`, or `oauth` from one unauthenticated initialize.
+`AuthorizeMCP` is owner-present PKCE (browser + local redirect);
+Claudia returns tokens and does not store them. Token refresh
+without the owner is jevons 🎯T520. Stdio MCP is out of scope.
+
 Pass `SessionID` to attempt `session/load`. A materialized resume
 (`RequireResume`) never mints a replacement session: load failure is an
 error, including when `MCPConfig` is set. `MCPConfig` is converted to
