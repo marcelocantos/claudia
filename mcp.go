@@ -22,6 +22,15 @@ type MCPServer struct {
 	Command string            `json:"command,omitempty"`
 	Args    []string          `json:"args,omitempty"`
 	Env     map[string]string `json:"env,omitempty"`
+
+	// Static HTTP auth (🎯T41). Headers is the Claude/Grok form
+	// (Authorization: Bearer …, or ${ENV} interpolation). BearerTokenEnv
+	// is the Codex form (bearer_token_env_var). Auth is Codex
+	// oauth|chatgpt when no static token is supplied.
+	Headers        map[string]string `json:"headers,omitempty"`
+	HeadersHelper  string            `json:"headersHelper,omitempty"`
+	BearerTokenEnv string            `json:"bearerTokenEnv,omitempty"`
+	Auth           string            `json:"auth,omitempty"`
 }
 
 // LoadMCPArgs selects which on-disk Claude config to read. Nil is valid
@@ -42,10 +51,15 @@ type MCPInventory struct {
 }
 
 // EnsureMCPArgs is the single write surface (🎯T40). One name + HTTP URL
-// is merged into each Session provider's own config file.
+// is merged into each Session provider's own config file. Optional
+// Headers / BearerTokenEnv / Auth travel with the registration (🎯T41).
 type EnsureMCPArgs struct {
-	Name string
-	URL  string
+	Name           string
+	URL            string
+	Headers        map[string]string
+	HeadersHelper  string
+	BearerTokenEnv string
+	Auth           string
 	// Path overrides. Empty uses the production user-scope files.
 	// Isolates and tests must pass fixture paths — never the daily
 	// ~/.claude.json / ~/.grok/config.toml / ~/.codex/config.toml.
@@ -116,7 +130,7 @@ func EnsureMCP(args *EnsureMCPArgs) error {
 			if path == "" {
 				path = filepath.Join(home, ".claude.json")
 			}
-			if _, err := upsertClaudeJSON(path, name, url); err != nil {
+			if _, err := upsertClaudeJSON(path, args.server()); err != nil {
 				return fmt.Errorf("ensure mcp claude: %w", err)
 			}
 		case ProviderGrok:
@@ -124,7 +138,7 @@ func EnsureMCP(args *EnsureMCPArgs) error {
 			if path == "" {
 				path = filepath.Join(home, ".grok", "config.toml")
 			}
-			if _, err := upsertTOMLHTTPServer(path, name, url); err != nil {
+			if _, err := upsertTOMLHTTPServer(path, args.server()); err != nil {
 				return fmt.Errorf("ensure mcp grok: %w", err)
 			}
 		case ProviderCodex:
@@ -132,7 +146,7 @@ func EnsureMCP(args *EnsureMCPArgs) error {
 			if path == "" {
 				path = filepath.Join(home, ".codex", "config.toml")
 			}
-			if _, err := upsertTOMLHTTPServer(path, name, url); err != nil {
+			if _, err := upsertTOMLHTTPServer(path, args.server()); err != nil {
 				return fmt.Errorf("ensure mcp codex: %w", err)
 			}
 		case ProviderBedrock, ProviderOllama:
@@ -143,6 +157,18 @@ func EnsureMCP(args *EnsureMCPArgs) error {
 		}
 	}
 	return nil
+}
+
+func (a *EnsureMCPArgs) server() MCPServer {
+	return MCPServer{
+		Name:           strings.TrimSpace(a.Name),
+		Type:           "http",
+		URL:            strings.TrimSpace(a.URL),
+		Headers:        a.Headers,
+		HeadersHelper:  strings.TrimSpace(a.HeadersHelper),
+		BearerTokenEnv: strings.TrimSpace(a.BearerTokenEnv),
+		Auth:           strings.TrimSpace(a.Auth),
+	}
 }
 
 func claudiaMCPFile(workDir string) string {
@@ -207,12 +233,15 @@ func mcpServersToACP(servers []MCPServer) []any {
 	for _, s := range servers {
 		switch {
 		case strings.TrimSpace(s.URL) != "":
-			out = append(out, map[string]any{
-				"type":    "http",
-				"name":    s.Name,
-				"url":     s.URL,
-				"headers": []any{},
-			})
+			entry := map[string]any{
+				"type": "http",
+				"name": s.Name,
+				"url":  s.URL,
+			}
+			if hdrs := acpHeaders(s); hdrs != nil {
+				entry["headers"] = hdrs
+			}
+			out = append(out, entry)
 		case s.Command != "":
 			envs := []any{}
 			for k, v := range s.Env {
@@ -270,6 +299,13 @@ func mcpMapFromAny(v any) []MCPServer {
 		s := MCPServer{Name: name, Type: stringField(m, "type")}
 		s.URL = stringField(m, "url")
 		s.Command = stringField(m, "command")
+		s.HeadersHelper = stringField(m, "headersHelper")
+		s.BearerTokenEnv = stringField(m, "bearerTokenEnv")
+		if s.BearerTokenEnv == "" {
+			s.BearerTokenEnv = stringField(m, "bearer_token_env_var")
+		}
+		s.Auth = stringField(m, "auth")
+		s.Headers = stringMapField(m, "headers")
 		if args, ok := m["args"].([]any); ok {
 			for _, a := range args {
 				if str, ok := a.(string); ok {
@@ -302,6 +338,34 @@ func stringField(m map[string]any, key string) string {
 	return s
 }
 
+func stringMapField(m map[string]any, key string) map[string]string {
+	raw, ok := m[key].(map[string]any)
+	if !ok {
+		return nil
+	}
+	out := map[string]string{}
+	for k, v := range raw {
+		if str, ok := v.(string); ok && str != "" {
+			out[k] = str
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func acpHeaders(s MCPServer) []any {
+	if len(s.Headers) == 0 {
+		return nil
+	}
+	var out []any
+	for k, v := range s.Headers {
+		out = append(out, map[string]any{"name": k, "value": v})
+	}
+	return out
+}
+
 func writeClaudeMCPJSON(path string, servers []MCPServer) error {
 	root := map[string]any{"mcpServers": claudeMCPObject(servers)}
 	return writeJSONFile(path, root)
@@ -318,6 +382,18 @@ func claudeMCPObject(servers []MCPServer) map[string]any {
 			entry["type"] = "http"
 			entry["url"] = s.URL
 		}
+		if len(s.Headers) > 0 {
+			entry["headers"] = s.Headers
+		}
+		if s.HeadersHelper != "" {
+			entry["headersHelper"] = s.HeadersHelper
+		}
+		if s.BearerTokenEnv != "" {
+			entry["bearerTokenEnv"] = s.BearerTokenEnv
+		}
+		if s.Auth != "" {
+			entry["auth"] = s.Auth
+		}
 		if s.Command != "" {
 			entry["command"] = s.Command
 			if len(s.Args) > 0 {
@@ -332,7 +408,7 @@ func claudeMCPObject(servers []MCPServer) map[string]any {
 	return obj
 }
 
-func upsertClaudeJSON(path, name, url string) (bool, error) {
+func upsertClaudeJSON(path string, srv MCPServer) (bool, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return false, err
 	}
@@ -360,12 +436,11 @@ func upsertClaudeJSON(path, name, url string) (bool, error) {
 	if servers == nil {
 		servers = map[string]any{}
 	}
-	if existing, ok := servers[name].(map[string]any); ok {
-		if stringField(existing, "url") == url && (stringField(existing, "type") == "http" || stringField(existing, "type") == "") {
-			return false, nil
-		}
+	want := claudeHTTPEntry(srv)
+	if existing, ok := servers[srv.Name].(map[string]any); ok && sameStringAnyMap(existing, want) {
+		return false, nil
 	}
-	servers[name] = map[string]any{"type": "http", "url": url}
+	servers[srv.Name] = want
 	root["mcpServers"] = servers
 	out, err := json.MarshalIndent(root, "", "  ")
 	if err != nil {
@@ -396,7 +471,30 @@ func writeJSONFile(path string, root map[string]any) error {
 	return os.WriteFile(path, out, 0o644)
 }
 
-func upsertTOMLHTTPServer(path, name, url string) (bool, error) {
+func claudeHTTPEntry(srv MCPServer) map[string]any {
+	entry := map[string]any{"type": "http", "url": srv.URL}
+	if len(srv.Headers) > 0 {
+		entry["headers"] = srv.Headers
+	}
+	if srv.HeadersHelper != "" {
+		entry["headersHelper"] = srv.HeadersHelper
+	}
+	if srv.BearerTokenEnv != "" {
+		entry["bearerTokenEnv"] = srv.BearerTokenEnv
+	}
+	if srv.Auth != "" {
+		entry["auth"] = srv.Auth
+	}
+	return entry
+}
+
+func sameStringAnyMap(a, b map[string]any) bool {
+	aj, err1 := json.Marshal(a)
+	bj, err2 := json.Marshal(b)
+	return err1 == nil && err2 == nil && string(aj) == string(bj)
+}
+
+func upsertTOMLHTTPServer(path string, srv MCPServer) (bool, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return false, err
 	}
@@ -414,7 +512,7 @@ func upsertTOMLHTTPServer(path, name, url string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	next, changed := mergeTOMLHTTPServer(string(data), name, url)
+	next, changed := mergeTOMLHTTPServer(string(data), srv)
 	if !changed {
 		return false, nil
 	}
@@ -430,44 +528,82 @@ func upsertTOMLHTTPServer(path, name, url string) (bool, error) {
 	return true, nil
 }
 
-func mergeTOMLHTTPServer(src, name, url string) (string, bool) {
-	prefix := "mcp_servers." + name
+func mergeTOMLHTTPServer(src string, srv MCPServer) (string, bool) {
+	prefix := "mcp_servers." + srv.Name
 	lines := strings.Split(strings.ReplaceAll(src, "\r\n", "\n"), "\n")
 	var keep []string
 	skip := false
 	had := false
-	curURL := ""
+	cur := map[string]string{}
+	curHeaders := map[string]string{}
+	inHeaders := false
 	for _, line := range lines {
 		trim := strings.TrimSpace(line)
 		if key, ok := tomlTableKey(trim); ok {
 			if key == prefix || strings.HasPrefix(key, prefix+".") {
 				skip = true
+				inHeaders = key == prefix+".headers"
 				if key == prefix {
 					had = true
 				}
 				continue
 			}
 			skip = false
+			inHeaders = false
 		}
 		if skip {
-			if k, v, ok := tomlBareKV(trim); ok && k == "url" {
-				curURL = strings.Trim(v, `"'`)
+			if k, v, ok := tomlBareKV(trim); ok {
+				v = strings.Trim(v, `"'`)
+				if inHeaders {
+					curHeaders[k] = v
+				} else {
+					cur[k] = v
+				}
 			}
 			continue
 		}
 		keep = append(keep, line)
 	}
-	if had && curURL == url {
+	if had && cur["url"] == srv.URL &&
+		cur["bearer_token_env_var"] == srv.BearerTokenEnv &&
+		cur["auth"] == srv.Auth &&
+		sameStringMap(curHeaders, srv.Headers) {
 		return src, false
 	}
 	for len(keep) > 0 && strings.TrimSpace(keep[len(keep)-1]) == "" {
 		keep = keep[:len(keep)-1]
 	}
-	block := fmt.Sprintf("\n[mcp_servers.%s]\nurl = %q\nenabled = true\n", name, url)
+	var b strings.Builder
+	fmt.Fprintf(&b, "\n[mcp_servers.%s]\nurl = %q\nenabled = true\n", srv.Name, srv.URL)
+	if srv.BearerTokenEnv != "" {
+		fmt.Fprintf(&b, "bearer_token_env_var = %q\n", srv.BearerTokenEnv)
+	}
+	if srv.Auth != "" {
+		fmt.Fprintf(&b, "auth = %q\n", srv.Auth)
+	}
+	if len(srv.Headers) > 0 {
+		fmt.Fprintf(&b, "\n[mcp_servers.%s.headers]\n", srv.Name)
+		for k, v := range srv.Headers {
+			fmt.Fprintf(&b, "%s = %q\n", k, v)
+		}
+	}
+	block := b.String()
 	if len(keep) == 0 {
 		return strings.TrimPrefix(block, "\n"), true
 	}
 	return strings.Join(keep, "\n") + "\n" + block, true
+}
+
+func sameStringMap(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if b[k] != v {
+			return false
+		}
+	}
+	return true
 }
 
 func tomlTableKey(trim string) (string, bool) {

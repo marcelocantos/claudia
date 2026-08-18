@@ -818,6 +818,7 @@ func acpMCPServers(mcpConfigPath string) []any {
 			Command string            `json:"command"`
 			Args    []string          `json:"args"`
 			Env     map[string]string `json:"env"`
+			Headers map[string]string `json:"headers"`
 		} `json:"mcpServers"`
 	}
 	if err := json.Unmarshal(data, &cfg); err != nil {
@@ -828,12 +829,15 @@ func acpMCPServers(mcpConfigPath string) []any {
 	for name, srv := range cfg.MCPServers {
 		switch {
 		case srv.URL != "":
-			out = append(out, map[string]any{
-				"type":    "http",
-				"name":    name,
-				"url":     srv.URL,
-				"headers": []any{},
-			})
+			entry := map[string]any{
+				"type": "http",
+				"name": name,
+				"url":  srv.URL,
+			}
+			if len(srv.Headers) > 0 {
+				entry["headers"] = acpHeaders(MCPServer{Headers: srv.Headers})
+			}
+			out = append(out, entry)
 		case srv.Command != "":
 			envs := []any{}
 			for k, v := range srv.Env {

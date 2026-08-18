@@ -199,6 +199,107 @@ func TestWriteSessionMCPFileIsPrivateJSON(t *testing.T) {
 	}
 }
 
+func TestMCPAuthRoundTripAndACP(t *testing.T) {
+	dir := t.TempDir()
+	claude := filepath.Join(dir, "claude.json")
+	grok := filepath.Join(dir, "grok.toml")
+	codex := filepath.Join(dir, "codex.toml")
+	doc := map[string]any{
+		"mcpServers": map[string]any{
+			"private": map[string]any{
+				"type": "http",
+				"url":  "https://mcp.example.com/mcp",
+				"headers": map[string]any{
+					"Authorization": "Bearer ${API_TOKEN}",
+				},
+			},
+		},
+	}
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(claude, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	inv, err := LoadMCP(&LoadMCPArgs{ClaudeJSON: claude})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := mcpByName(inv.Servers)["private"]
+	if got.Headers["Authorization"] != "Bearer ${API_TOKEN}" {
+		t.Fatalf("load dropped headers: %+v", got)
+	}
+
+	args := &EnsureMCPArgs{
+		Name:           "private",
+		URL:            got.URL,
+		Headers:        got.Headers,
+		BearerTokenEnv: "API_TOKEN",
+		ClaudeJSON:     claude,
+		GrokTOML:       grok,
+		CodexTOML:      codex,
+	}
+	if err := EnsureMCP(args); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureMCP(args); err != nil {
+		t.Fatal(err)
+	}
+	again, err := LoadMCP(&LoadMCPArgs{ClaudeJSON: claude})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = mcpByName(again.Servers)["private"]
+	if got.Headers["Authorization"] != "Bearer ${API_TOKEN}" || got.BearerTokenEnv != "API_TOKEN" {
+		t.Fatalf("ensure dropped auth: %+v", got)
+	}
+	grokTxt := string(readFile(t, grok))
+	if !strings.Contains(grokTxt, "Bearer ${API_TOKEN}") || !strings.Contains(grokTxt, "bearer_token_env_var") {
+		t.Fatalf("grok auth:\n%s", grokTxt)
+	}
+	codexTxt := string(readFile(t, codex))
+	if !strings.Contains(codexTxt, `bearer_token_env_var = "API_TOKEN"`) {
+		t.Fatalf("codex auth:\n%s", codexTxt)
+	}
+	acp := mcpServersToACP([]MCPServer{got})
+	m := acp[0].(map[string]any)
+	hdrs, ok := m["headers"].([]any)
+	if !ok || len(hdrs) != 1 {
+		t.Fatalf("acp headers = %#v", m["headers"])
+	}
+}
+
+func TestEnsureMCPCorrectsStaleHeader(t *testing.T) {
+	dir := t.TempDir()
+	claude := filepath.Join(dir, "claude.json")
+	if err := EnsureMCP(&EnsureMCPArgs{
+		Name:       "api",
+		URL:        "https://mcp.example.com/mcp",
+		Headers:    map[string]string{"Authorization": "Bearer old"},
+		ClaudeJSON: claude,
+		Providers:  []Provider{ProviderClaude},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureMCP(&EnsureMCPArgs{
+		Name:       "api",
+		URL:        "https://mcp.example.com/mcp",
+		Headers:    map[string]string{"Authorization": "Bearer new"},
+		ClaudeJSON: claude,
+		Providers:  []Provider{ProviderClaude},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	inv, err := LoadMCP(&LoadMCPArgs{ClaudeJSON: claude})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mcpByName(inv.Servers)["api"].Headers["Authorization"] != "Bearer new" {
+		t.Fatalf("stale header not replaced: %+v", inv.Servers)
+	}
+}
+
 func TestEnsureMCPRejectsBadName(t *testing.T) {
 	err := EnsureMCP(&EnsureMCPArgs{Name: "bad name", URL: "http://127.0.0.1/mcp"})
 	if err == nil {

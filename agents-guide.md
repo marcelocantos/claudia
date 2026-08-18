@@ -136,6 +136,9 @@ they do not write `~/.claude.json`, `~/.grok/config.toml`, or
 inv, err := claudia.LoadMCP(nil) // Claude user-scope map
 inv.Servers = append(inv.Servers, claudia.MCPServer{
     Name: "jevonsmcp", Type: "http", URL: "http://127.0.0.1:13705/mcp",
+    // Headers / BearerTokenEnv ride with the server when the
+    // endpoint needs a static token. OAuth stays in each
+    // provider's own vault — Claudia does not copy it.
 })
 cfg.MCPServers = inv.Servers
 if err := claudia.EnsureMCP(&claudia.EnsureMCPArgs{
