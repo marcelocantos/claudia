@@ -1448,6 +1448,7 @@ func (a *Agent) tailJSONL() {
 	defer f.Close()
 
 	reader := bufio.NewReader(f)
+	var correlator claudeEventCorrelator
 	for {
 		line, err := reader.ReadString('\n')
 		if err != nil {
@@ -1462,7 +1463,7 @@ func (a *Agent) tailJSONL() {
 			continue
 		}
 
-		ev := parseEvent(line)
+		ev := correlator.correlate(parseEvent(line))
 
 		a.publishEvent(ev)
 	}

@@ -104,6 +104,60 @@ func TestParseCodexAppServerInterruptedFixture(t *testing.T) {
 	}
 }
 
+func TestCodexAppServerEventsCarryTrackedTurnIdentity(t *testing.T) {
+	var got []Event
+	c := &codexAppServerClient{
+		threadID: "thr-identity",
+		onEvent:  func(ev Event) { got = append(got, ev) },
+	}
+	startTurn := func(turnID, itemID, text string, responseID int) {
+		t.Helper()
+		c.mu.Lock()
+		c.inFlight = true
+		c.turnID = ""
+		c.mu.Unlock()
+		c.dispatch([]byte(fmt.Sprintf(`{"id":%d,"result":{"turn":{"id":%q,"status":"inProgress"}}}`, responseID, turnID)))
+		// Deliberately omit turnId: dispatch must stamp the turn/start identity
+		// it already tracks, not leave consumers to infer it.
+		c.dispatch([]byte(fmt.Sprintf(`{"method":"item/completed","params":{"threadId":"thr-identity","item":{"id":%q,"type":"agent_message","text":%q}}}`, itemID, text)))
+		c.dispatch([]byte(fmt.Sprintf(`{"method":"turn/completed","params":{"threadId":"thr-identity","turn":{"id":%q,"status":"completed"}}}`, turnID)))
+	}
+
+	startTurn("turn-1", "item-1", "first", 1)
+	// A backend item outside an in-flight turn must not inherit turn-1.
+	c.dispatch([]byte(`{"method":"item/completed","params":{"threadId":"thr-identity","item":{"id":"item-outside","type":"agent_message","text":"outside"}}}`))
+	startTurn("turn-2", "item-2", "second", 2)
+
+	if len(got) != 5 {
+		t.Fatalf("events = %d, want 5: %+v", len(got), got)
+	}
+	checks := []struct {
+		index     int
+		turnID    string
+		messageID string
+		terminal  bool
+	}{
+		{0, "turn-1", "item-1", false},
+		{1, "turn-1", "", true},
+		{2, "", "item-outside", false},
+		{3, "turn-2", "item-2", false},
+		{4, "turn-2", "", true},
+	}
+	for _, check := range checks {
+		ev := got[check.index]
+		if ev.SessionID != "thr-identity" || ev.TurnID != check.turnID || ev.MessageID != check.messageID {
+			t.Errorf("event[%d] identity = session %q turn %q message %q, want thr-identity/%q/%q",
+				check.index, ev.SessionID, ev.TurnID, ev.MessageID, check.turnID, check.messageID)
+		}
+		if ev.IsTerminalStop() != check.terminal {
+			t.Errorf("event[%d] terminal = %v, want %v", check.index, ev.IsTerminalStop(), check.terminal)
+		}
+	}
+	if got[0].TurnID == got[3].TurnID {
+		t.Fatalf("consecutive Codex turns share TurnID %q", got[0].TurnID)
+	}
+}
+
 func TestParseCodexAppServerUnsupportedCapabilityFixture(t *testing.T) {
 	line := readFixtureLines(t, "testdata/codex/app-server/unsupported-capability.jsonl")[0]
 	ev, ok, err := parseCodexAppServerLine([]byte(line))

@@ -257,6 +257,8 @@ every event independently:
 ```go
 token := agent.SubscribeEvents(func(ev claudia.Event) {
     // ev.Type: "assistant", "user", "system", "progress", ...
+    // ev.SessionID / ev.TurnID: backend-owned conversation and turn identity
+    // ev.MessageID: backend message/item identity when available
     // ev.Text: concatenated text for assistant turns
     // ev.Usage: token counts (populated on assistant events)
     // ev.Raw:  complete JSONL line
@@ -266,6 +268,13 @@ defer agent.UnsubscribeEvents(token)
 agent.Send("prompt")  // short text is typed; large payloads are pasted. Extra Enters until the composer leaves idle. Failure is `turn not submitted: composer state=…` — never a silent "keys sent".
 reply, err := agent.WaitForResponse(ctx)  // blocks until the turn's terminal stop_reason
 ```
+
+`TurnID` is safe to use directly as the grouping key for assistant and
+progress events. Claudia never mints it from stop-reason observation: Claude
+uses the prompt transcript record UUID, Codex uses its app-server turn ID, and
+Grok uses its ACP prompt request ID. `TurnID == ""` means the backend did not
+associate that event with an in-flight turn; consumers must not carry forward
+the previous ID or manufacture a replacement.
 
 For a one-shot, use the package-level helper:
 

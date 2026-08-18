@@ -318,10 +318,13 @@ func normalizeCodexAppServerItemType(t string) string {
 func (ev codexAppServerEvent) agentEvent() (Event, bool) {
 	if ev.IsError {
 		return Event{
-			Type:    "system",
-			Raw:     ev.Raw,
-			Text:    ev.ErrorMsg,
-			IsError: true,
+			Type:      "system",
+			SessionID: ev.ThreadID,
+			TurnID:    ev.TurnID,
+			MessageID: ev.ItemID,
+			Raw:       ev.Raw,
+			Text:      ev.ErrorMsg,
+			IsError:   true,
 		}, true
 	}
 	switch ev.Method {
@@ -332,15 +335,19 @@ func (ev codexAppServerEvent) agentEvent() (Event, bool) {
 			return Event{}, false
 		}
 		return Event{
-			Type:  "system",
-			Raw:   ev.Raw,
-			Model: ev.Model,
-			Text:  ev.ThreadID,
+			Type:      "system",
+			SessionID: ev.ThreadID,
+			Raw:       ev.Raw,
+			Model:     ev.Model,
+			Text:      ev.ThreadID,
 		}, true
 	case "item/started", "item/completed":
 		if ev.ItemType == "command_execution" {
 			return Event{
 				Type:         "progress",
+				SessionID:    ev.ThreadID,
+				TurnID:       ev.TurnID,
+				MessageID:    ev.ItemID,
 				Raw:          ev.Raw,
 				ProgressType: "tool_use",
 			}, true
@@ -352,10 +359,13 @@ func (ev codexAppServerEvent) agentEvent() (Event, bool) {
 				return Event{}, false
 			}
 			return Event{
-				Type:  "assistant",
-				Raw:   ev.Raw,
-				Text:  ev.Text,
-				Model: ev.Model,
+				Type:      "assistant",
+				SessionID: ev.ThreadID,
+				TurnID:    ev.TurnID,
+				MessageID: ev.ItemID,
+				Raw:       ev.Raw,
+				Text:      ev.Text,
+				Model:     ev.Model,
 			}, true
 		}
 	case "thread/tokenUsage/updated":
@@ -363,26 +373,32 @@ func (ev codexAppServerEvent) agentEvent() (Event, bool) {
 			return Event{}, false
 		}
 		return Event{
-			Type:  "assistant",
-			Raw:   ev.Raw,
-			Usage: ev.Usage,
+			Type:      "assistant",
+			SessionID: ev.ThreadID,
+			TurnID:    ev.TurnID,
+			Raw:       ev.Raw,
+			Usage:     ev.Usage,
 		}, true
 	case "turn/completed":
 		out := Event{
-			Type:  "assistant",
-			Raw:   ev.Raw,
-			Usage: ev.Usage,
-			Model: ev.Model,
+			Type:      "assistant",
+			SessionID: ev.ThreadID,
+			TurnID:    ev.TurnID,
+			Raw:       ev.Raw,
+			Usage:     ev.Usage,
+			Model:     ev.Model,
 		}
 		switch ev.Status {
 		case "completed", "interrupted":
 			out.StopReason = "end_turn"
 		case "failed":
 			return Event{
-				Type:    "system",
-				Raw:     ev.Raw,
-				Text:    ev.ErrorMsg,
-				IsError: true,
+				Type:      "system",
+				SessionID: ev.ThreadID,
+				TurnID:    ev.TurnID,
+				Raw:       ev.Raw,
+				Text:      ev.ErrorMsg,
+				IsError:   true,
 			}, true
 		}
 		return out, true

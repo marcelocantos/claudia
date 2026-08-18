@@ -103,6 +103,54 @@ func TestHermeticGrokSessionStartSendWait(t *testing.T) {
 	}
 }
 
+func TestGrokACPEventsCarryPromptBracketIdentity(t *testing.T) {
+	var got []Event
+	c := &grokACPClient{
+		sessionID: "sess-identity",
+		promptID:  41,
+		onEvent:   func(ev Event) { got = append(got, ev) },
+	}
+	update := []byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess-identity","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"chunk"}}}}`)
+
+	c.dispatchMessage(update)
+	c.dispatchMessage([]byte(`{"jsonrpc":"2.0","id":41,"result":{"stopReason":"end_turn"}}`))
+	// Once the response closes prompt 41, a stray update remains associated
+	// with its session but must not inherit the completed prompt id.
+	c.dispatchMessage(update)
+	c.mu.Lock()
+	c.promptID = 42
+	c.mu.Unlock()
+	c.dispatchMessage(update)
+	c.dispatchMessage([]byte(`{"jsonrpc":"2.0","id":42,"result":{"stopReason":"end_turn"}}`))
+	c.mu.Lock()
+	c.promptID = 43
+	c.mu.Unlock()
+	c.dispatchMessage([]byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess-other","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"foreign"}}}}`))
+
+	if len(got) != 6 {
+		t.Fatalf("events = %d, want 6: %+v", len(got), got)
+	}
+	wantTurns := []string{"41", "41", "", "42", "42", ""}
+	for i, want := range wantTurns {
+		wantSession := "sess-identity"
+		if i == 5 {
+			wantSession = "sess-other"
+		}
+		if got[i].SessionID != wantSession || got[i].TurnID != want {
+			t.Errorf("event[%d] identity = session %q turn %q, want %s/%q", i, got[i].SessionID, got[i].TurnID, wantSession, want)
+		}
+	}
+	if !got[1].IsTerminalStop() || !got[4].IsTerminalStop() {
+		t.Fatalf("terminal events = [%v, %v], want true", got[1].IsTerminalStop(), got[4].IsTerminalStop())
+	}
+	if got[0].TurnID == got[3].TurnID {
+		t.Fatalf("consecutive Grok prompts share TurnID %q", got[0].TurnID)
+	}
+	if got[5].SessionID != "sess-other" {
+		t.Fatalf("foreign update SessionID = %q, want sess-other", got[5].SessionID)
+	}
+}
+
 // TestHermeticGrokBashPermissionOptionID proves the client never replies
 // with a foreign optionId when Grok only offers bash-scoped allows
 // (live failure: unknown permission option for tool run_terminal_command).

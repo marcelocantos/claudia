@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -256,12 +257,14 @@ func (c *grokACPClient) dispatchMessage(line []byte) {
 			delete(c.pending, *msg.ID)
 		}
 		isPrompt := c.promptID == *msg.ID
+		promptID := c.promptID
+		sessionID := c.sessionID
 		if isPrompt {
 			c.promptID = 0
 		}
 		c.mu.Unlock()
 		if isPrompt {
-			c.publishPromptResult(msg)
+			c.publishPromptResult(msg, sessionID, strconv.FormatInt(promptID, 10))
 		}
 		if ch != nil {
 			select {
@@ -390,6 +393,21 @@ func (c *grokACPClient) handleSessionUpdate(params json.RawMessage) {
 	if err := json.Unmarshal(params, &p); err != nil {
 		return
 	}
+	c.mu.Lock()
+	promptID := c.promptID
+	clientSessionID := c.sessionID
+	c.mu.Unlock()
+	sessionID := clientSessionID
+	if p.SessionID != "" {
+		sessionID = p.SessionID
+	}
+	turnID := ""
+	// A client owns one ACP session. If a malformed or stale update names a
+	// different session, preserve its stated SessionID but never attach this
+	// session's active prompt id to it.
+	if promptID != 0 && (p.SessionID == "" || clientSessionID == "" || p.SessionID == clientSessionID) {
+		turnID = strconv.FormatInt(promptID, 10)
+	}
 	switch p.Update.SessionUpdate {
 	case "agent_message_chunk":
 		text := ""
@@ -399,16 +417,16 @@ func (c *grokACPClient) handleSessionUpdate(params json.RawMessage) {
 		if text == "" {
 			return
 		}
-		c.onEvent(Event{Type: "assistant", Raw: params, Text: text})
+		c.onEvent(Event{Type: "assistant", SessionID: sessionID, TurnID: turnID, Raw: params, Text: text})
 	case "tool_call", "tool_call_update":
 		// Pass params through unchanged so rawInput is preserved.
-		c.onEvent(Event{Type: "progress", Raw: params, ProgressType: "tool_use"})
+		c.onEvent(Event{Type: "progress", SessionID: sessionID, TurnID: turnID, Raw: params, ProgressType: "tool_use"})
 	case "user_message_chunk":
 		text := ""
 		if p.Update.Content != nil {
 			text = p.Update.Content.Text
 		}
-		c.onEvent(Event{Type: "user", Raw: params, Text: text})
+		c.onEvent(Event{Type: "user", SessionID: sessionID, TurnID: turnID, Raw: params, Text: text})
 	}
 }
 
@@ -560,12 +578,14 @@ func (c *grokACPClient) Prompt(text string) error {
 	})
 }
 
-func (c *grokACPClient) publishPromptResult(msg acpRPCMessage) {
+func (c *grokACPClient) publishPromptResult(msg acpRPCMessage, sessionID, turnID string) {
 	if msg.Error != nil {
 		if c.onEvent != nil {
 			raw, _ := json.Marshal(msg.Error)
 			c.onEvent(Event{
 				Type:       "assistant",
+				SessionID:  sessionID,
+				TurnID:     turnID,
 				Raw:        raw,
 				Text:       msg.Error.Message,
 				StopReason: "end_turn",
@@ -612,6 +632,8 @@ func (c *grokACPClient) publishPromptResult(msg acpRPCMessage) {
 		}
 		c.onEvent(Event{
 			Type:       "assistant",
+			SessionID:  sessionID,
+			TurnID:     turnID,
 			Raw:        raw,
 			StopReason: stopReason,
 			Usage:      usage,

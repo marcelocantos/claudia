@@ -191,8 +191,15 @@ func (c *codexAppServerClient) dispatch(line []byte) {
 	if ev.Model != "" {
 		c.model = ev.Model
 	}
+	if ev.ThreadID == "" {
+		ev.ThreadID = c.threadID
+	}
+	if ev.TurnID == "" && c.inFlight {
+		ev.TurnID = c.turnID
+	}
 	if ev.Method == "turn/completed" {
 		c.inFlight = false
+		c.turnID = ""
 	}
 	onEvent := c.onEvent
 	c.mu.Unlock()
@@ -337,6 +344,7 @@ func (c *codexAppServerClient) Prompt(text string) error {
 		return fmt.Errorf("codex app-server: turn already in flight")
 	}
 	c.inFlight = true
+	c.turnID = ""
 	threadID := c.threadID
 	c.mu.Unlock()
 

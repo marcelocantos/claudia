@@ -8,10 +8,30 @@ import (
 	"strings"
 )
 
-// Event is a parsed JSONL event from a Claude Code session transcript.
+// Event is a provider-neutral event from a persistent agent session.
 type Event struct {
 	// Type is the event type: "assistant", "user", "system", "progress", etc.
 	Type string `json:"type"`
+
+	// SessionID is the backend's durable conversation identity: a Claude
+	// session id, Codex thread id, or Grok ACP session id.
+	SessionID string `json:"-"`
+
+	// TurnID groups every event caused by one user prompt. It comes from the
+	// backend's own correlation primitive: the Claude prompt record UUID,
+	// Codex turn id, or Grok ACP session/prompt request id. Empty means the
+	// backend did not associate the event with an in-flight turn.
+	TurnID string `json:"-"`
+
+	// MessageID is the backend's identity for a logical message or item when
+	// one exists (Claude message.id, Codex itemId). It is empty for backends
+	// and event kinds that expose only turn-level correlation.
+	MessageID string `json:"-"`
+
+	// RecordID is the identity of this individual backend record when one
+	// exists. Claude transcript records expose their top-level uuid here;
+	// other providers currently leave it empty.
+	RecordID string `json:"-"`
 
 	// Raw is the complete JSONL line as the bytes that were parsed.
 	// Callers that want to re-marshal can wrap in json.RawMessage.
@@ -81,10 +101,16 @@ func parseEvent(line string) Event {
 		return ev
 	}
 	ev.Type, _ = entry["type"].(string)
+	ev.RecordID, _ = entry["uuid"].(string)
+	ev.SessionID, _ = entry["sessionId"].(string)
+	if ev.SessionID == "" {
+		ev.SessionID, _ = entry["session_id"].(string)
+	}
 
 	switch ev.Type {
 	case "assistant":
 		if msg, ok := entry["message"].(map[string]any); ok {
+			ev.MessageID, _ = msg["id"].(string)
 			if sr, ok := msg["stop_reason"].(string); ok {
 				ev.StopReason = sr
 			}
@@ -125,6 +151,37 @@ func parseEvent(line string) Event {
 		}
 	}
 
+	return ev
+}
+
+// claudeEventCorrelator stamps transcript events with the UUID of the user
+// prompt record that opened their turn. Claude repeats message.id across the
+// content-block records of a terminal assistant message, so terminalMessageID
+// keeps those sibling records in the same turn while ensuring the first
+// unrelated record after them is not mislabeled with the completed turn.
+type claudeEventCorrelator struct {
+	turnID            string
+	terminalMessageID string
+}
+
+func (c *claudeEventCorrelator) correlate(ev Event) Event {
+	if isUserPromptLine(ev.Raw) {
+		c.turnID = ev.RecordID
+		c.terminalMessageID = ""
+	} else if c.terminalMessageID != "" && ev.MessageID != c.terminalMessageID {
+		c.turnID = ""
+		c.terminalMessageID = ""
+	}
+
+	ev.TurnID = c.turnID
+	if ev.IsTerminalStop() {
+		if ev.MessageID == "" {
+			c.turnID = ""
+			c.terminalMessageID = ""
+		} else {
+			c.terminalMessageID = ev.MessageID
+		}
+	}
 	return ev
 }
 
