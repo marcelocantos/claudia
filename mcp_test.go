@@ -47,6 +47,9 @@ func TestLoadMCPReadsClaudeUserMapAndProjectOverlay(t *testing.T) {
 	if byName["mnemo"].URL != "http://127.0.0.1:7700/mcp" {
 		t.Fatalf("user mnemo = %+v", byName["mnemo"])
 	}
+	if !hasProvider(byName["mnemo"].Providers, ProviderClaude) || hasProvider(byName["mnemo"].Providers, ProviderCodex) {
+		t.Fatalf("claude-only mnemo providers = %v", byName["mnemo"].Providers)
+	}
 	if byName["old"].URL != "http://127.0.0.1:1/mcp" {
 		t.Fatalf("user old = %+v", byName["old"])
 	}
@@ -61,6 +64,87 @@ func TestLoadMCPReadsClaudeUserMapAndProjectOverlay(t *testing.T) {
 	}
 	if byName["mnemo"].URL != "http://127.0.0.1:7700/mcp" {
 		t.Fatalf("mnemo dropped by overlay: %+v", byName["mnemo"])
+	}
+}
+
+func TestLoadMCPPerProviderOrigins(t *testing.T) {
+	dir := t.TempDir()
+	claude := filepath.Join(dir, "claude.json")
+	grok := filepath.Join(dir, "grok.toml")
+	codex := filepath.Join(dir, "codex.toml")
+	doc := map[string]any{
+		"mcpServers": map[string]any{
+			"mnemo":     map[string]any{"type": "http", "url": "http://127.0.0.1:7700/mcp"},
+			"atlassian": map[string]any{"type": "http", "url": "https://mcp.atlassian.com/v1/mcp/authv2"},
+		},
+	}
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(claude, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(grok, []byte(`
+[mcp_servers.mnemo]
+url = "http://127.0.0.1:7700/mcp"
+enabled = true
+
+[mcp_servers.orthograph]
+url = "http://127.0.0.1:13720/mcp"
+enabled = true
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(codex, []byte(`
+[mcp_servers.computer-use]
+command = "./SkyComputerUseClient"
+args = ["mcp"]
+
+[mcp_servers.mnemo]
+url = "http://127.0.0.1:7700/mcp"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	inv, err := LoadMCP(&LoadMCPArgs{ClaudeJSON: claude, GrokTOML: grok, CodexTOML: codex})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := mcpByName(inv.Servers)
+	if !hasProvider(byName["atlassian"].Providers, ProviderClaude) || hasProvider(byName["atlassian"].Providers, ProviderGrok) {
+		t.Fatalf("atlassian providers = %v", byName["atlassian"].Providers)
+	}
+	if !hasProvider(byName["orthograph"].Providers, ProviderGrok) || hasProvider(byName["orthograph"].Providers, ProviderClaude) {
+		t.Fatalf("orthograph providers = %v", byName["orthograph"].Providers)
+	}
+	cu := byName["computer-use"]
+	if cu.Command == "" || cu.URL != "" || !hasProvider(cu.Providers, ProviderCodex) || hasProvider(cu.Providers, ProviderClaude) {
+		t.Fatalf("computer-use = %+v", cu)
+	}
+	mnemo := byName["mnemo"]
+	for _, p := range []Provider{ProviderClaude, ProviderGrok, ProviderCodex} {
+		if !hasProvider(mnemo.Providers, p) {
+			t.Fatalf("mnemo missing %s: %v", p, mnemo.Providers)
+		}
+	}
+
+	claudeOnly := (&MCPInventory{Servers: inv.Servers}).ForProvider(ProviderClaude)
+	claudeNames := mcpByName(claudeOnly)
+	if _, ok := claudeNames["computer-use"]; ok {
+		t.Fatal("ForProvider(Claude) leaked Codex-only computer-use")
+	}
+	if _, ok := claudeNames["atlassian"]; !ok {
+		t.Fatal("ForProvider(Claude) dropped atlassian")
+	}
+	if _, ok := claudeNames["mnemo"]; !ok {
+		t.Fatal("ForProvider(Claude) dropped shared mnemo")
+	}
+
+	// Caller-appended servers (empty Providers) are valid for every backend.
+	inv.Servers = append(inv.Servers, MCPServer{Name: "jevonsmcp", URL: "http://127.0.0.1:13705/mcp"})
+	if mcpByName(inv.ForProvider(ProviderCodex))["jevonsmcp"].URL == "" {
+		t.Fatal("empty Providers should be included for Codex")
 	}
 }
 

@@ -146,7 +146,13 @@ if err := claudia.EnsureMCP(&claudia.EnsureMCPArgs{
 }); err != nil { /* Codex + Grok + Claude user files */ }
 ```
 
-`LoadMCP` is how a host says "use what's already on the system."
+`LoadMCP` reads **each provider's** config (Claude JSON, Grok TOML,
+Codex TOML) and tags `MCPServer.Providers`. A Codex-only
+computer-use server stays off Claude. `inv.ForProvider(cfg.Provider)`
+is the list to attach to a Session. Caller-appended servers with
+empty Providers (jevonsmcp) are valid for every backend. `LoadMCP(nil)`
+uses the three user-scope defaults; any path override means *only*
+those paths are read.
 `Config.MCPServers` is session-scoped (Claude private `mcp.claudia.json`,
 Grok ACP `mcpServers`). Codex Session has no `thread/start` MCP field —
 `EnsureMCP` writes Codex's own config. Isolates pass fixture paths on

@@ -31,23 +31,31 @@ type MCPServer struct {
 	HeadersHelper  string            `json:"headersHelper,omitempty"`
 	BearerTokenEnv string            `json:"bearerTokenEnv,omitempty"`
 	Auth           string            `json:"auth,omitempty"`
+
+	// Providers is the discovery origin set (🎯T44). Empty means the
+	// caller appended this server and it is valid for every Session
+	// provider. A Codex-only computer-use entry has [ProviderCodex].
+	Providers []Provider `json:"providers,omitempty"`
 }
 
-// LoadMCPArgs selects which on-disk Claude config to read. Nil is valid
-// (defaults). Claude user-scope is the default system map so a host can
-// say "use what's already on the machine" without knowing the file.
+// LoadMCPArgs selects which on-disk configs to read (🎯T44). Nil is
+// valid and loads all three user-scope defaults. If any path override
+// is set, only those provided paths are read — tests must not leak
+// daily ~/.grok or ~/.codex.
 type LoadMCPArgs struct {
-	// ClaudeJSON overrides ~/.claude.json.
 	ClaudeJSON string
-	// WorkDir, when set, overlays projects[WorkDir].mcpServers on top
-	// of the user-scope map (same directory-key rule Claude uses).
+	GrokTOML   string
+	CodexTOML  string
+	// WorkDir, when set, overlays Claude projects[WorkDir].mcpServers
+	// on top of the Claude user-scope map.
 	WorkDir string
 }
 
 // MCPInventory is the system MCP map in Claudia's dialect.
 type MCPInventory struct {
 	Servers []MCPServer
-	Source  string
+	Source  string   // first source, usually Claude JSON (compat)
+	Sources []string // every file that was read
 }
 
 // EnsureMCPArgs is the single write surface (🎯T40). One name + HTTP URL
@@ -73,30 +81,91 @@ type EnsureMCPArgs struct {
 
 var mcpServerNameRE = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]*$`)
 
-// LoadMCP reads the current Claude user-scope MCP map (and optional
-// project overlay) into provider-agnostic [MCPServer] values. A host
-// that wants "what's already on the system" plus its own server does:
+// LoadMCP reads each Session provider's own MCP config and tags
+// servers with their origin (🎯T44). A host that wants "what's already
+// on the system" plus its own server does:
 //
 //	inv, err := claudia.LoadMCP(nil)
 //	inv.Servers = append(inv.Servers, claudia.MCPServer{Name: "jevonsmcp", Type: "http", URL: url})
-//	cfg.MCPServers = inv.Servers
+//	cfg.MCPServers = inv.ForProvider(cfg.Provider)
 func LoadMCP(args *LoadMCPArgs) (*MCPInventory, error) {
 	if args == nil {
 		args = &LoadMCPArgs{}
 	}
-	path := args.ClaudeJSON
-	if path == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return nil, fmt.Errorf("load mcp: home dir: %w", err)
-		}
-		path = filepath.Join(home, ".claude.json")
-	}
-	servers, err := readClaudeMCPMap(path, args.WorkDir)
+	home, err := os.UserHomeDir()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("load mcp: home dir: %w", err)
 	}
-	return &MCPInventory{Servers: servers, Source: path}, nil
+	type src struct {
+		path     string
+		provider Provider
+		kind     string
+	}
+	var sources []src
+	explicit := args.ClaudeJSON != "" || args.GrokTOML != "" || args.CodexTOML != ""
+	if !explicit || args.ClaudeJSON != "" {
+		path := args.ClaudeJSON
+		if path == "" {
+			path = filepath.Join(home, ".claude.json")
+		}
+		sources = append(sources, src{path, ProviderClaude, "claude"})
+	}
+	if !explicit || args.GrokTOML != "" {
+		path := args.GrokTOML
+		if path == "" {
+			path = filepath.Join(home, ".grok", "config.toml")
+		}
+		sources = append(sources, src{path, ProviderGrok, "grok"})
+	}
+	if !explicit || args.CodexTOML != "" {
+		path := args.CodexTOML
+		if path == "" {
+			path = filepath.Join(home, ".codex", "config.toml")
+		}
+		sources = append(sources, src{path, ProviderCodex, "codex"})
+	}
+
+	var servers []MCPServer
+	var read []string
+	for _, s := range sources {
+		var got []MCPServer
+		var err error
+		switch s.kind {
+		case "claude":
+			got, err = readClaudeMCPMap(s.path, args.WorkDir)
+		default:
+			got, err = readTOMLMCPMap(s.path)
+		}
+		if err != nil {
+			return nil, err
+		}
+		read = append(read, s.path)
+		for i := range got {
+			got[i].Providers = []Provider{s.provider}
+		}
+		servers = overlayMCPServers(servers, got)
+	}
+	source := ""
+	if len(read) > 0 {
+		source = read[0]
+	}
+	return &MCPInventory{Servers: servers, Source: source, Sources: read}, nil
+}
+
+// ForProvider returns servers that belong on this Session provider.
+// Caller-appended entries with empty Providers are included for every
+// provider.
+func (inv *MCPInventory) ForProvider(p Provider) []MCPServer {
+	if inv == nil {
+		return nil
+	}
+	var out []MCPServer
+	for _, s := range inv.Servers {
+		if len(s.Providers) == 0 || hasProvider(s.Providers, p) {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // EnsureMCP merges an HTTP MCP server into each requested provider's
@@ -219,11 +288,32 @@ func overlayMCPServers(base, extra []MCPServer) []MCPServer {
 	}
 	for _, s := range extra {
 		if i, ok := byName[s.Name]; ok {
+			prev := out[i].Providers
 			out[i] = s
+			out[i].Providers = unionProviders(prev, s.Providers)
 			continue
 		}
 		byName[s.Name] = len(out)
 		out = append(out, s)
+	}
+	return out
+}
+
+func hasProvider(ps []Provider, p Provider) bool {
+	for _, x := range ps {
+		if x == p {
+			return true
+		}
+	}
+	return false
+}
+
+func unionProviders(a, b []Provider) []Provider {
+	out := append([]Provider(nil), a...)
+	for _, p := range b {
+		if !hasProvider(out, p) {
+			out = append(out, p)
+		}
 	}
 	return out
 }
@@ -592,6 +682,132 @@ func mergeTOMLHTTPServer(src string, srv MCPServer) (string, bool) {
 		return strings.TrimPrefix(block, "\n"), true
 	}
 	return strings.Join(keep, "\n") + "\n" + block, true
+}
+
+func readTOMLMCPMap(path string) ([]MCPServer, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read mcp %s: %w", path, err)
+	}
+	type acc struct {
+		srv     MCPServer
+		enabled bool
+		have    bool
+	}
+	byName := map[string]*acc{}
+	order := []string{}
+	cur := ""
+	sub := ""
+	lines := strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n")
+	for i := 0; i < len(lines); i++ {
+		trim := strings.TrimSpace(lines[i])
+		if key, ok := tomlTableKey(trim); ok {
+			name, rest, ok := tomlMCPServerKey(key)
+			if !ok {
+				cur, sub = "", ""
+				continue
+			}
+			if _, exists := byName[name]; !exists {
+				byName[name] = &acc{srv: MCPServer{Name: name}, enabled: true}
+				order = append(order, name)
+			}
+			cur, sub = name, rest
+			continue
+		}
+		if cur == "" {
+			continue
+		}
+		k, v, ok := tomlBareKV(trim)
+		if !ok {
+			continue
+		}
+		v = strings.Trim(v, `"'`)
+		a := byName[cur]
+		a.have = true
+		switch {
+		case sub == "headers":
+			if a.srv.Headers == nil {
+				a.srv.Headers = map[string]string{}
+			}
+			a.srv.Headers[k] = v
+		case sub == "env":
+			if a.srv.Env == nil {
+				a.srv.Env = map[string]string{}
+			}
+			a.srv.Env[k] = v
+		case sub != "":
+			// tools.* and other nested tables are ignored
+		case k == "url":
+			a.srv.URL = v
+		case k == "command":
+			a.srv.Command = v
+		case k == "args":
+			a.srv.Args = parseTOMLStringArray(v)
+		case k == "bearer_token_env_var":
+			a.srv.BearerTokenEnv = v
+		case k == "auth":
+			a.srv.Auth = v
+		case k == "enabled":
+			a.enabled = v != "false"
+		}
+	}
+	var out []MCPServer
+	for _, name := range order {
+		a := byName[name]
+		if !a.have || !a.enabled {
+			continue
+		}
+		if a.srv.Type == "" {
+			if a.srv.URL != "" {
+				a.srv.Type = "http"
+			} else if a.srv.Command != "" {
+				a.srv.Type = "stdio"
+			}
+		}
+		out = append(out, a.srv)
+	}
+	return out, nil
+}
+
+func tomlMCPServerKey(key string) (name, sub string, ok bool) {
+	const prefix = "mcp_servers."
+	if !strings.HasPrefix(key, prefix) {
+		return "", "", false
+	}
+	rest := key[len(prefix):]
+	if rest == "" {
+		return "", "", false
+	}
+	name, after, found := strings.Cut(rest, ".")
+	if !mcpServerNameRE.MatchString(name) {
+		return "", "", false
+	}
+	if found {
+		return name, after, true
+	}
+	return name, "", true
+}
+
+func parseTOMLStringArray(v string) []string {
+	v = strings.TrimSpace(v)
+	if !strings.HasPrefix(v, "[") {
+		if v == "" {
+			return nil
+		}
+		return []string{strings.Trim(v, `"'`)}
+	}
+	v = strings.TrimSuffix(strings.TrimPrefix(v, "["), "]")
+	var out []string
+	for _, part := range strings.Split(v, ",") {
+		part = strings.TrimSpace(strings.Trim(part, `"'`))
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }
 
 func sameStringMap(a, b map[string]string) bool {
