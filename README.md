@@ -171,6 +171,14 @@ if err := agent.Send("What does this repo do?"); err != nil {
 reply, err := agent.WaitForResponse(ctx)
 ```
 
+`Config.Goal` (also `AgentDef.Goal`) is a host-owned Session
+objective. Empty keeps one-shot `Send`. When set, the Agent issues a
+continuation `Send` after each terminal assistant turn until `Stop`,
+`Interrupt`, or an assistant line `GOAL_STATUS: complete` /
+`GOAL_STATUS: blocked`. The string is not forwarded to any provider
+`/goal` command, so the same Goal can ride a later `Start` on a
+different Provider.
+
 The one-shot helper `claudia.Run(ctx, prompt, cfg)` bundles `Start` +
 `Send` + `WaitForResponse` + `Stop` for session mode if you want a
 single call.
