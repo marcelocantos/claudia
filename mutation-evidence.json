@@ -133,7 +133,7 @@
       "target": "T39",
       "mutation": "drop-host-continuation",
       "what": "maybeContinueGoal stops calling Send, so an open Goal dies after one terminal turn",
-      "quoted_by": "pending-t39",
+      "quoted_by": "9591960",
       "package": ".",
       "edits": [
         {
