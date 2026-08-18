@@ -132,6 +132,7 @@ var sessionFieldFates = map[Provider]map[string]fieldDecl{
 		"GrokConnect":    {fateIgnored, "Grok serve-mode switch; Claude Session is tmux"},
 		"ConnectURL":     {fateIgnored, "Grok reattach URL; Claude Session has no serve endpoint"},
 		"ConnectPID":     {fateIgnored, "Grok serve PID; Claude Session has no serve process"},
+		"Goal":           {fateLocal, "host-owned continuation; never sent to the provider"},
 	},
 	ProviderGrok: {
 		"Provider":       {fateLocal, "selects this path"},
@@ -150,6 +151,7 @@ var sessionFieldFates = map[Provider]map[string]fieldDecl{
 		"GrokConnect":    {fateConsumed, ""},
 		"ConnectURL":     {fateConsumed, ""},
 		"ConnectPID":     {fateLocal, "recorded for Adopt/Alive; Start itself keys off ConnectURL / GrokConnect"},
+		"Goal":           {fateLocal, "host-owned continuation; never sent to the provider"},
 	},
 	ProviderCodex: {
 		"Provider":       {fateLocal, "selects this path"},
@@ -168,6 +170,7 @@ var sessionFieldFates = map[Provider]map[string]fieldDecl{
 		"GrokConnect":    {fateIgnored, "Grok serve-mode switch; Codex Session is app-server stdio"},
 		"ConnectURL":     {fateIgnored, "Grok reattach URL"},
 		"ConnectPID":     {fateIgnored, "Grok serve PID"},
+		"Goal":           {fateLocal, "host-owned continuation; never sent to the provider"},
 	},
 }
 

@@ -87,6 +87,15 @@ type Config struct {
 	// providers refuse a non-empty value rather than drop it.
 	SandboxMode string
 
+	// Goal is a durable host-owned objective for this Session. Empty
+	// keeps one-shot Send. When set, the Agent issues a continuation
+	// Send after each terminal assistant turn until Stop, Interrupt,
+	// or an assistant line GOAL_STATUS: complete / blocked. The
+	// string is not forwarded to any provider /goal RPC or slash
+	// command, so a later Start on another Provider can carry the
+	// same objective (🎯T39).
+	Goal string
+
 	// MCPConfig is the path to an MCP config JSON file.
 	// Empty means Claude Code uses its default discovery.
 	MCPConfig string
@@ -167,6 +176,13 @@ type Agent struct {
 	// poolWorkDir is the resolved absolute working directory used as
 	// part of the pool key. Set by buildPoolAgent; empty for Start agents.
 	poolWorkDir string
+
+	// Host-owned goal loop (🎯T39). goal is copied from Config at Start.
+	goal             string
+	goalClosed       bool
+	goalSeenTerminal bool
+	goalTimer        *time.Timer
+	goalTurn         strings.Builder
 
 	// Terminal output streaming. termMu also guards termLog writes,
 	// termLog close, and termLogLive so Stop cannot close the file
@@ -419,6 +435,7 @@ func startWithBackend(cfg Config, backend agentBackend) (*Agent, error) {
 		alive:       true,
 		ready:       make(chan struct{}),
 		eventSubs:   make(map[int64]EventFunc),
+		goal:        strings.TrimSpace(cfg.Goal),
 	}
 
 	// Open terminal log.
@@ -1048,6 +1065,7 @@ func (a *Agent) PublishEvent(ev Event) {
 // Interrupt sends the Escape key to the Claude process to cancel
 // the current turn.
 func (a *Agent) Interrupt() error {
+	a.closeGoal()
 	a.mu.Lock()
 	alive := a.alive
 	a.mu.Unlock()
@@ -1161,6 +1179,7 @@ func (a *Agent) publishEvent(ev Event) {
 		a.usage.CacheCreationInputTokens += ev.Usage.CacheCreationInputTokens
 		a.usage.CacheReadInputTokens += ev.Usage.CacheReadInputTokens
 	}
+	a.noteGoalEvent(ev)
 	subs := make([]EventFunc, 0, len(a.eventSubs))
 	for _, fn := range a.eventSubs {
 		subs = append(subs, fn)
@@ -1328,6 +1347,7 @@ func (a *Agent) Resize(cols, rows uint16) error {
 // window to the pool.
 func (a *Agent) Stop() {
 	a.stopOnce.Do(func() {
+		a.closeGoal()
 		if a.ops.stop != nil {
 			a.ops.stop(a)
 		}

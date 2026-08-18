@@ -120,6 +120,14 @@ _ = reg.Register(claudia.AgentDef{
 agent, err := reg.Launch("helper")
 ```
 
+`Config.Goal` (also `AgentDef.Goal`) is a host-owned Session
+objective. Empty keeps one-shot `Send`. When set, the Agent issues a
+continuation `Send` after each terminal assistant turn until `Stop`,
+`Interrupt`, or an assistant line `GOAL_STATUS: complete` /
+`GOAL_STATUS: blocked`. The string is not forwarded to any provider
+`/goal` command, so the same Goal can ride a later `Start` on a
+different Provider.
+
 Pass `SessionID` to attempt `session/load`. A materialized resume
 (`RequireResume`) never mints a replacement session: load failure is an
 error, including when `MCPConfig` is set. `MCPConfig` is converted to
