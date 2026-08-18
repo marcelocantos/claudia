@@ -122,6 +122,7 @@ var sessionFieldFates = map[Provider]map[string]fieldDecl{
 		"RequireResume":  {fateConsumed, ""},
 		"Model":          {fateConsumed, ""},
 		"PermissionMode": {fateConsumed, ""},
+		"SandboxMode":    {fateRefused, "SandboxMode is a Codex app-server field"},
 		"MCPConfig":      {fateConsumed, ""},
 		"DisallowTools":  {fateConsumed, ""},
 		"ExtraArgs":      {fateConsumed, ""},
@@ -139,6 +140,7 @@ var sessionFieldFates = map[Provider]map[string]fieldDecl{
 		"RequireResume":  {fateConsumed, ""},
 		"Model":          {fateConsumed, ""},
 		"PermissionMode": {fateRefused, "Grok Session hardcodes ACP always-approve/yoloMode"},
+		"SandboxMode":    {fateRefused, "SandboxMode is a Codex app-server field"},
 		"MCPConfig":      {fateConsumed, ""},
 		"DisallowTools":  {fateRefused, "Config.DisallowTools never reaches the ACP client"},
 		"ExtraArgs":      {fateRefused, "fixed grok agent argv; caller ExtraArgs have nowhere to go"},
@@ -156,6 +158,7 @@ var sessionFieldFates = map[Provider]map[string]fieldDecl{
 		"RequireResume":  {fateConsumed, ""},
 		"Model":          {fateConsumed, ""},
 		"PermissionMode": {fateRefused, "Codex sandbox/approval are not Claude PermissionMode"},
+		"SandboxMode":    {fateConsumed, ""},
 		"MCPConfig":      {fateIgnored, "app-server thread/start has no MCPConfig field"},
 		"DisallowTools":  {fateRefused, "codex exec / app-server have no per-tool disallow flag"},
 		"ExtraArgs":      {fateRefused, "typed app-server fields only"},
@@ -355,6 +358,8 @@ func sessionStartRequest(field string) agentStartRequest {
 		req.Config.Model = "t24-model"
 	case "PermissionMode":
 		req.Config.PermissionMode = "plan"
+	case "SandboxMode":
+		req.Config.SandboxMode = "workspace-write"
 	case "MCPConfig":
 		req.Config.MCPConfig = "/tmp/claudia-t24-mcp.json"
 	case "DisallowTools":
@@ -380,6 +385,8 @@ func sessionMaterialises(provider Provider, field string) bool {
 			return p.CWD == req.WorkDir
 		case "Model":
 			return p.Model == req.Config.Model
+		case "SandboxMode":
+			return p.Sandbox == req.Config.SandboxMode
 		case "SessionID":
 			return req.SessionID != ""
 		case "RequireResume":
@@ -440,6 +447,8 @@ func sessionNeedle(field string, req agentStartRequest) string {
 
 func sessionPrecheck(provider Provider, req agentStartRequest) error {
 	switch provider {
+	case ProviderClaude:
+		return claudeSessionPrecheck(req)
 	case ProviderGrok:
 		return grokSessionPrecheck(req)
 	case ProviderCodex:

@@ -83,6 +83,11 @@ type AgentDef struct {
 	// GrokConnect forces connect-mode on next Launch for ProviderGrok.
 	// Also enabled via CLAUDIA_GROK_CONNECT env.
 	GrokConnect bool `json:"grok_connect,omitempty"`
+
+	// SandboxMode is the Codex app-server sandbox for ProviderCodex
+	// Session (e.g. "workspace-write"). Empty keeps claudia's safe
+	// default of read-only (🎯T37).
+	SandboxMode string `json:"sandbox_mode,omitempty"`
 }
 
 // Canonical Purpose values for [AgentDef.Purpose].
@@ -226,6 +231,7 @@ func (r *Registry) Launch(name string) (*Agent, error) {
 		GrokConnect:   def.GrokConnect || def.ConnectURL != "",
 		ConnectURL:    def.ConnectURL,
 		ConnectPID:    def.ConnectPID,
+		SandboxMode:   def.SandboxMode,
 	})
 	if err != nil {
 		return nil, err

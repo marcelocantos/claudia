@@ -102,6 +102,66 @@ func TestHermeticCodexSessionStartSendWait(t *testing.T) {
 	}
 }
 
+func TestCodexThreadStartParamsSandboxDefaultAndOverride(t *testing.T) {
+	def := codexThreadStartParams(agentStartRequest{})
+	if def.Sandbox != "read-only" {
+		t.Fatalf("default sandbox = %q, want read-only", def.Sandbox)
+	}
+	got := codexThreadStartParams(agentStartRequest{Config: Config{SandboxMode: "workspace-write"}})
+	if got.Sandbox != "workspace-write" {
+		t.Fatalf("writable sandbox = %q, want workspace-write", got.Sandbox)
+	}
+}
+
+func TestHermeticCodexStartHonoursSandboxMode(t *testing.T) {
+	bin := writeFakeCodexAppServer(t)
+	t.Setenv("CODEX_BIN", bin)
+	writeFakeCodexSubscriptionAuth(t)
+
+	t.Run("default-read-only", func(t *testing.T) {
+		last := filepath.Join(t.TempDir(), "start.json")
+		t.Setenv("FAKE_CODEX_LAST_START", last)
+		agent, err := Start(Config{
+			Provider:    ProviderCodex,
+			WorkDir:     t.TempDir(),
+			TermLogPath: "-",
+		})
+		if err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		defer agent.Stop()
+		raw, err := os.ReadFile(last)
+		if err != nil {
+			t.Fatalf("read start params: %v", err)
+		}
+		if !strings.Contains(string(raw), `"sandbox":"read-only"`) {
+			t.Fatalf("default thread/start = %s", raw)
+		}
+	})
+
+	t.Run("workspace-write", func(t *testing.T) {
+		last := filepath.Join(t.TempDir(), "start.json")
+		t.Setenv("FAKE_CODEX_LAST_START", last)
+		agent, err := Start(Config{
+			Provider:    ProviderCodex,
+			WorkDir:     t.TempDir(),
+			SandboxMode: "workspace-write",
+			TermLogPath: "-",
+		})
+		if err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		defer agent.Stop()
+		raw, err := os.ReadFile(last)
+		if err != nil {
+			t.Fatalf("read start params: %v", err)
+		}
+		if !strings.Contains(string(raw), `"sandbox":"workspace-write"`) {
+			t.Fatalf("writable thread/start = %s", raw)
+		}
+	})
+}
+
 func TestHermeticCodexRequireResumeFailsClosed(t *testing.T) {
 	bin := writeFakeCodexAppServer(t)
 	t.Setenv("CODEX_BIN", bin)

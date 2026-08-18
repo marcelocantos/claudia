@@ -81,6 +81,12 @@ type Config struct {
 	// Defaults to "bypassPermissions".
 	PermissionMode string
 
+	// SandboxMode selects the Codex app-server sandbox for
+	// ProviderCodex Session (e.g. "read-only", "workspace-write").
+	// Empty keeps the safe default of read-only (🎯T37). Other
+	// providers refuse a non-empty value rather than drop it.
+	SandboxMode string
+
 	// MCPConfig is the path to an MCP config JSON file.
 	// Empty means Claude Code uses its default discovery.
 	MCPConfig string
@@ -534,7 +540,17 @@ func claudeAgentArgs(req agentStartRequest) []string {
 	return append(args, req.Config.ExtraArgs...)
 }
 
+func claudeSessionPrecheck(req agentStartRequest) error {
+	if req.Config.SandboxMode != "" {
+		return capabilityRefusal(ProviderClaude, CapabilitySandboxPolicy, sandboxPolicyIsCodexOnlyReason)
+	}
+	return nil
+}
+
 func (claudeAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
+	if err := claudeSessionPrecheck(req); err != nil {
+		return nil, err
+	}
 	if err := checkTmux(); err != nil {
 		return nil, err
 	}
@@ -691,6 +707,9 @@ func grokSessionPrecheck(req agentStartRequest) error {
 	if len(req.Config.ExtraArgs) > 0 {
 		return capabilityRefusal(ProviderGrok, CapabilityExtraArgs, grokExtraArgsReason)
 	}
+	if req.Config.SandboxMode != "" {
+		return capabilityRefusal(ProviderGrok, CapabilitySandboxPolicy, sandboxPolicyIsCodexOnlyReason)
+	}
 	return nil
 }
 
@@ -735,7 +754,7 @@ func startCodexAgent(req agentStartRequest) (*agentStart, error) {
 		}
 	}
 
-	client, err := startCodexAppServer(bin, req.WorkDir, req.Config.Model, req.SessionID, req.Config.RequireResume, onEvent, onClose)
+	client, err := startCodexAppServer(bin, req.WorkDir, req.Config.Model, req.SessionID, req.Config.RequireResume, req.Config.SandboxMode, onEvent, onClose)
 	if err != nil {
 		return nil, err
 	}

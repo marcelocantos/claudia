@@ -31,10 +31,20 @@ type codexAppServerClient struct {
 	threadID string
 	turnID   string
 	model    string
+	sandbox  string
 	inFlight bool
 
 	onEvent func(Event)
 	onClose func()
+}
+
+const defaultCodexSandbox = "read-only"
+
+func resolveCodexSandbox(mode string) string {
+	if mode == "" {
+		return defaultCodexSandbox
+	}
+	return mode
 }
 
 func codexThreadStartParams(req agentStartRequest) codexAppServerThreadStartParams {
@@ -43,12 +53,12 @@ func codexThreadStartParams(req agentStartRequest) codexAppServerThreadStartPara
 		CWD:            req.WorkDir,
 		Model:          req.Config.Model,
 		ApprovalPolicy: "never",
-		Sandbox:        "read-only",
+		Sandbox:        resolveCodexSandbox(req.Config.SandboxMode),
 		Ephemeral:      &ephemeral,
 	}
 }
 
-func startCodexAppServer(bin, workDir, model, sessionID string, requireResume bool, onEvent func(Event), onClose func()) (*codexAppServerClient, error) {
+func startCodexAppServer(bin, workDir, model, sessionID string, requireResume bool, sandbox string, onEvent func(Event), onClose func()) (*codexAppServerClient, error) {
 	cmd := exec.Command(bin, "app-server")
 	cmd.Dir = workDir
 	stdin, err := cmd.StdinPipe()
@@ -78,6 +88,7 @@ func startCodexAppServer(bin, workDir, model, sessionID string, requireResume bo
 		stdin:   stdin,
 		stdout:  stdout,
 		stderr:  stderr,
+		sandbox: resolveCodexSandbox(sandbox),
 		pending: make(map[int64]chan []byte),
 		onEvent: onEvent,
 		onClose: onClose,
@@ -106,6 +117,10 @@ func (c *codexAppServerClient) Model() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.model
+}
+
+func (c *codexAppServerClient) sandboxMode() string {
+	return resolveCodexSandbox(c.sandbox)
 }
 
 func (c *codexAppServerClient) promptInFlight() bool {
@@ -280,7 +295,7 @@ func (c *codexAppServerClient) openThread(workDir, model, sessionID string, requ
 			CWD:            workDir,
 			Model:          model,
 			ApprovalPolicy: "never",
-			Sandbox:        "read-only",
+			Sandbox:        c.sandboxMode(),
 		}))
 		if err == nil {
 			c.applyThreadResult(line, sessionID)
@@ -296,7 +311,7 @@ func (c *codexAppServerClient) openThread(workDir, model, sessionID string, requ
 		CWD:            workDir,
 		Model:          model,
 		ApprovalPolicy: "never",
-		Sandbox:        "read-only",
+		Sandbox:        c.sandboxMode(),
 		Ephemeral:      &ephemeral,
 	}))
 	if err != nil {
