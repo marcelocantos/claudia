@@ -98,7 +98,15 @@ type Config struct {
 
 	// MCPConfig is the path to an MCP config JSON file.
 	// Empty means Claude Code uses its default discovery.
+	// Prefer [Config.MCPServers] plus [LoadMCP] so callers do not
+	// maintain per-provider files (🎯T40).
 	MCPConfig string
+
+	// MCPServers is the session-scoped MCP list in Claudia's dialect.
+	// Claude writes it to a private mcp.claudia.json; Grok sends it on
+	// the ACP wire. Codex Session has no thread/start field — call
+	// [EnsureMCP] so the server lands in Codex's own config.
+	MCPServers []MCPServer
 
 	// DisallowTools lists additional tool names to disallow. Agent,
 	// TeamCreate, TeamDelete, SendMessage, and EnterWorktree are
@@ -548,8 +556,8 @@ func claudeAgentArgs(req agentStartRequest) []string {
 	} else {
 		args = append(args, "--session-id", req.SessionID)
 	}
-	if req.Config.MCPConfig != "" {
-		args = append(args, "--mcp-config", req.Config.MCPConfig)
+	if path := claudeMCPConfigArg(req); path != "" {
+		args = append(args, "--mcp-config", path)
 	}
 	if req.Config.Model != "" {
 		args = append(args, "--model", req.Config.Model)
@@ -572,6 +580,9 @@ func (claudeAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error)
 		return nil, err
 	}
 
+	if err := writeSessionMCPFile(req); err != nil {
+		return nil, fmt.Errorf("session mcp file: %w", err)
+	}
 	args := claudeAgentArgs(req)
 
 	windowName := tmuxagent.SessionWindowName(req.SessionID)
@@ -695,7 +706,7 @@ func planGrokSession(req agentStartRequest) grokSessionPlan {
 		Model:           req.Config.Model,
 		PreferSessionID: preferID,
 		RequireResume:   req.Config.RequireResume,
-		MCPServers:      acpMCPServers(req.Config.MCPConfig),
+		MCPServers:      resolveACPMCPServers(req.Config),
 		Connect:         connect,
 	}
 }

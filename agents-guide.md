@@ -128,13 +128,33 @@ continuation `Send` after each terminal assistant turn until `Stop`,
 `/goal` command, so the same Goal can ride a later `Start` on a
 different Provider.
 
+MCP is Claudia's job (🎯T40). Callers name servers and transports;
+they do not write `~/.claude.json`, `~/.grok/config.toml`, or
+`~/.codex/config.toml`.
+
+```go
+inv, err := claudia.LoadMCP(nil) // Claude user-scope map
+inv.Servers = append(inv.Servers, claudia.MCPServer{
+    Name: "jevonsmcp", Type: "http", URL: "http://127.0.0.1:13705/mcp",
+})
+cfg.MCPServers = inv.Servers
+if err := claudia.EnsureMCP(&claudia.EnsureMCPArgs{
+    Name: "jevonsmcp", URL: "http://127.0.0.1:13705/mcp",
+}); err != nil { /* Codex + Grok + Claude user files */ }
+```
+
+`LoadMCP` is how a host says "use what's already on the system."
+`Config.MCPServers` is session-scoped (Claude private `mcp.claudia.json`,
+Grok ACP `mcpServers`). Codex Session has no `thread/start` MCP field —
+`EnsureMCP` writes Codex's own config. Isolates pass fixture paths on
+`LoadMCPArgs` / `EnsureMCPArgs` so they never touch the daily files.
+Bedrock and Ollama have no MCP ensure path.
+
 Pass `SessionID` to attempt `session/load`. A materialized resume
 (`RequireResume`) never mints a replacement session: load failure is an
 error, including when `MCPConfig` is set. `MCPConfig` is converted to
 ACP `mcpServers` and sent on both new and load; it does not skip load.
-Durable tools on resume belong in user-scoped `~/.grok/config.toml`
-(the host registers them). Without `RequireResume`, a failed load may
-fall through to `session/new`.
+Without `RequireResume`, a failed load may fall through to `session/new`.
 Permissions are auto-approved (`--always-approve`). Rewind remains
 `CapabilityUnsupported`; do not truncate private Grok session files.
 
