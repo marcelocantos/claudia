@@ -544,17 +544,25 @@ binary, no credentials, no API cost. CI runs `go test -race -count=1
 ./...` on every push. Use them for parsers, capability refusals,
 lifecycle, and anything a fake peer can decide.
 
-**Live tests are for backend changes.** When you change how a provider
-is spawned or spoken to (`Start`, `Task.Run`, app-server/ACP/exec
-framing, binary discovery, auth preflight), run the real-world smoke
-for that backend. Do not use live tests as the everyday suite, and do
-not retire a target on live smoke alone.
+**Live tests are a hard gate for backend changes.** Hermetic tests
+cannot decide spawn, submit, auth, or turn-loop behaviour. When you
+change how a provider is started, spoken to, or observed (`Start`,
+`Send`, `WaitForResponse`, Goal continuation, event mapping, sandbox,
+auth, app-server/ACP/exec/tmux framing), run the live tests for
+**every backend whose wire you touched**. A Session-wide change is
+every Session backend you can authenticate — not just the one you
+had in mind. CI never sets these gates. A skipped live test is not
+a pass; name it as residue. Full rule: [`AGENTS.md`](AGENTS.md).
 
-| Gate | Surfaces | Named smokes |
-|------|----------|--------------|
-| `CLAUDIA_LIVE=1` | Claude Task + Session | `TestTaskRunSmoke`, `TestAgentSendAndWaitForResponse` |
-| `CLAUDIA_GROK_LIVE=1` | Grok Task + Session | `TestGrokTaskRunSmoke`, `TestGrokSessionLiveSmoke` |
-| `CLAUDIA_CODEX_LIVE=1` | Codex Task + Session | `TestCodexTaskRunSmoke`, `TestCodexSessionLiveSmoke` |
+Do not use live tests as the everyday suite, and do not retire a
+target on live smoke *alone* — hermetic journeys still have to
+exist. Do not retire on hermetic green *alone* either.
+
+| Gate | Surfaces | Named live tests |
+|------|----------|------------------|
+| `CLAUDIA_LIVE=1` | Claude Task + Session | `TestTaskRunSmoke`, `TestAgentSendAndWaitForResponse`, `TestGoalJourneyLiveBackends/claude` |
+| `CLAUDIA_GROK_LIVE=1` | Grok Task + Session | `TestGrokTaskRunSmoke`, `TestGrokSessionLiveSmoke`, `TestGoalJourneyLiveBackends/grok` |
+| `CLAUDIA_CODEX_LIVE=1` | Codex Task + Session | `TestCodexTaskRunSmoke`, `TestCodexSessionLiveSmoke`, `TestGoalJourneyLiveBackends/codex` |
 | `CLAUDIA_BEDROCK_LIVE=1` | Bedrock Task | `TestBedrockTaskLiveSmoke` |
 | `CLAUDIA_OLLAMA_LIVE=1` | Ollama Task | `TestOllamaTaskLiveSmoke` (needs `CLAUDIA_OLLAMA_MODEL`) |
 

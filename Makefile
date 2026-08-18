@@ -40,9 +40,10 @@ verify-mutation-evidence:
 	@scripts/check-mutation-evidence.py
 	@scripts/check-mutation-evidence.py --prove-teeth
 
-# Real-world backend smokes. Hermetic `go test` is the default; run this
-# when changing a provider backend (spawn, protocol, Start/Send/Task.Run).
-# Each test skips unless its gate is set, so unset providers cost nothing.
+# Real-world backend tests (AGENTS.md "Live tests"). Hermetic `go test`
+# is the default. Run this when changing a provider backend — spawn,
+# protocol, Start/Send/Goal, event mapping. Each test skips unless its
+# gate is set; a skip is residue, not a pass. CI never sets the gates.
 # Claude: CLAUDIA_LIVE=1
 # Grok:   CLAUDIA_GROK_LIVE=1
 # Codex:  CLAUDIA_CODEX_LIVE=1
