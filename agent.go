@@ -81,6 +81,21 @@ type Config struct {
 	// Defaults to "bypassPermissions".
 	PermissionMode string
 
+	// SandboxMode selects the Codex app-server sandbox for
+	// ProviderCodex Session (e.g. "read-only", "workspace-write").
+	// Empty keeps the safe default of read-only (🎯T37). Other
+	// providers refuse a non-empty value rather than drop it.
+	SandboxMode string
+
+	// Goal is a durable host-owned objective for this Session. Empty
+	// keeps one-shot Send. When set, the Agent issues a continuation
+	// Send after each terminal assistant turn until Stop, Interrupt,
+	// or an assistant line GOAL_STATUS: complete / blocked. The
+	// string is not forwarded to any provider /goal RPC or slash
+	// command, so a later Start on another Provider can carry the
+	// same objective (🎯T39).
+	Goal string
+
 	// MCPConfig is the path to an MCP config JSON file.
 	// Empty means Claude Code uses its default discovery.
 	MCPConfig string
@@ -161,6 +176,13 @@ type Agent struct {
 	// poolWorkDir is the resolved absolute working directory used as
 	// part of the pool key. Set by buildPoolAgent; empty for Start agents.
 	poolWorkDir string
+
+	// Host-owned goal loop (🎯T39). goal is copied from Config at Start.
+	goal             string
+	goalClosed       bool
+	goalSeenTerminal bool
+	goalTimer        *time.Timer
+	goalTurn         strings.Builder
 
 	// Terminal output streaming. termMu also guards termLog writes,
 	// termLog close, and termLogLive so Stop cannot close the file
@@ -413,6 +435,7 @@ func startWithBackend(cfg Config, backend agentBackend) (*Agent, error) {
 		alive:       true,
 		ready:       make(chan struct{}),
 		eventSubs:   make(map[int64]EventFunc),
+		goal:        strings.TrimSpace(cfg.Goal),
 	}
 
 	// Open terminal log.
@@ -534,7 +557,17 @@ func claudeAgentArgs(req agentStartRequest) []string {
 	return append(args, req.Config.ExtraArgs...)
 }
 
+func claudeSessionPrecheck(req agentStartRequest) error {
+	if req.Config.SandboxMode != "" {
+		return capabilityRefusal(ProviderClaude, CapabilitySandboxPolicy, sandboxPolicyIsCodexOnlyReason)
+	}
+	return nil
+}
+
 func (claudeAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
+	if err := claudeSessionPrecheck(req); err != nil {
+		return nil, err
+	}
 	if err := checkTmux(); err != nil {
 		return nil, err
 	}
@@ -691,6 +724,9 @@ func grokSessionPrecheck(req agentStartRequest) error {
 	if len(req.Config.ExtraArgs) > 0 {
 		return capabilityRefusal(ProviderGrok, CapabilityExtraArgs, grokExtraArgsReason)
 	}
+	if req.Config.SandboxMode != "" {
+		return capabilityRefusal(ProviderGrok, CapabilitySandboxPolicy, sandboxPolicyIsCodexOnlyReason)
+	}
 	return nil
 }
 
@@ -735,7 +771,7 @@ func startCodexAgent(req agentStartRequest) (*agentStart, error) {
 		}
 	}
 
-	client, err := startCodexAppServer(bin, req.WorkDir, req.Config.Model, req.SessionID, req.Config.RequireResume, onEvent, onClose)
+	client, err := startCodexAppServer(bin, req.WorkDir, req.Config.Model, req.SessionID, req.Config.RequireResume, req.Config.SandboxMode, onEvent, onClose)
 	if err != nil {
 		return nil, err
 	}
@@ -1029,6 +1065,7 @@ func (a *Agent) PublishEvent(ev Event) {
 // Interrupt sends the Escape key to the Claude process to cancel
 // the current turn.
 func (a *Agent) Interrupt() error {
+	a.closeGoal()
 	a.mu.Lock()
 	alive := a.alive
 	a.mu.Unlock()
@@ -1142,6 +1179,7 @@ func (a *Agent) publishEvent(ev Event) {
 		a.usage.CacheCreationInputTokens += ev.Usage.CacheCreationInputTokens
 		a.usage.CacheReadInputTokens += ev.Usage.CacheReadInputTokens
 	}
+	a.noteGoalEvent(ev)
 	subs := make([]EventFunc, 0, len(a.eventSubs))
 	for _, fn := range a.eventSubs {
 		subs = append(subs, fn)
@@ -1309,6 +1347,7 @@ func (a *Agent) Resize(cols, rows uint16) error {
 // window to the pool.
 func (a *Agent) Stop() {
 	a.stopOnce.Do(func() {
+		a.closeGoal()
 		if a.ops.stop != nil {
 			a.ops.stop(a)
 		}
@@ -1448,6 +1487,7 @@ func (a *Agent) tailJSONL() {
 	defer f.Close()
 
 	reader := bufio.NewReader(f)
+	var correlator claudeEventCorrelator
 	for {
 		line, err := reader.ReadString('\n')
 		if err != nil {
@@ -1462,7 +1502,7 @@ func (a *Agent) tailJSONL() {
 			continue
 		}
 
-		ev := parseEvent(line)
+		ev := correlator.correlate(parseEvent(line))
 
 		a.publishEvent(ev)
 	}

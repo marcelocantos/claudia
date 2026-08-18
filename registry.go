@@ -83,6 +83,16 @@ type AgentDef struct {
 	// GrokConnect forces connect-mode on next Launch for ProviderGrok.
 	// Also enabled via CLAUDIA_GROK_CONNECT env.
 	GrokConnect bool `json:"grok_connect,omitempty"`
+
+	// SandboxMode is the Codex app-server sandbox for ProviderCodex
+	// Session (e.g. "workspace-write"). Empty keeps claudia's safe
+	// default of read-only (🎯T37).
+	SandboxMode string `json:"sandbox_mode,omitempty"`
+
+	// Goal is the durable host-owned Session objective (🎯T39). Copied
+	// onto Config.Goal at Launch/Adopt so a provider switch keeps the
+	// same objective. Empty means one-shot Send.
+	Goal string `json:"goal,omitempty"`
 }
 
 // Canonical Purpose values for [AgentDef.Purpose].
@@ -226,6 +236,8 @@ func (r *Registry) Launch(name string) (*Agent, error) {
 		GrokConnect:   def.GrokConnect || def.ConnectURL != "",
 		ConnectURL:    def.ConnectURL,
 		ConnectPID:    def.ConnectPID,
+		SandboxMode:   def.SandboxMode,
+		Goal:          def.Goal,
 	})
 	if err != nil {
 		return nil, err
@@ -299,6 +311,8 @@ func (r *Registry) Adopt(name string) (*Agent, error) {
 		GrokConnect:   def.GrokConnect || def.ConnectURL != "",
 		ConnectURL:    def.ConnectURL,
 		ConnectPID:    def.ConnectPID,
+		SandboxMode:   def.SandboxMode,
+		Goal:          def.Goal,
 	}
 
 	var proc *Agent

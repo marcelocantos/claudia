@@ -39,6 +39,10 @@ def main() -> None:
         elif method == "thread/start":
             thread_id = "thr_fake"
             model = params.get("model") or "gpt-5-codex"
+            last = os.environ.get("FAKE_CODEX_LAST_START")
+            if last:
+                with open(last, "w", encoding="utf-8") as fh:
+                    fh.write(json.dumps(params, separators=(",", ":")))
             emit(
                 {
                     "id": mid,

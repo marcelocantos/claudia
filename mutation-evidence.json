@@ -128,6 +128,25 @@
       "tests": [
         {"name": "TestSendKeysAcceptsRealTurnEvidence", "expect": "red"}
       ]
+    },
+    {
+      "target": "T39",
+      "mutation": "drop-host-continuation",
+      "what": "maybeContinueGoal stops calling Send, so an open Goal dies after one terminal turn",
+      "quoted_by": "9591960",
+      "package": ".",
+      "edits": [
+        {
+          "file": "goal.go",
+          "find": "\tif err := a.Send(goalContinuation(goal)); err != nil {\n\t\tslog.Warn(\"claudia goal continuation failed\", \"session\", a.sessionID, \"err\", err)\n\t\ta.closeGoal()\n\t}\n",
+          "replace": "\t_ = goal\n"
+        }
+      ],
+      "tests": [
+        {"name": "TestGoalJourneyUnfinishedMultiCycle", "expect": "red"},
+        {"name": "TestGoalIssuesContinuationAfterTerminalTurn", "expect": "red"},
+        {"name": "TestEmptyGoalStaysSingleTurn", "expect": "green"}
+      ]
     }
   ]
 }
