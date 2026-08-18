@@ -159,6 +159,14 @@ HTTP MCP OAuth (🎯T42): `ProbeMCP` classifies a URL as `open`,
 Claudia returns tokens and does not store them. Token refresh
 without the owner is jevons 🎯T520. Stdio MCP is out of scope.
 
+HTTP MCP proxy (🎯T43): `NewMCPProxy` returns an `http.Handler`.
+The host mounts it (for example `mux.Handle("/upstream/",
+http.StripPrefix("/upstream", p))` or pass `Prefix: "/upstream"`)
+and sets `PublicBase` to the advertised origin
+(`http://127.0.0.1:13705`). `Advertised()` is the inventory with
+loopback URLs to `EnsureMCP`. Claudia is not a server; the host
+process is.
+
 Pass `SessionID` to attempt `session/load`. A materialized resume
 (`RequireResume`) never mints a replacement session: load failure is an
 error, including when `MCPConfig` is set. `MCPConfig` is converted to
