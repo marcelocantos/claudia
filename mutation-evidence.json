@@ -138,7 +138,7 @@
       "edits": [
         {
           "file": "goal.go",
-          "find": "\tif err := a.Send(goalContinuation(goal)); err != nil {\n\t\tslog.Warn(\"claudia goal continuation failed\", \"session\", a.sessionID, \"err\", err)\n\t\ta.closeGoal()\n\t}\n",
+          "find": "\tmsg := goalContinuation(goal)\n\tslog.Info(\"claudia goal continuation\", \"session\", a.sessionID, \"bytes\", len(msg))\n\tif err := a.Send(msg); err != nil {\n\t\tslog.Warn(\"claudia goal continuation failed\", \"session\", a.sessionID, \"err\", err)\n\t\ta.closeGoal()\n\t}\n",
           "replace": "\t_ = goal\n"
         }
       ],

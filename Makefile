@@ -40,9 +40,10 @@ verify-mutation-evidence:
 	@scripts/check-mutation-evidence.py
 	@scripts/check-mutation-evidence.py --prove-teeth
 
-# Real-world backend smokes. Hermetic `go test` is the default; run this
-# when changing a provider backend (spawn, protocol, Start/Send/Task.Run).
-# Each test skips unless its gate is set, so unset providers cost nothing.
+# Real-world backend tests (AGENTS.md "Live tests"). Hermetic `go test`
+# is the default. Run this when changing a provider backend — spawn,
+# protocol, Start/Send/Goal, event mapping. Each test skips unless its
+# gate is set; a skip is residue, not a pass. CI never sets the gates.
 # Claude: CLAUDIA_LIVE=1
 # Grok:   CLAUDIA_GROK_LIVE=1
 # Codex:  CLAUDIA_CODEX_LIVE=1
@@ -50,7 +51,7 @@ verify-mutation-evidence:
 # Ollama: CLAUDIA_OLLAMA_LIVE=1 (and CLAUDIA_OLLAMA_MODEL)
 .PHONY: live
 live:
-	go test -count=1 -timeout 15m -run 'TestTaskRunSmoke|TestAgentSendAndWaitForResponse|TestGrokTaskRunSmoke|TestGrokSessionLiveSmoke|TestCodexTaskRunSmoke|TestCodexSessionLiveSmoke|TestBedrockTaskLiveSmoke|TestOllamaTaskLiveSmoke' .
+	go test -count=1 -timeout 15m -run 'TestTaskRunSmoke|TestAgentSendAndWaitForResponse|TestGrokTaskRunSmoke|TestGrokSessionLiveSmoke|TestCodexTaskRunSmoke|TestCodexSessionLiveSmoke|TestBedrockTaskLiveSmoke|TestOllamaTaskLiveSmoke|TestGoalJourneyLiveBackends|TestMCPLiveLoadAndSessionSeesMnemo' .
 
 # Model-check the broker lifecycle spec (T2.0/T2.8 oracle). The correct config
 # must be green AND every fault-injection mutant must be caught — a spec that

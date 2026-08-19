@@ -111,7 +111,9 @@ func (a *Agent) maybeContinueGoal() {
 	if a.PromptInFlight() {
 		return
 	}
-	if err := a.Send(goalContinuation(goal)); err != nil {
+	msg := goalContinuation(goal)
+	slog.Info("claudia goal continuation", "session", a.sessionID, "bytes", len(msg))
+	if err := a.Send(msg); err != nil {
 		slog.Warn("claudia goal continuation failed", "session", a.sessionID, "err", err)
 		a.closeGoal()
 	}
@@ -130,10 +132,15 @@ func parseGoalStatus(text string) (string, bool) {
 }
 
 func goalContinuation(goal string) string {
-	return "Continue the open objective. Ending the previous turn did not complete it.\n" +
-		"Objective:\n" + goal + "\n\n" +
-		"Keep working until the objective is evidenced complete or blocked.\n" +
-		"When complete, emit a line exactly:\n" + GoalStatusComplete + "\n" +
-		"When blocked with no remaining path, emit a line exactly:\n" + GoalStatusBlocked + "\n" +
+	// One line so Claude Session uses send-keys -l, the same path as a
+	// short follow-up Send. Newlines would take the paste-chip branch
+	// immediately after a turn and hang submit confirmation on the
+	// live TUI (live 🎯T39 journey, 2026-08-18).
+	obj := strings.Join(strings.Fields(strings.TrimSpace(goal)), " ")
+	return "Continue the open objective. Ending the previous turn did not complete it. " +
+		"Objective: " + obj + " " +
+		"Keep working until the objective is evidenced complete or blocked. " +
+		"When complete, emit a line exactly: " + GoalStatusComplete + " " +
+		"When blocked with no remaining path, emit a line exactly: " + GoalStatusBlocked + " " +
 		"Do not emit either line unless that condition holds."
 }

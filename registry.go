@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/google/uuid"
@@ -93,6 +94,11 @@ type AgentDef struct {
 	// onto Config.Goal at Launch/Adopt so a provider switch keeps the
 	// same objective. Empty means one-shot Send.
 	Goal string `json:"goal,omitempty"`
+
+	// MCPServers is the session-scoped MCP list (🎯T40). Copied onto
+	// Config.MCPServers at Launch. Codex Launch also EnsureMCPs HTTP
+	// entries into Codex's own config.
+	MCPServers []MCPServer `json:"mcp_servers,omitempty"`
 }
 
 // Canonical Purpose values for [AgentDef.Purpose].
@@ -179,6 +185,30 @@ func (r *Registry) Remove(name string) error {
 	return r.save()
 }
 
+// ensureDefMCP writes HTTP MCP entries into Codex's own config so a
+// Codex Launch can see tools (app-server has no MCPConfig field).
+func ensureDefMCP(def *AgentDef) error {
+	if def == nil {
+		return nil
+	}
+	if def.Provider != ProviderCodex {
+		return nil
+	}
+	for _, s := range def.MCPServers {
+		if strings.TrimSpace(s.URL) == "" {
+			continue
+		}
+		if err := EnsureMCP(&EnsureMCPArgs{
+			Name:      s.Name,
+			URL:       s.URL,
+			Providers: []Provider{ProviderCodex},
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // registryStart is the Session entrypoint used by [Registry.Launch].
 // Production points at [Start]; hermetic tests may override it.
 var registryStart = Start
@@ -225,6 +255,9 @@ func (r *Registry) Launch(name string) (*Agent, error) {
 		}
 	}
 
+	if err := ensureDefMCP(def); err != nil {
+		return nil, err
+	}
 	proc, err := registryStart(Config{
 		Provider:      def.Provider,
 		WorkDir:       def.WorkDir,
@@ -233,6 +266,7 @@ func (r *Registry) Launch(name string) (*Agent, error) {
 		Model:         def.Model,
 		DisallowTools: def.DisallowTools,
 		MCPConfig:     mcpConfig,
+		MCPServers:    def.MCPServers,
 		GrokConnect:   def.GrokConnect || def.ConnectURL != "",
 		ConnectURL:    def.ConnectURL,
 		ConnectPID:    def.ConnectPID,
@@ -300,6 +334,9 @@ func (r *Registry) Adopt(name string) (*Agent, error) {
 		}
 	}
 
+	if err := ensureDefMCP(def); err != nil {
+		return nil, err
+	}
 	cfg := Config{
 		Provider:      def.Provider,
 		WorkDir:       def.WorkDir,
@@ -308,6 +345,7 @@ func (r *Registry) Adopt(name string) (*Agent, error) {
 		Model:         def.Model,
 		DisallowTools: def.DisallowTools,
 		MCPConfig:     mcpConfig,
+		MCPServers:    def.MCPServers,
 		GrokConnect:   def.GrokConnect || def.ConnectURL != "",
 		ConnectURL:    def.ConnectURL,
 		ConnectPID:    def.ConnectPID,
