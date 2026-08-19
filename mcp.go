@@ -324,12 +324,10 @@ func mcpServersToACP(servers []MCPServer) []any {
 		switch {
 		case strings.TrimSpace(s.URL) != "":
 			entry := map[string]any{
-				"type": "http",
-				"name": s.Name,
-				"url":  s.URL,
-			}
-			if hdrs := acpHeaders(s); hdrs != nil {
-				entry["headers"] = hdrs
+				"type":    "http",
+				"name":    s.Name,
+				"url":     s.URL,
+				"headers": acpHeaders(s),
 			}
 			out = append(out, entry)
 		case s.Command != "":
@@ -446,10 +444,9 @@ func stringMapField(m map[string]any, key string) map[string]string {
 }
 
 func acpHeaders(s MCPServer) []any {
-	if len(s.Headers) == 0 {
-		return nil
-	}
-	var out []any
+	// Grok ACP session/new requires `headers` as an array (empty is
+	// fine). Omitting the field is Invalid params (live 2026-08-19).
+	out := []any{}
 	for k, v := range s.Headers {
 		out = append(out, map[string]any{"name": k, "value": v})
 	}

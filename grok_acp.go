@@ -829,15 +829,12 @@ func acpMCPServers(mcpConfigPath string) []any {
 	for name, srv := range cfg.MCPServers {
 		switch {
 		case srv.URL != "":
-			entry := map[string]any{
-				"type": "http",
-				"name": name,
-				"url":  srv.URL,
-			}
-			if len(srv.Headers) > 0 {
-				entry["headers"] = acpHeaders(MCPServer{Headers: srv.Headers})
-			}
-			out = append(out, entry)
+			out = append(out, map[string]any{
+				"type":    "http",
+				"name":    name,
+				"url":     srv.URL,
+				"headers": acpHeaders(MCPServer{Headers: srv.Headers}),
+			})
 		case srv.Command != "":
 			envs := []any{}
 			for k, v := range srv.Env {

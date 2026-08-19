@@ -352,6 +352,10 @@ func TestMCPAuthRoundTripAndACP(t *testing.T) {
 	if !ok || len(hdrs) != 1 {
 		t.Fatalf("acp headers = %#v", m["headers"])
 	}
+	bare := mcpServersToACP([]MCPServer{{Name: "mnemo", URL: "http://127.0.0.1:7700/mcp"}})
+	if _, ok := bare[0].(map[string]any)["headers"].([]any); !ok {
+		t.Fatalf("ACP HTTP must include headers array, got %#v", bare[0])
+	}
 }
 
 func TestEnsureMCPCorrectsStaleHeader(t *testing.T) {
