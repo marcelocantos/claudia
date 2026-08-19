@@ -179,6 +179,31 @@ continuation `Send` after each terminal assistant turn until `Stop`,
 `/goal` command, so the same Goal can ride a later `Start` on a
 different Provider.
 
+MCP is Claudia's job. Callers do not write `~/.claude.json`,
+`~/.grok/config.toml`, or `~/.codex/config.toml`.
+
+```go
+inv, err := claudia.LoadMCP(nil) // Claude + Grok + Codex maps
+cfg.MCPServers = inv.ForProvider(cfg.Provider)
+inv.Servers = append(inv.Servers, claudia.MCPServer{
+    Name: "jevonsmcp", Type: "http", URL: "http://127.0.0.1:13705/mcp",
+})
+err = claudia.EnsureMCP(&claudia.EnsureMCPArgs{
+    Name: "jevonsmcp", URL: "http://127.0.0.1:13705/mcp",
+})
+p, err := claudia.NewMCPProxy(&claudia.MCPProxyArgs{
+    Prefix: "/upstream", PublicBase: "http://127.0.0.1:13705",
+    Servers: inv.Servers,
+})
+mux.Handle("/upstream/", p)
+```
+
+`LoadMCP` tags each server with origin `Providers` (Codex-only
+computer-use stays off Claude). `EnsureMCP` flock-merges HTTP
+registrations. `NewMCPProxy` is an `http.Handler` the host process
+mounts — Claudia is not a server. Owner-present OAuth is
+`AuthorizeMCP`; token refresh without the owner is the host's job.
+
 The one-shot helper `claudia.Run(ctx, prompt, cfg)` bundles `Start` +
 `Send` + `WaitForResponse` + `Stop` for session mode if you want a
 single call.
