@@ -245,14 +245,14 @@ func claudiaMCPFile(workDir string) string {
 }
 
 func claudeMCPConfigArg(req agentStartRequest) string {
-	if len(req.Config.MCPServers) > 0 {
+	if len(req.Config.MCPServers) > 0 || req.Config.MCPExclusive {
 		return claudiaMCPFile(req.WorkDir)
 	}
 	return req.Config.MCPConfig
 }
 
 func writeSessionMCPFile(req agentStartRequest) error {
-	if len(req.Config.MCPServers) == 0 {
+	if len(req.Config.MCPServers) == 0 && !req.Config.MCPExclusive {
 		return nil
 	}
 	path := claudiaMCPFile(req.WorkDir)

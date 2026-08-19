@@ -55,7 +55,7 @@ func truthyEnv(v string) bool {
 // serve after Stop), kills the stale PID and falls through to spawn — a
 // failed reattach must not strand the caller with no process.
 // Otherwise spawns `grok agent serve` detached, dials it, and opens a session.
-func startGrokACPConnect(bin string, workDir, model, sessionID string, requireResume bool, mcpServers []any, cfg Config, onEvent func(Event), onClose func()) (*grokACPClient, error) {
+func startGrokACPConnect(bin string, workDir, model, sessionID string, requireResume bool, mcpServers []any, cfg Config, extraEnv []string, onEvent func(Event), onClose func()) (*grokACPClient, error) {
 	url := strings.TrimSpace(cfg.ConnectURL)
 	pid := cfg.ConnectPID
 
@@ -81,7 +81,7 @@ func startGrokACPConnect(bin string, workDir, model, sessionID string, requireRe
 			"url", url, "pid", pid)
 	}
 
-	serve, err := spawnDetachedGrokServe(bin, model)
+	serve, err := spawnDetachedGrokServe(bin, model, extraEnv)
 	if err != nil {
 		return nil, err
 	}
@@ -112,7 +112,7 @@ type grokServeEndpoint struct {
 // spawnDetachedGrokServe starts `grok agent serve` in a new session so it
 // survives consumer exit, waits until the port accepts connections, and
 // returns the WebSocket URL + PID.
-func spawnDetachedGrokServe(bin, model string) (*grokServeEndpoint, error) {
+func spawnDetachedGrokServe(bin, model string, extraEnv []string) (*grokServeEndpoint, error) {
 	port, err := freeTCPPort()
 	if err != nil {
 		return nil, fmt.Errorf("grok serve free port: %w", err)
@@ -125,6 +125,9 @@ func spawnDetachedGrokServe(bin, model string) (*grokServeEndpoint, error) {
 	args := append(grokACPArgs(model, true), "--bind", bind, "--secret", secret)
 
 	cmd := exec.Command(bin, args...)
+	if len(extraEnv) > 0 {
+		cmd.Env = appendEnv(nil, extraEnv)
+	}
 	// Detach: new session so SIGHUP on consumer death does not kill serve.
 	// Stdio discarded — ACP is over WebSocket, not these pipes.
 	detachProcess(cmd)

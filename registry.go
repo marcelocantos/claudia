@@ -99,6 +99,8 @@ type AgentDef struct {
 	// Config.MCPServers at Launch. Codex Launch also EnsureMCPs HTTP
 	// entries into Codex's own config.
 	MCPServers []MCPServer `json:"mcp_servers,omitempty"`
+
+	MCPExclusive bool `json:"mcp_exclusive,omitempty"`
 }
 
 // Canonical Purpose values for [AgentDef.Purpose].
@@ -191,7 +193,7 @@ func ensureDefMCP(def *AgentDef) error {
 	if def == nil {
 		return nil
 	}
-	if def.Provider != ProviderCodex {
+	if def.Provider != ProviderCodex || def.MCPExclusive {
 		return nil
 	}
 	for _, s := range def.MCPServers {
@@ -267,6 +269,7 @@ func (r *Registry) Launch(name string) (*Agent, error) {
 		DisallowTools: def.DisallowTools,
 		MCPConfig:     mcpConfig,
 		MCPServers:    def.MCPServers,
+		MCPExclusive:  def.MCPExclusive,
 		GrokConnect:   def.GrokConnect || def.ConnectURL != "",
 		ConnectURL:    def.ConnectURL,
 		ConnectPID:    def.ConnectPID,
@@ -346,6 +349,7 @@ func (r *Registry) Adopt(name string) (*Agent, error) {
 		DisallowTools: def.DisallowTools,
 		MCPConfig:     mcpConfig,
 		MCPServers:    def.MCPServers,
+		MCPExclusive:  def.MCPExclusive,
 		GrokConnect:   def.GrokConnect || def.ConnectURL != "",
 		ConnectURL:    def.ConnectURL,
 		ConnectPID:    def.ConnectPID,

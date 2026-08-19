@@ -146,6 +146,13 @@ if err := claudia.EnsureMCP(&claudia.EnsureMCPArgs{
 }); err != nil { /* Codex + Grok + Claude user files */ }
 ```
 
+`Config.MCPExclusive` (default false) is the isolate switch. False
+keeps each CLI's user-scope MCP map (additive). True is hermetic:
+Claude `--strict-mcp-config`, Grok `GROK_HOME` with copied auth and
+no user `mcp_servers`, Codex `CODEX_HOME` containing only
+`Config.MCPServers`. Jevons wants exclusive; other hosts can leave
+the default.
+
 `LoadMCP` reads **each provider's** config (Claude JSON, Grok TOML,
 Codex TOML) and tags `MCPServer.Providers`. A Codex-only
 computer-use server stays off Claude. `inv.ForProvider(cfg.Provider)`

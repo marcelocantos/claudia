@@ -98,9 +98,12 @@ func grokACPArgs(model string, connect bool) []string {
 //
 // sessionID and requireResume control resume; see openSession. mcpServers
 // are passed on both session/new and session/load.
-func startGrokACP(bin string, workDir, model, sessionID string, requireResume bool, mcpServers []any, onEvent func(Event), onClose func()) (*grokACPClient, error) {
+func startGrokACP(bin string, workDir, model, sessionID string, requireResume bool, mcpServers []any, extraEnv []string, onEvent func(Event), onClose func()) (*grokACPClient, error) {
 	cmd := exec.Command(bin, grokACPArgs(model, false)...)
 	cmd.Dir = workDir
+	if len(extraEnv) > 0 {
+		cmd.Env = appendEnv(nil, extraEnv)
+	}
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

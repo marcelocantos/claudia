@@ -125,6 +125,7 @@ var sessionFieldFates = map[Provider]map[string]fieldDecl{
 		"SandboxMode":    {fateRefused, "SandboxMode is a Codex app-server field"},
 		"MCPConfig":      {fateConsumed, ""},
 		"MCPServers":     {fateConsumed, ""},
+		"MCPExclusive":   {fateConsumed, ""},
 		"DisallowTools":  {fateConsumed, ""},
 		"ExtraArgs":      {fateConsumed, ""},
 		"TermLogPath":    {fateLocal, "host-side PTY log path; not a provider argument"},
@@ -145,6 +146,7 @@ var sessionFieldFates = map[Provider]map[string]fieldDecl{
 		"SandboxMode":    {fateRefused, "SandboxMode is a Codex app-server field"},
 		"MCPConfig":      {fateConsumed, ""},
 		"MCPServers":     {fateConsumed, ""},
+		"MCPExclusive":   {fateConsumed, ""},
 		"DisallowTools":  {fateRefused, "Config.DisallowTools never reaches the ACP client"},
 		"ExtraArgs":      {fateRefused, "fixed grok agent argv; caller ExtraArgs have nowhere to go"},
 		"TermLogPath":    {fateLocal, "host-side log path; Grok ACP is not a PTY"},
@@ -165,6 +167,7 @@ var sessionFieldFates = map[Provider]map[string]fieldDecl{
 		"SandboxMode":    {fateConsumed, ""},
 		"MCPConfig":      {fateIgnored, "app-server thread/start has no MCPConfig field"},
 		"MCPServers":     {fateLocal, "Codex Session reads user Codex config; call EnsureMCP"},
+		"MCPExclusive":   {fateConsumed, "CODEX_HOME isolate at spawn"},
 		"DisallowTools":  {fateRefused, "codex exec / app-server have no per-tool disallow flag"},
 		"ExtraArgs":      {fateRefused, "typed app-server fields only"},
 		"TermLogPath":    {fateLocal, "host-side log path; app-server is not a PTY"},
@@ -370,6 +373,8 @@ func sessionStartRequest(field string) agentStartRequest {
 		req.Config.MCPConfig = "/tmp/claudia-t24-mcp.json"
 	case "MCPServers":
 		req.Config.MCPServers = []MCPServer{{Name: "t24mcp", URL: "http://127.0.0.1:9/mcp"}}
+	case "MCPExclusive":
+		req.Config.MCPExclusive = true
 	case "DisallowTools":
 		req.Config.DisallowTools = []string{"WebFetch"}
 		req.DisallowedTools = disallowedToolList([]string{"WebFetch"})
@@ -399,6 +404,8 @@ func sessionMaterialises(provider Provider, field string) bool {
 			return req.SessionID != ""
 		case "RequireResume":
 			return req.Config.RequireResume
+		case "MCPExclusive":
+			return req.Config.MCPExclusive
 		default:
 			return false
 		}
@@ -410,6 +417,8 @@ func sessionMaterialises(provider Provider, field string) bool {
 			return req.Config.RequireResume
 		case "MCPServers":
 			return argvHolds(claudeAgentArgs(req), "--mcp-config")
+		case "MCPExclusive":
+			return argvHolds(claudeAgentArgs(req), "--strict-mcp-config")
 		default:
 			return argvHolds(claudeAgentArgs(req), sessionNeedle(field, req))
 		}
@@ -428,6 +437,8 @@ func sessionMaterialises(provider Provider, field string) bool {
 			return req.Config.MCPConfig != "" // path is forwarded into acpMCPServers
 		case "MCPServers":
 			return len(resolveACPMCPServers(req.Config)) > 0
+		case "MCPExclusive":
+			return planGrokSession(req).GrokHome != ""
 		case "GrokConnect", "ConnectURL":
 			return plan.Connect
 		default:

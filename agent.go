@@ -108,6 +108,12 @@ type Config struct {
 	// [EnsureMCP] so the server lands in Codex's own config.
 	MCPServers []MCPServer
 
+	// MCPExclusive, when true, is the only MCP set the Session may
+	// see (🎯T45). Default false keeps provider user-scope maps
+	// (additive). Jevons wants exclusive; other hosts often want
+	// whatever is already configured.
+	MCPExclusive bool
+
 	// DisallowTools lists additional tool names to disallow. Agent,
 	// TeamCreate, TeamDelete, SendMessage, and EnterWorktree are
 	// always disallowed in addition to whatever appears here.
@@ -559,6 +565,9 @@ func claudeAgentArgs(req agentStartRequest) []string {
 	if path := claudeMCPConfigArg(req); path != "" {
 		args = append(args, "--mcp-config", path)
 	}
+	if req.Config.MCPExclusive {
+		args = append(args, "--strict-mcp-config")
+	}
 	if req.Config.Model != "" {
 		args = append(args, "--model", req.Config.Model)
 	}
@@ -691,6 +700,7 @@ type grokSessionPlan struct {
 	RequireResume   bool
 	MCPServers      []any
 	Connect         bool
+	GrokHome        string
 }
 
 func planGrokSession(req agentStartRequest) grokSessionPlan {
@@ -700,6 +710,10 @@ func planGrokSession(req agentStartRequest) grokSessionPlan {
 		preferID = req.SessionID
 	}
 	connect := grokConnectEnabled(req.Config)
+	home := ""
+	if req.Config.MCPExclusive {
+		home = exclusiveMCPHomeDir(req.WorkDir, "grok")
+	}
 	return grokSessionPlan{
 		Args:            grokACPArgs(req.Config.Model, connect),
 		WorkDir:         req.WorkDir,
@@ -708,6 +722,7 @@ func planGrokSession(req agentStartRequest) grokSessionPlan {
 		RequireResume:   req.Config.RequireResume,
 		MCPServers:      resolveACPMCPServers(req.Config),
 		Connect:         connect,
+		GrokHome:        home,
 	}
 }
 
@@ -782,7 +797,15 @@ func startCodexAgent(req agentStartRequest) (*agentStart, error) {
 		}
 	}
 
-	client, err := startCodexAppServer(bin, req.WorkDir, req.Config.Model, req.SessionID, req.Config.RequireResume, req.Config.SandboxMode, onEvent, onClose)
+	var extraEnv []string
+	if req.Config.MCPExclusive {
+		home, herr := prepareExclusiveCodexHome(req.WorkDir, req.Config.MCPServers)
+		if herr != nil {
+			return nil, herr
+		}
+		extraEnv = exclusiveEnv("CODEX_HOME", home)
+	}
+	client, err := startCodexAppServer(bin, req.WorkDir, req.Config.Model, req.SessionID, req.Config.RequireResume, req.Config.SandboxMode, extraEnv, onEvent, onClose)
 	if err != nil {
 		return nil, err
 	}
@@ -851,11 +874,20 @@ func startGrokAgent(req agentStartRequest) (*agentStart, error) {
 		}
 	}
 
+	var extraEnv []string
+	if req.Config.MCPExclusive {
+		home, herr := prepareExclusiveGrokHome(req.WorkDir)
+		if herr != nil {
+			return nil, herr
+		}
+		extraEnv = exclusiveEnv("GROK_HOME", home)
+	}
+
 	var client *grokACPClient
 	if plan.Connect {
-		client, err = startGrokACPConnect(bin, plan.WorkDir, plan.Model, preferID, plan.RequireResume, plan.MCPServers, req.Config, onEvent, onClose)
+		client, err = startGrokACPConnect(bin, plan.WorkDir, plan.Model, preferID, plan.RequireResume, plan.MCPServers, req.Config, extraEnv, onEvent, onClose)
 	} else {
-		client, err = startGrokACP(bin, plan.WorkDir, plan.Model, preferID, plan.RequireResume, plan.MCPServers, onEvent, onClose)
+		client, err = startGrokACP(bin, plan.WorkDir, plan.Model, preferID, plan.RequireResume, plan.MCPServers, extraEnv, onEvent, onClose)
 	}
 	if err != nil {
 		return nil, err

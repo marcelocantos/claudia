@@ -58,9 +58,12 @@ func codexThreadStartParams(req agentStartRequest) codexAppServerThreadStartPara
 	}
 }
 
-func startCodexAppServer(bin, workDir, model, sessionID string, requireResume bool, sandbox string, onEvent func(Event), onClose func()) (*codexAppServerClient, error) {
+func startCodexAppServer(bin, workDir, model, sessionID string, requireResume bool, sandbox string, extraEnv []string, onEvent func(Event), onClose func()) (*codexAppServerClient, error) {
 	cmd := exec.Command(bin, "app-server")
 	cmd.Dir = workDir
+	if len(extraEnv) > 0 {
+		cmd.Env = appendEnv(nil, extraEnv)
+	}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, fmt.Errorf("codex app-server stdin: %w", err)

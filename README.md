@@ -203,6 +203,8 @@ computer-use stays off Claude). `EnsureMCP` flock-merges HTTP
 registrations. `NewMCPProxy` is an `http.Handler` the host process
 mounts — Claudia is not a server. Owner-present OAuth is
 `AuthorizeMCP`; token refresh without the owner is the host's job.
+`Config.MCPExclusive` (default false) keeps user-scope MCP maps;
+set true for a hermetic session that sees only `MCPServers`.
 
 The one-shot helper `claudia.Run(ctx, prompt, cfg)` bundles `Start` +
 `Send` + `WaitForResponse` + `Stop` for session mode if you want a
