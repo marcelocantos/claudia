@@ -890,6 +890,7 @@ func startGrokAgent(req agentStartRequest) (*agentStart, error) {
 			return nil, herr
 		}
 		extraEnv = exclusiveEnv("GROK_HOME", home)
+		slog.Info("grok MCPExclusive", "GROK_HOME", home)
 	}
 
 	var client *grokACPClient

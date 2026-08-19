@@ -47,6 +47,9 @@ func TestPrepareExclusiveHomesSkipUserMCP(t *testing.T) {
 	if strings.Contains(string(txt), "[mcp_servers") {
 		t.Fatalf("exclusive grok home leaked mcp_servers:\n%s", txt)
 	}
+	if !strings.Contains(string(txt), "mcps = false") {
+		t.Fatalf("exclusive grok home must disable Claude MCP compat:\n%s", txt)
+	}
 	codex, err := prepareExclusiveCodexHome(dir, []MCPServer{
 		{Name: "onlyme", URL: "http://127.0.0.1:9/mcp"},
 		{Name: "stdio", Command: "/bin/true"},

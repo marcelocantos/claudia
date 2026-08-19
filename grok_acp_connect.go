@@ -127,6 +127,7 @@ func spawnDetachedGrokServe(bin, model string, extraEnv []string) (*grokServeEnd
 	cmd := exec.Command(bin, args...)
 	if len(extraEnv) > 0 {
 		cmd.Env = appendEnv(nil, extraEnv)
+		slog.Info("grok serve exclusive env", "env", extraEnv)
 	}
 	// Detach: new session so SIGHUP on consumer death does not kill serve.
 	// Stdio discarded — ACP is over WebSocket, not these pipes.

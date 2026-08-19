@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 func exclusiveMCPHomeDir(workDir, kind string) string {
@@ -28,7 +29,13 @@ func prepareExclusiveGrokHome(workDir string) (string, error) {
 	}
 	_ = copyFileIfExists(filepath.Join(home, ".grok", "auth.json"), filepath.Join(dest, "auth.json"))
 	cfg := filepath.Join(dest, "config.toml")
-	if err := os.WriteFile(cfg, []byte("# claudia MCPExclusive: no user-scope mcp_servers\n"), 0o644); err != nil {
+	// Grok loads ~/.claude.json MCP by default ([compat.claude] mcps).
+	// An empty GROK_HOME config *enables* that discovery; daily
+	// ~/.grok/config.toml already sets mcps=false. Exclusive must too.
+	body := "# claudia MCPExclusive\n" +
+		"[compat.claude]\nmcps = false\n\n" +
+		"[compat.cursor]\nmcps = false\n"
+	if err := os.WriteFile(cfg, []byte(body), 0o644); err != nil {
 		return "", err
 	}
 	return dest, nil
@@ -73,7 +80,20 @@ func appendEnv(base, extra []string) []string {
 	if base == nil {
 		base = os.Environ()
 	}
-	return append(append([]string{}, base...), extra...)
+	override := map[string]struct{}{}
+	for _, e := range extra {
+		k, _, _ := strings.Cut(e, "=")
+		override[k] = struct{}{}
+	}
+	out := make([]string, 0, len(base)+len(extra))
+	for _, e := range base {
+		k, _, _ := strings.Cut(e, "=")
+		if _, ok := override[k]; ok {
+			continue
+		}
+		out = append(out, e)
+	}
+	return append(out, extra...)
 }
 
 func copyFileIfExists(src, dst string) error {
