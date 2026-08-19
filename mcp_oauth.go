@@ -41,12 +41,18 @@ type MCPProbe struct {
 }
 
 // MCPToken is the result of an owner-present authorization. Claudia
-// does not persist it (🎯T42). Refresh-without-the-owner is jevons 🎯T520.
+// does not persist it (🎯T42); the host (jevonsd) stores and reseeds.
+// ClientID / TokenURL / Resource are stamped so [RefreshMCPToken] can
+// renew without re-running browser OAuth (jevons 🎯T520).
 type MCPToken struct {
 	AccessToken  string
 	RefreshToken string
 	TokenType    string
 	ExpiresIn    int
+	ClientID     string
+	ClientSecret string
+	TokenURL     string
+	Resource     string
 }
 
 // AuthorizeMCPArgs drives [AuthorizeMCP]. Nil OpenURL uses the platform
@@ -253,7 +259,95 @@ func AuthorizeMCP(ctx context.Context, args *AuthorizeMCPArgs) (*MCPToken, error
 	case code = <-codeCh:
 	}
 
-	return exchangeCode(ctx, client, as.TokenEndpoint, clientID, clientSecret, redirect, code, verifier, args.URL)
+	tok, err := exchangeCode(ctx, client, as.TokenEndpoint, clientID, clientSecret, redirect, code, verifier, args.URL)
+	if err != nil {
+		return nil, err
+	}
+	tok.ClientID = clientID
+	tok.ClientSecret = clientSecret
+	tok.TokenURL = as.TokenEndpoint
+	tok.Resource = strings.TrimSpace(args.URL)
+	return tok, nil
+}
+
+// RefreshMCPArgs drives [RefreshMCPToken].
+type RefreshMCPArgs struct {
+	Token  *MCPToken
+	Client *http.Client
+}
+
+// RefreshMCPToken exchanges a refresh_token for a new access token
+// without opening a browser (jevons 🎯T520). Requires RefreshToken,
+// ClientID, and TokenURL on tok. Preserves ClientID/TokenURL/Resource
+// on the result; keeps the prior refresh_token when the AS omits one.
+func RefreshMCPToken(ctx context.Context, args *RefreshMCPArgs) (*MCPToken, error) {
+	if args == nil || args.Token == nil {
+		return nil, fmt.Errorf("refresh mcp: token required")
+	}
+	tok := args.Token
+	if strings.TrimSpace(tok.RefreshToken) == "" {
+		return nil, fmt.Errorf("refresh mcp: no refresh_token")
+	}
+	if strings.TrimSpace(tok.ClientID) == "" || strings.TrimSpace(tok.TokenURL) == "" {
+		return nil, fmt.Errorf("refresh mcp: client_id and token_url required")
+	}
+	client := args.Client
+	if client == nil {
+		client = http.DefaultClient
+	}
+	form := url.Values{}
+	form.Set("grant_type", "refresh_token")
+	form.Set("refresh_token", tok.RefreshToken)
+	form.Set("client_id", tok.ClientID)
+	if tok.ClientSecret != "" {
+		form.Set("client_secret", tok.ClientSecret)
+	}
+	if tok.Resource != "" {
+		form.Set("resource", tok.Resource)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tok.TokenURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("refresh mcp: %w", err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("refresh mcp: status %d: %s", resp.StatusCode, truncate(string(b), 200))
+	}
+	var out struct {
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+		TokenType    string `json:"token_type"`
+		ExpiresIn    int    `json:"expires_in"`
+	}
+	if err := json.Unmarshal(b, &out); err != nil {
+		return nil, fmt.Errorf("refresh mcp: %w", err)
+	}
+	if out.AccessToken == "" {
+		return nil, fmt.Errorf("refresh mcp: empty access_token")
+	}
+	next := &MCPToken{
+		AccessToken:  out.AccessToken,
+		RefreshToken: out.RefreshToken,
+		TokenType:    out.TokenType,
+		ExpiresIn:    out.ExpiresIn,
+		ClientID:     tok.ClientID,
+		ClientSecret: tok.ClientSecret,
+		TokenURL:     tok.TokenURL,
+		Resource:     tok.Resource,
+	}
+	if next.RefreshToken == "" {
+		next.RefreshToken = tok.RefreshToken
+	}
+	if next.TokenType == "" {
+		next.TokenType = "Bearer"
+	}
+	return next, nil
 }
 
 type prmDoc struct {

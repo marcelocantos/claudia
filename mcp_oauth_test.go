@@ -162,6 +162,49 @@ func TestAuthorizeMCPCompletesPKCEAgainstFixture(t *testing.T) {
 	}
 }
 
+func TestRefreshMCPTokenAgainstFixture(t *testing.T) {
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		if r.Form.Get("grant_type") != "refresh_token" {
+			http.Error(w, "bad grant", 400)
+			return
+		}
+		if r.Form.Get("refresh_token") != "refresh-old" || r.Form.Get("client_id") != "cid" {
+			http.Error(w, "bad creds", 400)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"access_token":  "access-new",
+			"refresh_token": "refresh-new",
+			"token_type":    "Bearer",
+			"expires_in":    3600,
+		})
+	}))
+	t.Cleanup(tokenSrv.Close)
+
+	tok, err := RefreshMCPToken(context.Background(), &RefreshMCPArgs{
+		Token: &MCPToken{
+			AccessToken:  "access-old",
+			RefreshToken: "refresh-old",
+			ClientID:     "cid",
+			TokenURL:     tokenSrv.URL,
+			Resource:     "https://mcp.example/v1",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tok.AccessToken != "access-new" || tok.RefreshToken != "refresh-new" {
+		t.Fatalf("token = %+v", tok)
+	}
+	if tok.ClientID != "cid" || tok.TokenURL != tokenSrv.URL || tok.Resource != "https://mcp.example/v1" {
+		t.Fatalf("stamp not preserved: %+v", tok)
+	}
+}
+
 func TestProbeMCPLiveAtlassian(t *testing.T) {
 	if os.Getenv("CLAUDIA_MCP_OAUTH_LIVE") == "" {
 		t.Skip("CLAUDIA_MCP_OAUTH_LIVE not set")

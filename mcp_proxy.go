@@ -33,24 +33,31 @@ type MCPProxyArgs struct {
 	Probe func(ctx context.Context, rawURL string) (*MCPProbe, error)
 	// Authorize runs owner-present OAuth. Nil uses [AuthorizeMCP].
 	Authorize func(ctx context.Context, args *AuthorizeMCPArgs) (*MCPToken, error)
+	// Refresh exchanges a refresh_token without a browser (jevons 🎯T520).
+	// Nil uses [RefreshMCPToken].
+	Refresh func(ctx context.Context, args *RefreshMCPArgs) (*MCPToken, error)
 	// OpenURL is passed through to AuthorizeMCP. Tests inject a stub.
 	OpenURL func(string) error
-	// OnTokenChange is invoked after an OAuth token is obtained or
-	// reseeded so the host can persist it. Claudia does not store tokens.
+	// OnTokenChange is called after Authorize or Refresh stores a token.
+	// The host uses it to persist tokens; Claudia does not.
 	OnTokenChange func(name string, tok *MCPToken)
 }
 
 // MCPProxy is an http.Handler that reverse-proxies named HTTP MCP
 // servers. A host mounts it and supplies Prefix + PublicBase (🎯T43).
 // Tokens live in memory on the handler; Claudia does not persist them.
+// On access-token expiry the proxy refreshes silently when a refresh
+// token is present; Authorize (browser) runs only when there is no
+// refresh token or refresh fails (jevons 🎯T520).
 type MCPProxy struct {
 	prefix        string
 	publicBase    string
 	client        *http.Client
 	probe         func(context.Context, string) (*MCPProbe, error)
 	authorize     func(context.Context, *AuthorizeMCPArgs) (*MCPToken, error)
+	refresh       func(context.Context, *RefreshMCPArgs) (*MCPToken, error)
 	openURL       func(string) error
-	onTokenChange func(name string, tok *MCPToken)
+	onTokenChange func(string, *MCPToken)
 
 	mu     sync.Mutex
 	byName map[string]*proxiedMCP
@@ -73,6 +80,7 @@ func NewMCPProxy(args *MCPProxyArgs) (*MCPProxy, error) {
 		client:        args.Client,
 		probe:         args.Probe,
 		authorize:     args.Authorize,
+		refresh:       args.Refresh,
 		openURL:       args.OpenURL,
 		onTokenChange: args.OnTokenChange,
 		byName:        map[string]*proxiedMCP{},
@@ -85,6 +93,9 @@ func NewMCPProxy(args *MCPProxyArgs) (*MCPProxy, error) {
 	}
 	if p.authorize == nil {
 		p.authorize = AuthorizeMCP
+	}
+	if p.refresh == nil {
+		p.refresh = RefreshMCPToken
 	}
 	for _, s := range args.Servers {
 		if strings.TrimSpace(s.URL) == "" || s.Name == "" {
@@ -121,24 +132,39 @@ func (p *MCPProxy) PublicURL(name string) string {
 	return p.publicURLLocked(name)
 }
 
-// SetToken reseeds a stored token so the next 401 can retry without
-// opening a browser. Unknown names are an error.
-func (p *MCPProxy) SetToken(name string, tok *MCPToken) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	e, ok := p.byName[name]
-	if !ok {
-		return fmt.Errorf("mcp proxy: unknown server %q", name)
-	}
-	e.token = tok
-	return nil
-}
-
 func (p *MCPProxy) publicURLLocked(name string) string {
 	if p.publicBase == "" {
 		return p.prefix + "/" + name
 	}
 	return p.publicBase + p.prefix + "/" + name
+}
+
+// SetToken seeds a stored token for name (host persistence → memory).
+func (p *MCPProxy) SetToken(name string, tok *MCPToken) error {
+	if name == "" || tok == nil {
+		return fmt.Errorf("mcp proxy: set token requires name and token")
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	entry, ok := p.byName[name]
+	if !ok {
+		return fmt.Errorf("mcp proxy: unknown server %q", name)
+	}
+	cp := *tok
+	entry.token = &cp
+	return nil
+}
+
+// Token returns a copy of the in-memory token for name, or nil.
+func (p *MCPProxy) Token(name string) *MCPToken {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	entry, ok := p.byName[name]
+	if !ok || entry.token == nil {
+		return nil
+	}
+	cp := *entry.token
+	return &cp
 }
 
 func (p *MCPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -161,7 +187,10 @@ func (p *MCPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := p.forward(r.Context(), entry, r, body, false)
+	// Prefer sending known credentials on the first attempt so a stored
+	// access token is exercised (and expiry can be detected) without an
+	// always-unauthenticated probe round-trip (jevons 🎯T520).
+	resp, err := p.forward(r.Context(), entry, r, body, p.hasCreds(entry))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
@@ -180,6 +209,15 @@ func (p *MCPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	copyHeader(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, resp.Body)
+}
+
+func (p *MCPProxy) hasCreds(entry *proxiedMCP) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if entry.token != nil && entry.token.AccessToken != "" {
+		return true
+	}
+	return len(entry.srv.Headers) > 0
 }
 
 func (p *MCPProxy) serverName(path string) (string, bool) {
@@ -246,13 +284,6 @@ func (p *MCPProxy) applyAuth(req *http.Request, entry *proxiedMCP) {
 }
 
 func (p *MCPProxy) ensureAuth(ctx context.Context, entry *proxiedMCP, unauthorized *http.Response) error {
-	p.mu.Lock()
-	if entry.token != nil && entry.token.AccessToken != "" {
-		p.mu.Unlock()
-		return nil
-	}
-	p.mu.Unlock()
-
 	probe := entry.probe
 	if probe == nil {
 		var err error
@@ -286,26 +317,53 @@ func (p *MCPProxy) ensureAuth(ctx context.Context, entry *proxiedMCP, unauthoriz
 		}
 		return nil
 	case MCPAuthOAuth:
-		tok, err := p.authorize(ctx, &AuthorizeMCPArgs{
-			URL:     entry.srv.URL,
-			Probe:   probe,
-			OpenURL: p.openURL,
-			Client:  p.client,
-		})
-		if err != nil {
-			return err
-		}
-		p.mu.Lock()
-		entry.token = tok
-		name := entry.srv.Name
-		cb := p.onTokenChange
-		p.mu.Unlock()
-		if cb != nil {
-			cb(name, tok)
-		}
-		return nil
+		return p.ensureOAuth(ctx, entry, probe)
 	default:
 		return fmt.Errorf("mcp proxy: unknown auth kind %q", probe.Kind)
+	}
+}
+
+// ensureOAuth refreshes when possible; Authorize (browser) only when
+// there is no refresh token or refresh fails (jevons 🎯T520).
+func (p *MCPProxy) ensureOAuth(ctx context.Context, entry *proxiedMCP, probe *MCPProbe) error {
+	p.mu.Lock()
+	cur := entry.token
+	p.mu.Unlock()
+
+	if cur != nil && strings.TrimSpace(cur.RefreshToken) != "" {
+		next, err := p.refresh(ctx, &RefreshMCPArgs{Token: cur, Client: p.client})
+		if err == nil {
+			p.storeToken(entry, next)
+			return nil
+		}
+		// Refresh failed — fall through to owner-present Authorize.
+	}
+
+	tok, err := p.authorize(ctx, &AuthorizeMCPArgs{
+		URL:     entry.srv.URL,
+		Probe:   probe,
+		OpenURL: p.openURL,
+		Client:  p.client,
+	})
+	if err != nil {
+		return err
+	}
+	p.storeToken(entry, tok)
+	return nil
+}
+
+func (p *MCPProxy) storeToken(entry *proxiedMCP, tok *MCPToken) {
+	if tok == nil {
+		return
+	}
+	cp := *tok
+	p.mu.Lock()
+	entry.token = &cp
+	name := entry.srv.Name
+	cb := p.onTokenChange
+	p.mu.Unlock()
+	if cb != nil {
+		cb(name, &cp)
 	}
 }
 
