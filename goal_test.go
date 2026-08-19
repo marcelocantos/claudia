@@ -49,16 +49,16 @@ func backendSends(t *testing.T, b *fakeAgentBackend) []string {
 
 func TestParseGoalStatus(t *testing.T) {
 	t.Parallel()
-	if got, ok := parseGoalStatus("working\n" + GoalStatusComplete + "\n"); !ok || got != GoalStatusComplete {
+	if got, ok := ParseGoalStatus("working\n" + GoalStatusComplete + "\n"); !ok || got != GoalStatusComplete {
 		t.Fatalf("complete: got %q ok=%v", got, ok)
 	}
-	if got, ok := parseGoalStatus(GoalStatusBlocked); !ok || got != GoalStatusBlocked {
+	if got, ok := ParseGoalStatus(GoalStatusBlocked); !ok || got != GoalStatusBlocked {
 		t.Fatalf("blocked: got %q ok=%v", got, ok)
 	}
-	if _, ok := parseGoalStatus("I think I am done"); ok {
+	if _, ok := ParseGoalStatus("I think I am done"); ok {
 		t.Fatal("prose must not count as a status")
 	}
-	if _, ok := parseGoalStatus("prefix " + GoalStatusComplete); ok {
+	if _, ok := ParseGoalStatus("prefix " + GoalStatusComplete); ok {
 		t.Fatal("status must be a whole line")
 	}
 }
@@ -130,6 +130,28 @@ func TestGoalCompleteStatusEndsLoop(t *testing.T) {
 	}
 	if agent.GoalActive() {
 		t.Fatal("complete must close the goal")
+	}
+}
+
+func TestGoalCompleteCheckEndsLoopWithoutStatus(t *testing.T) {
+	agent, backend := startGoalAgent(t, "SPAWN T512 T520 T527")
+	agent.SetGoalCompleteCheck(func(goal, turnText string) bool {
+		return strings.Contains(goal, "T512")
+	})
+	if err := agent.Send("go"); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	agent.PublishEvent(Event{
+		Type:       "assistant",
+		Text:       "workers finished; ledger achieved",
+		StopReason: "end_turn",
+	})
+	waitGoalSettle(t)
+	if n := len(backendSends(t, backend)); n != 1 {
+		t.Fatalf("sends = %d, want 1 (no Continue inject)", n)
+	}
+	if agent.GoalActive() {
+		t.Fatal("host GoalCompleteCheck must close the goal")
 	}
 }
 

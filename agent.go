@@ -96,6 +96,13 @@ type Config struct {
 	// same objective (🎯T39).
 	Goal string
 
+	// GoalCompleteCheck, when set, is consulted after a terminal turn
+	// before a Goal continuation Send. Returning true closes the Goal
+	// without injecting "Continue the open objective" — for hosts that
+	// know mission completeness from an external ledger (jevons 🎯T528).
+	// The check receives the durable Goal string and the settled turn text.
+	GoalCompleteCheck func(goal, turnText string) bool
+
 	// MCPConfig is the path to an MCP config JSON file.
 	// Empty means Claude Code uses its default discovery.
 	// Prefer [Config.MCPServers] plus [LoadMCP] so callers do not
@@ -192,11 +199,12 @@ type Agent struct {
 	poolWorkDir string
 
 	// Host-owned goal loop (🎯T39). goal is copied from Config at Start.
-	goal             string
-	goalClosed       bool
-	goalSeenTerminal bool
-	goalTimer        *time.Timer
-	goalTurn         strings.Builder
+	goal              string
+	goalClosed        bool
+	goalSeenTerminal  bool
+	goalTimer         *time.Timer
+	goalTurn          strings.Builder
+	goalCompleteCheck func(goal, turnText string) bool
 
 	// Terminal output streaming. termMu also guards termLog writes,
 	// termLog close, and termLogLive so Stop cannot close the file
@@ -442,14 +450,15 @@ func startWithBackend(cfg Config, backend agentBackend) (*Agent, error) {
 	disallowed := disallowedToolList(cfg.DisallowTools)
 
 	a := &Agent{
-		provider:    provider,
-		sessionID:   sessionID,
-		jsonlPath:   jsonlPath,
-		termLogPath: termLogPath,
-		alive:       true,
-		ready:       make(chan struct{}),
-		eventSubs:   make(map[int64]EventFunc),
-		goal:        strings.TrimSpace(cfg.Goal),
+		provider:          provider,
+		sessionID:         sessionID,
+		jsonlPath:         jsonlPath,
+		termLogPath:       termLogPath,
+		alive:             true,
+		ready:             make(chan struct{}),
+		eventSubs:         make(map[int64]EventFunc),
+		goal:              strings.TrimSpace(cfg.Goal),
+		goalCompleteCheck: cfg.GoalCompleteCheck,
 	}
 
 	// Open terminal log.

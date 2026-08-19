@@ -39,6 +39,25 @@ func (a *Agent) GoalActive() bool {
 	return a.goal != "" && !a.goalClosed
 }
 
+// CloseGoal stops host Goal continuation without waiting for
+// GOAL_STATUS. Hosts that learn mission completeness from an external
+// ledger (e.g. jevons 🎯T528) call this so remint cannot reopen Continue.
+func (a *Agent) CloseGoal() {
+	a.closeGoal()
+}
+
+// SetGoalCompleteCheck installs (or clears) the host completeness hook
+// consulted before a Goal continuation Send. Safe to call after Start /
+// Launch when the registry path cannot carry a function on AgentDef.
+func (a *Agent) SetGoalCompleteCheck(fn func(goal, turnText string) bool) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.goalCompleteCheck = fn
+}
+
 func (a *Agent) closeGoal() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -96,13 +115,29 @@ func (a *Agent) maybeContinueGoal() {
 		return
 	}
 	text := a.goalTurn.String()
-	if status, ok := parseGoalStatus(text); ok {
+	if status, ok := ParseGoalStatus(text); ok {
 		a.closeGoalLocked()
 		a.mu.Unlock()
 		slog.Info("claudia goal closed by status", "session", a.sessionID, "status", status)
 		return
 	}
 	goal := a.goal
+	check := a.goalCompleteCheck
+	a.mu.Unlock()
+
+	// Host ledger / external completeness (jevons 🎯T528): close without
+	// injecting Continue when the check says the objective is done.
+	if check != nil && check(goal, text) {
+		a.closeGoal()
+		slog.Info("claudia goal closed by host check", "session", a.sessionID)
+		return
+	}
+
+	a.mu.Lock()
+	if a.goal == "" || a.goalClosed || !a.alive {
+		a.mu.Unlock()
+		return
+	}
 	a.goalSeenTerminal = false
 	a.goalTurn.Reset()
 	a.goalTimer = nil
@@ -119,7 +154,9 @@ func (a *Agent) maybeContinueGoal() {
 	}
 }
 
-func parseGoalStatus(text string) (string, bool) {
+// ParseGoalStatus reports a whole-line GOAL_STATUS: complete / blocked
+// marker in assistant text.
+func ParseGoalStatus(text string) (string, bool) {
 	for _, line := range strings.Split(text, "\n") {
 		switch strings.TrimSpace(line) {
 		case GoalStatusComplete:
