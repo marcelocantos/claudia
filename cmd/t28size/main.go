@@ -381,12 +381,15 @@ func pasteBuffer(windowID, msg string) error {
 		return err
 	}
 	sock := tmuxagent.SocketPath()
-	const buf = "t28size"
+	// Unique name per paste — same race class as tmuxagent.pasteViaBuffer
+	// (claudia 🎯T46 / jevons 🎯T469).
+	buf := fmt.Sprintf("t28size-%d-%d", os.Getpid(), time.Now().UnixNano())
 	if out, err := exec.Command("tmux", "-S", sock, "load-buffer", "-b", buf, path).CombinedOutput(); err != nil {
 		return fmt.Errorf("load-buffer: %w: %s", err, out)
 	}
 	if out, err := exec.Command("tmux", "-S", sock,
 		"paste-buffer", "-p", "-r", "-d", "-b", buf, "-t", windowID).CombinedOutput(); err != nil {
+		_ = exec.Command("tmux", "-S", sock, "delete-buffer", "-b", buf).Run()
 		return fmt.Errorf("paste-buffer: %w: %s", err, out)
 	}
 	return nil

@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -494,9 +495,30 @@ func sendNamedEnter(windowID string) error {
 	return nil
 }
 
-// pasteViaBuffer writes msg to a temp file, load-buffers it, and
-// paste-buffers with bracketed-paste (-p) and raw newlines (-r).
+// pasteBufSeq distinguishes concurrent pasteViaBuffer calls in one
+// process. Combined with the pid, the name is unique across sends so
+// a sibling's paste-buffer -d cannot delete another send's buffer
+// between load and paste (🎯T46 / jevons 🎯T469). The pre-fix literal
+// "claudia-send" raced under concurrent jevons_agent_start/send.
+var pasteBufSeq atomic.Uint64
+
+func uniquePasteBufferName() string {
+	return fmt.Sprintf("claudia-send-%d-%d", os.Getpid(), pasteBufSeq.Add(1))
+}
+
+// pasteViaBuffer writes msg to a temp file, load-buffers it under a
+// per-send buffer name, and paste-buffers with bracketed-paste (-p)
+// and raw newlines (-r).
 func pasteViaBuffer(windowID, msg string) error {
+	return pasteViaNamedBuffer(windowID, msg, uniquePasteBufferName(), nil)
+}
+
+// pasteViaNamedBuffer is the load → optional hook → paste path.
+// betweenLoadAndPaste, when non-nil, runs after a successful load and
+// before paste (hermetic race oracles synchronise here). On paste
+// failure the named buffer is deleted so a miss does not leave orphans
+// (-d only runs on paste success).
+func pasteViaNamedBuffer(windowID, msg, bufName string, betweenLoadAndPaste func()) error {
 	sock := SocketPath()
 	f, err := os.CreateTemp("", "claudia-send-*.txt")
 	if err != nil {
@@ -512,18 +534,22 @@ func pasteViaBuffer(windowID, msg string) error {
 		return fmt.Errorf("close paste file: %w", err)
 	}
 
-	bufName := "claudia-send"
 	if out, err := exec.Command(
 		"tmux", "-S", sock,
 		"load-buffer", "-b", bufName, path,
 	).CombinedOutput(); err != nil {
 		return fmt.Errorf("tmux load-buffer: %w: %s", err, out)
 	}
+	if betweenLoadAndPaste != nil {
+		betweenLoadAndPaste()
+	}
 	// -p: bracketed paste; -r: keep LFs (do not rewrite to CR); -d: drop buffer.
 	if out, err := exec.Command(
 		"tmux", "-S", sock,
 		"paste-buffer", "-p", "-r", "-d", "-b", bufName, "-t", windowID,
 	).CombinedOutput(); err != nil {
+		// -d did not run; drop the named buffer so failures stay clean.
+		_ = exec.Command("tmux", "-S", sock, "delete-buffer", "-b", bufName).Run()
 		return fmt.Errorf("tmux paste-buffer: %w: %s", err, out)
 	}
 	return nil
