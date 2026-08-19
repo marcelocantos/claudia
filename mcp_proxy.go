@@ -35,18 +35,22 @@ type MCPProxyArgs struct {
 	Authorize func(ctx context.Context, args *AuthorizeMCPArgs) (*MCPToken, error)
 	// OpenURL is passed through to AuthorizeMCP. Tests inject a stub.
 	OpenURL func(string) error
+	// OnTokenChange is invoked after an OAuth token is obtained or
+	// reseeded so the host can persist it. Claudia does not store tokens.
+	OnTokenChange func(name string, tok *MCPToken)
 }
 
 // MCPProxy is an http.Handler that reverse-proxies named HTTP MCP
 // servers. A host mounts it and supplies Prefix + PublicBase (🎯T43).
 // Tokens live in memory on the handler; Claudia does not persist them.
 type MCPProxy struct {
-	prefix     string
-	publicBase string
-	client     *http.Client
-	probe      func(context.Context, string) (*MCPProbe, error)
-	authorize  func(context.Context, *AuthorizeMCPArgs) (*MCPToken, error)
-	openURL    func(string) error
+	prefix        string
+	publicBase    string
+	client        *http.Client
+	probe         func(context.Context, string) (*MCPProbe, error)
+	authorize     func(context.Context, *AuthorizeMCPArgs) (*MCPToken, error)
+	openURL       func(string) error
+	onTokenChange func(name string, tok *MCPToken)
 
 	mu     sync.Mutex
 	byName map[string]*proxiedMCP
@@ -64,13 +68,14 @@ func NewMCPProxy(args *MCPProxyArgs) (*MCPProxy, error) {
 		return nil, fmt.Errorf("mcp proxy: args required")
 	}
 	p := &MCPProxy{
-		prefix:     normalizePrefix(args.Prefix),
-		publicBase: strings.TrimRight(strings.TrimSpace(args.PublicBase), "/"),
-		client:     args.Client,
-		probe:      args.Probe,
-		authorize:  args.Authorize,
-		openURL:    args.OpenURL,
-		byName:     map[string]*proxiedMCP{},
+		prefix:        normalizePrefix(args.Prefix),
+		publicBase:    strings.TrimRight(strings.TrimSpace(args.PublicBase), "/"),
+		client:        args.Client,
+		probe:         args.Probe,
+		authorize:     args.Authorize,
+		openURL:       args.OpenURL,
+		onTokenChange: args.OnTokenChange,
+		byName:        map[string]*proxiedMCP{},
 	}
 	if p.client == nil {
 		p.client = http.DefaultClient
@@ -114,6 +119,19 @@ func (p *MCPProxy) PublicURL(name string) string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.publicURLLocked(name)
+}
+
+// SetToken reseeds a stored token so the next 401 can retry without
+// opening a browser. Unknown names are an error.
+func (p *MCPProxy) SetToken(name string, tok *MCPToken) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	e, ok := p.byName[name]
+	if !ok {
+		return fmt.Errorf("mcp proxy: unknown server %q", name)
+	}
+	e.token = tok
+	return nil
 }
 
 func (p *MCPProxy) publicURLLocked(name string) string {
@@ -279,7 +297,12 @@ func (p *MCPProxy) ensureAuth(ctx context.Context, entry *proxiedMCP, unauthoriz
 		}
 		p.mu.Lock()
 		entry.token = tok
+		name := entry.srv.Name
+		cb := p.onTokenChange
 		p.mu.Unlock()
+		if cb != nil {
+			cb(name, tok)
+		}
 		return nil
 	default:
 		return fmt.Errorf("mcp proxy: unknown auth kind %q", probe.Kind)

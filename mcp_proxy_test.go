@@ -120,6 +120,40 @@ func TestMCPProxyOAuthRetriesWithToken(t *testing.T) {
 	}
 }
 
+func TestMCPProxySetTokenAndOnTokenChange(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") == "Bearer reseeded" {
+			io.WriteString(w, `{"ok":true}`)
+			return
+		}
+		w.Header().Set("WWW-Authenticate", `Bearer resource_metadata="http://example/.well-known"`)
+		http.Error(w, "no", http.StatusUnauthorized)
+	}))
+	t.Cleanup(up.Close)
+	p, err := NewMCPProxy(&MCPProxyArgs{
+		Prefix:  "/upstream",
+		Servers: []MCPServer{{Name: "atlassian", URL: up.URL}},
+		Probe: func(ctx context.Context, rawURL string) (*MCPProbe, error) {
+			return &MCPProbe{Kind: MCPAuthOAuth, URL: rawURL, Status: 401, ResourceMetadata: "http://example/.well-known"}, nil
+		},
+		Authorize: func(ctx context.Context, args *AuthorizeMCPArgs) (*MCPToken, error) {
+			t.Fatal("should not authorize after SetToken")
+			return nil, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.SetToken("atlassian", &MCPToken{AccessToken: "reseeded", TokenType: "Bearer"}); err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	p.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/upstream/atlassian", strings.NewReader(`{}`)))
+	if rec.Code != 200 {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestMCPProxyUnknownAndStdioAre404(t *testing.T) {
 	p, err := NewMCPProxy(&MCPProxyArgs{
 		Prefix:  "/upstream",
