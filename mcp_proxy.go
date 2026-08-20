@@ -67,6 +67,10 @@ type proxiedMCP struct {
 	srv   MCPServer
 	probe *MCPProbe
 	token *MCPToken
+
+	// authMu serializes refresh/Authorize so concurrent 401s share one
+	// browser tab (jevons 🎯T531).
+	authMu sync.Mutex
 }
 
 // NewMCPProxy builds a handler for the HTTP entries in args.Servers.
@@ -190,13 +194,14 @@ func (p *MCPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Prefer sending known credentials on the first attempt so a stored
 	// access token is exercised (and expiry can be detected) without an
 	// always-unauthenticated probe round-trip (jevons 🎯T520).
-	resp, err := p.forward(r.Context(), entry, r, body, p.hasCreds(entry))
+	sent := p.bearer(entry)
+	resp, err := p.forward(r.Context(), entry, r, body, sent != "")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
 	if resp.StatusCode == http.StatusUnauthorized {
-		if err := p.ensureAuth(r.Context(), entry, resp); err == nil {
+		if err := p.ensureAuth(r.Context(), entry, resp, sent); err == nil {
 			_ = resp.Body.Close()
 			resp, err = p.forward(r.Context(), entry, r, body, true)
 			if err != nil {
@@ -283,7 +288,20 @@ func (p *MCPProxy) applyAuth(req *http.Request, entry *proxiedMCP) {
 	}
 }
 
-func (p *MCPProxy) ensureAuth(ctx context.Context, entry *proxiedMCP, unauthorized *http.Response) error {
+func (p *MCPProxy) bearer(entry *proxiedMCP) string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if entry.token == nil || entry.token.AccessToken == "" {
+		return ""
+	}
+	typ := entry.token.TokenType
+	if typ == "" {
+		typ = "Bearer"
+	}
+	return typ + " " + entry.token.AccessToken
+}
+
+func (p *MCPProxy) ensureAuth(ctx context.Context, entry *proxiedMCP, unauthorized *http.Response, sent string) error {
 	probe := entry.probe
 	if probe == nil {
 		var err error
@@ -317,15 +335,26 @@ func (p *MCPProxy) ensureAuth(ctx context.Context, entry *proxiedMCP, unauthoriz
 		}
 		return nil
 	case MCPAuthOAuth:
-		return p.ensureOAuth(ctx, entry, probe)
+		return p.ensureOAuth(ctx, entry, probe, sent)
 	default:
 		return fmt.Errorf("mcp proxy: unknown auth kind %q", probe.Kind)
 	}
 }
 
 // ensureOAuth refreshes when possible; Authorize (browser) only when
-// there is no refresh token or refresh fails (jevons 🎯T520).
-func (p *MCPProxy) ensureOAuth(ctx context.Context, entry *proxiedMCP, probe *MCPProbe) error {
+// there is no refresh token or refresh fails (jevons 🎯T520). Concurrent
+// 401s that observed the same authGen share one Authorize (jevons 🎯T531).
+func (p *MCPProxy) ensureOAuth(ctx context.Context, entry *proxiedMCP, probe *MCPProbe, sent string) error {
+	entry.authMu.Lock()
+	defer entry.authMu.Unlock()
+	// Another 401 already refreshed/authorized; do not open a second tab.
+	if now := p.bearer(entry); now != "" && now != sent {
+		return nil
+	}
+	return p.runOAuth(ctx, entry, probe)
+}
+
+func (p *MCPProxy) runOAuth(ctx context.Context, entry *proxiedMCP, probe *MCPProbe) error {
 	p.mu.Lock()
 	cur := entry.token
 	p.mu.Unlock()

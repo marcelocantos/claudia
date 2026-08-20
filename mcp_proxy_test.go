@@ -10,8 +10,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestMCPProxyOpenPassThrough(t *testing.T) {
@@ -365,5 +367,72 @@ func TestMCPProxyNoRefreshTokenInvokesAuthorize(t *testing.T) {
 	p.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/upstream/atlassian", strings.NewReader(`{}`)))
 	if rec.Code != 200 || authorizeHits.Load() != 1 {
 		t.Fatalf("status=%d authorize=%d body=%s", rec.Code, authorizeHits.Load(), rec.Body.String())
+	}
+}
+
+// jevons 🎯T531: N concurrent 401s open one browser, not N.
+func TestMCPProxyConcurrent401AuthorizesOnce(t *testing.T) {
+	var authorizeHits atomic.Int32
+	started := make(chan struct{})
+	var startOnce sync.Once
+	release := make(chan struct{})
+
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") == "Bearer once" {
+			io.WriteString(w, `{"ok":true}`)
+			return
+		}
+		w.Header().Set("WWW-Authenticate", `Bearer resource_metadata="http://example/.well-known/oauth-protected-resource"`)
+		http.Error(w, `{"error":"invalid_token"}`, http.StatusUnauthorized)
+	}))
+	t.Cleanup(up.Close)
+
+	p, err := NewMCPProxy(&MCPProxyArgs{
+		Prefix:  "/upstream",
+		Servers: []MCPServer{{Name: "atlassian", URL: up.URL}},
+		Probe: func(ctx context.Context, rawURL string) (*MCPProbe, error) {
+			return &MCPProbe{Kind: MCPAuthOAuth, URL: rawURL, Status: 401, ResourceMetadata: "http://example/.well-known"}, nil
+		},
+		Authorize: func(ctx context.Context, args *AuthorizeMCPArgs) (*MCPToken, error) {
+			authorizeHits.Add(1)
+			startOnce.Do(func() { close(started) })
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+			return &MCPToken{AccessToken: "once", TokenType: "Bearer"}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const n = 8
+	var wg sync.WaitGroup
+	codes := make([]int, n)
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			defer wg.Done()
+			rec := httptest.NewRecorder()
+			p.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/upstream/atlassian", strings.NewReader(`{}`)))
+			codes[i] = rec.Code
+		}(i)
+	}
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Authorize never started")
+	}
+	close(release)
+	wg.Wait()
+	if got := authorizeHits.Load(); got != 1 {
+		t.Fatalf("Authorize called %d times, want 1", got)
+	}
+	for i, c := range codes {
+		if c != 200 {
+			t.Errorf("request %d status=%d, want 200", i, c)
+		}
 	}
 }
