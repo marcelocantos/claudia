@@ -1,0 +1,403 @@
+# hygiene.yaml — declared, drift-validated hygiene posture for claudia.
+# Schema reference: the `hygiene` skill (~/.claude/skills/hygiene/SKILL.md).
+# Validate with `/hygiene`; aggregate the fleet with `/hygiene fleet`. Tracks
+# steady-state ("we maintain X"), the complement to bullseye's aspirational
+# targets ("achieve X").
+#
+# Tiers are PER DIMENSION (schema v1): a dimension's held tier is the highest T
+# such that every item in it with tier <= T is satisfied. `floors` is the
+# per-dimension ratchet (below floor => DRIFT); `aspires` is the gap horizon;
+# `enforce` is intent-only and does not affect tiers.
+
+schema_version: 1
+
+repo: claudia
+aspires: 3
+floors:            # per-dimension held-tier ratchet; below floor => DRIFT
+  correctness: 2
+  security: 2
+  quality: 2
+  deps: 2
+  release: 2
+  governance: 2
+  build: 2
+  docs: 2
+  perf: 0          # no benchmark suite yet
+  vcs: 0           # no committed git hooks yet
+  agent: 2
+
+tiers:
+  1: baseline    # LICENSE + README + .gitignore; tests build & run
+  2: maintained  # full matrix, examples run, lint/format, release + governance
+  3: hardened    # formal specs, security scanning, SBOM/signing, fuzzing, perf
+
+items:
+
+  # ============================== CORRECTNESS =============================
+  - id: correctness.tests
+    dim: correctness
+    desc: Hermetic go test -race -count=1 ./... runs on every push/PR
+    state: enforced
+    cadence: continuous
+    enforce: blocking
+    tier: 1
+    evidence: {ci_step: {workflow: test.yml, name: Test}}
+
+  - id: correctness.os-matrix
+    dim: correctness
+    desc: Test job runs on ubuntu-latest and macos-latest
+    state: enforced
+    cadence: continuous
+    enforce: blocking
+    tier: 2
+    evidence: {ci_job: test.yml#test}
+
+  - id: correctness.mutation-evidence
+    dim: correctness
+    desc: Quoted mutation evidence is re-derived in CI (make verify-mutation-evidence)
+    state: enforced
+    cadence: continuous
+    enforce: blocking
+    tier: 2
+    evidence: {ci_job: test.yml#mutation-evidence}
+
+  - id: correctness.live-gate
+    dim: correctness
+    desc: Opt-in live backend gate exists (make live); CI never sets CLAUDIA_*_LIVE
+    state: present
+    cadence: continuous
+    enforce: warning
+    tier: 2
+    evidence: {make_target: live}
+
+  - id: correctness.formal-tla
+    dim: correctness
+    desc: TLA+ broker lifecycle spec is model-checked in CI, with mutant configs required to fail
+    state: enforced
+    cadence: continuous
+    enforce: blocking
+    tier: 3
+    evidence: {ci_job: specs.yml#tlc}
+
+  - id: correctness.windows
+    dim: correctness
+    desc: Windows CI / supported Windows Agent
+    state: skipped
+    cadence: continuous
+    enforce: informational
+    tier: 3
+    reason: >-
+      README states Windows is not supported (WSL works). flock_windows.go is a
+      build-tagged helper, not a claimed port. No Windows runner in the matrix.
+    evidence: {absent: {ci_job: test.yml#windows}}
+
+  - id: correctness.fuzzing
+    dim: correctness
+    desc: Fuzz harnesses over provider JSONL / ACP / app-server parsers
+    state: planned
+    cadence: continuous
+    enforce: warning
+    tier: 3
+    reason: Parsers are covered by hermetic fixtures; no go-fuzz/Fuzz targets yet.
+    evidence: {absent: {make_target: fuzz}}
+
+  - id: correctness.examples-run
+    dim: correctness
+    desc: Package examples execute in CI (not only compile)
+    state: planned
+    cadence: continuous
+    enforce: informational
+    tier: 3
+    reason: >-
+      example_test.go has Example functions without Output comments, so go test
+      compiles them but does not execute them. They also need live provider CLIs.
+    evidence: {absent: {ci_step: {workflow: test.yml, name: Examples}}}
+
+  # =========================== SECURITY / SUPPLY ==========================
+  - id: security.dep-pinning
+    dim: security
+    desc: go.sum committed — reproducible, pinned module graph
+    state: present
+    cadence: per-release
+    enforce: warning
+    tier: 2
+    evidence: {file: {path: go.sum}}
+
+  - id: security.secret-scan
+    dim: security
+    desc: Secret scanning (gitleaks) in pre-commit and/or CI
+    state: planned
+    cadence: continuous
+    enforce: blocking
+    tier: 3
+    reason: No gitleaks config; GitHub secret scanning is disabled. Manual review only.
+    evidence: {absent: {scanner: {tool: gitleaks}}}
+
+  - id: security.dep-vuln-scan
+    dim: security
+    desc: Vulnerability scanning of Go modules (govulncheck)
+    state: planned
+    cadence: periodic:30d
+    enforce: warning
+    tier: 3
+    reason: go.sum is pinned but no govulncheck (or OSV) job runs against it yet.
+    evidence: {absent: {scanner: {tool: govulncheck}}}
+
+  - id: security.sast-codeql
+    dim: security
+    desc: CodeQL static analysis for Go
+    state: planned
+    cadence: continuous
+    enforce: warning
+    tier: 3
+    reason: CodeQL is not enabled; go vet is the only static check in CI.
+    evidence: {absent: {ci_job: test.yml#codeql}}
+
+  - id: security.actions-perms
+    dim: security
+    desc: GitHub Actions default token permissions scoped to least privilege
+    state: planned
+    cadence: once-must-hold
+    enforce: warning
+    tier: 3
+    reason: "No top-level permissions block in the workflows; inherits repo default."
+    evidence: {absent: {file: {path: .github/workflows/test.yml, matches: '(?m)^permissions:'}}}
+
+  - id: security.signed-releases
+    dim: security
+    desc: Release artifacts carry provenance / are signed (cosign/sigstore)
+    state: skipped
+    cadence: per-release
+    enforce: informational
+    tier: 3
+    reason: >-
+      claudia is a Go library published via git tags (no release.yml, no
+      uploaded binaries to sign).
+    evidence: {absent: {ci_job: release.yml#build}}
+
+  # ============================== CODE QUALITY ============================
+  - id: quality.vet
+    dim: quality
+    desc: go vet runs on every push/PR
+    state: enforced
+    cadence: continuous
+    enforce: blocking
+    tier: 2
+    evidence: {ci_step: {workflow: test.yml, name: Vet}}
+
+  - id: quality.format
+    dim: quality
+    desc: Sources are gofmt-clean, enforced in CI
+    state: planned
+    cadence: continuous
+    enforce: warning
+    tier: 3
+    reason: No gofmt --check (or gofmt -l gate) in CI; formatting is by-hand convention.
+    evidence: {absent: {ci_step: {workflow: test.yml, name: Format}}}
+
+  - id: quality.staticcheck
+    dim: quality
+    desc: staticcheck / golangci-lint in CI
+    state: planned
+    cadence: continuous
+    enforce: warning
+    tier: 3
+    reason: staticcheck is not wired in CI (and the locally installed build cannot compile go1.26).
+    evidence: {absent: {scanner: {tool: staticcheck}}}
+
+  # =========================== DEPENDENCY HEALTH ==========================
+  - id: deps.lock
+    dim: deps
+    desc: go.sum lockfile is committed
+    state: present
+    cadence: once-must-hold
+    enforce: warning
+    tier: 2
+    evidence: {file: {path: go.sum}}
+
+  - id: deps.dependabot
+    dim: deps
+    desc: Automated dependency-update PRs (Dependabot or Renovate)
+    state: planned
+    cadence: periodic:30d
+    enforce: informational
+    tier: 3
+    reason: No .github/dependabot.yml; GitHub Dependabot security updates are disabled.
+    evidence: {absent: {file: {path: .github/dependabot.yml}}}
+
+  # ========================== RELEASE & VERSIONING =======================
+  - id: release.semver
+    dim: release
+    desc: version.go Version constant matches the latest git tag
+    state: enforced
+    cadence: per-release
+    enforce: blocking
+    tier: 2
+    evidence:
+      command: >-
+        test "$(sed -n 's/^const Version = "\([0-9][0-9.]*\)"/\1/p' version.go)"
+        = "$(git describe --tags --abbrev=0 | tr -d v)"
+
+  - id: release.changelog
+    dim: release
+    desc: A maintained CHANGELOG records user-visible changes per release
+    state: planned
+    cadence: per-release
+    enforce: warning
+    tier: 3
+    reason: History lives in git + GitHub release notes; no curated CHANGELOG.md yet.
+    evidence: {absent: {file: {path: CHANGELOG.md}}}
+
+  # ============================ GOVERNANCE / META ========================
+  - id: governance.license
+    dim: governance
+    desc: Apache-2.0 LICENSE present
+    state: present
+    cadence: once-must-hold
+    enforce: blocking
+    tier: 1
+    evidence: {file: {path: LICENSE, matches: 'Apache License'}}
+
+  - id: governance.readme
+    dim: governance
+    desc: README present and current
+    state: present
+    cadence: once-must-hold
+    enforce: blocking
+    tier: 1
+    evidence: {file: {path: README.md}}
+
+  - id: governance.gitignore
+    dim: governance
+    desc: .gitignore covers agent state dirs
+    state: present
+    cadence: once-must-hold
+    enforce: warning
+    tier: 1
+    evidence: {file: {path: .gitignore}}
+
+  - id: governance.squash-only
+    dim: governance
+    desc: Repo is squash-merge only, with delete-branch-on-merge
+    state: enforced
+    cadence: once-must-hold
+    enforce: blocking
+    tier: 2
+    evidence: {gh_setting: {key: allow_merge_commit, equals: false}}
+
+  - id: governance.security-md
+    dim: governance
+    desc: SECURITY.md documents the vulnerability-disclosure process
+    state: planned
+    cadence: once-must-hold
+    enforce: informational
+    tier: 3
+    reason: Public repo without a published disclosure policy yet.
+    evidence: {absent: {file: {path: SECURITY.md}}}
+
+  # ================================= BUILD ===============================
+  - id: build.ci
+    dim: build
+    desc: go build ./... runs in CI
+    state: enforced
+    cadence: continuous
+    enforce: blocking
+    tier: 1
+    evidence: {ci_step: {workflow: test.yml, name: Build}}
+
+  - id: build.go-version
+    dim: build
+    desc: Go toolchain version pinned in go.mod
+    state: present
+    cadence: once-must-hold
+    enforce: informational
+    tier: 2
+    evidence: {file: {path: go.mod, matches: '(?m)^go 1\.26'}}
+
+  - id: build.reproducible-lock
+    dim: build
+    desc: Committed go.sum makes the module graph reproducible
+    state: present
+    cadence: once-must-hold
+    enforce: warning
+    tier: 2
+    evidence: {file: {path: go.sum}}
+
+  # ============================ DOCUMENTATION ============================
+  - id: docs.agents-guide
+    dim: docs
+    desc: Consumer API guide (agents-guide.md) is present
+    state: present
+    cadence: once-must-hold
+    enforce: warning
+    tier: 1
+    evidence: {file: {path: agents-guide.md}}
+
+  - id: docs.stability-surface
+    dim: docs
+    desc: STABILITY.md enumerates the snapshot tag's public surface (make verify-stability)
+    state: enforced
+    cadence: continuous
+    enforce: blocking
+    tier: 2
+    evidence: {ci_job: test.yml#stability-surface}
+
+  - id: docs.md-links
+    dim: docs
+    desc: Internal markdown links resolve (no dead cross-references)
+    state: planned
+    cadence: continuous
+    enforce: informational
+    tier: 3
+    reason: No check-md-links (or equivalent) target/job yet.
+    evidence: {absent: {make_target: check-md-links}}
+
+  # ============================== PERFORMANCE ===========================
+  - id: perf.benchmarks
+    dim: perf
+    desc: Go benchmark suite exists and is invocable
+    state: planned
+    cadence: per-release
+    enforce: informational
+    tier: 3
+    reason: No Benchmark functions and no make bench target; load tests are hermetic correctness, not a bench suite.
+    evidence: {absent: {make_target: bench}}
+
+  # ============================== VCS / HISTORY =========================
+  - id: vcs.pre-commit-hook
+    dim: vcs
+    desc: Committed git hooks (scripts/hooks) gate locally before commit
+    state: planned
+    cadence: once-must-hold
+    enforce: informational
+    tier: 3
+    reason: No scripts/hooks; core.hooksPath is the default .git/hooks.
+    evidence: {absent: {file: {path: scripts/hooks/pre-commit}}}
+
+  # =================== AGENT-READINESS / ONBOARDING ====================
+  - id: agent.agents-md
+    dim: agent
+    desc: AGENTS.md present (project conventions discoverable by agents)
+    state: present
+    cadence: once-must-hold
+    enforce: warning
+    tier: 1
+    evidence: {file: {path: AGENTS.md}}
+
+  - id: agent.claude-md
+    dim: agent
+    desc: CLAUDE.md present (Claude adapter over AGENTS.md)
+    state: present
+    cadence: once-must-hold
+    enforce: warning
+    tier: 1
+    evidence: {file: {path: CLAUDE.md}}
+
+  - id: agent.bullseye
+    dim: agent
+    desc: bullseye.yaml present (convergence targets discoverable)
+    state: present
+    cadence: once-must-hold
+    enforce: informational
+    tier: 2
+    evidence: {file: {path: bullseye.yaml}}
