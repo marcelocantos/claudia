@@ -12,16 +12,22 @@ new module (e.g. `claudia2`) rather than breaking an existing import
 path. The pre-1.0 period exists to shake out the API design before
 that contract takes effect.
 
-Snapshot as of: v0.21.0 (tagged 2026-08-10).
+Snapshot as of: v0.25.0 (tagged 2026-08-19).
 
-> **Present at HEAD, not yet released:** `ProviderOllama` landed after
-> v0.21.0. The snapshot tracks releases, so it is enumerated by the
-> release that ships it, not here.
+> **Present at HEAD, not yet released** (after v0.25.0):
+> `Config.GoalCompleteCheck`, `Agent.SetGoalCompleteCheck`,
+> `Agent.CloseGoal`, `ParseGoalStatus`; `Config.MCPExclusive`,
+> `AgentDef.MCPExclusive`; `RefreshMCPToken`, `RefreshMCPArgs`;
+> `MCPProxy.SetToken`, `MCPProxy.Token`, `MCPProxyArgs.Refresh`,
+> `MCPProxyArgs.OnTokenChange`; `MCPToken` fields `ClientID`,
+> `ClientSecret`, `TokenURL`, `Resource`; exclusive-mode `GROK_HOME` /
+> `CODEX_HOME`. The snapshot tracks releases, so those identifiers are
+> enumerated by the release that ships them, not in the tables below.
 
 ## Interaction surface
 
 The exhaustive list of public-facing items in the module at the snapshot
-tag, derived from `go doc -all` over a clean `v0.21.0` worktree rather
+tag, derived from `go doc -all` over a clean `v0.25.0` worktree rather
 than transcribed from the previous revision of this document. Items are
 listed alphabetically within each table so the list can be diffed against
 `go doc` mechanically. Each item is annotated with a stability assessment:
@@ -45,23 +51,33 @@ release it claims to describe.
 | Item | Definition | Status |
 |---|---|---|
 | `Agent` | opaque struct; methods listed below | Needs review |
-| `AgentDef` | struct with `Name, WorkDir, SessionID, Model, Parent, Purpose, Description, TargetID, ConnectURL string`, `Provider Provider`, `DisallowTools []string`, `AutoStart, Materialized, GrokConnect bool`, `ConnectPID int` | Needs review |
+| `AgentDef` | struct with `Name, WorkDir, SessionID, Model, Parent, Purpose, Description, TargetID, ConnectURL, SandboxMode, Goal string`, `Provider Provider`, `DisallowTools []string`, `MCPServers []MCPServer`, `AutoStart, Materialized, GrokConnect bool`, `ConnectPID int` | Needs review |
 | `AllPlanUsageArgs` | struct: every `PlanUsageArgs` field except `Provider`, plus `Providers []Provider` (empty means all supported providers) | Fluid |
+| `AuthorizeMCPArgs` | struct with `URL, ClientName string`, `Probe *MCPProbe`, `OpenURL func(string) error`, `Client *http.Client` | Fluid |
 | `Capability` | string type naming a reported provider behaviour | Fluid |
 | `CapabilityError` | struct with `Provider Provider`, `Capability Capability`, `Status CapabilityStatus`, `Reason string`; method `Error() string` | Fluid |
 | `CapabilityStatus` | string type: `CapabilitySupported`, `CapabilityUnsupported`, `CapabilityExperimental` | Fluid |
 | `CodexAuthMode` | string type: `CodexAuthModeChatGPT`, `CodexAuthModeAPIKey`, `CodexAuthModeUnknown` | Fluid |
 | `CodexAuthPreflight` | struct with `Mode CodexAuthMode`, `AuthPath, Reason string`, `HasAccessToken, HasAPIKeyInFile, EnvOpenAIAPIKey, SubscriptionOK bool`, `Warnings []string` | Fluid |
 | `CodexAuthPreflightArgs` | struct with `AuthPath string`, `Getenv func(string) string` | Fluid |
-| `Config` | struct with `Provider Provider`, `WorkDir, SessionID, Model, PermissionMode, MCPConfig, TermLogPath, PoolPolicy, ConnectURL string`, `RequireResume, GrokConnect bool`, `ExtraArgs, DisallowTools []string`, `PoolCap, ConnectPID int` | Needs review |
-| `Event` | struct with `Type string`, `Raw []byte`, `Text, StopReason, ProgressType, Model string`, `Usage Usage`, `IsError bool`; method `IsTerminalStop() bool` | Stable |
+| `Config` | struct with `Provider Provider`, `WorkDir, SessionID, Model, PermissionMode, SandboxMode, Goal, MCPConfig, TermLogPath, PoolPolicy, ConnectURL string`, `RequireResume, GrokConnect bool`, `MCPServers []MCPServer`, `ExtraArgs, DisallowTools []string`, `PoolCap, ConnectPID int` | Needs review |
+| `EnsureMCPArgs` | struct with `Name, URL, HeadersHelper, BearerTokenEnv, Auth, ClaudeJSON, GrokTOML, CodexTOML string`, `Headers map[string]string`, `Providers []Provider` | Fluid |
+| `Event` | struct with `Type, SessionID, TurnID, MessageID, RecordID, Text, StopReason, ProgressType, Model string`, `Raw []byte`, `Usage Usage`, `IsError bool`; method `IsTerminalStop() bool` | Stable |
 | `EventFunc` | `func(Event)` | Needs review |
+| `LoadMCPArgs` | struct with `ClaudeJSON, GrokTOML, CodexTOML, WorkDir string` | Fluid |
+| `MCPAuthKind` | string type: `MCPAuthOpen`, `MCPAuthStatic`, `MCPAuthOAuth` | Fluid |
+| `MCPInventory` | struct with `Servers []MCPServer`, `Source string`, `Sources []string`; method `ForProvider(p Provider) []MCPServer` | Fluid |
+| `MCPProbe` | struct with `Kind MCPAuthKind`, `URL, WWWAuthenticate, ResourceMetadata string`, `Status int`, `AuthorizationServers, Scopes []string` | Fluid |
+| `MCPProxy` | opaque `http.Handler`; methods listed below | Fluid |
+| `MCPProxyArgs` | struct with `Prefix, PublicBase string`, `Servers []MCPServer`, `Client *http.Client`, `Probe func(ctx, rawURL) (*MCPProbe, error)`, `Authorize func(ctx, *AuthorizeMCPArgs) (*MCPToken, error)`, `OpenURL func(string) error` | Fluid |
+| `MCPServer` | struct with `Name, Type, URL, Command, HeadersHelper, BearerTokenEnv, Auth string`, `Args []string`, `Env, Headers map[string]string`, `Providers []Provider` | Fluid |
+| `MCPToken` | struct with `AccessToken, RefreshToken, TokenType string`, `ExpiresIn int` | Fluid |
 | `PlanUsage` | struct with `Provider Provider`, `Status PlanUsageStatus`, `Reason, PlanType string`, `Windows []PlanWindow`, `FetchedAt time.Time` | Needs review |
 | `PlanUsageArgs` | struct with `Provider Provider`, `HTTPClient *http.Client`, `Now time.Time`, credential/endpoint overrides `ClaudeAccessToken, ClaudeUsageURL, CodexAccessToken, CodexAccountID, CodexAuthPath, CodexUsageURL, GrokAccessToken, GrokAuthPath, GrokBillingURL string`, `GrokBillingRaw json.RawMessage`, `GrokUnstableUsage bool` | Fluid |
 | `PlanUsageStatus` | string type: `PlanUsageAvailable`, `PlanUsageUnavailable` | Needs review |
 | `PlanWindow` | struct with `Name PlanWindowName`, `UsedPercent, RemainingPercent *float64`, `ResetsAt *time.Time`, `LimitWindow time.Duration` | Needs review |
 | `PlanWindowName` | string type: `PlanWindowSession`, `PlanWindowWeekly` | Needs review |
-| `Provider` | string type selecting `ProviderClaude`, `ProviderCodex`, `ProviderGrok`, or `ProviderBedrock` | Fluid |
+| `Provider` | string type selecting `ProviderClaude`, `ProviderCodex`, `ProviderGrok`, `ProviderBedrock`, or `ProviderOllama` | Fluid |
 | `RawLogFunc` | `func(line []byte)` | Stable |
 | `Registry` | opaque struct; methods listed below | Needs review |
 | `RewindResult` | struct with `SessionID, JSONLPath, BackupPath string`, `TurnsRemoved, LinesRemoved int`, `BytesRemoved int64` | Needs review |
@@ -78,29 +94,44 @@ release it claims to describe.
 |---|---|
 | `BaseDisallowedTools` | Needs review |
 | `CapabilitySupported, CapabilityUnsupported, CapabilityExperimental` (CapabilityStatus) | Fluid |
-| `CapabilityTask, CapabilitySession, CapabilityResume, CapabilityRewind, CapabilityCost, CapabilityTmuxAttach, CapabilityTerminalLog, CapabilityPermissionMode, CapabilityToolRestrictions, CapabilityImageInput, CapabilityWebSearch` (Capability) | Fluid |
+| `CapabilityTask, CapabilitySession, CapabilityResume, CapabilityRewind, CapabilityCost, CapabilityTmuxAttach, CapabilityTerminalLog, CapabilityPermissionMode, CapabilityToolRestrictions, CapabilityImageInput, CapabilityWebSearch, CapabilitySandboxPolicy, CapabilityExtraArgs` (Capability) | Fluid |
 | `CodexAuthModeChatGPT, CodexAuthModeAPIKey, CodexAuthModeUnknown` (CodexAuthMode) | Fluid |
+| `DefaultOllamaEndpoint` | Fluid |
 | `EnvGrokConnect` (the name of the `CLAUDIA_GROK_CONNECT` env var) | Fluid |
+| `GoalStatusComplete, GoalStatusBlocked` | Fluid |
+| `MCPAuthOpen, MCPAuthStatic, MCPAuthOAuth` (MCPAuthKind) | Fluid |
 | `PlanUsageAvailable, PlanUsageUnavailable` (PlanUsageStatus) | Needs review |
 | `PlanWindowSession, PlanWindowWeekly` (PlanWindowName) | Needs review |
-| `ProviderClaude, ProviderCodex, ProviderGrok, ProviderBedrock` (Provider) | Fluid |
+| `ProviderClaude, ProviderCodex, ProviderGrok, ProviderBedrock, ProviderOllama` (Provider) | Fluid |
 | `PurposeWork, PurposeAside, PurposeOverseer` (untyped string, for `AgentDef.Purpose`) | Needs review |
 | `TaskEventInit, TaskEventText, TaskEventToolUse, TaskEventResult, TaskEventError` (TaskEventType) | Stable |
 | `TaskStatusIdle, TaskStatusRunning, TaskStatusError, TaskStatusStopped` (TaskStatus) | Stable |
 | `Version` | Stable |
 | ~~`ErrDaemonUnavailable`~~ | Removed (daemon pivot) |
 
+#### Variables
+
+| Item | Status |
+|---|---|
+| `ErrNoSessionWindow` | Needs review |
+
 #### Functions
 
 | Item | Signature | Status |
 |---|---|---|
 | `Acquire` | `Acquire(ctx context.Context, cfg Config) (*Agent, error)` | Needs review |
+| `Adopt` | `Adopt(cfg Config) (*Agent, error)` — rebuild a handle for a live Claude tmux window or Grok connect-mode serve; missing process is `ErrNoSessionWindow`, not a silent `Start` | Needs review |
+| `AuthorizeMCP` | `AuthorizeMCP(ctx context.Context, args *AuthorizeMCPArgs) (*MCPToken, error)` — owner-present PKCE; tokens are returned, not stored | Fluid |
 | `CheckCapability` | `CheckCapability(provider Provider, capability Capability) error` | Fluid |
+| `EnsureMCP` | `EnsureMCP(args *EnsureMCPArgs) error` | Fluid |
+| `LoadMCP` | `LoadMCP(args *LoadMCPArgs) (*MCPInventory, error)` — nil args reads Claude + Grok + Codex user-scope maps | Fluid |
 | `LookupChain` | `LookupChain(sessionID string) (chainID string, sessionIDs []string, err error)` | Needs review |
+| `NewMCPProxy` | `NewMCPProxy(args *MCPProxyArgs) (*MCPProxy, error)` | Fluid |
 | `NewRegistry` | `NewRegistry(path string) (*Registry, error)` | Stable |
 | `NewTask` | `NewTask(cfg TaskConfig) *Task` | Stable |
 | `ParseTaskLine` | `ParseTaskLine(line []byte) []TaskEvent` | Stable |
 | `PreflightCodexAuth` | `PreflightCodexAuth(args *CodexAuthPreflightArgs) CodexAuthPreflight` | Fluid |
+| `ProbeMCP` | `ProbeMCP(ctx context.Context, rawURL string) (*MCPProbe, error)` | Fluid |
 | `ProviderCapabilityMatrix` | `ProviderCapabilityMatrix(provider Provider) map[Capability]CapabilityStatus` | Fluid |
 | `ProviderCapabilityReason` | `ProviderCapabilityReason(provider Provider, capability Capability) string` | Fluid |
 | `ProviderCapabilityStatus` | `ProviderCapabilityStatus(provider Provider, capability Capability) CapabilityStatus` | Fluid |
@@ -122,6 +153,8 @@ release it claims to describe.
 | `AttachCommand` | `() string` | Needs review |
 | `ConnectURL` | `() string` — Grok connect-mode reattach URL, `""` otherwise | Fluid |
 | `EventSubscriberCount` | `() int` — hermetic oracle for fan-out idempotency | Needs review |
+| `Goal` | `() string` — durable host-owned Session objective; empty means one-shot `Send` | Fluid |
+| `GoalActive` | `() bool` — whether a continuation `Send` will follow the next terminal turn | Fluid |
 | `Interrupt` | `() error` | Stable |
 | `JSONLPath` | `() string` | Stable |
 | `Model` | `() string` | Needs review |
@@ -143,6 +176,7 @@ release it claims to describe.
 | `Usage` | `() Usage` | Needs review |
 | `WaitForResponse` | `(ctx context.Context) (string, error)` | Needs review |
 | `WaitReady` | `(ctx context.Context) error` | Stable |
+| `WindowID` | `() string` — tmux window id (e.g. `@3`) for Claude; `""` when the agent is not tmux-backed | Needs review |
 
 #### `Task` methods
 
@@ -164,6 +198,8 @@ release it claims to describe.
 
 | Item | Signature | Status |
 |---|---|---|
+| `Adopt` | `(name string) (*Agent, error)` — rebuild a handle for a still-running process; does not spawn or reap | Needs review |
+| `AdoptOrLaunch` | `(name string) (*Agent, error)` — `Adopt`, then `Launch` if no process remains (upgrade boot) | Needs review |
 | `Def` | `(name string) *AgentDef` | Stable |
 | `Descendants` | `(root string) []string` — depth-first subtree walk, excluding `root` | Needs review |
 | `EnsureAgent` | `(name, workDir, model string, autoStart bool) (*AgentDef, error)` | Needs review |
@@ -176,8 +212,17 @@ release it claims to describe.
 | `Register` | `(def AgentDef) error` | Stable |
 | `Remove` | `(name string) error` | Stable |
 | `StartAll` | `()` | Stable |
+| `StartAllPreferAdopt` | `()` — upgrade-boot counterpart of `StartAll`: reuse a leftover process when one exists | Needs review |
 | `Stop` | `(name string)` | Stable |
 | `StopAll` | `()` | Stable |
+
+#### `MCPProxy` methods
+
+| Item | Signature | Status |
+|---|---|---|
+| `Advertised` | `() []MCPServer` — HTTP entries whose URL is `PublicBase+Prefix+name` | Fluid |
+| `PublicURL` | `(name string) string` | Fluid |
+| `ServeHTTP` | `(w http.ResponseWriter, r *http.Request)` — `http.Handler` | Fluid |
 
 ### Package `github.com/marcelocantos/claudia/codex`
 
@@ -240,7 +285,7 @@ going via `claudia.Task` and `ProviderCodex`. The whole package is **Fluid**
 |---|---|---|
 | `Client` | opaque struct; methods listed below | Stable |
 | `Config` | struct with `APIKey string`, callback fields (`OnAudio, OnTranscript, OnTranscriptDone, OnUserTranscript, OnFunctionCall, OnSessionReady, OnResponseDone, OnError`), `Voice string`, `Tools []Tool`, `SystemPrompt string`, `ManualCommit bool`, `Dial *DialArgs` | Needs review |
-| `DialArgs` | struct with `URL string` and `Dial func(ctx, url, *websocket.DialOptions) (*websocket.Conn, *http.Response, error)`. Test seam for reaching the Realtime endpoint; nil is valid. Leaks `nhooyr.io/websocket` into the public signature | Fluid |
+| `DialArgs` | struct with `URL string` and `Dial func(ctx, url, *websocket.DialOptions) (*websocket.Conn, *http.Response, error)`. Test seam for reaching the Realtime endpoint; nil is valid. Leaks `github.com/coder/websocket` into the public signature | Fluid |
 | `ResponseModalities` | `[]string`; selects which output modalities Grok generates for a response | Needs review |
 | `Tool` | struct with `Type, Name, Description string` and `Parameters json.RawMessage` | Stable |
 
@@ -292,37 +337,43 @@ public packages are listed; `internal/` variables are not surface.
 | `CLAUDIA_CODEX_AUTH_PATH` | Overrides `~/.codex/auth.json` for `PreflightCodexAuth` and for `codex` binary resolution. | Fluid |
 | `CLAUDIA_GROK_CONNECT` | Named by the exported const `EnvGrokConnect`. Truthy (`1`, `true`, `yes`, `on`) forces Grok connect-mode on Session `Start` even when `Config.GrokConnect` is false. | Fluid |
 | `CLAUDIA_GROK_USAGE` | Opts into the undocumented Grok billing endpoint behind `QueryPlanUsage(ProviderGrok)`. Off by default because the surface is private and unversioned. | Fluid |
-| `CODEX_BIN` | Absolute path or PATH-resolvable name of the `codex` executable. Honoured by Codex Task mode. Falls back to `exec.LookPath("codex")` then to known install locations including `/Applications/ChatGPT.app/Contents/Resources/codex`. | Fluid |
-| `GROK_BIN` | Absolute path or PATH-resolvable name of the Grok Build CLI (`grok`). Honoured by Grok Task mode. Falls back to `exec.LookPath("grok")` then to known install locations including `~/.grok/bin/grok`. Not related to package `claudia/grok` (Realtime voice). | Fluid |
+| `CLAUDIA_OLLAMA_ENDPOINT` | Ollama `/api/generate` base URL for `ProviderOllama` when not default. Empty uses `DefaultOllamaEndpoint` (`http://127.0.0.1:11434`). | Fluid |
+| `CLAUDIA_OLLAMA_MODEL` | Ollama model for `ProviderOllama` when `TaskConfig.Model` is empty. Required if Model is also empty. | Fluid |
+| `CODEX_BIN` | Absolute path or PATH-resolvable name of the `codex` executable. Honoured by Codex Task and Session spawn. Falls back to `exec.LookPath("codex")` then to known install locations including `/Applications/ChatGPT.app/Contents/Resources/codex`. | Fluid |
+| `GROK_BIN` | Absolute path or PATH-resolvable name of the Grok Build CLI (`grok`). Honoured by Grok Task and Session spawn. Falls back to `exec.LookPath("grok")` then to known install locations including `~/.grok/bin/grok`. Not related to package `claudia/grok` (Realtime voice). | Fluid |
 | `OPENAI_API_KEY` | Read only for *detection* by `PreflightCodexAuth`: when set, the ChatGPT-subscription assertion fails (`SubscriptionOK=false`) because Codex would bill per token. claudia never sets or forwards it. | Fluid |
 
-`CLAUDIA_LIVE`, `CLAUDIA_BEDROCK_LIVE`, `CLAUDIA_CODEX_LIVE` and
-`CLAUDIA_GROK_LIVE` gate live tests. They are test-harness switches, not
-runtime surface, and carry no compatibility commitment.
+`CLAUDIA_LIVE`, `CLAUDIA_BEDROCK_LIVE`, `CLAUDIA_CODEX_LIVE`,
+`CLAUDIA_GROK_LIVE` and `CLAUDIA_OLLAMA_LIVE` gate live tests. They are
+test-harness switches, not runtime surface, and carry no compatibility
+commitment. `CLAUDIA_BEDROCK_LIVE` is named in production source as the
+live-test env const; the others live in `_test.go` only.
 
 ### Provider capability matrix
 
 Every gap is published rather than discovered at runtime. Query it with
 `ProviderCapabilityMatrix(provider)`, or gate a call ahead of time with
 `CheckCapability`, which returns the same `*CapabilityError` the operation
-itself would have returned. The table below is the state at v0.21.0; the
+itself would have returned. The table below is the state at v0.25.0; the
 claim table in `capability.go` is the source of truth, and
 `TestProviderCapabilityMatrixIsTotal` fails if a provider goes silent on a
 capability rather than claiming one — silence must never read as support.
 
-| Capability | Claude | Codex | Grok | Bedrock |
-|---|---|---|---|---|
-| `CapabilityTask` | Supported | Supported | Supported | Supported |
-| `CapabilitySession` | Supported | **Experimental** | Supported | Unsupported |
-| `CapabilityResume` | Supported | Supported | Supported | Unsupported |
-| `CapabilityRewind` | Supported | Unsupported | Unsupported | Unsupported |
-| `CapabilityCost` | Supported | Unsupported | Unsupported | Unsupported |
-| `CapabilityTmuxAttach` | Supported | Unsupported | Unsupported | Unsupported |
-| `CapabilityTerminalLog` | Supported | Unsupported | Unsupported | Unsupported |
-| `CapabilityPermissionMode` | Supported | Unsupported | Unsupported | Unsupported |
-| `CapabilityToolRestrictions` | Supported | Unsupported | Unsupported | Unsupported |
-| `CapabilityImageInput` | Unsupported | Unsupported | Unsupported | Unsupported |
-| `CapabilityWebSearch` | Supported | Unsupported | Unsupported | Unsupported |
+| Capability | Claude | Codex | Grok | Bedrock | Ollama |
+|---|---|---|---|---|---|
+| `CapabilityTask` | Supported | Supported | Supported | Supported | Supported |
+| `CapabilitySession` | Supported | Supported | Supported | Unsupported | Unsupported |
+| `CapabilityResume` | Supported | Supported | Supported | Unsupported | Unsupported |
+| `CapabilityRewind` | Supported | Unsupported | Unsupported | Unsupported | Unsupported |
+| `CapabilityCost` | Supported | Unsupported | Unsupported | Unsupported | Unsupported |
+| `CapabilityTmuxAttach` | Supported | Unsupported | Unsupported | Unsupported | Unsupported |
+| `CapabilityTerminalLog` | Supported | Unsupported | Unsupported | Unsupported | Unsupported |
+| `CapabilityPermissionMode` | Supported | Unsupported | Unsupported | Unsupported | Unsupported |
+| `CapabilityToolRestrictions` | Supported | Unsupported | Unsupported | Unsupported | Unsupported |
+| `CapabilityImageInput` | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported |
+| `CapabilityWebSearch` | Supported | Unsupported | Unsupported | Unsupported | Unsupported |
+| `CapabilitySandboxPolicy` | Unsupported | Supported | Unsupported | Unsupported | Unsupported |
+| `CapabilityExtraArgs` | Supported | Unsupported | Unsupported | Unsupported | Unsupported |
 
 `CapabilityImageInput` is unsupported everywhere for one reason: claudia has
 no API for attaching an image to a prompt on any provider. That is a claudia
@@ -344,6 +395,20 @@ Region and model resolve from `TaskConfig` first, then
 `CLAUDIA_BEDROCK_REGION` / `CLAUDIA_BEDROCK_MODEL_ID`, then the AWS
 variables. Credential material stays in the AWS SDK default chain —
 claudia reads no keys and holds none.
+
+### Ollama provider surface
+
+`ProviderOllama` is local inference through an Ollama daemon
+(`/api/generate`). There is no coding-agent CLI and no persistent
+session: v1 is Task-only. Cost is latency, not money, so
+`CapabilityCost` is unsupported rather than reported as a spend of
+zero. `Start(ProviderOllama)` fails closed with `*CapabilityError`.
+`TaskConfig.DisallowTools`, `SandboxMode`, `ApprovalPolicy`, and
+resume are refused rather than dropped.
+
+Endpoint and model resolve from `TaskConfig.Model` first, then
+`CLAUDIA_OLLAMA_ENDPOINT` / `CLAUDIA_OLLAMA_MODEL`, then
+`DefaultOllamaEndpoint`. No credentials are read.
 
 ### Codex provider surface
 
@@ -373,6 +438,8 @@ The per-capability rationale claudia publishes for Codex:
 | `CapabilityToolRestrictions` | Unsupported | `codex exec` has no per-tool disallow flag |
 | `CapabilityImageInput` | Unsupported | claudia has no image-attachment API on any provider |
 | `CapabilityWebSearch` | Unsupported | claudia does not bind Codex's `--search`; the Codex default applies |
+| `CapabilitySandboxPolicy` | Supported | `TaskConfig.SandboxMode` / `ApprovalPolicy` and Session `Config.SandboxMode` reach Codex as Codex-native flags |
+| `CapabilityExtraArgs` | Unsupported | Codex Session speaks typed app-server fields; `Config.ExtraArgs` have nowhere to go |
 
 Billing is asserted, not assumed. `PreflightCodexAuth` reads
 `~/.codex/auth.json` (or `CLAUDIA_CODEX_AUTH_PATH`) without touching the
@@ -441,11 +508,14 @@ voice WebSocket client.
 
 ### Surface item count
 
-192 top-level items at v0.21.0 — 138 in `claudia`, 36 in `claudia/codex`,
+228 top-level items at v0.25.0 — 174 in `claudia`, 36 in `claudia/codex`,
 18 in `claudia/grok` — counting types, functions, methods, constants and
-variables, but not struct fields. With fields, 366. The comparable count
-at v0.17.0, the previous snapshot, was 100 across two packages: the
-surface nearly doubled in one release, almost all of it additive.
+variables, but not struct fields. With fields, 463. The comparable count
+at v0.21.0, the previous snapshot, was 192 across the same three packages:
+the added surface is MCP inventory/proxy/OAuth, host-owned Goal,
+`ProviderOllama`, `Adopt` / Registry upgrade-boot, `Event` turn identity,
+and `CapabilitySandboxPolicy` / `CapabilityExtraArgs`. No identifiers
+were removed between v0.21.0 and v0.25.0.
 
 Per the release skill's pre-1.0 → 1.0 shakeout gate (B.3a), the minimum
 settling period is **1 month** with no backwards-incompatible changes
@@ -454,20 +524,21 @@ surface size (3+ months for >50 items); the LLM-coding era compresses
 real-world API exercise enough that a flat 1-month minimum suffices.
 
 The clock resets if a breaking change ships mid-shakeout. Diffing the
-derived surface at every tag from v0.12.0 to v0.21.0 finds exactly one
+derived surface at every tag from v0.12.0 to v0.25.0 finds exactly one
 reset after v0.12.0's `grok.Client.SendText` signature change: **v0.21.0
 retyped `CapabilityError.Capability` and `CapabilityError.Status` from
 `string` to the new `Capability` and `CapabilityStatus` types.** That is
 source-incompatible for any caller that assigned either field to a
 `string` variable or passed it where a `string` was expected. Every other
-tag in that range removed or changed nothing. v0.21.0 was tagged
-2026-08-10, so the earliest eligible 1.0 cut date is **2026-09-10**.
+tag in that range, including v0.22.0–v0.25.0, removed or changed nothing.
+v0.21.0 was tagged 2026-08-10, so the earliest eligible 1.0 cut date is
+**2026-09-10**.
 
 ## Gaps and prerequisites for 1.0
 
 Concrete items that must be addressed before cutting 1.0.
 
-### API design questions raised by the v0.21.0 surface
+### API design questions raised by the v0.25.0 surface
 
 Raised by this snapshot; none are resolved.
 
@@ -480,7 +551,7 @@ Raised by this snapshot; none are resolved.
   Codex API and the root package's Codex path is the wrapper. Note that
   `codex.Usage` has no `CacheCreationInputTokens` while `claudia.Usage`
   does, so the two are not interchangeable today.
-- **`grok.DialArgs` leaks `nhooyr.io/websocket` into the public
+- **`grok.DialArgs` leaks `github.com/coder/websocket` into the public
   signature.** `DialArgs.Dial` names `*websocket.DialOptions` and
   `*websocket.Conn`, so the module cannot change WebSocket library
   without a breaking change, for the sake of a test seam.
@@ -499,6 +570,12 @@ Raised by this snapshot; none are resolved.
   string constants**, unlike every other constant group in the package.
   `AgentDef.Purpose` is a bare `string`, so the constants do not
   constrain it. A `Purpose` named type would make it checkable.
+- **`TaskConfig.ClaudeID` is the resume handle for every provider.**
+  The field docs still say "claude session ID"; Codex and Grok Task
+  resume reuse it. A caller skipping the guide will not set it for
+  Codex, or will assume Claude JSONL layout. The `codex` subpackage
+  already uses `SessionID`. Renaming (or aliasing) before 1.0 is the
+  window; after 1.0 it is a breaking cut.
 
 ### ~~API design fixes (breaking)~~
 
@@ -588,10 +665,11 @@ have doc comments, and `example_test.go` adds `ExampleRun`, `ExampleNewTask`,
   API. If Anthropic ships one, it becomes a separate project.
 - **Arbitrary multi-backend support (OpenAI Chat Completions, Gemini,
   etc. as coding agents).** claudia harnesses terminal coding-agent
-  CLIs (Claude Code, Codex, Grok Build). The `grok` subpackage covers
-  Realtime voice only and is not a generic LLM SDK.
-- **WebSocket / HTTP server wrapping.** The concern of the host
-  program, not this library.
+  CLIs (Claude Code, Codex, Grok Build) plus Task-only API paths
+  (Bedrock ConverseStream, Ollama `/api/generate`). The `grok`
+  subpackage covers Realtime voice only and is not a generic LLM SDK.
+- **Being an HTTP server.** claudia is a library. `NewMCPProxy`
+  returns an `http.Handler` the host mounts; Claudia does not listen.
 - **Windows support for the tmux-backed Agent.** The tmux substrate
   is Unix-only. Windows consumers who want the Agent must use WSL.
   This is a deliberate tradeoff for the crash-survival and

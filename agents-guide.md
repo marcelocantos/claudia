@@ -22,11 +22,11 @@ on the shape of the work.
 |                     | Task mode                            | Session mode                            |
 |---------------------|--------------------------------------|-----------------------------------------|
 | Type                | `claudia.Task`                       | `claudia.Agent`                         |
-| Process model       | New `claude` per prompt              | Persistent PTY                          |
-| Output              | Structured NDJSON (stream-json)      | JSONL transcript + raw PTY              |
+| Process model       | New process (or HTTP call) per prompt | Persistent process: tmux PTY (Claude); ACP stdio/WebSocket (Grok); `codex app-server` JSON-RPC (Codex) |
+| Output              | Structured events (JSONL / stream-json / HTTP chunks) | Events via JSONL tail (Claude) or in-process RPC (Grok ACP, Codex app-server). Claude also captures a raw PTY log. |
 | Use case            | One-shot generation / analysis       | Multi-turn conversations                |
-| Cost accounting     | Yes, per prompt via `TaskEvent`      | Cumulative via `Agent.Usage()`          |
-| Resume across runs  | Via `TaskConfig.ClaudeID`            | Via `Config.SessionID`                  |
+| Cost accounting     | Yes when the provider reports it (`TaskEvent`) | Cumulative via `Agent.Usage()` when the transcript carries tokens |
+| Resume across runs  | Via `TaskConfig.ClaudeID` (the name is reused for every provider's session id) | Via `Config.SessionID` |
 
 **Default to Task mode.** It's simpler, gives you structured events,
 and exposes cost and token accounting. Only use Session mode if the
@@ -123,10 +123,13 @@ agent, err := reg.Launch("helper")
 `Config.Goal` (also `AgentDef.Goal`) is a host-owned Session
 objective. Empty keeps one-shot `Send`. When set, the Agent issues a
 continuation `Send` after each terminal assistant turn until `Stop`,
-`Interrupt`, or an assistant line `GOAL_STATUS: complete` /
+`Interrupt`, `Agent.CloseGoal()`, `Config.GoalCompleteCheck` returning
+true, or an assistant line `GOAL_STATUS: complete` /
 `GOAL_STATUS: blocked`. The string is not forwarded to any provider
 `/goal` command, so the same Goal can ride a later `Start` on a
-different Provider.
+different Provider. `SetGoalCompleteCheck` installs the hook after
+`Start` / `Launch` when the registry path cannot carry a function on
+`AgentDef`.
 
 MCP is Claudia's job (🎯T40). Callers name servers and transports;
 they do not write `~/.claude.json`, `~/.grok/config.toml`, or
@@ -209,6 +212,24 @@ binary discovery. `Start(ProviderBedrock)` fails closed with
 [docs/bedrock-work-account.md](docs/bedrock-work-account.md). Design:
 [docs/bedrock-provider.md](docs/bedrock-provider.md).
 
+### Ollama provider (Task mode only)
+
+```go
+task := claudia.NewTask(claudia.TaskConfig{
+    Provider: claudia.ProviderOllama,
+    ID:       "ollama-1",
+    Model:    "llama3.2", // or CLAUDIA_OLLAMA_MODEL
+})
+```
+
+Ollama is a local HTTP path (`/api/generate` at
+`CLAUDIA_OLLAMA_ENDPOINT`, default `http://127.0.0.1:11434`), not a
+coding-agent CLI. Cost is latency, not tokens — `CapabilityCost` is
+unsupported rather than a spend of zero. **Not claimed:** Session,
+resume, rewind, tools, permissions, extra argv. `Start(ProviderOllama)`
+fails closed with `CapabilityError`. Live tests:
+`CLAUDIA_OLLAMA_LIVE=1` (needs `CLAUDIA_OLLAMA_MODEL`).
+
 ## Plan usage (subscription remaining + rollover)
 
 Per-run token `Usage` / `CostUSD` on Task events is **not** the same as
@@ -230,6 +251,7 @@ all, err := claudia.QueryAllPlanUsage(ctx, nil)
 | Codex | ChatGPT `wham/usage` → windows classified by `limit_window_seconds` |
 | Grok | **Unavailable** (no documented SuperGrok remaining API) |
 | Bedrock | **Unavailable** (no subscription remaining surface) |
+| Ollama | **Unavailable** (local inference; no subscription remaining surface) |
 
 Never invent numbers: missing auth, HTTP errors, or unpublished windows
 yield `Status == PlanUsageUnavailable` with an explicit `Reason`. Full
@@ -292,14 +314,15 @@ agent, err := claudia.Start(claudia.Config{
 defer agent.Stop()
 ```
 
-`Start` returns as soon as the `claude` process has been spawned,
-which is before the TUI has finished painting its startup UI. You
-do **not** need to sleep or poll: the first `Send` blocks
-internally until the TUI has gone quiet for 500 ms, which on a
-typical standalone session takes about 1.2 s from `Start`. If you
-want to observe the ready transition (e.g. to update a spinner),
-call `agent.WaitReady(ctx)` explicitly — it returns nil once the
-TUI is ready, or an error if detection gave up.
+`Start` returns as soon as the provider process has been spawned.
+For Claude, that is before the TUI has finished painting its startup
+UI. You do **not** need to sleep or poll: the first `Send` on a
+Claude Session blocks internally until the TUI has gone quiet for
+500 ms, which on a typical standalone session takes about 1.2 s from
+`Start`. If you want to observe the ready transition (e.g. to update
+a spinner), call `agent.WaitReady(ctx)` explicitly — it returns nil
+once ready, or an error if detection gave up. Grok ACP and Codex
+app-server readiness is protocol-level, not a tmux pane poll.
 
 Subscribe to events **before** sending the first message — messages
 may arrive quickly. Multiple subscribers are supported; each receives
@@ -335,17 +358,19 @@ reply, err := claudia.Run(ctx, "prompt", cfg)
 
 It bundles Start + Send + WaitForResponse + Stop.
 
-**Interrupting**: `Interrupt()` sends ESC to the PTY, cancelling the
-current turn without killing the process.
+**Interrupting**: `Interrupt()` cancels the current turn without
+killing the process. Claude Session sends ESC to the PTY; Grok ACP
+and Codex app-server use their interrupt RPCs.
 
-**Terminal output**: Session mode captures the raw PTY byte stream to
-a log file at
+**Terminal output**: Claude Session mode captures the raw PTY byte
+stream to a log file at
 `$XDG_STATE_HOME/claudia/terms/<escaped-workdir>/<sessionID>.term`
 (defaulting to `~/.local/state/...` when the XDG var is unset).
 Override via `Config.TermLogPath`; set to `"-"` to disable. This file
 contains ANSI escapes, cursor moves, and progress bars — it is the
 rendered terminal view, not a structured feed. The JSONL transcript
-is authoritative for logical content.
+is authoritative for logical content. Grok and Codex Session have no
+PTY log.
 
 **Live terminal streaming**: `SubscribeTerminal()` returns the
 buffered history and a live channel of PTY chunks. Always call
@@ -453,23 +478,27 @@ owns a single short-lived agent, skip the Registry.
    or auth falls through to API-key mode, the spawn fails closed with a
    loud warning so the no-per-token path is verified, not assumed.
    Grok Build CLI resolver checks `GROK_BIN`, then `grok` on `$PATH`,
-   then known locations including `~/.grok/bin/grok`.
+   then known locations including `~/.grok/bin/grok`. Ollama needs a
+   reachable daemon (`CLAUDIA_OLLAMA_ENDPOINT`, default
+   `http://127.0.0.1:11434`) and a model (`TaskConfig.Model` or
+   `CLAUDIA_OLLAMA_MODEL`). Bedrock uses the AWS SDK default chain.
 
-   Current provider capability matrix:
+   Current provider capability matrix (full table: [STABILITY.md](STABILITY.md)):
 
-   | Capability | Claude | Codex | Grok Build CLI |
-   |------------|--------|-------|----------------|
-   | Task prompts | Supported | Supported via `codex exec --json` | Supported via `grok -p --output-format streaming-json` |
-   | Task resume | Supported | Supported via `codex exec resume --json` | Supported via `--resume` |
-   | Task usage / cost | Supported | Tokens yes; cost unavailable | Not on streaming-json (no tool_use/cost events); SuperGrok `/usage` panel has no public API ([docs/grok-usage-billing.md](docs/grok-usage-billing.md)) |
-   | Persistent Session | Supported | Supported via `codex app-server` | Supported via ACP (`grok agent stdio`) |
-   | Rewind | Supported | Unsupported without public fork/resume proof | Unsupported (no private session-file rewrite) |
-   | tmux attach | Supported | Unsupported | Unsupported (ACP is process-local; AttachCommand empty) |
-   | Terminal byte log | Supported | Unsupported | Unsupported |
-   | Permission mode | Supported | Unsupported — Codex sandbox/approval flags are Codex-native, not a Claude mapping | Unsupported — Task hardcodes `--permission-mode bypassPermissions` |
-   | Tool restrictions (`DisallowTools`) | Supported | Unsupported — `codex exec` has no per-tool disallow flag, so `Task.Run` **refuses** the run | Unsupported — `grok` *has* `--deny` and `--disallowed-tools`, but claudia translates `DisallowTools` into neither, so `Task.Run` **refuses** the run |
-   | Image inputs | Unsupported (no claudia API on any provider) | Unsupported | Unsupported |
-   | Web search | Supported (WebSearch tool, restrictable) | Unsupported — claudia does not bind `--search` | Unsupported |
+   | Capability | Claude | Codex | Grok | Bedrock | Ollama |
+   |------------|--------|-------|------|---------|--------|
+   | Task | Supported | `codex exec --json` | `grok -p` streaming-json | ConverseStream | `/api/generate` |
+   | Session | tmux PTY | `codex app-server` | ACP stdio/serve | Unsupported | Unsupported |
+   | Resume | Supported | `codex exec resume` | `--resume` / ACP load | Unsupported | Unsupported |
+   | Rewind | Supported | Unsupported | Unsupported | Unsupported | Unsupported |
+   | Cost | Supported | tokens only | unsupported | unsupported | unsupported (latency, not money) |
+   | tmux attach / terminal log | Supported | Unsupported | Unsupported | Unsupported | Unsupported |
+   | Permission mode | Supported | Unsupported (Codex-native sandbox, not a mapping) | Unsupported (Task hardcodes bypassPermissions) | Unsupported | Unsupported |
+   | Tool restrictions | Supported | Unsupported — `Task.Run` **refuses** | Unsupported — `grok` has `--deny` but claudia does not translate; **refuses** | Unsupported — **refuses** | Unsupported — **refuses** |
+   | Sandbox policy | Unsupported | Supported (`SandboxMode` / `ApprovalPolicy`) | Unsupported — **refuses** | Unsupported — **refuses** | Unsupported — **refuses** |
+   | Extra args | Supported | Unsupported — **refuses** | Unsupported — **refuses** | Unsupported — **refuses** | Unsupported — **refuses** |
+   | Image inputs | Unsupported (no claudia API) | Unsupported | Unsupported | Unsupported | Unsupported |
+   | Web search | Supported | Unsupported (does not bind `--search`) | Unsupported | Unsupported | Unsupported |
 
    This table is generated from the same claims production reads. Query
    it with `claudia.ProviderCapabilityMatrix(provider)`, or gate one
@@ -486,7 +515,7 @@ owns a single short-lived agent, skip the Registry.
    Don't try to re-enable these.
 
    Those are Claude Code tool names, and `BaseDisallowedTools` is
-   applied on Claude only — never on Codex, Grok or Bedrock. Rather
+   applied on Claude only — never on Codex, Grok, Bedrock, or Ollama. Rather
    than pretend otherwise, the non-Claude providers report
    `CapabilityToolRestrictions` as unsupported, and a Codex **or Grok**
    task carrying `DisallowTools` is refused outright rather than run
@@ -544,11 +573,12 @@ owns a single short-lived agent, skip the Registry.
 
 ## tmux substrate
 
-Session mode agents run inside windows on a dedicated claudia tmux
-server (socket at `$XDG_STATE_HOME/claudia/tmux.sock`, defaulting
+Claude Session mode agents run inside windows on a dedicated claudia
+tmux server (socket at `$XDG_STATE_HOME/claudia/tmux.sock`, defaulting
 to `~/.local/state/claudia/tmux.sock`). The server starts
-automatically on the first `Start` or `Acquire` call — no launchd
-or systemd setup is needed.
+automatically on the first Claude `Start` or `Acquire` call — no
+launchd or systemd setup is needed. Grok and Codex Session do not use
+tmux.
 
 ### Human observability: AttachCommand
 

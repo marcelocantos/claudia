@@ -1,21 +1,28 @@
 # claudia
 
 Go library for embedding [Claude Code](https://claude.com/claude-code),
-[Grok](https://x.ai/cli), Codex, and Bedrock agents in any program.
+[Grok](https://x.ai/cli), Codex, Bedrock, and Ollama agents in any program.
 
 claudia wraps each provider's CLI or API in two complementary modes
-(Task and Session), so you can drive an agent from a Go process without
-re-implementing PTY handling, JSONL transcript tailing, or session
-lifecycle.
+(Task and Session). Session transports differ by provider: Claude uses
+a tmux PTY plus JSONL tail; Grok uses ACP over stdio or connect-mode
+WebSocket; Codex uses `codex app-server` JSON-RPC. Bedrock and Ollama
+are Task-only HTTP paths.
 
 ## Requirements
 
 - Go 1.26+
-- `claude` CLI installed (on `$PATH`, in a known install dir like `~/.local/bin`, or pointed at via the `CLAUDE_BIN` env var)
-- tmux 3.0+ (`brew install tmux` / `apt install tmux` / `dnf install tmux`)
 - macOS or Linux (Windows is not supported; WSL works)
+- Per provider, as used:
+  - Claude: `claude` CLI (`CLAUDE_BIN` or `$PATH` / known install dirs); tmux 3.0+ for Session mode
+  - Grok: `grok` CLI (`GROK_BIN` or `$PATH` / `~/.grok/bin/grok`)
+  - Codex: `codex` CLI (`CODEX_BIN` or `$PATH` / known app-bundle paths)
+  - Bedrock: AWS SDK default credential chain
+  - Ollama: a local daemon (`CLAUDIA_OLLAMA_ENDPOINT`, default `http://127.0.0.1:11434`)
 
-No launchd or systemd setup is needed — tmux handles process lifetime for Session mode agents.
+No launchd or systemd setup is needed. Claude Session mode uses tmux for
+process lifetime; Grok and Codex Session modes are stdio processes (or
+Grok connect-mode `grok agent serve`).
 
 **Grok Build CLI** ships via `ProviderGrok` for both Task mode and
 Session mode. Binary discovery checks `GROK_BIN`, then `grok` on `$PATH`,
@@ -135,12 +142,15 @@ Session, resume, and tools fail closed. Cost is latency, not tokens.
 
 ### Session mode — persistent conversations
 
-Spawns `claude` inside a tmux window on a dedicated claudia tmux server
-and keeps it alive. Use it for multi-turn conversations, interactive
-agents that respond to external events, or programs that need to observe
-the session transcript as it happens. The tmux substrate provides
-crash-survival (agents outlive the consumer process) and human-attachable
-observability — you can inspect any live agent with:
+Claude Session mode spawns `claude` inside a tmux window on a dedicated
+claudia tmux server and keeps it alive. Grok Session uses ACP (`grok
+agent stdio` or connect-mode serve); Codex Session uses `codex
+app-server` JSON-RPC. There is no tmux window for Grok or Codex.
+Use Session mode for multi-turn conversations, interactive agents that
+respond to external events, or programs that need to observe the session
+as it happens. Claude's tmux substrate provides crash-survival (the
+agent outlives the consumer) and human-attachable observability — you
+can inspect a live Claude agent with:
 
 ```sh
 tmux -S ~/.local/state/claudia/tmux.sock attach -t <window>
@@ -174,7 +184,8 @@ reply, err := agent.WaitForResponse(ctx)
 `Config.Goal` (also `AgentDef.Goal`) is a host-owned Session
 objective. Empty keeps one-shot `Send`. When set, the Agent issues a
 continuation `Send` after each terminal assistant turn until `Stop`,
-`Interrupt`, or an assistant line `GOAL_STATUS: complete` /
+`Interrupt`, `Agent.CloseGoal`, `Config.GoalCompleteCheck` returning
+true, or an assistant line `GOAL_STATUS: complete` /
 `GOAL_STATUS: blocked`. The string is not forwarded to any provider
 `/goal` command, so the same Goal can ride a later `Start` on a
 different Provider.
@@ -255,15 +266,16 @@ if err := claudia.CheckCapability(
 `ProviderCapabilityMatrix(provider)` returns the whole table. Unknown
 providers and unclaimed capabilities report `CapabilityUnsupported`:
 silence never reads as parity with Claude. See
-[STABILITY.md](STABILITY.md) for the current Codex matrix — including
-that a Codex task carrying `DisallowTools` is refused, because `codex
-exec` has no per-tool disallow flag to honour it with.
+[STABILITY.md](STABILITY.md) for the current five-provider matrix —
+including that a Codex task carrying `DisallowTools` is refused, because
+`codex exec` has no per-tool disallow flag to honour it with.
 
-The PTY output is also captured to
+Claude Session also captures PTY output to
 `$XDG_STATE_HOME/claudia/terms/<escaped-workdir>/<sessionID>.term`
 (defaulting to `~/.local/state/...`) so you have a faithful record of
 the rendered terminal view alongside the structured JSONL transcript.
-Override via `Config.TermLogPath`; set to `"-"` to disable.
+Override via `Config.TermLogPath`; set to `"-"` to disable. Grok and
+Codex Session have no PTY log (`CapabilityTerminalLog` unsupported).
 
 ## Registry
 
@@ -284,17 +296,19 @@ and call `Start` directly.
 
 ## tmux substrate
 
-Session mode agents run inside a dedicated claudia tmux server (socket
-at `$XDG_STATE_HOME/claudia/tmux.sock`, defaulting to
-`~/.local/state/claudia/tmux.sock`). Each agent occupies one tmux
-window. The server starts automatically on the first `Start` or
-`Acquire` call and persists until the machine reboots — no launchd or
-systemd configuration is needed.
+Claude Session mode agents run inside a dedicated claudia tmux server
+(socket at `$XDG_STATE_HOME/claudia/tmux.sock`, defaulting to
+`~/.local/state/claudia/tmux.sock`). Each Claude agent occupies one
+tmux window. The server starts automatically on the first Claude
+`Start` or `Acquire` call and persists until the machine reboots — no
+launchd or systemd configuration is needed.
 
-Because agents live in tmux, they survive consumer process death. A
-new consumer process can reconnect to an existing window (via
+Because Claude agents live in tmux, they survive consumer process death.
+A new consumer process can reconnect to an existing window (via
 `Acquire` with a matching pool key) or observe its transcript via the
-JSONL file that Claude Code writes to `~/.claude/projects/`.
+JSONL file that Claude Code writes to `~/.claude/projects/`. Grok
+connect-mode (`Config.GrokConnect`) is the analogous outlive-the-consumer
+path for Grok; Codex Session is process-local stdio.
 
 Session-id chains across resume/rotate are filesystem-backed via
 `RegisterChain` / `LookupChain`. There is no `claudiad` daemon.
