@@ -12,13 +12,13 @@ new module (e.g. `claudia2`) rather than breaking an existing import
 path. The pre-1.0 period exists to shake out the API design before
 that contract takes effect.
 
-Snapshot as of: v0.26.0 (tagged 2026-08-23).
+Snapshot as of: v0.27.0 (tagged 2026-08-23).
 
 
 ## Interaction surface
 
 The exhaustive list of public-facing items in the module at the snapshot
-tag, derived from `go doc -all` over a clean `v0.26.0` worktree rather
+tag, derived from `go doc -all` over a clean `v0.27.0` worktree rather
 than transcribed from the previous revision of this document. Items are
 listed alphabetically within each table so the list can be diffed against
 `go doc` mechanically. Each item is annotated with a stability assessment:
@@ -42,7 +42,7 @@ release it claims to describe.
 | Item | Definition | Status |
 |---|---|---|
 | `Agent` | opaque struct; methods listed below | Needs review |
-| `AgentDef` | struct with `Name, WorkDir, SessionID, Model, Parent, Purpose, Description, TargetID, ConnectURL, SandboxMode, Goal string`, `Provider Provider`, `DisallowTools []string`, `MCPServers []MCPServer`, `AutoStart, Materialized, GrokConnect, MCPExclusive bool`, `ConnectPID int` | Needs review |
+| `AgentDef` | struct with `Name, WorkDir, SessionID, Model, Parent, Purpose, Description, TargetID, ConnectURL, SandboxMode, Goal, Role string`, `Provider Provider`, `DisallowTools []string`, `MCPServers []MCPServer`, `AutoStart, Materialized, GrokConnect, MCPExclusive bool`, `ConnectPID int` | Needs review |
 | `AllPlanUsageArgs` | struct: every `PlanUsageArgs` field except `Provider`, plus `Providers []Provider` (empty means all supported providers; includes Cursor overrides) | Fluid |
 | `AuthorizeMCPArgs` | struct with `URL, ClientName string`, `Probe *MCPProbe`, `OpenURL func(string) error`, `Client *http.Client` | Fluid |
 | `Capability` | string type naming a reported provider behaviour | Fluid |
@@ -52,7 +52,6 @@ release it claims to describe.
 | `CodexAuthPreflight` | struct with `Mode CodexAuthMode`, `AuthPath, Reason string`, `HasAccessToken, HasAPIKeyInFile, EnvOpenAIAPIKey, SubscriptionOK bool`, `Warnings []string` | Fluid |
 | `CodexAuthPreflightArgs` | struct with `AuthPath string`, `Getenv func(string) string` | Fluid |
 | `Config` | struct with `Provider Provider`, `WorkDir, SessionID, Model, PermissionMode, SandboxMode, Goal, MCPConfig, TermLogPath, PoolPolicy, ConnectURL string`, `RequireResume, GrokConnect, MCPExclusive bool`, `MCPServers []MCPServer`, `ExtraArgs, DisallowTools []string`, `PoolCap, ConnectPID int`, `GoalCompleteCheck func(goal, turnText string) bool` | Needs review |
-| `EnsureMCPArgs` | struct with `Name, URL, HeadersHelper, BearerTokenEnv, Auth, ClaudeJSON, GrokTOML, CodexTOML, CursorJSON string`, `Headers map[string]string`, `Providers []Provider` | Fluid |
 | `Event` | struct with `Type, SessionID, TurnID, MessageID, RecordID, Text, StopReason, ProgressType, Model string`, `Raw []byte`, `Usage Usage`, `IsError bool`; method `IsTerminalStop() bool` | Stable |
 | `EventFunc` | `func(Event)` | Needs review |
 | `LoadMCPArgs` | struct with `ClaudeJSON, GrokTOML, CodexTOML, CursorJSON, WorkDir string` | Fluid |
@@ -115,7 +114,6 @@ release it claims to describe.
 | `Adopt` | `Adopt(cfg Config) (*Agent, error)` — rebuild a handle for a live Claude tmux window or Grok connect-mode serve; missing process is `ErrNoSessionWindow`, not a silent `Start` | Needs review |
 | `AuthorizeMCP` | `AuthorizeMCP(ctx context.Context, args *AuthorizeMCPArgs) (*MCPToken, error)` — owner-present PKCE; tokens are returned, not stored | Fluid |
 | `CheckCapability` | `CheckCapability(provider Provider, capability Capability) error` | Fluid |
-| `EnsureMCP` | `EnsureMCP(args *EnsureMCPArgs) error` | Fluid |
 | `LoadMCP` | `LoadMCP(args *LoadMCPArgs) (*MCPInventory, error)` — nil args reads Claude + Grok + Codex user-scope maps | Fluid |
 | `LookupChain` | `LookupChain(sessionID string) (chainID string, sessionIDs []string, err error)` | Needs review |
 | `NewMCPProxy` | `NewMCPProxy(args *MCPProxyArgs) (*MCPProxy, error)` | Fluid |
@@ -340,11 +338,11 @@ public packages are listed; `internal/` variables are not surface.
 | `CLAUDIA_OLLAMA_ENDPOINT` | Ollama `/api/generate` base URL for `ProviderOllama` when not default. Empty uses `DefaultOllamaEndpoint` (`http://127.0.0.1:11434`). | Fluid |
 | `CLAUDIA_OLLAMA_MODEL` | Ollama model for `ProviderOllama` when `TaskConfig.Model` is empty. Required if Model is also empty. | Fluid |
 | `CODEX_BIN` | Absolute path or PATH-resolvable name of the `codex` executable. Honoured by Codex Task and Session spawn. Falls back to `exec.LookPath("codex")` then to known install locations including `/Applications/ChatGPT.app/Contents/Resources/codex`. | Fluid |
-| `CODEX_HOME` | When `Config.MCPExclusive` is set for Codex Session, claudia points Codex at an isolated home under the workdir so only configured MCP servers attach. | Fluid |
+| `CODEX_HOME` | When `Config.MCPServers` or `Config.MCPExclusive` is set for Codex Session, claudia points Codex at a process-private temp home so only configured MCP servers attach. | Fluid |
 | `CURSOR_API_KEY` | Cursor Agent CLI API key; alternative to `agent login` for Session/Task auth. | Fluid |
 | `CURSOR_BIN` | Absolute path or PATH-resolvable name of the Cursor Agent CLI (`cursor-agent` / `agent`). Honoured by Cursor Task and Session spawn. | Fluid |
 | `GROK_BIN` | Absolute path or PATH-resolvable name of the Grok Build CLI (`grok`). Honoured by Grok Task and Session spawn. Falls back to `exec.LookPath("grok")` then to known install locations including `~/.grok/bin/grok`. Not related to package `claudia/grok` (Realtime voice). | Fluid |
-| `GROK_HOME` | When `Config.MCPExclusive` is set for Grok Session, claudia points Grok at an isolated home under the workdir. | Fluid |
+| `GROK_HOME` | When `Config.MCPExclusive` is set for Grok Session, claudia points Grok at a process-private temp home (compat MCP discovery off). | Fluid |
 | `OPENAI_API_KEY` | Read only for *detection* by `PreflightCodexAuth`: when set, the ChatGPT-subscription assertion fails (`SubscriptionOK=false`) because Codex would bill per token. claudia never sets or forwards it. | Fluid |
 
 `CLAUDIA_LIVE`, `CLAUDIA_BEDROCK_LIVE`, `CLAUDIA_CODEX_LIVE`,
@@ -512,14 +510,14 @@ voice WebSocket client.
 
 ### Surface item count
 
-237 top-level items at v0.26.0 — 183 in `claudia`, 36 in `claudia/codex`,
+235 top-level items at v0.27.0 — 181 in `claudia`, 36 in `claudia/codex`,
 18 in `claudia/grok` — counting types, functions, methods, constants and
-variables, but not struct fields. With fields, 495. The comparable count
+variables, but not struct fields. With fields, 483. The comparable count
 at v0.25.0, the previous snapshot, was 228 across the same three packages:
 the added surface is `ProviderCursor` (Session ACP + Task print), host
 Goal close/complete-check, MCP exclusive + OAuth refresh/token hooks,
 and Cursor plan-usage. No identifiers were removed between v0.25.0 and
-v0.26.0.
+v0.27.0.
 
 Per the release skill's pre-1.0 → 1.0 shakeout gate (B.3a), the minimum
 settling period is **1 month** with no backwards-incompatible changes
