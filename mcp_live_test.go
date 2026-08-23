@@ -5,6 +5,7 @@ package claudia
 
 import (
 	"context"
+	"net/http"
 	"os"
 	"os/exec"
 	"strings"
@@ -13,9 +14,9 @@ import (
 )
 
 // Live 🎯T40: LoadMCP reads the real Claude user map (mnemo is assumed
-// present), a Session started with that inventory plus the same mnemo
-// URL can see the server, and EnsureMCP is a no-op when Codex already
-// has the matching entry.
+// present) and a Session started with that inventory under MCPExclusive
+// can see the server. Exclusive keeps host MCP maps from drowning the
+// assertion (Codex especially).
 
 func TestMCPLiveLoadAndSessionSeesMnemo(t *testing.T) {
 	if os.Getenv("CLAUDIA_LIVE") == "" && os.Getenv("CLAUDIA_GROK_LIVE") == "" && os.Getenv("CLAUDIA_CODEX_LIVE") == "" && os.Getenv("CLAUDIA_CURSOR_LIVE") == "" {
@@ -29,6 +30,12 @@ func TestMCPLiveLoadAndSessionSeesMnemo(t *testing.T) {
 	if !ok || mnemo.URL == "" {
 		t.Fatalf("LoadMCP(%s) has no mnemo HTTP server; live T40 assumes mnemo is in the Claude user map", inv.Source)
 	}
+	// Prefer the local mnemo daemon when the Claude map points at a
+	// jevons upstream that is down or unrouted (404 on /upstream/mnemo).
+	if direct := liveMnemoDirectURL(); direct != "" {
+		t.Logf("using direct mnemo %s (LoadMCP had %s)", direct, mnemo.URL)
+		mnemo.URL = direct
+	}
 	t.Logf("system mnemo url=%s source=%s servers=%d", mnemo.URL, inv.Source, len(inv.Servers))
 
 	t.Run("claude", func(t *testing.T) {
@@ -39,10 +46,11 @@ func TestMCPLiveLoadAndSessionSeesMnemo(t *testing.T) {
 			t.Skip("claude not on PATH")
 		}
 		runLiveMCPSeesMnemo(t, Config{
-			Provider:    ProviderClaude,
-			Model:       "haiku",
-			MCPServers:  []MCPServer{mnemo},
-			TermLogPath: "-",
+			Provider:     ProviderClaude,
+			Model:        "haiku",
+			MCPServers:   []MCPServer{mnemo},
+			MCPExclusive: true,
+			TermLogPath:  "-",
 		})
 	})
 	t.Run("grok", func(t *testing.T) {
@@ -53,9 +61,10 @@ func TestMCPLiveLoadAndSessionSeesMnemo(t *testing.T) {
 			t.Skip(err)
 		}
 		runLiveMCPSeesMnemo(t, Config{
-			Provider:    ProviderGrok,
-			MCPServers:  []MCPServer{mnemo},
-			TermLogPath: "-",
+			Provider:     ProviderGrok,
+			MCPServers:   []MCPServer{mnemo},
+			MCPExclusive: true,
+			TermLogPath:  "-",
 		})
 	})
 	t.Run("codex", func(t *testing.T) {
@@ -65,17 +74,13 @@ func TestMCPLiveLoadAndSessionSeesMnemo(t *testing.T) {
 		if _, err := resolveCodexBin(); err != nil {
 			t.Skip(err)
 		}
-		if err := EnsureMCP(&EnsureMCPArgs{
-			Name:      mnemo.Name,
-			URL:       mnemo.URL,
-			Providers: []Provider{ProviderCodex},
-		}); err != nil {
-			t.Fatalf("EnsureMCP codex: %v", err)
-		}
+		// Exclusive CODEX_HOME so the host's crowded ~/.codex/config.toml
+		// cannot hide mnemo among dozens of other MCP namespaces.
 		runLiveMCPSeesMnemo(t, Config{
-			Provider:    ProviderCodex,
-			MCPServers:  []MCPServer{mnemo},
-			TermLogPath: "-",
+			Provider:     ProviderCodex,
+			MCPServers:   []MCPServer{mnemo},
+			MCPExclusive: true,
+			TermLogPath:  "-",
 		})
 	})
 	t.Run("cursor", func(t *testing.T) {
@@ -120,8 +125,35 @@ func runLiveMCPSeesMnemo(t *testing.T, cfg Config) {
 		}
 		return r
 	}, strings.ToLower(reply))
-	if !strings.Contains(compact, "mnemo-ok") && !strings.Contains(compact, "mnemo") {
-		t.Fatalf("reply does not show mnemo: %q", reply)
+	// Affirmative only. A bare "mnemo" substring matches refusals like
+	// "no tool name contains mnemo" (Codex live 2026-08-23).
+	if !strings.Contains(compact, "mnemo-ok") && !strings.Contains(compact, "mcp__mnemo") {
+		t.Fatalf("reply does not show mnemo attached: %q", reply)
 	}
 	t.Logf("mcp live reply: %q", reply)
+}
+
+// liveMnemoDirectURL returns http://127.0.0.1:19419/mcp when the local
+// mnemo daemon answers initialize there; otherwise empty.
+func liveMnemoDirectURL() string {
+	const url = "http://127.0.0.1:19419/mcp"
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"claudia-live","version":"0"}}}`,
+	))
+	if err != nil {
+		return ""
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return ""
+	}
+	return url
 }
