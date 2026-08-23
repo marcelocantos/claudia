@@ -79,9 +79,8 @@ macOS Keychain miss `cursor-user` and hang `authenticate` on a dialog.
 Auth stays on the real `agent login` or `CURSOR_API_KEY` / `--api-key`
 (the dedicated-key model rather than a hermetic home).
 
-`EnsureMCP` upserts HTTP servers into `~/.cursor/mcp.json` (same JSON
-shape as Claude). `LoadMCP` reads that file and tags
-`ProviderCursor`. Forum reports have claimed ACP `mcpServers` and
+`LoadMCP` reads `~/.cursor/mcp.json` and tags `ProviderCursor`.
+Forum reports have claimed ACP `mcpServers` and
 even static config were ignored on some CLI builds — live
 `CLAUDIA_CURSOR_LIVE` MCP tests are the gate, not the docs.
 

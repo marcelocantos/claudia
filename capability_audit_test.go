@@ -180,7 +180,7 @@ var sessionFieldFates = map[Provider]map[string]fieldDecl{
 		"PermissionMode":    {fateRefused, "Codex sandbox/approval are not Claude PermissionMode"},
 		"SandboxMode":       {fateConsumed, ""},
 		"MCPConfig":         {fateIgnored, "app-server thread/start has no MCPConfig field"},
-		"MCPServers":        {fateLocal, "Codex Session reads user Codex config; call EnsureMCP"},
+		"MCPServers":        {fateConsumed, "process-private CODEX_HOME at spawn"},
 		"MCPExclusive":      {fateConsumed, "CODEX_HOME isolate at spawn"},
 		"DisallowTools":     {fateRefused, "codex exec / app-server have no per-tool disallow flag"},
 		"ExtraArgs":         {fateRefused, "typed app-server fields only"},
@@ -203,7 +203,7 @@ var sessionFieldFates = map[Provider]map[string]fieldDecl{
 		"SandboxMode":       {fateRefused, "SandboxMode is a Codex app-server field"},
 		"MCPConfig":         {fateConsumed, ""},
 		"MCPServers":        {fateConsumed, ""},
-		"MCPExclusive":      {fateConsumed, "project .cursor/mcp.json + ACP mcpServers (no HOME rewrite)"},
+		"MCPExclusive":      {fateConsumed, "ACP mcpServers only (no project mcp.json rewrite)"},
 		"DisallowTools":     {fateRefused, "Config.DisallowTools never reaches the ACP client"},
 		"ExtraArgs":         {fateRefused, "fixed agent acp argv; caller ExtraArgs have nowhere to go"},
 		"TermLogPath":       {fateLocal, "host-side log path; Cursor ACP is not a PTY"},
@@ -445,8 +445,8 @@ func sessionMaterialises(provider Provider, field string) bool {
 			return req.SessionID != ""
 		case "RequireResume":
 			return req.Config.RequireResume
-		case "MCPExclusive":
-			return req.Config.MCPExclusive
+		case "MCPServers", "MCPExclusive":
+			return needsSessionMCPMaterialization(req.Config)
 		default:
 			return false
 		}
@@ -501,7 +501,7 @@ func sessionMaterialises(provider Provider, field string) bool {
 		case "MCPServers":
 			return len(resolveACPMCPServers(req.Config)) > 0
 		case "MCPExclusive":
-			return plan.ExclusiveProjectMCP != ""
+			return plan.MCPExclusive
 		default:
 			return argvHolds(plan.Args, sessionNeedle(field, req))
 		}

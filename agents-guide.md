@@ -180,21 +180,19 @@ inv.Servers = append(inv.Servers, claudia.MCPServer{
     // provider's own vault — Claudia does not copy it.
 })
 cfg.MCPServers = inv.Servers
-if err := claudia.EnsureMCP(&claudia.EnsureMCPArgs{
-    Name: "jevonsmcp", URL: "http://127.0.0.1:13705/mcp",
-}); err != nil { /* Codex + Grok + Claude + Cursor user files */ }
 ```
 
 `Config.MCPExclusive` (default false) is the isolate switch. False
-keeps each CLI's user-scope MCP map (additive). True is hermetic:
-Claude `--strict-mcp-config`, Grok `GROK_HOME` with copied auth and
-no user `mcp_servers`, Codex `CODEX_HOME` containing only
-`Config.MCPServers`. Cursor does **not** rewrite `HOME` (that breaks
-macOS Keychain for `cursor-user`); exclusive writes project
-`.cursor/mcp.json` plus ACP `mcpServers`, and auth uses the real
-login or `CURSOR_API_KEY` / `--api-key`. Cursor has no strict-mcp
-flag, so user-scope `~/.cursor/mcp.json` may still attach. Jevons
-wants exclusive; other hosts can leave the default.
+keeps each CLI's user-scope MCP map (additive) where the backend
+still loads it. True is hermetic via process-private materialisation:
+Claude `--strict-mcp-config`, Grok temp `GROK_HOME` (auth copied,
+compat MCP discovery off), Codex temp `CODEX_HOME` containing only
+`Config.MCPServers`. Cursor has no strict flag and Claudia does
+**not** rewrite project `.cursor/mcp.json` or `HOME` (Keychain);
+exclusive Session MCP is ACP `mcpServers` only, so user-scope
+`~/.cursor/mcp.json` may still attach. Auth uses the real login or
+`CURSOR_API_KEY` / `--api-key`. Jevons wants exclusive; other hosts
+can leave the default.
 
 `LoadMCP` reads **each provider's** config (Claude JSON, Grok TOML,
 Codex TOML, Cursor `mcp.json`) and tags `MCPServer.Providers`. A Codex-only
@@ -203,11 +201,13 @@ is the list to attach to a Session. Caller-appended servers with
 empty Providers (jevonsmcp) are valid for every backend. `LoadMCP(nil)`
 uses the user-scope defaults; any path override means *only*
 those paths are read.
-`Config.MCPServers` is session-scoped (Claude private `mcp.claudia.json`,
-Grok/Cursor ACP `mcpServers`). Codex Session has no `thread/start` MCP field —
-`EnsureMCP` writes Codex's own config. Isolates pass fixture paths on
-`LoadMCPArgs` / `EnsureMCPArgs` so they never touch the daily files.
-Bedrock and Ollama have no MCP ensure path.
+`Config.MCPServers` is the only Session attach path: Claude gets an
+inline or temp `--mcp-config`, Grok/Cursor get ACP `mcpServers`, and
+Codex gets a process-private `CODEX_HOME`. Claudia never writes
+`~/.claude.json`, `~/.grok`, `~/.codex`, `~/.cursor`, project
+`.cursor/mcp.json`, or workdir `mcp.claudia.json`. Isolates pass
+fixture paths on `LoadMCPArgs` so they never read the daily files.
+Bedrock and Ollama have no Session MCP surface.
 
 HTTP MCP OAuth (🎯T42): `ProbeMCP` classifies a URL as `open`,
 `static`, or `oauth` from one unauthenticated initialize.
@@ -221,7 +221,7 @@ The host mounts it (for example `mux.Handle("/upstream/",
 http.StripPrefix("/upstream", p))` or pass `Prefix: "/upstream"`)
 and sets `PublicBase` to the advertised origin
 (`http://127.0.0.1:13705`). `Advertised()` is the inventory with
-loopback URLs to `EnsureMCP`. On 401 the proxy refreshes when a
+loopback URLs for the host to stamp on `Config.MCPServers`. On 401 the proxy refreshes when a
 refresh token is present; Authorize runs only when refresh is
 impossible or fails. `SetToken` / `OnTokenChange` are the host
 persistence hooks. Claudia is not a server; the host process is.

@@ -10,7 +10,6 @@ import (
 	"io"
 	"log/slog"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -624,9 +623,10 @@ type cursorSessionPlan struct {
 	PreferSessionID string
 	RequireResume   bool
 	MCPServers      []any
-	// ExclusiveProjectMCP is the workDir/.cursor/mcp.json path when
-	// MCPExclusive is set. Empty means additive (no project rewrite).
-	ExclusiveProjectMCP string
+	// MCPExclusive is the isolate flag from Config. Cursor has no
+	// strict-mcp flag and Claudia does not rewrite project mcp.json;
+	// exclusive Session MCP is ACP mcpServers only.
+	MCPExclusive bool
 }
 
 func planCursorSession(req agentStartRequest) cursorSessionPlan {
@@ -634,18 +634,14 @@ func planCursorSession(req agentStartRequest) cursorSessionPlan {
 	if req.Resuming || req.Config.SessionID != "" {
 		preferID = req.SessionID
 	}
-	projectMCP := ""
-	if req.Config.MCPExclusive && req.WorkDir != "" {
-		projectMCP = filepath.Join(req.WorkDir, ".cursor", "mcp.json")
-	}
 	return cursorSessionPlan{
-		Args:                cursorACPArgs(req.Config.Model),
-		WorkDir:             req.WorkDir,
-		Model:               req.Config.Model,
-		PreferSessionID:     preferID,
-		RequireResume:       req.Config.RequireResume,
-		MCPServers:          resolveACPMCPServers(req.Config),
-		ExclusiveProjectMCP: projectMCP,
+		Args:            cursorACPArgs(req.Config.Model),
+		WorkDir:         req.WorkDir,
+		Model:           req.Config.Model,
+		PreferSessionID: preferID,
+		RequireResume:   req.Config.RequireResume,
+		MCPServers:      resolveACPMCPServers(req.Config),
+		MCPExclusive:    req.Config.MCPExclusive,
 	}
 }
 
@@ -688,14 +684,6 @@ func startCursorAgent(req agentStartRequest) (*agentStart, error) {
 			a.alive = false
 			a.mu.Unlock()
 		}
-	}
-
-	if req.Config.MCPExclusive {
-		path, herr := writeExclusiveCursorProjectMCP(req.WorkDir, req.Config.MCPServers)
-		if herr != nil {
-			return nil, herr
-		}
-		slog.Info("cursor MCPExclusive", "project_mcp", path)
 	}
 
 	client, err := startCursorACP(bin, plan.WorkDir, plan.Model, plan.PreferSessionID, plan.RequireResume, plan.MCPServers, nil, onEvent, onClose)

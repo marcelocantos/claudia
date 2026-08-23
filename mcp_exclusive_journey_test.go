@@ -25,10 +25,11 @@ func TestMCPExclusiveGrokInspectJourney(t *testing.T) {
 		t.Skipf("grok binary not found: %v", err)
 	}
 	dir := t.TempDir()
-	home, err := prepareExclusiveGrokHome(dir)
+	home, cleanup, err := prepareExclusiveGrokHome()
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(cleanup)
 	cmd := exec.Command(bin, "inspect")
 	cmd.Dir = dir
 	cmd.Env = appendEnv(os.Environ(), exclusiveEnv("GROK_HOME", home))
@@ -118,10 +119,10 @@ func TestMCPExclusiveSessionRoundTrip(t *testing.T) {
 	t.Logf("exclusive grok round-trip: %q", reply)
 }
 
-// TestMCPExclusiveCursorProjectMCPJourney is the hermetic Cursor twin of
-// GROK_HOME inspect: exclusive must plan a project mcp.json path and write
-// only the named HTTP servers — never rewrite HOME (Keychain).
-func TestMCPExclusiveCursorProjectMCPJourney(t *testing.T) {
+// TestMCPExclusiveCursorACPOnlyJourney is the hermetic Cursor twin of
+// GROK_HOME inspect: exclusive must plan ACP mcpServers only — never
+// rewrite project .cursor/mcp.json or HOME (Keychain).
+func TestMCPExclusiveCursorACPOnlyJourney(t *testing.T) {
 	dir := t.TempDir()
 	req := agentStartRequest{
 		WorkDir: dir,
@@ -134,35 +135,29 @@ func TestMCPExclusiveCursorProjectMCPJourney(t *testing.T) {
 		},
 	}
 	plan := planCursorSession(req)
-	wantPath := filepath.Join(dir, ".cursor", "mcp.json")
-	if plan.ExclusiveProjectMCP != wantPath {
-		t.Fatalf("ExclusiveProjectMCP = %q, want %q", plan.ExclusiveProjectMCP, wantPath)
+	if !plan.MCPExclusive {
+		t.Fatal("plan.MCPExclusive = false")
 	}
-
-	path, err := writeExclusiveCursorProjectMCP(dir, req.Config.MCPServers)
-	if err != nil {
-		t.Fatal(err)
+	byName := map[string]map[string]any{}
+	for _, raw := range plan.MCPServers {
+		m := raw.(map[string]any)
+		byName[m["name"].(string)] = m
 	}
-	if path != wantPath {
-		t.Fatalf("wrote %q, want %q", path, wantPath)
+	if byName["onlyme"]["url"] != "http://127.0.0.1:9/mcp" {
+		t.Fatalf("ACP entry = %#v", plan.MCPServers)
 	}
-	inv, err := LoadMCP(&LoadMCPArgs{CursorJSON: path})
-	if err != nil {
-		t.Fatal(err)
+	if byName["stdio"]["command"] != "/bin/true" {
+		t.Fatalf("ACP should include stdio servers: %#v", plan.MCPServers)
 	}
-	byName := mcpByName(inv.Servers)
-	if byName["onlyme"].URL != "http://127.0.0.1:9/mcp" {
-		t.Fatalf("exclusive project mcp = %+v", inv.Servers)
-	}
-	if _, ok := byName["stdio"]; ok {
-		t.Fatalf("stdio leaked into exclusive project mcp: %+v", inv.Servers)
+	if _, err := os.Stat(filepath.Join(dir, ".cursor", "mcp.json")); !os.IsNotExist(err) {
+		t.Fatalf("must not write project mcp.json: %v", err)
 	}
 }
 
 // TestMCPExclusiveCursorSessionRoundTrip is the live Cursor exclusive
-// ping: project mcp.json isolate, real-home auth (or CURSOR_API_KEY),
-// one Send, one terminal. Catches Keychain/HOME regressions and ACP
-// handshake stalls.
+// ping: ACP mcpServers only (no project mcp.json), real-home auth
+// (or CURSOR_API_KEY), one Send, one terminal. Catches Keychain/HOME
+// regressions and ACP handshake stalls.
 func TestMCPExclusiveCursorSessionRoundTrip(t *testing.T) {
 	if os.Getenv("CLAUDIA_CURSOR_LIVE") == "" {
 		t.Skip("CLAUDIA_CURSOR_LIVE not set (this test spends API credit)")
@@ -185,9 +180,8 @@ func TestMCPExclusiveCursorSessionRoundTrip(t *testing.T) {
 	if err := agent.WaitReady(t.Context()); err != nil {
 		t.Fatalf("WaitReady: %v", err)
 	}
-	mcpPath := filepath.Join(cfg.WorkDir, ".cursor", "mcp.json")
-	if _, err := os.Stat(mcpPath); err != nil {
-		t.Fatalf("exclusive did not write project mcp.json: %v", err)
+	if _, err := os.Stat(filepath.Join(cfg.WorkDir, ".cursor", "mcp.json")); err == nil {
+		t.Fatal("exclusive must not write project .cursor/mcp.json")
 	}
 	if err := agent.Send("Reply with exactly: " + token); err != nil {
 		t.Fatalf("Send: %v", err)

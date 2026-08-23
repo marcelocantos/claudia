@@ -25,8 +25,8 @@ func TestMCPExclusiveClaudeArgvUsesStrictConfig(t *testing.T) {
 func TestMCPExclusiveGrokPlanSetsHome(t *testing.T) {
 	req := agentStartRequest{WorkDir: "/work/t45", Config: Config{MCPExclusive: true}}
 	plan := planGrokSession(req)
-	if plan.GrokHome == "" || !strings.Contains(plan.GrokHome, "grok") {
-		t.Fatalf("GrokHome = %q", plan.GrokHome)
+	if plan.GrokHome != "session:GROK_HOME" {
+		t.Fatalf("GrokHome = %q, want session:GROK_HOME", plan.GrokHome)
 	}
 	add := planGrokSession(agentStartRequest{WorkDir: "/work/t45", Config: Config{}})
 	if add.GrokHome != "" {
@@ -35,11 +35,11 @@ func TestMCPExclusiveGrokPlanSetsHome(t *testing.T) {
 }
 
 func TestPrepareExclusiveHomesSkipUserMCP(t *testing.T) {
-	dir := t.TempDir()
-	grok, err := prepareExclusiveGrokHome(dir)
+	grok, cleanup, err := prepareExclusiveGrokHome()
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(cleanup)
 	txt, err := os.ReadFile(filepath.Join(grok, "config.toml"))
 	if err != nil {
 		t.Fatal(err)
@@ -50,13 +50,14 @@ func TestPrepareExclusiveHomesSkipUserMCP(t *testing.T) {
 	if !strings.Contains(string(txt), "mcps = false") {
 		t.Fatalf("exclusive grok home must disable Claude MCP compat:\n%s", txt)
 	}
-	codex, err := prepareExclusiveCodexHome(dir, []MCPServer{
+	codex, cleanup2, err := prepareExclusiveCodexHome([]MCPServer{
 		{Name: "onlyme", URL: "http://127.0.0.1:9/mcp"},
 		{Name: "stdio", Command: "/bin/true"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(cleanup2)
 	cfgb, err := os.ReadFile(filepath.Join(codex, "config.toml"))
 	if err != nil {
 		t.Fatal(err)
@@ -67,43 +68,23 @@ func TestPrepareExclusiveHomesSkipUserMCP(t *testing.T) {
 	}
 }
 
-func TestMCPExclusiveCursorPlanSetsProjectMCP(t *testing.T) {
-	req := agentStartRequest{WorkDir: "/work/t45", Config: Config{MCPExclusive: true}}
+func TestMCPExclusiveCursorPlanIsACPOnly(t *testing.T) {
+	req := agentStartRequest{
+		WorkDir: "/work/t45",
+		Config: Config{
+			MCPExclusive: true,
+			MCPServers:   []MCPServer{{Name: "onlyme", URL: "http://127.0.0.1:9/mcp"}},
+		},
+	}
 	plan := planCursorSession(req)
-	want := filepath.Join("/work/t45", ".cursor", "mcp.json")
-	if plan.ExclusiveProjectMCP != want {
-		t.Fatalf("ExclusiveProjectMCP = %q, want %q", plan.ExclusiveProjectMCP, want)
+	if !plan.MCPExclusive {
+		t.Fatal("plan.MCPExclusive = false")
+	}
+	if len(plan.MCPServers) != 1 {
+		t.Fatalf("ACP MCPServers = %#v", plan.MCPServers)
 	}
 	add := planCursorSession(agentStartRequest{WorkDir: "/work/t45", Config: Config{}})
-	if add.ExclusiveProjectMCP != "" {
-		t.Fatalf("additive ExclusiveProjectMCP = %q", add.ExclusiveProjectMCP)
-	}
-}
-
-func TestWriteExclusiveCursorProjectMCPWritesOnlyNamedServers(t *testing.T) {
-	dir := t.TempDir()
-	path, err := writeExclusiveCursorProjectMCP(dir, []MCPServer{
-		{Name: "onlyme", URL: "http://127.0.0.1:9/mcp"},
-		{Name: "stdio", Command: "/bin/true"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	inv, err := LoadMCP(&LoadMCPArgs{CursorJSON: path})
-	if err != nil {
-		t.Fatal(err)
-	}
-	byName := mcpByName(inv.Servers)
-	if byName["onlyme"].URL != "http://127.0.0.1:9/mcp" {
-		t.Fatalf("exclusive cursor mcp = %+v", inv.Servers)
-	}
-	if _, ok := byName["stdio"]; ok {
-		t.Fatalf("stdio leaked into exclusive cursor mcp: %+v", inv.Servers)
-	}
-}
-
-func TestEnsureDefMCPSkipsWhenExclusive(t *testing.T) {
-	if err := ensureDefMCP(&AgentDef{Provider: ProviderCodex, MCPExclusive: true, MCPServers: []MCPServer{{Name: "x", URL: "http://127.0.0.1:9/mcp"}}}); err != nil {
-		t.Fatal(err)
+	if add.MCPExclusive {
+		t.Fatal("additive plan should not be exclusive")
 	}
 }

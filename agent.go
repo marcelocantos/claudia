@@ -111,15 +111,18 @@ type Config struct {
 	MCPConfig string
 
 	// MCPServers is the session-scoped MCP list in Claudia's dialect.
-	// Claude writes it to a private mcp.claudia.json; Grok and Cursor
-	// send it on the ACP wire. Codex Session has no thread/start field
-	// — call [EnsureMCP] so the server lands in Codex's own config.
+	// This is the only way Claudia populates a backend's MCP set at
+	// Start: Claude gets an inline/temp --mcp-config; Grok/Cursor get
+	// ACP mcpServers; Codex gets a process-private CODEX_HOME. Claudia
+	// never writes ~/.claude.json, ~/.grok, ~/.codex, ~/.cursor, or
+	// project .cursor/mcp.json for Session attach.
 	MCPServers []MCPServer
 
 	// MCPExclusive, when true, is the only MCP set the Session may
 	// see (🎯T45). Default false keeps provider user-scope maps
-	// (additive). Jevons wants exclusive; other hosts often want
-	// whatever is already configured.
+	// additive where the backend still loads them (Cursor has no
+	// strict flag). Claude uses --strict-mcp-config; Grok/Codex use
+	// process-private homes under the system temp dir.
 	MCPExclusive bool
 
 	// DisallowTools lists additional tool names to disallow. Agent,
@@ -183,6 +186,9 @@ type Agent struct {
 	// connect-mode (Grok serve): durable process endpoint for upgrade reattach.
 	connectURL string
 	connectPID int
+
+	// mcpCleanup removes process-private MCP materialisation created at Start.
+	mcpCleanup func()
 
 	mu        sync.Mutex
 	alive     bool
@@ -281,6 +287,9 @@ type agentStart struct {
 	// ConnectURL / ConnectPID for Grok connect-mode (durable serve).
 	ConnectURL string
 	ConnectPID int
+	// Cleanup removes process-private MCP materialisation (temp --mcp-config
+	// files, ephemeral CODEX_HOME / GROK_HOME). Called from Agent.Stop.
+	Cleanup func()
 }
 
 type agentBackend interface {
@@ -521,6 +530,7 @@ func startWithBackend(cfg Config, backend agentBackend) (*Agent, error) {
 	a.ops = start.Ops
 	a.connectURL = start.ConnectURL
 	a.connectPID = start.ConnectPID
+	a.mcpCleanup = start.Cleanup
 
 	// Store session ID on the window for crash-survival recovery.
 	if start.StoreSessionInWindow {
@@ -578,6 +588,10 @@ func startWithBackend(cfg Config, backend agentBackend) (*Agent, error) {
 // Kept separate from StartAgent so the request-field audit can materialise
 // the request without a tmux server (see capability_audit_test.go).
 func claudeAgentArgs(req agentStartRequest) []string {
+	return claudeAgentArgsWithMCP(req, claudeMCPConfigArg(req))
+}
+
+func claudeAgentArgsWithMCP(req agentStartRequest, mcpConfig string) []string {
 	args := []string{
 		"--permission-mode", req.Config.PermissionMode,
 		"--disallowedTools", req.DisallowedTools,
@@ -587,8 +601,8 @@ func claudeAgentArgs(req agentStartRequest) []string {
 	} else {
 		args = append(args, "--session-id", req.SessionID)
 	}
-	if path := claudeMCPConfigArg(req); path != "" {
-		args = append(args, "--mcp-config", path)
+	if mcpConfig != "" {
+		args = append(args, "--mcp-config", mcpConfig)
 	}
 	if req.Config.MCPExclusive {
 		args = append(args, "--strict-mcp-config")
@@ -614,26 +628,37 @@ func (claudeAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error)
 		return nil, err
 	}
 
-	if err := writeSessionMCPFile(req); err != nil {
-		return nil, fmt.Errorf("session mcp file: %w", err)
+	mcpArg, mcpCleanup, err := prepareClaudeMCPConfig(req.Config)
+	if err != nil {
+		return nil, fmt.Errorf("session mcp: %w", err)
 	}
-	args := claudeAgentArgs(req)
+	args := claudeAgentArgsWithMCP(req, mcpArg)
 
 	windowName := tmuxagent.SessionWindowName(req.SessionID)
 	claudeBin, err := resolveClaudeBin()
 	if err != nil {
+		if mcpCleanup != nil {
+			mcpCleanup()
+		}
 		return nil, err
 	}
 	windowID, err := tmuxagent.SpawnWindow(req.WorkDir, windowName, claudeBin, args)
 	if err != nil {
+		if mcpCleanup != nil {
+			mcpCleanup()
+		}
 		return nil, fmt.Errorf("tmux spawn: %w", err)
 	}
 
 	start, err := attachClaudeWindow(windowID)
 	if err != nil {
 		tmuxagent.KillWindow(windowID)
+		if mcpCleanup != nil {
+			mcpCleanup()
+		}
 		return nil, err
 	}
+	start.Cleanup = mcpCleanup
 	return start, nil
 }
 
@@ -737,7 +762,8 @@ func planGrokSession(req agentStartRequest) grokSessionPlan {
 	connect := grokConnectEnabled(req.Config)
 	home := ""
 	if req.Config.MCPExclusive {
-		home = exclusiveMCPHomeDir(req.WorkDir, "grok")
+		// Audit sentinel; Start materialises a real temp GROK_HOME.
+		home = "session:GROK_HOME"
 	}
 	return grokSessionPlan{
 		Args:            grokACPArgs(req.Config.Model, connect),
@@ -823,15 +849,20 @@ func startCodexAgent(req agentStartRequest) (*agentStart, error) {
 	}
 
 	var extraEnv []string
-	if req.Config.MCPExclusive {
-		home, herr := prepareExclusiveCodexHome(req.WorkDir, req.Config.MCPServers)
+	var mcpCleanup func()
+	if needsSessionMCPMaterialization(req.Config) {
+		home, cleanup, herr := prepareExclusiveCodexHome(mergeMCPServers(req.Config))
 		if herr != nil {
 			return nil, herr
 		}
+		mcpCleanup = cleanup
 		extraEnv = exclusiveEnv("CODEX_HOME", home)
 	}
 	client, err := startCodexAppServer(bin, req.WorkDir, req.Config.Model, req.SessionID, req.Config.RequireResume, req.Config.SandboxMode, extraEnv, onEvent, onClose)
 	if err != nil {
+		if mcpCleanup != nil {
+			mcpCleanup()
+		}
 		return nil, err
 	}
 	sid := client.ThreadID()
@@ -851,6 +882,7 @@ func startCodexAgent(req agentStartRequest) (*agentStart, error) {
 		},
 	}
 	return &agentStart{
+		Cleanup:   mcpCleanup,
 		WindowID:  "codex-app-server-" + sid,
 		Ops:       ops,
 		TailJSONL: false,
@@ -900,11 +932,13 @@ func startGrokAgent(req agentStartRequest) (*agentStart, error) {
 	}
 
 	var extraEnv []string
+	var mcpCleanup func()
 	if req.Config.MCPExclusive {
-		home, herr := prepareExclusiveGrokHome(req.WorkDir)
+		home, cleanup, herr := prepareExclusiveGrokHome()
 		if herr != nil {
 			return nil, herr
 		}
+		mcpCleanup = cleanup
 		extraEnv = exclusiveEnv("GROK_HOME", home)
 		slog.Info("grok MCPExclusive", "GROK_HOME", home)
 	}
@@ -916,6 +950,9 @@ func startGrokAgent(req agentStartRequest) (*agentStart, error) {
 		client, err = startGrokACP(bin, plan.WorkDir, plan.Model, preferID, plan.RequireResume, plan.MCPServers, extraEnv, onEvent, onClose)
 	}
 	if err != nil {
+		if mcpCleanup != nil {
+			mcpCleanup()
+		}
 		return nil, err
 	}
 
@@ -949,6 +986,7 @@ func startGrokAgent(req agentStartRequest) (*agentStart, error) {
 	}
 
 	return &agentStart{
+		Cleanup:    mcpCleanup,
 		WindowID:   windowID,
 		Ops:        ops,
 		TailJSONL:  false,
@@ -1419,6 +1457,10 @@ func (a *Agent) Stop() {
 		a.closeGoal()
 		if a.ops.stop != nil {
 			a.ops.stop(a)
+		}
+		if a.mcpCleanup != nil {
+			a.mcpCleanup()
+			a.mcpCleanup = nil
 		}
 
 		a.termMu.Lock()

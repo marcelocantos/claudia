@@ -9,8 +9,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"path/filepath"
-	"strings"
 	"sync"
 
 	"github.com/google/uuid"
@@ -104,8 +102,8 @@ type AgentDef struct {
 	Goal string `json:"goal,omitempty"`
 
 	// MCPServers is the session-scoped MCP list (🎯T40). Copied onto
-	// Config.MCPServers at Launch. Codex Launch also EnsureMCPs HTTP
-	// entries into Codex's own config.
+	// Config.MCPServers at Launch. Session never writes provider config
+	// files.
 	MCPServers []MCPServer `json:"mcp_servers,omitempty"`
 
 	MCPExclusive bool `json:"mcp_exclusive,omitempty"`
@@ -195,30 +193,6 @@ func (r *Registry) Remove(name string) error {
 	return r.save()
 }
 
-// ensureDefMCP writes HTTP MCP entries into Codex's own config so a
-// Codex Launch can see tools (app-server has no MCPConfig field).
-func ensureDefMCP(def *AgentDef) error {
-	if def == nil {
-		return nil
-	}
-	if def.Provider != ProviderCodex || def.MCPExclusive {
-		return nil
-	}
-	for _, s := range def.MCPServers {
-		if strings.TrimSpace(s.URL) == "" {
-			continue
-		}
-		if err := EnsureMCP(&EnsureMCPArgs{
-			Name:      s.Name,
-			URL:       s.URL,
-			Providers: []Provider{ProviderCodex},
-		}); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 // registryStart is the Session entrypoint used by [Registry.Launch].
 // Production points at [Start]; hermetic tests may override it.
 var registryStart = Start
@@ -229,8 +203,9 @@ var registryAdopt = Adopt
 // Launch starts the registered agent named name and returns it. If the agent
 // is already running and alive, the existing [Agent] is returned without
 // spawning a new process. It returns an error if name is not registered.
-// If the agent's workDir contains a .mcp.json file, it is passed to the
-// provider when supported (Claude MCP config path).
+// MCP comes only from AgentDef.MCPServers / MCPExclusive — Launch does
+// not scan workDir for mcp.claudia.json / .mcp.json and does not write
+// provider HOME configs.
 //
 // Provider is taken from AgentDef.Provider (empty = Claude). When the
 // launched agent reports a different SessionID (e.g. Grok ACP session/new),
@@ -253,21 +228,6 @@ func (r *Registry) Launch(name string) (*Agent, error) {
 		return nil, fmt.Errorf("agent %q not registered", name)
 	}
 
-	// Prefer mcp.claudia.json: a file the Grok CLI does not scan. Entries
-	// in cwd/.mcp.json are cross-referenced by the CLI and classified as
-	// repo-local, which silently gates them behind folder trust — the
-	// claudia-private filename keeps ACP-passed servers session-scoped.
-	mcpConfig := filepath.Join(def.WorkDir, "mcp.claudia.json")
-	if _, err := os.Stat(mcpConfig); err != nil {
-		mcpConfig = filepath.Join(def.WorkDir, ".mcp.json")
-		if _, err := os.Stat(mcpConfig); err != nil {
-			mcpConfig = ""
-		}
-	}
-
-	if err := ensureDefMCP(def); err != nil {
-		return nil, err
-	}
 	proc, err := registryStart(Config{
 		Provider:      def.Provider,
 		WorkDir:       def.WorkDir,
@@ -275,7 +235,6 @@ func (r *Registry) Launch(name string) (*Agent, error) {
 		RequireResume: def.Materialized,
 		Model:         def.Model,
 		DisallowTools: def.DisallowTools,
-		MCPConfig:     mcpConfig,
 		MCPServers:    def.MCPServers,
 		MCPExclusive:  def.MCPExclusive,
 		GrokConnect:   def.GrokConnect || def.ConnectURL != "",
@@ -337,17 +296,6 @@ func (r *Registry) Adopt(name string) (*Agent, error) {
 		return nil, fmt.Errorf("agent %q not registered", name)
 	}
 
-	mcpConfig := filepath.Join(def.WorkDir, "mcp.claudia.json")
-	if _, err := os.Stat(mcpConfig); err != nil {
-		mcpConfig = filepath.Join(def.WorkDir, ".mcp.json")
-		if _, err := os.Stat(mcpConfig); err != nil {
-			mcpConfig = ""
-		}
-	}
-
-	if err := ensureDefMCP(def); err != nil {
-		return nil, err
-	}
 	cfg := Config{
 		Provider:      def.Provider,
 		WorkDir:       def.WorkDir,
@@ -355,7 +303,6 @@ func (r *Registry) Adopt(name string) (*Agent, error) {
 		RequireResume: def.Materialized,
 		Model:         def.Model,
 		DisallowTools: def.DisallowTools,
-		MCPConfig:     mcpConfig,
 		MCPServers:    def.MCPServers,
 		MCPExclusive:  def.MCPExclusive,
 		GrokConnect:   def.GrokConnect || def.ConnectURL != "",

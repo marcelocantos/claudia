@@ -15,7 +15,7 @@ import (
 // MCPServer is a provider-agnostic MCP registration (🎯T40). Callers
 // name the server and transport; they do not write ~/.claude.json,
 // ~/.grok/config.toml, ~/.codex/config.toml, or ~/.cursor/mcp.json
-// themselves.
+// themselves. Session attach is Config.MCPServers only.
 type MCPServer struct {
 	Name    string            `json:"name"`
 	Type    string            `json:"type,omitempty"` // "http" or "stdio"
@@ -58,29 +58,6 @@ type MCPInventory struct {
 	Servers []MCPServer
 	Source  string   // first source, usually Claude JSON (compat)
 	Sources []string // every file that was read
-}
-
-// EnsureMCPArgs is the single write surface (🎯T40). One name + HTTP URL
-// is merged into each Session provider's own config file. Optional
-// Headers / BearerTokenEnv / Auth travel with the registration (🎯T41).
-type EnsureMCPArgs struct {
-	Name           string
-	URL            string
-	Headers        map[string]string
-	HeadersHelper  string
-	BearerTokenEnv string
-	Auth           string
-	// Path overrides. Empty uses the production user-scope files.
-	// Isolates and tests must pass fixture paths — never the daily
-	// ~/.claude.json / ~/.grok/config.toml / ~/.codex/config.toml /
-	// ~/.cursor/mcp.json.
-	ClaudeJSON string
-	GrokTOML   string
-	CodexTOML  string
-	CursorJSON string
-	// Providers limits which backends to write. Empty means Claude,
-	// Grok, Codex, and Cursor. Bedrock and Ollama have no MCP ensure path.
-	Providers []Provider
 }
 
 var mcpServerNameRE = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]*$`)
@@ -181,103 +158,59 @@ func (inv *MCPInventory) ForProvider(p Provider) []MCPServer {
 	return out
 }
 
-// EnsureMCP merges an HTTP MCP server into each requested provider's
-// native config. Missing or stale entries are corrected. A second call
-// with the same name and URL is a no-op. Files are flocked so concurrent
-// ensurers do not clobber each other.
-func EnsureMCP(args *EnsureMCPArgs) error {
-	if args == nil {
-		return fmt.Errorf("ensure mcp: args required")
+// needsSessionMCPMaterialization is true when Config.MCPServers /
+// MCPExclusive must drive the Session MCP set (never by mutating user
+// or project config files).
+func needsSessionMCPMaterialization(cfg Config) bool {
+	return len(cfg.MCPServers) > 0 || cfg.MCPExclusive
+}
+
+// mcpConfigInlineLimit: above this, Claude gets a private temp file
+// instead of an inline --mcp-config JSON string (argv size).
+const mcpConfigInlineLimit = 64 * 1024
+
+// prepareClaudeMCPConfig resolves the --mcp-config value for a Session
+// start. MCPServers / MCPExclusive are materialised as an inline JSON
+// string or a process-private temp file — never WorkDir and never
+// ~/.claude.json. A bare MCPConfig path is passed through unchanged
+// (caller-owned). cleanup removes any temp file we created.
+func prepareClaudeMCPConfig(cfg Config) (arg string, cleanup func(), err error) {
+	if !needsSessionMCPMaterialization(cfg) {
+		return cfg.MCPConfig, nil, nil
 	}
-	name := strings.TrimSpace(args.Name)
-	url := strings.TrimSpace(args.URL)
-	if !mcpServerNameRE.MatchString(name) {
-		return fmt.Errorf("ensure mcp: invalid server name %q", args.Name)
-	}
-	if url == "" {
-		return fmt.Errorf("ensure mcp: url required")
-	}
-	providers := args.Providers
-	if len(providers) == 0 {
-		providers = []Provider{ProviderClaude, ProviderGrok, ProviderCodex, ProviderCursor}
-	}
-	home, err := os.UserHomeDir()
+	raw, err := json.Marshal(map[string]any{"mcpServers": claudeMCPObject(mergeMCPServers(cfg))})
 	if err != nil {
-		return fmt.Errorf("ensure mcp: home dir: %w", err)
+		return "", nil, fmt.Errorf("session mcp json: %w", err)
 	}
-	for _, p := range providers {
-		switch p {
-		case ProviderClaude:
-			path := args.ClaudeJSON
-			if path == "" {
-				path = filepath.Join(home, ".claude.json")
-			}
-			if _, err := upsertClaudeJSON(path, args.server()); err != nil {
-				return fmt.Errorf("ensure mcp claude: %w", err)
-			}
-		case ProviderGrok:
-			path := args.GrokTOML
-			if path == "" {
-				path = filepath.Join(home, ".grok", "config.toml")
-			}
-			if _, err := upsertTOMLHTTPServer(path, args.server()); err != nil {
-				return fmt.Errorf("ensure mcp grok: %w", err)
-			}
-		case ProviderCodex:
-			path := args.CodexTOML
-			if path == "" {
-				path = filepath.Join(home, ".codex", "config.toml")
-			}
-			if _, err := upsertTOMLHTTPServer(path, args.server()); err != nil {
-				return fmt.Errorf("ensure mcp codex: %w", err)
-			}
-		case ProviderCursor:
-			path := args.CursorJSON
-			if path == "" {
-				path = filepath.Join(home, ".cursor", "mcp.json")
-			}
-			if _, err := upsertClaudeJSON(path, args.server()); err != nil {
-				return fmt.Errorf("ensure mcp cursor: %w", err)
-			}
-		case ProviderBedrock, ProviderOllama:
-			// No Session MCP surface. Callers skip these explicitly.
-			continue
-		default:
-			return fmt.Errorf("ensure mcp: unknown provider %q", p)
-		}
+	if len(raw) <= mcpConfigInlineLimit {
+		return string(raw), nil, nil
 	}
-	return nil
+	f, err := os.CreateTemp("", "claudia-mcp-*.json")
+	if err != nil {
+		return "", nil, fmt.Errorf("session mcp temp: %w", err)
+	}
+	path := f.Name()
+	if _, err := f.Write(raw); err != nil {
+		_ = f.Close()
+		_ = os.Remove(path)
+		return "", nil, fmt.Errorf("session mcp temp write: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(path)
+		return "", nil, err
+	}
+	return path, func() { _ = os.Remove(path) }, nil
 }
 
-func (a *EnsureMCPArgs) server() MCPServer {
-	return MCPServer{
-		Name:           strings.TrimSpace(a.Name),
-		Type:           "http",
-		URL:            strings.TrimSpace(a.URL),
-		Headers:        a.Headers,
-		HeadersHelper:  strings.TrimSpace(a.HeadersHelper),
-		BearerTokenEnv: strings.TrimSpace(a.BearerTokenEnv),
-		Auth:           strings.TrimSpace(a.Auth),
-	}
-}
-
-func claudiaMCPFile(workDir string) string {
-	return filepath.Join(workDir, "mcp.claudia.json")
-}
-
+// claudeMCPConfigArg is the audit/hermetic view of --mcp-config: a
+// non-empty sentinel when Session MCP is materialised from Config, else
+// the caller MCPConfig path. Start uses prepareClaudeMCPConfig for the
+// real argv value.
 func claudeMCPConfigArg(req agentStartRequest) string {
-	if len(req.Config.MCPServers) > 0 || req.Config.MCPExclusive {
-		return claudiaMCPFile(req.WorkDir)
+	if needsSessionMCPMaterialization(req.Config) {
+		return "session:mcpServers"
 	}
 	return req.Config.MCPConfig
-}
-
-func writeSessionMCPFile(req agentStartRequest) error {
-	if len(req.Config.MCPServers) == 0 && !req.Config.MCPExclusive {
-		return nil
-	}
-	path := claudiaMCPFile(req.WorkDir)
-	return writeClaudeMCPJSON(path, mergeMCPServers(req.Config))
 }
 
 func mergeMCPServers(cfg Config) []MCPServer {
@@ -474,11 +407,6 @@ func acpHeaders(s MCPServer) []any {
 	return out
 }
 
-func writeClaudeMCPJSON(path string, servers []MCPServer) error {
-	root := map[string]any{"mcpServers": claudeMCPObject(servers)}
-	return writeJSONFile(path, root)
-}
-
 func claudeMCPObject(servers []MCPServer) map[string]any {
 	obj := map[string]any{}
 	for _, s := range servers {
@@ -514,92 +442,6 @@ func claudeMCPObject(servers []MCPServer) map[string]any {
 		obj[s.Name] = entry
 	}
 	return obj
-}
-
-func upsertClaudeJSON(path string, srv MCPServer) (bool, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return false, err
-	}
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o644)
-	if err != nil {
-		return false, err
-	}
-	defer f.Close()
-	if err := flockExclusive(f); err != nil {
-		return false, err
-	}
-	defer flockUnlock(f)
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return false, err
-	}
-	root := map[string]any{}
-	if len(strings.TrimSpace(string(data))) > 0 {
-		if err := json.Unmarshal(data, &root); err != nil {
-			return false, fmt.Errorf("parse %s: %w", path, err)
-		}
-	}
-	servers, _ := root["mcpServers"].(map[string]any)
-	if servers == nil {
-		servers = map[string]any{}
-	}
-	want := claudeHTTPEntry(srv)
-	if existing, ok := servers[srv.Name].(map[string]any); ok && sameStringAnyMap(existing, want) {
-		return false, nil
-	}
-	servers[srv.Name] = want
-	root["mcpServers"] = servers
-	out, err := json.MarshalIndent(root, "", "  ")
-	if err != nil {
-		return false, err
-	}
-	out = append(out, '\n')
-	if err := f.Truncate(0); err != nil {
-		return false, err
-	}
-	if _, err := f.Seek(0, 0); err != nil {
-		return false, err
-	}
-	if _, err := f.Write(out); err != nil {
-		return false, err
-	}
-	return true, nil
-}
-
-func writeJSONFile(path string, root map[string]any) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	out, err := json.MarshalIndent(root, "", "  ")
-	if err != nil {
-		return err
-	}
-	out = append(out, '\n')
-	return os.WriteFile(path, out, 0o644)
-}
-
-func claudeHTTPEntry(srv MCPServer) map[string]any {
-	entry := map[string]any{"type": "http", "url": srv.URL}
-	if len(srv.Headers) > 0 {
-		entry["headers"] = srv.Headers
-	}
-	if srv.HeadersHelper != "" {
-		entry["headersHelper"] = srv.HeadersHelper
-	}
-	if srv.BearerTokenEnv != "" {
-		entry["bearerTokenEnv"] = srv.BearerTokenEnv
-	}
-	if srv.Auth != "" {
-		entry["auth"] = srv.Auth
-	}
-	return entry
-}
-
-func sameStringAnyMap(a, b map[string]any) bool {
-	aj, err1 := json.Marshal(a)
-	bj, err2 := json.Marshal(b)
-	return err1 == nil && err2 == nil && string(aj) == string(bj)
 }
 
 func upsertTOMLHTTPServer(path string, srv MCPServer) (bool, error) {

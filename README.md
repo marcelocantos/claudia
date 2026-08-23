@@ -210,9 +210,6 @@ cfg.MCPServers = inv.ForProvider(cfg.Provider)
 inv.Servers = append(inv.Servers, claudia.MCPServer{
     Name: "jevonsmcp", Type: "http", URL: "http://127.0.0.1:13705/mcp",
 })
-err = claudia.EnsureMCP(&claudia.EnsureMCPArgs{
-    Name: "jevonsmcp", URL: "http://127.0.0.1:13705/mcp",
-})
 p, err := claudia.NewMCPProxy(&claudia.MCPProxyArgs{
     Prefix: "/upstream", PublicBase: "http://127.0.0.1:13705",
     Servers: inv.Servers,
@@ -221,14 +218,17 @@ mux.Handle("/upstream/", p)
 ```
 
 `LoadMCP` tags each server with origin `Providers` (Codex-only
-computer-use stays off Claude). `EnsureMCP` flock-merges HTTP
-registrations. `NewMCPProxy` is an `http.Handler` the host process
+computer-use stays off Claude). `NewMCPProxy` is an `http.Handler` the host process
 mounts — Claudia is not a server. Owner-present OAuth is
 `AuthorizeMCP`; token refresh without the owner is the host's job.
-`Config.MCPExclusive` (default false) keeps user-scope MCP maps;
-set true for a hermetic session that sees only `MCPServers`
-(Claude/Grok/Codex isolate homes or strict flags; Cursor writes
-project `.cursor/mcp.json` and keeps real-home auth / `CURSOR_API_KEY`).
+`Config.MCPServers` is the only Session attach path (inline/temp
+`--mcp-config`, ACP `mcpServers`, or process-private Codex home) —
+Claudia never writes user or project MCP files.
+`Config.MCPExclusive` (default false) keeps
+user-scope maps additive where the backend still loads them; set true
+for hermetic Claude/Grok/Codex isolation. Cursor exclusive is ACP
+`mcpServers` only (no project mcp.json / HOME rewrite; real-home auth
+or `CURSOR_API_KEY`).
 
 The one-shot helper `claudia.Run(ctx, prompt, cfg)` bundles `Start` +
 `Send` + `WaitForResponse` + `Stop` for session mode if you want a

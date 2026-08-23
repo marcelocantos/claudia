@@ -202,7 +202,10 @@ func loadCursorAccessToken(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("sqlite3 not on PATH to read %s (set %s instead)", path, cursorAPIKeyEnv)
 	}
-	cmd := exec.Command(sqlite3, "-readonly", path, `SELECT value FROM ItemTable WHERE key = 'cursorAuth/accessToken' LIMIT 1;`)
+	// Apple's /usr/bin/sqlite3 -readonly cannot open Cursor's state.vscdb
+	// (SQLITE_CANTOPEN / exit 14). URI mode=ro opens the same file.
+	uri := "file:" + path + "?mode=ro"
+	cmd := exec.Command(sqlite3, uri, `SELECT value FROM ItemTable WHERE key = 'cursorAuth/accessToken' LIMIT 1;`)
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("read cursor auth db: %w", err)

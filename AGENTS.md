@@ -31,7 +31,7 @@ Applies to:
 - `Start` / `Send` / `WaitForResponse` / `Interrupt` / `Stop`
 - Event mapping, turn identity, terminal detection
 - Goal continuation, sandbox, auth preflight, binary discovery
-- MCP attach (`LoadMCP`, `EnsureMCP`, `Config.MCPServers`)
+- MCP attach (`LoadMCP`, `Config.MCPServers`)
 - app-server / ACP / exec / tmux paste-submit framing
 
 **Run every backend whose wire you touched.** A Session-wide change

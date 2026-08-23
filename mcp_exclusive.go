@@ -11,53 +11,61 @@ import (
 	"strings"
 )
 
-func exclusiveMCPHomeDir(workDir, kind string) string {
-	if workDir == "" {
-		workDir = os.TempDir()
-	}
-	return filepath.Join(workDir, ".claudia-mcp-home", kind)
-}
-
-func prepareExclusiveGrokHome(workDir string) (string, error) {
-	home, err := os.UserHomeDir()
+// prepareExclusiveGrokHome builds a process-private GROK_HOME under the
+// system temp dir (never WorkDir, never ~/.grok). Auth is copied read-only
+// from the user home when present. Compat Claude/Cursor MCP discovery is
+// disabled so Config.MCPServers on the ACP wire is the only MCP set.
+func prepareExclusiveGrokHome() (home string, cleanup func(), err error) {
+	userHome, err := os.UserHomeDir()
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
-	dest := exclusiveMCPHomeDir(workDir, "grok")
-	if err := os.MkdirAll(dest, 0o700); err != nil {
-		return "", err
+	dest, err := os.MkdirTemp("", "claudia-mcp-grok-")
+	if err != nil {
+		return "", nil, err
 	}
-	_ = copyFileIfExists(filepath.Join(home, ".grok", "auth.json"), filepath.Join(dest, "auth.json"))
+	cleanup = func() { _ = os.RemoveAll(dest) }
+	_ = copyFileIfExists(filepath.Join(userHome, ".grok", "auth.json"), filepath.Join(dest, "auth.json"))
 	cfg := filepath.Join(dest, "config.toml")
 	// Grok loads ~/.claude.json MCP by default ([compat.claude] mcps).
-	// An empty GROK_HOME config *enables* that discovery; daily
-	// ~/.grok/config.toml already sets mcps=false. Exclusive must too.
+	// Exclusive must disable that discovery.
 	body := "# claudia MCPExclusive\n" +
 		"[compat.claude]\nmcps = false\n\n" +
 		"[compat.cursor]\nmcps = false\n"
 	if err := os.WriteFile(cfg, []byte(body), 0o644); err != nil {
-		return "", err
+		cleanup()
+		return "", nil, err
 	}
-	return dest, nil
+	return dest, cleanup, nil
 }
 
-// writeExclusiveCursorProjectMCP writes workDir/.cursor/mcp.json with
-// only the named HTTP servers. Cursor exclusive does **not** rewrite
-// HOME: an isolated HOME breaks macOS Keychain ("cursor-user") and
-// pops a dialog on authenticate. Auth stays on the real login or
-// CURSOR_API_KEY; MCP isolate is project mcp.json + ACP mcpServers.
-// Cursor has no --strict-mcp-config equivalent, so user-scope
-// ~/.cursor/mcp.json may still attach — same residual as "different
-// key, not hermetic home."
-func writeExclusiveCursorProjectMCP(workDir string, servers []MCPServer) (string, error) {
-	if workDir == "" {
-		return "", fmt.Errorf("exclusive cursor mcp: WorkDir required")
+// prepareExclusiveCodexHome builds a process-private CODEX_HOME under the
+// system temp dir and writes only the named HTTP MCP servers into its
+// config.toml. Never mutates ~/.codex/config.toml or the project tree.
+// Auth is copied read-only from the user home when present.
+func prepareExclusiveCodexHome(servers []MCPServer) (home string, cleanup func(), err error) {
+	userHome, err := os.UserHomeDir()
+	if err != nil {
+		return "", nil, err
 	}
-	path := filepath.Join(workDir, ".cursor", "mcp.json")
-	if err := writeClaudeMCPJSON(path, httpMCPServers(servers)); err != nil {
-		return "", fmt.Errorf("exclusive cursor mcp: %w", err)
+	dest, err := os.MkdirTemp("", "claudia-mcp-codex-")
+	if err != nil {
+		return "", nil, err
 	}
-	return path, nil
+	cleanup = func() { _ = os.RemoveAll(dest) }
+	_ = copyFileIfExists(filepath.Join(userHome, ".codex", "auth.json"), filepath.Join(dest, "auth.json"))
+	cfg := filepath.Join(dest, "config.toml")
+	if err := os.WriteFile(cfg, []byte("# claudia session MCP\n"), 0o644); err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	for _, s := range httpMCPServers(servers) {
+		if _, err := upsertTOMLHTTPServer(cfg, s); err != nil {
+			cleanup()
+			return "", nil, fmt.Errorf("exclusive codex mcp %s: %w", s.Name, err)
+		}
+	}
+	return dest, cleanup, nil
 }
 
 func httpMCPServers(servers []MCPServer) []MCPServer {
@@ -69,31 +77,6 @@ func httpMCPServers(servers []MCPServer) []MCPServer {
 		out = append(out, s)
 	}
 	return out
-}
-
-func prepareExclusiveCodexHome(workDir string, servers []MCPServer) (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	dest := exclusiveMCPHomeDir(workDir, "codex")
-	if err := os.MkdirAll(dest, 0o700); err != nil {
-		return "", err
-	}
-	_ = copyFileIfExists(filepath.Join(home, ".codex", "auth.json"), filepath.Join(dest, "auth.json"))
-	cfg := filepath.Join(dest, "config.toml")
-	if err := os.WriteFile(cfg, []byte("# claudia MCPExclusive\n"), 0o644); err != nil {
-		return "", err
-	}
-	for _, s := range servers {
-		if s.URL == "" {
-			continue
-		}
-		if _, err := upsertTOMLHTTPServer(cfg, s); err != nil {
-			return "", fmt.Errorf("exclusive codex mcp %s: %w", s.Name, err)
-		}
-	}
-	return dest, nil
 }
 
 func exclusiveEnv(key, value string) []string {
@@ -139,4 +122,14 @@ func copyFileIfExists(src, dst string) error {
 	defer out.Close()
 	_, err = io.Copy(out, in)
 	return err
+}
+
+func joinCleanups(fns ...func()) func() {
+	return func() {
+		for i := len(fns) - 1; i >= 0; i-- {
+			if fns[i] != nil {
+				fns[i]()
+			}
+		}
+	}
 }

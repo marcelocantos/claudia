@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -186,5 +188,25 @@ func TestQueryPlanUsageCursorHTTPUnauthorizedUnavailable(t *testing.T) {
 	}
 	if !strings.Contains(pu.Reason, "HTTP 401") {
 		t.Errorf("Reason=%q", pu.Reason)
+	}
+}
+
+func TestLoadCursorAccessTokenURIMode(t *testing.T) {
+	sqlite3, err := exec.LookPath("sqlite3")
+	if err != nil {
+		t.Skip("sqlite3 not on PATH")
+	}
+	path := filepath.Join(t.TempDir(), "state.vscdb")
+	create := exec.Command(sqlite3, path,
+		`CREATE TABLE ItemTable (key TEXT, value TEXT); INSERT INTO ItemTable VALUES ('cursorAuth/accessToken', 'test-cursor-token');`)
+	if out, err := create.CombinedOutput(); err != nil {
+		t.Fatalf("create fixture: %v %s", err, out)
+	}
+	tok, err := loadCursorAccessToken(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tok != "test-cursor-token" {
+		t.Fatalf("token %q", tok)
 	}
 }
