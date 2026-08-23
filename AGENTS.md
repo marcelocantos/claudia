@@ -1,18 +1,20 @@
 # claudia
 
-Go library for embedding Claude, Grok, Codex, Bedrock, and Ollama agents.
+Go library for embedding Claude, Grok, Codex, Bedrock, Ollama, and Cursor agents.
 Consumer API: [`agents-guide.md`](agents-guide.md). This file is for
 agents working *in* this repo.
 
 ```bash
-go test -race -count=1 ./...   # hermetic default; CI runs this
-make live                      # real backends; each gate is opt-in
+make gate                      # hermetic owner gate (pre-push); same as CI
+make live                      # real backends; each live env is opt-in
 ```
 
 ## Delivery
 
-Merged to default branch (`master`). Ship only when asked (`/push`,
-“open a PR”, “release”).
+Owner ships to `master` by gated push (`make gate`, then
+`git push origin master`). Ship only when asked. Do not open an owner
+release-prep PR. Inbound PRs from others stay. After clone:
+`git config core.hooksPath scripts/hooks`.
 
 ## Live tests (backend changes)
 
@@ -45,13 +47,14 @@ continuation that only the live TUI paste path could show.
 | `CLAUDIA_CODEX_LIVE=1` | Codex Task + Session | `TestCodexSessionLiveSmoke`, `TestGoalJourneyLiveBackends/codex`, `TestMCPLiveLoadAndSessionSeesMnemo/codex` |
 | `CLAUDIA_BEDROCK_LIVE=1` | Bedrock Task | `TestBedrockTaskLiveSmoke` |
 | `CLAUDIA_OLLAMA_LIVE=1` | Ollama Task | `TestOllamaTaskLiveSmoke` |
+| `CLAUDIA_CURSOR_LIVE=1` | Cursor Task + Session | `TestCursorTaskLiveSmoke`, `TestCursorSessionLiveSmoke`, `TestGoalJourneyLiveBackends/cursor`, `TestMCPLiveLoadAndSessionSeesMnemo/cursor`, `TestMCPExclusiveCursorSessionRoundTrip` |
 
 ```bash
 # the backend you just changed
 CLAUDIA_CODEX_LIVE=1 make live
 
 # Session-wide change — all authed Session backends
-CLAUDIA_LIVE=1 CLAUDIA_GROK_LIVE=1 CLAUDIA_CODEX_LIVE=1 make live
+CLAUDIA_LIVE=1 CLAUDIA_GROK_LIVE=1 CLAUDIA_CODEX_LIVE=1 CLAUDIA_CURSOR_LIVE=1 make live
 ```
 
 Unset gates skip. CI never sets them. **You are the gate.**
@@ -62,3 +65,17 @@ green — or you have named the skip as residue (no binary, no auth).
 A skipped live test is not a pass.
 
 Not this rule: parser fixtures, capability-census tables, docs-only.
+
+## Gates
+
+profile: library
+override:
+  - pr-workflow: skip
+  - ci-green: skip
+
+The owner gate is local `make gate`, run by `scripts/hooks/pre-push`.
+Do not wait on `.github/workflows/test.yml`. `make live` remains a
+release-time owner gate for backend-behaviour changes. `/release` on
+this repo: commit prep on master, `make gate` (and `make live` if the
+diff touched a provider wire), `git push origin master`,
+`gh release create`. No prep PR.

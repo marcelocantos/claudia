@@ -41,6 +41,36 @@ func prepareExclusiveGrokHome(workDir string) (string, error) {
 	return dest, nil
 }
 
+// writeExclusiveCursorProjectMCP writes workDir/.cursor/mcp.json with
+// only the named HTTP servers. Cursor exclusive does **not** rewrite
+// HOME: an isolated HOME breaks macOS Keychain ("cursor-user") and
+// pops a dialog on authenticate. Auth stays on the real login or
+// CURSOR_API_KEY; MCP isolate is project mcp.json + ACP mcpServers.
+// Cursor has no --strict-mcp-config equivalent, so user-scope
+// ~/.cursor/mcp.json may still attach — same residual as "different
+// key, not hermetic home."
+func writeExclusiveCursorProjectMCP(workDir string, servers []MCPServer) (string, error) {
+	if workDir == "" {
+		return "", fmt.Errorf("exclusive cursor mcp: WorkDir required")
+	}
+	path := filepath.Join(workDir, ".cursor", "mcp.json")
+	if err := writeClaudeMCPJSON(path, httpMCPServers(servers)); err != nil {
+		return "", fmt.Errorf("exclusive cursor mcp: %w", err)
+	}
+	return path, nil
+}
+
+func httpMCPServers(servers []MCPServer) []MCPServer {
+	var out []MCPServer
+	for _, s := range servers {
+		if s.URL == "" {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
 func prepareExclusiveCodexHome(workDir string, servers []MCPServer) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {

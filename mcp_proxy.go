@@ -302,7 +302,12 @@ func (p *MCPProxy) bearer(entry *proxiedMCP) string {
 }
 
 func (p *MCPProxy) ensureAuth(ctx context.Context, entry *proxiedMCP, unauthorized *http.Response, sent string) error {
+	// Probe cache is shared across concurrent 401s on the same entry.
+	// Read and write under p.mu so TestMCPProxyConcurrent401AuthorizesOnce
+	// (ENT-001 / T47.1) stays race-free; authMu alone does not cover this.
+	p.mu.Lock()
 	probe := entry.probe
+	p.mu.Unlock()
 	if probe == nil {
 		var err error
 		probe, err = p.probe(ctx, entry.srv.URL)
@@ -322,7 +327,11 @@ func (p *MCPProxy) ensureAuth(ctx context.Context, entry *proxiedMCP, unauthoriz
 			}
 		}
 		p.mu.Lock()
-		entry.probe = probe
+		if entry.probe == nil {
+			entry.probe = probe
+		} else {
+			probe = entry.probe
+		}
 		p.mu.Unlock()
 	}
 

@@ -57,6 +57,7 @@ type Config struct {
 	// Provider selects the runtime backing this agent. Empty means
 	// ProviderClaude. ProviderGrok uses ACP over `grok agent stdio`.
 	// ProviderCodex Session mode uses `codex app-server` JSON-RPC.
+	// ProviderCursor uses ACP over `agent acp`.
 	Provider Provider
 
 	// WorkDir is the working directory for the Claude Code process.
@@ -110,9 +111,9 @@ type Config struct {
 	MCPConfig string
 
 	// MCPServers is the session-scoped MCP list in Claudia's dialect.
-	// Claude writes it to a private mcp.claudia.json; Grok sends it on
-	// the ACP wire. Codex Session has no thread/start field — call
-	// [EnsureMCP] so the server lands in Codex's own config.
+	// Claude writes it to a private mcp.claudia.json; Grok and Cursor
+	// send it on the ACP wire. Codex Session has no thread/start field
+	// — call [EnsureMCP] so the server lands in Codex's own config.
 	MCPServers []MCPServer
 
 	// MCPExclusive, when true, is the only MCP set the Session may
@@ -293,6 +294,8 @@ type codexAgentBackend struct{}
 
 type grokAgentBackend struct{}
 
+type cursorAgentBackend struct{}
+
 type errorAgentBackend struct {
 	err error
 }
@@ -305,6 +308,8 @@ func agentBackendForProvider(provider Provider) agentBackend {
 		return codexAgentBackend{}
 	case ProviderGrok:
 		return grokAgentBackend{}
+	case ProviderCursor:
+		return cursorAgentBackend{}
 	case ProviderBedrock:
 		return errorAgentBackend{err: CheckCapability(ProviderBedrock, CapabilitySession)}
 	default:
@@ -340,6 +345,17 @@ func (grokAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 	return startGrokAgent(req)
 }
 
+func (cursorAgentBackend) Capabilities() providerCapabilities {
+	return providerCapabilities{
+		Session: true,
+		Resume:  true,
+	}
+}
+
+func (cursorAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
+	return startCursorAgent(req)
+}
+
 func (b errorAgentBackend) Capabilities() providerCapabilities {
 	return providerCapabilities{}
 }
@@ -372,8 +388,8 @@ func claudeAgentOps() agentOps {
 }
 
 // Start spawns a new agent for cfg.Provider. Claude uses a tmux-backed
-// Session; Grok uses ACP over `grok agent stdio`; Codex uses
-// `codex app-server` JSON-RPC.
+// Session; Grok uses ACP over `grok agent stdio`; Cursor uses ACP over
+// `agent acp`; Codex uses `codex app-server` JSON-RPC.
 func Start(cfg Config) (*Agent, error) {
 	// Gate on the published capability matrix rather than a per-provider
 	// branch list, so Start cannot drift into offering a session claudia

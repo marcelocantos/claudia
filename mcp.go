@@ -14,7 +14,8 @@ import (
 
 // MCPServer is a provider-agnostic MCP registration (🎯T40). Callers
 // name the server and transport; they do not write ~/.claude.json,
-// ~/.grok/config.toml, or ~/.codex/config.toml themselves.
+// ~/.grok/config.toml, ~/.codex/config.toml, or ~/.cursor/mcp.json
+// themselves.
 type MCPServer struct {
 	Name    string            `json:"name"`
 	Type    string            `json:"type,omitempty"` // "http" or "stdio"
@@ -39,13 +40,14 @@ type MCPServer struct {
 }
 
 // LoadMCPArgs selects which on-disk configs to read (🎯T44). Nil is
-// valid and loads all three user-scope defaults. If any path override
+// valid and loads all user-scope defaults. If any path override
 // is set, only those provided paths are read — tests must not leak
-// daily ~/.grok or ~/.codex.
+// daily ~/.grok, ~/.codex, or ~/.cursor/mcp.json.
 type LoadMCPArgs struct {
 	ClaudeJSON string
 	GrokTOML   string
 	CodexTOML  string
+	CursorJSON string
 	// WorkDir, when set, overlays Claude projects[WorkDir].mcpServers
 	// on top of the Claude user-scope map.
 	WorkDir string
@@ -70,12 +72,14 @@ type EnsureMCPArgs struct {
 	Auth           string
 	// Path overrides. Empty uses the production user-scope files.
 	// Isolates and tests must pass fixture paths — never the daily
-	// ~/.claude.json / ~/.grok/config.toml / ~/.codex/config.toml.
+	// ~/.claude.json / ~/.grok/config.toml / ~/.codex/config.toml /
+	// ~/.cursor/mcp.json.
 	ClaudeJSON string
 	GrokTOML   string
 	CodexTOML  string
+	CursorJSON string
 	// Providers limits which backends to write. Empty means Claude,
-	// Grok, and Codex. Bedrock and Ollama have no MCP ensure path.
+	// Grok, Codex, and Cursor. Bedrock and Ollama have no MCP ensure path.
 	Providers []Provider
 }
 
@@ -102,7 +106,7 @@ func LoadMCP(args *LoadMCPArgs) (*MCPInventory, error) {
 		kind     string
 	}
 	var sources []src
-	explicit := args.ClaudeJSON != "" || args.GrokTOML != "" || args.CodexTOML != ""
+	explicit := args.ClaudeJSON != "" || args.GrokTOML != "" || args.CodexTOML != "" || args.CursorJSON != ""
 	if !explicit || args.ClaudeJSON != "" {
 		path := args.ClaudeJSON
 		if path == "" {
@@ -124,6 +128,13 @@ func LoadMCP(args *LoadMCPArgs) (*MCPInventory, error) {
 		}
 		sources = append(sources, src{path, ProviderCodex, "codex"})
 	}
+	if !explicit || args.CursorJSON != "" {
+		path := args.CursorJSON
+		if path == "" {
+			path = filepath.Join(home, ".cursor", "mcp.json")
+		}
+		sources = append(sources, src{path, ProviderCursor, "cursor"})
+	}
 
 	var servers []MCPServer
 	var read []string
@@ -133,6 +144,8 @@ func LoadMCP(args *LoadMCPArgs) (*MCPInventory, error) {
 		switch s.kind {
 		case "claude":
 			got, err = readClaudeMCPMap(s.path, args.WorkDir)
+		case "cursor":
+			got, err = readClaudeMCPMap(s.path, "")
 		default:
 			got, err = readTOMLMCPMap(s.path)
 		}
@@ -186,7 +199,7 @@ func EnsureMCP(args *EnsureMCPArgs) error {
 	}
 	providers := args.Providers
 	if len(providers) == 0 {
-		providers = []Provider{ProviderClaude, ProviderGrok, ProviderCodex}
+		providers = []Provider{ProviderClaude, ProviderGrok, ProviderCodex, ProviderCursor}
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -217,6 +230,14 @@ func EnsureMCP(args *EnsureMCPArgs) error {
 			}
 			if _, err := upsertTOMLHTTPServer(path, args.server()); err != nil {
 				return fmt.Errorf("ensure mcp codex: %w", err)
+			}
+		case ProviderCursor:
+			path := args.CursorJSON
+			if path == "" {
+				path = filepath.Join(home, ".cursor", "mcp.json")
+			}
+			if _, err := upsertClaudeJSON(path, args.server()); err != nil {
+				return fmt.Errorf("ensure mcp cursor: %w", err)
 			}
 		case ProviderBedrock, ProviderOllama:
 			// No Session MCP surface. Callers skip these explicitly.

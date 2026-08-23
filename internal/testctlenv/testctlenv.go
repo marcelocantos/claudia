@@ -62,6 +62,7 @@ func LiveGates() []string {
 		"CLAUDIA_CODEX_LIVE",
 		"CLAUDIA_GROK_LIVE",
 		"CLAUDIA_OLLAMA_LIVE",
+		"CLAUDIA_CURSOR_LIVE",
 	}
 }
 

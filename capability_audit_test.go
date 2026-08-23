@@ -43,8 +43,8 @@ func (d fieldDecl) ok() bool {
 	}
 }
 
-var taskProviders = []Provider{ProviderClaude, ProviderCodex, ProviderGrok, ProviderBedrock, ProviderOllama}
-var sessionProviders = []Provider{ProviderClaude, ProviderCodex, ProviderGrok, ProviderBedrock, ProviderOllama}
+var taskProviders = []Provider{ProviderClaude, ProviderCodex, ProviderGrok, ProviderBedrock, ProviderOllama, ProviderCursor}
+var sessionProviders = []Provider{ProviderClaude, ProviderCodex, ProviderGrok, ProviderBedrock, ProviderOllama, ProviderCursor}
 
 // taskFieldFates is what each Task path does with each TaskConfig field.
 // A missing entry is a silent drop waiting to happen.
@@ -109,6 +109,18 @@ var taskFieldFates = map[Provider]map[string]fieldDecl{
 		"ClaudeID":       {fateRefused, "/api/generate carries no conversation state"},
 		"LastResult":     {fateLocal, "rehydration seed for Task.LastResult; never sent to the API"},
 	},
+	ProviderCursor: {
+		"ID":             {fateLocal, "caller-assigned id; never sent to the process"},
+		"Name":           {fateLocal, "human label; never sent to the process"},
+		"Provider":       {fateLocal, "selects this path"},
+		"WorkDir":        {fateConsumed, ""},
+		"Model":          {fateConsumed, ""},
+		"SandboxMode":    {fateRefused, "SandboxMode is a Codex app-server field"},
+		"ApprovalPolicy": {fateRefused, "Cursor Task has no ApprovalPolicy flag"},
+		"DisallowTools":  {fateRefused, "Cursor Task has no per-tool disallow flag"},
+		"ClaudeID":       {fateConsumed, ""},
+		"LastResult":     {fateLocal, "rehydration seed for Task.LastResult; never sent to the process"},
+	},
 }
 
 // sessionFieldFates is what each Session path does with each Config field.
@@ -116,67 +128,92 @@ var taskFieldFates = map[Provider]map[string]fieldDecl{
 // audit asserts the whole Start fails closed instead of per-field.
 var sessionFieldFates = map[Provider]map[string]fieldDecl{
 	ProviderClaude: {
-		"Provider":       {fateLocal, "selects this path"},
-		"WorkDir":        {fateConsumed, ""},
-		"SessionID":      {fateConsumed, ""},
-		"RequireResume":  {fateConsumed, ""},
-		"Model":          {fateConsumed, ""},
-		"PermissionMode": {fateConsumed, ""},
-		"SandboxMode":    {fateRefused, "SandboxMode is a Codex app-server field"},
-		"MCPConfig":      {fateConsumed, ""},
-		"MCPServers":     {fateConsumed, ""},
-		"MCPExclusive":   {fateConsumed, ""},
-		"DisallowTools":  {fateConsumed, ""},
-		"ExtraArgs":      {fateConsumed, ""},
-		"TermLogPath":    {fateLocal, "host-side PTY log path; not a provider argument"},
-		"PoolPolicy":     {fateLocal, "Acquire policy; Start does not consult it"},
-		"PoolCap":        {fateLocal, "Acquire cap; Start does not consult it"},
-		"GrokConnect":    {fateIgnored, "Grok serve-mode switch; Claude Session is tmux"},
-		"ConnectURL":     {fateIgnored, "Grok reattach URL; Claude Session has no serve endpoint"},
-		"ConnectPID":     {fateIgnored, "Grok serve PID; Claude Session has no serve process"},
-		"Goal":           {fateLocal, "host-owned continuation; never sent to the provider"},
+		"Provider":          {fateLocal, "selects this path"},
+		"WorkDir":           {fateConsumed, ""},
+		"SessionID":         {fateConsumed, ""},
+		"RequireResume":     {fateConsumed, ""},
+		"Model":             {fateConsumed, ""},
+		"PermissionMode":    {fateConsumed, ""},
+		"SandboxMode":       {fateRefused, "SandboxMode is a Codex app-server field"},
+		"MCPConfig":         {fateConsumed, ""},
+		"MCPServers":        {fateConsumed, ""},
+		"MCPExclusive":      {fateConsumed, ""},
+		"DisallowTools":     {fateConsumed, ""},
+		"ExtraArgs":         {fateConsumed, ""},
+		"TermLogPath":       {fateLocal, "host-side PTY log path; not a provider argument"},
+		"PoolPolicy":        {fateLocal, "Acquire policy; Start does not consult it"},
+		"PoolCap":           {fateLocal, "Acquire cap; Start does not consult it"},
+		"GrokConnect":       {fateIgnored, "Grok serve-mode switch; Claude Session is tmux"},
+		"ConnectURL":        {fateIgnored, "Grok reattach URL; Claude Session has no serve endpoint"},
+		"ConnectPID":        {fateIgnored, "Grok serve PID; Claude Session has no serve process"},
+		"Goal":              {fateLocal, "host-owned continuation; never sent to the provider"},
+		"GoalCompleteCheck": {fateLocal, "host completeness hook; never sent to the provider"},
 	},
 	ProviderGrok: {
-		"Provider":       {fateLocal, "selects this path"},
-		"WorkDir":        {fateConsumed, ""},
-		"SessionID":      {fateConsumed, ""},
-		"RequireResume":  {fateConsumed, ""},
-		"Model":          {fateConsumed, ""},
-		"PermissionMode": {fateRefused, "Grok Session hardcodes ACP always-approve/yoloMode"},
-		"SandboxMode":    {fateRefused, "SandboxMode is a Codex app-server field"},
-		"MCPConfig":      {fateConsumed, ""},
-		"MCPServers":     {fateConsumed, ""},
-		"MCPExclusive":   {fateConsumed, ""},
-		"DisallowTools":  {fateRefused, "Config.DisallowTools never reaches the ACP client"},
-		"ExtraArgs":      {fateRefused, "fixed grok agent argv; caller ExtraArgs have nowhere to go"},
-		"TermLogPath":    {fateLocal, "host-side log path; Grok ACP is not a PTY"},
-		"PoolPolicy":     {fateLocal, "Acquire policy; Start does not consult it"},
-		"PoolCap":        {fateLocal, "Acquire cap; Start does not consult it"},
-		"GrokConnect":    {fateConsumed, ""},
-		"ConnectURL":     {fateConsumed, ""},
-		"ConnectPID":     {fateLocal, "recorded for Adopt/Alive; Start itself keys off ConnectURL / GrokConnect"},
-		"Goal":           {fateLocal, "host-owned continuation; never sent to the provider"},
+		"Provider":          {fateLocal, "selects this path"},
+		"WorkDir":           {fateConsumed, ""},
+		"SessionID":         {fateConsumed, ""},
+		"RequireResume":     {fateConsumed, ""},
+		"Model":             {fateConsumed, ""},
+		"PermissionMode":    {fateRefused, "Grok Session hardcodes ACP always-approve/yoloMode"},
+		"SandboxMode":       {fateRefused, "SandboxMode is a Codex app-server field"},
+		"MCPConfig":         {fateConsumed, ""},
+		"MCPServers":        {fateConsumed, ""},
+		"MCPExclusive":      {fateConsumed, ""},
+		"DisallowTools":     {fateRefused, "Config.DisallowTools never reaches the ACP client"},
+		"ExtraArgs":         {fateRefused, "fixed grok agent argv; caller ExtraArgs have nowhere to go"},
+		"TermLogPath":       {fateLocal, "host-side log path; Grok ACP is not a PTY"},
+		"PoolPolicy":        {fateLocal, "Acquire policy; Start does not consult it"},
+		"PoolCap":           {fateLocal, "Acquire cap; Start does not consult it"},
+		"GrokConnect":       {fateConsumed, ""},
+		"ConnectURL":        {fateConsumed, ""},
+		"ConnectPID":        {fateLocal, "recorded for Adopt/Alive; Start itself keys off ConnectURL / GrokConnect"},
+		"Goal":              {fateLocal, "host-owned continuation; never sent to the provider"},
+		"GoalCompleteCheck": {fateLocal, "host completeness hook; never sent to the provider"},
 	},
 	ProviderCodex: {
-		"Provider":       {fateLocal, "selects this path"},
-		"WorkDir":        {fateConsumed, ""},
-		"SessionID":      {fateConsumed, ""},
-		"RequireResume":  {fateConsumed, ""},
-		"Model":          {fateConsumed, ""},
-		"PermissionMode": {fateRefused, "Codex sandbox/approval are not Claude PermissionMode"},
-		"SandboxMode":    {fateConsumed, ""},
-		"MCPConfig":      {fateIgnored, "app-server thread/start has no MCPConfig field"},
-		"MCPServers":     {fateLocal, "Codex Session reads user Codex config; call EnsureMCP"},
-		"MCPExclusive":   {fateConsumed, "CODEX_HOME isolate at spawn"},
-		"DisallowTools":  {fateRefused, "codex exec / app-server have no per-tool disallow flag"},
-		"ExtraArgs":      {fateRefused, "typed app-server fields only"},
-		"TermLogPath":    {fateLocal, "host-side log path; app-server is not a PTY"},
-		"PoolPolicy":     {fateLocal, "Acquire policy; Start does not consult it"},
-		"PoolCap":        {fateLocal, "Acquire cap; Start does not consult it"},
-		"GrokConnect":    {fateIgnored, "Grok serve-mode switch; Codex Session is app-server stdio"},
-		"ConnectURL":     {fateIgnored, "Grok reattach URL"},
-		"ConnectPID":     {fateIgnored, "Grok serve PID"},
-		"Goal":           {fateLocal, "host-owned continuation; never sent to the provider"},
+		"Provider":          {fateLocal, "selects this path"},
+		"WorkDir":           {fateConsumed, ""},
+		"SessionID":         {fateConsumed, ""},
+		"RequireResume":     {fateConsumed, ""},
+		"Model":             {fateConsumed, ""},
+		"PermissionMode":    {fateRefused, "Codex sandbox/approval are not Claude PermissionMode"},
+		"SandboxMode":       {fateConsumed, ""},
+		"MCPConfig":         {fateIgnored, "app-server thread/start has no MCPConfig field"},
+		"MCPServers":        {fateLocal, "Codex Session reads user Codex config; call EnsureMCP"},
+		"MCPExclusive":      {fateConsumed, "CODEX_HOME isolate at spawn"},
+		"DisallowTools":     {fateRefused, "codex exec / app-server have no per-tool disallow flag"},
+		"ExtraArgs":         {fateRefused, "typed app-server fields only"},
+		"TermLogPath":       {fateLocal, "host-side log path; app-server is not a PTY"},
+		"PoolPolicy":        {fateLocal, "Acquire policy; Start does not consult it"},
+		"PoolCap":           {fateLocal, "Acquire cap; Start does not consult it"},
+		"GrokConnect":       {fateIgnored, "Grok serve-mode switch; Codex Session is app-server stdio"},
+		"ConnectURL":        {fateIgnored, "Grok reattach URL"},
+		"ConnectPID":        {fateIgnored, "Grok serve PID"},
+		"Goal":              {fateLocal, "host-owned continuation; never sent to the provider"},
+		"GoalCompleteCheck": {fateLocal, "host completeness hook; never sent to the provider"},
+	},
+	ProviderCursor: {
+		"Provider":          {fateLocal, "selects this path"},
+		"WorkDir":           {fateConsumed, ""},
+		"SessionID":         {fateConsumed, ""},
+		"RequireResume":     {fateConsumed, ""},
+		"Model":             {fateConsumed, ""},
+		"PermissionMode":    {fateRefused, "Cursor Session auto-approves ACP permissions"},
+		"SandboxMode":       {fateRefused, "SandboxMode is a Codex app-server field"},
+		"MCPConfig":         {fateConsumed, ""},
+		"MCPServers":        {fateConsumed, ""},
+		"MCPExclusive":      {fateConsumed, "project .cursor/mcp.json + ACP mcpServers (no HOME rewrite)"},
+		"DisallowTools":     {fateRefused, "Config.DisallowTools never reaches the ACP client"},
+		"ExtraArgs":         {fateRefused, "fixed agent acp argv; caller ExtraArgs have nowhere to go"},
+		"TermLogPath":       {fateLocal, "host-side log path; Cursor ACP is not a PTY"},
+		"PoolPolicy":        {fateLocal, "Acquire policy; Start does not consult it"},
+		"PoolCap":           {fateLocal, "Acquire cap; Start does not consult it"},
+		"GrokConnect":       {fateIgnored, "Grok serve-mode switch; Cursor Session is ACP stdio"},
+		"ConnectURL":        {fateIgnored, "Grok reattach URL"},
+		"ConnectPID":        {fateIgnored, "Grok serve PID"},
+		"Goal":              {fateLocal, "host-owned continuation; never sent to the provider"},
+		"GoalCompleteCheck": {fateLocal, "host completeness hook; never sent to the provider"},
 	},
 }
 
@@ -203,6 +240,8 @@ func taskPrecheck(provider Provider, req taskRunRequest) error {
 		return bedrockTaskPrecheck(req)
 	case ProviderOllama:
 		return ollamaTaskPrecheck(req)
+	case ProviderCursor:
+		return cursorTaskPrecheck(req)
 	default:
 		return unsupportedCapability(provider, CapabilityTask, "no task precheck")
 	}
@@ -245,6 +284,8 @@ func taskMaterialises(provider Provider, field string) bool {
 		}
 	case ProviderOllama:
 		return field == "Model" && req.Model != ""
+	case ProviderCursor:
+		return argvHolds(cursorTaskArgs(req), taskNeedle(field, req))
 	default:
 		return false
 	}
@@ -318,9 +359,9 @@ func auditTaskFates(fates map[Provider]map[string]fieldDecl) []string {
 					issues = append(issues, string(provider)+" Task "+field+": declared consumed, precheck refused: "+err.Error())
 					continue
 				}
-				if field == "WorkDir" && (provider == ProviderClaude) {
+				if field == "WorkDir" && (provider == ProviderClaude || provider == ProviderCursor) {
 					// Honouring is cmd.Dir, not argv. Codex/Grok put the
-					// directory on the command line; Claude does not.
+					// directory on the command line; Claude/Cursor do not.
 					continue
 				}
 				if !taskMaterialises(provider, field) {
@@ -444,6 +485,26 @@ func sessionMaterialises(provider Provider, field string) bool {
 		default:
 			return argvHolds(plan.Args, sessionNeedle(field, req))
 		}
+	case ProviderCursor:
+		plan := planCursorSession(req)
+		switch field {
+		case "WorkDir":
+			return plan.WorkDir == req.WorkDir
+		case "SessionID":
+			return plan.PreferSessionID == req.SessionID
+		case "RequireResume":
+			return plan.RequireResume
+		case "Model":
+			return argvHolds(plan.Args, req.Config.Model)
+		case "MCPConfig":
+			return req.Config.MCPConfig != ""
+		case "MCPServers":
+			return len(resolveACPMCPServers(req.Config)) > 0
+		case "MCPExclusive":
+			return plan.ExclusiveProjectMCP != ""
+		default:
+			return argvHolds(plan.Args, sessionNeedle(field, req))
+		}
 	default:
 		return false
 	}
@@ -476,6 +537,8 @@ func sessionPrecheck(provider Provider, req agentStartRequest) error {
 		return grokSessionPrecheck(req)
 	case ProviderCodex:
 		return codexSessionPrecheck(req)
+	case ProviderCursor:
+		return cursorSessionPrecheck(req)
 	default:
 		return nil
 	}

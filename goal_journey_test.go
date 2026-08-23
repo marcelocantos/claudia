@@ -130,7 +130,7 @@ func TestGoalJourneyUnfinishedMultiCycle(t *testing.T) {
 }
 
 // TestGoalJourneyEverySessionBackend proves the loop is on Agent, not
-// a Codex-only host: Claude, Grok, and Codex terminal shapes all
+// a Codex-only host: Claude, Grok, Cursor, and Codex terminal shapes all
 // produce one continuation of the same Goal.
 func TestGoalJourneyEverySessionBackend(t *testing.T) {
 	const objective = "portable across providers"
@@ -154,6 +154,7 @@ func TestGoalJourneyEverySessionBackend(t *testing.T) {
 	}{
 		{name: "claude", provider: ProviderClaude, terminal: unfinishedTurn("claude cycle done")},
 		{name: "grok", provider: ProviderGrok, terminal: Event{Type: "assistant", Text: "grok cycle done", StopReason: "end_turn"}},
+		{name: "cursor", provider: ProviderCursor, terminal: Event{Type: "assistant", Text: "cursor cycle done", StopReason: "end_turn"}},
 		{name: "codex", provider: ProviderCodex, terminal: Event{
 			Type:       "assistant",
 			Text:       "codex cycle done",
@@ -183,7 +184,8 @@ func TestGoalJourneyEverySessionBackend(t *testing.T) {
 }
 
 // TestGoalJourneyProviderSwitch keeps the same AgentDef.Goal across a
-// Grok → Codex remint, the jevons token-balancing move.
+// Grok → Codex → Cursor remint, the jevons token-balancing move plus
+// Cursor as a Session backend.
 func TestGoalJourneyProviderSwitch(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
@@ -238,11 +240,27 @@ func TestGoalJourneyProviderSwitch(t *testing.T) {
 	if second.Goal() != objective || !second.GoalActive() {
 		t.Fatalf("second Goal()=%q active=%v", second.Goal(), second.GoalActive())
 	}
-	if len(*cfgs) != 2 {
-		t.Fatalf("Launch configs = %d, want 2", len(*cfgs))
-	}
 	if (*cfgs)[1].Provider != ProviderCodex || (*cfgs)[1].Goal != objective {
 		t.Fatalf("second Launch cfg = %+v", (*cfgs)[1])
+	}
+	reloaded.Stop("worker")
+
+	def.Provider = ProviderCursor
+	if err := reloaded.Register(*def); err != nil {
+		t.Fatalf("re-Register as Cursor: %v", err)
+	}
+	third, err := reloaded.Launch("worker")
+	if err != nil {
+		t.Fatalf("Launch cursor: %v", err)
+	}
+	if third.Goal() != objective || !third.GoalActive() {
+		t.Fatalf("third Goal()=%q active=%v", third.Goal(), third.GoalActive())
+	}
+	if len(*cfgs) != 3 {
+		t.Fatalf("Launch configs = %d, want 3", len(*cfgs))
+	}
+	if (*cfgs)[2].Provider != ProviderCursor || (*cfgs)[2].Goal != objective {
+		t.Fatalf("third Launch cfg = %+v", (*cfgs)[2])
 	}
 }
 

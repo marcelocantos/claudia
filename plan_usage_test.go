@@ -190,7 +190,7 @@ func TestParseCodexWhamUsageNoWindowsUnavailable(t *testing.T) {
 func TestQueryPlanUsageGrokAndBedrockUnavailable(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
-	for _, p := range []Provider{ProviderGrok, ProviderBedrock} {
+	for _, p := range []Provider{ProviderGrok, ProviderBedrock, ProviderCursor} {
 		pu, err := QueryPlanUsage(ctx, &PlanUsageArgs{Provider: p, Now: now})
 		if err != nil {
 			t.Fatalf("%s: %v", p, err)
@@ -399,7 +399,7 @@ func TestQueryAllPlanUsageHermetic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(all) != 4 {
+	if len(all) != 5 {
 		t.Fatalf("len=%d", len(all))
 	}
 	by := map[Provider]PlanUsage{}
@@ -417,6 +417,9 @@ func TestQueryAllPlanUsageHermetic(t *testing.T) {
 	}
 	if by[ProviderBedrock].Status != PlanUsageUnavailable {
 		t.Errorf("bedrock: %+v", by[ProviderBedrock])
+	}
+	if by[ProviderCursor].Status != PlanUsageUnavailable {
+		t.Errorf("cursor: %+v", by[ProviderCursor])
 	}
 }
 

@@ -536,6 +536,9 @@ func TestTaskBackendForProvider(t *testing.T) {
 	if _, ok := taskBackendForProvider(ProviderGrok).(grokTaskBackend); !ok {
 		t.Error("ProviderGrok did not select grokTaskBackend")
 	}
+	if _, ok := taskBackendForProvider(ProviderCursor).(cursorTaskBackend); !ok {
+		t.Error("ProviderCursor did not select cursorTaskBackend")
+	}
 	if _, ok := taskBackendForProvider(ProviderBedrock).(bedrockTaskBackend); !ok {
 		t.Error("ProviderBedrock did not select bedrockTaskBackend")
 	}

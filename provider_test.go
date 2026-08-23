@@ -66,7 +66,27 @@ func TestResolveCodexBin(t *testing.T) {
 		}
 	})
 
-	t.Run("PATH lookup wins when CODEX_BIN is unset", func(t *testing.T) {
+	t.Run("known install candidate wins over PATH", func(t *testing.T) {
+		got, err := resolveCodexBinFrom(
+			func(string) string { return "" },
+			func(name string) (string, error) {
+				if name == codexBinName {
+					return fakeCodex, nil
+				}
+				return "", errNotFound
+			},
+			statExisting(fakeAppCodex),
+			[]string{fakeAppCodex},
+		)
+		if err != nil {
+			t.Fatalf("resolveCodexBinFrom: %v", err)
+		}
+		if got != fakeAppCodex {
+			t.Errorf("got %q, want candidate %q (not PATH %q)", got, fakeAppCodex, fakeCodex)
+		}
+	})
+
+	t.Run("PATH lookup used when candidates miss", func(t *testing.T) {
 		got, err := resolveCodexBinFrom(
 			func(string) string { return "" },
 			func(name string) (string, error) {
@@ -83,6 +103,27 @@ func TestResolveCodexBin(t *testing.T) {
 		}
 		if got != fakeCodex {
 			t.Errorf("got %q, want %q", got, fakeCodex)
+		}
+	})
+
+	t.Run("cmux PATH shim is skipped for real candidate", func(t *testing.T) {
+		shim := "/Users/u/.cmux-cli-shims/bin/codex"
+		got, err := resolveCodexBinFrom(
+			func(string) string { return "" },
+			func(name string) (string, error) {
+				if name == codexBinName {
+					return shim, nil
+				}
+				return "", errNotFound
+			},
+			statExisting(fakeAppCodex),
+			[]string{fakeAppCodex},
+		)
+		if err != nil {
+			t.Fatalf("resolveCodexBinFrom: %v", err)
+		}
+		if got != fakeAppCodex {
+			t.Errorf("got %q, want %q (skipped cmux shim)", got, fakeAppCodex)
 		}
 	})
 
@@ -265,7 +306,7 @@ func TestGrokBinCandidatesIncludeDotGrokBin(t *testing.T) {
 // failure 🎯T4.6 targets — a gap nobody wrote down, which a caller
 // discovers by watching it not work.
 func TestProviderCapabilityMatrixIsTotal(t *testing.T) {
-	providers := []Provider{ProviderClaude, ProviderCodex, ProviderGrok, ProviderBedrock, ProviderOllama}
+	providers := []Provider{ProviderClaude, ProviderCodex, ProviderGrok, ProviderBedrock, ProviderOllama, ProviderCursor}
 	for _, provider := range providers {
 		claims, ok := providerCapabilityClaims[provider]
 		if !ok {

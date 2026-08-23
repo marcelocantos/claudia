@@ -40,8 +40,9 @@ type AgentDef struct {
 	// Launch promoting from [SessionExists] when JSONL is already present.
 	Materialized bool `json:"materialized,omitempty"`
 
-	// Provider selects the runtime (claude, codex, grok). Empty means
+	// Provider selects the runtime (claude, codex, grok, cursor). Empty means
 	// ProviderClaude. Grok Session uses ACP over `grok agent stdio`.
+	// Cursor Session uses ACP over `agent acp`.
 	Provider Provider `json:"provider,omitempty"`
 
 	// Model overrides the default model (e.g. "opus", "sonnet", "grok-4").

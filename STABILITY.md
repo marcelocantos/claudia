@@ -15,7 +15,7 @@ that contract takes effect.
 Snapshot as of: v0.25.0 (tagged 2026-08-19).
 
 > **Present at HEAD, not yet released** (after v0.25.0):
-> `Config.GoalCompleteCheck`, `Agent.SetGoalCompleteCheck`,
+> `ProviderCursor`; `Config.GoalCompleteCheck`, `Agent.SetGoalCompleteCheck`,
 > `Agent.CloseGoal`, `ParseGoalStatus`; `Config.MCPExclusive`,
 > `AgentDef.MCPExclusive`; `RefreshMCPToken`, `RefreshMCPArgs`;
 > `MCPProxy.SetToken`, `MCPProxy.Token`, `MCPProxyArgs.Refresh`,

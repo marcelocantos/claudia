@@ -61,6 +61,21 @@ func TestGoalJourneyLiveBackends(t *testing.T) {
 			},
 		},
 		{
+			name: "cursor",
+			gate: "CLAUDIA_CURSOR_LIVE",
+			cfg: Config{
+				Provider:    ProviderCursor,
+				Goal:        "Produce three numbered observations about this workspace, one per turn.",
+				TermLogPath: "-",
+			},
+			skip: func(t *testing.T) {
+				t.Helper()
+				if _, err := resolveCursorBin(); err != nil {
+					t.Skipf("cursor agent binary not found: %v", err)
+				}
+			},
+		},
+		{
 			name: "codex",
 			gate: "CLAUDIA_CODEX_LIVE",
 			cfg: Config{

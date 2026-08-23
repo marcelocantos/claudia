@@ -395,6 +395,35 @@ func TestEnsureMCPRejectsBadName(t *testing.T) {
 	}
 }
 
+func TestEnsureAndLoadCursorMCP(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mcp.json")
+	if err := EnsureMCP(&EnsureMCPArgs{
+		Name:       "jevonsmcp",
+		URL:        "http://127.0.0.1:13705/mcp",
+		CursorJSON: path,
+		Providers:  []Provider{ProviderCursor},
+	}); err != nil {
+		t.Fatalf("EnsureMCP: %v", err)
+	}
+	if err := EnsureMCP(&EnsureMCPArgs{
+		Name:       "jevonsmcp",
+		URL:        "http://127.0.0.1:13705/mcp",
+		CursorJSON: path,
+		Providers:  []Provider{ProviderCursor},
+	}); err != nil {
+		t.Fatalf("second EnsureMCP: %v", err)
+	}
+	inv, err := LoadMCP(&LoadMCPArgs{CursorJSON: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := mcpByName(inv.Servers)["jevonsmcp"]
+	if got.URL != "http://127.0.0.1:13705/mcp" || !hasProvider(got.Providers, ProviderCursor) {
+		t.Fatalf("cursor jevonsmcp = %+v", got)
+	}
+}
+
 func TestLoadMCPMissingFileIsEmpty(t *testing.T) {
 	inv, err := LoadMCP(&LoadMCPArgs{ClaudeJSON: filepath.Join(t.TempDir(), "nope.json")})
 	if err != nil {

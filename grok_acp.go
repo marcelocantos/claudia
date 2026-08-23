@@ -325,17 +325,23 @@ func selectPermissionOptionID(params json.RawMessage) string {
 	if _, ok := has["allow_always"]; ok {
 		return "allow_always"
 	}
+	if _, ok := has["allow-always"]; ok {
+		return "allow-always"
+	}
 	// Tool-scoped always grants (shell, MCP, domain, …).
 	for _, id := range ids {
-		if strings.HasPrefix(id, "allow_always") {
+		if strings.HasPrefix(id, "allow_always") || strings.HasPrefix(id, "allow-always") {
 			return id
 		}
 	}
 	if _, ok := has["allow_once"]; ok {
 		return "allow_once"
 	}
+	if _, ok := has["allow-once"]; ok {
+		return "allow-once"
+	}
 	for _, id := range ids {
-		if strings.HasPrefix(id, "allow_") {
+		if strings.HasPrefix(id, "allow_") || strings.HasPrefix(id, "allow-") {
 			return id
 		}
 	}

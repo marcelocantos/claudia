@@ -18,7 +18,7 @@ import (
 // has the matching entry.
 
 func TestMCPLiveLoadAndSessionSeesMnemo(t *testing.T) {
-	if os.Getenv("CLAUDIA_LIVE") == "" && os.Getenv("CLAUDIA_GROK_LIVE") == "" && os.Getenv("CLAUDIA_CODEX_LIVE") == "" {
+	if os.Getenv("CLAUDIA_LIVE") == "" && os.Getenv("CLAUDIA_GROK_LIVE") == "" && os.Getenv("CLAUDIA_CODEX_LIVE") == "" && os.Getenv("CLAUDIA_CURSOR_LIVE") == "" {
 		t.Skip("no live gate set")
 	}
 	inv, err := LoadMCP(nil)
@@ -76,6 +76,20 @@ func TestMCPLiveLoadAndSessionSeesMnemo(t *testing.T) {
 			Provider:    ProviderCodex,
 			MCPServers:  []MCPServer{mnemo},
 			TermLogPath: "-",
+		})
+	})
+	t.Run("cursor", func(t *testing.T) {
+		if os.Getenv("CLAUDIA_CURSOR_LIVE") == "" {
+			t.Skip("CLAUDIA_CURSOR_LIVE not set")
+		}
+		if _, err := resolveCursorBin(); err != nil {
+			t.Skip(err)
+		}
+		runLiveMCPSeesMnemo(t, Config{
+			Provider:     ProviderCursor,
+			MCPServers:   []MCPServer{mnemo},
+			MCPExclusive: true,
+			TermLogPath:  "-",
 		})
 	})
 }

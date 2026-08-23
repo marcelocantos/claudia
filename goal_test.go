@@ -74,6 +74,21 @@ func TestGoalContinuationRestatesObjective(t *testing.T) {
 	}
 }
 
+func TestGoalContinuationStaysOnClaudeTypePath(t *testing.T) {
+	t.Parallel()
+	// Mirrors pasteBlockThreshold in internal/tmuxagent/send.go — keep
+	// the live Goal journey (and similar-length objectives) on send-keys.
+	const pasteBlockThreshold = 400
+	liveGoal := "Produce three numbered observations about this workspace, one per turn."
+	got := goalContinuation(liveGoal)
+	if strings.Contains(got, "\n") {
+		t.Fatalf("continuation has newlines (forces paste):\n%s", got)
+	}
+	if len(got) >= pasteBlockThreshold {
+		t.Fatalf("continuation len=%d >= %d (forces paste): %q", len(got), pasteBlockThreshold, got)
+	}
+}
+
 func TestGoalIssuesContinuationAfterTerminalTurn(t *testing.T) {
 	agent, backend := startGoalAgent(t, "finish the migration")
 	if !agent.GoalActive() || agent.Goal() != "finish the migration" {

@@ -1,7 +1,7 @@
 # claudia — agents guide
 
 `github.com/marcelocantos/claudia` is a Go library for embedding
-Claude, Grok, Codex, Bedrock, and Ollama agents in your program.
+Claude, Grok, Codex, Bedrock, Ollama, and Cursor agents in your program.
 
 ```
 go get github.com/marcelocantos/claudia
@@ -131,9 +131,45 @@ different Provider. `SetGoalCompleteCheck` installs the hook after
 `Start` / `Launch` when the registry path cannot carry a function on
 `AgentDef`.
 
+### Cursor provider (Session + Task)
+
+Cursor Session mode uses ACP over `agent acp`:
+
+```go
+agent, err := claudia.Start(claudia.Config{
+    Provider: claudia.ProviderCursor,
+    WorkDir:  "/abs/path",
+    Model:    "grok-4.6", // optional
+})
+```
+
+Task mode uses `agent --print --output-format stream-json`:
+
+```go
+task := claudia.NewTask(claudia.TaskConfig{
+    Provider: claudia.ProviderCursor,
+    WorkDir:  "/abs/path",
+})
+ch, err := task.Run(ctx, "Reply with exactly: pong")
+```
+
+Binary discovery: `CURSOR_BIN`, then `cursor-agent` on `$PATH`, then
+`~/.local/bin/agent`, then a PATH `agent` that is not Grok's
+`~/.grok/bin/agent`. Auth is `agent login` or `CURSOR_API_KEY`.
+`Start` sends `authenticate` with `methodId: "cursor_login"`. Permission
+prompts auto-select `allow-always` (hyphenated Cursor option ids).
+Blocking `cursor/ask_question` is skipped; `cursor/create_plan` is
+accepted so unattended turns do not stall.
+
+Rewind, tmux attach, and terminal logs stay unsupported.
+
+Plan remaining is opt-in (`CLAUDIA_CURSOR_USAGE=1`) and reads the
+undocumented dashboard `GetCurrentPeriodUsage` RPC — same honesty
+rule as Grok: unavailable with a reason, never a fabricated percent.
+
 MCP is Claudia's job (🎯T40). Callers name servers and transports;
-they do not write `~/.claude.json`, `~/.grok/config.toml`, or
-`~/.codex/config.toml`.
+they do not write `~/.claude.json`, `~/.grok/config.toml`,
+`~/.codex/config.toml`, or `~/.cursor/mcp.json`.
 
 ```go
 inv, err := claudia.LoadMCP(nil) // Claude user-scope map
@@ -146,25 +182,29 @@ inv.Servers = append(inv.Servers, claudia.MCPServer{
 cfg.MCPServers = inv.Servers
 if err := claudia.EnsureMCP(&claudia.EnsureMCPArgs{
     Name: "jevonsmcp", URL: "http://127.0.0.1:13705/mcp",
-}); err != nil { /* Codex + Grok + Claude user files */ }
+}); err != nil { /* Codex + Grok + Claude + Cursor user files */ }
 ```
 
 `Config.MCPExclusive` (default false) is the isolate switch. False
 keeps each CLI's user-scope MCP map (additive). True is hermetic:
 Claude `--strict-mcp-config`, Grok `GROK_HOME` with copied auth and
 no user `mcp_servers`, Codex `CODEX_HOME` containing only
-`Config.MCPServers`. Jevons wants exclusive; other hosts can leave
-the default.
+`Config.MCPServers`. Cursor does **not** rewrite `HOME` (that breaks
+macOS Keychain for `cursor-user`); exclusive writes project
+`.cursor/mcp.json` plus ACP `mcpServers`, and auth uses the real
+login or `CURSOR_API_KEY` / `--api-key`. Cursor has no strict-mcp
+flag, so user-scope `~/.cursor/mcp.json` may still attach. Jevons
+wants exclusive; other hosts can leave the default.
 
 `LoadMCP` reads **each provider's** config (Claude JSON, Grok TOML,
-Codex TOML) and tags `MCPServer.Providers`. A Codex-only
+Codex TOML, Cursor `mcp.json`) and tags `MCPServer.Providers`. A Codex-only
 computer-use server stays off Claude. `inv.ForProvider(cfg.Provider)`
 is the list to attach to a Session. Caller-appended servers with
 empty Providers (jevonsmcp) are valid for every backend. `LoadMCP(nil)`
-uses the three user-scope defaults; any path override means *only*
+uses the user-scope defaults; any path override means *only*
 those paths are read.
 `Config.MCPServers` is session-scoped (Claude private `mcp.claudia.json`,
-Grok ACP `mcpServers`). Codex Session has no `thread/start` MCP field —
+Grok/Cursor ACP `mcpServers`). Codex Session has no `thread/start` MCP field —
 `EnsureMCP` writes Codex's own config. Isolates pass fixture paths on
 `LoadMCPArgs` / `EnsureMCPArgs` so they never touch the daily files.
 Bedrock and Ollama have no MCP ensure path.
@@ -247,7 +287,7 @@ subscription plan remaining. For fleet backoff and host dashboards, use:
 
 ```go
 pu, err := claudia.QueryPlanUsage(ctx, &claudia.PlanUsageArgs{
-    Provider: claudia.ProviderClaude, // or ProviderCodex, ProviderGrok, ProviderBedrock
+    Provider: claudia.ProviderClaude, // or ProviderCodex, ProviderGrok, ProviderBedrock, ProviderCursor
 })
 // pu.Status: available | unavailable
 // pu.Windows: session / weekly with RemainingPercent + ResetsAt when published
@@ -648,14 +688,15 @@ exist. Do not retire on hermetic green *alone* either.
 | `CLAUDIA_CODEX_LIVE=1` | Codex Task + Session | `TestCodexTaskRunSmoke`, `TestCodexSessionLiveSmoke`, `TestGoalJourneyLiveBackends/codex` |
 | `CLAUDIA_BEDROCK_LIVE=1` | Bedrock Task | `TestBedrockTaskLiveSmoke` |
 | `CLAUDIA_OLLAMA_LIVE=1` | Ollama Task | `TestOllamaTaskLiveSmoke` (needs `CLAUDIA_OLLAMA_MODEL`) |
+| `CLAUDIA_CURSOR_LIVE=1` | Cursor Task + Session | `TestCursorTaskLiveSmoke`, `TestCursorSessionLiveSmoke`, `TestGoalJourneyLiveBackends/cursor`, `TestMCPLiveLoadAndSessionSeesMnemo/cursor`, `TestMCPExclusiveCursorSessionRoundTrip` |
 
 ```sh
 # one backend you just touched
 CLAUDIA_CODEX_LIVE=1 make live
 
-# every backend you have authed locally
+# every Session backend you have authed locally
 CLAUDIA_LIVE=1 CLAUDIA_GROK_LIVE=1 CLAUDIA_CODEX_LIVE=1 \
-  CLAUDIA_BEDROCK_LIVE=1 CLAUDIA_OLLAMA_LIVE=1 make live
+  CLAUDIA_CURSOR_LIVE=1 CLAUDIA_BEDROCK_LIVE=1 CLAUDIA_OLLAMA_LIVE=1 make live
 ```
 
 Unset gates skip. CI does not set any of them. Bedrock needs

@@ -266,6 +266,8 @@ func taskBackendForProvider(provider Provider) taskBackend {
 		return bedrockTaskBackend{}
 	case ProviderOllama:
 		return ollamaTaskBackend{}
+	case ProviderCursor:
+		return cursorTaskBackend{}
 	default:
 		return errorTaskBackend{err: fmt.Errorf("unknown task provider %q", provider)}
 	}

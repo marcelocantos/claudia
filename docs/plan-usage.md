@@ -10,7 +10,7 @@ call this to back off before exhausting plan windows.
 
 ```go
 pu, err := claudia.QueryPlanUsage(ctx, &claudia.PlanUsageArgs{
-    Provider: claudia.ProviderClaude, // or Codex / Grok / Bedrock
+    Provider: claudia.ProviderClaude, // or Codex / Grok / Bedrock / Cursor
 })
 // pu.Status: PlanUsageAvailable | PlanUsageUnavailable
 // pu.Windows: []PlanWindow{ Name: session|weekly, UsedPercent, RemainingPercent, ResetsAt }
@@ -30,6 +30,7 @@ is empty, and `Reason` explains why.
 | **Codex** | available (ChatGPT login) | primary/secondary mapped by `limit_window_seconds` (~5h → session, ~7d → weekly) | `GET https://chatgpt.com/backend-api/wham/usage` with Codex `auth.json` tokens |
 | **Grok** | available **opt-in** (`CLAUDIA_GROK_USAGE=1`) | `weekly` ← SuperGrok pool | `GET https://cli-chat-proxy.grok.com/v1/billing?format=credits` with the `grok login` token — **undocumented, unversioned** ([grok-usage-billing.md](grok-usage-billing.md)) |
 | **Bedrock** | **unavailable** | — | No Claude-style subscription remaining; AWS account quotas live in AWS |
+| **Cursor** | available **opt-in** (`CLAUDIA_CURSOR_USAGE=1`) | `weekly` ← billing-cycle `totalPercentUsed` | `POST https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage` — **undocumented, unversioned** |
 
 ### Claude
 
@@ -79,6 +80,22 @@ grok update.
 - The `x.ai/billing` ACP extension is **pager-internal**, not exposed to
   external ACP clients (`grok agent stdio` returns "Method not found"), so the
   HTTP endpoint is the route rather than the ACP session.
+
+### Cursor
+
+**Opt-in** — off unless `CLAUDIA_CURSOR_USAGE=1` (or `PlanUsageArgs.CursorUnstableUsage`).
+The surface is the undocumented dashboard RPC the Cursor billing UI
+reads; it is private and unversioned, so it is not on by default.
+
+- Auth: `CURSOR_API_KEY` or `PlanUsageArgs.CursorAccessToken`, then
+  the Cursor IDE `state.vscdb` key `cursorAuth/accessToken` via
+  `sqlite3` when present.
+- Only a **billing-cycle** included pool is published (mapped onto
+  the longer `weekly` window with `LimitWindow` from
+  `billingCycleStart`/`billingCycleEnd`). There is no rolling
+  session window.
+- **Remaining** = `100 - planUsage.totalPercentUsed`. A missing or
+  out-of-range percent is unavailable — never a fabricated number.
 
 ### Bedrock
 

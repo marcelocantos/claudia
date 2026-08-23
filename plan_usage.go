@@ -104,6 +104,19 @@ type PlanUsageArgs struct {
 	// GrokBillingRaw injects a captured billing response for tests, bypassing
 	// the network call entirely.
 	GrokBillingRaw json.RawMessage
+	// CursorUnstableUsage opts into reading Cursor plan usage from the
+	// undocumented dashboard GetCurrentPeriodUsage RPC. Off by default.
+	// CLAUDIA_CURSOR_USAGE=1 is an equivalent opt-in.
+	CursorUnstableUsage bool
+	// CursorAccessToken overrides the Cursor session token
+	// (default: CURSOR_API_KEY, then the IDE state.vscdb).
+	CursorAccessToken string
+	// CursorAuthPath overrides the path to Cursor state.vscdb (tests).
+	CursorAuthPath string
+	// CursorUsageURL overrides the Cursor usage endpoint (tests).
+	CursorUsageURL string
+	// CursorUsageRaw injects a captured usage response for tests.
+	CursorUsageRaw json.RawMessage
 }
 
 // AllPlanUsageArgs configures [QueryAllPlanUsage].
@@ -135,8 +148,15 @@ type AllPlanUsageArgs struct {
 	GrokBillingURL string
 	// GrokBillingRaw injects a captured billing response for tests.
 	GrokBillingRaw json.RawMessage
+	// CursorUnstableUsage opts into the undocumented Cursor usage surface
+	// (see PlanUsageArgs.CursorUnstableUsage). CLAUDIA_CURSOR_USAGE=1 is equivalent.
+	CursorUnstableUsage bool
+	CursorAccessToken   string
+	CursorAuthPath      string
+	CursorUsageURL      string
+	CursorUsageRaw      json.RawMessage
 	// Providers limits which providers to query. Empty means all supported
-	// providers (Claude, Codex, Grok, Bedrock).
+	// providers (Claude, Codex, Grok, Bedrock, Cursor).
 	Providers []Provider
 }
 
@@ -173,6 +193,8 @@ func QueryPlanUsage(ctx context.Context, args *PlanUsageArgs) (PlanUsage, error)
 		return unavailablePlan(ProviderBedrock, now,
 			"AWS Bedrock does not publish Claude-style session/weekly subscription remaining; "+
 				"account quotas and spend limits are managed in AWS, not via this surface"), nil
+	case ProviderCursor:
+		return queryCursorPlanUsage(ctx, args, now), nil
 	default:
 		return PlanUsage{}, fmt.Errorf("unknown provider %q", args.Provider)
 	}
@@ -188,25 +210,30 @@ func QueryAllPlanUsage(ctx context.Context, args *AllPlanUsageArgs) ([]PlanUsage
 	}
 	providers := args.Providers
 	if len(providers) == 0 {
-		providers = []Provider{ProviderClaude, ProviderCodex, ProviderGrok, ProviderBedrock}
+		providers = []Provider{ProviderClaude, ProviderCodex, ProviderGrok, ProviderBedrock, ProviderCursor}
 	}
 	out := make([]PlanUsage, 0, len(providers))
 	for _, p := range providers {
 		pu, err := QueryPlanUsage(ctx, &PlanUsageArgs{
-			Provider:          p,
-			HTTPClient:        args.HTTPClient,
-			ClaudeAccessToken: args.ClaudeAccessToken,
-			CodexAccessToken:  args.CodexAccessToken,
-			CodexAccountID:    args.CodexAccountID,
-			CodexAuthPath:     args.CodexAuthPath,
-			ClaudeUsageURL:    args.ClaudeUsageURL,
-			CodexUsageURL:     args.CodexUsageURL,
-			Now:               args.Now,
-			GrokUnstableUsage: args.GrokUnstableUsage,
-			GrokAccessToken:   args.GrokAccessToken,
-			GrokAuthPath:      args.GrokAuthPath,
-			GrokBillingURL:    args.GrokBillingURL,
-			GrokBillingRaw:    args.GrokBillingRaw,
+			Provider:            p,
+			HTTPClient:          args.HTTPClient,
+			ClaudeAccessToken:   args.ClaudeAccessToken,
+			CodexAccessToken:    args.CodexAccessToken,
+			CodexAccountID:      args.CodexAccountID,
+			CodexAuthPath:       args.CodexAuthPath,
+			ClaudeUsageURL:      args.ClaudeUsageURL,
+			CodexUsageURL:       args.CodexUsageURL,
+			Now:                 args.Now,
+			GrokUnstableUsage:   args.GrokUnstableUsage,
+			GrokAccessToken:     args.GrokAccessToken,
+			GrokAuthPath:        args.GrokAuthPath,
+			GrokBillingURL:      args.GrokBillingURL,
+			GrokBillingRaw:      args.GrokBillingRaw,
+			CursorUnstableUsage: args.CursorUnstableUsage,
+			CursorAccessToken:   args.CursorAccessToken,
+			CursorAuthPath:      args.CursorAuthPath,
+			CursorUsageURL:      args.CursorUsageURL,
+			CursorUsageRaw:      args.CursorUsageRaw,
 		})
 		if err != nil {
 			// Programmer / unknown-provider errors propagate.

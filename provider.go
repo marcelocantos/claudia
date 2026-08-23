@@ -8,13 +8,17 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 const (
-	codexBinEnv  = "CODEX_BIN"
-	codexBinName = "codex"
-	grokBinEnv   = "GROK_BIN"
-	grokBinName  = "grok"
+	codexBinEnv    = "CODEX_BIN"
+	codexBinName   = "codex"
+	grokBinEnv     = "GROK_BIN"
+	grokBinName    = "grok"
+	cursorBinEnv   = "CURSOR_BIN"
+	cursorBinName  = "agent"
+	cursorBinAlias = "cursor-agent"
 )
 
 // Provider identifies the CLI/runtime backing a Task or Agent.
@@ -37,6 +41,14 @@ const (
 	// cost is latency rather than money, which is why it reports no cost
 	// capability instead of reporting a spend of zero.
 	ProviderOllama Provider = "ollama"
+
+	// ProviderCursor uses the Cursor Agent CLI (binary name
+	// "cursor-agent", often also installed as "agent"). Session mode
+	// speaks ACP over `agent acp` stdio. Task mode uses
+	// `agent --print --output-format stream-json`. Bare "agent" on PATH
+	// is not trusted first: Grok ships its own `~/.grok/bin/agent`, which
+	// rejects Cursor's --force/--trust flags.
+	ProviderCursor Provider = "cursor"
 )
 
 // Capability reporting (Capability, CapabilityStatus, CapabilityError,
@@ -54,25 +66,34 @@ func resolveCodexBinFrom(
 ) (string, error) {
 	if p := getenv(codexBinEnv); p != "" {
 		if filepath.IsAbs(p) {
-			if _, err := stat(p); err == nil {
+			if _, err := stat(p); err == nil && !isCmuxCLIShim(p) {
 				return p, nil
 			}
-		} else if abs, err := lookPath(p); err == nil {
+		} else if abs, err := lookPath(p); err == nil && !isCmuxCLIShim(abs) {
 			return abs, nil
 		}
 	}
-	if p, err := lookPath(codexBinName); err == nil {
-		return p, nil
-	}
+	// Prefer known install dirs over PATH: cmux injects a shim named
+	// "codex" that prints "codex not found in PATH" (exit 127).
 	for _, c := range candidates {
-		if c == "" {
+		if c == "" || isCmuxCLIShim(c) {
 			continue
 		}
 		if _, err := stat(c); err == nil {
 			return c, nil
 		}
 	}
+	if p, err := lookPath(codexBinName); err == nil && !isCmuxCLIShim(p) {
+		return p, nil
+	}
 	return "", fmt.Errorf("codex executable not found in PATH or known install dirs (set %s to override)", codexBinEnv)
+}
+
+// isCmuxCLIShim reports whether p is a cmux-injected CLI wrapper, not
+// the real Codex/Claude binary. Those shims fail with exit 127 when the
+// wrapped tool is absent from the inner PATH.
+func isCmuxCLIShim(p string) bool {
+	return strings.Contains(filepath.ToSlash(p), "/cmux-cli-shims/")
 }
 
 func codexBinCandidates() []string {
@@ -128,5 +149,62 @@ func grokBinCandidates() []string {
 		filepath.Join(home, ".local", "bin", grokBinName),
 		"/opt/homebrew/bin/grok",
 		"/usr/local/bin/grok",
+	}
+}
+
+func resolveCursorBin() (string, error) {
+	return resolveCursorBinFrom(os.Getenv, exec.LookPath, os.Stat, cursorBinCandidates())
+}
+
+func resolveCursorBinFrom(
+	getenv func(string) string,
+	lookPath func(string) (string, error),
+	stat func(string) (os.FileInfo, error),
+	candidates []string,
+) (string, error) {
+	if p := getenv(cursorBinEnv); p != "" {
+		if filepath.IsAbs(p) {
+			if _, err := stat(p); err == nil {
+				return p, nil
+			}
+		} else if abs, err := lookPath(p); err == nil {
+			return abs, nil
+		}
+	}
+	// Prefer the unambiguous name. Grok also installs a binary named
+	// "agent" earlier on some PATHs (~/.grok/bin before ~/.local/bin).
+	if p, err := lookPath(cursorBinAlias); err == nil && !isGrokAgentPath(p) {
+		return p, nil
+	}
+	for _, c := range candidates {
+		if c == "" || isGrokAgentPath(c) {
+			continue
+		}
+		if _, err := stat(c); err == nil {
+			return c, nil
+		}
+	}
+	if p, err := lookPath(cursorBinName); err == nil && !isGrokAgentPath(p) {
+		return p, nil
+	}
+	return "", fmt.Errorf("cursor agent executable not found in PATH or known install dirs (set %s to override)", cursorBinEnv)
+}
+
+// isGrokAgentPath reports whether p is Grok's `agent` (not Cursor's).
+// Grok installs ~/.grok/bin/agent; Cursor installs cursor-agent and a
+// same-named symlink under ~/.local/bin.
+func isGrokAgentPath(p string) bool {
+	return strings.Contains(filepath.ToSlash(p), "/.grok/")
+}
+
+func cursorBinCandidates() []string {
+	home, _ := os.UserHomeDir()
+	return []string{
+		filepath.Join(home, ".local", "bin", cursorBinName),
+		filepath.Join(home, ".local", "bin", cursorBinAlias),
+		"/opt/homebrew/bin/agent",
+		"/opt/homebrew/bin/cursor-agent",
+		"/usr/local/bin/agent",
+		"/usr/local/bin/cursor-agent",
 	}
 }

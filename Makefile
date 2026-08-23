@@ -1,14 +1,22 @@
-# Standing invariants checked by bullseye_convergence.
-# Exit 0 = all green; non-zero = at least one violation.
-bullseye:
+# Hermetic owner gate (🎯T48). Same suite as .github/workflows/test.yml.
+# Pre-push runs this. Does not require a clean tree — /ship does.
+# Never pipe go test: `go test ... | tail` reports tail's status, so a
+# failing suite can print green and exit 0.
+.PHONY: gate gate-full bullseye
+gate:
 	@go vet ./... && echo "✓ vet"
-	@# Never pipe this: `go test ... | tail` reports tail's status, not
-	@# go test's, so a failing suite prints "✓ tests" and exits 0. That
-	@# trap produced a false green here before.
 	@go test -race -count=1 ./... && echo "✓ tests"
-	@scripts/check-stability-surface.py >/dev/null && echo "✓ stability surface"
+	@$(MAKE) --no-print-directory verify-stability >/dev/null && echo "✓ stability surface"
 	@$(MAKE) --no-print-directory verify-mutation-evidence >/dev/null && \
 	 echo "✓ mutation evidence"
+
+# TLA+ broker lifecycle (Java + tla2tools). Not on the pre-push hook;
+# run before a release.
+gate-full: gate
+	@$(MAKE) --no-print-directory verify-specs
+
+# Standing invariants checked by bullseye_convergence.
+bullseye: gate
 	@test -z "$$(git status --porcelain)" && echo "✓ clean" || \
 	 (echo "✗ dirty tree"; git status --short; exit 1)
 
@@ -49,9 +57,10 @@ verify-mutation-evidence:
 # Codex:  CLAUDIA_CODEX_LIVE=1
 # Bedrock: CLAUDIA_BEDROCK_LIVE=1
 # Ollama: CLAUDIA_OLLAMA_LIVE=1 (and CLAUDIA_OLLAMA_MODEL)
+# Cursor: CLAUDIA_CURSOR_LIVE=1
 .PHONY: live
 live:
-	go test -count=1 -timeout 15m -run 'TestTaskRunSmoke|TestAgentSendAndWaitForResponse|TestGrokTaskRunSmoke|TestGrokSessionLiveSmoke|TestCodexTaskRunSmoke|TestCodexSessionLiveSmoke|TestBedrockTaskLiveSmoke|TestOllamaTaskLiveSmoke|TestGoalJourneyLiveBackends|TestMCPLiveLoadAndSessionSeesMnemo|TestMCPExclusiveGrokInspectJourney|TestMCPExclusiveSessionRoundTrip' .
+	go test -count=1 -timeout 15m -run 'TestTaskRunSmoke|TestAgentSendAndWaitForResponse|TestGrokTaskRunSmoke|TestGrokSessionLiveSmoke|TestCodexTaskRunSmoke|TestCodexSessionLiveSmoke|TestBedrockTaskLiveSmoke|TestOllamaTaskLiveSmoke|TestCursorTaskLiveSmoke|TestCursorSessionLiveSmoke|TestGoalJourneyLiveBackends|TestMCPLiveLoadAndSessionSeesMnemo|TestMCPExclusiveGrokInspectJourney|TestMCPExclusiveSessionRoundTrip|TestMCPExclusiveCursorSessionRoundTrip' .
 
 # Model-check the broker lifecycle spec (T2.0/T2.8 oracle). The correct config
 # must be green AND every fault-injection mutant must be caught — a spec that

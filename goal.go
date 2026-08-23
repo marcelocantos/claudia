@@ -169,15 +169,16 @@ func ParseGoalStatus(text string) (string, bool) {
 }
 
 func goalContinuation(goal string) string {
-	// One line so Claude Session uses send-keys -l, the same path as a
-	// short follow-up Send. Newlines would take the paste-chip branch
-	// immediately after a turn and hang submit confirmation on the
-	// live TUI (live 🎯T39 journey, 2026-08-18).
+	// One line under the Claude Session paste threshold (400 bytes in
+	// internal/tmuxagent). Newlines or len>=400 take the paste-chip
+	// branch; right after a turn that path flakes on submit confirmation
+	// (live 🎯T39 journey). Keep the boilerplate short so typical Goal
+	// strings stay on send-keys -l.
 	obj := strings.Join(strings.Fields(strings.TrimSpace(goal)), " ")
-	return "Continue the open objective. Ending the previous turn did not complete it. " +
-		"Objective: " + obj + " " +
-		"Keep working until the objective is evidenced complete or blocked. " +
-		"When complete, emit a line exactly: " + GoalStatusComplete + " " +
-		"When blocked with no remaining path, emit a line exactly: " + GoalStatusBlocked + " " +
-		"Do not emit either line unless that condition holds."
+	return "Continue the open objective (previous turn did not finish it). " +
+		"Objective: " + obj + ". " +
+		"Work until evidenced complete or blocked. " +
+		"When complete emit exactly: " + GoalStatusComplete + " " +
+		"When blocked emit exactly: " + GoalStatusBlocked + " " +
+		"Emit neither unless true."
 }

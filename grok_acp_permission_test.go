@@ -24,6 +24,20 @@ func TestSelectPermissionOptionIDBashSpecific(t *testing.T) {
 	}
 }
 
+func TestSelectPermissionOptionIDPrefersHyphenAlways(t *testing.T) {
+	params := json.RawMessage(`{
+		"options": [
+			{"optionId": "allow-once"},
+			{"optionId": "allow-always"},
+			{"optionId": "reject-once"}
+		]
+	}`)
+	got := selectPermissionOptionID(params)
+	if got != "allow-always" {
+		t.Fatalf("got %q, want allow-always", got)
+	}
+}
+
 func TestSelectPermissionOptionIDPrefersGenericAlways(t *testing.T) {
 	params := json.RawMessage(`{
 		"options": [

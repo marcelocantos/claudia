@@ -288,6 +288,45 @@ var providerCapabilityClaims = map[Provider]map[Capability]capabilityClaim{
 			reason: grokExtraArgsReason,
 		},
 	},
+	ProviderCursor: {
+		CapabilityTask:    {status: CapabilitySupported},
+		CapabilityResume:  {status: CapabilitySupported},
+		CapabilitySession: {status: CapabilitySupported},
+		CapabilityRewind:  {status: CapabilityUnsupported, reason: cursorRewindReason},
+		CapabilityCost: {
+			status: CapabilityUnsupported,
+			reason: "Cursor print/ACP results publish token usage but no monetary cost; Usage.CostUSD stays zero",
+		},
+		CapabilityTmuxAttach: {
+			status: CapabilityUnsupported,
+			reason: "Cursor ACP/Task run process-local; there is no tmux window to attach",
+		},
+		CapabilityTerminalLog: {
+			status: CapabilityUnsupported,
+			reason: "Cursor ACP/Task are JSON streams, not a PTY, so there are no rendered terminal bytes to log",
+		},
+		CapabilityPermissionMode: {
+			status: CapabilityUnsupported,
+			reason: cursorPermissionModeReason,
+		},
+		CapabilityToolRestrictions: {status: CapabilityUnsupported, reason: cursorToolRestrictionsReason},
+		CapabilityImageInput: {
+			status: CapabilityUnsupported,
+			reason: "claudia has no API for attaching images to a prompt on any provider",
+		},
+		CapabilityWebSearch: {
+			status: CapabilityUnsupported,
+			reason: "claudia does not bind a Cursor web-search switch, so web access is left at the Cursor default",
+		},
+		CapabilitySandboxPolicy: {
+			status: CapabilityUnsupported,
+			reason: sandboxPolicyIsCodexOnlyReason,
+		},
+		CapabilityExtraArgs: {
+			status: CapabilityUnsupported,
+			reason: cursorExtraArgsReason,
+		},
+	},
 	ProviderBedrock: {
 		CapabilityTask:    {status: CapabilitySupported},
 		CapabilitySession: {status: CapabilityUnsupported, reason: bedrockSessionReason},
@@ -368,6 +407,13 @@ const (
 	grokSessionToolRestrictionsUnwiredReason = "the Grok tool_restrictions claim was flipped to supported, but the Grok Session path still emits no --deny or --disallowed-tools argument, so the restriction would be dropped; wire the translation before changing the claim"
 	//nolint:lll // one sentence, kept whole for the error message.
 	grokPermissionModeReason = "Grok Session hardcodes ACP always-approve/yoloMode; a PermissionMode other than bypassPermissions would be dropped, leaving an agent more permissive than the caller asked for"
+	cursorRewindReason = "Cursor rewind requires a public ACP session API; private transcript truncation is forbidden"
+	//nolint:lll // one sentence, kept whole for the error message.
+	cursorToolRestrictionsReason = "the Cursor Agent CLI has no per-tool disallow flag claudia can stand behind; DisallowTools never reaches `agent acp` or `--print`"
+	//nolint:lll // one sentence, kept whole for the error message.
+	cursorExtraArgsReason = "claudia drives Cursor over a fixed `agent … acp` / `--print` command line, so caller argv has nowhere to go"
+	//nolint:lll // one sentence, kept whole for the error message.
+	cursorPermissionModeReason = "Cursor Session auto-approves ACP permissions for unattended embedding; Cursor Task has no ApprovalPolicy/PermissionMode flag, so a non-default mode would be dropped"
 )
 
 // capabilityRefusal is the error a provider path returns to a caller who

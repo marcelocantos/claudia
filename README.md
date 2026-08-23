@@ -1,12 +1,13 @@
 # claudia
 
 Go library for embedding [Claude Code](https://claude.com/claude-code),
-[Grok](https://x.ai/cli), Codex, Bedrock, and Ollama agents in any program.
+[Grok](https://x.ai/cli), Codex, Bedrock, Ollama, and
+[Cursor](https://cursor.com/docs/cli/acp) agents in any program.
 
 claudia wraps each provider's CLI or API in two complementary modes
 (Task and Session). Session transports differ by provider: Claude uses
 a tmux PTY plus JSONL tail; Grok uses ACP over stdio or connect-mode
-WebSocket; Codex uses `codex app-server` JSON-RPC. Bedrock and Ollama
+WebSocket; Codex uses `codex app-server` JSON-RPC. Cursor uses ACP over `agent acp`. Bedrock and Ollama
 are Task-only HTTP paths.
 
 ## Requirements
@@ -19,6 +20,7 @@ are Task-only HTTP paths.
   - Codex: `codex` CLI (`CODEX_BIN` or `$PATH` / known app-bundle paths)
   - Bedrock: AWS SDK default credential chain
   - Ollama: a local daemon (`CLAUDIA_OLLAMA_ENDPOINT`, default `http://127.0.0.1:11434`)
+  - Cursor: `cursor-agent` / `agent` CLI (`CURSOR_BIN` or `$PATH` / `~/.local/bin/agent`)
 
 No launchd or systemd setup is needed. Claude Session mode uses tmux for
 process lifetime; Grok and Codex Session modes are stdio processes (or
@@ -35,6 +37,14 @@ voice client in package `claudia/grok`. Session mode uses ACP over
 `CODEX_BIN`, then `codex` on `$PATH`, then known install locations
 including `/Applications/Codex.app/Contents/Resources/codex`. Codex
 Session mode uses `codex app-server` JSON-RPC (not tmux).
+
+**Cursor Agent CLI** ships via `ProviderCursor` for Session and Task.
+Binary discovery checks `CURSOR_BIN`, then `cursor-agent` on `$PATH`,
+then `~/.local/bin/agent`, then a PATH `agent` that is not Grok's
+`~/.grok/bin/agent`. Session mode uses ACP over `agent acp` (not tmux).
+Task mode uses `agent --print --output-format stream-json`. Auth is
+`agent login` or `CURSOR_API_KEY`. See
+[docs/cursor-acp-session.md](docs/cursor-acp-session.md).
 
 **AWS Bedrock Task mode** ships via `ProviderBedrock` — Anthropic Claude
 models through Bedrock **ConverseStream** (API path; no local `claude`
@@ -119,8 +129,9 @@ SuperGrok weekly usage / Extra Credits and console prepaid balance are
 **Plan remaining (all providers):** `QueryPlanUsage` /
 `QueryAllPlanUsage` expose subscription session + weekly % remaining and
 rollover times when a backend publishes them; Grok and Bedrock report
-explicit unavailable (never invented numbers). See
-[docs/plan-usage.md](docs/plan-usage.md).
+explicit unavailable (never invented numbers). Cursor plan remaining
+is opt-in (`CLAUDIA_CURSOR_USAGE=1`) because it reads an undocumented
+dashboard RPC. See [docs/plan-usage.md](docs/plan-usage.md).
 
 Bedrock Task mode is available by selecting `ProviderBedrock`. It calls
 AWS Bedrock ConverseStream and maps text deltas to `TaskEventText`:
@@ -215,7 +226,9 @@ registrations. `NewMCPProxy` is an `http.Handler` the host process
 mounts — Claudia is not a server. Owner-present OAuth is
 `AuthorizeMCP`; token refresh without the owner is the host's job.
 `Config.MCPExclusive` (default false) keeps user-scope MCP maps;
-set true for a hermetic session that sees only `MCPServers`.
+set true for a hermetic session that sees only `MCPServers`
+(Claude/Grok/Codex isolate homes or strict flags; Cursor writes
+project `.cursor/mcp.json` and keeps real-home auth / `CURSOR_API_KEY`).
 
 The one-shot helper `claudia.Run(ctx, prompt, cfg)` bundles `Start` +
 `Send` + `WaitForResponse` + `Stop` for session mode if you want a
