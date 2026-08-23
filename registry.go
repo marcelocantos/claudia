@@ -62,6 +62,13 @@ type AgentDef struct {
 	// present them differently without a second store.
 	Purpose string `json:"purpose,omitempty"`
 
+	// Role is the declarative fleet role the agent was spawned as
+	// (e.g. worker, auditor, product-owner). Empty means derive from
+	// Purpose / name heuristics. Distinct from Purpose: purpose is the
+	// sandbox/goal class; role carries per-type doctrine (jevons 🎯T511 /
+	// 🎯T536.2).
+	Role string `json:"role,omitempty"`
+
 	// Description is an optional owner-facing label (e.g. aside title for
 	// purpose=aside rows). Empty means UI falls back to Name.
 	Description string `json:"description,omitempty"`
