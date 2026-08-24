@@ -138,6 +138,17 @@ func codexAppServerThreadArchive(id int, threadID string) codexAppServerRequest 
 	}
 }
 
+// thread/name/set is what live Codex persists a rollout with after
+// thread/start (jevons 🎯T545.1.3). thread/start itself writes nothing;
+// a forged session_meta jsonl is rejected as "rollout is empty".
+func codexAppServerThreadNameSet(id int, threadID, name string) codexAppServerRequest {
+	return codexAppServerRequest{
+		Method: "thread/name/set",
+		ID:     intPtr(id),
+		Params: map[string]any{"threadId": threadID, "name": name},
+	}
+}
+
 func codexAppServerThreadUnarchive(id int, threadID string) codexAppServerRequest {
 	return codexAppServerRequest{
 		Method: "thread/unarchive",

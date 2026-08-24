@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func writeFakeCodexAppServer(t *testing.T) string {
@@ -349,5 +350,220 @@ func TestHermeticCodexInterrupt(t *testing.T) {
 	}
 	if err := agent.Interrupt(); err != nil {
 		t.Fatalf("Interrupt: %v", err)
+	}
+}
+
+// 🎯T545.1.2: exclusive CODEX_HOME survives Stop so bounce can thread/resume.
+func TestHermeticCodexExclusiveHomeSurvivesStop(t *testing.T) {
+	bin := writeFakeCodexAppServer(t)
+	t.Setenv("CODEX_BIN", bin)
+	writeFakeCodexSubscriptionAuth(t)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	lastHome := filepath.Join(t.TempDir(), "home1")
+	t.Setenv("FAKE_CODEX_LAST_HOME", lastHome)
+
+	minted := "fd4bbbe8-0000-4000-8000-000000d95306"
+	cfg := Config{
+		Provider:     ProviderCodex,
+		WorkDir:      t.TempDir(),
+		SessionID:    minted,
+		MCPExclusive: true,
+		MCPServers:   []MCPServer{{Name: "onlyme", URL: "http://127.0.0.1:9/mcp"}},
+		TermLogPath:  "-",
+	}
+	agent, err := Start(cfg)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	sid := agent.SessionID()
+	if sid == "" {
+		agent.Stop()
+		t.Fatal("empty SessionID")
+	}
+	durable := exclusiveCodexHomeDir(sid)
+	if !dirExists(durable) {
+		agent.Stop()
+		t.Fatal("durable home missing before Stop — SIGHUP skips StopAll")
+	}
+	agent.Stop()
+	if !dirExists(durable) {
+		t.Fatalf("durable home deleted on Stop: %s", durable)
+	}
+
+	lastHome2 := filepath.Join(t.TempDir(), "home2")
+	t.Setenv("FAKE_CODEX_LAST_HOME", lastHome2)
+	cfg.SessionID = sid
+	cfg.RequireResume = true
+	agent2, err := Start(cfg)
+	if err != nil {
+		t.Fatalf("resume Start: %v", err)
+	}
+	defer agent2.Stop()
+	if agent2.SessionID() != sid {
+		t.Fatalf("resumed SessionID = %q, want %q", agent2.SessionID(), sid)
+	}
+	secondHome, err := os.ReadFile(lastHome2)
+	if err != nil {
+		t.Fatalf("resume CODEX_HOME: %v", err)
+	}
+	if strings.TrimSpace(string(secondHome)) != durable {
+		t.Fatalf("resume CODEX_HOME = %q, want durable %q", secondHome, durable)
+	}
+}
+
+func TestHermeticCodexExclusiveHomeMissingFailsLoud(t *testing.T) {
+	bin := writeFakeCodexAppServer(t)
+	t.Setenv("CODEX_BIN", bin)
+	writeFakeCodexSubscriptionAuth(t)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	_, err := Start(Config{
+		Provider:      ProviderCodex,
+		WorkDir:       t.TempDir(),
+		SessionID:     "thr_existing",
+		RequireResume: true,
+		MCPExclusive:  true,
+		TermLogPath:   "-",
+	})
+	if err == nil {
+		t.Fatal("Start succeeded with missing exclusive home")
+	}
+	want := exclusiveCodexHomeDir("thr_existing")
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("err = %v, want named home %s", err, want)
+	}
+	if strings.Contains(err.Error(), "no rollout found") {
+		t.Fatal("must fail before empty-home resume")
+	}
+}
+
+func TestHermeticCodexCloseFlushesExclusiveHome(t *testing.T) {
+	bin := writeFakeCodexAppServer(t)
+	t.Setenv("CODEX_BIN", bin)
+	writeFakeCodexSubscriptionAuth(t)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	agent, err := Start(Config{
+		Provider:     ProviderCodex,
+		WorkDir:      t.TempDir(),
+		SessionID:    "fd4bbbe8-0000-4000-8000-000000d95307",
+		MCPExclusive: true,
+		MCPServers:   []MCPServer{{Name: "onlyme", URL: "http://127.0.0.1:9/mcp"}},
+		TermLogPath:  "-",
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	home := exclusiveCodexHomeDir("fd4bbbe8-0000-4000-8000-000000d95307")
+	agent.Stop()
+	if _, err := os.Stat(filepath.Join(home, "flushed")); err != nil {
+		t.Fatalf("Stop SIGKILL-ed Codex (no SIGTERM flush in exclusive home %s): %v", home, err)
+	}
+}
+
+func TestHermeticCodexStartSeedsRolloutWithoutTurn(t *testing.T) {
+	bin := writeFakeCodexAppServer(t)
+	t.Setenv("CODEX_BIN", bin)
+	t.Setenv("FAKE_CODEX_SKIP_ROLLOUT", "1")
+	writeFakeCodexSubscriptionAuth(t)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	agent, err := Start(Config{
+		Provider:     ProviderCodex,
+		WorkDir:      t.TempDir(),
+		MCPExclusive: true,
+		MCPServers:   []MCPServer{{Name: "onlyme", URL: "http://127.0.0.1:9/mcp"}},
+		TermLogPath:  "-",
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	sid := agent.SessionID()
+	if sid == "" {
+		agent.Stop()
+		t.Fatal("empty SessionID")
+	}
+	home := exclusiveCodexHomeDir(sid)
+	if findCodexRollout(home, sid) == "" {
+		agent.Stop()
+		t.Fatalf("no thread/name/set rollout under %s", home)
+	}
+	agent.Stop()
+
+	agent2, err := Start(Config{
+		Provider:      ProviderCodex,
+		WorkDir:       t.TempDir(),
+		SessionID:     sid,
+		RequireResume: true,
+		MCPExclusive:  true,
+		TermLogPath:   "-",
+	})
+	if err != nil {
+		t.Fatalf("resume after name/set persist: %v", err)
+	}
+	defer agent2.Stop()
+	if agent2.SessionID() != sid {
+		t.Fatalf("resumed SessionID = %q, want %q", agent2.SessionID(), sid)
+	}
+}
+
+func TestHermeticCodexResumeEmptyHomeNamesPath(t *testing.T) {
+	bin := writeFakeCodexAppServer(t)
+	t.Setenv("CODEX_BIN", bin)
+	writeFakeCodexSubscriptionAuth(t)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	sid := "01a0320f-0000-4000-8000-00000000dead"
+	home := exclusiveCodexHomeDir(sid)
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Start(Config{
+		Provider:      ProviderCodex,
+		WorkDir:       t.TempDir(),
+		SessionID:     sid,
+		RequireResume: true,
+		MCPExclusive:  true,
+		TermLogPath:   "-",
+	})
+	if err == nil {
+		t.Fatal("Start resumed an empty exclusive home")
+	}
+	if !strings.Contains(err.Error(), home) {
+		t.Fatalf("err = %v, want named home %s", err, home)
+	}
+	if !strings.Contains(err.Error(), "refusing to mint") {
+		t.Fatalf("err = %v, want refuse remint", err)
+	}
+}
+
+// 🎯T545.1.1: a thread/start that never replies must fail loud inside the
+// handshake window, not block the caller's MCP tools/call until the client
+// gives up.
+func TestHermeticCodexThreadStartTimesOut(t *testing.T) {
+	prev := codexAppServerHandshakeTimeout
+	codexAppServerHandshakeTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { codexAppServerHandshakeTimeout = prev })
+
+	bin := writeFakeCodexAppServer(t)
+	t.Setenv("CODEX_BIN", bin)
+	t.Setenv("FAKE_CODEX_HANG_START", "1")
+	writeFakeCodexSubscriptionAuth(t)
+
+	started := time.Now()
+	_, err := Start(Config{
+		Provider:    ProviderCodex,
+		WorkDir:     t.TempDir(),
+		TermLogPath: "-",
+	})
+	elapsed := time.Since(started)
+	if err == nil {
+		t.Fatal("Start succeeded against a hanging thread/start")
+	}
+	if !strings.Contains(err.Error(), "timeout waiting for thread/start") {
+		t.Fatalf("Start err = %v, want timeout waiting for thread/start", err)
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("Start hung %s, want handshake timeout", elapsed)
 	}
 }

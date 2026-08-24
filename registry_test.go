@@ -5,6 +5,7 @@ package claudia
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -473,6 +474,191 @@ func TestMarkMaterializedUnknownAgent(t *testing.T) {
 	}
 	if err := r.MarkMaterialized("ghost"); err == nil {
 		t.Error("MarkMaterialized unknown returned nil, want error")
+	}
+}
+
+func TestLaunchLatchesCursorResumeDenied(t *testing.T) {
+	prev := registryStart
+	t.Cleanup(func() { registryStart = prev })
+	var starts int
+	registryStart = func(Config) (*Agent, error) {
+		starts++
+		return nil, fmt.Errorf("acp session/load sid: connection closed (%w)", ErrCursorResumeDenied)
+	}
+
+	r, err := NewRegistry(filepath.Join(t.TempDir(), "agents.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Register(AgentDef{
+		Name:      "jevons",
+		WorkDir:   t.TempDir(),
+		SessionID: "sid-cursor",
+		Provider:  ProviderCursor,
+		AutoStart: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := r.Launch("jevons"); !IsCursorResumeDenied(err) {
+		t.Fatalf("first Launch: %v", err)
+	}
+	if _, err := r.Launch("jevons"); !IsCursorResumeDenied(err) {
+		t.Fatalf("second Launch: %v", err)
+	}
+	if starts != 1 {
+		t.Fatalf("starts=%d want 1 (latched fail-closed must not spawn again)", starts)
+	}
+	if r.ResumeDenied("jevons") == nil {
+		t.Fatal("expected ResumeDenied latch")
+	}
+}
+
+// 🎯T545.1: a Codex/Cursor row reloaded from disk is a bounce resume, not a
+// never-materialized mint. Launch must RequireResume and must not persist
+// a replacement session_id.
+func TestHermeticCodexCursorBounceLaunchRequiresResume(t *testing.T) {
+	cases := []struct {
+		name     string
+		agent    string
+		sid      string
+		provider Provider
+	}{
+		{"codex", "jv-t543-compact-once", "01a030e9-054a-45c0-8c2f-afc545afa986", ProviderCodex},
+		{"cursor", "jevons-po", "531d90af-9299-4607-ab3d-7dcc14fa7a83", ProviderCursor},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "agents.json")
+			workDir := t.TempDir()
+			r1, err := NewRegistry(path)
+			if err != nil {
+				t.Fatalf("NewRegistry seed: %v", err)
+			}
+			if err := r1.Register(AgentDef{
+				Name: tc.agent, WorkDir: workDir, SessionID: tc.sid,
+				Provider: tc.provider, AutoStart: true,
+			}); err != nil {
+				t.Fatalf("Register: %v", err)
+			}
+
+			r2, err := NewRegistry(path)
+			if err != nil {
+				t.Fatalf("NewRegistry bounce: %v", err)
+			}
+			prev := registryStart
+			t.Cleanup(func() { registryStart = prev })
+			var cfgs []Config
+			registryStart = func(cfg Config) (*Agent, error) {
+				cfgs = append(cfgs, cfg)
+				if cfg.RequireResume {
+					return nil, fmt.Errorf("session %s: existing conversation required — refusing to mint a replacement session", cfg.SessionID)
+				}
+				reminted := cfg
+				reminted.SessionID = tc.sid + "-reminted"
+				return startWithBackend(reminted, &fakeAgentBackend{name: "fake-" + tc.name})
+			}
+
+			_, err = r2.Launch(tc.agent)
+			if err == nil {
+				t.Fatal("bounce Launch reminted; want RequireResume fail-closed")
+			}
+			if !strings.Contains(err.Error(), "refusing to mint") {
+				t.Errorf("error = %v, want refuse-to-mint wording", err)
+			}
+			if len(cfgs) != 1 || !cfgs[0].RequireResume {
+				t.Fatalf("Start RequireResume = %+v, want true", cfgs)
+			}
+			if got := r2.Def(tc.agent).SessionID; got != tc.sid {
+				t.Fatalf("persisted session_id = %q, want %q", got, tc.sid)
+			}
+		})
+	}
+}
+
+func TestHermeticCodexLaunchRefusesRemintPersist(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agents.json")
+	workDir := t.TempDir()
+	const name = "codex-worker"
+	const sid = "01a030e9-keep-me"
+
+	r1, err := NewRegistry(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r1.Register(AgentDef{
+		Name: name, WorkDir: workDir, SessionID: sid,
+		Provider: ProviderCodex,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	r2, err := NewRegistry(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prev := registryStart
+	t.Cleanup(func() { registryStart = prev })
+	registryStart = func(cfg Config) (*Agent, error) {
+		reminted := cfg
+		reminted.SessionID = "01a030f5-should-not-persist"
+		return startWithBackend(reminted, &fakeAgentBackend{name: "fake-codex"})
+	}
+
+	_, err = r2.Launch(name)
+	if err == nil {
+		t.Fatal("Launch persisted a remint; want refuse")
+	}
+	if !strings.Contains(err.Error(), "refusing remint") {
+		t.Errorf("error = %v, want refusing remint", err)
+	}
+	if got := r2.Def(name).SessionID; got != sid {
+		t.Fatalf("session_id drifted to %q", got)
+	}
+	r3, err := NewRegistry(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := r3.Def(name).SessionID; got != sid {
+		t.Fatalf("disk session_id = %q after remint refuse, want %q", got, sid)
+	}
+}
+
+func TestHermeticCodexEnsureAgentFirstLaunchMayMint(t *testing.T) {
+	r, err := NewRegistry(filepath.Join(t.TempDir(), "agents.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	def, err := r.EnsureAgent("fresh-codex", t.TempDir(), "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Register(AgentDef{
+		Name: def.Name, WorkDir: def.WorkDir, SessionID: def.SessionID,
+		Provider: ProviderCodex,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	prev := registryStart
+	t.Cleanup(func() { registryStart = prev })
+	registryStart = func(cfg Config) (*Agent, error) {
+		if cfg.RequireResume {
+			return nil, fmt.Errorf("first mint set RequireResume")
+		}
+		reminted := cfg
+		reminted.SessionID = "01a030e9-first-thread"
+		return startWithBackend(reminted, &fakeAgentBackend{name: "fake-codex"})
+	}
+
+	agent, err := r.Launch("fresh-codex")
+	if err != nil {
+		t.Fatalf("first Launch: %v", err)
+	}
+	agent.Stop()
+	r.Stop("fresh-codex")
+	if got := r.Def("fresh-codex").SessionID; got != "01a030e9-first-thread" {
+		t.Fatalf("first mint session_id = %q, want Codex thread", got)
 	}
 }
 

@@ -113,7 +113,8 @@ type Config struct {
 	// MCPServers is the session-scoped MCP list in Claudia's dialect.
 	// This is the only way Claudia populates a backend's MCP set at
 	// Start: Claude gets an inline/temp --mcp-config; Grok/Cursor get
-	// ACP mcpServers; Codex gets a process-private CODEX_HOME. Claudia
+	// ACP mcpServers; Codex gets a process-private CODEX_HOME persisted
+	// under $XDG_STATE_HOME/claudia/codex-homes/<sessionID>. Claudia
 	// never writes ~/.claude.json, ~/.grok, ~/.codex, ~/.cursor, or
 	// project .cursor/mcp.json for Session attach.
 	MCPServers []MCPServer
@@ -121,8 +122,10 @@ type Config struct {
 	// MCPExclusive, when true, is the only MCP set the Session may
 	// see (🎯T45). Default false keeps provider user-scope maps
 	// additive where the backend still loads them (Cursor has no
-	// strict flag). Claude uses --strict-mcp-config; Grok/Codex use
-	// process-private homes under the system temp dir.
+	// strict flag). Claude uses --strict-mcp-config; Grok uses a
+	// process-private temp GROK_HOME; Codex uses a process-private
+	// CODEX_HOME persisted under $XDG_STATE_HOME/claudia/codex-homes
+	// so bounce can thread/resume (jevons 🎯T545.1.2).
 	MCPExclusive bool
 
 	// DisallowTools lists additional tool names to disallow. Agent,
@@ -288,7 +291,8 @@ type agentStart struct {
 	ConnectURL string
 	ConnectPID int
 	// Cleanup removes process-private MCP materialisation (temp --mcp-config
-	// files, ephemeral CODEX_HOME / GROK_HOME). Called from Agent.Stop.
+	// files, ephemeral GROK_HOME). Codex exclusive homes persist under
+	// XDG state so Stop does not delete the rollout. Called from Agent.Stop.
 	Cleanup func()
 }
 
@@ -850,11 +854,13 @@ func startCodexAgent(req agentStartRequest) (*agentStart, error) {
 
 	var extraEnv []string
 	var mcpCleanup func()
+	var exclusiveHome string
 	if needsSessionMCPMaterialization(req.Config) {
-		home, cleanup, herr := prepareExclusiveCodexHome(mergeMCPServers(req.Config))
+		home, cleanup, herr := exclusiveCodexHomeForStart(req.SessionID, req.Config.RequireResume, mergeMCPServers(req.Config))
 		if herr != nil {
 			return nil, herr
 		}
+		exclusiveHome = home
 		mcpCleanup = cleanup
 		extraEnv = exclusiveEnv("CODEX_HOME", home)
 	}
@@ -863,9 +869,18 @@ func startCodexAgent(req agentStartRequest) (*agentStart, error) {
 		if mcpCleanup != nil {
 			mcpCleanup()
 		}
+		if req.Config.RequireResume && exclusiveHome != "" {
+			return nil, fmt.Errorf("%w — exclusive CODEX_HOME %s", err, exclusiveHome)
+		}
 		return nil, err
 	}
 	sid := client.ThreadID()
+	if exclusiveHome != "" && sid != "" {
+		if err := publishExclusiveCodexHome(exclusiveHome, sid); err != nil {
+			slog.Error("publish exclusive CODEX_HOME", "src", exclusiveHome, "session", sid, "err", err)
+		}
+		mcpCleanup = exclusiveCodexHomeCleanup(exclusiveHome, sid, mcpCleanup)
+	}
 	ops := agentOps{
 		attachCommand: func(*Agent) string { return "" },
 		interrupt: func(*Agent) error {

@@ -10,9 +10,18 @@ import (
 	"io"
 	"log/slog"
 	"os/exec"
+	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
+	"time"
 )
+
+// Handshake RPCs (initialize / thread/start / thread/resume) must not
+// block the caller's MCP tools/call forever. Cursor's client deadline is
+// ~60s; a hang here wedges every later jevons_* call (jevons 🎯T545.1.1).
+// Prompt/turn stays unbounded — those are the work, not the mint.
+var codexAppServerHandshakeTimeout = 20 * time.Second
 
 // codexAppServerClient is a JSONL JSON-RPC client for `codex app-server`.
 // Transport is parent-owned stdio. Notifications become [Event]s via
@@ -28,11 +37,14 @@ type codexAppServerClient struct {
 	pending map[int64]chan []byte
 	closed  bool
 
-	threadID string
-	turnID   string
-	model    string
-	sandbox  string
-	inFlight bool
+	threadID      string
+	turnID        string
+	lastTurnID    string
+	model         string
+	sandbox       string
+	inFlight      bool
+	exclusiveHome string
+	workDir       string
 
 	onEvent func(Event)
 	onClose func()
@@ -87,14 +99,16 @@ func startCodexAppServer(bin, workDir, model, sessionID string, requireResume bo
 	}
 
 	c := &codexAppServerClient{
-		cmd:     cmd,
-		stdin:   stdin,
-		stdout:  stdout,
-		stderr:  stderr,
-		sandbox: resolveCodexSandbox(sandbox),
-		pending: make(map[int64]chan []byte),
-		onEvent: onEvent,
-		onClose: onClose,
+		cmd:           cmd,
+		stdin:         stdin,
+		stdout:        stdout,
+		stderr:        stderr,
+		sandbox:       resolveCodexSandbox(sandbox),
+		pending:       make(map[int64]chan []byte),
+		exclusiveHome: envValue(extraEnv, "CODEX_HOME"),
+		workDir:       workDir,
+		onEvent:       onEvent,
+		onClose:       onClose,
 	}
 	go c.drainStderr()
 	go c.readLoop()
@@ -160,8 +174,7 @@ func (c *codexAppServerClient) readLoop() {
 	if c.stdout == nil {
 		return
 	}
-	sc := bufio.NewScanner(c.stdout)
-	sc.Buffer(make([]byte, 1024*1024), 1024*1024)
+	sc := newACPLineScanner(c.stdout)
 	for sc.Scan() {
 		line := append([]byte(nil), sc.Bytes()...)
 		if len(line) == 0 {
@@ -169,6 +182,7 @@ func (c *codexAppServerClient) readLoop() {
 		}
 		c.dispatch(line)
 	}
+	logACPScanErr("codex", sc.Err())
 }
 
 func (c *codexAppServerClient) dispatch(line []byte) {
@@ -205,6 +219,7 @@ func (c *codexAppServerClient) dispatch(line []byte) {
 	}
 	if ev.TurnID != "" {
 		c.turnID = ev.TurnID
+		c.lastTurnID = ev.TurnID
 	}
 	if ev.Model != "" {
 		c.model = ev.Model
@@ -248,16 +263,70 @@ func (c *codexAppServerClient) request(req codexAppServerRequest) ([]byte, error
 		c.mu.Unlock()
 		return nil, err
 	}
-	line, ok := <-ch
-	if !ok {
-		return nil, fmt.Errorf("codex app-server: closed waiting for %s", req.Method)
+	line, err := c.waitPending(ch, id, req.Method, 0)
+	if err != nil {
+		return nil, err
 	}
+	return c.parseRPCResult(line, req.Method)
+}
+
+func (c *codexAppServerClient) requestHandshake(req codexAppServerRequest) ([]byte, error) {
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return nil, fmt.Errorf("codex app-server: client closed")
+	}
+	id := atomic.AddInt64(&c.nextID, 1)
+	rid := int(id)
+	req.ID = &rid
+	ch := make(chan []byte, 1)
+	c.pending[id] = ch
+	c.mu.Unlock()
+
+	if err := c.write(req); err != nil {
+		c.mu.Lock()
+		delete(c.pending, id)
+		c.mu.Unlock()
+		return nil, err
+	}
+	line, err := c.waitPending(ch, id, req.Method, codexAppServerHandshakeTimeout)
+	if err != nil {
+		return nil, err
+	}
+	return c.parseRPCResult(line, req.Method)
+}
+
+func (c *codexAppServerClient) waitPending(ch <-chan []byte, id int64, method string, timeout time.Duration) ([]byte, error) {
+	if timeout <= 0 {
+		line, ok := <-ch
+		if !ok {
+			return nil, fmt.Errorf("codex app-server: closed waiting for %s", method)
+		}
+		return line, nil
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case line, ok := <-ch:
+		if !ok {
+			return nil, fmt.Errorf("codex app-server: closed waiting for %s", method)
+		}
+		return line, nil
+	case <-timer.C:
+		c.mu.Lock()
+		delete(c.pending, id)
+		c.mu.Unlock()
+		return nil, fmt.Errorf("codex app-server: timeout waiting for %s after %s", method, timeout)
+	}
+}
+
+func (c *codexAppServerClient) parseRPCResult(line []byte, method string) ([]byte, error) {
 	parsed, ok, err := parseCodexAppServerLine(line)
 	if err != nil {
 		return nil, err
 	}
 	if ok && parsed.IsError {
-		return line, fmt.Errorf("codex app-server %s: %s", req.Method, parsed.ErrorMsg)
+		return line, fmt.Errorf("codex app-server %s: %s", method, parsed.ErrorMsg)
 	}
 	return line, nil
 }
@@ -277,7 +346,7 @@ func (c *codexAppServerClient) write(req codexAppServerRequest) error {
 }
 
 func (c *codexAppServerClient) initialize() error {
-	_, err := c.request(codexAppServerInitialize(0, codexAppServerClientInfo{
+	_, err := c.requestHandshake(codexAppServerInitialize(0, codexAppServerClientInfo{
 		Name:    "claudia",
 		Title:   "claudia",
 		Version: Version,
@@ -293,7 +362,7 @@ func (c *codexAppServerClient) openThread(workDir, model, sessionID string, requ
 	// ids are not thr_-prefixed (2026-08-17: 01a00f11-… ULIDs).
 	tryResume := sessionID != ""
 	if tryResume {
-		line, err := c.request(codexAppServerThreadResume(0, codexAppServerThreadIDParams{
+		line, err := c.requestHandshake(codexAppServerThreadResume(0, codexAppServerThreadIDParams{
 			ThreadID:       sessionID,
 			CWD:            workDir,
 			Model:          model,
@@ -310,7 +379,7 @@ func (c *codexAppServerClient) openThread(workDir, model, sessionID string, requ
 	}
 
 	ephemeral := false
-	line, err := c.request(codexAppServerThreadStart(0, codexAppServerThreadStartParams{
+	line, err := c.requestHandshake(codexAppServerThreadStart(0, codexAppServerThreadStartParams{
 		CWD:            workDir,
 		Model:          model,
 		ApprovalPolicy: "never",
@@ -324,7 +393,36 @@ func (c *codexAppServerClient) openThread(workDir, model, sessionID string, requ
 	if c.ThreadID() == "" {
 		return fmt.Errorf("codex app-server: thread/start returned no thread id")
 	}
+	c.persistStartRollout()
 	return nil
+}
+
+// persistStartRollout asks live Codex to write its own session_meta.
+// Forged jsonl is found by thread/resume and then rejected ("rollout
+// is empty"). thread/name/set is the persist that does not start a turn.
+func (c *codexAppServerClient) persistStartRollout() {
+	if c == nil {
+		return
+	}
+	home := strings.TrimSpace(c.exclusiveHome)
+	tid := c.ThreadID()
+	if home == "" || tid == "" {
+		return
+	}
+	if findCodexRollout(home, tid) != "" {
+		return
+	}
+	if _, err := c.requestHandshake(codexAppServerThreadNameSet(0, tid, tid)); err != nil {
+		slog.Warn("persist Codex start rollout", "home", home, "thread", tid, "err", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if findCodexRollout(home, tid) != "" {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	slog.Warn("persist Codex start rollout: no file after thread/name/set", "home", home, "thread", tid)
 }
 
 func (c *codexAppServerClient) applyThreadResult(line []byte, fallbackID string) {
@@ -384,6 +482,9 @@ func (c *codexAppServerClient) Interrupt() error {
 	c.mu.Lock()
 	threadID := c.threadID
 	turnID := c.turnID
+	if turnID == "" {
+		turnID = c.lastTurnID
+	}
 	c.mu.Unlock()
 	if threadID == "" || turnID == "" {
 		return fmt.Errorf("codex app-server: no in-flight turn to interrupt")
@@ -401,11 +502,32 @@ func (c *codexAppServerClient) Close() {
 	c.closed = true
 	stdin := c.stdin
 	c.mu.Unlock()
+	if c.cmd != nil && c.cmd.Process != nil {
+		// SIGTERM first so Codex can flush sqlite/jsonl. Closing stdin
+		// then SIGKILL was the bounce hole: thread/resume → no rollout
+		// (jevons 🎯T545.1.2).
+		_ = c.cmd.Process.Signal(syscall.SIGTERM)
+	}
 	if stdin != nil {
 		_ = stdin.Close()
 	}
-	if c.cmd != nil && c.cmd.Process != nil {
-		_ = c.cmd.Process.Kill()
-		_ = c.cmd.Wait()
+	gracefulProcessExit(c.cmd, 3*time.Second)
+}
+
+func gracefulProcessExit(cmd *exec.Cmd, grace time.Duration) {
+	if cmd == nil || cmd.Process == nil {
+		return
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	if grace <= 0 {
+		grace = time.Second
+	}
+	select {
+	case <-done:
+		return
+	case <-time.After(grace):
+		_ = cmd.Process.Kill()
+		<-done
 	}
 }

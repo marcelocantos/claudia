@@ -338,7 +338,7 @@ public packages are listed; `internal/` variables are not surface.
 | `CLAUDIA_OLLAMA_ENDPOINT` | Ollama `/api/generate` base URL for `ProviderOllama` when not default. Empty uses `DefaultOllamaEndpoint` (`http://127.0.0.1:11434`). | Fluid |
 | `CLAUDIA_OLLAMA_MODEL` | Ollama model for `ProviderOllama` when `TaskConfig.Model` is empty. Required if Model is also empty. | Fluid |
 | `CODEX_BIN` | Absolute path or PATH-resolvable name of the `codex` executable. Honoured by Codex Task and Session spawn. Falls back to `exec.LookPath("codex")` then to known install locations including `/Applications/ChatGPT.app/Contents/Resources/codex`. | Fluid |
-| `CODEX_HOME` | When `Config.MCPServers` or `Config.MCPExclusive` is set for Codex Session, claudia points Codex at a process-private temp home so only configured MCP servers attach. | Fluid |
+| `CODEX_HOME` | When `Config.MCPServers` or `Config.MCPExclusive` is set for Codex Session, claudia points Codex at a process-private home so only configured MCP servers attach. The home persists under `$XDG_STATE_HOME/claudia/codex-homes/<sessionID>` so Stop/bounce can `thread/resume`. | Fluid |
 | `CURSOR_API_KEY` | Cursor Agent CLI API key; alternative to `agent login` for Session/Task auth. | Fluid |
 | `CURSOR_BIN` | Absolute path or PATH-resolvable name of the Cursor Agent CLI (`cursor-agent` / `agent`). Honoured by Cursor Task and Session spawn. | Fluid |
 | `GROK_BIN` | Absolute path or PATH-resolvable name of the Grok Build CLI (`grok`). Honoured by Grok Task and Session spawn. Falls back to `exec.LookPath("grok")` then to known install locations including `~/.grok/bin/grok`. Not related to package `claudia/grok` (Realtime voice). | Fluid |

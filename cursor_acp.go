@@ -6,6 +6,7 @@ package claudia
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -14,6 +15,17 @@ import (
 	"sync"
 	"sync/atomic"
 )
+
+// ErrCursorResumeDenied is returned when session/load failed for a
+// conversation that already has store.db (or RequireResume). Callers
+// must not retry Launch — a second client stacks a writer on the same
+// store (🎯T541.1).
+var ErrCursorResumeDenied = errors.New("existing conversation; refusing to mint a replacement session")
+
+// IsCursorResumeDenied reports whether err is (or wraps) ErrCursorResumeDenied.
+func IsCursorResumeDenied(err error) bool {
+	return errors.Is(err, ErrCursorResumeDenied)
+}
 
 // cursorACPClient is a minimal ACP client over JSON-RPC 2.0 stdio to
 // `agent acp`. See https://cursor.com/docs/cli/acp and
@@ -140,8 +152,7 @@ func (c *cursorACPClient) readLoop() {
 	if c.stdout == nil {
 		return
 	}
-	sc := bufio.NewScanner(c.stdout)
-	sc.Buffer(make([]byte, 1024*1024), 1024*1024)
+	sc := newACPLineScanner(c.stdout)
 	for sc.Scan() {
 		line := sc.Bytes()
 		if len(line) == 0 {
@@ -149,6 +160,7 @@ func (c *cursorACPClient) readLoop() {
 		}
 		c.dispatchMessage(line)
 	}
+	logACPScanErr("cursor", sc.Err())
 }
 
 func (c *cursorACPClient) dispatchMessage(line []byte) {
@@ -193,13 +205,12 @@ func (c *cursorACPClient) dispatchMessage(line []byte) {
 func (c *cursorACPClient) handleServerRequest(msg acpRPCMessage) {
 	switch msg.Method {
 	case "session/request_permission":
-		optionID := selectPermissionOptionID(msg.Params)
-		_ = c.reply(msg.ID, map[string]any{
-			"outcome": map[string]any{
-				"outcome":  "selected",
-				"optionId": optionID,
-			},
-		})
+		reply := permissionSelectedReply(msg.Params)
+		if permissionMutatesBullseye(msg.Params) {
+			slog.Warn("cursor acp refused ledger mutation",
+				"reason", LedgerRefuseReason)
+		}
+		_ = c.reply(msg.ID, reply)
 	case "cursor/ask_question":
 		// Unattended: skip rather than stall the turn.
 		_ = c.reply(msg.ID, map[string]any{
@@ -321,10 +332,13 @@ func (c *cursorACPClient) openSession(workDir, preferSessionID string, requireRe
 		if err == nil {
 			return nil
 		}
-		if requireResume {
-			return fmt.Errorf("acp session/load %s: %w — existing conversation; refusing to mint a replacement session", preferSessionID, err)
+		// A store.db means this id already hosted a conversation.
+		// session/new after a failed load stacks a second writer and
+		// often dies with "client closed" (🎯T541.1).
+		if requireResume || cursorACPStoreExists(preferSessionID) {
+			return fmt.Errorf("acp session/load %s: %w (%w)", preferSessionID, err, ErrCursorResumeDenied)
 		}
-		slog.Debug("cursor acp session/load failed for unmaterialized id; creating new session", "err", err, "session", preferSessionID)
+		slog.Warn("cursor acp session/load failed for unmaterialized id; creating new session", "err", err, "session", preferSessionID)
 	}
 	return c.createSession(workDir, mcpServers)
 }
@@ -503,10 +517,9 @@ func (c *cursorACPClient) promptInFlight() bool {
 
 func (c *cursorACPClient) Close() {
 	c.mu.Lock()
-	if c.closed {
-		c.mu.Unlock()
-		return
-	}
+	// readLoop sets closed when stdout EOFs. That is not a kill — a
+	// cursor-agent that drops the ACP pipe can still hold store.db
+	// (🎯T541.1 launch storm). Always signal if we own the process.
 	c.closed = true
 	owns := c.ownsProcess
 	cmd := c.cmd
@@ -672,6 +685,14 @@ func startCursorAgent(req agentStartRequest) (*agentStart, error) {
 	}
 
 	plan := planCursorSession(req)
+	// Stdio cannot be adopted after the coordinator dies. Reap leftover
+	// writers (persisted PID + anyone holding store.db) before minting
+	// so Launch cannot stack a second client (🎯T541.1).
+	if req.Config.ConnectPID > 0 && req.Config.ConnectURL == "" {
+		ReapCursorACPLeftovers(plan.PreferSessionID, req.Config.ConnectPID)
+	} else if plan.PreferSessionID != "" {
+		ReapCursorACPLeftovers(plan.PreferSessionID, 0)
+	}
 	var agentRef atomic.Pointer[Agent]
 	onEvent := func(ev Event) {
 		if a := agentRef.Load(); a != nil {
@@ -688,10 +709,17 @@ func startCursorAgent(req agentStartRequest) (*agentStart, error) {
 
 	client, err := startCursorACP(bin, plan.WorkDir, plan.Model, plan.PreferSessionID, plan.RequireResume, plan.MCPServers, nil, onEvent, onClose)
 	if err != nil {
+		if plan.PreferSessionID != "" {
+			ReapCursorACPLeftovers(plan.PreferSessionID, 0)
+		}
 		return nil, err
 	}
 
 	sid := client.SessionID()
+	pid := 0
+	if client.cmd != nil && client.cmd.Process != nil {
+		pid = client.cmd.Process.Pid
+	}
 	ops := agentOps{
 		attachCommand: func(*Agent) string { return "" },
 		interrupt: func(*Agent) error {
@@ -708,10 +736,11 @@ func startCursorAgent(req agentStartRequest) (*agentStart, error) {
 		},
 	}
 	return &agentStart{
-		WindowID:  "cursor-acp-" + sid,
-		Ops:       ops,
-		TailJSONL: false,
-		SessionID: sid,
+		WindowID:   "cursor-acp-" + sid,
+		Ops:        ops,
+		TailJSONL:  false,
+		SessionID:  sid,
+		ConnectPID: pid,
 		DetectReady: func(a *Agent) {
 			agentRef.Store(a)
 			select {

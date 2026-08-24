@@ -197,8 +197,7 @@ func (c *grokACPClient) readLoop() {
 	if c.stdout == nil {
 		return
 	}
-	sc := bufio.NewScanner(c.stdout)
-	sc.Buffer(make([]byte, 1024*1024), 1024*1024)
+	sc := newACPLineScanner(c.stdout)
 	for sc.Scan() {
 		line := sc.Bytes()
 		if len(line) == 0 {
@@ -206,6 +205,7 @@ func (c *grokACPClient) readLoop() {
 		}
 		c.dispatchMessage(line)
 	}
+	logACPScanErr("grok", sc.Err())
 }
 
 func (c *grokACPClient) readLoopWS() {
@@ -290,13 +290,12 @@ func (c *grokACPClient) handleServerRequest(msg acpRPCMessage) {
 		// appears in the request: Grok offers tool-specific IDs for shell
 		// (e.g. allow_always_bash) and rejects unknown ones with
 		// "unknown permission option for tool run_terminal_command".
-		optionID := selectPermissionOptionID(msg.Params)
-		_ = c.reply(msg.ID, map[string]any{
-			"outcome": map[string]any{
-				"outcome":  "selected",
-				"optionId": optionID,
-			},
-		})
+		reply := permissionSelectedReply(msg.Params)
+		if permissionMutatesBullseye(msg.Params) {
+			slog.Warn("grok acp refused ledger mutation",
+				"reason", LedgerRefuseReason)
+		}
+		_ = c.reply(msg.ID, reply)
 	case "fs/read_text_file", "fs/write_text_file",
 		"terminal/create", "terminal/output", "terminal/release",
 		"terminal/wait_for_exit", "terminal/kill":
@@ -314,6 +313,9 @@ func (c *grokACPClient) handleServerRequest(msg acpRPCMessage) {
 // allow_once, then any other allow_*. Empty or unparseable params fall
 // back to allow_always (legacy Grok shape).
 func selectPermissionOptionID(params json.RawMessage) string {
+	if permissionMutatesBullseye(params) {
+		return selectRejectPermissionOptionID(params)
+	}
 	ids := permissionOptionIDs(params)
 	if len(ids) == 0 {
 		return "allow_always"

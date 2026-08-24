@@ -6,6 +6,7 @@ package claudia
 import (
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -39,33 +40,214 @@ func prepareExclusiveGrokHome() (home string, cleanup func(), err error) {
 	return dest, cleanup, nil
 }
 
+// exclusiveCodexHomeDir is the durable isolate home for a Codex thread.
+// Bounce resume (jevons 🎯T545.1.2) looks here — a temp dir deleted on
+// Stop cannot hold the rollout that thread/resume needs.
+func exclusiveCodexHomeDir(sessionID string) string {
+	sid := exclusiveCodexHomeKey(sessionID)
+	if sid == "" {
+		return ""
+	}
+	return filepath.Join(claudiaStateHome(), "codex-homes", sid)
+}
+
+func exclusiveCodexHomeKey(sessionID string) string {
+	sid := strings.TrimSpace(sessionID)
+	if sid == "" || sid == "." || sid == ".." || strings.ContainsAny(sid, `/\`) {
+		return ""
+	}
+	return sid
+}
+
+func claudiaStateHome() string {
+	stateHome := os.Getenv("XDG_STATE_HOME")
+	if stateHome == "" {
+		stateHome = filepath.Join(os.Getenv("HOME"), ".local", "state")
+	}
+	return filepath.Join(stateHome, "claudia")
+}
+
+func dirExists(path string) bool {
+	if path == "" {
+		return false
+	}
+	st, err := os.Stat(path)
+	return err == nil && st.IsDir()
+}
+
+// exclusiveCodexHomeForStart reuses the durable isolate home when the
+// session already has one. A first mint with a known session id creates
+// that durable dir immediately — jevons SIGHUP skips StopAll, so a
+// temp home deleted (or never persisted) on coordinator death cannot
+// hold the rollout. RequireResume + a missing home is fail-loud and
+// names the path.
+func exclusiveCodexHomeForStart(sessionID string, requireResume bool, servers []MCPServer) (home string, cleanup func(), err error) {
+	dest := exclusiveCodexHomeDir(sessionID)
+	if dest != "" {
+		if dirExists(dest) {
+			if err := writeExclusiveCodexHome(dest, servers); err != nil {
+				return "", nil, err
+			}
+			return dest, func() {}, nil
+		}
+		if requireResume {
+			return "", nil, fmt.Errorf("thread/resume: exclusive CODEX_HOME missing at %s — refusing to mint", dest)
+		}
+		if err := writeExclusiveCodexHome(dest, servers); err != nil {
+			return "", nil, err
+		}
+		return dest, func() {}, nil
+	}
+	return prepareExclusiveCodexHome(servers)
+}
+
+// publishExclusiveCodexHome makes dest(sessionID) resolve to src without
+// moving src (the running app-server still has CODEX_HOME=src). Durable
+// src becomes a symlink; a temp src is copied. Call this as soon as
+// thread/start returns — do not wait for Stop.
+func publishExclusiveCodexHome(src, sessionID string) error {
+	dest := exclusiveCodexHomeDir(sessionID)
+	if src == "" || dest == "" {
+		return fmt.Errorf("publish exclusive CODEX_HOME: empty src or session")
+	}
+	if filepath.Clean(src) == filepath.Clean(dest) {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		return err
+	}
+	if dirExists(dest) {
+		return nil
+	}
+	if isDurableCodexHome(src) {
+		if err := os.Symlink(src, dest); err == nil {
+			return nil
+		}
+	}
+	return copyDir(src, dest)
+}
+
+func isDurableCodexHome(path string) bool {
+	root := filepath.Join(claudiaStateHome(), "codex-homes")
+	rel, err := filepath.Rel(root, filepath.Clean(path))
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, "..")
+}
+
+func exclusiveCodexHomeCleanup(home, sessionID string, ephemeral func()) func() {
+	return func() {
+		if sessionID != "" {
+			if err := publishExclusiveCodexHome(home, sessionID); err != nil {
+				dest := exclusiveCodexHomeDir(sessionID)
+				slog.Error("persist exclusive CODEX_HOME", "src", home, "dest", dest, "err", err)
+			}
+		}
+		if isDurableCodexHome(home) {
+			return
+		}
+		if ephemeral != nil {
+			ephemeral()
+		}
+	}
+}
+
+func persistExclusiveCodexHome(src, sessionID string) error {
+	dest := exclusiveCodexHomeDir(sessionID)
+	if src == "" || dest == "" {
+		return fmt.Errorf("persist exclusive CODEX_HOME: empty src or session")
+	}
+	if filepath.Clean(src) == filepath.Clean(dest) {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		return err
+	}
+	if dirExists(dest) {
+		if src != dest {
+			_ = os.RemoveAll(src)
+		}
+		return nil
+	}
+	if err := os.Rename(src, dest); err == nil {
+		return nil
+	}
+	if err := copyDir(src, dest); err != nil {
+		return err
+	}
+	return os.RemoveAll(src)
+}
+
+func copyDir(src, dest string) error {
+	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		out := filepath.Join(dest, rel)
+		if info.IsDir() {
+			return os.MkdirAll(out, 0o700)
+		}
+		return copyFileMode(path, out, info.Mode())
+	})
+}
+
+func copyFileMode(src, dst string, mode os.FileMode) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode.Perm())
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	_, err = io.Copy(out, in)
+	return err
+}
+
 // prepareExclusiveCodexHome builds a process-private CODEX_HOME under the
 // system temp dir and writes only the named HTTP MCP servers into its
 // config.toml. Never mutates ~/.codex/config.toml or the project tree.
-// Auth is copied read-only from the user home when present.
+// Auth is copied read-only from the user home when present. Callers that
+// have a session id persist this dir via exclusiveCodexHomeCleanup.
 func prepareExclusiveCodexHome(servers []MCPServer) (home string, cleanup func(), err error) {
-	userHome, err := os.UserHomeDir()
-	if err != nil {
-		return "", nil, err
-	}
 	dest, err := os.MkdirTemp("", "claudia-mcp-codex-")
 	if err != nil {
 		return "", nil, err
 	}
 	cleanup = func() { _ = os.RemoveAll(dest) }
-	_ = copyFileIfExists(filepath.Join(userHome, ".codex", "auth.json"), filepath.Join(dest, "auth.json"))
-	cfg := filepath.Join(dest, "config.toml")
-	if err := os.WriteFile(cfg, []byte("# claudia session MCP\n"), 0o644); err != nil {
+	if err := writeExclusiveCodexHome(dest, servers); err != nil {
 		cleanup()
 		return "", nil, err
 	}
+	return dest, cleanup, nil
+}
+
+func writeExclusiveCodexHome(dest string, servers []MCPServer) error {
+	userHome, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dest, 0o700); err != nil {
+		return err
+	}
+	_ = copyFileIfExists(filepath.Join(userHome, ".codex", "auth.json"), filepath.Join(dest, "auth.json"))
+	cfg := filepath.Join(dest, "config.toml")
+	if err := os.WriteFile(cfg, []byte("# claudia session MCP\n"), 0o644); err != nil {
+		return err
+	}
 	for _, s := range httpMCPServers(servers) {
 		if _, err := upsertTOMLHTTPServer(cfg, s); err != nil {
-			cleanup()
-			return "", nil, fmt.Errorf("exclusive codex mcp %s: %w", s.Name, err)
+			return fmt.Errorf("exclusive codex mcp %s: %w", s.Name, err)
 		}
 	}
-	return dest, cleanup, nil
+	return nil
 }
 
 func httpMCPServers(servers []MCPServer) []MCPServer {

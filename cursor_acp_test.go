@@ -10,10 +10,31 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestCursorACPCloseKillsAfterReadLoopClosed(t *testing.T) {
+	cmd := exec.Command("sleep", "60")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	pid := cmd.Process.Pid
+	c := &cursorACPClient{cmd: cmd, ownsProcess: true, closed: true}
+	c.Close()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "pid=").Output()
+		if err != nil || strings.TrimSpace(string(out)) == "" {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("Close left pid %d alive after readLoop already marked closed", pid)
+}
 
 func writeFakeCursorACP(t *testing.T) string {
 	t.Helper()
@@ -58,6 +79,9 @@ func TestHermeticCursorSessionStartSendWait(t *testing.T) {
 	}
 	if !agent.Alive() {
 		t.Fatal("agent not alive")
+	}
+	if agent.PID() <= 0 {
+		t.Fatal("cursor ACP start must record the child PID (🎯T541.1)")
 	}
 
 	ctx := t.Context()
@@ -126,6 +150,27 @@ func TestHermeticCursorSessionLoad(t *testing.T) {
 	}
 }
 
+func TestHermeticCursorLoadSurvivesMultiMegabyteJSONLine(t *testing.T) {
+	bin := writeFakeCursorACP(t)
+	t.Setenv("CURSOR_BIN", bin)
+	t.Setenv("FAKE_ACP_HUGE_LOAD", "1")
+
+	agent, err := Start(Config{
+		Provider:      ProviderCursor,
+		WorkDir:       t.TempDir(),
+		SessionID:     "sess-huge-replay",
+		RequireResume: true,
+		TermLogPath:   "-",
+	})
+	if err != nil {
+		t.Fatalf("session/load with a >1MiB JSON-RPC line: %v", err)
+	}
+	defer agent.Stop()
+	if agent.SessionID() != "sess-huge-replay" {
+		t.Fatalf("session=%q", agent.SessionID())
+	}
+}
+
 func TestHermeticCursorLoadFailsClosedWhenRequireResume(t *testing.T) {
 	bin := writeFakeCursorACP(t)
 	t.Setenv("CURSOR_BIN", bin)
@@ -144,6 +189,42 @@ func TestHermeticCursorLoadFailsClosedWhenRequireResume(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "refusing to mint a replacement session") {
 		t.Fatalf("error %q lacks the fail-closed explanation", err)
+	}
+	if !IsCursorResumeDenied(err) {
+		t.Fatalf("error %v is not ErrCursorResumeDenied", err)
+	}
+}
+
+func TestHermeticCursorLoadFailsClosedWhenStoreExists(t *testing.T) {
+	bin := writeFakeCursorACP(t)
+	t.Setenv("CURSOR_BIN", bin)
+	t.Setenv("FAKE_ACP_REJECT_LOAD", "1")
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	sid := "sess-has-store"
+	dir := filepath.Join(home, ".cursor", "acp-sessions", sid)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "store.db"), []byte("sqlite"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	agent, err := Start(Config{
+		Provider:    ProviderCursor,
+		WorkDir:     t.TempDir(),
+		SessionID:   sid,
+		TermLogPath: "-",
+	})
+	if err == nil {
+		agent.Stop()
+		t.Fatal("Start must not session/new when store.db already exists")
+	}
+	if !strings.Contains(err.Error(), "refusing to mint a replacement session") {
+		t.Fatalf("error %q", err)
+	}
+	if !IsCursorResumeDenied(err) {
+		t.Fatalf("error %v is not ErrCursorResumeDenied", err)
 	}
 }
 

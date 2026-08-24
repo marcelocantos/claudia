@@ -36,6 +36,12 @@ type AgentDef struct {
 	// replacement id. Never flip this on bare Start alone — use
 	// [Registry.MarkMaterialized] after evidence appears, or rely on
 	// Launch promoting from [SessionExists] when JSONL is already present.
+	//
+	// Codex and Cursor also RequireResume on a persisted SessionID that
+	// was not minted in this process (bounce / reload), even when
+	// Materialized is still false — those providers' first mint leaves
+	// Materialized unset, and treating that as "never-materialized" is
+	// how a SIGHUP reminted a live Codex thread (jevons 🎯T545.1).
 	Materialized bool `json:"materialized,omitempty"`
 
 	// Provider selects the runtime (claude, codex, grok, cursor). Empty means
@@ -127,15 +133,25 @@ type Registry struct {
 	mu     sync.Mutex
 	agents map[string]*AgentDef
 	procs  map[string]*Agent
+	// resumeDenied latches a Cursor session/load fail-closed so Launch
+	// and the HTTP list path cannot stack another writer (🎯T541.1).
+	// In-memory only — a process restart retries once.
+	resumeDenied map[string]error
+	// freshSession is name → SessionID assigned by Register/EnsureAgent
+	// in this process. A persisted Codex/Cursor id loaded from disk is
+	// not listed here, so bounce Launch RequireResume-es it (🎯T545.1).
+	freshSession map[string]string
 }
 
 // NewRegistry loads or creates an agent registry at the given path.
 // If the file does not exist, an empty registry is created.
 func NewRegistry(path string) (*Registry, error) {
 	r := &Registry{
-		path:   path,
-		agents: make(map[string]*AgentDef),
-		procs:  make(map[string]*Agent),
+		path:         path,
+		agents:       make(map[string]*AgentDef),
+		procs:        make(map[string]*Agent),
+		resumeDenied: make(map[string]error),
+		freshSession: make(map[string]string),
 	}
 
 	data, err := os.ReadFile(path)
@@ -174,6 +190,14 @@ func (r *Registry) Register(def AgentDef) error {
 	if def.SessionID == "" {
 		return fmt.Errorf("agent %q: session_id required", def.Name)
 	}
+	old, existed := r.agents[def.Name]
+	if existed && old.SessionID != def.SessionID {
+		delete(r.resumeDenied, def.Name)
+		r.freshSession[def.Name] = def.SessionID
+	}
+	if !existed {
+		r.freshSession[def.Name] = def.SessionID
+	}
 	r.agents[def.Name] = &def
 	return r.save()
 }
@@ -190,6 +214,8 @@ func (r *Registry) Remove(name string) error {
 		reapSessionWindows(def)
 	}
 	delete(r.agents, name)
+	delete(r.resumeDenied, name)
+	delete(r.freshSession, name)
 	return r.save()
 }
 
@@ -209,7 +235,9 @@ var registryAdopt = Adopt
 //
 // Provider is taken from AgentDef.Provider (empty = Claude). When the
 // launched agent reports a different SessionID (e.g. Grok ACP session/new),
-// the definition is updated and persisted.
+// the definition is updated and persisted only when this Launch was
+// allowed to mint. A remint under RequireResume is refused and the
+// prior session_id stays on disk (jevons 🎯T545.1).
 //
 // Materialized is never set solely because Start succeeded. When Claude
 // session JSONL already exists for the def's SessionID, Launch promotes
@@ -227,12 +255,16 @@ func (r *Registry) Launch(name string) (*Agent, error) {
 	if !ok {
 		return nil, fmt.Errorf("agent %q not registered", name)
 	}
+	if err := r.resumeDenied[name]; err != nil {
+		return nil, err
+	}
 
+	wantResume := r.requireResumeLocked(def)
 	proc, err := registryStart(Config{
 		Provider:      def.Provider,
 		WorkDir:       def.WorkDir,
 		SessionID:     def.SessionID,
-		RequireResume: def.Materialized,
+		RequireResume: wantResume,
 		Model:         def.Model,
 		DisallowTools: def.DisallowTools,
 		MCPServers:    def.MCPServers,
@@ -244,11 +276,23 @@ func (r *Registry) Launch(name string) (*Agent, error) {
 		Goal:          def.Goal,
 	})
 	if err != nil {
+		if IsCursorResumeDenied(err) {
+			if r.resumeDenied == nil {
+				r.resumeDenied = make(map[string]error)
+			}
+			r.resumeDenied[name] = err
+		}
 		return nil, err
 	}
+	delete(r.resumeDenied, name)
 
 	changed := false
 	if sid := proc.SessionID(); sid != "" && sid != def.SessionID {
+		if wantResume {
+			prior := def.SessionID
+			proc.Stop()
+			return nil, fmt.Errorf("refusing remint of %s: session %s → %s — existing conversation required", name, prior, sid)
+		}
 		def.SessionID = sid
 		changed = true
 	}
@@ -300,7 +344,7 @@ func (r *Registry) Adopt(name string) (*Agent, error) {
 		Provider:      def.Provider,
 		WorkDir:       def.WorkDir,
 		SessionID:     def.SessionID,
-		RequireResume: def.Materialized,
+		RequireResume: r.requireResumeLocked(def),
 		Model:         def.Model,
 		DisallowTools: def.DisallowTools,
 		MCPServers:    def.MCPServers,
@@ -317,9 +361,16 @@ func (r *Registry) Adopt(name string) (*Agent, error) {
 	switch {
 	case isClaudeProvider(def.Provider):
 		proc, err = registryAdopt(cfg)
-	case def.ConnectURL != "" || def.ConnectPID > 0:
+	case def.Provider == ProviderGrok && (def.ConnectURL != "" || def.ConnectPID > 0):
 		// Grok connect-mode: Start dials the existing serve.
 		proc, err = registryStart(cfg)
+	case def.Provider == ProviderCursor:
+		// Cursor ACP is stdio-owned. A leftover PID cannot be adopted —
+		// reap writers on that store so Launch mints exactly one client
+		// (🎯T541.1). Treating ConnectPID as Grok-style adopt would Start
+		// a second cursor-agent on the same store.db.
+		reapCursorACPDef(def)
+		err = fmt.Errorf("%w: %s", ErrNoSessionWindow, def.SessionID)
 	default:
 		err = fmt.Errorf("%w: %s", ErrNoSessionWindow, def.SessionID)
 	}
@@ -403,6 +454,28 @@ func isClaudeProvider(p Provider) bool {
 	return p == "" || p == ProviderClaude
 }
 
+// requireResumeLocked reports whether Launch/Adopt must fail closed
+// rather than mint a replacement session. Caller holds r.mu.
+func (r *Registry) requireResumeLocked(def *AgentDef) bool {
+	if def == nil {
+		return false
+	}
+	if def.Materialized {
+		return true
+	}
+	if def.SessionID == "" {
+		return false
+	}
+	switch def.Provider {
+	case ProviderCodex, ProviderCursor:
+		// First mint this process (EnsureAgent / Register) may fall
+		// through. A row reloaded from disk is a bounce resume.
+		return r.freshSession[def.Name] != def.SessionID
+	default:
+		return false
+	}
+}
+
 // claudeSessionEvidence reports whether Claude durable transcript evidence
 // exists for sessionID under workDir. Non-Claude providers always return
 // false here (they materialize via [Registry.MarkMaterialized] attestation).
@@ -428,8 +501,10 @@ func (r *Registry) Stop(name string) {
 	} else if def, ok := r.agents[name]; ok {
 		// After a consumer restart procs is empty. The window is still
 		// findable by session id; killing it is what makes Stop a real
-		// cleanup rather than a silent no-op (🎯T34).
+		// cleanup rather than a silent no-op (🎯T34). Cursor ACP leftovers
+		// hold store.db, not a tmux window (🎯T541.1).
 		reapSessionWindows(def)
+		reapCursorACPDef(def)
 		slog.Info("agent stopped", "name", name, "via", "session-window")
 	}
 	if def, ok := r.agents[name]; ok {
@@ -441,6 +516,17 @@ func (r *Registry) Stop(name string) {
 			}
 		}
 	}
+}
+
+// ResumeDenied returns the latched Cursor fail-closed error for name,
+// or nil if Launch may still be attempted.
+func (r *Registry) ResumeDenied(name string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.resumeDenied == nil {
+		return nil
+	}
+	return r.resumeDenied[name]
 }
 
 // Get returns the running agent for a name, or nil.

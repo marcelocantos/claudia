@@ -186,7 +186,8 @@ cfg.MCPServers = inv.Servers
 keeps each CLI's user-scope MCP map (additive) where the backend
 still loads it. True is hermetic via process-private materialisation:
 Claude `--strict-mcp-config`, Grok temp `GROK_HOME` (auth copied,
-compat MCP discovery off), Codex temp `CODEX_HOME` containing only
+compat MCP discovery off), Codex `CODEX_HOME` persisted under
+`$XDG_STATE_HOME/claudia/codex-homes/<sessionID>` containing only
 `Config.MCPServers`. Cursor has no strict flag and Claudia does
 **not** rewrite project `.cursor/mcp.json` or `HOME` (Keychain);
 exclusive Session MCP is ACP `mcpServers` only, so user-scope

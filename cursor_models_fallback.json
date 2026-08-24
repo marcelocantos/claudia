@@ -1,0 +1,1024 @@
+{
+ "models": [
+  {
+   "id": "auto",
+   "label": "Auto",
+   "default": true
+  },
+  {
+   "id": "gpt-5.3-codex-low",
+   "label": "Codex 5.3 Low",
+   "default": false
+  },
+  {
+   "id": "gpt-5.3-codex-low-fast",
+   "label": "Codex 5.3 Low Fast",
+   "default": false
+  },
+  {
+   "id": "gpt-5.3-codex",
+   "label": "Codex 5.3",
+   "default": false
+  },
+  {
+   "id": "gpt-5.3-codex-fast",
+   "label": "Codex 5.3 Fast",
+   "default": false
+  },
+  {
+   "id": "gpt-5.3-codex-high",
+   "label": "Codex 5.3 High",
+   "default": false
+  },
+  {
+   "id": "gpt-5.3-codex-high-fast",
+   "label": "Codex 5.3 High Fast",
+   "default": false
+  },
+  {
+   "id": "gpt-5.3-codex-xhigh",
+   "label": "Codex 5.3 Extra High",
+   "default": false
+  },
+  {
+   "id": "gpt-5.3-codex-xhigh-fast",
+   "label": "Codex 5.3 Extra High Fast",
+   "default": false
+  },
+  {
+   "id": "gpt-5.2",
+   "label": "GPT-5.2",
+   "default": false
+  },
+  {
+   "id": "cursor-grok-4.6-high-fast",
+   "label": "Cursor Grok 4.6 Fast",
+   "default": false
+  },
+  {
+   "id": "composer-2.5",
+   "label": "Composer 2.5",
+   "default": false
+  },
+  {
+   "id": "claude-opus-5-thinking-high",
+   "label": "Claude Opus 5 1M Thinking",
+   "default": false
+  },
+  {
+   "id": "claude-opus-5-thinking-high-fast",
+   "label": "Claude Opus 5 1M Thinking Fast",
+   "default": false
+  },
+  {
+   "id": "gpt-5.6-sol-high",
+   "label": "GPT-5.6 Sol 1M High",
+   "default": false
+  },
+  {
+   "id": "gpt-5.6-sol-high-fast",
+   "label": "GPT-5.6 Sol High Fast",
+   "default": false
+  },
+  {
+   "id": "gpt-5.6-sol-xhigh",
+   "label": "GPT-5.6 Sol 1M Extra High",
+   "default": false
+  },
+  {
+   "id": "gpt-5.6-sol-xhigh-fast",
+   "label": "GPT-5.6 Sol Extra High Fast",
+   "default": false
+  },
+  {
+   "id": "claude-fable-5-thinking-high",
+   "label": "Claude Fable 5 1M Thinking (NO ZDR)",
+   "default": false
+  },
+  {
+   "id": "claude-fable-5-thinking-xhigh",
+   "label": "Claude Fable 5 1M Extra High Thinking (NO ZDR)",
+   "default": false
+  },
+  {
+   "id": "cursor-grok-4.5-high",
+   "label": "Cursor Grok 4.5",
+   "default": false
+  },
+  {
+   "id": "cursor-grok-4.5-high-fast",
+   "label": "Cursor Grok 4.5 Fast",
+   "default": false
+  },
+  {
+   "id": "gemini-3.7-flash-high",
+   "label": "Gemini 3.7 Flash",
+   "default": false
+  },
+  {
+   "id": "claude-sonnet-5-thinking-high",
+   "label": "Claude Sonnet 5 1M Thinking",
+   "default": false
+  },
+  {
+   "id": "claude-sonnet-5-thinking-xhigh",
+   "label": "Claude Sonnet 5 1M Extra High Thinking",
+   "default": false
+  },
+  {
+   "id": "gpt-5.6-luna-high",
+   "label": "GPT-5.6 Luna 1M High",
+   "default": false
+  },
+  {
+   "id": "cursor-grok-4.6-low",
+   "label": "Cursor Grok 4.6 Low",
+   "default": false
+  },
+  {
+   "id": "cursor-grok-4.6-low-fast",
+   "label": "Cursor Grok 4.6 Low Fast",
+   "default": false
+  },
+  {
+   "id": "cursor-grok-4.6-medium",
+   "label": "Cursor Grok 4.6 Medium",
+   "default": false
+  },
+  {
+   "id": "cursor-grok-4.6-medium-fast",
+   "label": "Cursor Grok 4.6 Medium Fast",
+   "default": false
+  },
+  {
+   "id": "cursor-grok-4.6-high",
+   "label": "Cursor Grok 4.6",
+   "default": false
+  },
+  {
+   "id": "cursor-grok-4.6-xhigh",
+   "label": "Cursor Grok 4.6 Extra High",
+   "default": false
+  },
+  {
+   "id": "cursor-grok-4.6-xhigh-fast",
+   "label": "Cursor Grok 4.6 Extra High Fast",
+   "default": false
+  },
+  {
+   "id": "composer-2.5-fast",
+   "label": "Composer 2.5 Fast",
+   "default": false
+  },
+  {
+   "id": "claude-opus-5-low",
+   "label": "Claude Opus 5 1M Low",
+   "default": false
+  },
+  {
+   "id": "claude-opus-5-low-fast",
+   "label": "Claude Opus 5 1M Low Fast",
+   "default": false
+  },
+  {
+   "id": "claude-opus-5-medium",
+   "label": "Claude Opus 5 1M Medium",
+   "default": false
+  },
+  {
+   "id": "claude-opus-5-medium-fast",
+   "label": "Claude Opus 5 1M Medium Fast",
+   "default": false
+  },
+  {
+   "id": "claude-opus-5-high",
+   "label": "Claude Opus 5 1M",
+   "default": false
+  },
+  {
+   "id": "claude-opus-5-high-fast",
+   "label": "Claude Opus 5 1M Fast",
+   "default": false
+  },
+  {
+   "id": "claude-opus-5-thinking-low",
+   "label": "Claude Opus 5 1M Low Thinking",
+   "default": false
+  },
+  {
+   "id": "claude-opus-5-thinking-low-fast",
+   "label": "Claude Opus 5 1M Low Thinking Fast",
+   "default": false
+  },
+  {
+   "id": "claude-opus-5-thinking-medium",
+   "label": "Claude Opus 5 1M Medium Thinking",
+   "default": false
+  },
+  {
+   "id": "claude-opus-5-thinking-medium-fast",
+   "label": "Claude Opus 5 1M Medium Thinking Fast",
+   "default": false
+  },
+  {
+   "id": "claude-opus-5-thinking-xhigh",
+   "label": "Claude Opus 5 1M Extra High Thinking",
+   "default": false
+  },
+  {
+   "id": "claude-opus-5-thinking-xhigh-fast",
+   "label": "Claude Opus 5 1M Extra High Thinking Fast",
+   "default": false
+  },
+  {
+   "id": "claude-opus-5-thinking-max",
+   "label": "Claude Opus 5 1M Max Thinking",
+   "default": false
+  },
+  {
+   "id": "claude-opus-5-thinking-max-fast",
+   "label": "Claude Opus 5 1M Max Thinking Fast",
+   "default": false
+  },
+  {
+   "id": "claude-opus-4-8-low",
+   "label": "Claude Opus 4.8 1M Low",
+   "default": false
+  },
+  {
+   "id": "claude-opus-4-8-low-fast",
+   "label": "Claude Opus 4.8 1M Low Fast",
+   "default": false
+  },
+  {
+   "id": "claude-opus-4-8-medium",
+   "label": "Claude Opus 4.8 1M Medium",
+   "default": false
+  },
+  {
+   "id": "claude-opus-4-8-medium-fast",
+   "label": "Claude Opus 4.8 1M Medium Fast",
+   "default": false
+  },
+  {
+   "id": "claude-opus-4-8-high",
+   "label": "Claude Opus 4.8 1M",
+   "default": false
+  },
+  {
+   "id": "claude-opus-4-8-high-fast",
+   "label": "Claude Opus 4.8 1M Fast",
+   "default": false
+  },
+  {
+   "id": "claude-opus-4-8-xhigh",
+   "label": "Claude Opus 4.8 1M Extra High",
+   "default": false
+  },
+  {
+   "id": "claude-opus-4-8-xhigh-fast",
+   "label": "Claude Opus 4.8 1M Extra High Fast",
+   "default": false
+  },
+  {
+   "id": "claude-opus-4-8-max",
+   "label": "Claude Opus 4.8 1M Max",
+   "default": false
+  },
+  {
+   "id": "claude-opus-4-8-max-fast",
+   "label": "Claude Opus 4.8 1M Max Fast",
+   "default": false
+  },
+  {
+   "id": "claude-opus-4-8-thinking-low",
+   "label": "Claude Opus 4.8 1M Low Thinking",
+   "default": false
+  },
+  {
+   "id": "claude-opus-4-8-thinking-low-fast",
+   "label": "Claude Opus 4.8 1M Low Thinking Fast",
+   "default": false
+  },
+  {
+   "id": "claude-opus-4-8-thinking-medium",
+   "label": "Claude Opus 4.8 1M Medium Thinking",
+   "default": false
+  },
+  {
+   "id": "claude-opus-4-8-thinking-medium-fast",
+   "label": "Claude Opus 4.8 1M Medium Thinking Fast",
+   "default": false
+  },
+  {
+   "id": "claude-opus-4-8-thinking-high",
+   "label": "Claude Opus 4.8 1M Thinking",
+   "default": false
+  },
+  {
+   "id": "claude-opus-4-8-thinking-high-fast",
+   "label": "Claude Opus 4.8 1M Thinking Fast",
+   "default": false
+  },
+  {
+   "id": "claude-opus-4-8-thinking-xhigh",
+   "label": "Claude Opus 4.8 1M Extra High Thinking",
+   "default": false
+  },
+  {
+   "id": "claude-opus-4-8-thinking-xhigh-fast",
+   "label": "Claude Opus 4.8 1M Extra High Thinking Fast",
+   "default": false
+  },
+  {
+   "id": "claude-opus-4-8-thinking-max",
+   "label": "Claude Opus 4.8 1M Max Thinking",
+   "default": false
+  },
+  {
+   "id": "claude-opus-4-8-thinking-max-fast",
+   "label": "Claude Opus 4.8 1M Max Thinking Fast",
+   "default": false
+  },
+  {
+   "id": "gpt-5.6-sol-none",
+   "label": "GPT-5.6 Sol 1M None",
+   "default": false
+  },
+  {
+   "id": "gpt-5.6-sol-none-fast",
+   "label": "GPT-5.6 Sol None Fast",
+   "default": false
+  },
+  {
+   "id": "gpt-5.6-sol-low",
+   "label": "GPT-5.6 Sol 1M Low",
+   "default": false
+  },
+  {
+   "id": "gpt-5.6-sol-low-fast",
+   "label": "GPT-5.6 Sol Low Fast",
+   "default": false
+  },
+  {
+   "id": "gpt-5.6-sol-medium",
+   "label": "GPT-5.6 Sol 1M",
+   "default": false
+  },
+  {
+   "id": "gpt-5.6-sol-medium-fast",
+   "label": "GPT-5.6 Sol Fast",
+   "default": false
+  },
+  {
+   "id": "gpt-5.6-sol-max",
+   "label": "GPT-5.6 Sol 1M Max",
+   "default": false
+  },
+  {
+   "id": "gpt-5.6-sol-max-fast",
+   "label": "GPT-5.6 Sol Max Fast",
+   "default": false
+  },
+  {
+   "id": "gpt-5.5-none",
+   "label": "GPT-5.5 1M None",
+   "default": false
+  },
+  {
+   "id": "gpt-5.5-none-fast",
+   "label": "GPT-5.5 None Fast",
+   "default": false
+  },
+  {
+   "id": "gpt-5.5-low",
+   "label": "GPT-5.5 1M Low",
+   "default": false
+  },
+  {
+   "id": "gpt-5.5-low-fast",
+   "label": "GPT-5.5 Low Fast",
+   "default": false
+  },
+  {
+   "id": "gpt-5.5-medium",
+   "label": "GPT-5.5 1M",
+   "default": false
+  },
+  {
+   "id": "gpt-5.5-medium-fast",
+   "label": "GPT-5.5 Fast",
+   "default": false
+  },
+  {
+   "id": "gpt-5.5-high",
+   "label": "GPT-5.5 1M High",
+   "default": false
+  },
+  {
+   "id": "gpt-5.5-high-fast",
+   "label": "GPT-5.5 High Fast",
+   "default": false
+  },
+  {
+   "id": "gpt-5.5-extra-high",
+   "label": "GPT-5.5 1M Extra High",
+   "default": false
+  },
+  {
+   "id": "gpt-5.5-extra-high-fast",
+   "label": "GPT-5.5 Extra High Fast",
+   "default": false
+  },
+  {
+   "id": "claude-fable-5-low",
+   "label": "Claude Fable 5 1M Low (NO ZDR)",
+   "default": false
+  },
+  {
+   "id": "claude-fable-5-medium",
+   "label": "Claude Fable 5 1M Medium (NO ZDR)",
+   "default": false
+  },
+  {
+   "id": "claude-fable-5-high",
+   "label": "Claude Fable 5 1M (NO ZDR)",
+   "default": false
+  },
+  {
+   "id": "claude-fable-5-xhigh",
+   "label": "Claude Fable 5 1M Extra High (NO ZDR)",
+   "default": false
+  },
+  {
+   "id": "claude-fable-5-max",
+   "label": "Claude Fable 5 1M Max (NO ZDR)",
+   "default": false
+  },
+  {
+   "id": "claude-fable-5-thinking-low",
+   "label": "Claude Fable 5 1M Low Thinking (NO ZDR)",
+   "default": false
+  },
+  {
+   "id": "claude-fable-5-thinking-medium",
+   "label": "Claude Fable 5 1M Medium Thinking (NO ZDR)",
+   "default": false
+  },
+  {
+   "id": "claude-fable-5-thinking-max",
+   "label": "Claude Fable 5 1M Max Thinking (NO ZDR)",
+   "default": false
+  },
+  {
+   "id": "cursor-grok-4.5-low",
+   "label": "Cursor Grok 4.5 Low",
+   "default": false
+  },
+  {
+   "id": "cursor-grok-4.5-low-fast",
+   "label": "Cursor Grok 4.5 Low Fast",
+   "default": false
+  },
+  {
+   "id": "cursor-grok-4.5-medium",
+   "label": "Cursor Grok 4.5 Medium",
+   "default": false
+  },
+  {
+   "id": "cursor-grok-4.5-medium-fast",
+   "label": "Cursor Grok 4.5 Medium Fast",
+   "default": false
+  },
+  {
+   "id": "gemini-3.7-flash-low",
+   "label": "Gemini 3.7 Flash Low",
+   "default": false
+  },
+  {
+   "id": "gemini-3.7-flash-medium",
+   "label": "Gemini 3.7 Flash Medium",
+   "default": false
+  },
+  {
+   "id": "gpt-5.6-terra-none",
+   "label": "GPT-5.6 Terra 1M None",
+   "default": false
+  },
+  {
+   "id": "gpt-5.6-terra-none-fast",
+   "label": "GPT-5.6 Terra None Fast",
+   "default": false
+  },
+  {
+   "id": "gpt-5.6-terra-low",
+   "label": "GPT-5.6 Terra 1M Low",
+   "default": false
+  },
+  {
+   "id": "gpt-5.6-terra-low-fast",
+   "label": "GPT-5.6 Terra Low Fast",
+   "default": false
+  },
+  {
+   "id": "gpt-5.6-terra-medium",
+   "label": "GPT-5.6 Terra 1M",
+   "default": false
+  },
+  {
+   "id": "gpt-5.6-terra-medium-fast",
+   "label": "GPT-5.6 Terra Fast",
+   "default": false
+  },
+  {
+   "id": "gpt-5.6-terra-high",
+   "label": "GPT-5.6 Terra 1M High",
+   "default": false
+  },
+  {
+   "id": "gpt-5.6-terra-high-fast",
+   "label": "GPT-5.6 Terra High Fast",
+   "default": false
+  },
+  {
+   "id": "gpt-5.6-terra-xhigh",
+   "label": "GPT-5.6 Terra 1M Extra High",
+   "default": false
+  },
+  {
+   "id": "gpt-5.6-terra-xhigh-fast",
+   "label": "GPT-5.6 Terra Extra High Fast",
+   "default": false
+  },
+  {
+   "id": "gpt-5.6-terra-max",
+   "label": "GPT-5.6 Terra 1M Max",
+   "default": false
+  },
+  {
+   "id": "gpt-5.6-terra-max-fast",
+   "label": "GPT-5.6 Terra Max Fast",
+   "default": false
+  },
+  {
+   "id": "claude-sonnet-5-low",
+   "label": "Claude Sonnet 5 1M Low",
+   "default": false
+  },
+  {
+   "id": "claude-sonnet-5-medium",
+   "label": "Claude Sonnet 5 1M Medium",
+   "default": false
+  },
+  {
+   "id": "claude-sonnet-5-high",
+   "label": "Claude Sonnet 5 1M",
+   "default": false
+  },
+  {
+   "id": "claude-sonnet-5-xhigh",
+   "label": "Claude Sonnet 5 1M Extra High",
+   "default": false
+  },
+  {
+   "id": "claude-sonnet-5-max",
+   "label": "Claude Sonnet 5 1M Max",
+   "default": false
+  },
+  {
+   "id": "claude-sonnet-5-thinking-low",
+   "label": "Claude Sonnet 5 1M Low Thinking",
+   "default": false
+  },
+  {
+   "id": "claude-sonnet-5-thinking-medium",
+   "label": "Claude Sonnet 5 1M Medium Thinking",
+   "default": false
+  },
+  {
+   "id": "claude-sonnet-5-thinking-max",
+   "label": "Claude Sonnet 5 1M Max Thinking",
+   "default": false
+  },
+  {
+   "id": "claude-4.6-sonnet-medium",
+   "label": "Claude Sonnet 4.6 1M",
+   "default": false
+  },
+  {
+   "id": "claude-4.6-sonnet-medium-thinking",
+   "label": "Claude Sonnet 4.6 1M Thinking",
+   "default": false
+  },
+  {
+   "id": "claude-opus-4-7-low",
+   "label": "Claude Opus 4.7 1M Low",
+   "default": false
+  },
+  {
+   "id": "claude-opus-4-7-low-fast",
+   "label": "Claude Opus 4.7 1M Low Fast",
+   "default": false
+  },
+  {
+   "id": "claude-opus-4-7-medium",
+   "label": "Claude Opus 4.7 1M Medium",
+   "default": false
+  },
+  {
+   "id": "claude-opus-4-7-medium-fast",
+   "label": "Claude Opus 4.7 1M Medium Fast",
+   "default": false
+  },
+  {
+   "id": "claude-opus-4-7-high",
+   "label": "Claude Opus 4.7 1M High",
+   "default": false
+  },
+  {
+   "id": "claude-opus-4-7-high-fast",
+   "label": "Claude Opus 4.7 1M High Fast",
+   "default": false
+  },
+  {
+   "id": "claude-opus-4-7-xhigh",
+   "label": "Claude Opus 4.7 1M",
+   "default": false
+  },
+  {
+   "id": "claude-opus-4-7-xhigh-fast",
+   "label": "Claude Opus 4.7 1M Fast",
+   "default": false
+  },
+  {
+   "id": "claude-opus-4-7-max",
+   "label": "Claude Opus 4.7 1M Max",
+   "default": false
+  },
+  {
+   "id": "claude-opus-4-7-max-fast",
+   "label": "Claude Opus 4.7 1M Max Fast",
+   "default": false
+  },
+  {
+   "id": "claude-opus-4-7-thinking-low",
+   "label": "Claude Opus 4.7 1M Low Thinking",
+   "default": false
+  },
+  {
+   "id": "claude-opus-4-7-thinking-low-fast",
+   "label": "Claude Opus 4.7 1M Low Thinking Fast",
+   "default": false
+  },
+  {
+   "id": "claude-opus-4-7-thinking-medium",
+   "label": "Claude Opus 4.7 1M Medium Thinking",
+   "default": false
+  },
+  {
+   "id": "claude-opus-4-7-thinking-medium-fast",
+   "label": "Claude Opus 4.7 1M Medium Thinking Fast",
+   "default": false
+  },
+  {
+   "id": "claude-opus-4-7-thinking-high",
+   "label": "Claude Opus 4.7 1M High Thinking",
+   "default": false
+  },
+  {
+   "id": "claude-opus-4-7-thinking-high-fast",
+   "label": "Claude Opus 4.7 1M High Thinking Fast",
+   "default": false
+  },
+  {
+   "id": "claude-opus-4-7-thinking-xhigh",
+   "label": "Claude Opus 4.7 1M Thinking",
+   "default": false
+  },
+  {
+   "id": "claude-opus-4-7-thinking-xhigh-fast",
+   "label": "Claude Opus 4.7 1M Thinking Fast",
+   "default": false
+  },
+  {
+   "id": "claude-opus-4-7-thinking-max",
+   "label": "Claude Opus 4.7 1M Max Thinking",
+   "default": false
+  },
+  {
+   "id": "claude-opus-4-7-thinking-max-fast",
+   "label": "Claude Opus 4.7 1M Max Thinking Fast",
+   "default": false
+  },
+  {
+   "id": "gpt-5.4-low",
+   "label": "GPT-5.4 1M Low",
+   "default": false
+  },
+  {
+   "id": "gpt-5.4-medium",
+   "label": "GPT-5.4 1M",
+   "default": false
+  },
+  {
+   "id": "gpt-5.4-medium-fast",
+   "label": "GPT-5.4 Fast",
+   "default": false
+  },
+  {
+   "id": "gpt-5.4-high",
+   "label": "GPT-5.4 1M High",
+   "default": false
+  },
+  {
+   "id": "gpt-5.4-high-fast",
+   "label": "GPT-5.4 High Fast",
+   "default": false
+  },
+  {
+   "id": "gpt-5.4-xhigh",
+   "label": "GPT-5.4 1M Extra High",
+   "default": false
+  },
+  {
+   "id": "gpt-5.4-xhigh-fast",
+   "label": "GPT-5.4 Extra High Fast",
+   "default": false
+  },
+  {
+   "id": "claude-4.6-opus-high",
+   "label": "Claude Opus 4.6 1M",
+   "default": false
+  },
+  {
+   "id": "claude-4.6-opus-max",
+   "label": "Claude Opus 4.6 1M Max",
+   "default": false
+  },
+  {
+   "id": "claude-4.6-opus-high-thinking",
+   "label": "Claude Opus 4.6 1M Thinking",
+   "default": false
+  },
+  {
+   "id": "claude-4.6-opus-max-thinking",
+   "label": "Claude Opus 4.6 1M Max Thinking",
+   "default": false
+  },
+  {
+   "id": "claude-4.5-opus-high",
+   "label": "Claude Opus 4.5",
+   "default": false
+  },
+  {
+   "id": "claude-4.5-opus-high-thinking",
+   "label": "Claude Opus 4.5 Thinking",
+   "default": false
+  },
+  {
+   "id": "gpt-5.2-low",
+   "label": "GPT-5.2 Low",
+   "default": false
+  },
+  {
+   "id": "gpt-5.2-low-fast",
+   "label": "GPT-5.2 Low Fast",
+   "default": false
+  },
+  {
+   "id": "gpt-5.2-fast",
+   "label": "GPT-5.2 Fast",
+   "default": false
+  },
+  {
+   "id": "gpt-5.2-high",
+   "label": "GPT-5.2 High",
+   "default": false
+  },
+  {
+   "id": "gpt-5.2-high-fast",
+   "label": "GPT-5.2 High Fast",
+   "default": false
+  },
+  {
+   "id": "gpt-5.2-xhigh",
+   "label": "GPT-5.2 Extra High",
+   "default": false
+  },
+  {
+   "id": "gpt-5.2-xhigh-fast",
+   "label": "GPT-5.2 Extra High Fast",
+   "default": false
+  },
+  {
+   "id": "gpt-5.6-luna-none",
+   "label": "GPT-5.6 Luna 1M None",
+   "default": false
+  },
+  {
+   "id": "gpt-5.6-luna-none-fast",
+   "label": "GPT-5.6 Luna None Fast",
+   "default": false
+  },
+  {
+   "id": "gpt-5.6-luna-low",
+   "label": "GPT-5.6 Luna 1M Low",
+   "default": false
+  },
+  {
+   "id": "gpt-5.6-luna-low-fast",
+   "label": "GPT-5.6 Luna Low Fast",
+   "default": false
+  },
+  {
+   "id": "gpt-5.6-luna-medium",
+   "label": "GPT-5.6 Luna 1M",
+   "default": false
+  },
+  {
+   "id": "gpt-5.6-luna-medium-fast",
+   "label": "GPT-5.6 Luna Fast",
+   "default": false
+  },
+  {
+   "id": "gpt-5.6-luna-high-fast",
+   "label": "GPT-5.6 Luna High Fast",
+   "default": false
+  },
+  {
+   "id": "gpt-5.6-luna-xhigh",
+   "label": "GPT-5.6 Luna 1M Extra High",
+   "default": false
+  },
+  {
+   "id": "gpt-5.6-luna-xhigh-fast",
+   "label": "GPT-5.6 Luna Extra High Fast",
+   "default": false
+  },
+  {
+   "id": "gpt-5.6-luna-max",
+   "label": "GPT-5.6 Luna 1M Max",
+   "default": false
+  },
+  {
+   "id": "gpt-5.6-luna-max-fast",
+   "label": "GPT-5.6 Luna Max Fast",
+   "default": false
+  },
+  {
+   "id": "gemini-3.6-flash-minimal",
+   "label": "Gemini 3.6 Flash Minimal",
+   "default": false
+  },
+  {
+   "id": "gemini-3.6-flash-low",
+   "label": "Gemini 3.6 Flash Low",
+   "default": false
+  },
+  {
+   "id": "gemini-3.6-flash-medium",
+   "label": "Gemini 3.6 Flash Medium",
+   "default": false
+  },
+  {
+   "id": "gemini-3.6-flash-high",
+   "label": "Gemini 3.6 Flash",
+   "default": false
+  },
+  {
+   "id": "gemini-3.1-pro",
+   "label": "Gemini 3.1 Pro",
+   "default": false
+  },
+  {
+   "id": "gpt-5.4-mini-none",
+   "label": "GPT-5.4 Mini None",
+   "default": false
+  },
+  {
+   "id": "gpt-5.4-mini-low",
+   "label": "GPT-5.4 Mini Low",
+   "default": false
+  },
+  {
+   "id": "gpt-5.4-mini-medium",
+   "label": "GPT-5.4 Mini",
+   "default": false
+  },
+  {
+   "id": "gpt-5.4-mini-high",
+   "label": "GPT-5.4 Mini High",
+   "default": false
+  },
+  {
+   "id": "gpt-5.4-mini-xhigh",
+   "label": "GPT-5.4 Mini Extra High",
+   "default": false
+  },
+  {
+   "id": "gpt-5.4-nano-none",
+   "label": "GPT-5.4 Nano None",
+   "default": false
+  },
+  {
+   "id": "gpt-5.4-nano-low",
+   "label": "GPT-5.4 Nano Low",
+   "default": false
+  },
+  {
+   "id": "gpt-5.4-nano-medium",
+   "label": "GPT-5.4 Nano",
+   "default": false
+  },
+  {
+   "id": "gpt-5.4-nano-high",
+   "label": "GPT-5.4 Nano High",
+   "default": false
+  },
+  {
+   "id": "gpt-5.4-nano-xhigh",
+   "label": "GPT-5.4 Nano Extra High",
+   "default": false
+  },
+  {
+   "id": "claude-4.5-sonnet",
+   "label": "Claude Sonnet 4.5",
+   "default": false
+  },
+  {
+   "id": "claude-4.5-sonnet-thinking",
+   "label": "Claude Sonnet 4.5 Thinking",
+   "default": false
+  },
+  {
+   "id": "gpt-5.1-low",
+   "label": "GPT-5.1 Low",
+   "default": false
+  },
+  {
+   "id": "gpt-5.1",
+   "label": "GPT-5.1",
+   "default": false
+  },
+  {
+   "id": "gpt-5.1-high",
+   "label": "GPT-5.1 High",
+   "default": false
+  },
+  {
+   "id": "gemini-3-flash",
+   "label": "Gemini 3 Flash",
+   "default": false
+  },
+  {
+   "id": "gemini-3.5-flash",
+   "label": "Gemini 3.5 Flash",
+   "default": false
+  },
+  {
+   "id": "claude-4-sonnet",
+   "label": "Claude Sonnet 4",
+   "default": false
+  },
+  {
+   "id": "claude-4-sonnet-thinking",
+   "label": "Claude Sonnet 4 Thinking",
+   "default": false
+  },
+  {
+   "id": "gpt-5-mini",
+   "label": "GPT-5 Mini",
+   "default": false
+  },
+  {
+   "id": "kimi-k3-low",
+   "label": "Kimi K3 Low",
+   "default": false
+  },
+  {
+   "id": "kimi-k3-high",
+   "label": "Kimi K3 High",
+   "default": false
+  },
+  {
+   "id": "kimi-k3-max",
+   "label": "Kimi K3",
+   "default": false
+  },
+  {
+   "id": "kimi-k2.7-code",
+   "label": "Kimi K2.7 Code",
+   "default": false
+  },
+  {
+   "id": "glm-5.2-high",
+   "label": "GLM 5.2",
+   "default": false
+  },
+  {
+   "id": "glm-5.2-max",
+   "label": "GLM 5.2 Max",
+   "default": false
+  }
+ ]
+}

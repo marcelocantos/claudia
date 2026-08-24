@@ -86,11 +86,15 @@ def main() -> None:
             else:
                 sid = params.get("sessionId") or session_id
                 session_id = sid
+                result = {"sessionId": sid}
+                if os.environ.get("FAKE_ACP_HUGE_LOAD"):
+                    # Larger than the old 1 MiB Scan cap (jevons 🎯T545).
+                    result["replay"] = "x" * (2 * 1024 * 1024 + 64)
                 send(
                     {
                         "jsonrpc": "2.0",
                         "id": mid,
-                        "result": {"sessionId": sid},
+                        "result": result,
                     }
                 )
         elif method == "session/prompt":
