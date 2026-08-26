@@ -12,13 +12,13 @@ new module (e.g. `claudia2`) rather than breaking an existing import
 path. The pre-1.0 period exists to shake out the API design before
 that contract takes effect.
 
-Snapshot as of: v0.27.0 (tagged 2026-08-23).
+Snapshot as of: v0.28.0 (tagged 2026-08-26).
 
 
 ## Interaction surface
 
 The exhaustive list of public-facing items in the module at the snapshot
-tag, derived from `go doc -all` over a clean `v0.27.0` worktree rather
+tag, derived from `go doc -all` over a clean `v0.28.0` worktree rather
 than transcribed from the previous revision of this document. Items are
 listed alphabetically within each table so the list can be diffed against
 `go doc` mechanically. Each item is annotated with a stability assessment:
@@ -51,9 +51,13 @@ release it claims to describe.
 | `CodexAuthMode` | string type: `CodexAuthModeChatGPT`, `CodexAuthModeAPIKey`, `CodexAuthModeUnknown` | Fluid |
 | `CodexAuthPreflight` | struct with `Mode CodexAuthMode`, `AuthPath, Reason string`, `HasAccessToken, HasAPIKeyInFile, EnvOpenAIAPIKey, SubscriptionOK bool`, `Warnings []string` | Fluid |
 | `CodexAuthPreflightArgs` | struct with `AuthPath string`, `Getenv func(string) string` | Fluid |
+| `CursorModel` | struct with `ID, Label string`, `Default bool` | Fluid |
 | `Config` | struct with `Provider Provider`, `WorkDir, SessionID, Model, PermissionMode, SandboxMode, Goal, MCPConfig, TermLogPath, PoolPolicy, ConnectURL string`, `RequireResume, GrokConnect, MCPExclusive bool`, `MCPServers []MCPServer`, `ExtraArgs, DisallowTools []string`, `PoolCap, ConnectPID int`, `GoalCompleteCheck func(goal, turnText string) bool` | Needs review |
+| `CursorModelCatalog` | struct with `Models []CursorModel`, `Source CursorModelSource`, `FetchedAt time.Time`, `CachePath string`, `Stale bool` | Fluid |
+| `CursorModelSource` | string type: `CursorModelSourceCache`, `CursorModelSourceEmbedded`, `CursorModelSourceCLI` | Fluid |
 | `Event` | struct with `Type, SessionID, TurnID, MessageID, RecordID, Text, StopReason, ProgressType, Model string`, `Raw []byte`, `Usage Usage`, `IsError bool`; method `IsTerminalStop() bool` | Stable |
 | `EventFunc` | `func(Event)` | Needs review |
+| `ListCursorModelsArgs` | struct with `Refresh bool`, `MaxAge time.Duration`, `CachePath string`, `Now time.Time`, `RunModels func(ctx context.Context) ([]byte, error)` | Fluid |
 | `LoadMCPArgs` | struct with `ClaudeJSON, GrokTOML, CodexTOML, CursorJSON, WorkDir string` | Fluid |
 | `MCPAuthKind` | string type: `MCPAuthOpen`, `MCPAuthStatic`, `MCPAuthOAuth` | Fluid |
 | `MCPInventory` | struct with `Servers []MCPServer`, `Source string`, `Sources []string`; method `ForProvider(p Provider) []MCPServer` | Fluid |
@@ -83,11 +87,13 @@ release it claims to describe.
 
 | Item | Status |
 |---|---|
+| `CursorModelSourceCache, CursorModelSourceEmbedded, CursorModelSourceCLI` (CursorModelSource) | Fluid |
 | `BaseDisallowedTools` | Needs review |
 | `CapabilitySupported, CapabilityUnsupported, CapabilityExperimental` (CapabilityStatus) | Fluid |
 | `CapabilityTask, CapabilitySession, CapabilityResume, CapabilityRewind, CapabilityCost, CapabilityTmuxAttach, CapabilityTerminalLog, CapabilityPermissionMode, CapabilityToolRestrictions, CapabilityImageInput, CapabilityWebSearch, CapabilitySandboxPolicy, CapabilityExtraArgs` (Capability) | Fluid |
 | `CodexAuthModeChatGPT, CodexAuthModeAPIKey, CodexAuthModeUnknown` (CodexAuthMode) | Fluid |
 | `DefaultOllamaEndpoint` | Fluid |
+| `LedgerRefuseReason` | Fluid |
 | `EnvGrokConnect` (the name of the `CLAUDIA_GROK_CONNECT` env var) | Fluid |
 | `GoalStatusComplete, GoalStatusBlocked` | Fluid |
 | `MCPAuthOpen, MCPAuthStatic, MCPAuthOAuth` (MCPAuthKind) | Fluid |
@@ -104,6 +110,7 @@ release it claims to describe.
 
 | Item | Status |
 |---|---|
+| `ErrCursorResumeDenied` | Fluid |
 | `ErrNoSessionWindow` | Needs review |
 
 #### Functions
@@ -113,7 +120,13 @@ release it claims to describe.
 | `Acquire` | `Acquire(ctx context.Context, cfg Config) (*Agent, error)` | Needs review |
 | `Adopt` | `Adopt(cfg Config) (*Agent, error)` — rebuild a handle for a live Claude tmux window or Grok connect-mode serve; missing process is `ErrNoSessionWindow`, not a silent `Start` | Needs review |
 | `AuthorizeMCP` | `AuthorizeMCP(ctx context.Context, args *AuthorizeMCPArgs) (*MCPToken, error)` — owner-present PKCE; tokens are returned, not stored | Fluid |
+| `CursorACPSessionDir` | `CursorACPSessionDir(sessionID string) string` | Fluid |
+| `CursorACPStorePath` | `CursorACPStorePath(sessionID string) string` | Fluid |
 | `CheckCapability` | `CheckCapability(provider Provider, capability Capability) error` | Fluid |
+| `IsBullseyeYAML` | `IsBullseyeYAML(path string) bool` | Fluid |
+| `IsCursorResumeDenied` | `IsCursorResumeDenied(err error) bool` | Fluid |
+| `IsOrphanCursorACP` | `IsOrphanCursorACP(ppid int, command string) bool` | Fluid |
+| `ListCursorModels` | `ListCursorModels(ctx context.Context, args *ListCursorModelsArgs) (*CursorModelCatalog, error)` — offline-first Cursor model catalog | Fluid |
 | `LoadMCP` | `LoadMCP(args *LoadMCPArgs) (*MCPInventory, error)` — nil args reads Claude + Grok + Codex user-scope maps | Fluid |
 | `LookupChain` | `LookupChain(sessionID string) (chainID string, sessionIDs []string, err error)` | Needs review |
 | `NewMCPProxy` | `NewMCPProxy(args *MCPProxyArgs) (*MCPProxy, error)` | Fluid |
@@ -129,6 +142,8 @@ release it claims to describe.
 | `ProviderCapabilityStatus` | `ProviderCapabilityStatus(provider Provider, capability Capability) CapabilityStatus` | Fluid |
 | `QueryAllPlanUsage` | `QueryAllPlanUsage(ctx context.Context, args *AllPlanUsageArgs) ([]PlanUsage, error)` | Fluid |
 | `QueryPlanUsage` | `QueryPlanUsage(ctx context.Context, args *PlanUsageArgs) (PlanUsage, error)` | Fluid |
+| `ReapCursorACPLeftovers` | `ReapCursorACPLeftovers(sessionID string, extraPID int) []int` | Fluid |
+| `ReapOrphanCursorACP` | `ReapOrphanCursorACP() []int` | Fluid |
 | `RefreshMCPToken` | `RefreshMCPToken(ctx context.Context, args *RefreshMCPArgs) (*MCPToken, error)` — refresh expired HTTP MCP OAuth without browser | Fluid |
 | `RegisterChain` | `RegisterChain(chainID, sessionID string) error` | Needs review |
 | `RewindSession` | `RewindSession(sessionID, workDir string, n int) (*RewindResult, error)` | Needs review |
@@ -206,6 +221,7 @@ release it claims to describe.
 | `MarkMaterialized` | `(name string) error` — persists `Materialized=true` so later launches pass `RequireResume` | Needs review |
 | `Register` | `(def AgentDef) error` | Stable |
 | `Remove` | `(name string) error` | Stable |
+| `ResumeDenied` | `(name string) error` — latched Cursor fail-closed resume error | Fluid |
 | `StartAll` | `()` | Stable |
 | `StartAllPreferAdopt` | `()` — upgrade-boot counterpart of `StartAll`: reuse a leftover process when one exists | Needs review |
 | `Stop` | `(name string)` | Stable |
@@ -510,9 +526,7 @@ voice WebSocket client.
 
 ### Surface item count
 
-235 top-level items at v0.27.0 — 181 in `claudia`, 36 in `claudia/codex`,
-18 in `claudia/grok` — counting types, functions, methods, constants and
-variables, but not struct fields. With fields, 483. The comparable count
+253 top-level items at v0.28.0 — 199 in `claudia`, 36 in `claudia/codex`, 18 in `claudia/grok` — counting types, functions, methods, constants and variables, but not struct fields. With fields, 514. The comparable count
 at v0.25.0, the previous snapshot, was 228 across the same three packages:
 the added surface is `ProviderCursor` (Session ACP + Task print), host
 Goal close/complete-check, MCP exclusive + OAuth refresh/token hooks,
