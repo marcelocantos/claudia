@@ -570,7 +570,11 @@ func claudeTaskArgs(req taskRunRequest) []string {
 	if req.Model != "" {
 		args = append(args, "--model", req.Model)
 	}
-	return append(args, req.Prompt)
+	// Claude Code 2.1.x documents `--disallowedTools <tools...>` as
+	// variadic. A trailing positional prompt is consumed as another tool
+	// name, print mode then exits 1 with "Input must be provided..."
+	// (ytt 2026-08-26 / 🎯T49). Terminate the option list before the prompt.
+	return append(args, "--", req.Prompt)
 }
 
 func (claudeTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*taskRun, error) {
@@ -607,25 +611,44 @@ func (claudeTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*task
 	}
 	armTaskProcessGroupKill(ctx, cmd)
 
+	var stderrBuf strings.Builder
+	stderrDone := make(chan struct{})
 	go func() {
+		defer close(stderrDone)
 		scanner := bufio.NewScanner(stderr)
 		scanner.Buffer(make([]byte, 256*1024), 256*1024)
 		for scanner.Scan() {
-			slog.Debug("claude stderr", "line", scanner.Text())
+			line := scanner.Text()
+			slog.Debug("claude stderr", "line", line)
+			if stderrBuf.Len() < 8*1024 {
+				stderrBuf.WriteString(line)
+				stderrBuf.WriteByte('\n')
+			}
 		}
 	}()
 
 	ch := make(chan TaskEvent, 16)
 	go func() {
 		defer close(ch)
-		defer func() {
-			if err := cmd.Wait(); err != nil {
-				slog.Warn("claude process exited with error", "error", err)
-			} else {
-				slog.Debug("claude process exited cleanly")
-			}
-		}()
 		forwardTaskStream(ctx, stdout, ParseTaskLine, req.RawLog, ch)
+		waitErr := cmd.Wait()
+		<-stderrDone
+		if waitErr != nil {
+			msg := strings.TrimSpace(stderrBuf.String())
+			if msg == "" {
+				msg = waitErr.Error()
+			}
+			// 🎯T49.3: failed print-mode stderr (e.g. missing prompt after
+			// variadic --disallowedTools) must reach Task callers, not only
+			// Debug logs — ytt otherwise reports a silent empty result.
+			slog.Warn("claude process exited with error", "error", waitErr, "stderr", msg)
+			select {
+			case ch <- TaskEvent{Type: TaskEventError, IsError: true, ErrorMsg: msg}:
+			case <-ctx.Done():
+			}
+			return
+		}
+		slog.Debug("claude process exited cleanly")
 	}()
 
 	return &taskRun{

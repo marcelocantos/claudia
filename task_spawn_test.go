@@ -137,6 +137,50 @@ func TestHermeticTaskRunClaudeErrorEvent(t *testing.T) {
 	}
 }
 
+// TestHermeticClaudeTaskFailedSpawnSurfacesStderr (🎯T49.3): when print-mode
+// Claude exits non-zero with no stdout result, the stderr text must appear
+// on TaskEventError so callers (ytt) do not see a silent empty result.
+func TestHermeticClaudeTaskFailedSpawnSurfacesStderr(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("hermetic fake CLI spawn tests use a POSIX shell script")
+	}
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "fake-claude-fail")
+	script := "#!/bin/sh\n" +
+		"echo 'Error: Input must be provided either through stdin or as a prompt argument when using --print' >&2\n" +
+		"exit 1\n"
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CLAUDE_BIN", bin)
+
+	task := NewTask(TaskConfig{
+		ID:            "hermetic-claude-stderr",
+		Provider:      ProviderClaude,
+		WorkDir:       t.TempDir(),
+		DisallowTools: []string{"Bash"},
+	})
+	ctx := t.Context()
+	events, err := task.Run(ctx, "respond with: ok")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	got := drainTaskEvents(t, events)
+	var sawErr bool
+	for _, ev := range got {
+		if ev.Type == TaskEventError && ev.IsError &&
+			strings.Contains(ev.ErrorMsg, "Input must be provided") {
+			sawErr = true
+		}
+	}
+	if !sawErr {
+		t.Fatalf("want TaskEventError carrying Claude stderr, got %#v", got)
+	}
+	if !strings.Contains(task.LastResult(), "Input must be provided") {
+		t.Errorf("LastResult = %q", task.LastResult())
+	}
+}
+
 func TestHermeticTaskRunCodexSpawn(t *testing.T) {
 	bin := writeFakeCLI(t, "testdata/codex/exec/success.jsonl", 0)
 	t.Setenv("CODEX_BIN", bin)

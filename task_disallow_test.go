@@ -11,29 +11,6 @@ import (
 	"testing"
 )
 
-// argvFor rebuilds the argv the claude backend passes, so these tests
-// assert on what is actually handed to the process rather than on what
-// the caller intended. Intent is precisely what failed here: a consumer
-// moved from Session mode to Task mode, kept passing DisallowTools in
-// spirit, and silently lost every restriction because Task mode ignored
-// the concept entirely.
-func argvFor(req taskRunRequest) []string {
-	args := []string{
-		"-p", "--verbose",
-		"--output-format", "stream-json",
-		"--include-partial-messages",
-		"--dangerously-skip-permissions",
-		"--disallowedTools", disallowedToolList(req.DisallowTools),
-	}
-	if req.SessionID != "" {
-		args = append(args, "--resume", req.SessionID)
-	}
-	if req.Model != "" {
-		args = append(args, "--model", req.Model)
-	}
-	return append(args, req.Prompt)
-}
-
 func disallowedIn(t *testing.T, argv []string) string {
 	t.Helper()
 	i := slices.Index(argv, "--disallowedTools")
@@ -52,7 +29,7 @@ func disallowedIn(t *testing.T, argv []string) string {
 // containing "go deep with fanout" obeyed it and produced roughly 33,000
 // subagents and 4.3 billion tokens in two hours.
 func TestTaskAlwaysDisallowsAgentSpawning(t *testing.T) {
-	got := disallowedIn(t, argvFor(taskRunRequest{Prompt: "summarise this"}))
+	got := disallowedIn(t, claudeTaskArgs(taskRunRequest{Prompt: "summarise this"}))
 	for _, tool := range strings.Split(BaseDisallowedTools, ",") {
 		if !slices.Contains(strings.Split(got, ","), tool) {
 			t.Errorf("%q missing from --disallowedTools %q", tool, got)
@@ -65,7 +42,7 @@ func TestTaskAlwaysDisallowsAgentSpawning(t *testing.T) {
 // way to express that in Task mode at all.
 func TestTaskHonoursCallerDisallowTools(t *testing.T) {
 	extra := []string{"Bash", "Edit", "Write", "WebFetch", "WebSearch"}
-	got := disallowedIn(t, argvFor(taskRunRequest{
+	got := disallowedIn(t, claudeTaskArgs(taskRunRequest{
 		Prompt: "summarise this", DisallowTools: extra,
 	}))
 	list := strings.Split(got, ",")
@@ -81,19 +58,46 @@ func TestTaskHonoursCallerDisallowTools(t *testing.T) {
 	}
 }
 
-// TestTaskDisallowFlagPrecedesPrompt guards an ordering mistake that
-// would silently disarm the flag: the prompt is positional and anything
-// after it is consumed as prompt text, not as an option.
-func TestTaskDisallowFlagPrecedesPrompt(t *testing.T) {
-	argv := argvFor(taskRunRequest{Prompt: "the prompt"})
+// TestClaudeTaskPromptIsolatedFromVariadicDisallowedTools (🎯T49.1 / T49.2)
+// pins the live Claude Code 2.1.x grammar: `--disallowedTools <tools...>`
+// is variadic, so a trailing positional prompt is eaten as another tool
+// name and print mode exits with "Input must be provided...". Production
+// claudeTaskArgs must terminate the option list before the prompt.
+//
+// Calls production claudeTaskArgs — a hand-copied argv builder stayed
+// green while the live CLI disagreed (ytt 2026-08-26).
+func TestClaudeTaskPromptIsolatedFromVariadicDisallowedTools(t *testing.T) {
+	const prompt = "the prompt"
+	argv := claudeTaskArgs(taskRunRequest{
+		Prompt:        prompt,
+		DisallowTools: []string{"Bash", "Write"},
+	})
+
 	flagAt := slices.Index(argv, "--disallowedTools")
-	promptAt := slices.Index(argv, "the prompt")
+	promptAt := slices.Index(argv, prompt)
 	if flagAt < 0 || promptAt < 0 {
 		t.Fatalf("unexpected argv: %v", argv)
 	}
 	if flagAt > promptAt {
-		t.Errorf("--disallowedTools at %d comes after the prompt at %d, so it would be "+
-			"swallowed as prompt text: %v", flagAt, promptAt, argv)
+		t.Errorf("--disallowedTools at %d comes after the prompt at %d: %v",
+			flagAt, promptAt, argv)
+	}
+
+	// The tool list is one argv token today (comma-joined). Anything
+	// after that token until `--` would be parsed as another disallowed
+	// tool by Claude 2.1.x — the prompt must not sit there.
+	toolsAt := flagAt + 1
+	if toolsAt >= promptAt {
+		t.Fatalf("tool list / prompt positions: %v", argv)
+	}
+	termAt := slices.Index(argv[toolsAt+1:promptAt+1], "--")
+	if termAt < 0 {
+		t.Fatalf("prompt %q sits in the --disallowedTools rest-arg "+
+			"region (no `--` terminator between tools and prompt): %v",
+			prompt, argv)
+	}
+	if argv[promptAt-1] != "--" {
+		t.Errorf("prompt is not immediately after `--`: %v", argv)
 	}
 }
 

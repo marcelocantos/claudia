@@ -952,6 +952,57 @@ func TestTaskRunSmoke(t *testing.T) {
 	}
 }
 
+// TestClaudeTaskDisallowToolsLiveSmoke (🎯T49.3) is the live oracle for the
+// ytt empty-result incident: Claude Code 2.1.x treats --disallowedTools as
+// variadic, so a trailing positional prompt was eaten and print mode exited
+// 1 with no result. BaseDisallowedTools is always on; extras mirror a
+// synopsis-style locked-down task.
+func TestClaudeTaskDisallowToolsLiveSmoke(t *testing.T) {
+	if os.Getenv("CLAUDIA_LIVE") == "" {
+		t.Skip("CLAUDIA_LIVE not set (this test spends API credit); residue for 🎯T49.3")
+	}
+	if _, err := exec.LookPath("claude"); err != nil {
+		t.Skip("claude binary not on PATH; residue for 🎯T49.3")
+	}
+
+	task := NewTask(TaskConfig{
+		ID:            "smoke-disallow",
+		Name:          "smoke-disallow",
+		WorkDir:       t.TempDir(),
+		Model:         "haiku",
+		DisallowTools: []string{"Bash", "Edit", "Write", "WebFetch", "WebSearch"},
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	events, err := task.Run(ctx, "respond with only the word: ok")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	var (
+		sawResult bool
+		resultTxt string
+	)
+	for ev := range events {
+		switch ev.Type {
+		case TaskEventResult:
+			sawResult = true
+			resultTxt = ev.Content
+		case TaskEventError:
+			t.Fatalf("TaskEventError: %s", ev.ErrorMsg)
+		}
+	}
+	if !sawResult {
+		t.Fatal("never saw TaskEventResult")
+	}
+	if strings.TrimSpace(resultTxt) == "" {
+		t.Fatal("TaskEventResult content empty")
+	}
+	t.Logf("result: %q", resultTxt)
+}
+
 // TestGrokTaskRunSmoke spawns a real grok headless process and runs a
 // trivial prompt through Task mode. Gated on CLAUDIA_GROK_LIVE because it
 // uses local Grok credentials and may contact xAI.
