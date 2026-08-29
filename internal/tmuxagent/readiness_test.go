@@ -4,6 +4,7 @@
 package tmuxagent
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -414,5 +415,31 @@ func TestWaitReadyWarningsOnlyTimeoutNamesFrameVerbatim(t *testing.T) {
 	}
 	if !strings.Contains(msg, settingsWarningsFrame) {
 		t.Fatalf("timeout must carry the last frame verbatim, got: %v", err)
+	}
+}
+
+// A transcript that talks about "/rc connecting" is not a status bar
+// that says it. The overseer's own diagnosis of a wedge wedged its pane
+// for twenty consecutive deliveries (jevons 🎯T565, 2026-08-29).
+func TestMatchConnectingReadsOnlyTheStatusTail(t *testing.T) {
+	mention, err := os.ReadFile("testdata/frame_rc_mentioned_in_transcript.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if MatchConnecting(mention) {
+		t.Fatalf("transcript prose mentioning /rc connecting read as connecting")
+	}
+	if !MatchReady(mention) {
+		t.Fatalf("idle composer under an /rc status bar must be ready")
+	}
+	status, err := os.ReadFile("testdata/frame_rc_connecting_status.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !MatchConnecting(status) {
+		t.Fatalf("status bar showing /rc connecting… must still read as connecting")
+	}
+	if MatchReady(status) {
+		t.Fatalf("connecting frame must not be ready")
 	}
 }

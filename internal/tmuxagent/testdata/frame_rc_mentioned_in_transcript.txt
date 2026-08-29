@@ -1,0 +1,24 @@
+  ⎿  Shell cwd was reset to /Users/marcelo/.jevons/jevons
+
+⏺ Bash(cd /Users/marcelo/work/github.com/marcelocantos/claudia && grep -n
+      'readyPattern\s*=' -A6 internal/tmuxagent/readiness.go | head -20)
+  ⎿  59:var readyPattern = regexp.MustCompile(`─{10,}\n❯([^\n]*` + composer
+     Continuation + `)\n─{10,}(?:\n[^\n]*){0,5}\s*\z`)
+     60-
+     … +9 lines (ctrl+o to expand)
+  ⎿  Shell cwd was reset to /Users/marcelo/.jevons/jevons
+
+⏺ The delivery failures trace back to claudia's readiness check rejecting panes
+  stuck showing "/rc connecting," which network flapping this afternoon
+  triggered repeatedly even though the panes were actually idle. I'm recording
+  this finding on T565. · summarized
+
+  Called bullseye (ctrl+o to expand)
+
+────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← 3 agents               /rc
+
+
+

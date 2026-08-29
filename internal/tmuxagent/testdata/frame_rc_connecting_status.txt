@@ -1,0 +1,24 @@
+  documented and ratchets down. Also: jv-t573 has 2 messages stalled 10 min
+  behind a live turn — expected while it runs gates; do not interrupt unless
+  its transcript stops growing.
+
+  Called jevonsmcp
+
+⏺ The T565 seat's claude CLI is stuck in /rc connecting; sends cannot land.
+  Reminting it thin on claude (kill + same-name start).
+
+  Called jevonsmcp 2 times
+
+⏺ [silent] Re-briefed jv-t574-hot-config with the widened owner scope (queued
+  behind its live turn). jv-t565-send-route's claude CLI hung in /rc connecting
+  (sends refused twice) — reminted thin on claude, same name (c4ad90e2), briefed
+  to resume from the on-disk t565 test files and gate record. jv-t573's two
+  queued messages are expected while its gate runs; not interrupting. Nothing
+  else independent; sleeping until finish-reports.
+
+✻ Crunched for 1m 10s · done 6:08 pm
+                                                            ◐ medium · /effort
+────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← 3 agents   /rc connecting…

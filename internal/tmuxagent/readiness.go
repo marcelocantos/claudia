@@ -119,10 +119,37 @@ func MatchStartupWarningsOnly(frame []byte) bool {
 // or leaves a paste chip that never submits (🎯T305 live probe).
 var connectingPattern = regexp.MustCompile(`(?i)/rc\s+connecting`)
 
+// statusTailLines bounds how far above the end of the frame the
+// remote-control status may sit: Claude Code draws it on the line under
+// the composer's bottom rule, and readyPattern already tolerates up to 5
+// trailing lines there.
+const statusTailLines = 6
+
 // MatchConnecting reports whether the frame still shows Claude Code
 // connecting (not yet accepting a durable turn).
+//
+// Only the status-bar tail is consulted. The transcript above the
+// composer is the agent's own prose, and prose that *mentions* the
+// status — an overseer reporting "panes stuck showing /rc connecting" —
+// matched a whole-frame scan and wedged that very pane until the words
+// scrolled out of view: every delivery failed "ready pattern did not
+// match" against a composer that was idle (jevons 🎯T565, 2026-08-29).
 func MatchConnecting(frame []byte) bool {
-	return connectingPattern.Match(trimTrailingSpace(frame))
+	return connectingPattern.Match(statusTail(trimTrailingSpace(frame)))
+}
+
+// statusTail returns the last statusTailLines lines of a trimmed frame.
+func statusTail(f []byte) []byte {
+	n := len(f)
+	for lines := 0; n > 0; n-- {
+		if f[n-1] == '\n' {
+			lines++
+			if lines == statusTailLines {
+				break
+			}
+		}
+	}
+	return f[n:]
 }
 
 // MatchReady reports whether the captured frame shows Claude's idle
