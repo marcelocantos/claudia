@@ -286,6 +286,10 @@ func (c *grokACPClient) dispatchMessage(line []byte) {
 func (c *grokACPClient) handleServerRequest(msg acpRPCMessage) {
 	switch msg.Method {
 	case "session/request_permission":
+		c.mu.Lock()
+		sid, promptID := c.sessionID, c.promptID
+		c.mu.Unlock()
+		publishEvent(c.onEvent, acpPermissionEvent(sid, promptID, msg.Params))
 		// Auto-approve for unattended embedding. Must pick an optionId that
 		// appears in the request: Grok offers tool-specific IDs for shell
 		// (e.g. allow_always_bash) and rejects unknown ones with
@@ -419,6 +423,12 @@ func (c *grokACPClient) handleSessionUpdate(params json.RawMessage) {
 	if promptID != 0 && (p.SessionID == "" || clientSessionID == "" || p.SessionID == clientSessionID) {
 		turnID = strconv.FormatInt(promptID, 10)
 	}
+	if ev, ok := acpProgressEvent(sessionID, turnID, params); ok {
+		c.onEvent(ev)
+		return
+	}
+	probe, _ := parseACPUpdate(params)
+	usage := acpUsage(probe)
 	switch p.Update.SessionUpdate {
 	case "agent_message_chunk":
 		text := ""
@@ -428,16 +438,13 @@ func (c *grokACPClient) handleSessionUpdate(params json.RawMessage) {
 		if text == "" {
 			return
 		}
-		c.onEvent(Event{Type: "assistant", SessionID: sessionID, TurnID: turnID, Raw: params, Text: text})
-	case "tool_call", "tool_call_update":
-		// Pass params through unchanged so rawInput is preserved.
-		c.onEvent(Event{Type: "progress", SessionID: sessionID, TurnID: turnID, Raw: params, ProgressType: "tool_use"})
+		c.onEvent(Event{Type: "assistant", SessionID: sessionID, TurnID: turnID, Raw: params, Text: text, Usage: usage})
 	case "user_message_chunk":
 		text := ""
 		if p.Update.Content != nil {
 			text = p.Update.Content.Text
 		}
-		c.onEvent(Event{Type: "user", SessionID: sessionID, TurnID: turnID, Raw: params, Text: text})
+		c.onEvent(Event{Type: "user", SessionID: sessionID, TurnID: turnID, Raw: params, Text: text, Usage: usage})
 	}
 }
 
@@ -575,6 +582,7 @@ func (c *grokACPClient) Prompt(text string) error {
 	c.promptID = id
 	// No pending channel: completion is handled in readLoop via promptID.
 	c.mu.Unlock()
+	publishEvent(c.onEvent, acpPromptAcceptedEvent(sid, id))
 
 	return c.write(map[string]any{
 		"jsonrpc": "2.0",

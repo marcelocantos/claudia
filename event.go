@@ -53,8 +53,15 @@ type Event struct {
 	// reported by the message. Zero if the event carries no usage data.
 	Usage Usage `json:"-"`
 
-	// ProgressType is populated for type == "progress" (e.g. "tool_use").
+	// ProgressType is populated for type == "progress" (e.g. "tool_use",
+	// "thought", "plan", "prompt_accepted", "permission").
 	ProgressType string `json:"-"`
+
+	// ToolCallID / ToolTitle / ToolStatus are promoted off Event.Raw for
+	// tool_call and tool_call_update (🎯T50.3). Empty when ACP omitted them.
+	ToolCallID string `json:"-"`
+	ToolTitle  string `json:"-"`
+	ToolStatus string `json:"-"`
 
 	// Model is populated for type == "assistant" with the model that actually
 	// produced the message (the transcript's message.model), e.g.
