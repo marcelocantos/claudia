@@ -92,6 +92,19 @@ func EnsureServer() error {
 	// `tmux -S <sock> list-sessions` exits 0 iff a server is running
 	// on that socket. Any error means we need to start one.
 	if err := exec.Command("tmux", "-S", sock, "list-sessions").Run(); err == nil {
+		// 🎯T579: a live server is not enough — agent windows are
+		// created inside the anchor session, so an anchor that was
+		// reaped (pane census, a stray kill-session) leaves new-window
+		// failing against a server that is demonstrably up. Recreate
+		// it; new-session on an existing name errors harmlessly.
+		if err := exec.Command("tmux", "-S", sock, "has-session", "-t", anchorSessionName).Run(); err != nil {
+			cmd := exec.Command("tmux", "-S", sock, "new-session", "-d", "-s", anchorSessionName)
+			cmd.Env = testctlenv.Strip(os.Environ())
+			if out, err := cmd.CombinedOutput(); err != nil &&
+				!strings.Contains(string(out), "duplicate session") {
+				return fmt.Errorf("recreate tmux anchor session: %w: %s", err, out)
+			}
+		}
 		return scrubServerEnv(sock)
 	}
 

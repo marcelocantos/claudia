@@ -61,10 +61,43 @@ func SpawnWindow(workdir, windowName, command string, args []string) (windowID s
 	}
 
 	out, err := exec.Command("tmux", tmuxArgs...).Output()
+	if err == nil {
+		return strings.TrimSpace(string(out)), nil
+	}
+
+	// 🎯T579: EnsureServer proved a server was up, but the window is
+	// created by a second process a moment later, and in between the
+	// server can go away — the anchor session is reaped, the last
+	// window exits, or a kill-server lands. The failure the fleet sees
+	// is "no server running on <sock>", and because the caller treats
+	// it as a spawn failure the agent never comes back. The socket was
+	// never wrong; the server was gone. Bring it back and try once
+	// more. A second failure is reported as it stands.
+	first := wrapExitErr(err)
+	if !serverGone(first) {
+		return "", fmt.Errorf("tmux new-window: %w", first)
+	}
+	if err := EnsureServer(); err != nil {
+		return "", fmt.Errorf("tmux new-window: %w (restarting server: %v)", first, err)
+	}
+	out, err = exec.Command("tmux", tmuxArgs...).Output()
 	if err != nil {
 		return "", fmt.Errorf("tmux new-window: %w", wrapExitErr(err))
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// serverGone reports a tmux error that means the server on our socket
+// was not there, rather than a bad argument or a missing target. tmux
+// says "no server running on <path>" for a dead socket and "can't find
+// session"/"session not found" when the server is up but the anchor
+// session is not.
+func serverGone(err error) bool {
+	s := err.Error()
+	return strings.Contains(s, "no server running") ||
+		strings.Contains(s, "can't find session") ||
+		strings.Contains(s, "session not found") ||
+		strings.Contains(s, "no such session")
 }
 
 // KillWindow kill-windows the given window ID. Idempotent: a missing
