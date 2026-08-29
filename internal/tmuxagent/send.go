@@ -47,7 +47,12 @@ const (
 	// connectingClearTimeout waits for /rc connecting to clear before
 	// paste when the ready channel closed on a still-connecting frame
 	// (older agents); MatchReady now rejects connecting too.
-	connectingClearTimeout = 15 * time.Second
+	//
+	// This is the full ready timeout (agent.readyOverallTimeout), not a
+	// shorter window: /rc connecting is transient (MCP / network flap)
+	// and a 15s give-up failed a pane that would have been idle 10s later
+	// (jevons 🎯T565).
+	connectingClearTimeout = 30 * time.Second
 )
 
 // pastedTextChip matches Claude Code's collapsed paste chip. Prefer the
@@ -304,13 +309,18 @@ func waitNotConnecting(d sendDriver, timeout time.Duration) error {
 		return nil
 	}
 	deadline := d.clock().Add(timeout)
+	var last []byte
 	for {
 		frame, err := d.capture()
-		if err == nil && !MatchConnecting(frame) {
-			return nil
+		if err == nil {
+			last = frame
+			if !MatchConnecting(frame) {
+				return nil
+			}
 		}
 		if !d.clock().Before(deadline) {
-			return fmt.Errorf("claude still /rc connecting after %s; refusing to paste", timeout)
+			return fmt.Errorf("claude not ready (%s): still /rc connecting after %s; refusing to paste; last frame:\n%s",
+				NotReadyRCConnecting, timeout, frameTail(last))
 		}
 		d.sleep(submitSettle)
 	}

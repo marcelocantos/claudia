@@ -294,9 +294,40 @@ func waitReadyLoop(d readyDriver, poll, timeout, menuSettle time.Duration) (time
 	}
 }
 
+// Not-ready reason tokens named in WaitReady timeout errors (jevons 🎯T565).
+// A generic "ready pattern did not match" left operators chasing the
+// wrong thing: /rc connecting, a splash, a blank pane, and settings
+// warnings all produced the same string.
+const (
+	NotReadyRCConnecting    = "rc_connecting"
+	NotReadyNoComposer      = "no_composer"
+	NotReadySplash          = "splash"
+	NotReadySettingsWarning = "settings_warning"
+)
+
+// NotReadyReason classifies why MatchReady is false for a captured frame.
+// Empty means the frame was not recognised as one of the named stalls
+// (a menu is handled separately by WaitReady before this is consulted).
+func NotReadyReason(frame []byte) string {
+	if MatchConnecting(frame) {
+		return NotReadyRCConnecting
+	}
+	if MatchStartupWarningsOnly(frame) {
+		return NotReadySettingsWarning
+	}
+	if MatchStartupSplash(frame) {
+		return NotReadySplash
+	}
+	if composerBody(frame) == nil {
+		return NotReadyNoComposer
+	}
+	return ""
+}
+
 // readyTimeoutErr builds the timeout error, distinguishing a wedged
-// startup menu (actionable) from a plain no-match or a capture that
-// never succeeded.
+// startup menu (actionable) from a named not-ready reason or a capture
+// that never succeeded. The reason token is in parentheses so hosts can
+// classify without scraping prose (jevons 🎯T565).
 func readyTimeoutErr(menuSeen bool, dismissals int, timeout time.Duration, lastFrame []byte, lastErr error) error {
 	if menuSeen {
 		return fmt.Errorf("startup menu (e.g. Claude Code's resume/summary prompt) still present after %d auto-confirmations within %s; last frame:\n%s", dismissals, timeout, lastFrame)
@@ -307,15 +338,26 @@ func readyTimeoutErr(menuSeen bool, dismissals int, timeout time.Duration, lastF
 		}
 		return fmt.Errorf("capture-pane never succeeded within %s", timeout)
 	}
-	if MatchStartupWarningsOnly(lastFrame) {
+	switch NotReadyReason(lastFrame) {
+	case NotReadySettingsWarning:
 		// The warnings are Claude Code's own settings diagnostics, not the
 		// reason the box never appeared: a process that printed them and then
 		// exited, or one still loading, leaves exactly this frame. Name both
 		// so the operator does not chase the wrong thing, and keep the frame
 		// verbatim so nothing is lost in the retelling.
-		return fmt.Errorf("Claude Code printed startup settings warnings and never drew its input box within %s "+
+		return fmt.Errorf("claude not ready (%s): Claude Code printed startup settings warnings and never drew its input box within %s "+
 			"(the warnings are diagnostics about permission rules, not the cause — the process exited after printing them, "+
-			"or is still starting; check the term log); last frame:\n%s", timeout, lastFrame)
+			"or is still starting; check the term log); last frame:\n%s", NotReadySettingsWarning, timeout, lastFrame)
+	case NotReadyRCConnecting:
+		return fmt.Errorf("claude not ready (%s): /rc connecting still showing after %s; last frame:\n%s",
+			NotReadyRCConnecting, timeout, lastFrame)
+	case NotReadySplash:
+		return fmt.Errorf("claude not ready (%s): composer ghost placeholder still drawn after %s; last frame:\n%s",
+			NotReadySplash, timeout, lastFrame)
+	case NotReadyNoComposer:
+		return fmt.Errorf("claude not ready (%s): no idle input box after %s; last frame:\n%s",
+			NotReadyNoComposer, timeout, lastFrame)
+	default:
+		return fmt.Errorf("ready pattern did not match within %s; last frame:\n%s", timeout, lastFrame)
 	}
-	return fmt.Errorf("ready pattern did not match within %s; last frame:\n%s", timeout, lastFrame)
 }

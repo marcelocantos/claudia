@@ -213,6 +213,29 @@ func TestSendKeysWaitsForConnectingThenPastes(t *testing.T) {
 	}
 }
 
+// Delivery waits out /rc connecting for the full ready timeout (30s), not
+// a shorter 15s window (jevons 🎯T565).
+func TestSendKeysConnectingWaitUsesFullReadyTimeout(t *testing.T) {
+	t.Parallel()
+	d, _ := hermeticDriver(
+		func() ([]byte, error) { return []byte(connectingFrame), nil },
+		func(string) error { t.Fatal("paste"); return nil },
+		func(string) error { t.Fatal("type"); return nil },
+	)
+	start := d.clock()
+	err := sendKeysWith(d, "hi")
+	if err == nil {
+		t.Fatal("expected connecting timeout")
+	}
+	if !strings.Contains(err.Error(), "rc_connecting") {
+		t.Fatalf("error must name rc_connecting, got: %v", err)
+	}
+	elapsed := d.clock().Sub(start)
+	if elapsed < connectingClearTimeout {
+		t.Fatalf("gave up after %s, want full ready timeout %s", elapsed, connectingClearTimeout)
+	}
+}
+
 // Short single-line uses typeLiteral; confirm waits until working.
 func TestSendKeysShortMessageLiteral(t *testing.T) {
 	t.Parallel()

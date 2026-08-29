@@ -443,3 +443,60 @@ func TestMatchConnectingReadsOnlyTheStatusTail(t *testing.T) {
 		t.Fatalf("connecting frame must not be ready")
 	}
 }
+
+func TestNotReadyReasonTokens(t *testing.T) {
+	t.Parallel()
+	splashNoRC := strings.ReplaceAll(startupSplashFrame, " /rc connecting…", "")
+	cases := []struct {
+		name  string
+		frame string
+		want  string
+	}{
+		{"connecting status", connectingFrame, NotReadyRCConnecting},
+		{"warnings only", settingsWarningsFrame, NotReadySettingsWarning},
+		{"splash without /rc connecting", splashNoRC, NotReadySplash},
+		{"streaming, no box", streamingFrame, NotReadyNoComposer},
+		{"live composer", liveComposerFrame, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := NotReadyReason([]byte(c.frame)); got != c.want {
+				t.Fatalf("NotReadyReason=%q want %q", got, c.want)
+			}
+		})
+	}
+}
+
+func TestWaitReadyTimeoutNamesReason(t *testing.T) {
+	t.Parallel()
+	splashNoRC := strings.ReplaceAll(startupSplashFrame, " /rc connecting…", "")
+	cases := []struct {
+		name  string
+		frame string
+		token string
+	}{
+		{"rc_connecting", connectingFrame, NotReadyRCConnecting},
+		{"settings_warning", settingsWarningsFrame, NotReadySettingsWarning},
+		{"splash", splashNoRC, NotReadySplash},
+		{"no_composer", streamingFrame, NotReadyNoComposer},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			d := readyDriver{
+				capture:   func() ([]byte, error) { return []byte(c.frame), nil },
+				sendEnter: func() error { t.Fatal("no menu to dismiss"); return nil },
+			}
+			_, err := waitReadyLoop(d, time.Millisecond, 40*time.Millisecond, time.Millisecond)
+			if err == nil {
+				t.Fatal("expected a timeout")
+			}
+			msg := err.Error()
+			if !strings.Contains(msg, "claude not ready ("+c.token+")") {
+				t.Fatalf("timeout must name %s, got: %v", c.token, err)
+			}
+			if strings.Contains(msg, "ready pattern did not match") {
+				t.Fatalf("generic pattern message must not be used when the reason is known: %v", err)
+			}
+		})
+	}
+}

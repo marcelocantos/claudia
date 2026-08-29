@@ -10,6 +10,23 @@ import (
 	"testing"
 )
 
+// Claude Code CLI exposes `--remote-control` (opt-in enable) and no
+// `--no-remote-control` / per-pane disable. Session seats do not pass the
+// enable flag; the /rc status chrome cannot be turned off by launch flag
+// (jevons 🎯T565 part c). Product path is wait-out + a named not-ready reason.
+func TestClaudeSessionArgsOmitRemoteControl(t *testing.T) {
+	args := claudeAgentArgs(agentStartRequest{
+		WorkDir:   "/work/t565",
+		SessionID: "00000000-0000-0000-0000-000000000565",
+		Config:    Config{},
+	})
+	for _, a := range args {
+		if strings.Contains(a, "remote-control") {
+			t.Fatalf("session argv must not enable remote control: %v", args)
+		}
+	}
+}
+
 func TestMCPExclusiveClaudeArgvUsesStrictConfig(t *testing.T) {
 	req := agentStartRequest{WorkDir: "/work/t45", Config: Config{MCPExclusive: true}}
 	args := claudeAgentArgs(req)
