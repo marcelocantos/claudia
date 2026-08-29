@@ -129,7 +129,7 @@ type Config struct {
 	MCPExclusive bool
 
 	// DisallowTools lists additional tool names to disallow. Agent,
-	// TeamCreate, TeamDelete, SendMessage, and EnterWorktree are
+	// SendMessage, and EnterWorktree are
 	// always disallowed in addition to whatever appears here.
 	DisallowTools []string
 

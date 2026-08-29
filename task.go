@@ -128,7 +128,14 @@ const (
 // this wrong is not abstract — a summariser handed a transcript
 // containing "go deep with fanout" obeyed it and produced ~33,000
 // subagents and ~4.3 billion tokens in two hours.
-const BaseDisallowedTools = "Agent,TeamCreate,TeamDelete,SendMessage,EnterWorktree"
+//
+// TeamCreate and TeamDelete used to be listed too. Claude Code no longer
+// ships those tools, and a deny rule that matches no tool is printed as a
+// startup warning ("Permission deny rule \"TeamCreate\" matches no known
+// tool") on every launch — a frame that, seen alone, looks like a seat that
+// never drew its composer (jevons 🎯T565). Nothing is lost by dropping them:
+// a tool that does not exist cannot be called.
+const BaseDisallowedTools = "Agent,SendMessage,EnterWorktree"
 
 // disallowedToolList joins the always-forbidden baseline with any extra
 // tools the caller wants removed.

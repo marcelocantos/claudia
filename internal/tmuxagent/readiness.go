@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os/exec"
 	"regexp"
+	"strings"
 	"time"
 )
 
@@ -84,6 +85,34 @@ var startupMenuCursor = regexp.MustCompile(`❯\s*\d+[.)]`)
 // 🎯T6 targets: a 5-day / 105k-token session parks the TUI at a
 // "Resume from summary / Resume full session / Don't ask again" menu.
 var resumePrompt = regexp.MustCompile(`(?i)resume (from summary|full session)|resume this session`)
+
+// settingsWarning matches the line Claude Code prints, before its TUI
+// mounts, for a permission rule that names no tool. It is not the ready
+// signal and it is not a failure; it is the normal preamble of a launch
+// whose settings are slightly stale. MatchReady already ignores it — the
+// pattern anchors on the composer at the tail of the frame — but a frame
+// holding only such warnings is what a caller sees when the process died
+// (or is still loading) right after printing them, and the timeout error
+// should say that rather than leave the warnings to be read as the cause.
+var settingsWarning = regexp.MustCompile(`(?m)^Permission (?:deny|allow|ask) rule "[^"]*" matches no known tool`)
+
+// MatchStartupWarningsOnly reports whether the frame holds nothing but
+// Claude Code's settings warnings and blank lines: the TUI has not drawn
+// anything yet (or is gone), so the frame carries no ready verdict.
+func MatchStartupWarningsOnly(frame []byte) bool {
+	f := trimTrailingSpace(frame)
+	if !settingsWarning.Match(f) {
+		return false
+	}
+	for _, line := range strings.Split(string(f), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || settingsWarning.MatchString(line) {
+			continue
+		}
+		return false
+	}
+	return true
+}
 
 // connectingPattern matches Claude Code's remote-control status while
 // the TUI is still wiring. Paste/Enter during this window is swallowed
@@ -250,6 +279,16 @@ func readyTimeoutErr(menuSeen bool, dismissals int, timeout time.Duration, lastF
 			return fmt.Errorf("capture-pane never succeeded within %s: %w", timeout, lastErr)
 		}
 		return fmt.Errorf("capture-pane never succeeded within %s", timeout)
+	}
+	if MatchStartupWarningsOnly(lastFrame) {
+		// The warnings are Claude Code's own settings diagnostics, not the
+		// reason the box never appeared: a process that printed them and then
+		// exited, or one still loading, leaves exactly this frame. Name both
+		// so the operator does not chase the wrong thing, and keep the frame
+		// verbatim so nothing is lost in the retelling.
+		return fmt.Errorf("Claude Code printed startup settings warnings and never drew its input box within %s "+
+			"(the warnings are diagnostics about permission rules, not the cause — the process exited after printing them, "+
+			"or is still starting; check the term log); last frame:\n%s", timeout, lastFrame)
 	}
 	return fmt.Errorf("ready pattern did not match within %s; last frame:\n%s", timeout, lastFrame)
 }

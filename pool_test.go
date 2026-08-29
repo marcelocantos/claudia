@@ -58,7 +58,7 @@ func TestPoolKeyConsistency(t *testing.T) {
 // TestPoolWindowNaming verifies the window-name scheme so that
 // ListWindows matching works as expected.
 func TestPoolWindowNaming(t *testing.T) {
-	key := poolKeyFor("/tmp/testdir", "haiku", "Agent,TeamCreate,TeamDelete,SendMessage,EnterWorktree")
+	key := poolKeyFor("/tmp/testdir", "haiku", "Agent,SendMessage,EnterWorktree")
 	name := poolWindowPrefix + key
 	if !strings.HasPrefix(name, "claudia-pool-") {
 		t.Errorf("pool window name %q does not start with claudia-pool-", name)

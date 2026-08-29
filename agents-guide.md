@@ -560,7 +560,7 @@ owns a single short-lived agent, skip the Registry.
 
 2. **Sub-agents are disabled — on Claude.** Claude Session and Task
    modes always pass
-   `--disallowedTools Agent,TeamCreate,TeamDelete,SendMessage,EnterWorktree`.
+   `--disallowedTools Agent,SendMessage,EnterWorktree`.
    The host Go program owns the process lifecycle; nested claudia
    sessions would fight over PTY ownership and transcript tailing.
    Don't try to re-enable these.

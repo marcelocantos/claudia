@@ -374,3 +374,45 @@ func TestWaitReadyPollsThroughStartupSplash(t *testing.T) {
 		t.Errorf("pressed Enter %d time(s) into the dead splash composer", enters)
 	}
 }
+
+// Claude Code prints a warning per permission rule that names no tool
+// before its TUI mounts. A composer below those lines is a live composer
+// (the pattern anchors on the tail), and a frame that is only the warnings
+// is not a match — and its timeout names the frame verbatim and says the
+// warnings are not the cause (jevons 🎯T565).
+const settingsWarningsFrame = "Permission deny rule \"TeamCreate\" matches no known tool — check for typos.\n" +
+	"Permission deny rule \"TeamDelete\" matches no known tool — check for typos.\n\n\n\n\n\n"
+
+func TestMatchReadyToleratesSettingsWarnings(t *testing.T) {
+	frame := []byte(settingsWarningsFrame + "\n" + idleBoxFrame)
+	if !MatchReady(frame) {
+		t.Fatalf("composer under settings warnings must be ready:\n%s", frame)
+	}
+	if MatchStartupWarningsOnly(frame) {
+		t.Fatal("a frame with a composer is not warnings-only")
+	}
+	if !MatchStartupWarningsOnly([]byte(settingsWarningsFrame)) {
+		t.Fatal("warnings + blank lines is warnings-only")
+	}
+	if MatchReady([]byte(settingsWarningsFrame)) {
+		t.Fatal("warnings alone are not a ready verdict")
+	}
+}
+
+func TestWaitReadyWarningsOnlyTimeoutNamesFrameVerbatim(t *testing.T) {
+	d := readyDriver{
+		capture:   func() ([]byte, error) { return []byte(settingsWarningsFrame), nil },
+		sendEnter: func() error { t.Fatal("no menu to dismiss"); return nil },
+	}
+	_, err := waitReadyLoop(d, time.Millisecond, 50*time.Millisecond, time.Millisecond)
+	if err == nil {
+		t.Fatal("expected a timeout")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "startup settings warnings") || !strings.Contains(msg, "not the cause") {
+		t.Fatalf("timeout must diagnose a warnings-only frame, got: %v", err)
+	}
+	if !strings.Contains(msg, settingsWarningsFrame) {
+		t.Fatalf("timeout must carry the last frame verbatim, got: %v", err)
+	}
+}

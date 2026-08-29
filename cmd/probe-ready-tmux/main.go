@@ -38,7 +38,7 @@ func main() {
 		die("ensure tmux server: %v", err)
 	}
 
-	disallowed := "Agent,TeamCreate,TeamDelete,SendMessage,EnterWorktree"
+	disallowed := "Agent,SendMessage,EnterWorktree"
 	args := []string{
 		"--permission-mode", "bypassPermissions",
 		"--disallowedTools", disallowed,

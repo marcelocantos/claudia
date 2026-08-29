@@ -101,7 +101,7 @@ func Acquire(ctx context.Context, cfg Config) (*Agent, error) {
 		workDir = resolved
 	}
 
-	disallowed := "Agent,TeamCreate,TeamDelete,SendMessage,EnterWorktree"
+	disallowed := "Agent,SendMessage,EnterWorktree"
 	if len(cfg.DisallowTools) > 0 {
 		disallowed += "," + strings.Join(cfg.DisallowTools, ",")
 	}
