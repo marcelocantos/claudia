@@ -438,7 +438,7 @@ func (c *grokACPClient) handleSessionUpdate(params json.RawMessage) {
 		if text == "" {
 			return
 		}
-		c.onEvent(Event{Type: "assistant", SessionID: sessionID, TurnID: turnID, Raw: params, Text: text, Usage: usage})
+		c.onEvent(Event{Type: "assistant", SessionID: sessionID, TurnID: turnID, Raw: params, Text: text, Usage: usage, PreviewUpdate: PreviewUpdateAppend})
 	case "user_message_chunk":
 		text := ""
 		if p.Update.Content != nil {
@@ -673,6 +673,14 @@ func (c *grokACPClient) Cancel() error {
 		return nil
 	}
 	return c.notify("session/cancel", map[string]any{"sessionId": sid})
+}
+
+// SetModel switches the ACP session model (🎯T54).
+func (c *grokACPClient) SetModel(model string) error {
+	c.mu.Lock()
+	sid := c.sessionID
+	c.mu.Unlock()
+	return acpSetModel(c.request, sid, model)
 }
 
 // promptInFlight reports whether a session/prompt is awaiting completion.

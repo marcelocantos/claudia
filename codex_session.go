@@ -518,7 +518,19 @@ func parseEffectiveSandbox(line []byte) codexEffectiveSandbox {
 }
 
 func (c *codexAppServerClient) applyThreadResult(line []byte, fallbackID string) {
-	checkEffectiveSandbox(c.sandboxMode(), c.sandboxTuning, parseEffectiveSandbox(line), c.threadID)
+	// Snapshot under the lock before reading anything the reader goroutine
+	// owns. dispatch() writes threadID (and model, turnID) from the stdout
+	// pump while this runs on the caller's goroutine, so reading them bare
+	// is a data race -- one that -race has been failing on since at least
+	// v0.28.0, taking five Codex tests with it.
+	//
+	// The check itself stays OUTSIDE the lock: it can log and notify, and
+	// holding a client mutex across that is how a stall becomes a deadlock.
+	c.mu.Lock()
+	mode, tuning, threadID := resolveCodexSandbox(c.sandbox), c.sandboxTuning, c.threadID
+	c.mu.Unlock()
+	checkEffectiveSandbox(mode, tuning, parseEffectiveSandbox(line), threadID)
+
 	ev, ok, err := parseCodexAppServerLine(line)
 	c.mu.Lock()
 	defer c.mu.Unlock()

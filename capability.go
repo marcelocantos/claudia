@@ -56,6 +56,10 @@ const (
 	// provider process verbatim. A provider claudia does not launch as a
 	// CLI with caller-supplied argv cannot honour it.
 	CapabilityExtraArgs Capability = "extra_args"
+	// CapabilityModelSwitch is changing the model on a live Session
+	// without leaving the provider ([Agent.SetModel]). Inter-provider
+	// migration is a separate target.
+	CapabilityModelSwitch Capability = "model_switch"
 )
 
 // CapabilityStatus classifies how far claudia supports one [Capability]
@@ -133,6 +137,7 @@ func reportedCapabilities() []Capability {
 		CapabilityWebSearch,
 		CapabilitySandboxPolicy,
 		CapabilityExtraArgs,
+		CapabilityModelSwitch,
 	}
 }
 
@@ -191,6 +196,10 @@ var providerCapabilityClaims = map[Provider]map[Capability]capabilityClaim{
 			status: CapabilityUnsupported,
 			reason: "the Ollama path is an HTTP request, not a process claudia launches, so there is no argv to extend",
 		},
+		CapabilityModelSwitch: {
+			status: CapabilityUnsupported,
+			reason: "Ollama Task mode is one-shot generate; there is no live session model to switch",
+		},
 	},
 	ProviderClaude: {
 		CapabilityTask:             {status: CapabilitySupported},
@@ -212,6 +221,7 @@ var providerCapabilityClaims = map[Provider]map[Capability]capabilityClaim{
 			reason: sandboxPolicyIsCodexOnlyReason,
 		},
 		CapabilityExtraArgs: {status: CapabilitySupported},
+		CapabilityModelSwitch: {status: CapabilitySupported},
 	},
 	ProviderCodex: {
 		CapabilityTask:    {status: CapabilitySupported},
@@ -248,6 +258,7 @@ var providerCapabilityClaims = map[Provider]map[Capability]capabilityClaim{
 			status: CapabilityUnsupported,
 			reason: "Codex Session speaks typed app-server fields; Config.ExtraArgs have nowhere to go",
 		},
+		CapabilityModelSwitch: {status: CapabilitySupported},
 	},
 	ProviderGrok: {
 		CapabilityTask:    {status: CapabilitySupported},
@@ -287,6 +298,7 @@ var providerCapabilityClaims = map[Provider]map[Capability]capabilityClaim{
 			status: CapabilityUnsupported,
 			reason: grokExtraArgsReason,
 		},
+		CapabilityModelSwitch: {status: CapabilitySupported},
 	},
 	ProviderCursor: {
 		CapabilityTask:    {status: CapabilitySupported},
@@ -326,6 +338,7 @@ var providerCapabilityClaims = map[Provider]map[Capability]capabilityClaim{
 			status: CapabilityUnsupported,
 			reason: cursorExtraArgsReason,
 		},
+		CapabilityModelSwitch: {status: CapabilitySupported},
 	},
 	ProviderBedrock: {
 		CapabilityTask:    {status: CapabilitySupported},
@@ -370,6 +383,10 @@ var providerCapabilityClaims = map[Provider]map[Capability]capabilityClaim{
 		CapabilityExtraArgs: {
 			status: CapabilityUnsupported,
 			reason: "Bedrock v1 is an API call, not a process claudia launches, so there is no argv to extend",
+		},
+		CapabilityModelSwitch: {
+			status: CapabilityUnsupported,
+			reason: "Bedrock v1 is one-shot ConverseStream; there is no live session model to switch",
 		},
 	},
 }

@@ -47,6 +47,9 @@ func TestT50_1ThoughtPlanThenToolThenAssistantInOrder(t *testing.T) {
 			if got[i].SessionID != "s1" || got[i].TurnID != "7" {
 				t.Fatalf("%s event[%d] identity %q/%q", cl.name, i, got[i].SessionID, got[i].TurnID)
 			}
+			if got[i].Type == "assistant" && got[i].PreviewUpdate != PreviewUpdateAppend {
+				t.Fatalf("%s assistant chunk PreviewUpdate=%q want %q", cl.name, got[i].PreviewUpdate, PreviewUpdateAppend)
+			}
 		}
 		if got[0].Text != "considering" {
 			t.Fatalf("%s thought text=%q", cl.name, got[0].Text)

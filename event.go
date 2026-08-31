@@ -54,8 +54,15 @@ type Event struct {
 	Usage Usage `json:"-"`
 
 	// ProgressType is populated for type == "progress" (e.g. "tool_use",
-	// "thought", "plan", "prompt_accepted", "permission").
+	// "thought", "plan", "prompt_accepted", "permission", "tui_preview").
 	ProgressType string `json:"-"`
+
+	// PreviewUpdate is set on provisional streaming text so clients apply a
+	// single append/rewrite rule without backend-specific branching (🎯T53).
+	// PreviewUpdateAppend: Text is a suffix delta to append.
+	// PreviewUpdateRewrite: Text replaces the open provisional buffer.
+	// Empty on non-provisional events (including sealed Type=assistant).
+	PreviewUpdate string `json:"-"`
 
 	// ToolCallID / ToolTitle / ToolStatus are promoted off Event.Raw for
 	// tool_call and tool_call_update (🎯T50.3). Empty when ACP omitted them.
