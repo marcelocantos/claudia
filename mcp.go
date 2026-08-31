@@ -162,7 +162,13 @@ func (inv *MCPInventory) ForProvider(p Provider) []MCPServer {
 // MCPExclusive must drive the Session MCP set (never by mutating user
 // or project config files).
 func needsSessionMCPMaterialization(cfg Config) bool {
-	return len(cfg.MCPServers) > 0 || cfg.MCPExclusive
+	// Sandbox tuning counts (🎯T598): it is written into
+	// CODEX_HOME/config.toml, so a seat that asks for writable roots or
+	// network access needs a private home even with no MCP servers.
+	// Without this the request would be dropped in silence and the seat
+	// would come up with less access than its mission requires.
+	return len(cfg.MCPServers) > 0 || cfg.MCPExclusive ||
+		len(cfg.SandboxWritableRoots) > 0 || cfg.SandboxNetworkAccess
 }
 
 // mcpConfigInlineLimit: above this, Claude gets a private temp file

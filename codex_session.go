@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"os/exec"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -42,6 +43,7 @@ type codexAppServerClient struct {
 	lastTurnID    string
 	model         string
 	sandbox       string
+	sandboxTuning codexSandboxTuning
 	inFlight      bool
 	exclusiveHome string
 	workDir       string
@@ -70,7 +72,7 @@ func codexThreadStartParams(req agentStartRequest) codexAppServerThreadStartPara
 	}
 }
 
-func startCodexAppServer(bin, workDir, model, sessionID string, requireResume bool, sandbox string, extraEnv []string, onEvent func(Event), onClose func()) (*codexAppServerClient, error) {
+func startCodexAppServer(bin, workDir, model, sessionID string, requireResume bool, sandbox string, tuning codexSandboxTuning, extraEnv []string, onEvent func(Event), onClose func()) (*codexAppServerClient, error) {
 	cmd := exec.Command(bin, "app-server")
 	cmd.Dir = workDir
 	if len(extraEnv) > 0 {
@@ -104,6 +106,7 @@ func startCodexAppServer(bin, workDir, model, sessionID string, requireResume bo
 		stdout:        stdout,
 		stderr:        stderr,
 		sandbox:       resolveCodexSandbox(sandbox),
+		sandboxTuning: tuning,
 		pending:       make(map[int64]chan []byte),
 		exclusiveHome: envValue(extraEnv, "CODEX_HOME"),
 		workDir:       workDir,
@@ -134,6 +137,24 @@ func (c *codexAppServerClient) Model() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.model
+}
+
+// SetModel selects the model for subsequent turn/start calls (🎯T54).
+func (c *codexAppServerClient) SetModel(model string) error {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return fmt.Errorf("codex app-server: model must be non-empty")
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return fmt.Errorf("codex app-server: client closed")
+	}
+	if c.inFlight {
+		return fmt.Errorf("codex app-server: turn already in flight")
+	}
+	c.model = model
+	return nil
 }
 
 func (c *codexAppServerClient) sandboxMode() string {
@@ -425,7 +446,79 @@ func (c *codexAppServerClient) persistStartRollout() {
 	slog.Warn("persist Codex start rollout: no file after thread/name/set", "home", home, "thread", tid)
 }
 
+// checkEffectiveSandbox compares the sandbox the app-server reports for a
+// freshly started thread against what was asked for (🎯T598).
+//
+// This exists because asking is not getting. thread/start accepts an
+// unknown sandboxPolicy and discards it in silence — a deliberately bogus
+// value was accepted in testing — so "the call returned no error" says
+// nothing about the sandbox a seat actually runs in. A seat that believes
+// it can write its gate record and cannot will look healthy and fail only
+// at its first gate, which is the failure this whole target came from.
+//
+// A mismatch is logged loudly rather than fatal: refusing to start would
+// take the fleet down over a Codex schema change, and a seat that runs
+// with a narrower sandbox can still do useful work — it just must not do
+// so silently.
+func checkEffectiveSandbox(want string, tuning codexSandboxTuning, effective codexEffectiveSandbox, session string) {
+	if effective.Type == "" {
+		return // nothing reported; no claim to check
+	}
+	wantType := codexSandboxTypeFor(want)
+	if wantType != "" && effective.Type != wantType {
+		slog.Error("codex sandbox is not what was requested",
+			"session", session, "requested", want, "effective", effective.Type)
+		return
+	}
+	if tuning.NetworkAccess && !effective.NetworkAccess {
+		slog.Error("codex sandbox denied the requested network access",
+			"session", session, "effective", effective.Type,
+			"hint", "CODEX_HOME/config.toml [sandbox_workspace_write] network_access")
+	}
+	for _, want := range tuning.WritableRoots {
+		if want == "" || slices.Contains(effective.WritableRoots, want) {
+			continue
+		}
+		slog.Error("codex sandbox omitted a requested writable root",
+			"session", session, "root", want, "effective", effective.WritableRoots)
+	}
+}
+
+// codexSandboxTypeFor maps the wire mode name onto the type the
+// app-server echoes back.
+func codexSandboxTypeFor(mode string) string {
+	switch mode {
+	case "workspace-write":
+		return "workspaceWrite"
+	case "read-only":
+		return "readOnly"
+	case "danger-full-access":
+		return "dangerFullAccess"
+	}
+	return ""
+}
+
+// codexEffectiveSandbox is the sandbox object thread/start echoes.
+type codexEffectiveSandbox struct {
+	Type          string   `json:"type"`
+	NetworkAccess bool     `json:"networkAccess"`
+	WritableRoots []string `json:"writableRoots"`
+}
+
+func parseEffectiveSandbox(line []byte) codexEffectiveSandbox {
+	var envelope struct {
+		Result struct {
+			Thread struct {
+				Sandbox codexEffectiveSandbox `json:"sandbox"`
+			} `json:"thread"`
+		} `json:"result"`
+	}
+	_ = json.Unmarshal(line, &envelope)
+	return envelope.Result.Thread.Sandbox
+}
+
 func (c *codexAppServerClient) applyThreadResult(line []byte, fallbackID string) {
+	checkEffectiveSandbox(c.sandboxMode(), c.sandboxTuning, parseEffectiveSandbox(line), c.threadID)
 	ev, ok, err := parseCodexAppServerLine(line)
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -462,13 +555,18 @@ func (c *codexAppServerClient) Prompt(text string) error {
 	c.inFlight = true
 	c.turnID = ""
 	threadID := c.threadID
+	model := c.model
 	c.mu.Unlock()
 
-	_, err := c.request(codexAppServerTurnStart(0, codexAppServerTurnStartParams{
+	params := codexAppServerTurnStartParams{
 		ThreadID:       threadID,
 		Input:          []codexAppServerUserInput{{Type: "text", Text: text}},
 		ApprovalPolicy: "never",
-	}))
+	}
+	if model != "" {
+		params.Model = model
+	}
+	_, err := c.request(codexAppServerTurnStart(0, params))
 	if err != nil {
 		c.mu.Lock()
 		c.inFlight = false

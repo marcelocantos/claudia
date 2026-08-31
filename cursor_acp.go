@@ -292,7 +292,7 @@ func (c *cursorACPClient) handleSessionUpdate(params json.RawMessage) {
 		if text == "" {
 			return
 		}
-		c.onEvent(Event{Type: "assistant", SessionID: sessionID, TurnID: turnID, Raw: params, Text: text, Usage: usage})
+		c.onEvent(Event{Type: "assistant", SessionID: sessionID, TurnID: turnID, Raw: params, Text: text, Usage: usage, PreviewUpdate: PreviewUpdateAppend})
 	case "user_message_chunk":
 		text := ""
 		if p.Update.Content != nil {
@@ -518,6 +518,14 @@ func (c *cursorACPClient) Cancel() error {
 	return c.notify("session/cancel", map[string]any{"sessionId": sid})
 }
 
+// SetModel switches the ACP session model (🎯T54).
+func (c *cursorACPClient) SetModel(model string) error {
+	c.mu.Lock()
+	sid := c.sessionID
+	c.mu.Unlock()
+	return acpSetModel(c.request, sid, model)
+}
+
 func (c *cursorACPClient) promptInFlight() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -677,7 +685,7 @@ func cursorSessionPrecheck(req agentStartRequest) error {
 	if len(req.Config.ExtraArgs) > 0 {
 		return capabilityRefusal(ProviderCursor, CapabilityExtraArgs, cursorExtraArgsReason)
 	}
-	if req.Config.SandboxMode != "" {
+	if sandboxPolicyRequested(req.Config) {
 		return capabilityRefusal(ProviderCursor, CapabilitySandboxPolicy, sandboxPolicyIsCodexOnlyReason)
 	}
 	return nil
@@ -742,6 +750,9 @@ func startCursorAgent(req agentStartRequest) (*agentStart, error) {
 		},
 		promptInFlight: func(*Agent) bool {
 			return client.promptInFlight()
+		},
+		setModel: func(_ *Agent, model string) error {
+			return client.SetModel(model)
 		},
 	}
 	return &agentStart{

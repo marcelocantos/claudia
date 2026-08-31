@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -81,11 +82,11 @@ func dirExists(path string) bool {
 // temp home deleted (or never persisted) on coordinator death cannot
 // hold the rollout. RequireResume + a missing home is fail-loud and
 // names the path.
-func exclusiveCodexHomeForStart(sessionID string, requireResume bool, servers []MCPServer) (home string, cleanup func(), err error) {
+func exclusiveCodexHomeForStart(sessionID string, requireResume bool, servers []MCPServer, sandbox codexSandboxTuning) (home string, cleanup func(), err error) {
 	dest := exclusiveCodexHomeDir(sessionID)
 	if dest != "" {
 		if dirExists(dest) {
-			if err := writeExclusiveCodexHome(dest, servers); err != nil {
+			if err := writeExclusiveCodexHome(dest, servers, sandbox); err != nil {
 				return "", nil, err
 			}
 			return dest, func() {}, nil
@@ -93,12 +94,12 @@ func exclusiveCodexHomeForStart(sessionID string, requireResume bool, servers []
 		if requireResume {
 			return "", nil, fmt.Errorf("thread/resume: exclusive CODEX_HOME missing at %s — refusing to mint", dest)
 		}
-		if err := writeExclusiveCodexHome(dest, servers); err != nil {
+		if err := writeExclusiveCodexHome(dest, servers, sandbox); err != nil {
 			return "", nil, err
 		}
 		return dest, func() {}, nil
 	}
-	return prepareExclusiveCodexHome(servers)
+	return prepareExclusiveCodexHome(servers, sandbox)
 }
 
 // publishExclusiveCodexHome makes dest(sessionID) resolve to src without
@@ -216,20 +217,58 @@ func copyFileMode(src, dst string, mode os.FileMode) error {
 // config.toml. Never mutates ~/.codex/config.toml or the project tree.
 // Auth is copied read-only from the user home when present. Callers that
 // have a session id persist this dir via exclusiveCodexHomeCleanup.
-func prepareExclusiveCodexHome(servers []MCPServer) (home string, cleanup func(), err error) {
+func prepareExclusiveCodexHome(servers []MCPServer, sandbox codexSandboxTuning) (home string, cleanup func(), err error) {
 	dest, err := os.MkdirTemp("", "claudia-mcp-codex-")
 	if err != nil {
 		return "", nil, err
 	}
 	cleanup = func() { _ = os.RemoveAll(dest) }
-	if err := writeExclusiveCodexHome(dest, servers); err != nil {
+	if err := writeExclusiveCodexHome(dest, servers, sandbox); err != nil {
 		cleanup()
 		return "", nil, err
 	}
 	return dest, cleanup, nil
 }
 
-func writeExclusiveCodexHome(dest string, servers []MCPServer) error {
+// codexSandboxTuning is the part of a Codex sandbox that thread/start
+// cannot carry (🎯T598). Empty means "leave Codex's own defaults alone".
+type codexSandboxTuning struct {
+	WritableRoots []string
+	NetworkAccess bool
+}
+
+func (t codexSandboxTuning) empty() bool {
+	return len(t.WritableRoots) == 0 && !t.NetworkAccess
+}
+
+// codexSandboxTOML renders the [sandbox_workspace_write] stanza. Codex
+// reads these from CODEX_HOME/config.toml; no RPC accepts them, so this
+// file is the whole channel.
+func codexSandboxTOML(t codexSandboxTuning) string {
+	// Decide what there is to say BEFORE writing a header: a stanza with
+	// no keys is not harmless, it overrides whatever the user's own
+	// config said.
+	quoted := make([]string, 0, len(t.WritableRoots))
+	for _, r := range t.WritableRoots {
+		if r = strings.TrimSpace(r); r != "" {
+			quoted = append(quoted, strconv.Quote(r))
+		}
+	}
+	if len(quoted) == 0 && !t.NetworkAccess {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n[sandbox_workspace_write]\n")
+	if len(quoted) > 0 {
+		b.WriteString("writable_roots = [" + strings.Join(quoted, ", ") + "]\n")
+	}
+	if t.NetworkAccess {
+		b.WriteString("network_access = true\n")
+	}
+	return b.String()
+}
+
+func writeExclusiveCodexHome(dest string, servers []MCPServer, sandbox codexSandboxTuning) error {
 	userHome, err := os.UserHomeDir()
 	if err != nil {
 		return err
@@ -239,7 +278,8 @@ func writeExclusiveCodexHome(dest string, servers []MCPServer) error {
 	}
 	_ = copyFileIfExists(filepath.Join(userHome, ".codex", "auth.json"), filepath.Join(dest, "auth.json"))
 	cfg := filepath.Join(dest, "config.toml")
-	if err := os.WriteFile(cfg, []byte("# claudia session MCP\n"), 0o644); err != nil {
+	body := "# claudia session MCP\n" + codexSandboxTOML(sandbox)
+	if err := os.WriteFile(cfg, []byte(body), 0o644); err != nil {
 		return err
 	}
 	for _, s := range httpMCPServers(servers) {

@@ -70,7 +70,7 @@ func TestPrepareExclusiveHomesSkipUserMCP(t *testing.T) {
 	codex, cleanup2, err := prepareExclusiveCodexHome([]MCPServer{
 		{Name: "onlyme", URL: "http://127.0.0.1:9/mcp"},
 		{Name: "stdio", Command: "/bin/true"},
-	})
+	}, codexSandboxTuning{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +92,7 @@ func TestExclusiveCodexHomePersistsAndReuses(t *testing.T) {
 
 	src, cleanup, err := prepareExclusiveCodexHome([]MCPServer{
 		{Name: "onlyme", URL: "http://127.0.0.1:9/mcp"},
-	})
+	}, codexSandboxTuning{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +118,7 @@ func TestExclusiveCodexHomePersistsAndReuses(t *testing.T) {
 
 	home, reuseCleanup, err := exclusiveCodexHomeForStart(sid, true, []MCPServer{
 		{Name: "onlyme", URL: "http://127.0.0.1:9/mcp"},
-	})
+	}, codexSandboxTuning{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +135,7 @@ func TestPublishExclusiveCodexHomeAliasesThreadID(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	const minted = "fd4bbbe8-0000-4000-8000-000000d95306"
 	const thread = "01a0321d-ae2e-77d0-926c-c884a5add0fe"
-	src, _, err := exclusiveCodexHomeForStart(minted, false, nil)
+	src, _, err := exclusiveCodexHomeForStart(minted, false, nil, codexSandboxTuning{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +160,7 @@ func TestPublishExclusiveCodexHomeAliasesThreadID(t *testing.T) {
 func TestExclusiveCodexHomeMissingFailsLoud(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	const sid = "thr_missing_home"
-	_, _, err := exclusiveCodexHomeForStart(sid, true, nil)
+	_, _, err := exclusiveCodexHomeForStart(sid, true, nil, codexSandboxTuning{})
 	if err == nil {
 		t.Fatal("RequireResume with missing home succeeded")
 	}

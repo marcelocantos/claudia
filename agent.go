@@ -88,6 +88,24 @@ type Config struct {
 	// providers refuse a non-empty value rather than drop it.
 	SandboxMode string
 
+	// SandboxWritableRoots and SandboxNetworkAccess widen a Codex
+	// workspace-write sandbox beyond the working directory (🎯T598).
+	//
+	// These cannot ride thread/start. Its `sandbox` field is a UNIT
+	// variant — "read-only" | "workspace-write" | "danger-full-access" —
+	// and a map there is refused with "invalid type: map, expected unit".
+	// The sibling `sandboxPolicy` param looks like the right home and is
+	// worse than useless: the app-server accepts it and silently discards
+	// it, a deliberately bogus value included, so a client that used it
+	// would report success while the sandbox stayed read-only.
+	//
+	// The dimensions live in CODEX_HOME/config.toml
+	// ([sandbox_workspace_write] writable_roots, network_access), which
+	// claudia already owns per session, so they are written there.
+	// Verified against codex-cli 0.148.0-alpha.9 on 2026-08-31.
+	SandboxWritableRoots []string
+	SandboxNetworkAccess bool
+
 	// Goal is a durable host-owned objective for this Session. Empty
 	// keeps one-shot Send. When set, the Agent issues a continuation
 	// Send after each terminal assistant turn until Stop, Interrupt,
@@ -231,6 +249,12 @@ type Agent struct {
 	// blocks on this channel before writing to the agent.
 	ready    chan struct{}
 	readyErr error
+
+	// Claude Session provisional ⏺ preview (🎯T51). Nil on non-Claude
+	// backends. capturePane is injectable for hermetic pane fixtures.
+	tuiPreviewMu sync.Mutex
+	tuiPreview   *tuiPreviewTracker
+	capturePane  func() (string, error)
 }
 
 // nextEventSubID is a process-wide counter for event subscription tokens.
@@ -263,6 +287,9 @@ type agentOps struct {
 	stop          func(*Agent)
 	// promptInFlight is optional (Grok ACP). Nil → always false.
 	promptInFlight func(*Agent) bool
+	// setModel switches the in-session model within the same provider
+	// (🎯T54). Nil → SetModel refuses after the capability check.
+	setModel func(*Agent, string) error
 }
 
 type agentStartRequest struct {
@@ -396,6 +423,10 @@ func claudeAgentOps() agentOps {
 			if a.tmuxCtrl != nil {
 				a.tmuxCtrl.Close()
 			}
+		},
+		setModel: func(a *Agent, model string) error {
+			// Claude Code: /model <alias|id> switches the live session model.
+			return tmuxagent.SendKeys(a.tmuxWindowID, "/model "+model)
 		},
 	}
 }
@@ -575,6 +606,18 @@ func startWithBackend(cfg Config, backend agentBackend) (*Agent, error) {
 	if start.TailJSONL {
 		go a.tailJSONL()
 	}
+	// Claude Session: poll capture-pane for provisional ⏺ preview (🎯T51).
+	if start.TailJSONL && windowID != "" {
+		a.tuiPreview = &tuiPreviewTracker{}
+		a.capturePane = func() (string, error) {
+			b, err := tmuxagent.CapturePane(a.tmuxWindowID)
+			if err != nil {
+				return "", err
+			}
+			return string(b), nil
+		}
+		go a.pollTUIPreview()
+	}
 
 	if start.DetectReady != nil {
 		// Synchronous: Grok ACP needs agentRef wired before Send, and
@@ -617,8 +660,17 @@ func claudeAgentArgsWithMCP(req agentStartRequest, mcpConfig string) []string {
 	return append(args, req.Config.ExtraArgs...)
 }
 
+// sandboxPolicyRequested reports whether the caller asked for ANY Codex
+// sandbox tuning. Providers that cannot honour it must refuse rather than
+// drop it: a silently ignored sandbox request is how a seat comes up with
+// less access than its mission needs and fails only at its first gate
+// (🎯T598).
+func sandboxPolicyRequested(c Config) bool {
+	return c.SandboxMode != "" || len(c.SandboxWritableRoots) > 0 || c.SandboxNetworkAccess
+}
+
 func claudeSessionPrecheck(req agentStartRequest) error {
-	if req.Config.SandboxMode != "" {
+	if sandboxPolicyRequested(req.Config) {
 		return capabilityRefusal(ProviderClaude, CapabilitySandboxPolicy, sandboxPolicyIsCodexOnlyReason)
 	}
 	return nil
@@ -805,7 +857,7 @@ func grokSessionPrecheck(req agentStartRequest) error {
 	if len(req.Config.ExtraArgs) > 0 {
 		return capabilityRefusal(ProviderGrok, CapabilityExtraArgs, grokExtraArgsReason)
 	}
-	if req.Config.SandboxMode != "" {
+	if sandboxPolicyRequested(req.Config) {
 		return capabilityRefusal(ProviderGrok, CapabilitySandboxPolicy, sandboxPolicyIsCodexOnlyReason)
 	}
 	return nil
@@ -856,7 +908,11 @@ func startCodexAgent(req agentStartRequest) (*agentStart, error) {
 	var mcpCleanup func()
 	var exclusiveHome string
 	if needsSessionMCPMaterialization(req.Config) {
-		home, cleanup, herr := exclusiveCodexHomeForStart(req.SessionID, req.Config.RequireResume, mergeMCPServers(req.Config))
+		home, cleanup, herr := exclusiveCodexHomeForStart(req.SessionID, req.Config.RequireResume, mergeMCPServers(req.Config),
+			codexSandboxTuning{
+				WritableRoots: req.Config.SandboxWritableRoots,
+				NetworkAccess: req.Config.SandboxNetworkAccess,
+			})
 		if herr != nil {
 			return nil, herr
 		}
@@ -864,7 +920,9 @@ func startCodexAgent(req agentStartRequest) (*agentStart, error) {
 		mcpCleanup = cleanup
 		extraEnv = exclusiveEnv("CODEX_HOME", home)
 	}
-	client, err := startCodexAppServer(bin, req.WorkDir, req.Config.Model, req.SessionID, req.Config.RequireResume, req.Config.SandboxMode, extraEnv, onEvent, onClose)
+	client, err := startCodexAppServer(bin, req.WorkDir, req.Config.Model, req.SessionID, req.Config.RequireResume, req.Config.SandboxMode,
+		codexSandboxTuning{WritableRoots: req.Config.SandboxWritableRoots, NetworkAccess: req.Config.SandboxNetworkAccess},
+		extraEnv, onEvent, onClose)
 	if err != nil {
 		if mcpCleanup != nil {
 			mcpCleanup()
@@ -894,6 +952,9 @@ func startCodexAgent(req agentStartRequest) (*agentStart, error) {
 		},
 		promptInFlight: func(*Agent) bool {
 			return client.promptInFlight()
+		},
+		setModel: func(_ *Agent, model string) error {
+			return client.SetModel(model)
 		},
 	}
 	return &agentStart{
@@ -997,6 +1058,9 @@ func startGrokAgent(req agentStartRequest) (*agentStart, error) {
 		},
 		promptInFlight: func(*Agent) bool {
 			return client.promptInFlight()
+		},
+		setModel: func(_ *Agent, model string) error {
+			return client.SetModel(model)
 		},
 	}
 
@@ -1282,11 +1346,59 @@ func (a *Agent) Usage() Usage {
 // [Config.Model] to detect silent fallback: an alias such as "opus" resolves
 // to its full id here. An unusable model surfaces as "<synthetic>" with
 // [Event.IsError] set — [Agent.WaitForResponse] returns that as a descriptive
-// error rather than a normal reply.
+// error rather than a normal reply. After a successful [Agent.SetModel], this
+// reflects the requested model until a later event publishes a resolved id.
 func (a *Agent) Model() string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.model
+}
+
+// SetModel switches the model used for subsequent turns on this Session
+// without changing provider (🎯T54). Empty model is rejected. Refuses while
+// a turn is in flight. Support is gated by [CapabilityModelSwitch]:
+// Claude sends `/model <name>` into the TUI; Codex applies model on the
+// next turn/start; Grok/Cursor use ACP session/set_config_option (with
+// legacy session/set_model fallback). Task-only providers refuse.
+//
+// On success, [Agent.Model] is updated immediately to the requested string
+// and a Type=system Event with that Model is published so subscribers see
+// the switch; a later assistant event may refine Model to a fully resolved id.
+func (a *Agent) SetModel(model string) error {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return fmt.Errorf("SetModel: model must be non-empty")
+	}
+	if err := CheckCapability(a.provider, CapabilityModelSwitch); err != nil {
+		return err
+	}
+	<-a.ready
+	if a.readyErr != nil {
+		return fmt.Errorf("agent not ready: %w", a.readyErr)
+	}
+	a.mu.Lock()
+	alive := a.alive
+	a.mu.Unlock()
+	if !alive {
+		return fmt.Errorf("agent process not running")
+	}
+	if a.PromptInFlight() {
+		return fmt.Errorf("SetModel: turn in flight; wait for the current response or Interrupt first")
+	}
+	if a.ops.setModel == nil {
+		return unsupportedCapability(a.provider, CapabilityModelSwitch,
+			"provider did not supply a setModel operation")
+	}
+	if err := a.ops.setModel(a, model); err != nil {
+		return err
+	}
+	a.publishEvent(Event{
+		Type:      "system",
+		SessionID: a.sessionID,
+		Model:     model,
+		Text:      "model switch: " + model,
+	})
+	return nil
 }
 
 func (a *Agent) publishEvent(ev Event) {
@@ -1629,8 +1741,82 @@ func (a *Agent) tailJSONL() {
 		}
 
 		ev := correlator.correlate(parseEvent(line))
-
+		a.applyClaudeTUIPreviewTranscript(ev)
 		a.publishEvent(ev)
+	}
+}
+
+const tuiPreviewPollInterval = 100 * time.Millisecond
+
+// pollTUIPreview periodically captures the Claude tmux pane and publishes
+// provisional ⏺ preview (and invariant fault) Events (🎯T51 / 🎯T51.4).
+func (a *Agent) pollTUIPreview() {
+	ticker := time.NewTicker(tuiPreviewPollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			if !a.Alive() {
+				return
+			}
+			if a.capturePane == nil {
+				continue
+			}
+			frame, err := a.capturePane()
+			if err != nil {
+				continue
+			}
+			a.ObservePaneFrame(frame)
+		}
+	}
+}
+
+// ObservePaneFrame feeds a capture-pane frame into the Claude TUI preview
+// tracker and publishes resulting Events. Hermetic tests inject fixtures
+// here; the live path uses pollTUIPreview (🎯T51).
+func (a *Agent) ObservePaneFrame(frame string) {
+	a.tuiPreviewMu.Lock()
+	tr := a.tuiPreview
+	if tr == nil {
+		a.tuiPreviewMu.Unlock()
+		return
+	}
+	evs := tr.observeFrame(frame)
+	a.tuiPreviewMu.Unlock()
+
+	for _, ev := range evs {
+		ev.SessionID = a.sessionID
+		if ev.ProgressType == ProgressTUIPreviewFault {
+			slog.Error("claude tui preview invariant failed",
+				"session", a.sessionID,
+				"turn", ev.TurnID,
+				"message_id", ev.MessageID,
+				"report", ev.Text,
+			)
+		}
+		a.publishEvent(ev)
+	}
+}
+
+// applyClaudeTUIPreviewTranscript updates turn baseline / seal state from
+// transcript events. User prompts open a turn; assistant-text seals the
+// next open ⏺ in order (🎯T51.3).
+func (a *Agent) applyClaudeTUIPreviewTranscript(ev Event) {
+	a.tuiPreviewMu.Lock()
+	defer a.tuiPreviewMu.Unlock()
+	if a.tuiPreview == nil {
+		return
+	}
+	if len(ev.Raw) > 0 && isUserPromptLine(ev.Raw) {
+		turnID := ev.RecordID
+		if turnID == "" {
+			turnID = ev.TurnID
+		}
+		a.tuiPreview.resetTurn(turnID)
+		return
+	}
+	if ev.Type == "assistant" && strings.TrimSpace(ev.Text) != "" {
+		a.tuiPreview.sealAssistantText()
 	}
 }
 

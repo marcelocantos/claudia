@@ -102,6 +102,15 @@ type AgentDef struct {
 	// default of read-only (🎯T37).
 	SandboxMode string `json:"sandbox_mode,omitempty"`
 
+	// SandboxWritableRoots and SandboxNetworkAccess widen that sandbox
+	// beyond the working directory (🎯T598). They reach Codex through
+	// CODEX_HOME/config.toml, not through thread/start, which cannot
+	// express them. Persisted so a relaunch keeps the access the seat's
+	// mission needs — a seat silently narrowed on restart fails at its
+	// next gate, not at launch.
+	SandboxWritableRoots []string `json:"sandbox_writable_roots,omitempty"`
+	SandboxNetworkAccess bool     `json:"sandbox_network_access,omitempty"`
+
 	// Goal is the durable host-owned Session objective (🎯T39). Copied
 	// onto Config.Goal at Launch/Adopt so a provider switch keeps the
 	// same objective. Empty means one-shot Send.
@@ -261,19 +270,21 @@ func (r *Registry) Launch(name string) (*Agent, error) {
 
 	wantResume := r.requireResumeLocked(def)
 	proc, err := registryStart(Config{
-		Provider:      def.Provider,
-		WorkDir:       def.WorkDir,
-		SessionID:     def.SessionID,
-		RequireResume: wantResume,
-		Model:         def.Model,
-		DisallowTools: def.DisallowTools,
-		MCPServers:    def.MCPServers,
-		MCPExclusive:  def.MCPExclusive,
-		GrokConnect:   def.GrokConnect || def.ConnectURL != "",
-		ConnectURL:    def.ConnectURL,
-		ConnectPID:    def.ConnectPID,
-		SandboxMode:   def.SandboxMode,
-		Goal:          def.Goal,
+		Provider:             def.Provider,
+		WorkDir:              def.WorkDir,
+		SessionID:            def.SessionID,
+		RequireResume:        wantResume,
+		Model:                def.Model,
+		DisallowTools:        def.DisallowTools,
+		MCPServers:           def.MCPServers,
+		MCPExclusive:         def.MCPExclusive,
+		GrokConnect:          def.GrokConnect || def.ConnectURL != "",
+		ConnectURL:           def.ConnectURL,
+		ConnectPID:           def.ConnectPID,
+		SandboxMode:          def.SandboxMode,
+		SandboxWritableRoots: def.SandboxWritableRoots,
+		SandboxNetworkAccess: def.SandboxNetworkAccess,
+		Goal:                 def.Goal,
 	})
 	if err != nil {
 		if IsCursorResumeDenied(err) {
@@ -341,19 +352,21 @@ func (r *Registry) Adopt(name string) (*Agent, error) {
 	}
 
 	cfg := Config{
-		Provider:      def.Provider,
-		WorkDir:       def.WorkDir,
-		SessionID:     def.SessionID,
-		RequireResume: r.requireResumeLocked(def),
-		Model:         def.Model,
-		DisallowTools: def.DisallowTools,
-		MCPServers:    def.MCPServers,
-		MCPExclusive:  def.MCPExclusive,
-		GrokConnect:   def.GrokConnect || def.ConnectURL != "",
-		ConnectURL:    def.ConnectURL,
-		ConnectPID:    def.ConnectPID,
-		SandboxMode:   def.SandboxMode,
-		Goal:          def.Goal,
+		Provider:             def.Provider,
+		WorkDir:              def.WorkDir,
+		SessionID:            def.SessionID,
+		RequireResume:        r.requireResumeLocked(def),
+		Model:                def.Model,
+		DisallowTools:        def.DisallowTools,
+		MCPServers:           def.MCPServers,
+		MCPExclusive:         def.MCPExclusive,
+		GrokConnect:          def.GrokConnect || def.ConnectURL != "",
+		ConnectURL:           def.ConnectURL,
+		ConnectPID:           def.ConnectPID,
+		SandboxMode:          def.SandboxMode,
+		SandboxWritableRoots: def.SandboxWritableRoots,
+		SandboxNetworkAccess: def.SandboxNetworkAccess,
+		Goal:                 def.Goal,
 	}
 
 	var proc *Agent
