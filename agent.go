@@ -406,6 +406,22 @@ func (b errorAgentBackend) StartAgent(agentStartRequest) (*agentStart, error) {
 
 func claudeAgentOps() agentOps {
 	return agentOps{
+		// 🎯T601: a tmux Claude session must answer this from the pane.
+		// Leaving it unset made Agent.PromptInFlight() return a confident
+		// false for every Claude session — not "unknown", but "no turn is
+		// running" while one visibly was. A caller using that to decide
+		// whether an agent is wedged concludes the wrong thing precisely
+		// when a turn is long, which is when it matters.
+		promptInFlight: func(a *Agent) bool {
+			if a == nil || a.tmuxWindowID == "" {
+				return false
+			}
+			frame, err := tmuxagent.CapturePane(a.tmuxWindowID)
+			if err != nil {
+				return false
+			}
+			return tmuxagent.MatchTurnInProgress(frame)
+		},
 		attachCommand: func(a *Agent) string {
 			return fmt.Sprintf("tmux -S %s attach -t %s", tmuxagent.SocketPath(), a.tmuxWindowID)
 		},
