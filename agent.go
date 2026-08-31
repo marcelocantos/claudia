@@ -226,6 +226,15 @@ type Agent struct {
 	// part of the pool key. Set by buildPoolAgent; empty for Start agents.
 	poolWorkDir string
 
+	// windowAliveFn probes whether this agent's tmux window still exists
+	// (🎯T602). Set by the tmux backend at start; nil everywhere else,
+	// which is what keeps hermetic fixtures — and every non-tmux
+	// provider — out of the probe. A synthetic window id is not a claim
+	// that tmux knows about it.
+	windowAliveFn func(string) bool
+	windowCheckAt time.Time
+	windowCheckOK bool
+
 	// Host-owned goal loop (🎯T39). goal is copied from Config at Start.
 	goal              string
 	goalClosed        bool
@@ -303,7 +312,12 @@ type agentStartRequest struct {
 }
 
 type agentStart struct {
-	WindowID             string
+	WindowID string
+	// WindowAlive probes whether WindowID still exists (🎯T602). Only a
+	// backend that really created a tmux window sets it; a fixture with a
+	// synthetic WindowID leaves it nil and keeps the old flag-only
+	// liveness, which is what keeps hermetic tests hermetic.
+	WindowAlive          func(string) bool
 	Control              agentControl
 	Ops                  agentOps
 	TailJSONL            bool
@@ -577,6 +591,7 @@ func startWithBackend(cfg Config, backend agentBackend) (*Agent, error) {
 	}
 	windowID := start.WindowID
 	a.tmuxWindowID = windowID
+	a.windowAliveFn = start.WindowAlive
 	a.tmuxCtrl = start.Control
 	a.ops = start.Ops
 	a.connectURL = start.ConnectURL
@@ -796,6 +811,7 @@ func attachClaudeWindow(windowID string) (*agentStart, error) {
 	}
 	return &agentStart{
 		WindowID:             windowID,
+		WindowAlive:          tmuxagent.IsWindowAlive,
 		Control:              ctrl,
 		Ops:                  claudeAgentOps(),
 		TailJSONL:            true,
@@ -1205,11 +1221,57 @@ func (a *Agent) AttachCommand() string {
 // (stdio child or WebSocket). For Grok connect-mode a dropped WebSocket
 // makes Alive false even if the serve PID still runs — use [Agent.PID]
 // + process reattach rather than treating the stale Agent as usable.
+// Alive reports whether this agent can still be reached.
+//
+// For a tmux-backed session the WINDOW is the agent: if it is gone the
+// agent is gone, whatever the in-process flag remembers. Returning the
+// cached flag alone was a lie with consequences (🎯T602) — on 2026-08-31
+// the overseer's window vanished and the daemon went on believing the
+// process alive, so its converge loop chose "unstick" over "launch" and
+// tried, every 90 seconds and forever, to send Escape to a window tmux
+// had already forgotten:
+//
+//	cockpit: interrupt failed: tmux send-keys Escape: can't find window: @124
+//
+// It could not self-heal, because the one fact that would have triggered
+// a relaunch was the fact it had wrong. Every stuck episode that day
+// needed a human to restart the daemon.
+//
+// The window check is cached briefly: Alive is on the converge loop's
+// path (every few seconds, per agent) and each miss costs a tmux exec.
 func (a *Agent) Alive() bool {
 	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.alive
+	alive := a.alive
+	win := a.tmuxWindowID
+	probe := a.windowAliveFn
+	if !alive || win == "" || probe == nil {
+		a.mu.Unlock()
+		return alive
+	}
+	if time.Since(a.windowCheckAt) < windowCheckTTL {
+		ok := a.windowCheckOK
+		a.mu.Unlock()
+		return ok
+	}
+	a.mu.Unlock()
+
+	ok := probe(win)
+
+	a.mu.Lock()
+	a.windowCheckAt, a.windowCheckOK = time.Now(), ok
+	if !ok {
+		// Latch it: a window does not come back, and later callers
+		// should not pay for the probe again.
+		a.alive = false
+	}
+	a.mu.Unlock()
+	return ok
 }
+
+// windowCheckTTL bounds how stale the tmux window answer may be. Short
+// enough that a lost window is noticed within one converge tick, long
+// enough that agent_list does not shell out per row per request.
+const windowCheckTTL = 2 * time.Second
 
 // PID returns the durable agent OS process id when known (Grok
 // connect-mode serve PID). Zero for stdio children or Claude tmux
