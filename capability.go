@@ -58,7 +58,7 @@ const (
 	CapabilityExtraArgs Capability = "extra_args"
 	// CapabilityModelSwitch is changing the model on a live Session
 	// without leaving the provider ([Agent.SetModel]). Inter-provider
-	// migration is a separate target.
+	// Session moves use [CapabilityMigrate] / [Agent.Migrate].
 	CapabilityModelSwitch Capability = "model_switch"
 	// CapabilityMigrate is moving a live Session to a different
 	// Provider ([Agent.Migrate]). Session providers that claudia

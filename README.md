@@ -192,6 +192,13 @@ if err := agent.Send("What does this repo do?"); err != nil {
 reply, err := agent.WaitForResponse(ctx)
 ```
 
+Same-provider model change is `agent.SetModel("sonnet")`. Switching
+providers on a live Session is
+`agent.Migrate(&claudia.MigrateArgs{Provider: claudia.ProviderGrok})`:
+a new native destination session, an inert distilled seed, and the
+same `*Agent` handle and event subscriptions. Claudia does not
+auto-migrate. See [agents-guide.md](agents-guide.md).
+
 `Config.Goal` (also `AgentDef.Goal`) is a host-owned Session
 objective. Empty keeps one-shot `Send`. When set, the Agent issues a
 continuation `Send` after each terminal assistant turn until `Stop`,
@@ -281,7 +288,7 @@ if err := claudia.CheckCapability(
 `ProviderCapabilityMatrix(provider)` returns the whole table. Unknown
 providers and unclaimed capabilities report `CapabilityUnsupported`:
 silence never reads as parity with Claude. See
-[STABILITY.md](STABILITY.md) for the current five-provider matrix —
+[STABILITY.md](STABILITY.md) for the current six-provider matrix —
 including that a Codex task carrying `DisallowTools` is refused, because
 `codex exec` has no per-tool disallow flag to honour it with.
 

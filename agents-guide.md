@@ -606,6 +606,11 @@ owns a single short-lived agent, skip the Registry.
    | Migrate (inter-provider) | Supported | Supported | Supported | Unsupported | Unsupported |
    | Web search | Supported | Unsupported (does not bind `--search`) | Unsupported | Unsupported | Unsupported |
 
+   Cursor is a sixth Session provider (ACP, like Grok): Task, Session,
+   Resume, model switch, and migrate are Supported; Rewind, ExtraArgs,
+   sandbox, and tool restrictions refuse. Query `ProviderCapabilityMatrix`
+   rather than this abbreviated table for Cursor.
+
    This table is generated from the same claims production reads. Query
    it with `claudia.ProviderCapabilityMatrix(provider)`, or gate one
    call with `claudia.CheckCapability(provider, capability)`, which
@@ -621,11 +626,11 @@ owns a single short-lived agent, skip the Registry.
    Don't try to re-enable these.
 
    Those are Claude Code tool names, and `BaseDisallowedTools` is
-   applied on Claude only — never on Codex, Grok, Bedrock, or Ollama. Rather
-   than pretend otherwise, the non-Claude providers report
-   `CapabilityToolRestrictions` as unsupported, and a Codex **or Grok**
-   task carrying `DisallowTools` is refused outright rather than run
-   with the restriction dropped (see the matrix above).
+   applied on Claude only — never on Codex, Grok, Cursor, Bedrock, or
+   Ollama. Rather than pretend otherwise, the non-Claude providers
+   report `CapabilityToolRestrictions` as unsupported, and a Codex,
+   Grok, or Cursor task carrying `DisallowTools` is refused outright
+   rather than run with the restriction dropped (see the matrix above).
 
    The same rule applies to every caller-supplied field: a path that
    cannot honour it returns `*CapabilityError` (Grok Session also
@@ -644,10 +649,13 @@ owns a single short-lived agent, skip the Registry.
    and closing it means wiring the translation, the argv builder and
    the claim in one change.
 
-3. **Session resumption is automatic.** `Start` checks whether
-   `<SessionID>.jsonl` exists under Claude Code's project directory.
-   If it does, claudia passes `--resume`; otherwise `--session-id`.
-   Pass a stable `SessionID` to get resumption for free.
+3. **Session resumption is automatic on `Start`.** `Start` checks
+   whether `<SessionID>.jsonl` exists under Claude Code's project
+   directory. If it does, claudia passes `--resume`; otherwise
+   `--session-id`. Pass a stable `SessionID` to get resumption for
+   free. **`Migrate` is the opposite:** the destination is always a
+   new native session (`Resuming=false`). Claudia never `--resume` or
+   `session/load` the predecessor's id on the destination provider.
 
 4. **Terminal log files are append-only, with no run-boundary markers.**
    Resumed sessions concatenate PTY output across runs — this is a
