@@ -925,6 +925,36 @@ func codexSessionPrecheck(req agentStartRequest) error {
 	return nil
 }
 
+// acpBind wires an ACP/app-server client to an Agent after Start
+// constructs it. onClose is generation-gated so a source Close after
+// [Agent.Migrate] cannot mark the destination dead (🎯T55).
+type acpBind struct {
+	ref atomic.Pointer[Agent]
+	gen atomic.Uint64
+}
+
+func (b *acpBind) onEvent(ev Event) {
+	if a := b.ref.Load(); a != nil {
+		a.publishEvent(ev)
+	}
+}
+
+func (b *acpBind) onClose() {
+	if a := b.ref.Load(); a != nil {
+		if a.backendGen.Load() != b.gen.Load() {
+			return
+		}
+		a.mu.Lock()
+		a.alive = false
+		a.mu.Unlock()
+	}
+}
+
+func (b *acpBind) attach(a *Agent) {
+	b.gen.Store(a.backendGen.Load())
+	b.ref.Store(a)
+}
+
 func startCodexAgent(req agentStartRequest) (*agentStart, error) {
 	if err := codexSessionPrecheck(req); err != nil {
 		return nil, err
@@ -937,19 +967,7 @@ func startCodexAgent(req agentStartRequest) (*agentStart, error) {
 		return nil, err
 	}
 
-	var agentRef atomic.Pointer[Agent]
-	onEvent := func(ev Event) {
-		if a := agentRef.Load(); a != nil {
-			a.publishEvent(ev)
-		}
-	}
-	onClose := func() {
-		if a := agentRef.Load(); a != nil {
-			a.mu.Lock()
-			a.alive = false
-			a.mu.Unlock()
-		}
-	}
+	var bind acpBind
 
 	var extraEnv []string
 	var mcpCleanup func()
@@ -969,7 +987,7 @@ func startCodexAgent(req agentStartRequest) (*agentStart, error) {
 	}
 	client, err := startCodexAppServer(bin, req.WorkDir, req.Config.Model, req.SessionID, req.Config.RequireResume, req.Config.SandboxMode,
 		codexSandboxTuning{WritableRoots: req.Config.SandboxWritableRoots, NetworkAccess: req.Config.SandboxNetworkAccess},
-		extraEnv, onEvent, onClose)
+		extraEnv, bind.onEvent, bind.onClose)
 	if err != nil {
 		if mcpCleanup != nil {
 			mcpCleanup()
@@ -1011,7 +1029,7 @@ func startCodexAgent(req agentStartRequest) (*agentStart, error) {
 		TailJSONL: false,
 		SessionID: sid,
 		DetectReady: func(a *Agent) {
-			agentRef.Store(a)
+			bind.attach(a)
 			if m := client.Model(); m != "" {
 				a.publishEvent(Event{Type: "system", Model: m})
 			}
@@ -1040,19 +1058,7 @@ func startGrokAgent(req agentStartRequest) (*agentStart, error) {
 	// Client is closed via ops.stop. publishEvent is wired once Agent exists;
 	// we stash a pointer-to-func that Start fills after construction by
 	// closing ready immediately and using ops that capture the client.
-	var agentRef atomic.Pointer[Agent]
-	onEvent := func(ev Event) {
-		if a := agentRef.Load(); a != nil {
-			a.publishEvent(ev)
-		}
-	}
-	onClose := func() {
-		if a := agentRef.Load(); a != nil {
-			a.mu.Lock()
-			a.alive = false
-			a.mu.Unlock()
-		}
-	}
+	var bind acpBind
 
 	var extraEnv []string
 	var mcpCleanup func()
@@ -1068,9 +1074,9 @@ func startGrokAgent(req agentStartRequest) (*agentStart, error) {
 
 	var client *grokACPClient
 	if plan.Connect {
-		client, err = startGrokACPConnect(bin, plan.WorkDir, plan.Model, preferID, plan.RequireResume, plan.MCPServers, req.Config, extraEnv, onEvent, onClose)
+		client, err = startGrokACPConnect(bin, plan.WorkDir, plan.Model, preferID, plan.RequireResume, plan.MCPServers, req.Config, extraEnv, bind.onEvent, bind.onClose)
 	} else {
-		client, err = startGrokACP(bin, plan.WorkDir, plan.Model, preferID, plan.RequireResume, plan.MCPServers, extraEnv, onEvent, onClose)
+		client, err = startGrokACP(bin, plan.WorkDir, plan.Model, preferID, plan.RequireResume, plan.MCPServers, extraEnv, bind.onEvent, bind.onClose)
 	}
 	if err != nil {
 		if mcpCleanup != nil {
@@ -1122,7 +1128,7 @@ func startGrokAgent(req agentStartRequest) (*agentStart, error) {
 		// Leave JSONLPath empty: Grok Session is not a Claude JSONL transcript.
 		DetectReady: func(a *Agent) {
 			// Must run before Send: wire publishEvent target, then mark ready.
-			agentRef.Store(a)
+			bind.attach(a)
 			select {
 			case <-a.ready:
 			default:

@@ -55,8 +55,8 @@
       "edits": [
         {
           "file": "agent.go",
-          "find": "\treturn a.ops.send(a, msg)\n",
-          "replace": "\t_ = a.ops.send(a, msg)\n\treturn nil\n"
+          "find": "\tif err := a.ops.send(a, msg); err != nil {\n\t\treturn err\n\t}\n",
+          "replace": "\tif err := a.ops.send(a, msg); err != nil {\n\t\treturn nil\n\t}\n"
         }
       ],
       "tests": [

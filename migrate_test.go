@@ -283,6 +283,87 @@ func TestMigrateSameProviderRefused(t *testing.T) {
 	}
 }
 
+func TestMigrateClaudeShapedDestKeepsMintedSessionID(t *testing.T) {
+	src, _ := startMigrateFixture(t, ProviderGrok, "fake-grok")
+	src.PublishEvent(Event{Type: "user", Text: "switch to claude"})
+	src.PublishEvent(Event{Type: "assistant", Text: "ok"})
+	fromID := src.SessionID()
+	dest := &fakeAgentBackend{name: "fake-claude-attach", tailJSONL: true, omitStartIDs: true}
+
+	var got []Event
+	src.SubscribeEvents(func(ev Event) { got = append(got, ev) })
+
+	if err := src.migrateWithBackend(&MigrateArgs{Provider: ProviderClaude, Model: "sonnet"}, dest); err != nil {
+		t.Fatal(err)
+	}
+	dest.mu.Lock()
+	if len(dest.requests) != 1 {
+		dest.mu.Unlock()
+		t.Fatal("dest not started")
+	}
+	reqID := dest.requests[0].SessionID
+	workDir := dest.requests[0].WorkDir
+	dest.mu.Unlock()
+	if reqID == "" {
+		t.Fatal("claude dest request SessionID is empty; mint never reached StartAgent")
+	}
+	if reqID == fromID {
+		t.Fatal("dest SessionID reused the predecessor id")
+	}
+	if src.SessionID() != reqID {
+		t.Fatalf("Agent.SessionID() = %q, want minted destID %q", src.SessionID(), reqID)
+	}
+	wantJSONL := SessionJSONLPath(reqID, workDir)
+	if src.JSONLPath() != wantJSONL {
+		t.Fatalf("JSONLPath = %q, want %q", src.JSONLPath(), wantJSONL)
+	}
+	var switchEv *Event
+	for i := range got {
+		if got[i].ProgressType == ProgressModelSwitch {
+			switchEv = &got[i]
+			break
+		}
+	}
+	if switchEv == nil {
+		t.Fatalf("no model_switch in %v", eventTypes(got))
+	}
+	if switchEv.SessionID != reqID {
+		t.Fatalf("switch Event SessionID = %q, want %q", switchEv.SessionID, reqID)
+	}
+}
+
+func TestMigrateSourceACPCloseLeavesDestAlive(t *testing.T) {
+	src, _ := startMigrateFixture(t, ProviderGrok, "fake-grok")
+	src.PublishEvent(Event{Type: "user", Text: "go"})
+	src.PublishEvent(Event{Type: "assistant", Text: "ok"})
+	var srcBind acpBind
+	srcBind.attach(src)
+	dest := &fakeAgentBackend{name: "fake-claude-attach", tailJSONL: true, omitStartIDs: true}
+	if err := src.migrateWithBackend(&MigrateArgs{Provider: ProviderClaude}, dest); err != nil {
+		t.Fatal(err)
+	}
+	srcBind.onClose()
+	if !src.Alive() {
+		t.Fatal("source ACP onClose after swap marked dest dead")
+	}
+}
+
+func TestACPBindOnCloseIgnoresStaleGeneration(t *testing.T) {
+	a := &Agent{alive: true}
+	var b acpBind
+	b.attach(a)
+	a.backendGen.Add(1)
+	b.onClose()
+	if !a.Alive() {
+		t.Fatal("source onClose after migrate marked dest dead")
+	}
+	b.attach(a)
+	b.onClose()
+	if a.Alive() {
+		t.Fatal("current-generation onClose must mark the agent dead")
+	}
+}
+
 func TestMigrateUnsupportedSource(t *testing.T) {
 	a := &Agent{provider: ProviderOllama, alive: true, ready: make(chan struct{})}
 	close(a.ready)

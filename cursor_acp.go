@@ -710,21 +710,9 @@ func startCursorAgent(req agentStartRequest) (*agentStart, error) {
 	} else if plan.PreferSessionID != "" {
 		ReapCursorACPLeftovers(plan.PreferSessionID, 0)
 	}
-	var agentRef atomic.Pointer[Agent]
-	onEvent := func(ev Event) {
-		if a := agentRef.Load(); a != nil {
-			a.publishEvent(ev)
-		}
-	}
-	onClose := func() {
-		if a := agentRef.Load(); a != nil {
-			a.mu.Lock()
-			a.alive = false
-			a.mu.Unlock()
-		}
-	}
+	var bind acpBind
 
-	client, err := startCursorACP(bin, plan.WorkDir, plan.Model, plan.PreferSessionID, plan.RequireResume, plan.MCPServers, nil, onEvent, onClose)
+	client, err := startCursorACP(bin, plan.WorkDir, plan.Model, plan.PreferSessionID, plan.RequireResume, plan.MCPServers, nil, bind.onEvent, bind.onClose)
 	if err != nil {
 		if plan.PreferSessionID != "" {
 			ReapCursorACPLeftovers(plan.PreferSessionID, 0)
@@ -762,7 +750,7 @@ func startCursorAgent(req agentStartRequest) (*agentStart, error) {
 		SessionID:  sid,
 		ConnectPID: pid,
 		DetectReady: func(a *Agent) {
-			agentRef.Store(a)
+			bind.attach(a)
 			select {
 			case <-a.ready:
 			default:

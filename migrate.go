@@ -361,7 +361,7 @@ func (a *Agent) migrateWithBackend(args *MigrateArgs, destBackend agentBackend) 
 		toModel = destCfg.Model
 	}
 
-	a.swapBackend(args.Provider, destCfg, start)
+	a.swapBackend(args.Provider, destCfg, start, destID)
 
 	toSession := a.SessionID()
 	a.publishEvent(Event{
@@ -415,7 +415,7 @@ func migrateDestConfig(src Config, args *MigrateArgs) Config {
 	return cfg
 }
 
-func (a *Agent) swapBackend(provider Provider, cfg Config, start *agentStart) {
+func (a *Agent) swapBackend(provider Provider, cfg Config, start *agentStart, destID string) {
 	a.backendGen.Add(1)
 	if a.ops.stop != nil {
 		a.ops.stop(a)
@@ -425,19 +425,24 @@ func (a *Agent) swapBackend(provider Provider, cfg Config, start *agentStart) {
 		a.mcpCleanup = nil
 	}
 
+	sid := start.SessionID
+	if sid == "" {
+		sid = destID
+	}
+	jsonl := start.JSONLPath
+	if jsonl == "" && start.TailJSONL && sid != "" {
+		jsonl = SessionJSONLPath(sid, cfg.WorkDir)
+	}
+
 	a.mu.Lock()
 	a.provider = provider
 	a.startCfg = cfg
 	a.alive = true
 	a.ready = make(chan struct{})
 	a.readyErr = nil
-	if start.SessionID != "" {
-		a.sessionID = start.SessionID
-	} else {
-		a.sessionID = ""
-	}
-	if start.JSONLPath != "" {
-		a.jsonlPath = start.JSONLPath
+	a.sessionID = sid
+	if jsonl != "" {
+		a.jsonlPath = jsonl
 	} else if !start.TailJSONL {
 		a.jsonlPath = ""
 	}
