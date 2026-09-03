@@ -428,6 +428,36 @@ buffered history and a live channel of PTY chunks. Always call
 `UnsubscribeTerminal(ch)` when done. Subscribers that don't drain
 their channel drop data (sends are non-blocking).
 
+**Provisional TUI preview (Claude Session)**: while a turn is open,
+Claude Session publishes `Type=progress` Events with
+`ProgressType=tui_preview`. `Text` is **generated Markdown** from a full
+scrape parse under open `⏺` blocks (blank-line paragraphs with soft-wrap
+join; box-drawing tables as pipe Markdown, truncated at the last complete
+row while the grid is still painting) — not raw pane glyphs. Tool chrome
+(`⏺ Bash(...)`, `Ran N shell command(s)`) is excluded.
+
+`Event.PreviewUpdate` tells every client how to apply provisional text
+without branching on provider:
+- `append` — `Text` is a suffix delta to append to the open buffer
+- `rewrite` — `Text` replaces the open buffer wholesale
+
+Claude derives the kind by prefix-comparing generated Markdown snapshots
+(scrape reflows become `rewrite`, not errors). Grok/Cursor ACP
+`agent_message_chunk` events set `PreviewUpdate=append` on
+`Type=assistant` chunks so the same client rule applies to true streams.
+When the matching assistant-text JSONL lands, a normal `Type=assistant`
+Event (no `PreviewUpdate`) seals that block — replace the provisional
+blob with `Event.Text`. `WaitForResponse` ignores preview (and
+preview-fault) Events; JSONL remains the completion path. Preview is
+UX-only: not billed, not durable reply.
+
+Scrape chrome assumptions still use checked invariants
+(`ran_shell_chrome_form`). Open-block scroll-off is trimmed silently
+(viewport capture has no scrollback). Failures publish
+`ProgressType=tui_preview_fault` with invariant id, detail, and a bounded
+pane excerpt (also `slog.Error`). That usually means Claude Code TUI
+chrome changed.
+
 **Usage accounting**: `Agent.Usage()` returns cumulative token counts
 parsed from the JSONL transcript. The counts accumulate across turns
 for the lifetime of the agent. Unlike Task mode (which reports per-prompt
@@ -451,9 +481,32 @@ init, then fails mid-turn with `message.model` `"<synthetic>"`,
 that as `TaskEventError` whose `ErrorMsg` names the model. Session mode
 sets `Event.IsError` and `WaitForResponse` returns that text as an
 `error` immediately — it never hangs to context timeout and never
-treats the synthetic message as a normal reply. The model is fixed at
-process launch: pass it on every spawn; it cannot be changed on an
-already-running or attached instance except via an in-session `/model`.
+treats the synthetic message as a normal reply.
+
+**Switching models mid-session (same provider)**: call
+`agent.SetModel("sonnet")` (or any provider-native id/alias). This is
+gated by the `model_switch` capability: Claude types `/model <name>` into
+the live TUI; Codex applies the model on the next `turn/start`; Grok and
+Cursor use ACP `session/set_config_option` (legacy `session/set_model`
+fallback). SetModel refuses an empty name, a dead agent, or a turn still
+in flight. On success it publishes a `Type=system` Event carrying the
+requested `Model` and `Agent.Model()` updates immediately (a later
+assistant event may refine it to a fully resolved id). Task-only
+providers (Bedrock, Ollama) refuse. Switching *providers* on a live
+conversation uses [Agent.Migrate] (🎯T55), not SetModel.
+
+**Switching providers mid-session**: `agent.Migrate(&claudia.MigrateArgs{Provider: claudia.ProviderGrok, Model: "grok-4"})`.
+Gated by the `migrate` capability: supported for Claude, Codex, Grok, and Cursor Sessions; Task-only Bedrock and Ollama refuse with `*CapabilityError`. Same-provider calls are refused (use SetModel). Claudia never auto-migrates — the host decides when.
+
+The destination is a **new native session** (`session/new` / `--session-id`). Claudia never `--resume` or `session/load` the predecessor's id on the destination. `Agent.SessionID()` rotates; the same `*Agent` handle and `SubscribeEvents` subscriptions stay valid.
+
+Continuity is an **inert distilled seed**, not a verbatim transcript: goal, last recoverable user request, relevant files, work completed / still open, stopping point, and warning codes (for example `stale_tool_output`). Foreign system prompts, thinking, and tool calls are not replayed as executable. Missing both last-user and last-assistant refuses unless `Force` (cold) is set. The seed is sent as the destination's first user turn, wrapped so transcript text cannot become instructions.
+
+On success, a `Type=system` Event with `ProgressType=model_switch` is published **before** the destination accepts work. It carries `FromProvider`, `ToProvider`, `FromModel`, `Model` (destination), `Reason` (host-supplied or `"explicit"`), the post-migrate `SessionID`, and `WarningCodes` when the seed was partial. Switches are never silent.
+
+When a turn ends in a classified stuck/exhausted condition (`rate_limit` or spend/quota wall — not auth, not `model_not_found`), Claudia publishes `ProgressType=stuck` with `StuckClass` and a short detail on the same stream and does **not** SetModel, Migrate, remint, or climb a ladder. The host decides the next step.
+
+Resumed-prefix disk reconstruction (compact/snip/Codex rollback) is a follow-on (🎯T55.2 / 🎯T56). In-flight migrate seeds from the retained live Event log.
 
 **Readiness detection**: The TUI-ready detector polls `tmux capture-pane`
 every 50 ms and gives up after 30 s. These values are fixed and not
@@ -549,6 +602,8 @@ owns a single short-lived agent, skip the Registry.
    | Sandbox policy | Unsupported | Supported (`SandboxMode` / `ApprovalPolicy`) | Unsupported — **refuses** | Unsupported — **refuses** | Unsupported — **refuses** |
    | Extra args | Supported | Unsupported — **refuses** | Unsupported — **refuses** | Unsupported — **refuses** | Unsupported — **refuses** |
    | Image inputs | Unsupported (no claudia API) | Unsupported | Unsupported | Unsupported | Unsupported |
+   | Model switch | Supported (`/model`) | Supported (next turn/start) | Supported (ACP) | Unsupported | Unsupported |
+   | Migrate (inter-provider) | Supported | Supported | Supported | Unsupported | Unsupported |
    | Web search | Supported | Unsupported (does not bind `--search`) | Unsupported | Unsupported | Unsupported |
 
    This table is generated from the same claims production reads. Query

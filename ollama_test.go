@@ -184,6 +184,7 @@ func TestOllamaCapabilityMatrixMatchesTheBackend(t *testing.T) {
 		CapabilitySession, CapabilityResume, CapabilityRewind, CapabilityCost,
 		CapabilityTmuxAttach, CapabilityTerminalLog, CapabilityPermissionMode,
 		CapabilityToolRestrictions, CapabilityImageInput, CapabilityWebSearch,
+		CapabilityMigrate,
 	} {
 		if matrix[c] == CapabilitySupported {
 			t.Errorf("%s is claimed as supported but nothing wires it", c)

@@ -60,6 +60,11 @@ const (
 	// without leaving the provider ([Agent.SetModel]). Inter-provider
 	// migration is a separate target.
 	CapabilityModelSwitch Capability = "model_switch"
+	// CapabilityMigrate is moving a live Session to a different
+	// Provider ([Agent.Migrate]). Session providers that claudia
+	// actually starts can be sources and destinations; Task-only
+	// providers cannot.
+	CapabilityMigrate Capability = "migrate"
 )
 
 // CapabilityStatus classifies how far claudia supports one [Capability]
@@ -138,6 +143,7 @@ func reportedCapabilities() []Capability {
 		CapabilitySandboxPolicy,
 		CapabilityExtraArgs,
 		CapabilityModelSwitch,
+		CapabilityMigrate,
 	}
 }
 
@@ -200,6 +206,10 @@ var providerCapabilityClaims = map[Provider]map[Capability]capabilityClaim{
 			status: CapabilityUnsupported,
 			reason: "Ollama Task mode is one-shot generate; there is no live session model to switch",
 		},
+		CapabilityMigrate: {
+			status: CapabilityUnsupported,
+			reason: migrateNeedsSessionReason,
+		},
 	},
 	ProviderClaude: {
 		CapabilityTask:             {status: CapabilitySupported},
@@ -220,8 +230,9 @@ var providerCapabilityClaims = map[Provider]map[Capability]capabilityClaim{
 			status: CapabilityUnsupported,
 			reason: sandboxPolicyIsCodexOnlyReason,
 		},
-		CapabilityExtraArgs: {status: CapabilitySupported},
+		CapabilityExtraArgs:   {status: CapabilitySupported},
 		CapabilityModelSwitch: {status: CapabilitySupported},
+		CapabilityMigrate:     {status: CapabilitySupported},
 	},
 	ProviderCodex: {
 		CapabilityTask:    {status: CapabilitySupported},
@@ -259,6 +270,7 @@ var providerCapabilityClaims = map[Provider]map[Capability]capabilityClaim{
 			reason: "Codex Session speaks typed app-server fields; Config.ExtraArgs have nowhere to go",
 		},
 		CapabilityModelSwitch: {status: CapabilitySupported},
+		CapabilityMigrate:     {status: CapabilitySupported},
 	},
 	ProviderGrok: {
 		CapabilityTask:    {status: CapabilitySupported},
@@ -299,6 +311,7 @@ var providerCapabilityClaims = map[Provider]map[Capability]capabilityClaim{
 			reason: grokExtraArgsReason,
 		},
 		CapabilityModelSwitch: {status: CapabilitySupported},
+		CapabilityMigrate:     {status: CapabilitySupported},
 	},
 	ProviderCursor: {
 		CapabilityTask:    {status: CapabilitySupported},
@@ -339,6 +352,7 @@ var providerCapabilityClaims = map[Provider]map[Capability]capabilityClaim{
 			reason: cursorExtraArgsReason,
 		},
 		CapabilityModelSwitch: {status: CapabilitySupported},
+		CapabilityMigrate:     {status: CapabilitySupported},
 	},
 	ProviderBedrock: {
 		CapabilityTask:    {status: CapabilitySupported},
@@ -388,6 +402,10 @@ var providerCapabilityClaims = map[Provider]map[Capability]capabilityClaim{
 			status: CapabilityUnsupported,
 			reason: "Bedrock v1 is one-shot ConverseStream; there is no live session model to switch",
 		},
+		CapabilityMigrate: {
+			status: CapabilityUnsupported,
+			reason: migrateNeedsSessionReason,
+		},
 	},
 }
 
@@ -424,13 +442,14 @@ const (
 	grokSessionToolRestrictionsUnwiredReason = "the Grok tool_restrictions claim was flipped to supported, but the Grok Session path still emits no --deny or --disallowed-tools argument, so the restriction would be dropped; wire the translation before changing the claim"
 	//nolint:lll // one sentence, kept whole for the error message.
 	grokPermissionModeReason = "Grok Session hardcodes ACP always-approve/yoloMode; a PermissionMode other than bypassPermissions would be dropped, leaving an agent more permissive than the caller asked for"
-	cursorRewindReason = "Cursor rewind requires a public ACP session API; private transcript truncation is forbidden"
+	cursorRewindReason       = "Cursor rewind requires a public ACP session API; private transcript truncation is forbidden"
 	//nolint:lll // one sentence, kept whole for the error message.
 	cursorToolRestrictionsReason = "the Cursor Agent CLI has no per-tool disallow flag claudia can stand behind; DisallowTools never reaches `agent acp` or `--print`"
 	//nolint:lll // one sentence, kept whole for the error message.
 	cursorExtraArgsReason = "claudia drives Cursor over a fixed `agent … acp` / `--print` command line, so caller argv has nowhere to go"
 	//nolint:lll // one sentence, kept whole for the error message.
 	cursorPermissionModeReason = "Cursor Session auto-approves ACP permissions for unattended embedding; Cursor Task has no ApprovalPolicy/PermissionMode flag, so a non-default mode would be dropped"
+	migrateNeedsSessionReason  = "migrate needs a live Session on both sides; this provider is Task-only"
 )
 
 // capabilityRefusal is the error a provider path returns to a caller who

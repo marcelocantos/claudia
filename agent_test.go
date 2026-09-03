@@ -131,6 +131,9 @@ type fakeAgentBackend struct {
 	name      string
 	control   *fakeAgentControl
 	tailJSONL bool
+	// assignedSession, when set, is returned as start.SessionID so
+	// Migrate can prove identity rotation on an empty request id.
+	assignedSession string
 
 	mu         sync.Mutex
 	requests   []agentStartRequest
@@ -151,8 +154,13 @@ func (b *fakeAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error
 	if b.control == nil {
 		b.control = &fakeAgentControl{bytes: make(chan []byte, 4)}
 	}
+	sid := req.SessionID
+	if b.assignedSession != "" {
+		sid = b.assignedSession
+	}
 	return &agentStart{
 		WindowID:  b.name + "-window",
+		SessionID: sid,
 		Control:   b.control,
 		Ops:       b.ops(),
 		TailJSONL: b.tailJSONL,

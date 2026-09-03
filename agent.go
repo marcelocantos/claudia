@@ -243,6 +243,15 @@ type Agent struct {
 	goalTurn          strings.Builder
 	goalCompleteCheck func(goal, turnText string) bool
 
+	// startCfg is the Config Start resolved (workdir, MCP, Goal, …) so
+	// Migrate can spawn the destination without the caller restating it.
+	startCfg Config
+	// backendGen increments on Migrate so source control/JSONL/TUI
+	// goroutines do not mark the destination dead when they exit.
+	backendGen atomic.Uint64
+	// inertTurns is the bounded live-turn log Migrate distills (🎯T55.1).
+	inertTurns []inertTurn
+
 	// Terminal output streaming. termMu also guards termLog writes,
 	// termLog close, and termLogLive so Stop cannot close the file
 	// while pushTermOutput is mid-write.
@@ -549,6 +558,8 @@ func startWithBackend(cfg Config, backend agentBackend) (*Agent, error) {
 		eventSubs:         make(map[int64]EventFunc),
 		goal:              strings.TrimSpace(cfg.Goal),
 		goalCompleteCheck: cfg.GoalCompleteCheck,
+		startCfg:          cfg,
+		model:             cfg.Model,
 	}
 
 	// Open terminal log.
@@ -623,11 +634,15 @@ func startWithBackend(cfg Config, backend agentBackend) (*Agent, error) {
 	}
 
 	if start.Control != nil {
+		gen := a.backendGen.Load()
 		go func() {
 			for data := range start.Control.Bytes() {
 				a.pushTermOutput(data)
 			}
 			slog.Debug("terminal control stream closed", "session", sessionID)
+			if a.backendGen.Load() != gen {
+				return
+			}
 			a.mu.Lock()
 			a.alive = false
 			a.mu.Unlock()
@@ -1387,7 +1402,21 @@ func (a *Agent) Send(msg string) error {
 	if a.ops.send == nil {
 		return unsupportedCapability(a.provider, "send", "provider did not supply a send operation")
 	}
-	return a.ops.send(a, msg)
+	if err := a.ops.send(a, msg); err != nil {
+		return err
+	}
+	a.recordInert(inertTurn{Role: "user", Text: strings.TrimSpace(msg)})
+	return nil
+}
+
+// Provider returns the live Session provider (empty means Claude).
+func (a *Agent) Provider() Provider {
+	if a == nil {
+		return ""
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.provider
 }
 
 // WaitReady blocks until the TUI has finished initialising and is
@@ -1491,6 +1520,9 @@ func (a *Agent) publishEvent(ev Event) {
 		a.usage.CacheCreationInputTokens += ev.Usage.CacheCreationInputTokens
 		a.usage.CacheReadInputTokens += ev.Usage.CacheReadInputTokens
 	}
+	if t, ok := noteInertFromEvent(ev); ok {
+		a.recordInertLocked(t)
+	}
 	a.noteGoalEvent(ev)
 	subs := make([]EventFunc, 0, len(a.eventSubs))
 	for _, fn := range a.eventSubs {
@@ -1500,6 +1532,26 @@ func (a *Agent) publishEvent(ev Event) {
 
 	for _, fn := range subs {
 		fn(ev)
+	}
+
+	if class, detail := classifyStuckEvent(ev); class != "" {
+		stuck := Event{
+			Type:         "system",
+			ProgressType: ProgressStuck,
+			SessionID:    a.SessionID(),
+			StuckClass:   class,
+			Text:         detail,
+			IsError:      true,
+		}
+		a.mu.Lock()
+		stuckSubs := make([]EventFunc, 0, len(a.eventSubs))
+		for _, fn := range a.eventSubs {
+			stuckSubs = append(stuckSubs, fn)
+		}
+		a.mu.Unlock()
+		for _, fn := range stuckSubs {
+			fn(stuck)
+		}
 	}
 }
 
@@ -1784,8 +1836,12 @@ func (a *Agent) UnsubscribeTerminal(ch chan []byte) {
 }
 
 func (a *Agent) tailJSONL() {
+	gen := a.backendGen.Load()
 	// Wait for file to be created.
 	for {
+		if a.backendGen.Load() != gen {
+			return
+		}
 		if _, err := os.Stat(a.jsonlPath); err == nil {
 			break
 		}
@@ -1807,7 +1863,7 @@ func (a *Agent) tailJSONL() {
 	for {
 		line, err := reader.ReadString('\n')
 		if err != nil {
-			if !a.Alive() {
+			if a.backendGen.Load() != gen || !a.Alive() {
 				return
 			}
 			time.Sleep(100 * time.Millisecond)
@@ -1829,12 +1885,13 @@ const tuiPreviewPollInterval = 100 * time.Millisecond
 // pollTUIPreview periodically captures the Claude tmux pane and publishes
 // provisional ⏺ preview (and invariant fault) Events (🎯T51 / 🎯T51.4).
 func (a *Agent) pollTUIPreview() {
+	gen := a.backendGen.Load()
 	ticker := time.NewTicker(tuiPreviewPollInterval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:
-			if !a.Alive() {
+			if a.backendGen.Load() != gen || !a.Alive() {
 				return
 			}
 			if a.capturePane == nil {

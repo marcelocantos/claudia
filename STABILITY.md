@@ -55,7 +55,7 @@ release it claims to describe.
 | `Config` | struct with `Provider Provider`, `WorkDir, SessionID, Model, PermissionMode, SandboxMode, Goal, MCPConfig, TermLogPath, PoolPolicy, ConnectURL string`, `RequireResume, GrokConnect, MCPExclusive bool`, `MCPServers []MCPServer`, `ExtraArgs, DisallowTools []string`, `PoolCap, ConnectPID int`, `GoalCompleteCheck func(goal, turnText string) bool` | Needs review |
 | `CursorModelCatalog` | struct with `Models []CursorModel`, `Source CursorModelSource`, `FetchedAt time.Time`, `CachePath string`, `Stale bool` | Fluid |
 | `CursorModelSource` | string type: `CursorModelSourceCache`, `CursorModelSourceEmbedded`, `CursorModelSourceCLI` | Fluid |
-| `Event` | struct with `Type, SessionID, TurnID, MessageID, RecordID, Text, StopReason, ProgressType, ToolCallID, ToolTitle, ToolStatus, Model string`, `Raw []byte`, `Usage Usage`, `IsError bool`; method `IsTerminalStop() bool`. ProgressType values include `tool_use`, `thought`, `plan`, `prompt_accepted`, `permission` | Stable |
+| `Event` | struct with `Type, SessionID, TurnID, MessageID, RecordID, Text, StopReason, ProgressType, PreviewUpdate, ToolCallID, ToolTitle, ToolStatus, Model string`, `Raw []byte`, `Usage Usage`, `IsError bool`; method `IsTerminalStop() bool`. ProgressType values include `tool_use`, `thought`, `plan`, `prompt_accepted`, `permission`, `tui_preview`, `tui_preview_fault`, `model_switch`, `stuck`. PreviewUpdate values include `append`, `rewrite` (provisional streams; empty when unset). HEAD also carries FromProvider, ToProvider, FromModel, Reason, WarningCodes on model_switch and StuckClass on stuck (🎯T55; snapshot tag predates those fields) | Stable |
 | `EventFunc` | `func(Event)` | Needs review |
 | `ListCursorModelsArgs` | struct with `Refresh bool`, `MaxAge time.Duration`, `CachePath string`, `Now time.Time`, `RunModels func(ctx context.Context) ([]byte, error)` | Fluid |
 | `LoadMCPArgs` | struct with `ClaudeJSON, GrokTOML, CodexTOML, CursorJSON, WorkDir string` | Fluid |
@@ -167,6 +167,7 @@ release it claims to describe.
 | `Interrupt` | `() error` | Stable |
 | `JSONLPath` | `() string` | Stable |
 | `Model` | `() string` | Needs review |
+| `Provider` | `() Provider` | Fluid |
 | `PID` | `() int` — durable process id (Grok connect-mode serve); 0 for stdio children and Claude tmux | Fluid |
 | `ProcessAlive` | `() bool` — falls back to `Alive` when no PID is known | Fluid |
 | `PromptInFlight` | `() bool` — provider turn open and blocking `Send`; false when unknown | Fluid |
@@ -549,6 +550,14 @@ source-incompatible for any caller that assigned either field to a
 tag in that range, including v0.22.0–v0.25.0, removed or changed nothing.
 v0.21.0 was tagged 2026-08-10, so the earliest eligible 1.0 cut date is
 **2026-09-10**.
+
+## Beyond this snapshot (HEAD)
+
+The Event row above names ProgressType model_switch and stuck for 🎯T55
+(inert-seed inter-provider Session migrate). The snapshot tag does not
+yet export Agent.Migrate, MigrateArgs, or CapabilityMigrate — those are
+HEAD. agents-guide.md is the consumer contract until the next snapshot
+retarget. SetModel (🎯T54) is likewise HEAD-only.
 
 ## Gaps and prerequisites for 1.0
 

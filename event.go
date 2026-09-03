@@ -84,6 +84,18 @@ type Event struct {
 	// turn, etc.). [Agent.WaitForResponse] returns a descriptive error
 	// instead of treating the message as a normal reply or hanging.
 	IsError bool `json:"-"`
+
+	// FromProvider / ToProvider / FromModel / Reason / WarningCodes are
+	// set on Type=system ProgressType=model_switch Events (🎯T55).
+	FromProvider Provider
+	ToProvider   Provider
+	FromModel    string
+	Reason       string
+	WarningCodes []string
+
+	// StuckClass is set on Type=system ProgressType=stuck Events
+	// (rate_limit or quota). Empty on every other event.
+	StuckClass string
 }
 
 // IsTerminalStop reports whether the event represents a completed

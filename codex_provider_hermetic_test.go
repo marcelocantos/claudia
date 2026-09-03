@@ -52,6 +52,7 @@ func TestCodexCapabilityMatrixIsExplicit(t *testing.T) {
 		CapabilitySandboxPolicy: CapabilitySupported,
 		CapabilityExtraArgs:     CapabilityUnsupported,
 		CapabilityModelSwitch:   CapabilitySupported,
+		CapabilityMigrate:       CapabilitySupported,
 	}
 	got := ProviderCapabilityMatrix(ProviderCodex)
 	if len(got) != len(want) {
