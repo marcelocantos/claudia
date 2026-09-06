@@ -204,6 +204,13 @@ old temporary homes that were already deleted, or seats saved before their first
 successful launch. Existing unmanaged connect endpoints without a durable-home
 mapping are refused; same-process adoption is not covered by the restart test.
 
+Restart verification currently has a consumer-level limit: Claudia's real
+stdio and serve retained-context tests pass, but Jevons' strict J14 reply check
+also requires no extra commentary. A final local consumer run retained the
+original message and produced the correct answer after unsolicited tool-search
+commentary, so that run remains failed. Storage persistence alone does not
+certify the complete Jevons restart interaction (Claudia T57 / Jevons T627.1).
+
 `LoadMCP` reads **each provider's** config (Claude JSON, Grok TOML,
 Codex TOML, Cursor `mcp.json`) and tags `MCPServer.Providers`. A Codex-only
 computer-use server stays off Claude. `inv.ForProvider(cfg.Provider)`

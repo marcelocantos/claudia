@@ -866,7 +866,7 @@ func planGrokSession(req agentStartRequest) grokSessionPlan {
 	connect := grokConnectEnabled(req.Config)
 	home := ""
 	if req.Config.MCPExclusive {
-		// Audit sentinel; Start materialises a real temp GROK_HOME.
+		// Audit sentinel; Start resolves the durable per-session GROK_HOME.
 		home = "session:GROK_HOME"
 	}
 	return grokSessionPlan{
