@@ -18,27 +18,49 @@ import (
 // from the user home when present. Compat Claude/Cursor MCP discovery is
 // disabled so Config.MCPServers on the ACP wire is the only MCP set.
 func prepareExclusiveGrokHome() (home string, cleanup func(), err error) {
-	userHome, err := os.UserHomeDir()
-	if err != nil {
-		return "", nil, err
-	}
 	dest, err := os.MkdirTemp("", "claudia-mcp-grok-")
 	if err != nil {
 		return "", nil, err
 	}
 	cleanup = func() { _ = os.RemoveAll(dest) }
-	_ = copyFileIfExists(filepath.Join(userHome, ".grok", "auth.json"), filepath.Join(dest, "auth.json"))
-	cfg := filepath.Join(dest, "config.toml")
-	// Grok loads ~/.claude.json MCP by default ([compat.claude] mcps).
-	// Exclusive must disable that discovery.
-	body := "# claudia MCPExclusive\n" +
-		"[compat.claude]\nmcps = false\n\n" +
-		"[compat.cursor]\nmcps = false\n"
-	if err := os.WriteFile(cfg, []byte(body), 0o644); err != nil {
+	if err := writeExclusiveGrokHome(dest); err != nil {
 		cleanup()
 		return "", nil, err
 	}
 	return dest, cleanup, nil
+}
+
+func writeExclusiveGrokHome(dest string) error {
+	// Validate both leaves even when auth comes from the environment and
+	// there is no user auth file to copy. The provider still reads this path.
+	for _, name := range []string{"auth.json", "config.toml"} {
+		path := filepath.Join(dest, name)
+		if info, err := os.Lstat(path); err == nil {
+			if !info.Mode().IsRegular() {
+				return fmt.Errorf("exclusive GROK_HOME configuration is not a regular file: %s", path)
+			}
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+	}
+	userHome, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	// Missing file auth is valid when the provider uses its environment or
+	// keychain. Other copy errors must not silently produce a broken home.
+	auth, err := os.ReadFile(filepath.Join(userHome, ".grok", "auth.json"))
+	if err == nil {
+		if err := writeExclusiveGrokFile(dest, "auth.json", auth); err != nil {
+			return err
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	body := "# claudia MCPExclusive\n" +
+		"[compat.claude]\nmcps = false\n\n" +
+		"[compat.cursor]\nmcps = false\n"
+	return writeExclusiveGrokFile(dest, "config.toml", []byte(body))
 }
 
 // exclusiveCodexHomeDir is the durable isolate home for a Codex thread.

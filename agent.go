@@ -141,7 +141,8 @@ type Config struct {
 	// see (🎯T45). Default false keeps provider user-scope maps
 	// additive where the backend still loads them (Cursor has no
 	// strict flag). Claude uses --strict-mcp-config; Grok uses a
-	// process-private temp GROK_HOME; Codex uses a process-private
+	// durable per-session GROK_HOME under $XDG_STATE_HOME/claudia/grok-homes;
+	// Codex uses a process-private
 	// CODEX_HOME persisted under $XDG_STATE_HOME/claudia/codex-homes
 	// so bounce can thread/resume (jevons 🎯T545.1.2).
 	MCPExclusive bool
@@ -865,7 +866,7 @@ func planGrokSession(req agentStartRequest) grokSessionPlan {
 	connect := grokConnectEnabled(req.Config)
 	home := ""
 	if req.Config.MCPExclusive {
-		// Audit sentinel; Start materialises a real temp GROK_HOME.
+		// Audit sentinel; Start resolves the durable per-session GROK_HOME.
 		home = "session:GROK_HOME"
 	}
 	return grokSessionPlan{
@@ -1061,13 +1062,13 @@ func startGrokAgent(req agentStartRequest) (*agentStart, error) {
 	var bind acpBind
 
 	var extraEnv []string
-	var mcpCleanup func()
+	var grokHome string
 	if req.Config.MCPExclusive {
-		home, cleanup, herr := prepareExclusiveGrokHome()
+		home, herr := exclusiveGrokHomeForStart(preferID, plan.RequireResume || req.Config.ConnectURL != "")
 		if herr != nil {
 			return nil, herr
 		}
-		mcpCleanup = cleanup
+		grokHome = home
 		extraEnv = exclusiveEnv("GROK_HOME", home)
 		slog.Info("grok MCPExclusive", "GROK_HOME", home)
 	}
@@ -1079,13 +1080,16 @@ func startGrokAgent(req agentStartRequest) (*agentStart, error) {
 		client, err = startGrokACP(bin, plan.WorkDir, plan.Model, preferID, plan.RequireResume, plan.MCPServers, extraEnv, bind.onEvent, bind.onClose)
 	}
 	if err != nil {
-		if mcpCleanup != nil {
-			mcpCleanup()
-		}
 		return nil, err
 	}
 
 	sid := client.SessionID()
+	if grokHome != "" {
+		if err := publishExclusiveGrokHome(grokHome, sid); err != nil {
+			client.Close()
+			return nil, err
+		}
+	}
 	windowID := "grok-acp-" + sid
 	if client.ConnectURL() != "" {
 		windowID = "grok-serve-" + sid
@@ -1118,7 +1122,6 @@ func startGrokAgent(req agentStartRequest) (*agentStart, error) {
 	}
 
 	return &agentStart{
-		Cleanup:    mcpCleanup,
 		WindowID:   windowID,
 		Ops:        ops,
 		TailJSONL:  false,

@@ -514,7 +514,7 @@ func TestLaunchLatchesCursorResumeDenied(t *testing.T) {
 	}
 }
 
-// 🎯T545.1: a Codex/Cursor row reloaded from disk is a bounce resume, not a
+// 🎯T545.1 / T57: a Grok/Codex/Cursor row reloaded from disk is a bounce resume, not a
 // never-materialized mint. Launch must RequireResume and must not persist
 // a replacement session_id.
 func TestHermeticCodexCursorBounceLaunchRequiresResume(t *testing.T) {
@@ -526,6 +526,7 @@ func TestHermeticCodexCursorBounceLaunchRequiresResume(t *testing.T) {
 	}{
 		{"codex", "jv-t543-compact-once", "01a030e9-054a-45c0-8c2f-afc545afa986", ProviderCodex},
 		{"cursor", "jevons-po", "531d90af-9299-4607-ab3d-7dcc14fa7a83", ProviderCursor},
+		{"grok", "jevons", "01a030e9-existing-grok", ProviderGrok},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

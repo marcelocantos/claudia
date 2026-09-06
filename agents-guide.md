@@ -185,7 +185,8 @@ cfg.MCPServers = inv.Servers
 `Config.MCPExclusive` (default false) is the isolate switch. False
 keeps each CLI's user-scope MCP map (additive) where the backend
 still loads it. True is hermetic via process-private materialisation:
-Claude `--strict-mcp-config`, Grok temp `GROK_HOME` (auth copied,
+Claude `--strict-mcp-config`, Grok durable per-session `GROK_HOME` under
+`$XDG_STATE_HOME/claudia/grok-homes` (auth copied,
 compat MCP discovery off), Codex `CODEX_HOME` persisted under
 `$XDG_STATE_HOME/claudia/codex-homes/<sessionID>` containing only
 `Config.MCPServers`. Cursor has no strict flag and Claudia does
@@ -194,6 +195,21 @@ exclusive Session MCP is ACP `mcpServers` only, so user-scope
 `~/.cursor/mcp.json` may still attach. Auth uses the real login or
 `CURSOR_API_KEY` / `--api-key`. Jevons wants exclusive; other hosts
 can leave the default.
+
+Exclusive Grok homes survive `Stop` and are indexed by the session identity
+returned by the provider. A Grok registry row loaded from disk requires resume,
+even when its `Materialized` flag is false. Missing homes or refused loads fail
+explicitly instead of creating replacement conversations. This does not recover
+old temporary homes that were already deleted, or seats saved before their first
+successful launch. Existing unmanaged connect endpoints without a durable-home
+mapping are refused; same-process adoption is not covered by the restart test.
+
+Restart verification currently has a consumer-level limit: Claudia's real
+stdio and serve retained-context tests pass, but Jevons' strict J14 reply check
+also requires no extra commentary. A final local consumer run retained the
+original message and produced the correct answer after unsolicited tool-search
+commentary, so that run remains failed. Storage persistence alone does not
+certify the complete Jevons restart interaction (Claudia T57 / Jevons T627.1).
 
 `LoadMCP` reads **each provider's** config (Claude JSON, Grok TOML,
 Codex TOML, Cursor `mcp.json`) and tags `MCPServer.Providers`. A Codex-only
