@@ -4,6 +4,7 @@
 package claudia
 
 import (
+	"context"
 	"time"
 
 	"github.com/marcelocantos/claudia/internal/broker"
@@ -42,8 +43,12 @@ func considerBroker() {
 }
 
 func startConsideringBroker(cfg Config, backend agentBackend) (*Agent, error) {
+	return startConsideringBrokerContext(context.Background(), cfg, backend)
+}
+
+func startConsideringBrokerContext(ctx context.Context, cfg Config, backend agentBackend) (*Agent, error) {
 	if usingBroker() {
 		considerBroker()
 	}
-	return startWithBackend(cfg, backend)
+	return startWithBackendContext(ctx, cfg, backend)
 }

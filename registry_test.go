@@ -4,6 +4,7 @@
 package claudia
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -267,7 +268,7 @@ func installFakeRegistryStart(t *testing.T) *[]Config {
 	var cfgs []Config
 	prev := registryStart
 	t.Cleanup(func() { registryStart = prev })
-	registryStart = func(cfg Config) (*Agent, error) {
+	registryStart = func(_ context.Context, cfg Config) (*Agent, error) {
 		cfgs = append(cfgs, cfg)
 		backend := &fakeAgentBackend{name: "fake-claude"}
 		return startWithBackend(cfg, backend)
@@ -481,7 +482,7 @@ func TestLaunchLatchesCursorResumeDenied(t *testing.T) {
 	prev := registryStart
 	t.Cleanup(func() { registryStart = prev })
 	var starts int
-	registryStart = func(Config) (*Agent, error) {
+	registryStart = func(context.Context, Config) (*Agent, error) {
 		starts++
 		return nil, fmt.Errorf("acp session/load sid: connection closed (%w)", ErrCursorResumeDenied)
 	}
@@ -550,7 +551,7 @@ func TestHermeticCodexCursorBounceLaunchRequiresResume(t *testing.T) {
 			prev := registryStart
 			t.Cleanup(func() { registryStart = prev })
 			var cfgs []Config
-			registryStart = func(cfg Config) (*Agent, error) {
+			registryStart = func(_ context.Context, cfg Config) (*Agent, error) {
 				cfgs = append(cfgs, cfg)
 				if cfg.RequireResume {
 					return nil, fmt.Errorf("session %s: existing conversation required — refusing to mint a replacement session", cfg.SessionID)
@@ -600,7 +601,7 @@ func TestHermeticCodexLaunchRefusesRemintPersist(t *testing.T) {
 	}
 	prev := registryStart
 	t.Cleanup(func() { registryStart = prev })
-	registryStart = func(cfg Config) (*Agent, error) {
+	registryStart = func(_ context.Context, cfg Config) (*Agent, error) {
 		reminted := cfg
 		reminted.SessionID = "01a030f5-should-not-persist"
 		return startWithBackend(reminted, &fakeAgentBackend{name: "fake-codex"})
@@ -643,7 +644,7 @@ func TestHermeticCodexEnsureAgentFirstLaunchMayMint(t *testing.T) {
 
 	prev := registryStart
 	t.Cleanup(func() { registryStart = prev })
-	registryStart = func(cfg Config) (*Agent, error) {
+	registryStart = func(_ context.Context, cfg Config) (*Agent, error) {
 		if cfg.RequireResume {
 			return nil, fmt.Errorf("first mint set RequireResume")
 		}

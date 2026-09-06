@@ -787,7 +787,11 @@ func startCursorAgent(req agentStartRequest) (*agentStart, error) {
 	}
 	var bind acpBind
 
-	client, err := startCursorACP(context.Background(), bin, plan.WorkDir, plan.Model, plan.PreferSessionID, plan.RequireResume, plan.MCPServers, nil, bind.onEvent, bind.onClose)
+	ctx := req.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	client, err := startCursorACP(ctx, bin, plan.WorkDir, plan.Model, plan.PreferSessionID, plan.RequireResume, plan.MCPServers, nil, bind.onEvent, bind.onClose)
 	if err != nil {
 		if plan.PreferSessionID != "" {
 			ReapCursorACPLeftovers(plan.PreferSessionID, 0)

@@ -312,6 +312,7 @@ type agentOps struct {
 }
 
 type agentStartRequest struct {
+	Context         context.Context
 	Config          Config
 	WorkDir         string
 	SessionID       string
@@ -475,6 +476,18 @@ func claudeAgentOps() agentOps {
 // Session; Grok uses ACP over `grok agent stdio`; Cursor uses ACP over
 // `agent acp`; Codex uses `codex app-server` JSON-RPC.
 func Start(cfg Config) (*Agent, error) {
+	return StartContext(context.Background(), cfg)
+}
+
+// StartContext starts an agent with a cancelable startup. The context does not
+// own the returned agent's lifetime. Cursor interrupts ACP startup immediately;
+// cancellation in other backends remains cooperative and may only be observed
+// before their provider operation begins. Registry Stop/Remove join any pending
+// startup and clean up its result before completing.
+func StartContext(ctx context.Context, cfg Config) (*Agent, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	// Gate on the published capability matrix rather than a per-provider
 	// branch list, so Start cannot drift into offering a session claudia
 	// has not claimed. Unknown providers still fall through to the
@@ -484,10 +497,17 @@ func Start(cfg Config) (*Agent, error) {
 			return nil, err
 		}
 	}
-	return startConsideringBroker(cfg, agentBackendForProvider(cfg.Provider))
+	return startConsideringBrokerContext(ctx, cfg, agentBackendForProvider(cfg.Provider))
 }
 
 func startWithBackend(cfg Config, backend agentBackend) (*Agent, error) {
+	return startWithBackendContext(context.Background(), cfg, backend)
+}
+
+func startWithBackendContext(ctx context.Context, cfg Config, backend agentBackend) (*Agent, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	provider := cfg.Provider
 	if provider == "" {
 		provider = ProviderClaude
@@ -576,6 +596,7 @@ func startWithBackend(cfg Config, backend agentBackend) (*Agent, error) {
 	}
 
 	start, err := backend.StartAgent(agentStartRequest{
+		Context:         ctx,
 		Config:          cfg,
 		WorkDir:         workDir,
 		SessionID:       sessionID,
@@ -585,12 +606,14 @@ func startWithBackend(cfg Config, backend agentBackend) (*Agent, error) {
 		DisallowedTools: disallowed,
 	})
 	if err != nil {
+		a.Stop()
 		return nil, err
 	}
 	// A backend that returns neither a session nor an error is a bug in
 	// that backend, but the cost of trusting it is a nil dereference
 	// several lines below, well away from the cause.
 	if start == nil {
+		a.Stop()
 		return nil, fmt.Errorf("%s agent backend returned no session and no error", provider)
 	}
 	if start.SessionID != "" {
@@ -1148,7 +1171,7 @@ func startGrokAgent(req agentStartRequest) (*agentStart, error) {
 // before the provider begins streaming (important for fast ACP fakes and
 // quick local models).
 func Run(ctx context.Context, prompt string, cfg Config) (string, error) {
-	agent, err := Start(cfg)
+	agent, err := StartContext(ctx, cfg)
 	if err != nil {
 		return "", err
 	}

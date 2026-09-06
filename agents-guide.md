@@ -576,6 +576,16 @@ never reaps leftover windows (a leak stays visible). `Adopt` /
 without spawning or reaping. Drain is `StopAll`. If the host program
 owns a single short-lived agent, skip the Registry.
 
+`StartContext`, `LaunchContext`, `AdoptOrLaunchContext` and
+`StartAllPreferAdoptContext` accept startup cancellation. The context does
+not own the returned agent's lifetime. Cursor ACP startup is interruptible;
+other providers cooperate where supported and may finish after cancellation.
+Provider operations run outside the registry's global lock, with one lifecycle
+reservation per name. `Stop` / `Remove` cancel and join pending startup before
+returning, including cleanup of late results. Metadata-only `Register` updates
+remain allowed during startup; conflicting process configuration returns
+`ErrLifecycleInProgress` and should be retried after the operation finishes.
+
 ## Gotchas
 
 1. **`tmux` must be on `$PATH`; `claude` must be resolvable.** claudia
