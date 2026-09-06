@@ -185,7 +185,7 @@ cfg.MCPServers = inv.Servers
 `Config.MCPExclusive` (default false) is the isolate switch. False
 keeps each CLI's user-scope MCP map (additive) where the backend
 still loads it. True is hermetic via process-private materialisation:
-Claude `--strict-mcp-config`, Grok temp `GROK_HOME` (auth copied,
+Claude `--strict-mcp-config`, Grok durable per-session `GROK_HOME` under `$XDG_STATE_HOME/claudia/grok-homes` (auth copied,
 compat MCP discovery off), Codex `CODEX_HOME` persisted under
 `$XDG_STATE_HOME/claudia/codex-homes/<sessionID>` containing only
 `Config.MCPServers`. Cursor has no strict flag and Claudia does

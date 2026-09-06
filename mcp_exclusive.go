@@ -18,27 +18,32 @@ import (
 // from the user home when present. Compat Claude/Cursor MCP discovery is
 // disabled so Config.MCPServers on the ACP wire is the only MCP set.
 func prepareExclusiveGrokHome() (home string, cleanup func(), err error) {
-	userHome, err := os.UserHomeDir()
-	if err != nil {
-		return "", nil, err
-	}
 	dest, err := os.MkdirTemp("", "claudia-mcp-grok-")
 	if err != nil {
 		return "", nil, err
 	}
 	cleanup = func() { _ = os.RemoveAll(dest) }
-	_ = copyFileIfExists(filepath.Join(userHome, ".grok", "auth.json"), filepath.Join(dest, "auth.json"))
-	cfg := filepath.Join(dest, "config.toml")
-	// Grok loads ~/.claude.json MCP by default ([compat.claude] mcps).
-	// Exclusive must disable that discovery.
-	body := "# claudia MCPExclusive\n" +
-		"[compat.claude]\nmcps = false\n\n" +
-		"[compat.cursor]\nmcps = false\n"
-	if err := os.WriteFile(cfg, []byte(body), 0o644); err != nil {
+	if err := writeExclusiveGrokHome(dest); err != nil {
 		cleanup()
 		return "", nil, err
 	}
 	return dest, cleanup, nil
+}
+
+func writeExclusiveGrokHome(dest string) error {
+	userHome, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	// Missing file auth is valid when the provider uses its environment or
+	// keychain. Other copy errors must not silently produce a broken home.
+	if err := copyFileIfExists(filepath.Join(userHome, ".grok", "auth.json"), filepath.Join(dest, "auth.json")); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	body := "# claudia MCPExclusive\n" +
+		"[compat.claude]\nmcps = false\n\n" +
+		"[compat.cursor]\nmcps = false\n"
+	return os.WriteFile(filepath.Join(dest, "config.toml"), []byte(body), 0o600)
 }
 
 // exclusiveCodexHomeDir is the durable isolate home for a Codex thread.
