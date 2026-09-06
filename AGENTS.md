@@ -11,10 +11,11 @@ make live                      # real backends; each live env is opt-in
 
 ## Delivery
 
-Owner ships to `master` by gated push (`make gate`, then
-`git push origin master`). Ship only when asked. Do not open an owner
-release-prep PR. Inbound PRs from others stay. After clone:
-`git config core.hooksPath scripts/hooks`.
+Owner ships to `master` by gated push: `scripts/hooks/pre-push` runs
+`make gate` and refuses the push when it is red ([`docs/gate.md`](docs/gate.md)).
+Ship only when asked. Do not open an owner release-prep PR. Inbound PRs
+from others stay. After clone: `make hooks` (sets
+`core.hooksPath=scripts/hooks`). Never `git push --no-verify`.
 
 ## Live tests (backend changes)
 
@@ -73,9 +74,14 @@ override:
   - pr-workflow: skip
   - ci-green: skip
 
-The owner gate is local `make gate`, run by `scripts/hooks/pre-push`.
-Do not wait on `.github/workflows/test.yml`. `make live` remains a
-release-time owner gate for backend-behaviour changes. `/release` on
-this repo: commit prep on master, `make gate` (and `make live` if the
-diff touched a provider wire), `git push origin master`,
-`gh release create`. No prep PR.
+The owner gate is local `make gate`, run by `scripts/hooks/pre-push`;
+`.github/workflows/test.yml` runs the same target on Linux and macOS
+after the push as a regression net, not as a merge gate. Do not wait
+on it. `make gate` fails on any skipped test that is not declared
+residue (live gates, subprocess helpers, host-bound paths — see
+`scripts/gate-test.py`); a missing tool is a broken gate, not a pass.
+`make live` remains a release-time owner gate for backend-behaviour
+changes. `/release` on this repo: commit prep on master, `make gate`
+(and `make live` if the diff touched a provider wire),
+`git push origin master`, `gh release create`. No prep PR. Flow and
+drill: [`docs/gate.md`](docs/gate.md).
