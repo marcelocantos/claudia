@@ -1,14 +1,35 @@
-# Hermetic owner gate (🎯T48). Same suite as .github/workflows/test.yml.
-# Pre-push runs this. Does not require a clean tree — /ship does.
+# Hermetic owner gate (🎯T48). CI runs this same target
+# (.github/workflows/test.yml); the pre-push hook runs it before every push
+# (docs/gate.md). Does not require a clean tree — /ship does.
 # Never pipe go test: `go test ... | tail` reports tail's status, so a
-# failing suite can print green and exit 0.
-.PHONY: gate gate-full bullseye
-gate:
+# failing suite can print green and exit 0. scripts/gate-test.py runs
+# `go test -json -race -count=1 -shuffle=on`, prints failures with the
+# shuffle seed that produced them, and lists every skipped test against the
+# residue this repo declares — an undeclared skip is red, not silent.
+.PHONY: gate gate-full bullseye hooks hooks-check
+gate: hooks-check
+	@unformatted=$$(gofmt -l . 2>/dev/null); \
+	 if [ -n "$$unformatted" ]; then echo "✗ gofmt:"; echo "$$unformatted"; exit 1; fi; \
+	 echo "✓ gofmt"
 	@go vet ./... && echo "✓ vet"
-	@go test -race -count=1 ./... && echo "✓ tests"
+	@scripts/gate-test.py
 	@$(MAKE) --no-print-directory verify-stability >/dev/null && echo "✓ stability surface"
 	@$(MAKE) --no-print-directory verify-mutation-evidence >/dev/null && \
 	 echo "✓ mutation evidence"
+
+# Wire the pre-push gate. A relative core.hooksPath resolves against
+# whichever worktree the push runs from, so one setting covers them all.
+# Redirecting hooksPath disables .git/hooks entirely; scripts/hooks/pre-push
+# chains git-lfs's pre-push so LFS uploads would survive if this repo ever
+# tracked LFS objects (it does not today).
+hooks:
+	@git config core.hooksPath scripts/hooks && chmod +x scripts/hooks/* && \
+	 echo "✓ core.hooksPath=scripts/hooks (pre-push runs make gate)"
+
+# Warning only: the gate must still run on a runner that has no hooks.
+hooks-check:
+	@if [ -z "$$GITHUB_ACTIONS" ] && [ "$$(git config --get core.hooksPath)" != "scripts/hooks" ]; then \
+	  echo "⚠  pre-push gate is not wired in this clone: run 'make hooks'"; fi
 
 # TLA+ broker lifecycle (Java + tla2tools). Not on the pre-push hook;
 # run before a release.

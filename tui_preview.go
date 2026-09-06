@@ -168,8 +168,8 @@ type tuiPreviewFault struct {
 // prefix-comparing generated MD (🎯T53).
 type tuiPreviewTracker struct {
 	turnID       string
-	turnBaseline int // ⏺ count at turn open; -1 = unset until next observe
-	sealed       int // how many post-baseline blocks have been sealed
+	turnBaseline int      // ⏺ count at turn open; -1 = unset until next observe
+	sealed       int      // how many post-baseline blocks have been sealed
 	lastEmitted  []string // generated Markdown per open slot
 	// reportedFaults dedupes identical invariant reports within a turn.
 	reportedFaults map[string]struct{}
