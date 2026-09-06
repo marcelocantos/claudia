@@ -223,3 +223,44 @@ func TestExclusiveGrokSessionResumeLive(t *testing.T) {
 		})
 	}
 }
+
+func TestExclusiveGrokHomeRejectsRedirectionWithoutChangingVictim(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	victim := t.TempDir()
+	victimFile := filepath.Join(victim, "config.toml")
+	if err := os.WriteFile(victimFile, []byte("untouched"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	home, err := exclusiveGrokHomeForStart("safe", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(victim, exclusiveGrokHomeDir("escape")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := exclusiveGrokHomeForStart("escape", true); err == nil {
+		t.Fatal("accepted external home alias")
+	}
+	config := filepath.Join(home, "config.toml")
+	if err := os.Remove(config); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(victimFile, config); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := exclusiveGrokHomeForStart("safe", true); err == nil {
+		t.Fatal("accepted redirected configuration")
+	}
+	if err := os.Remove(config); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(victimFile, config); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := exclusiveGrokHomeForStart("safe", true); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(victimFile); err != nil || string(b) != "untouched" {
+		t.Fatalf("modified victim: %q %v", b, err)
+	}
+}

@@ -37,13 +37,18 @@ func writeExclusiveGrokHome(dest string) error {
 	}
 	// Missing file auth is valid when the provider uses its environment or
 	// keychain. Other copy errors must not silently produce a broken home.
-	if err := copyFileIfExists(filepath.Join(userHome, ".grok", "auth.json"), filepath.Join(dest, "auth.json")); err != nil && !os.IsNotExist(err) {
+	auth, err := os.ReadFile(filepath.Join(userHome, ".grok", "auth.json"))
+	if err == nil {
+		if err := writeExclusiveGrokFile(dest, "auth.json", auth); err != nil {
+			return err
+		}
+	} else if !os.IsNotExist(err) {
 		return err
 	}
 	body := "# claudia MCPExclusive\n" +
 		"[compat.claude]\nmcps = false\n\n" +
 		"[compat.cursor]\nmcps = false\n"
-	return os.WriteFile(filepath.Join(dest, "config.toml"), []byte(body), 0o600)
+	return writeExclusiveGrokFile(dest, "config.toml", []byte(body))
 }
 
 // exclusiveCodexHomeDir is the durable isolate home for a Codex thread.

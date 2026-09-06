@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Exclusive configuration belongs to one conversation, not one process. Stop
@@ -49,15 +50,39 @@ func exclusiveGrokHomeForStart(sessionID string, requireResume bool) (string, er
 			return "", err
 		}
 	}
+	if err := validateExclusiveGrokHome(home); err != nil {
+		return "", err
+	}
 	if err := writeExclusiveGrokHome(home); err != nil {
 		return "", err
 	}
 	return home, nil
 }
 
+// Aliases may select another home in this managed store, never an unrelated
+// directory whose credentials/configuration Start would otherwise overwrite.
+func validateExclusiveGrokHome(home string) error {
+	root, err := filepath.EvalSymlinks(filepath.Join(claudiaStateHome(), "grok-homes"))
+	if err != nil {
+		return err
+	}
+	resolved, err := filepath.EvalSymlinks(home)
+	if err != nil {
+		return err
+	}
+	rel, err := filepath.Rel(root, resolved)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return fmt.Errorf("exclusive GROK_HOME escapes its managed store: %s", home)
+	}
+	return nil
+}
+
 // session/new may replace the requested ID. Publish its actual ID before Start
 // returns, without moving the directory the running provider still writes to.
 func publishExclusiveGrokHome(home, sessionID string) error {
+	if err := validateExclusiveGrokHome(home); err != nil {
+		return err
+	}
 	dest := exclusiveGrokHomeDir(sessionID)
 	if dest == "" {
 		return fmt.Errorf("publish exclusive GROK_HOME: invalid session identity")
@@ -86,4 +111,30 @@ func publishExclusiveGrokHome(home, sessionID string) error {
 		}
 	}
 	return nil
+}
+
+// Replace a configuration leaf atomically. Refuse redirection and avoid
+// modifying another file through either symlinks or hard links.
+func writeExclusiveGrokFile(home, name string, body []byte) error {
+	path := filepath.Join(home, name)
+	if info, err := os.Lstat(path); err == nil {
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("exclusive GROK_HOME configuration is not a regular file: %s", path)
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	f, err := os.CreateTemp(home, ".config-")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	if _, err := f.Write(body); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(f.Name(), path)
 }
