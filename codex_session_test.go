@@ -541,8 +541,16 @@ func TestHermeticCodexResumeEmptyHomeNamesPath(t *testing.T) {
 // handshake window, not block the caller's MCP tools/call until the client
 // gives up.
 func TestHermeticCodexThreadStartTimesOut(t *testing.T) {
+	// The handshake timeout is per call, and the fake app-server is a
+	// python process: under -race with every package's tests running at
+	// once, its `initialize` reply alone took longer than 200ms, and the
+	// drill then reported a timeout on initialize instead of thread/start
+	// (2 of 5 runs on an M4 Max). The hang is what is under test, so the
+	// window must clear interpreter start-up with room to spare.
+	const hangTimeout = time.Second
+	const hangBudget = 5 * hangTimeout
 	prev := codexAppServerHandshakeTimeout
-	codexAppServerHandshakeTimeout = 200 * time.Millisecond
+	codexAppServerHandshakeTimeout = hangTimeout
 	t.Cleanup(func() { codexAppServerHandshakeTimeout = prev })
 
 	bin := writeFakeCodexAppServer(t)
@@ -563,7 +571,7 @@ func TestHermeticCodexThreadStartTimesOut(t *testing.T) {
 	if !strings.Contains(err.Error(), "timeout waiting for thread/start") {
 		t.Fatalf("Start err = %v, want timeout waiting for thread/start", err)
 	}
-	if elapsed > 2*time.Second {
+	if elapsed > hangBudget {
 		t.Fatalf("Start hung %s, want handshake timeout", elapsed)
 	}
 }
