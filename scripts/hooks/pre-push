@@ -44,6 +44,8 @@ if [[ "$updates" -gt 0 ]]; then
 	echo "pre-push: gate green — pushing"
 fi
 
-if command -v git-lfs >/dev/null 2>&1; then
+# git always passes <remote name> <remote url>; a bare `git hook run
+# pre-push` does not, and git-lfs refuses to run without them.
+if [[ $# -gt 0 ]] && command -v git-lfs >/dev/null 2>&1; then
 	git lfs pre-push "$@" < "$refs"
 fi

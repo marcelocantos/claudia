@@ -110,16 +110,21 @@ git add drill_test.go && git commit -qm 'drill: planted failure'
 
 # Invoke the hook exactly as git would: argv = remote name + URL,
 # stdin = "<local ref> <local sha> <remote ref> <remote sha>".
+# `git hook run` gives the hook /dev/null on stdin unless --to-stdin
+# names a file; piping into it is silently an empty push list.
 sha=$(git rev-parse HEAD)
-printf 'refs/heads/drill %s refs/heads/master %s\n' "$sha" "$sha" |
-  git -c core.hooksPath=scripts/hooks hook run pre-push -- origin https://github.com/marcelocantos/claudia.git
+printf 'refs/heads/drill %s refs/heads/master %s\n' "$sha" "$sha" > refs.txt
+git -c core.hooksPath=scripts/hooks hook run --to-stdin=refs.txt pre-push \
+  -- origin https://github.com/marcelocantos/claudia.git
 echo "exit=$?"          # must be non-zero: push refused
 
 git rm -q drill_test.go && git commit -qm 'drill: remove planted failure'
 sha=$(git rev-parse HEAD)
-printf 'refs/heads/drill %s refs/heads/master %s\n' "$sha" "$sha" |
-  git -c core.hooksPath=scripts/hooks hook run pre-push -- origin https://github.com/marcelocantos/claudia.git
+printf 'refs/heads/drill %s refs/heads/master %s\n' "$sha" "$sha" > refs.txt
+git -c core.hooksPath=scripts/hooks hook run --to-stdin=refs.txt pre-push \
+  -- origin https://github.com/marcelocantos/claudia.git
 echo "exit=$?"          # must be 0: push allowed
+rm refs.txt
 ```
 
 `git hook run` honours `-c core.hooksPath`, so the drill works in a clone
