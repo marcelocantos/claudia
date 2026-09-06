@@ -60,7 +60,7 @@ verify-mutation-evidence:
 # Cursor: CLAUDIA_CURSOR_LIVE=1
 .PHONY: live
 live:
-	go test -count=1 -timeout 15m -run 'TestTaskRunSmoke|TestAgentSendAndWaitForResponse|TestGrokTaskRunSmoke|TestGrokSessionLiveSmoke|TestCodexTaskRunSmoke|TestCodexSessionLiveSmoke|TestBedrockTaskLiveSmoke|TestOllamaTaskLiveSmoke|TestCursorTaskLiveSmoke|TestCursorSessionLiveSmoke|TestGoalJourneyLiveBackends|TestMCPLiveLoadAndSessionSeesMnemo|TestMCPExclusiveGrokInspectJourney|TestMCPExclusiveSessionRoundTrip|TestExclusiveGrokSessionResumeLive|TestMCPExclusiveCursorSessionRoundTrip' .
+	go test -count=1 -timeout 15m -run 'TestTaskRunSmoke|TestAgentSendAndWaitForResponse|TestGrokTaskRunSmoke|TestGrokSessionLiveSmoke|TestCodexTaskRunSmoke|TestCodexSessionLiveSmoke|TestBedrockTaskLiveSmoke|TestOllamaTaskLiveSmoke|TestCursorTaskLiveSmoke|TestCursorSessionLiveSmoke|TestCursorSavedSessionResumeLive|TestGoalJourneyLiveBackends|TestMCPLiveLoadAndSessionSeesMnemo|TestMCPExclusiveGrokInspectJourney|TestMCPExclusiveSessionRoundTrip|TestExclusiveGrokSessionResumeLive|TestMCPExclusiveCursorSessionRoundTrip' .
 
 # Model-check the broker lifecycle spec (T2.0/T2.8 oracle). The correct config
 # must be green AND every fault-injection mutant must be caught — a spec that

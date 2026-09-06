@@ -31,6 +31,12 @@ def main() -> None:
         method = msg.get("method") or ""
         params = msg.get("params") or {}
 
+        if path := os.environ.get("FAKE_ACP_REQUEST_LOG"):
+            with open(path, "a", encoding="utf-8") as log:
+                log.write(json.dumps({"pid": os.getpid(), "method": method}) + "\n")
+        if method == os.environ.get("FAKE_ACP_WITHHOLD"):
+            continue
+
         if method == "initialize":
             send(
                 {
