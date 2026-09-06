@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -150,12 +151,51 @@ func TestExclusiveGrokSessionResumeLive(t *testing.T) {
 				if err := a.WaitReady(ctx); err != nil {
 					t.Fatal(err)
 				}
+				// Subscribe before Send; replay without a live prompt identity does
+				// not count. Grok sends append fragments, including empty terminals.
+				const eventBuffer = 256
+				events := make(chan Event, eventBuffer)
+				var overflow atomic.Bool
+				sub := a.SubscribeEvents(func(ev Event) {
+					select {
+					case events <- ev:
+					default:
+						overflow.Store(true)
+					}
+				})
+				defer a.UnsubscribeEvents(sub)
 				if err := a.Send(prompt); err != nil {
 					t.Fatal(err)
 				}
-				text, err := a.WaitForResponse(ctx)
-				if err != nil || strings.TrimSpace(text) != expected {
-					t.Fatalf("reply=%q, error=%v, want=%q", text, err, expected)
+				var text strings.Builder
+				turn := ""
+				for {
+					select {
+					case <-ctx.Done():
+						t.Fatal(ctx.Err())
+					case ev := <-events:
+						if overflow.Load() {
+							t.Fatal("provider event observation overflowed")
+						}
+						if ev.SessionID != a.SessionID() || ev.TurnID == "" {
+							continue
+						}
+						if turn == "" {
+							turn = ev.TurnID
+						}
+						if ev.TurnID != turn {
+							t.Fatal("multiple provider turns in one direct")
+						}
+						if ev.Type == "assistant" {
+							text.WriteString(ev.Text)
+						}
+						if ev.IsTerminalStop() {
+							if strings.TrimSpace(text.String()) != expected {
+								t.Fatalf("reply=%q, want=%q", text.String(), expected)
+							}
+							return
+						}
+					}
 				}
 			}
 			secret, ack := "remember-"+uuid.NewString(), "stored-"+uuid.NewString()
