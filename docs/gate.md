@@ -41,6 +41,45 @@ tracks no LFS objects, and `scripts/hooks/pre-push` chains
 `git lfs pre-push "$@"` on the saved stdin ref list anyway, so a future
 `git lfs track` cannot break uploads without anyone noticing.
 
+### Git's exported environment (`nogit`)
+
+Git exports `GIT_DIR`, `GIT_INDEX_FILE`, `GIT_WORK_TREE`, `GIT_OBJECT_DIRECTORY`
+and friends into every hook, and **every process the hook spawns inherits
+them** — including the whole of `make gate`. A test that shells out to git
+against a scratch repo then operates on the *pushing* repository instead,
+because the environment overrides the scratch directory's own `.git`.
+
+This is not hypothetical. On 2026-09-06 a hook drill in `bullseye` flipped
+that repo's primary checkout to `core.bare=true`, rewrote its `.git/config`
+and landed a spurious commit — from a test that ran `git init` in a temp
+directory. The drill only exposed it; a genuine `git push` would have done
+the same damage.
+
+`scripts/hooks/pre-push` therefore strips the variables before running
+anything:
+
+```bash
+nogit() {
+	env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_COMMON_DIR \
+		-u GIT_PREFIX -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES \
+		-u GIT_QUARANTINE_PATH -u GIT_PUSH_CERT_NONCE -u GIT_REFLOG_ACTION "$@"
+}
+
+if [[ "$updates" -gt 0 ]]; then
+	cd "$(nogit git rev-parse --show-toplevel)"
+	if ! nogit make gate; then
+		...
+	fi
+fi
+```
+
+Both call sites need it. `--show-toplevel` is not exempt: with `GIT_DIR`
+pointing at the common dir of a multi-worktree repo, it names the wrong
+worktree and the gate runs against the wrong tree.
+
+The trailing `git lfs pre-push "$@"` chain is deliberately **not** wrapped —
+git-lfs is a git subcommand and needs the environment git handed it.
+
 ## What `make gate` runs
 
 | Step | Oracle | Owned by |
@@ -128,7 +167,10 @@ rm refs.txt
 ```
 
 `git hook run` honours `-c core.hooksPath`, so the drill works in a clone
-that has not run `make hooks`. The last drill transcript is recorded in the
+that has not run `make hooks`. The drill runs the gate with git's
+hook environment set, so it is also the check that the `nogit` guard above is
+still in place: a drill that mutates any repository other than the drill
+branch's own worktree means the guard has regressed. The last drill transcript is recorded in the
 🎯T48 lifecycle note in `bullseye.yaml`.
 
 ## Bypass
