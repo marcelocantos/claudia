@@ -37,7 +37,7 @@ type AgentDef struct {
 	// [Registry.MarkMaterialized] after evidence appears, or rely on
 	// Launch promoting from [SessionExists] when JSONL is already present.
 	//
-	// Codex and Cursor also RequireResume on a persisted SessionID that
+	// Grok, Codex and Cursor also RequireResume on a persisted SessionID that
 	// was not minted in this process (bounce / reload), even when
 	// Materialized is still false — those providers' first mint leaves
 	// Materialized unset, and treating that as "never-materialized" is
@@ -147,7 +147,7 @@ type Registry struct {
 	// In-memory only — a process restart retries once.
 	resumeDenied map[string]error
 	// freshSession is name → SessionID assigned by Register/EnsureAgent
-	// in this process. A persisted Codex/Cursor id loaded from disk is
+	// in this process. A persisted Grok/Codex/Cursor id loaded from disk is
 	// not listed here, so bounce Launch RequireResume-es it (🎯T545.1).
 	freshSession map[string]string
 }
@@ -480,7 +480,7 @@ func (r *Registry) requireResumeLocked(def *AgentDef) bool {
 		return false
 	}
 	switch def.Provider {
-	case ProviderCodex, ProviderCursor:
+	case ProviderGrok, ProviderCodex, ProviderCursor:
 		// First mint this process (EnsureAgent / Register) may fall
 		// through. A row reloaded from disk is a bounce resume.
 		return r.freshSession[def.Name] != def.SessionID

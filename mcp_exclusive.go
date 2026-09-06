@@ -31,6 +31,18 @@ func prepareExclusiveGrokHome() (home string, cleanup func(), err error) {
 }
 
 func writeExclusiveGrokHome(dest string) error {
+	// Validate both leaves even when auth comes from the environment and
+	// there is no user auth file to copy. The provider still reads this path.
+	for _, name := range []string{"auth.json", "config.toml"} {
+		path := filepath.Join(dest, name)
+		if info, err := os.Lstat(path); err == nil {
+			if !info.Mode().IsRegular() {
+				return fmt.Errorf("exclusive GROK_HOME configuration is not a regular file: %s", path)
+			}
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+	}
 	userHome, err := os.UserHomeDir()
 	if err != nil {
 		return err
