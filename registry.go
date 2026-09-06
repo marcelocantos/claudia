@@ -4,6 +4,7 @@
 package claudia
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -150,6 +151,7 @@ type Registry struct {
 	// in this process. A persisted Grok/Codex/Cursor id loaded from disk is
 	// not listed here, so bounce Launch RequireResume-es it (🎯T545.1).
 	freshSession map[string]string
+	lifecycle    map[string]*registryLifecycle
 }
 
 // NewRegistry loads or creates an agent registry at the given path.
@@ -180,7 +182,7 @@ func NewRegistry(path string) (*Registry, error) {
 func (r *Registry) save() error {
 	defs := make([]AgentDef, 0, len(r.agents))
 	for _, d := range r.agents {
-		defs = append(defs, *d)
+		defs = append(defs, cloneAgentDef(*d))
 	}
 	data, err := json.MarshalIndent(defs, "", "  ")
 	if err != nil {
@@ -195,11 +197,18 @@ func (r *Registry) save() error {
 func (r *Registry) Register(def AgentDef) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	return r.registerLocked(def)
+}
 
+func (r *Registry) registerLocked(def AgentDef) error {
 	if def.SessionID == "" {
 		return fmt.Errorf("agent %q: session_id required", def.Name)
 	}
 	old, existed := r.agents[def.Name]
+	if op := r.lifecycle[def.Name]; op != nil && (!existed || !sameLaunchDefinition(*old, def)) {
+		return fmt.Errorf("agent %q: %w", def.Name, ErrLifecycleInProgress)
+	}
+	def = cloneAgentDef(def)
 	if existed && old.SessionID != def.SessionID {
 		delete(r.resumeDenied, def.Name)
 		r.freshSession[def.Name] = def.SessionID
@@ -213,24 +222,12 @@ func (r *Registry) Register(def AgentDef) error {
 
 // Remove removes an agent definition and stops it if running.
 func (r *Registry) Remove(name string) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	if proc, ok := r.procs[name]; ok {
-		proc.Stop()
-		delete(r.procs, name)
-	} else if def, ok := r.agents[name]; ok {
-		reapSessionWindows(def)
-	}
-	delete(r.agents, name)
-	delete(r.resumeDenied, name)
-	delete(r.freshSession, name)
-	return r.save()
+	return r.stopLifecycle(name, true)
 }
 
 // registryStart is the Session entrypoint used by [Registry.Launch].
-// Production points at [Start]; hermetic tests may override it.
-var registryStart = Start
+// Production points at [StartContext]; hermetic tests may override it.
+var registryStart = StartContext
 
 // registryAdopt is the Session entrypoint used by [Registry.Adopt].
 var registryAdopt = Adopt
@@ -253,39 +250,89 @@ var registryAdopt = Adopt
 // Materialized so subsequent launches require resume. Hosts that complete
 // a first turn after a bare Start should call [Registry.MarkMaterialized].
 func (r *Registry) Launch(name string) (*Agent, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	return r.LaunchContext(context.Background(), name)
+}
 
-	if proc, ok := r.procs[name]; ok && proc.Alive() {
-		return proc, nil
-	}
+// LaunchContext is Launch with cooperative startup cancellation. Its context
+// does not own the returned agent. See StartContext for backend support.
+func (r *Registry) LaunchContext(ctx context.Context, name string) (*Agent, error) {
+	return r.startLifecycle(ctx, name, false, false)
+}
 
-	def, ok := r.agents[name]
-	if !ok {
-		return nil, fmt.Errorf("agent %q not registered", name)
-	}
-	if err := r.resumeDenied[name]; err != nil {
+// Adopt rebuilds a handle for a still-running process under the same per-name
+// reservation as Launch. Cursor stdio leftovers cannot be adopted.
+func (r *Registry) Adopt(name string) (*Agent, error) {
+	return r.startLifecycle(context.Background(), name, true, false)
+}
+
+// AdoptOrLaunch adopts or starts inside one reservation, so no second caller
+// can open a provider writer between the failed adopt and its fallback.
+func (r *Registry) AdoptOrLaunch(name string) (*Agent, error) {
+	return r.AdoptOrLaunchContext(context.Background(), name)
+}
+
+func (r *Registry) AdoptOrLaunchContext(ctx context.Context, name string) (*Agent, error) {
+	return r.startLifecycle(ctx, name, true, true)
+}
+
+func (r *Registry) startLifecycle(ctx context.Context, name string, adopt, fallback bool) (*Agent, error) {
+	ctx, op, finish, err := r.beginLifecycle(ctx, name, false)
+	if err != nil {
 		return nil, err
 	}
-
-	wantResume := r.requireResumeLocked(def)
-	proc, err := registryStart(Config{
-		Provider:             def.Provider,
-		WorkDir:              def.WorkDir,
-		SessionID:            def.SessionID,
-		RequireResume:        wantResume,
-		Model:                def.Model,
-		DisallowTools:        def.DisallowTools,
-		MCPServers:           def.MCPServers,
-		MCPExclusive:         def.MCPExclusive,
-		GrokConnect:          def.GrokConnect || def.ConnectURL != "",
-		ConnectURL:           def.ConnectURL,
-		ConnectPID:           def.ConnectPID,
-		SandboxMode:          def.SandboxMode,
-		SandboxWritableRoots: def.SandboxWritableRoots,
-		SandboxNetworkAccess: def.SandboxNetworkAccess,
-		Goal:                 def.Goal,
-	})
+	defer finish()
+	r.mu.Lock()
+	registered, ok := r.agents[name]
+	if !ok {
+		r.mu.Unlock()
+		return nil, fmt.Errorf("agent %q not registered", name)
+	}
+	def := cloneAgentDef(*registered)
+	wantResume := r.requireResumeLocked(&def)
+	prior, denied := r.procs[name], r.resumeDenied[name]
+	r.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if prior != nil && prior.Alive() {
+		return prior, nil
+	}
+	if denied != nil {
+		return nil, denied
+	}
+	cfg := registryConfig(&def, wantResume)
+	var proc *Agent
+	started := !adopt
+	if adopt {
+		switch {
+		case isClaudeProvider(def.Provider):
+			proc, err = registryAdopt(cfg)
+		case def.Provider == ProviderGrok && (def.ConnectURL != "" || def.ConnectPID > 0):
+			proc, err = registryStart(ctx, cfg)
+		case def.Provider == ProviderCursor:
+			reapCursorACPDef(&def)
+			err = fmt.Errorf("%w: %s", ErrNoSessionWindow, def.SessionID)
+		default:
+			err = fmt.Errorf("%w: %s", ErrNoSessionWindow, def.SessionID)
+		}
+	}
+	if !adopt || (fallback && err != nil && ctx.Err() == nil) {
+		started = true
+		if err != nil && !errors.Is(err, ErrNoSessionWindow) {
+			slog.Warn("adopt failed; falling back to launch", "agent", name, "err", err)
+		}
+		proc, err = registryStart(ctx, cfg)
+	}
+	r.mu.Lock()
+	// Stop/Remove intent wins even if a backend ignored cancellation and
+	// returned a process. Keep the reservation while that process is cleaned up.
+	if op.stops > 0 {
+		r.mu.Unlock()
+		if proc != nil {
+			proc.Stop()
+		}
+		return nil, context.Canceled
+	}
 	if err != nil {
 		if IsCursorResumeDenied(err) {
 			if r.resumeDenied == nil {
@@ -293,144 +340,52 @@ func (r *Registry) Launch(name string) (*Agent, error) {
 			}
 			r.resumeDenied[name] = err
 		}
+		r.mu.Unlock()
 		return nil, err
+	}
+	if proc == nil {
+		r.mu.Unlock()
+		return nil, fmt.Errorf("agent %q: startup returned no process", name)
+	}
+	current := r.agents[name]
+	if sid := proc.SessionID(); sid != "" && sid != def.SessionID && (wantResume || current.Materialized) {
+		r.mu.Unlock()
+		proc.Stop()
+		return nil, fmt.Errorf("refusing remint of %s: session %s → %s — existing conversation required", name, def.SessionID, sid)
 	}
 	delete(r.resumeDenied, name)
-
 	changed := false
-	if sid := proc.SessionID(); sid != "" && sid != def.SessionID {
-		if wantResume {
-			prior := def.SessionID
-			proc.Stop()
-			return nil, fmt.Errorf("refusing remint of %s: session %s → %s — existing conversation required", name, prior, sid)
-		}
-		def.SessionID = sid
+	if sid := proc.SessionID(); sid != "" && sid != current.SessionID {
+		current.SessionID = sid
 		changed = true
 	}
-	if u := proc.ConnectURL(); u != def.ConnectURL {
-		def.ConnectURL = u
+	if u := proc.ConnectURL(); u != current.ConnectURL {
+		current.ConnectURL = u
 		changed = true
 	}
-	if p := proc.PID(); p != def.ConnectPID {
-		def.ConnectPID = p
+	if p := proc.PID(); p != current.ConnectPID {
+		current.ConnectPID = p
 		changed = true
 	}
-	// Promote Materialized only from conversation evidence, never from
-	// bare Start success (Claude: SessionExists / durable JSONL).
-	if !def.Materialized && claudeSessionEvidence(def.Provider, def.SessionID, def.WorkDir) {
-		def.Materialized = true
+	if !current.Materialized && claudeSessionEvidence(current.Provider, current.SessionID, current.WorkDir) {
+		current.Materialized = true
 		changed = true
 	}
 	if changed {
 		if err := r.save(); err != nil {
-			slog.Warn("persist agent def after launch", "name", name, "err", err)
+			slog.Warn("persist agent def after startup", "name", name, "err", err)
 		}
 	}
-
 	r.procs[name] = proc
-	slog.Info("agent started", "name", name, "provider", def.Provider, "session", proc.SessionID(),
-		"connect_pid", proc.PID(), "connect_url_set", proc.ConnectURL() != "",
-		"window", proc.WindowID(),
-		"materialized", def.Materialized)
+	materialized := current.Materialized
+	r.mu.Unlock()
+	message := "agent adopted"
+	if started {
+		message = "agent started"
+	}
+	slog.Info(message, "name", name, "provider", def.Provider, "session", proc.SessionID(),
+		"connect_pid", proc.PID(), "connect_url_set", proc.ConnectURL() != "", "window", proc.WindowID(), "materialized", materialized)
 	return proc, nil
-}
-
-// Adopt rebuilds a handle for a still-running process. It does not
-// spawn and does not reap. Drain boot uses [Registry.Launch]; upgrade
-// boot uses [Registry.AdoptOrLaunch].
-func (r *Registry) Adopt(name string) (*Agent, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	if proc, ok := r.procs[name]; ok && proc.Alive() {
-		return proc, nil
-	}
-
-	def, ok := r.agents[name]
-	if !ok {
-		return nil, fmt.Errorf("agent %q not registered", name)
-	}
-
-	cfg := Config{
-		Provider:             def.Provider,
-		WorkDir:              def.WorkDir,
-		SessionID:            def.SessionID,
-		RequireResume:        r.requireResumeLocked(def),
-		Model:                def.Model,
-		DisallowTools:        def.DisallowTools,
-		MCPServers:           def.MCPServers,
-		MCPExclusive:         def.MCPExclusive,
-		GrokConnect:          def.GrokConnect || def.ConnectURL != "",
-		ConnectURL:           def.ConnectURL,
-		ConnectPID:           def.ConnectPID,
-		SandboxMode:          def.SandboxMode,
-		SandboxWritableRoots: def.SandboxWritableRoots,
-		SandboxNetworkAccess: def.SandboxNetworkAccess,
-		Goal:                 def.Goal,
-	}
-
-	var proc *Agent
-	var err error
-	switch {
-	case isClaudeProvider(def.Provider):
-		proc, err = registryAdopt(cfg)
-	case def.Provider == ProviderGrok && (def.ConnectURL != "" || def.ConnectPID > 0):
-		// Grok connect-mode: Start dials the existing serve.
-		proc, err = registryStart(cfg)
-	case def.Provider == ProviderCursor:
-		// Cursor ACP is stdio-owned. A leftover PID cannot be adopted —
-		// reap writers on that store so Launch mints exactly one client
-		// (🎯T541.1). Treating ConnectPID as Grok-style adopt would Start
-		// a second cursor-agent on the same store.db.
-		reapCursorACPDef(def)
-		err = fmt.Errorf("%w: %s", ErrNoSessionWindow, def.SessionID)
-	default:
-		err = fmt.Errorf("%w: %s", ErrNoSessionWindow, def.SessionID)
-	}
-	if err != nil {
-		return nil, err
-	}
-
-	changed := false
-	if sid := proc.SessionID(); sid != "" && sid != def.SessionID {
-		def.SessionID = sid
-		changed = true
-	}
-	if u := proc.ConnectURL(); u != def.ConnectURL {
-		def.ConnectURL = u
-		changed = true
-	}
-	if p := proc.PID(); p != def.ConnectPID {
-		def.ConnectPID = p
-		changed = true
-	}
-	if !def.Materialized && claudeSessionEvidence(def.Provider, def.SessionID, def.WorkDir) {
-		def.Materialized = true
-		changed = true
-	}
-	if changed {
-		if err := r.save(); err != nil {
-			slog.Warn("persist agent def after adopt", "name", name, "err", err)
-		}
-	}
-
-	r.procs[name] = proc
-	slog.Info("agent adopted", "name", name, "provider", def.Provider, "session", proc.SessionID(),
-		"connect_pid", proc.PID(), "window", proc.WindowID())
-	return proc, nil
-}
-
-// AdoptOrLaunch tries [Registry.Adopt] and falls back to [Registry.Launch]
-// when no process remains. Only the upgrade boot uses this.
-func (r *Registry) AdoptOrLaunch(name string) (*Agent, error) {
-	proc, err := r.Adopt(name)
-	if err == nil {
-		return proc, nil
-	}
-	if !errors.Is(err, ErrNoSessionWindow) {
-		slog.Warn("adopt failed; falling back to launch", "agent", name, "err", err)
-	}
-	return r.Launch(name)
 }
 
 // MarkMaterialized records that name has hosted a real conversation and
@@ -504,31 +459,45 @@ func claudeSessionEvidence(provider Provider, sessionID, workDir string) bool {
 // durable serve process and clears ConnectURL/ConnectPID so the next
 // Launch does not reattach to a dead endpoint.
 func (r *Registry) Stop(name string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	if err := r.stopLifecycle(name, false); err != nil {
+		slog.Warn("persist agent stop", "name", name, "err", err)
+	}
+}
 
-	if proc, ok := r.procs[name]; ok {
+func (r *Registry) stopLifecycle(name string, remove bool) error {
+	_, _, finish, err := r.beginLifecycle(context.Background(), name, true)
+	if err != nil {
+		return err
+	}
+	defer finish()
+	r.mu.Lock()
+	proc := r.procs[name]
+	var def *AgentDef
+	if current := r.agents[name]; current != nil {
+		copy := cloneAgentDef(*current)
+		def = &copy
+	}
+	r.mu.Unlock()
+	if proc != nil {
 		proc.Stop()
-		delete(r.procs, name)
-		slog.Info("agent stopped", "name", name)
-	} else if def, ok := r.agents[name]; ok {
-		// After a consumer restart procs is empty. The window is still
-		// findable by session id; killing it is what makes Stop a real
-		// cleanup rather than a silent no-op (🎯T34). Cursor ACP leftovers
-		// hold store.db, not a tmux window (🎯T541.1).
+	} else if def != nil {
 		reapSessionWindows(def)
 		reapCursorACPDef(def)
-		slog.Info("agent stopped", "name", name, "via", "session-window")
 	}
-	if def, ok := r.agents[name]; ok {
-		if def.ConnectURL != "" || def.ConnectPID != 0 {
-			def.ConnectURL = ""
-			def.ConnectPID = 0
-			if err := r.save(); err != nil {
-				slog.Warn("persist clear connect endpoint after stop", "name", name, "err", err)
-			}
-		}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.procs, name)
+	if remove {
+		delete(r.agents, name)
+		delete(r.resumeDenied, name)
+		delete(r.freshSession, name)
+		return r.save()
 	}
+	if current := r.agents[name]; current != nil && (current.ConnectURL != "" || current.ConnectPID != 0) {
+		current.ConnectURL, current.ConnectPID = "", 0
+		return r.save()
+	}
+	return nil
 }
 
 // ResumeDenied returns the latched Cursor fail-closed error for name,
@@ -554,7 +523,7 @@ func (r *Registry) Def(name string) *AgentDef {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if d, ok := r.agents[name]; ok {
-		cp := *d
+		cp := cloneAgentDef(*d)
 		return &cp
 	}
 	return nil
@@ -566,7 +535,7 @@ func (r *Registry) List() []AgentDef {
 	defer r.mu.Unlock()
 	defs := make([]AgentDef, 0, len(r.agents))
 	for _, d := range r.agents {
-		defs = append(defs, *d)
+		defs = append(defs, cloneAgentDef(*d))
 	}
 	return defs
 }
@@ -593,6 +562,11 @@ func (r *Registry) StartAll() {
 // reuse a leftover process when one exists, otherwise Launch. Ordinary
 // start never reaps; a leak stays visible as extra processes.
 func (r *Registry) StartAllPreferAdopt() {
+	r.StartAllPreferAdoptContext(context.Background())
+}
+
+// StartAllPreferAdoptContext stops starting further seats when ctx is canceled.
+func (r *Registry) StartAllPreferAdoptContext(ctx context.Context) {
 	r.mu.Lock()
 	names := make([]string, 0)
 	for name, def := range r.agents {
@@ -603,7 +577,10 @@ func (r *Registry) StartAllPreferAdopt() {
 	r.mu.Unlock()
 
 	for _, name := range names {
-		if _, err := r.AdoptOrLaunch(name); err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		if _, err := r.AdoptOrLaunchContext(ctx, name); err != nil {
 			slog.Error("auto-start failed", "agent", name, "err", err)
 		}
 	}
@@ -653,12 +630,11 @@ func (r *Registry) EnsureAgent(name, workDir, model string, autoStart bool) (*Ag
 // new registrations (fleet lineage for kill authorization).
 func (r *Registry) EnsureAgentWithParent(name, workDir, model, parent string, autoStart bool) (*AgentDef, error) {
 	r.mu.Lock()
+	defer r.mu.Unlock()
 	if def, ok := r.agents[name]; ok {
-		cp := *def
-		r.mu.Unlock()
+		cp := cloneAgentDef(*def)
 		return &cp, nil
 	}
-	r.mu.Unlock()
 
 	def := AgentDef{
 		Name:      name,
@@ -668,7 +644,7 @@ func (r *Registry) EnsureAgentWithParent(name, workDir, model, parent string, au
 		AutoStart: autoStart,
 		Parent:    parent,
 	}
-	if err := r.Register(def); err != nil {
+	if err := r.registerLocked(def); err != nil {
 		return nil, err
 	}
 	return &def, nil

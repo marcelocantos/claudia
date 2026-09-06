@@ -5,6 +5,7 @@ package claudia
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // ErrCursorResumeDenied is returned when session/load failed for a
@@ -37,10 +39,12 @@ type cursorACPClient struct {
 	stderr      io.ReadCloser
 	ownsProcess bool
 
-	mu      sync.Mutex
-	nextID  int64
-	pending map[int64]chan acpRPCMessage
-	closed  bool
+	mu        sync.Mutex
+	nextID    int64
+	pending   map[int64]chan acpRPCMessage
+	closed    bool
+	writeMu   sync.Mutex
+	closeOnce sync.Once
 
 	sessionID string
 	onEvent   func(Event)
@@ -60,7 +64,16 @@ func cursorACPArgs(model string) []string {
 	return append(args, "acp")
 }
 
-func startCursorACP(bin string, workDir, model, sessionID string, requireResume bool, mcpServers []any, extraEnv []string, onEvent func(Event), onClose func()) (*cursorACPClient, error) {
+// Saved sessions with a full MCP map can take minutes to load. This bound
+// allows that cold start; explicit cancellation remains immediate.
+const cursorACPStartupTimeout = 5 * time.Minute
+
+func startCursorACP(ctx context.Context, bin string, workDir, model, sessionID string, requireResume bool, mcpServers []any, extraEnv []string, onEvent func(Event), onClose func()) (*cursorACPClient, error) {
+	ctx, cancel := context.WithTimeout(ctx, cursorACPStartupTimeout)
+	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	cmd := exec.Command(bin, cursorACPArgs(model)...)
 	cmd.Dir = workDir
 	if len(extraEnv) > 0 {
@@ -104,15 +117,38 @@ func startCursorACP(bin string, workDir, model, sessionID string, requireResume 
 	go c.drainStderr()
 	go c.readLoop()
 
-	if err := c.initialize(); err != nil {
+	// Closing the transport does not acquire its write lock, so cancellation
+	// also interrupts a child that has stopped reading stdin.
+	closed := make(chan struct{})
+	stopCancel := context.AfterFunc(ctx, func() {
+		c.Close()
+		close(closed)
+	})
+	defer func() {
+		if stopCancel != nil && !stopCancel() {
+			<-closed
+		}
+	}()
+	if err := c.initialize(ctx); err != nil {
 		c.Close()
 		return nil, err
 	}
-	if err := c.authenticate(); err != nil {
+	if err := c.authenticate(ctx); err != nil {
 		c.Close()
 		return nil, err
 	}
-	if err := c.openSession(workDir, sessionID, requireResume, mcpServers); err != nil {
+	if err := c.openSession(ctx, workDir, sessionID, requireResume, mcpServers); err != nil {
+		c.Close()
+		return nil, err
+	}
+	// If cancellation won the handoff race, no closed client escapes. Once
+	// disarmed, a later cancellation cannot kill the successfully started agent.
+	if !stopCancel() {
+		<-closed
+		return nil, ctx.Err()
+	}
+	stopCancel = nil
+	if err := ctx.Err(); err != nil {
 		c.Close()
 		return nil, err
 	}
@@ -160,7 +196,12 @@ func (c *cursorACPClient) readLoop() {
 		}
 		c.dispatchMessage(line)
 	}
-	logACPScanErr("cursor", sc.Err())
+	c.mu.Lock()
+	closed := c.closed
+	c.mu.Unlock()
+	if !closed {
+		logACPScanErr("cursor", sc.Err())
+	}
 }
 
 func (c *cursorACPClient) dispatchMessage(line []byte) {
@@ -302,8 +343,8 @@ func (c *cursorACPClient) handleSessionUpdate(params json.RawMessage) {
 	}
 }
 
-func (c *cursorACPClient) initialize() error {
-	_, err := c.request("initialize", map[string]any{
+func (c *cursorACPClient) initialize(ctx context.Context) error {
+	_, err := c.requestContext(ctx, "initialize", map[string]any{
 		"protocolVersion": 1,
 		"clientInfo": map[string]any{
 			"name":    "claudia",
@@ -321,8 +362,8 @@ func (c *cursorACPClient) initialize() error {
 	return nil
 }
 
-func (c *cursorACPClient) authenticate() error {
-	_, err := c.request("authenticate", map[string]any{
+func (c *cursorACPClient) authenticate(ctx context.Context) error {
+	_, err := c.requestContext(ctx, "authenticate", map[string]any{
 		"methodId": "cursor_login",
 	})
 	if err != nil {
@@ -331,14 +372,17 @@ func (c *cursorACPClient) authenticate() error {
 	return nil
 }
 
-func (c *cursorACPClient) openSession(workDir, preferSessionID string, requireResume bool, mcpServers []any) error {
+func (c *cursorACPClient) openSession(ctx context.Context, workDir, preferSessionID string, requireResume bool, mcpServers []any) error {
 	if mcpServers == nil {
 		mcpServers = []any{}
 	}
 	if preferSessionID != "" {
-		err := c.loadSession(preferSessionID, workDir, mcpServers)
+		err := c.loadSession(ctx, preferSessionID, workDir, mcpServers)
 		if err == nil {
 			return nil
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return fmt.Errorf("acp session/load %s interrupted; refusing replacement: %w", preferSessionID, err)
 		}
 		// A store.db means this id already hosted a conversation.
 		// session/new after a failed load stacks a second writer and
@@ -348,14 +392,14 @@ func (c *cursorACPClient) openSession(workDir, preferSessionID string, requireRe
 		}
 		slog.Warn("cursor acp session/load failed for unmaterialized id; creating new session", "err", err, "session", preferSessionID)
 	}
-	return c.createSession(workDir, mcpServers)
+	return c.createSession(ctx, workDir, mcpServers)
 }
 
-func (c *cursorACPClient) createSession(workDir string, mcpServers []any) error {
+func (c *cursorACPClient) createSession(ctx context.Context, workDir string, mcpServers []any) error {
 	if mcpServers == nil {
 		mcpServers = []any{}
 	}
-	result, err := c.request("session/new", map[string]any{
+	result, err := c.requestContext(ctx, "session/new", map[string]any{
 		"cwd":        workDir,
 		"mcpServers": mcpServers,
 	})
@@ -377,11 +421,11 @@ func (c *cursorACPClient) createSession(workDir string, mcpServers []any) error 
 	return nil
 }
 
-func (c *cursorACPClient) loadSession(sessionID, workDir string, mcpServers []any) error {
+func (c *cursorACPClient) loadSession(ctx context.Context, sessionID, workDir string, mcpServers []any) error {
 	if mcpServers == nil {
 		mcpServers = []any{}
 	}
-	result, err := c.request("session/load", map[string]any{
+	result, err := c.requestContext(ctx, "session/load", map[string]any{
 		"sessionId":  sessionID,
 		"cwd":        workDir,
 		"mcpServers": mcpServers,
@@ -533,26 +577,31 @@ func (c *cursorACPClient) promptInFlight() bool {
 }
 
 func (c *cursorACPClient) Close() {
-	c.mu.Lock()
-	// readLoop sets closed when stdout EOFs. That is not a kill — a
-	// cursor-agent that drops the ACP pipe can still hold store.db
-	// (🎯T541.1 launch storm). Always signal if we own the process.
-	c.closed = true
-	owns := c.ownsProcess
-	cmd := c.cmd
-	stdin := c.stdin
-	c.mu.Unlock()
-
-	if stdin != nil {
-		_ = stdin.Close()
-	}
-	if !owns {
-		return
-	}
-	if cmd != nil && cmd.Process != nil {
-		_ = cmd.Process.Kill()
-		_, _ = cmd.Process.Wait()
-	}
+	c.closeOnce.Do(func() {
+		c.mu.Lock()
+		c.closed = true
+		for id, ch := range c.pending {
+			close(ch)
+			delete(c.pending, id)
+		}
+		c.mu.Unlock()
+		// These handles are immutable after construction. Never acquire writeMu:
+		// the write we need to interrupt may hold it indefinitely.
+		if c.stdin != nil {
+			_ = c.stdin.Close()
+		}
+		if c.stdout != nil {
+			_ = c.stdout.Close()
+		}
+		if c.stderr != nil {
+			_ = c.stderr.Close()
+		}
+		// EOF alone does not release Cursor's store.db writer.
+		if c.ownsProcess && c.cmd != nil && c.cmd.Process != nil {
+			_ = c.cmd.Process.Kill()
+			_, _ = c.cmd.Process.Wait()
+		}
+	})
 }
 
 func (c *cursorACPClient) nextReqID() int64 {
@@ -560,11 +609,28 @@ func (c *cursorACPClient) nextReqID() int64 {
 }
 
 func (c *cursorACPClient) request(method string, params any) (json.RawMessage, error) {
+	return c.requestContext(context.Background(), method, params)
+}
+
+func (c *cursorACPClient) requestContext(ctx context.Context, method string, params any) (json.RawMessage, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	closed := make(chan struct{})
+	stopCancel := context.AfterFunc(ctx, func() { c.Close(); close(closed) })
+	defer func() {
+		if !stopCancel() {
+			<-closed
+		}
+	}()
 	id := c.nextReqID()
 	ch := make(chan acpRPCMessage, 1)
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		return nil, fmt.Errorf("cursor acp: client closed")
 	}
 	c.pending[id] = ch
@@ -583,9 +649,15 @@ func (c *cursorACPClient) request(method string, params any) (json.RawMessage, e
 		c.mu.Lock()
 		delete(c.pending, id)
 		c.mu.Unlock()
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		return nil, err
 	}
 	resp, ok := <-ch
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
 	if !ok {
 		return nil, fmt.Errorf("cursor acp: connection closed waiting for %s", method)
 	}
@@ -626,14 +698,17 @@ func (c *cursorACPClient) replyError(id *int64, code int, message string) error 
 }
 
 func (c *cursorACPClient) write(v any) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.closed {
-		return fmt.Errorf("cursor acp: client closed")
-	}
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
+	}
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	c.mu.Lock()
+	closed := c.closed
+	c.mu.Unlock()
+	if closed {
+		return fmt.Errorf("cursor acp: client closed")
 	}
 	if c.stdin == nil {
 		return fmt.Errorf("cursor acp: no transport")
@@ -712,7 +787,11 @@ func startCursorAgent(req agentStartRequest) (*agentStart, error) {
 	}
 	var bind acpBind
 
-	client, err := startCursorACP(bin, plan.WorkDir, plan.Model, plan.PreferSessionID, plan.RequireResume, plan.MCPServers, nil, bind.onEvent, bind.onClose)
+	ctx := req.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	client, err := startCursorACP(ctx, bin, plan.WorkDir, plan.Model, plan.PreferSessionID, plan.RequireResume, plan.MCPServers, nil, bind.onEvent, bind.onClose)
 	if err != nil {
 		if plan.PreferSessionID != "" {
 			ReapCursorACPLeftovers(plan.PreferSessionID, 0)
