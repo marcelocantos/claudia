@@ -1,11 +1,20 @@
 name: specs
 
-# Formal-verification oracle for the broker lifecycle (T2.0/T2.8). Kept separate
-# from test.yml so the Go matrix and the TLA+ model-check evolve independently.
+# Formal-verification oracle for the broker lifecycle (T2.0/T2.8). Kept
+# separate from test.yml so the Go matrix and the TLA+ model-check evolve
+# independently. Locally this is `make gate-full` (needs Java + tla2tools);
+# it is not on the pre-push hook, so this run is the standing enforcement
+# point for the spec. Like test.yml it runs on push to master and on tags;
+# `pull_request` is a courtesy for external contributors.
 on:
   push:
     branches: [master]
+    tags: ['v*']
   pull_request:
+
+concurrency:
+  group: specs-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   tlc:
