@@ -77,6 +77,37 @@ Both call sites need it. `--show-toplevel` is not exempt: with `GIT_DIR`
 pointing at the common dir of a multi-worktree repo, it names the wrong
 worktree and the gate runs against the wrong tree.
 
+The trailing `git lfs pre-push` is deliberately **not** wrapped — LFS needs
+git's environment to know what it is pushing.
+
+### The wider class: a worktree does not isolate `.git`
+
+The exported variables are one instance of a general fact worth stating
+plainly, because it governs how agents may work in this repo at all:
+**`git worktree` isolates the working tree and nothing else.** Everything
+reached through `.git` is shared with every other worktree, including the
+one the owner is sitting in.
+
+| Shared | Consequence |
+|---|---|
+| stashes (`refs/stash`) | one stack for all worktrees |
+| config | `core.hooksPath`, `core.bare`, identity are repo-wide |
+| refs and reflogs | a branch written in one worktree appears in all |
+| the index | via `GIT_INDEX_FILE`, as above |
+| `.git/modules` | submodule state is shared |
+
+So, when several agents hold worktrees of this repo at once:
+
+- **Never `git stash`.** On a clean tree `stash push` saves nothing, so the
+  matching `pop` takes the top entry — which may be someone else's, from
+  months ago. To toggle a file, copy it aside inside your worktree and copy
+  it back.
+- **Never `git config` to change behaviour**; it retunes every worktree.
+  Use `git -c <key>=<value>` per invocation. This is why `make hooks` is
+  the owner's to run and not an agent's.
+- **Do not `git submodule update --init`** from a worktree while the primary
+  checkout has submodules populated.
+
 The trailing `git lfs pre-push "$@"` chain is deliberately **not** wrapped —
 git-lfs is a git subcommand and needs the environment git handed it.
 
