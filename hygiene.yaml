@@ -23,7 +23,7 @@ floors:            # per-dimension held-tier ratchet; below floor => DRIFT
   build: 2
   docs: 2
   perf: 0          # no benchmark suite yet
-  vcs: 0           # no committed git hooks yet
+  vcs: 3           # committed pre-push hook, wired by make hooks, self-checked
   agent: 2
 
 tiers:
@@ -41,25 +41,25 @@ items:
     cadence: continuous
     enforce: blocking
     tier: 1
-    evidence: {ci_step: {workflow: test.yml, name: Test}}
+    evidence: {ci_step: {workflow: test.yml, name: make gate}}
 
   - id: correctness.os-matrix
     dim: correctness
-    desc: Test job runs on ubuntu-latest and macos-latest
+    desc: The gate job runs on ubuntu-latest and macos-latest
     state: enforced
     cadence: continuous
     enforce: blocking
     tier: 2
-    evidence: {ci_job: test.yml#test}
+    evidence: {ci_job: test.yml#gate}
 
   - id: correctness.mutation-evidence
     dim: correctness
-    desc: Quoted mutation evidence is re-derived in CI (make verify-mutation-evidence)
+    desc: Quoted mutation evidence is re-derived inside `make gate` in CI
     state: enforced
     cadence: continuous
     enforce: blocking
     tier: 2
-    evidence: {ci_job: test.yml#mutation-evidence}
+    evidence: {file: {path: Makefile, matches: "verify-mutation-evidence"}}
 
   - id: correctness.live-gate
     dim: correctness
@@ -178,12 +178,12 @@ items:
   # ============================== CODE QUALITY ============================
   - id: quality.vet
     dim: quality
-    desc: go vet runs on every push/PR
+    desc: go vet runs on every push/PR, inside `make gate`
     state: enforced
     cadence: continuous
     enforce: blocking
     tier: 2
-    evidence: {ci_step: {workflow: test.yml, name: Vet}}
+    evidence: {file: {path: Makefile, matches: "go vet \\./\\.\\.\\."}}
 
   - id: quality.format
     dim: quality
@@ -298,12 +298,12 @@ items:
   # ================================= BUILD ===============================
   - id: build.ci
     dim: build
-    desc: go build ./... runs in CI
+    desc: The build is exercised in CI through the `make gate` step
     state: enforced
     cadence: continuous
     enforce: blocking
     tier: 1
-    evidence: {ci_step: {workflow: test.yml, name: Build}}
+    evidence: {ci_step: {workflow: test.yml, name: make gate}}
 
   - id: build.go-version
     dim: build
@@ -335,12 +335,12 @@ items:
 
   - id: docs.stability-surface
     dim: docs
-    desc: STABILITY.md enumerates the snapshot tag's public surface (make verify-stability)
+    desc: STABILITY.md's public surface is re-derived inside `make gate`
     state: enforced
     cadence: continuous
     enforce: blocking
     tier: 2
-    evidence: {ci_job: test.yml#stability-surface}
+    evidence: {file: {path: Makefile, matches: "verify-stability"}}
 
   - id: docs.md-links
     dim: docs
@@ -364,15 +364,32 @@ items:
     evidence: {absent: {make_target: bench}}
 
   # ============================== VCS / HISTORY =========================
-  - id: vcs.pre-commit-hook
+  - id: vcs.pre-push-hook
     dim: vcs
-    desc: Committed git hooks (scripts/hooks) gate locally before commit
-    state: planned
-    cadence: once-must-hold
-    enforce: informational
+    desc: A committed pre-push hook (scripts/hooks/pre-push) runs the gate
+    state: enforced
+    cadence: continuous
+    enforce: blocking
     tier: 3
-    reason: No scripts/hooks; core.hooksPath is the default .git/hooks.
-    evidence: {absent: {file: {path: scripts/hooks/pre-commit}}}
+    evidence: {file: {path: scripts/hooks/pre-push}}
+
+  - id: vcs.hooks-wired
+    dim: vcs
+    desc: "`make hooks` points core.hooksPath at the committed hook directory"
+    state: enforced
+    cadence: once-must-hold
+    enforce: blocking
+    tier: 3
+    evidence: {make_target: hooks}
+
+  - id: vcs.hooks-self-check
+    dim: vcs
+    desc: The gate refuses to pass locally when core.hooksPath is not wired
+    state: enforced
+    cadence: continuous
+    enforce: blocking
+    tier: 3
+    evidence: {file: {path: Makefile, matches: "core\\.hooksPath"}}
 
   # =================== AGENT-READINESS / ONBOARDING ====================
   - id: agent.agents-md
