@@ -305,11 +305,14 @@ Install the daemon with Homebrew, then start it as a user service:
 
 ```bash
 brew install marcelocantos/tap/claudia
+# supervisor-hosted machines (this host):
+make supervisor-install
+# other machines:
 brew services start claudia
 ```
 
-`claudia broker serve` (or `brew services start claudia` / `claudia
-broker install` for a launchd user agent) runs a host-wide daemon that
+`claudia broker serve` (or `make supervisor-install` / `brew services
+start claudia` / `claudia broker install` for a launchd user agent) runs a host-wide daemon that
 owns every consumer's agent processes: Sessions become named grants that survive the consumer's
 restart, Tasks run on the daemon, plan usage is fetched once per host,
 and after a reboot the daemon resumes the seats it held and tells them

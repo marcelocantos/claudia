@@ -7,6 +7,7 @@ agents working *in* this repo.
 ```bash
 make gate                      # hermetic owner gate (pre-push); same as CI
 make live                      # real backends; each live env is opt-in
+make supervisor-install        # host daemon under supervisord (evicts brew/launchd)
 ```
 
 ## Delivery

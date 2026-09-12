@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -17,6 +18,60 @@ import (
 	"github.com/marcelocantos/claudia"
 	"github.com/marcelocantos/claudia/internal/broker"
 )
+
+func TestSupervisorInstallRendersProgram(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join("..", "..", "supervisor", "install.sh")
+	cmd := exec.Command(script)
+	cmd.Env = append(os.Environ(),
+		"SUPERVISOR_SKIP_CTL=1",
+		"SUPERVISOR_CONF_DIR="+dir,
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("install.sh: %v\n%s", err, out)
+	}
+	body, err := os.ReadFile(filepath.Join(dir, "claudia.ini"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	for _, want := range []string{
+		"[program:claudia]",
+		"supervisor/run-claudia.sh",
+		"TERM=\"xterm-256color\"",
+		"LANG=\"en_US.UTF-8\"",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("rendered claudia.ini missing %q:\n%s", want, s)
+		}
+	}
+	if strings.Contains(s, "@REPO@") {
+		t.Fatalf("rendered claudia.ini still has @REPO@:\n%s", s)
+	}
+}
+
+func TestSupervisorRunScriptPrefersHomebrewOpt(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", "supervisor", "run-claudia.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	for _, want := range []string{
+		"opt/claudia/bin/claudia",
+		"broker serve",
+		"CLAUDIA_BIN",
+		"TERM=",
+		"LANG=",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("run-claudia.sh missing %q:\n%s", want, s)
+		}
+	}
+	if strings.Contains(s, "command -v claudia") || strings.Contains(s, "LookPath") {
+		t.Fatal("run-claudia.sh must not resolve claudia from PATH (~/go/bin shadows brew)")
+	}
+}
 
 func TestHomebrewFormulaStartsBrokerServe(t *testing.T) {
 	body, err := os.ReadFile(filepath.Join("..", "..", "tapper", "formula_includes.rb"))

@@ -668,9 +668,13 @@ does. Tests that want a daemon start one on a temp socket
 `t.Setenv("CLAUDIA_NO_BROKER", "")`.
 
 Install the daemon with `brew install marcelocantos/tap/claudia`.
-Operate it with `brew services start claudia` (Homebrew launchd
-plist, 🎯T2.7) or `claudia broker install` (owner-installed launchd
-user agent on macOS), then `status`, `grants`, `usage [--refresh]`,
+On a supervisor-hosted machine, `make supervisor-install` (or
+`supervisor/install.sh`) renders `supervisor.d/claudia.ini`, evicts
+brew/launchd, and starts `claudia broker serve` under supervisord —
+same shape as bullseye/mnemo/jevonsd. Elsewhere, operate it with
+`brew services start claudia` (Homebrew launchd plist, 🎯T2.7) or
+`claudia broker install` (owner-installed launchd user agent on
+macOS). Then `status`, `grants`, `usage [--refresh]`,
 `tail` (NDJSON lifecycle events), `release NAME [--detach]`, `socket`.
 `claudia --help-agent` prints this guide after the CLI usage text.
 Not covered by

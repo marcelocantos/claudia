@@ -80,6 +80,13 @@ live:
 # must be green AND every fault-injection mutant must be caught — a spec that
 # stays green on known-broken code is toothless. Requires Java + tla2tools.jar
 # (see scripts/tlc.sh). CI runs this in .github/workflows/specs.yml.
+.PHONY: supervisor-install supervisor-status
+supervisor-install:
+	@supervisor/install.sh
+
+supervisor-status:
+	-supervisorctl status claudia
+
 .PHONY: release-dist release-tap
 release-dist:
 	@scripts/release-package.sh
