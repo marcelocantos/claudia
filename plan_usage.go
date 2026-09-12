@@ -91,9 +91,8 @@ type PlanUsageArgs struct {
 	CodexUsageURL string
 	// Now overrides wall clock for FetchedAt (tests). Zero uses time.Now.
 	Now time.Time
-	// GrokUnstableUsage opts into reading Grok plan usage from the undocumented
-	// cli-chat-proxy billing endpoint. Off by default — the surface is private
-	// and unversioned. CLAUDIA_GROK_USAGE=1 is an equivalent opt-in.
+	// GrokUnstableUsage is ignored. Grok usage is always fetched; a break
+	// is unavailable-with-reason. Kept so Fluid callers still compile.
 	GrokUnstableUsage bool
 	// GrokAccessToken overrides the grok OIDC token (default: ~/.grok/auth.json).
 	GrokAccessToken string
@@ -104,9 +103,8 @@ type PlanUsageArgs struct {
 	// GrokBillingRaw injects a captured billing response for tests, bypassing
 	// the network call entirely.
 	GrokBillingRaw json.RawMessage
-	// CursorUnstableUsage opts into reading Cursor plan usage from the
-	// undocumented dashboard GetCurrentPeriodUsage RPC. Off by default.
-	// CLAUDIA_CURSOR_USAGE=1 is an equivalent opt-in.
+	// CursorUnstableUsage is ignored. Cursor usage is always fetched; a
+	// break is unavailable-with-reason. Kept so Fluid callers still compile.
 	CursorUnstableUsage bool
 	// CursorAccessToken overrides the Cursor session token
 	// (default: CURSOR_API_KEY, then the IDE state.vscdb).
@@ -137,8 +135,7 @@ type AllPlanUsageArgs struct {
 	CodexUsageURL string
 	// Now overrides wall clock for FetchedAt (tests). Zero uses time.Now.
 	Now time.Time
-	// GrokUnstableUsage opts into the undocumented Grok billing surface
-	// (see PlanUsageArgs.GrokUnstableUsage). CLAUDIA_GROK_USAGE=1 is equivalent.
+	// GrokUnstableUsage is ignored. Grok usage is always fetched.
 	GrokUnstableUsage bool
 	// GrokAccessToken overrides the grok OIDC token (default: ~/.grok/auth.json).
 	GrokAccessToken string
@@ -148,8 +145,7 @@ type AllPlanUsageArgs struct {
 	GrokBillingURL string
 	// GrokBillingRaw injects a captured billing response for tests.
 	GrokBillingRaw json.RawMessage
-	// CursorUnstableUsage opts into the undocumented Cursor usage surface
-	// (see PlanUsageArgs.CursorUnstableUsage). CLAUDIA_CURSOR_USAGE=1 is equivalent.
+	// CursorUnstableUsage is ignored. Cursor usage is always fetched.
 	CursorUnstableUsage bool
 	CursorAccessToken   string
 	CursorAuthPath      string
@@ -185,9 +181,8 @@ func QueryPlanUsage(ctx context.Context, args *PlanUsageArgs) (PlanUsage, error)
 	case ProviderCodex:
 		return queryCodexPlanUsage(ctx, client, args, now)
 	case ProviderGrok:
-		// SuperGrok has no documented public API; the weekly pool is read from
-		// the undocumented x.ai/billing ACP extension, opt-in only. Without the
-		// opt-in this returns unavailable with a reason (see queryGrokPlanUsage).
+		// SuperGrok weekly pool is the undocumented cli-chat-proxy billing
+		// endpoint. Always fetched; a break is unavailable-with-reason.
 		return queryGrokPlanUsage(ctx, args, now), nil
 	case ProviderBedrock:
 		return unavailablePlan(ProviderBedrock, now,

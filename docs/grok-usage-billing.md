@@ -81,7 +81,7 @@ when a host needs spend automation outside claudia’s Task event model.
 
 | System | Who | What | Programmatic access |
 | --- | --- | --- | --- |
-| **SuperGrok consumer** | grok.com / apps / Build subscription | Shared weekly pool, Extra Usage Credits, Auto Top Up | **None documented.** claudia reads the weekly pool **opt-in** via the undocumented `cli-chat-proxy` billing endpoint — see [Verified: what claudia uses](#verified-what-claudia-uses) |
+| **SuperGrok consumer** | grok.com / apps / Build subscription | Shared weekly pool, Extra Usage Credits, Auto Top Up | **None documented.** claudia reads the weekly pool via the undocumented `cli-chat-proxy` billing endpoint — see [Verified: what claudia uses](#verified-what-claudia-uses) |
 | **API team prepaid** | [console.x.ai](https://console.x.ai) teams | Prepaid credits, invoices, spending limits, usage analytics | **Management API** (documented) |
 
 `/usage` in Build is the SuperGrok consumer view (plus session counters).
@@ -137,8 +137,8 @@ Exact base URL, schema, and stability are **not published**.
 
 ## Verified: what claudia uses
 
-Captured live 2026-08-10. claudia's Grok plan-usage path (`plan_usage_grok.go`,
-opt-in behind `CLAUDIA_GROK_USAGE=1`) replicates the pager's own upstream call:
+Captured live 2026-08-10. claudia's Grok plan-usage path (`plan_usage_grok.go`)
+replicates the pager's own upstream call:
 
 ```
 GET https://cli-chat-proxy.grok.com/v1/billing?format=credits
@@ -170,9 +170,8 @@ Mapping (weekly window only — no rolling session window is published here):
 
 Fail-loud contract: a missing/out-of-range `creditUsagePercent`, a non-200
 (e.g. 401 on an expired token — grok owns refresh), or an unparseable body all
-yield `PlanUsageUnavailable` **with a reason**, never a fabricated number. This
-is why the surface is opt-in: it can break on any grok update, and when it does
-it degrades loudly.
+yield `PlanUsageUnavailable` **with a reason**, never a fabricated number. The
+surface can break on any grok update; when it does, fix the parser.
 
 Response-shaped field names seen in the binary for billing structs
 include (names only; no schema guarantee):

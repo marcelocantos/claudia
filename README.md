@@ -128,10 +128,10 @@ SuperGrok weekly usage / Extra Credits and console prepaid balance are
 
 **Plan remaining (all providers):** `QueryPlanUsage` /
 `QueryAllPlanUsage` expose subscription session + weekly % remaining and
-rollover times when a backend publishes them; Grok and Bedrock report
-explicit unavailable (never invented numbers). Cursor plan remaining
-is opt-in (`CLAUDIA_CURSOR_USAGE=1`) because it reads an undocumented
-dashboard RPC. See [docs/plan-usage.md](docs/plan-usage.md).
+rollover times when a backend publishes them. Grok and Cursor unofficial
+billing surfaces are always fetched; a break is unavailable-with-reason
+(never invented numbers). Bedrock has no subscription window. See
+[docs/plan-usage.md](docs/plan-usage.md).
 
 Bedrock Task mode is available by selecting `ProviderBedrock`. It calls
 AWS Bedrock ConverseStream and maps text deltas to `TaskEventText`:

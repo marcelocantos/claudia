@@ -17,11 +17,9 @@ import (
 	"time"
 )
 
-// cursorUsageEnv opts into the undocumented Cursor dashboard usage surface.
-const cursorUsageEnv = "CLAUDIA_CURSOR_USAGE"
-
 // cursorPeriodUsageURL is the undocumented DashboardService RPC the Cursor
-// IDE billing UI reads. Private and unversioned — this path is opt-in.
+// IDE billing UI reads. Private and unversioned. A break fails loud
+// (unavailable + reason), never a fabricated percent.
 const cursorPeriodUsageURL = "https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage"
 
 const cursorAPIKeyEnv = "CURSOR_API_KEY"
@@ -123,12 +121,6 @@ func parseInt64String(s string) (int64, error) {
 func queryCursorPlanUsage(ctx context.Context, args *PlanUsageArgs, now time.Time) PlanUsage {
 	if len(args.CursorUsageRaw) > 0 {
 		return parseCursorPeriodUsage(args.CursorUsageRaw, now)
-	}
-	if !args.CursorUnstableUsage && os.Getenv(cursorUsageEnv) != "1" {
-		return unavailablePlan(ProviderCursor, now,
-			"cursor plan usage is opt-in — it reads the undocumented "+cursorPeriodUsageURL+" endpoint. "+
-				"Set "+cursorUsageEnv+"=1 (or PlanUsageArgs.CursorUnstableUsage=true) to enable; it may "+
-				"break on any Cursor update, in which case this reports unavailable, never a wrong number.")
 	}
 	raw, err := fetchCursorPeriodUsage(ctx, args)
 	if err != nil {

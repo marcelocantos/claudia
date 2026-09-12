@@ -14,12 +14,10 @@ import (
 	"time"
 )
 
-// grokUsageEnv opts into the undocumented Grok plan-usage surface.
-const grokUsageEnv = "CLAUDIA_GROK_USAGE"
-
 // grokBillingURL is the undocumented Grok Build billing endpoint the CLI's own
 // /usage panel reads (observed from the grok binary + a captured request). It is
-// private and unversioned — the whole reason this path is opt-in.
+// private and unversioned. A break fails loud (unavailable + reason), never a
+// fabricated percent — we fix the parser rather than gate the read.
 const grokBillingURL = "https://cli-chat-proxy.grok.com/v1/billing?format=credits"
 
 // grokBillingConfig mirrors the /billing?format=credits response — an
@@ -88,19 +86,12 @@ func parseGrokBilling(raw []byte, now time.Time) PlanUsage {
 }
 
 // queryGrokPlanUsage returns SuperGrok weekly plan remaining from the
-// undocumented Grok billing endpoint. It is OPT-IN: the surface is private and
-// unversioned, so without the opt-in it stays unavailable with a reason. Any
-// transport or parse failure returns unavailable — never a fabricated number.
+// undocumented Grok billing endpoint. Always fetched. Transport or parse
+// failure returns unavailable — never a fabricated number.
 func queryGrokPlanUsage(ctx context.Context, args *PlanUsageArgs, now time.Time) PlanUsage {
 	// Test injection: parse a captured response without any network call.
 	if len(args.GrokBillingRaw) > 0 {
 		return parseGrokBilling(args.GrokBillingRaw, now)
-	}
-	if !args.GrokUnstableUsage && os.Getenv(grokUsageEnv) != "1" {
-		return unavailablePlan(ProviderGrok, now,
-			"grok plan usage is opt-in — it reads the undocumented "+grokBillingURL+" endpoint. "+
-				"Set "+grokUsageEnv+"=1 (or PlanUsageArgs.GrokUnstableUsage=true) to enable; it may "+
-				"break on any grok update, in which case this reports unavailable, never a wrong number.")
 	}
 	raw, err := fetchGrokBilling(ctx, args)
 	if err != nil {

@@ -9,7 +9,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 )
@@ -69,26 +68,7 @@ func TestParseGrokBillingFailLoud(t *testing.T) {
 	}
 }
 
-// TestGrokPlanUsageOptInGate: without the opt-in, Grok stays unavailable with an
-// opt-in reason and no invented numbers.
-func TestGrokPlanUsageOptInGate(t *testing.T) {
-	t.Setenv(grokUsageEnv, "")
-	pu, err := QueryPlanUsage(context.Background(), &PlanUsageArgs{Provider: ProviderGrok})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if pu.Status != PlanUsageUnavailable {
-		t.Fatalf("status=%q, want unavailable without opt-in", pu.Status)
-	}
-	if !strings.Contains(pu.Reason, "opt-in") {
-		t.Errorf("reason=%q, want it to mention opt-in", pu.Reason)
-	}
-	if len(pu.Windows) != 0 {
-		t.Error("windows must be empty when gated")
-	}
-}
-
-// TestGrokPlanUsageHTTPTransport exercises the full opt-in transport hermetically:
+// TestGrokPlanUsageHTTPTransport exercises the transport hermetically:
 // token load from a temp auth.json, the authenticated GET, and parsing — with a
 // stub server, no live grok. Also asserts the auth headers the endpoint requires.
 func TestGrokPlanUsageHTTPTransport(t *testing.T) {
@@ -113,11 +93,10 @@ func TestGrokPlanUsageHTTPTransport(t *testing.T) {
 	}
 
 	pu, err := QueryPlanUsage(context.Background(), &PlanUsageArgs{
-		Provider:          ProviderGrok,
-		GrokUnstableUsage: true,
-		GrokAuthPath:      authPath,
-		GrokBillingURL:    srv.URL,
-		Now:               time.Date(2026, 8, 10, 6, 0, 0, 0, time.UTC),
+		Provider:       ProviderGrok,
+		GrokAuthPath:   authPath,
+		GrokBillingURL: srv.URL,
+		Now:            time.Date(2026, 8, 10, 6, 0, 0, 0, time.UTC),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -146,7 +125,7 @@ func TestGrokPlanUsageLive(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	pu, err := QueryPlanUsage(ctx, &PlanUsageArgs{Provider: ProviderGrok, GrokUnstableUsage: true})
+	pu, err := QueryPlanUsage(ctx, &PlanUsageArgs{Provider: ProviderGrok})
 	if err != nil {
 		t.Fatal(err)
 	}

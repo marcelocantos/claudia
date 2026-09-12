@@ -163,9 +163,10 @@ accepted so unattended turns do not stall.
 
 Rewind, tmux attach, and terminal logs stay unsupported.
 
-Plan remaining is opt-in (`CLAUDIA_CURSOR_USAGE=1`) and reads the
-undocumented dashboard `GetCurrentPeriodUsage` RPC — same honesty
-rule as Grok: unavailable with a reason, never a fabricated percent.
+Plan remaining always reads the undocumented dashboard
+`GetCurrentPeriodUsage` RPC — same honesty rule as Grok: unavailable
+with a reason, never a fabricated percent. A break is a parser fix,
+not a gate.
 
 MCP is Claudia's job (🎯T40). Callers name servers and transports;
 they do not write `~/.claude.json`, `~/.grok/config.toml`,

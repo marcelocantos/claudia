@@ -28,9 +28,9 @@ is empty, and `Reason` explains why.
 | --- | --- | --- | --- |
 | **Claude** | available (Pro/Max OAuth) | `session` ← five_hour, `weekly` ← seven_day | `GET https://api.anthropic.com/api/oauth/usage` with Claude Code OAuth token |
 | **Codex** | available (ChatGPT login) | primary/secondary mapped by `limit_window_seconds` (~5h → session, ~7d → weekly) | `GET https://chatgpt.com/backend-api/wham/usage` with Codex `auth.json` tokens |
-| **Grok** | available **opt-in** (`CLAUDIA_GROK_USAGE=1`) | `weekly` ← SuperGrok pool | `GET https://cli-chat-proxy.grok.com/v1/billing?format=credits` with the `grok login` token — **undocumented, unversioned** ([grok-usage-billing.md](grok-usage-billing.md)) |
+| **Grok** | available (signed in) | `weekly` ← SuperGrok pool | `GET https://cli-chat-proxy.grok.com/v1/billing?format=credits` with the `grok login` token — **undocumented, unversioned** ([grok-usage-billing.md](grok-usage-billing.md)) |
 | **Bedrock** | **unavailable** | — | No Claude-style subscription remaining; AWS account quotas live in AWS |
-| **Cursor** | available **opt-in** (`CLAUDIA_CURSOR_USAGE=1`) | `weekly` ← billing-cycle `totalPercentUsed` | `POST https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage` — **undocumented, unversioned** |
+| **Cursor** | available (signed in) | `weekly` ← billing-cycle `totalPercentUsed` | `POST https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage` — **undocumented, unversioned** |
 
 ### Claude
 
@@ -61,10 +61,9 @@ is empty, and `Reason` explains why.
 
 ### Grok
 
-**Opt-in** — off unless `CLAUDIA_GROK_USAGE=1` (or `PlanUsageArgs.GrokUnstableUsage`).
-The surface is the undocumented endpoint the CLI's own `/usage` panel reads;
-it is private and unversioned, so it is not on by default and may break on any
-grok update.
+Always fetched. The surface is the undocumented endpoint the CLI's own
+`/usage` panel reads; it is private and unversioned. A break is
+unavailable-with-reason — fix the parser, do not gate the read.
 
 - Auth: the `grok login` OIDC token from `~/.grok/auth.json` (the long-lived
   `key` under the `auth.x.ai::…` entry), or `PlanUsageArgs.GrokAccessToken`.
@@ -83,9 +82,9 @@ grok update.
 
 ### Cursor
 
-**Opt-in** — off unless `CLAUDIA_CURSOR_USAGE=1` (or `PlanUsageArgs.CursorUnstableUsage`).
-The surface is the undocumented dashboard RPC the Cursor billing UI
-reads; it is private and unversioned, so it is not on by default.
+Always fetched. The surface is the undocumented dashboard RPC the
+Cursor billing UI reads; it is private and unversioned. A break is
+unavailable-with-reason — fix the parser, do not gate the read.
 
 - Auth: `CURSOR_API_KEY` or `PlanUsageArgs.CursorAccessToken`, then
   the Cursor IDE `state.vscdb` key `cursorAuth/accessToken` via

@@ -7,7 +7,6 @@ package claudia
 
 import (
 	"context"
-	"os"
 	"sync"
 	"time"
 
@@ -48,13 +47,11 @@ func newBrokerUsageService(clock broker.Clock, ttl time.Duration, fetch func(con
 	return &brokerUsageService{clock: clock, ttl: ttl, fetch: fetch, kick: make(chan struct{}, 1)}
 }
 
-// defaultDaemonUsageFetch is QueryAllPlanUsage with the same env opt-ins
-// a consumer would honour (CLAUDIA_GROK_USAGE, CLAUDIA_CURSOR_USAGE).
+// defaultDaemonUsageFetch is QueryAllPlanUsage for every supported
+// provider. Grok and Cursor unofficial surfaces are always fetched;
+// a break is unavailable-with-reason, never gated off.
 func defaultDaemonUsageFetch(ctx context.Context) ([]PlanUsage, error) {
-	return QueryAllPlanUsage(ctx, &AllPlanUsageArgs{
-		GrokUnstableUsage:   os.Getenv(grokUsageEnv) == "1",
-		CursorUnstableUsage: os.Getenv(cursorUsageEnv) == "1",
-	})
+	return QueryAllPlanUsage(ctx, &AllPlanUsageArgs{})
 }
 
 // run refreshes on start, then every ttl, or sooner when kicked.

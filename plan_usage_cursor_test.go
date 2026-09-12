@@ -93,31 +93,12 @@ func TestParseCursorPeriodUsageOutOfRangeUnavailable(t *testing.T) {
 	}
 }
 
-func TestQueryPlanUsageCursorOptInOff(t *testing.T) {
-	t.Setenv(cursorUsageEnv, "")
-	now := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
-	pu, err := QueryPlanUsage(context.Background(), &PlanUsageArgs{Provider: ProviderCursor, Now: now})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if pu.Status != PlanUsageUnavailable {
-		t.Fatalf("Status=%q", pu.Status)
-	}
-	if !strings.Contains(pu.Reason, cursorUsageEnv) {
-		t.Errorf("Reason=%q", pu.Reason)
-	}
-	if len(pu.Windows) != 0 {
-		t.Fatalf("invented windows: %+v", pu.Windows)
-	}
-}
-
 func TestQueryPlanUsageCursorRawBypassesNetwork(t *testing.T) {
 	now := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
 	pu, err := QueryPlanUsage(context.Background(), &PlanUsageArgs{
-		Provider:            ProviderCursor,
-		Now:                 now,
-		CursorUnstableUsage: true,
-		CursorUsageRaw:      json.RawMessage(`{"membershipType":"pro","planUsage":{"totalPercentUsed":40}}`),
+		Provider:       ProviderCursor,
+		Now:            now,
+		CursorUsageRaw: json.RawMessage(`{"membershipType":"pro","planUsage":{"totalPercentUsed":40}}`),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -148,12 +129,11 @@ func TestQueryPlanUsageCursorHTTPHermetic(t *testing.T) {
 	defer srv.Close()
 
 	pu, err := QueryPlanUsage(context.Background(), &PlanUsageArgs{
-		Provider:            ProviderCursor,
-		HTTPClient:          srv.Client(),
-		CursorAccessToken:   "test-token",
-		CursorUsageURL:      srv.URL,
-		CursorUnstableUsage: true,
-		Now:                 time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC),
+		Provider:          ProviderCursor,
+		HTTPClient:        srv.Client(),
+		CursorAccessToken: "test-token",
+		CursorUsageURL:    srv.URL,
+		Now:               time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -173,12 +153,11 @@ func TestQueryPlanUsageCursorHTTPUnauthorizedUnavailable(t *testing.T) {
 	defer srv.Close()
 
 	pu, err := QueryPlanUsage(context.Background(), &PlanUsageArgs{
-		Provider:            ProviderCursor,
-		HTTPClient:          srv.Client(),
-		CursorAccessToken:   "bad",
-		CursorUsageURL:      srv.URL,
-		CursorUnstableUsage: true,
-		Now:                 time.Now().UTC(),
+		Provider:          ProviderCursor,
+		HTTPClient:        srv.Client(),
+		CursorAccessToken: "bad",
+		CursorUsageURL:    srv.URL,
+		Now:               time.Now().UTC(),
 	})
 	if err != nil {
 		t.Fatal(err)
