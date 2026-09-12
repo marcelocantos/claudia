@@ -180,24 +180,19 @@ log `~/.local/state/claudia/broker.log`, grants in
 `replace github.com/marcelocantos/claudia => ../claudia` until the next
 claudia tag.
 
-Ledger: 🎯T3, 🎯T2.9 achieved (vcheck PASS at 940a66e / 5e02893).
-🎯T2.11 and 🎯T2.14 have vcheck PASS at 940a66e but the graph orders
-them behind 🎯T2.10. T2.10's rounds: BLOCK (uncommitted, TLA+ clause
-split to 🎯T62), BLOCK at 940a66e on live-evidence provenance only
-(fixed by re-running every live gate at 69b1278 into named logs), and
-a third check at 5e02893 that was stopped before it returned. Its
-evidence is recorded in the T2.10 target context. Next session: re-run
-`/vcheck T2.10` citing the hermetic command
-`go test -count=1 -run 'TestBrokerDaemon|TestBrokerWire|TestBrokerHandle|TestResolveIdenticalAcrossDaemonAndCache' .`
-(18 tests ok), `make gate` green at 5e02893, and the Grok/Cursor and
-Claude live passes from the session scratchpad logs — or simply re-run
-the live gates through the installed daemon once the Claude plan
-window has reset. On PASS, `bullseye_commit op=achieve` T2.10, then
-T2.11, then T2.14 (attestations drafted in this session's transcript,
-via mnemo), and commit the ledger with the next code change. Then 🎯T62 (TLA+ grant/reclaim), 🎯T63 (Jevons restart journey
-against a clean-tree jevonsd), 🎯T64 (Acquire/pool over the socket),
-🎯T2.7 (brew services formula), and a claudia release so the consumers
-can drop their replace directives.
+Ledger: 🎯T3, 🎯T2.9, 🎯T2.10, 🎯T2.11, 🎯T2.14 achieved. T2.10 vcheck
+PASS at 3025491 (hermetic 18/18, wire vectors, `make gate` ✓✓✓✓ on
+the checker's second attempt; live Session/Task/reclaim through the
+launchd daemon in scratchpad/live-3025491.log). T2.11 and 🎯T2.14
+recorded on that PASS using the attestations drafted 2026-09-12
+(vcheck PASS at 940a66e; hermetic/live reconfirmed at 3025491).
+bullseye.yaml is dirty — commit the ledger with the next code change.
+
+Next: 🎯T2.7 (brew-services stanza landing this session), then a
+claudia release so jevons and ytt can drop `replace`, then 🎯T63
+(jevonsd restart on a clean tree against that tag), 🎯T62 (TLA+),
+🎯T64 (Acquire/pool; blocked on T2.3), 🎯T65 (plan-cache `-race`
+flake).
 
 Hazards learned: an installed daemon is reachable from every `go test`
 on the machine — consumer hermetic suites must set

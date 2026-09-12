@@ -301,9 +301,9 @@ Codex Session have no PTY log (`CapabilityTerminalLog` unsupported).
 
 ## Daemon (optional)
 
-`claudia broker serve` (or `claudia broker install` for a launchd user
-agent) runs a host-wide daemon that owns every consumer's agent
-processes: Sessions become named grants that survive the consumer's
+`claudia broker serve` (or `brew services start claudia` / `claudia
+broker install` for a launchd user agent) runs a host-wide daemon that
+owns every consumer's agent processes: Sessions become named grants that survive the consumer's
 restart, Tasks run on the daemon, plan usage is fetched once per host,
 and after a reboot the daemon resumes the seats it held and tells them
 so. The library API is unchanged; with no socket (or

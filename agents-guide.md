@@ -666,9 +666,11 @@ does. Tests that want a daemon start one on a temp socket
 (`NewBrokerDaemon` with `SocketPath`) and re-enable the consult with
 `t.Setenv("CLAUDIA_NO_BROKER", "")`.
 
-Operate it with `claudia broker install` (launchd user agent on
-macOS), `status`, `grants`, `usage [--refresh]`, `tail` (NDJSON
-lifecycle events), `release NAME [--detach]`, `socket`. Not covered by
+Operate it with `brew services start claudia` (Homebrew launchd
+plist, 🎯T2.7) or `claudia broker install` (owner-installed launchd
+user agent on macOS), then `status`, `grants`, `usage [--refresh]`,
+`tail` (NDJSON lifecycle events), `release NAME [--detach]`, `socket`.
+Not covered by
 the daemon: `Acquire` / the in-process pool, `Rewind`,
 `Config.GoalCompleteCheck` (the daemon runs `ParseGoalStatus`).
 Design record: [docs/metaharness.md](docs/metaharness.md).
