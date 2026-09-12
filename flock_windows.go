@@ -30,6 +30,28 @@ func flockExclusive(f *os.File) error {
 	)
 }
 
+// flockTryExclusive acquires an exclusive lock without blocking.
+// ok is false when another process holds the lock.
+func flockTryExclusive(f *os.File) (ok bool, err error) {
+	var ol windows.Overlapped
+	const maxUint32 = ^uint32(0)
+	err = windows.LockFileEx(
+		windows.Handle(f.Fd()),
+		windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY,
+		0,
+		maxUint32,
+		maxUint32,
+		&ol,
+	)
+	if err == nil {
+		return true, nil
+	}
+	if err == windows.ERROR_LOCK_VIOLATION || err == windows.ERROR_IO_PENDING {
+		return false, nil
+	}
+	return false, err
+}
+
 // flockUnlock releases the advisory lock acquired by flockExclusive.
 func flockUnlock(f *os.File) error {
 	var ol windows.Overlapped

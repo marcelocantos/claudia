@@ -103,6 +103,26 @@ Token usage on Task events may still populate; **plan remaining** is
 out of scope. AWS Service Quotas / Budgets are operator tooling, not
 this API.
 
+## Shared cache (🎯T61.2)
+
+`LoadPlanUsage` is the multi-process path. Snapshots live under
+`$CLAUDIA_PLAN_CACHE` or `UserCacheDir()/claudia/plan-usage/`. A fresh
+snapshot (default TTL 5m) is returned without vendor calls. A miss takes
+an exclusive lease (`lock.json` + flock); the holder heartbeats; a quiet
+holder (default 20s) is stolen; waiters poll until the lease is released
+and then read the snapshot. This is the brokerless fallback — not a daemon.
+
+## Bands and Resolve (🎯T61)
+
+`ClassifyPlan` / `ClassifyWindow` own the T596 pressure model. Hosts must
+not keep a second copy of the vertices.
+
+`HasAvailableTokens` is the automatic Resolve predicate: skip weekly-hot
+and session-low/exhausted and 429 reasons; unpublished usage stays eligible.
+
+`Resolve` picks a catalog `(Provider, Model)` from predicates. It does not
+`Start`, `SetModel`, or `Migrate`.
+
 ## Residual / honesty
 
 - Endpoints used by Claude and Codex are **product backends** the
@@ -119,7 +139,7 @@ this API.
 ## Oracles
 
 ```bash
-go test ./... -count=1 -run 'TestParseClaude|TestParseCodex|TestQueryPlanUsage|TestQueryAllPlanUsage|TestClassifyCodex|TestRemainingFromUsed'
+go test ./... -count=1 -run 'TestParseClaude|TestParseCodex|TestQueryPlanUsage|TestQueryAllPlanUsage|TestClassifyCodex|TestRemainingFromUsed|TestClassifyWindow|TestHasAvailable|TestLoadPlanUsage|TestResolve'
 ```
 
 ## Related

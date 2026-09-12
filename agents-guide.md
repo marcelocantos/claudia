@@ -312,6 +312,34 @@ pu, err := claudia.QueryPlanUsage(ctx, &claudia.PlanUsageArgs{
 all, err := claudia.QueryAllPlanUsage(ctx, nil)
 ```
 
+Shared refresh (TTL cache under the user cache dir, exclusive lease,
+heartbeat steal if the holder goes quiet, waiters poll):
+
+```go
+all, err := claudia.LoadPlanUsage(ctx, nil) // CLAUDIA_PLAN_CACHE overrides the dir
+```
+
+Bands (ok / ahead / hot / under / locked / exhausted / unpublished) are
+classified next to this API — do not re-derive them in the client:
+
+```go
+v := claudia.ClassifyPlan(pu, time.Now(), nil)
+ok := claudia.HasAvailableTokens(pu, time.Now(), nil)
+```
+
+**Picking a model.** Pass predicates, not a model id. Available-tokens is
+automatic (known-exhausted / weekly-hot / session-low are skipped;
+unpublished is not a veto). Resolve does not spawn.
+
+```go
+pick, err := claudia.Resolve(ctx, claudia.ModelPredicates{
+    Mode:           claudia.CapabilityTask, // or CapabilitySession
+    PreferPlan:     true,
+    PreferProvider: claudia.ProviderGrok, // optional host preference
+})
+task := claudia.NewTask(claudia.TaskConfig{Provider: pick.Provider, Model: pick.Model, WorkDir: dir})
+```
+
 | Provider | Behaviour |
 | --- | --- |
 | Claude | OAuth `GET /api/oauth/usage` → session (5h) + weekly (7d) when signed into Claude.ai |
