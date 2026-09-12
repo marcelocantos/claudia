@@ -36,7 +36,9 @@ func TestBrokerReclaimLiveBackends(t *testing.T) {
 				t.Skipf("%s not set (this test spends plan capacity)", tc.gate)
 			}
 			name := "reclaim-live-" + string(tc.provider) + "-" + newRunID()
-			cfg := Config{Name: name, Provider: tc.provider, WorkDir: t.TempDir(), TermLogPath: "-"}
+			// The daemon keeps this seat's terminal log (default path) so a
+			// failure here can show what the provider printed.
+			cfg := Config{Name: name, Provider: tc.provider, WorkDir: t.TempDir()}
 			first, err := Start(cfg)
 			if err != nil {
 				t.Fatalf("Start: %v", err)
@@ -51,7 +53,7 @@ func TestBrokerReclaimLiveBackends(t *testing.T) {
 				t.Fatalf("WaitReady: %v", err)
 			}
 			if err := first.Send("Reply with exactly: pong"); err != nil {
-				t.Fatalf("Send: %v", err)
+				t.Fatalf("Send: %v\nterminal log %s:\n%s", err, first.TermLogPath(), termLogTail(first.TermLogPath()))
 			}
 			sid := first.SessionID()
 			// The consumer dies mid-turn: drop the socket without a release.
@@ -86,4 +88,34 @@ func TestBrokerReclaimLiveBackends(t *testing.T) {
 			t.Logf("reclaimed %s seat %s; answer %q", tc.provider, sid, text)
 		})
 	}
+}
+
+// termLogTail returns the last few KB of a terminal log with escapes stripped.
+func termLogTail(path string) string {
+	if path == "" {
+		return "(no terminal log)"
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "(unreadable: " + err.Error() + ")"
+	}
+	if len(raw) > 4000 {
+		raw = raw[len(raw)-4000:]
+	}
+	var b strings.Builder
+	esc := false
+	for _, r := range string(raw) {
+		switch {
+		case r == 0x1b:
+			esc = true
+		case esc && ((r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z')):
+			esc = false
+		case esc:
+		case r == '\r':
+			b.WriteByte('\n')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
