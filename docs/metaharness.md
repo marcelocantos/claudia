@@ -1,0 +1,154 @@
+# Claudia as a metaharness
+
+Status: design record for the 🎯T2 reframe (owner decision, 2026-09-12).
+It follows on from [plan-usage.md](plan-usage.md) (🎯T61) and
+[broker-oracles.md](broker-oracles.md) (🎯T2.8).
+
+## The sentence
+
+**Claudia is the process that runs agents and keeps their plan-contract
+true. Clients name seats and write turns. They do not evaluate usage and
+they do not pick models turn by turn.**
+
+Not "a library for embedding agent CLIs" (README today), not a Claude
+process allocator (🎯T2 as first written), and not an OpenRouter.
+
+## Why a daemon, stacked
+
+🎯T2 was filed for rate-limit slots, warm-pool waste, and cross-process
+cost. Three more reasons landed in September 2026, each one a thing a
+library cannot do.
+
+| Need | Why a library cannot own it | Target |
+|---|---|---|
+| Plan usage is host-global | 🎯T61's flock+TTL cache stops five processes hitting vendor endpoints, but the evaluator still runs inside whichever client won the flock. That client can stall the host picture, stampede a refresh, die mid-fetch, and cannot invalidate on a 429 it never saw. | 🎯T2.9 |
+| Consumer upgrade without a fleet bounce | Jevons pays for the inverse: a daemon-path rebuild restarts `jevonsd`, then T171 rehydrates POs and workers and the fleet is amnesiac rather than dead. Only Claude (tmux) and Grok (connect-mode `serve`) can be re-adopted; Cursor `agent acp` and `codex app-server` are stdio children and die with the consumer (`registry.go` `startLifecycle`, adopt switch → `ErrNoSessionWindow`). | 🎯T2.11 |
+| Standing contract on a seat | A process owner can keep "this grant satisfies these predicates, including has-tokens" true. A library that switches model mid-call surprises every consumer that is not the fleet, so the library never auto-actuates. | 🎯T2.12 |
+
+The cache in 🎯T61 is the brokerless fallback for the first row. It is
+not the architecture.
+
+## Responsibility split
+
+| | Daemon (metaharness) | Client (Jevons, YTT, …) |
+|---|---|---|
+| Lifecycle | spawn, grant, reclaim, reap, preempt | request a seat: name, purpose, parent, workdir |
+| Usage | track, classify, report | read |
+| Routing | `Resolve` on grant; rebind when the snapshot would violate the grant | set predicates once; pin if needed |
+| MCP / tools | attach as configured on the grant | choose the config |
+| Prompt / Goal / UI | execute | decide content and fleet topology |
+
+"Switch when tokens run low" is on the daemon **only** as
+rebind-to-keep-predicates. Jevons Claude-first is `PreferProvider=claude`
+on the grant. Overseer exemption is a pinned grant. Park-vs-migrate stays
+a client decision: the daemon says "this grant cannot be satisfied"
+(`stuck`); only Jevons parks a seat. That moves actuation without
+importing Jevons policy, so 🎯T13 holds.
+
+## What the native wire has to be
+
+Wire v1 (🎯T2.1) is `spawn` / `release` / `status` / `tail`.
+`SpawnRequest` carries provider, mode, model, intent, workdir. No name,
+no parent, no MCP, no predicates, no `send`, no events. That is a
+process allocator.
+
+The consumer census says what the wire must carry instead. Counts are
+symbol uses in the Jevons tree:
+
+| Symbol | Uses |
+|---|---|
+| `claudia.AgentDef` | 346 |
+| `claudia.Event` | 226 |
+| `claudia.NewRegistry` / `Registry` | 277 |
+| `claudia.Agent` | 59 |
+| `claudia.Config` | 3 |
+
+Jevons speaks **Registry by name plus the Event stream**, not `Start`.
+So the native API over the socket is the Registry contract
+(`grant` / `reclaim` / `release` keyed by name, carrying the `AgentDef`
+fields), `send` / `interrupt` / `wait`, and a per-grant `event` stream
+carrying the public `Event` type verbatim. STABILITY.md's Event row is
+the wire schema. Adding `usage` and `resolve` requests makes the
+daemon the evaluator (🎯T2.9). This is 🎯T2.10; it is where `agent.go`
+splits into a daemon-side backend and a client-side handle.
+
+It is NDJSON over a Unix socket with JSON types that already have
+golden vectors. Any language can speak it; Go gets it for free through
+the existing API (🎯T3).
+
+## Published protocol: three layers, one native
+
+1. **Native (the product).** The claudia Go surface over the socket,
+   as above. It is allowed to look like Claudia.
+2. **ACP as a Session facade** (🎯T2.13). Claudia already speaks ACP as
+   a client to Grok and Cursor. Serving it lets an IDE attach to **one
+   grant** as if it were one agent. ACP is a bad control plane for a
+   fleet: one session, one agent, no grants, no host-wide usage, no
+   "rebind this seat".
+3. **OpenAI-compatible as a Task facade** (🎯T2.13). Prompt in, stream
+   out, `Resolve` picks when `model` is empty. No MCP, no session. Do
+   not stretch it to Session.
+
+Codex app-server and Grok/Cursor ACP stay backend dialects the daemon
+speaks as a client.
+
+Why not OpenRouter: OpenRouter is many model HTTP APIs behind one chat
+schema, keys and billing. Claudia is many agent harnesses plus a few
+direct routes, subscription plans, a workdir, tools, and MCP. MCP is the
+tell: tools run inside the harness Claudia started. Claudia routes
+**agents**, not completions.
+
+## Rebind semantics (🎯T2.12)
+
+- Evaluated at exactly one point: `send` admission on a grant whose
+  current `(provider, model)` fails `HasAvailableTokens` or a `NotBand`
+  predicate against the daemon snapshot. Never on a timer. Never while
+  `PromptInFlight`.
+- Intra-provider → `SetModel` (🎯T54). Cross-provider → `Agent.Migrate`
+  with the inert seed (🎯T55.1). `ProgressType=model_switch` is
+  published before the admitted Send's first Event, with the `Resolve`
+  reason.
+- Pinned grant → never rebound. No satisfiable candidate → `stuck`
+  Event with `StuckClass`, Send refused with a typed error.
+- Library path (no socket) → never rebinds. Same predicates, hot band:
+  publishes `stuck`, does not switch.
+- `AgentLifecycle.tla` gains a Rebind action: ownership unchanged,
+  backend identity changes, no Send lost or duplicated, no rebind while
+  a turn is open. A mutant that rebinds mid-turn must be caught.
+
+Preemption (🎯T2.6) shares this admission point. "tmux suspend-pane" is
+a Claude-only mechanism; for stdio backends, pause is refusing Send
+admission until capacity returns.
+
+## Delivery order, risk-ranked
+
+| Step | Target | Touches spawn? | Why this order |
+|---|---|---|---|
+| 1 | 🎯T2.9 usage service | no | Same coordinator as 🎯T2.4 with plan windows as a second unit. 🎯T61 becomes the fallback. Jevons and YTT gain it through a library upgrade. |
+| 2 | 🎯T2.10, Task first | yes, request-scoped | A Task is a single turn; ownership is simplest. |
+| 3 | 🎯T2.10, Session grants | yes | The big one: Registry over the socket, Event over the wire, daemon parents stdio children. |
+| 4 | 🎯T2.11 reclaim across every provider | yes | Falls out of step 3 once the daemon is the parent; the value is the Jevons restart journey. |
+| 5 | 🎯T2.12 rebind | no new spawn | Needs 1 and 3 plus the 🎯T2.6 admission state. |
+| 6 | 🎯T2.13 facades | no | Adapters over one grant or one Task. |
+
+🎯T3 widens to match: `Registry`, `LoadPlanUsage`, and `Resolve` take
+the socket when present. A spawn-only RPC client would leave Jevons on
+the direct path. 🎯T47.6 (probe-then-ignore) is subsumed when 🎯T3 lands.
+
+## What does not change
+
+- Direct mode stays a fully supported path (🎯T3, 🎯T13). No socket or
+  `CLAUDIA_NO_BROKER=1` → today's behaviour, no auto-rebind.
+- 🎯T2.8's seams still gate every policy path: Clock, BackpressureSource,
+  the brokertest fake. Usage refresh and rebind read time and 429s only
+  through them.
+- The 🎯T1.6 shakeout clock is not reset; the broker path is additive.
+
+## Residue
+
+- Upgrading the daemon itself still bounces the fleet unless the daemon
+  can detach from its children. The win is making that bounce rare:
+  Claudia's wire changes slowly; consumer policy does not.
+- 🎯T2.3 (warm pool) is written as a tmux mechanism and needs a
+  provider-neutral restatement or an explicit Claude-only scope before
+  it is built.

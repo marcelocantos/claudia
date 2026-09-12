@@ -111,6 +111,8 @@ snapshot (default TTL 5m) is returned without vendor calls. A miss takes
 an exclusive lease (`lock.json` + flock); the holder heartbeats; a quiet
 holder (default 20s) is stolen; waiters poll until the lease is released
 and then read the snapshot. This is the brokerless fallback — not a daemon.
+When a broker is listening, the daemon is the one evaluator and this
+cache is the degraded path (🎯T2.9; see [metaharness.md](metaharness.md)).
 
 ## Bands and Resolve (🎯T61)
 
