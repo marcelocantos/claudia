@@ -537,12 +537,22 @@ func TestHermeticCodexResumeEmptyHomeNamesPath(t *testing.T) {
 	}
 }
 
-// 🎯T545.1.1: a thread/start that never replies must fail loud inside the
-// handshake window, not block the caller's MCP tools/call until the client
-// gives up.
+// 🎯T545.1.1 / 🎯T68: a thread/start that never replies must fail loud
+// inside the handshake window, not block the caller's MCP tools/call
+// until the client gives up.
 func TestHermeticCodexThreadStartTimesOut(t *testing.T) {
+	// The handshake timeout is per call, and the fake app-server is a
+	// python process: under -race with every package's tests running at
+	// once, its `initialize` reply alone took longer than 200ms, and the
+	// drill then reported a timeout on initialize instead of thread/start
+	// (2 of 5 runs on an M4 Max). The hang is what is under test, so the
+	// window must clear interpreter start-up with room to spare. This is
+	// the ci-gate bound (afab50e), not a skip or a weaker-than-ci-gate
+	// relaxation.
+	const hangTimeout = time.Second
+	const hangBudget = 5 * hangTimeout
 	prev := codexAppServerHandshakeTimeout
-	codexAppServerHandshakeTimeout = 200 * time.Millisecond
+	codexAppServerHandshakeTimeout = hangTimeout
 	t.Cleanup(func() { codexAppServerHandshakeTimeout = prev })
 
 	bin := writeFakeCodexAppServer(t)
@@ -563,7 +573,13 @@ func TestHermeticCodexThreadStartTimesOut(t *testing.T) {
 	if !strings.Contains(err.Error(), "timeout waiting for thread/start") {
 		t.Fatalf("Start err = %v, want timeout waiting for thread/start", err)
 	}
-	if elapsed > 2*time.Second {
+	if elapsed > hangBudget {
 		t.Fatalf("Start hung %s, want handshake timeout", elapsed)
+	}
+}
+
+func TestCodexAppServerHandshakeTimeoutIsProductionBound(t *testing.T) {
+	if codexAppServerHandshakeTimeout != 20*time.Second {
+		t.Fatalf("production handshake timeout = %s, want 20s", codexAppServerHandshakeTimeout)
 	}
 }
