@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"os/exec"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -25,8 +26,13 @@ import (
 var ErrCursorResumeDenied = errors.New("existing conversation; refusing to mint a replacement session")
 
 // IsCursorResumeDenied reports whether err is (or wraps) ErrCursorResumeDenied.
+// A daemon grant failure arrives as a ProtocolError whose Msg copies the
+// sentinel; errors.Is cannot see through that, so the text is also matched.
 func IsCursorResumeDenied(err error) bool {
-	return errors.Is(err, ErrCursorResumeDenied)
+	if errors.Is(err, ErrCursorResumeDenied) {
+		return true
+	}
+	return err != nil && strings.Contains(err.Error(), ErrCursorResumeDenied.Error())
 }
 
 // cursorACPClient is a minimal ACP client over JSON-RPC 2.0 stdio to

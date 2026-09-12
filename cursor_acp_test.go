@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -197,6 +198,16 @@ func TestHermeticCursorLoadFailsClosedWhenRequireResume(t *testing.T) {
 	}
 	if !IsCursorResumeDenied(err) {
 		t.Fatalf("error %v is not ErrCursorResumeDenied", err)
+	}
+}
+
+func TestIsCursorResumeDeniedSeesDaemonWrappedError(t *testing.T) {
+	wrapped := fmt.Errorf("broker protocol: agent_failed: acp session/load sid: Invalid params (%s)", ErrCursorResumeDenied)
+	if !IsCursorResumeDenied(wrapped) {
+		t.Fatal("daemon-wrapped resume denial not recognized")
+	}
+	if IsCursorResumeDenied(fmt.Errorf("acp session/load interrupted")) {
+		t.Fatal("non-denial error matched")
 	}
 }
 
