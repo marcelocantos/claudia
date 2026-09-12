@@ -1,6 +1,11 @@
 # Claudia as a metaharness
 
 Status: design record for the 🎯T2 reframe (owner decision, 2026-09-12).
+First implementation landed the same day: `claudia broker serve`
+(`broker_daemon.go`), the grant wire (`internal/broker/wire_grants.go`),
+the socket-backed Session and Task backends (`broker_agent.go`,
+`broker_task.go`), and the daemon's usage evaluator
+(`broker_daemon_usage.go`). Operator surface: `cmd/claudia`.
 It follows on from [plan-usage.md](plan-usage.md) (🎯T61) and
 [broker-oracles.md](broker-oracles.md) (🎯T2.8).
 
@@ -143,6 +148,18 @@ the direct path. 🎯T47.6 (probe-then-ignore) is subsumed when 🎯T3 lands.
   the brokertest fake. Usage refresh and rebind read time and 429s only
   through them.
 - The 🎯T1.6 shakeout clock is not reset; the broker path is additive.
+
+## Reboot recovery (🎯T2.14)
+
+The daemon marks every seat it grants as live in its own registry
+(`grants.json` under the state dir, `AutoStart`). On boot it walks that
+set: `Adopt` first (a tmux window or connect-mode serve that survived a
+daemon-only restart), else `Launch` with the registry's resume rules
+(`Materialized` → `RequireResume`, fail-closed). A relaunched seat is
+sent a restart nudge before any consumer reconnects, so the agent knows
+its tool calls did not finish. Consumers reconnect by granting the same
+names; Jevons's boot path (`ReattachFleet`) already does that, and with
+the daemon present it no longer stops or reaps seats on its own exit.
 
 ## Residue
 

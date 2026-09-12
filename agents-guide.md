@@ -614,6 +614,65 @@ returning, including cleanup of late results. Metadata-only `Register` updates
 remain allowed during startup; conflicting process configuration returns
 `ErrLifecycleInProgress` and should be retried after the operation finishes.
 
+## Daemon: `claudia broker` (optional, host-wide)
+
+`claudia broker serve` is a long-running process that owns agent
+lifecycles for every claudia consumer on the host (🎯T2). Nothing in
+the API above changes when it runs; what changes is who owns the
+process.
+
+- **Sessions are grants.** `Start` / `Registry.Launch` send the
+  Config (as an `AgentDef` plus `Config.Name`) over the Unix socket;
+  the daemon starts the provider process as its parent and streams
+  `Event`s back. The returned `*Agent` is a handle: `Send`,
+  `Interrupt`, `WaitForResponse`, `SetModel`, `Migrate`, `Usage`,
+  `SubscribeTerminal` all work; `JSONLPath` / `AttachCommand` name
+  host-local paths the daemon reported. `Rewind` is refused on a
+  daemon-held seat.
+- **Seats outlive the consumer.** If the consumer exits or crashes,
+  the seat keeps running unowned and retains up to 256 events. A new
+  process that `Start`s or `Launch`es the same `Config.Name` reclaims
+  it — same session, history replayed ahead of live events — for
+  every Session provider, including the stdio ones (Codex, Cursor)
+  that die with their parent on the direct path. A second live
+  consumer asking for a held name gets `grant_held`; nobody steals a
+  seat. `Agent.Alive()` goes false when the daemon connection is lost,
+  so a consumer's existing "not alive → relaunch" path is the
+  reconnect.
+- **Tasks run on the daemon.** `Task.Run` streams the run over its
+  own connection; `Cancel` reaches it; a dropped connection cancels
+  the run. `Task.SetRawLog` is not carried (raw NDJSON stays on the
+  daemon).
+- **Plan usage is the daemon's.** `LoadPlanUsage` and `Resolve` read
+  the daemon's snapshot; the daemon refreshes on a TTL and immediately
+  when any seat reports a rate limit or quota stop. The filesystem
+  cache is the path when no daemon runs.
+- **After a host reboot** the daemon brings back every seat it held:
+  adopts what still runs (tmux, connect-mode), relaunches the rest
+  with session resume, and sends a relaunched seat a restart nudge
+  (`--restart-nudge`; `-` disables) so it picks its work back up.
+- **Direct mode is unchanged.** No socket, `CLAUDIA_NO_BROKER=1`, or a
+  socket with no daemon runtime behind it (`not_available`) is today's
+  in-process path. The library never auto-switches models; only the
+  daemon rebinds, and only to keep a grant's predicates true (🎯T2.12,
+  not yet built).
+
+**Test suites must opt out.** A running daemon is reachable from
+`go test` like from any process, so a consumer's hermetic suite that
+launches agents through the Registry would be granted real seats with
+real provider processes behind them. Set `CLAUDIA_NO_BROKER=1` in the
+suite (a `TestMain`, or the Makefile test rule); claudia's own suite
+does. Tests that want a daemon start one on a temp socket
+(`NewBrokerDaemon` with `SocketPath`) and re-enable the consult with
+`t.Setenv("CLAUDIA_NO_BROKER", "")`.
+
+Operate it with `claudia broker install` (launchd user agent on
+macOS), `status`, `grants`, `usage [--refresh]`, `tail` (NDJSON
+lifecycle events), `release NAME [--detach]`, `socket`. Not covered by
+the daemon: `Acquire` / the in-process pool, `Rewind`,
+`Config.GoalCompleteCheck` (the daemon runs `ParseGoalStatus`).
+Design record: [docs/metaharness.md](docs/metaharness.md).
+
 ## Gotchas
 
 1. **`tmux` must be on `$PATH`; `claude` must be resolvable.** claudia

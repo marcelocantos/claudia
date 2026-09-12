@@ -1,0 +1,258 @@
+// Copyright 2026 Marcelo Cantos
+// SPDX-License-Identifier: Apache-2.0
+
+package claudia
+
+import (
+	"encoding/json"
+	"fmt"
+)
+
+// Wire codecs for the payloads the broker carries opaquely (🎯T2.10). The
+// broker package cannot import this one, so the schema of an Event, a
+// TaskEvent, a TaskConfig or a grant definition on the socket is decided
+// here. Each mirror struct is checked against its source type by
+// TestBrokerWireMirrorsAreComplete: a field added to Event without a wire
+// slot fails the build rather than vanishing on the socket, which is the
+// same rule 🎯T24 applies to Config.
+//
+// Event and TaskEvent deliberately carry `json:"-"` on most fields in their
+// public form (consumers marshal Raw themselves), so the wire form is a
+// separate struct rather than a change to the public JSON shape.
+
+// eventWire is Event, field for field, with wire tags.
+type eventWire struct {
+	Type          string   `json:"type"`
+	SessionID     string   `json:"session_id,omitempty"`
+	TurnID        string   `json:"turn_id,omitempty"`
+	MessageID     string   `json:"message_id,omitempty"`
+	RecordID      string   `json:"record_id,omitempty"`
+	Raw           []byte   `json:"raw,omitempty"`
+	Text          string   `json:"text,omitempty"`
+	StopReason    string   `json:"stop_reason,omitempty"`
+	Usage         Usage    `json:"usage,omitzero"`
+	ProgressType  string   `json:"progress_type,omitempty"`
+	PreviewUpdate string   `json:"preview_update,omitempty"`
+	ToolCallID    string   `json:"tool_call_id,omitempty"`
+	ToolTitle     string   `json:"tool_title,omitempty"`
+	ToolStatus    string   `json:"tool_status,omitempty"`
+	Model         string   `json:"model,omitempty"`
+	IsError       bool     `json:"is_error,omitempty"`
+	FromProvider  Provider `json:"from_provider,omitempty"`
+	ToProvider    Provider `json:"to_provider,omitempty"`
+	FromModel     string   `json:"from_model,omitempty"`
+	Reason        string   `json:"reason,omitempty"`
+	WarningCodes  []string `json:"warning_codes,omitempty"`
+	StuckClass    string   `json:"stuck_class,omitempty"`
+}
+
+func encodeEventWire(ev Event) (json.RawMessage, error) {
+	return json.Marshal(eventWire(ev))
+}
+
+func decodeEventWire(raw json.RawMessage) (Event, error) {
+	var w eventWire
+	if err := json.Unmarshal(raw, &w); err != nil {
+		return Event{}, fmt.Errorf("broker event: %w", err)
+	}
+	return Event(w), nil
+}
+
+// taskEventWire is TaskEvent with wire tags.
+type taskEventWire struct {
+	Type       TaskEventType `json:"type"`
+	Content    string        `json:"content,omitempty"`
+	ToolName   string        `json:"tool_name,omitempty"`
+	ToolInput  string        `json:"tool_input,omitempty"`
+	ToolID     string        `json:"tool_id,omitempty"`
+	SessionID  string        `json:"session_id,omitempty"`
+	DurationMs float64       `json:"duration_ms,omitempty"`
+	CostUSD    float64       `json:"cost_usd,omitempty"`
+	Usage      Usage         `json:"usage,omitzero"`
+	IsError    bool          `json:"is_error,omitempty"`
+	ErrorMsg   string        `json:"error_msg,omitempty"`
+	Model      string        `json:"model,omitempty"`
+}
+
+func encodeTaskEventWire(ev TaskEvent) (json.RawMessage, error) {
+	return json.Marshal(taskEventWire(ev))
+}
+
+func decodeTaskEventWire(raw json.RawMessage) (TaskEvent, error) {
+	var w taskEventWire
+	if err := json.Unmarshal(raw, &w); err != nil {
+		return TaskEvent{}, fmt.Errorf("broker task event: %w", err)
+	}
+	return TaskEvent(w), nil
+}
+
+// taskConfigWire is TaskConfig with wire tags.
+type taskConfigWire struct {
+	ID             string   `json:"id,omitempty"`
+	Name           string   `json:"name,omitempty"`
+	Provider       Provider `json:"provider,omitempty"`
+	WorkDir        string   `json:"workdir,omitempty"`
+	Model          string   `json:"model,omitempty"`
+	SandboxMode    string   `json:"sandbox_mode,omitempty"`
+	ApprovalPolicy string   `json:"approval_policy,omitempty"`
+	DisallowTools  []string `json:"disallow_tools,omitempty"`
+	ClaudeID       string   `json:"claude_id,omitempty"`
+	LastResult     string   `json:"last_result,omitempty"`
+}
+
+func encodeTaskConfigWire(cfg TaskConfig) (json.RawMessage, error) {
+	return json.Marshal(taskConfigWire(cfg))
+}
+
+func decodeTaskConfigWire(raw json.RawMessage) (TaskConfig, error) {
+	var w taskConfigWire
+	if err := json.Unmarshal(raw, &w); err != nil {
+		return TaskConfig{}, fmt.Errorf("broker task config: %w", err)
+	}
+	return TaskConfig(w), nil
+}
+
+// grantDefWire is what a grant carries: the persistent AgentDef, which is
+// the whole Session Config except three fields. Config.GoalCompleteCheck is
+// a func and stays on the consumer (the daemon runs ParseGoalStatus);
+// PoolPolicy / PoolCap belong to Acquire, which is not brokered.
+// RequireResume is the consumer Registry's verdict for this launch.
+type grantDefWire struct {
+	AgentDef
+	RequireResume bool `json:"require_resume,omitempty"`
+}
+
+// configNotOnGrantWire lists the Config fields a grant deliberately does not
+// carry, with the reason. TestBrokerWireMirrorsAreComplete refuses any other
+// omission.
+var configNotOnGrantWire = map[string]string{
+	"GoalCompleteCheck": "func value; the daemon runs ParseGoalStatus",
+	"PoolPolicy":        "Acquire pool policy; Acquire is not brokered",
+	"PoolCap":           "Acquire pool cap; Acquire is not brokered",
+}
+
+// configToGrantDef builds the grant from cfg, over the consumer's own
+// definition when it has one (labels the Config cannot carry).
+func configToGrantDef(name string, cfg Config, base *AgentDef) grantDefWire {
+	var labels AgentDef
+	if base != nil {
+		labels = cloneAgentDef(*base)
+	}
+	return grantDefWire{
+		AgentDef: AgentDef{
+			Name:                 name,
+			Parent:               labels.Parent,
+			Purpose:              labels.Purpose,
+			Role:                 labels.Role,
+			Description:          labels.Description,
+			TargetID:             labels.TargetID,
+			Materialized:         labels.Materialized,
+			WorkDir:              cfg.WorkDir,
+			SessionID:            cfg.SessionID,
+			Provider:             cfg.Provider,
+			Model:                cfg.Model,
+			DisallowTools:        cfg.DisallowTools,
+			ConnectURL:           cfg.ConnectURL,
+			ConnectPID:           cfg.ConnectPID,
+			GrokConnect:          cfg.GrokConnect,
+			SandboxMode:          cfg.SandboxMode,
+			SandboxWritableRoots: cfg.SandboxWritableRoots,
+			SandboxNetworkAccess: cfg.SandboxNetworkAccess,
+			Goal:                 cfg.Goal,
+			MCPServers:           cfg.MCPServers,
+			MCPExclusive:         cfg.MCPExclusive,
+			PermissionMode:       cfg.PermissionMode,
+			MCPConfig:            cfg.MCPConfig,
+			ExtraArgs:            cfg.ExtraArgs,
+			TermLogPath:          cfg.TermLogPath,
+		},
+		RequireResume: cfg.RequireResume,
+	}
+}
+
+func grantDefToConfig(def grantDefWire) Config {
+	cfg := registryConfig(&def.AgentDef, def.RequireResume)
+	cfg.Name = def.Name
+	return cfg
+}
+
+func encodeGrantDefWire(def grantDefWire) (json.RawMessage, error) {
+	return json.Marshal(def)
+}
+
+func decodeGrantDefWire(raw json.RawMessage) (grantDefWire, error) {
+	var w grantDefWire
+	if err := json.Unmarshal(raw, &w); err != nil {
+		return grantDefWire{}, fmt.Errorf("broker grant def: %w", err)
+	}
+	return w, nil
+}
+
+// predicatesWire is the portable half of ModelPredicates. Usage, Cache and
+// Now are caller-local inputs; the daemon answers from its own snapshot and
+// clock. Thresholds travel because they change the pick.
+type predicatesWire struct {
+	Mode             Capability      `json:"mode,omitempty"`
+	Quality          ModelQuality    `json:"quality,omitempty"`
+	PreferPlan       bool            `json:"prefer_plan,omitempty"`
+	PreferProvider   Provider        `json:"prefer_provider,omitempty"`
+	ExcludeProviders []Provider      `json:"exclude_providers,omitempty"`
+	Thresholds       *PlanThresholds `json:"thresholds,omitempty"`
+}
+
+// predicatesNotOnWire lists the ModelPredicates fields the daemon supplies
+// itself.
+var predicatesNotOnWire = map[string]string{
+	"Usage": "the daemon answers from its own snapshot",
+	"Cache": "the daemon is the cache",
+	"Now":   "the daemon reads its own clock",
+}
+
+func encodePredicatesWire(p ModelPredicates) (json.RawMessage, error) {
+	return json.Marshal(predicatesWire{
+		Mode: p.Mode, Quality: p.Quality, PreferPlan: p.PreferPlan,
+		PreferProvider: p.PreferProvider, ExcludeProviders: p.ExcludeProviders,
+		Thresholds: p.Thresholds,
+	})
+}
+
+func decodePredicatesWire(raw json.RawMessage) (ModelPredicates, error) {
+	var w predicatesWire
+	if err := json.Unmarshal(raw, &w); err != nil {
+		return ModelPredicates{}, fmt.Errorf("broker predicates: %w", err)
+	}
+	return ModelPredicates{
+		Mode: w.Mode, Quality: w.Quality, PreferPlan: w.PreferPlan,
+		PreferProvider: w.PreferProvider, ExcludeProviders: w.ExcludeProviders,
+		Thresholds: w.Thresholds,
+	}, nil
+}
+
+// pickWire is ModelPick with wire tags.
+type pickWire struct {
+	Provider Provider     `json:"provider"`
+	Model    string       `json:"model"`
+	Quality  ModelQuality `json:"quality,omitempty"`
+	Access   ModelAccess  `json:"access,omitempty"`
+	Band     PlanBand     `json:"band,omitempty"`
+	Reason   string       `json:"reason,omitempty"`
+}
+
+func encodePickWire(p ModelPick) (json.RawMessage, error) { return json.Marshal(pickWire(p)) }
+
+func decodePickWire(raw json.RawMessage) (ModelPick, error) {
+	var w pickWire
+	if err := json.Unmarshal(raw, &w); err != nil {
+		return ModelPick{}, fmt.Errorf("broker pick: %w", err)
+	}
+	return ModelPick(w), nil
+}
+
+// migrateArgsWire mirrors MigrateArgs on the wire (broker.MigrateRequest
+// carries the same fields by name; this keeps the census honest).
+type migrateArgsWire struct {
+	Provider Provider `json:"provider"`
+	Model    string   `json:"model,omitempty"`
+	Reason   string   `json:"reason,omitempty"`
+	Force    bool     `json:"force,omitempty"`
+}

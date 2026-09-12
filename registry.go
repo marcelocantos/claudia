@@ -123,6 +123,16 @@ type AgentDef struct {
 	MCPServers []MCPServer `json:"mcp_servers,omitempty"`
 
 	MCPExclusive bool `json:"mcp_exclusive,omitempty"`
+
+	// PermissionMode, MCPConfig, ExtraArgs and TermLogPath are the
+	// Session-only Config fields a definition can carry so a daemon grant
+	// (🎯T2.10) is the whole Config, not most of it. Empty keeps each
+	// Start default (bypassPermissions; no --mcp-config; no extra argv;
+	// the XDG terminal log path).
+	PermissionMode string   `json:"permission_mode,omitempty"`
+	MCPConfig      string   `json:"mcp_config,omitempty"`
+	ExtraArgs      []string `json:"extra_args,omitempty"`
+	TermLogPath    string   `json:"term_log_path,omitempty"`
 }
 
 // Canonical Purpose values for [AgentDef.Purpose].
@@ -152,6 +162,10 @@ type Registry struct {
 	// not listed here, so bounce Launch RequireResume-es it (🎯T545.1).
 	freshSession map[string]string
 	lifecycle    map[string]*registryLifecycle
+	// direct makes every launch take the in-process provider path even
+	// when a daemon listens. The daemon's own registry is direct: it IS
+	// the daemon, and dialling itself would wait on itself.
+	direct bool
 }
 
 // NewRegistry loads or creates an agent registry at the given path.
@@ -232,6 +246,10 @@ var registryStart = StartContext
 // registryAdopt is the Session entrypoint used by [Registry.Adopt].
 var registryAdopt = Adopt
 
+// registryStartDirect is the Session entrypoint a direct-mode registry (the
+// daemon's) uses. Hermetic tests point it at a fake backend.
+var registryStartDirect = startDirectContext
+
 // Launch starts the registered agent named name and returns it. If the agent
 // is already running and alive, the existing [Agent] is returned without
 // spawning a new process. It returns an error if name is not registered.
@@ -303,7 +321,19 @@ func (r *Registry) startLifecycle(ctx context.Context, name string, adopt, fallb
 	cfg := registryConfig(&def, wantResume)
 	var proc *Agent
 	started := !adopt
-	if adopt {
+	// A listening daemon holds the seat (🎯T2.10 / 🎯T2.11): adopt and
+	// launch are one grant, and the daemon decides whether the process is
+	// still there. Without a daemon the per-provider adopt logic below is
+	// what survival looks like.
+	if usingBroker() && !r.direct {
+		proc, err = startViaBrokerContext(withGrantHint(ctx, grantHint{adopt: adopt, fallback: fallback, def: &def}), cfg)
+		if err == nil || !brokerFellThrough(err) {
+			adopt, started = false, true
+		} else {
+			proc, err = nil, nil
+		}
+	}
+	if proc == nil && err == nil && adopt {
 		switch {
 		case isClaudeProvider(def.Provider):
 			proc, err = registryAdopt(cfg)
@@ -316,12 +346,16 @@ func (r *Registry) startLifecycle(ctx context.Context, name string, adopt, fallb
 			err = fmt.Errorf("%w: %s", ErrNoSessionWindow, def.SessionID)
 		}
 	}
-	if !adopt || (fallback && err != nil && ctx.Err() == nil) {
+	if proc == nil && (!adopt || (fallback && err != nil && ctx.Err() == nil)) {
 		started = true
 		if err != nil && !errors.Is(err, ErrNoSessionWindow) {
 			slog.Warn("adopt failed; falling back to launch", "agent", name, "err", err)
 		}
-		proc, err = registryStart(ctx, cfg)
+		if r.direct {
+			proc, err = registryStartDirect(ctx, cfg)
+		} else {
+			proc, err = registryStart(ctx, cfg)
+		}
 	}
 	r.mu.Lock()
 	// Stop/Remove intent wins even if a backend ignored cancellation and

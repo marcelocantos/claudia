@@ -44,6 +44,9 @@ func (a *Agent) GoalActive() bool {
 // ledger (e.g. jevons 🎯T528) call this so remint cannot reopen Continue.
 func (a *Agent) CloseGoal() {
 	a.closeGoal()
+	if a.ops.closeGoal != nil {
+		a.ops.closeGoal(a)
+	}
 }
 
 // SetGoalCompleteCheck installs (or clears) the host completeness hook
@@ -76,6 +79,11 @@ func (a *Agent) closeGoalLocked() {
 
 func (a *Agent) noteGoalEvent(ev Event) {
 	if a.goal == "" || a.goalClosed {
+		return
+	}
+	if a.brokerGrant != "" {
+		// The daemon's Agent runs the continuation loop; its Sends arrive
+		// on the stream. Running it here too would double every turn.
 		return
 	}
 	if ev.IsError {

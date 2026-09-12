@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -139,6 +140,10 @@ type fakeAgentBackend struct {
 	// land on Agent after swap).
 	omitStartIDs bool
 
+	// inFlight is what ops.promptInFlight reports (daemon-side truth for
+	// the broker tests).
+	inFlight atomic.Bool
+
 	mu         sync.Mutex
 	requests   []agentStartRequest
 	sends      []string
@@ -222,6 +227,7 @@ func (b *fakeAgentBackend) ops() agentOps {
 				_ = b.control.Close()
 			}
 		},
+		promptInFlight: func(*Agent) bool { return b.inFlight.Load() },
 	}
 }
 

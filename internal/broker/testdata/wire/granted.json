@@ -1,0 +1,1 @@
+{"v":1,"type":"granted","id":"g5","body":{"name":"jv-worker-1","session_id":"sid-1","provider":"claude","model":"opus","window_id":"@7","jsonl_path":"/h/.claude/projects/-w/sid-1.jsonl","term_log_path":"/h/.local/state/claudia/terms/-w/sid-1.term","attach_command":"tmux -L claudia attach -t @7","reclaimed":false}}

@@ -129,6 +129,7 @@ var taskFieldFates = map[Provider]map[string]fieldDecl{
 var sessionFieldFates = map[Provider]map[string]fieldDecl{
 	ProviderClaude: {
 		"Provider":             {fateLocal, "selects this path"},
+		"Name":                 {fateLocal, "broker grant key; never sent to the process"},
 		"WorkDir":              {fateConsumed, ""},
 		"SessionID":            {fateConsumed, ""},
 		"RequireResume":        {fateConsumed, ""},
@@ -153,6 +154,7 @@ var sessionFieldFates = map[Provider]map[string]fieldDecl{
 	},
 	ProviderGrok: {
 		"Provider":             {fateLocal, "selects this path"},
+		"Name":                 {fateLocal, "broker grant key; never sent to the process"},
 		"WorkDir":              {fateConsumed, ""},
 		"SessionID":            {fateConsumed, ""},
 		"RequireResume":        {fateConsumed, ""},
@@ -177,6 +179,7 @@ var sessionFieldFates = map[Provider]map[string]fieldDecl{
 	},
 	ProviderCodex: {
 		"Provider":             {fateLocal, "selects this path"},
+		"Name":                 {fateLocal, "broker grant key; never sent to the process"},
 		"WorkDir":              {fateConsumed, ""},
 		"SessionID":            {fateConsumed, ""},
 		"RequireResume":        {fateConsumed, ""},
@@ -201,6 +204,7 @@ var sessionFieldFates = map[Provider]map[string]fieldDecl{
 	},
 	ProviderCursor: {
 		"Provider":             {fateLocal, "selects this path"},
+		"Name":                 {fateLocal, "broker grant key; never sent to the process"},
 		"WorkDir":              {fateConsumed, ""},
 		"SessionID":            {fateConsumed, ""},
 		"RequireResume":        {fateConsumed, ""},

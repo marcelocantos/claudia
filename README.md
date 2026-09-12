@@ -299,6 +299,17 @@ the rendered terminal view alongside the structured JSONL transcript.
 Override via `Config.TermLogPath`; set to `"-"` to disable. Grok and
 Codex Session have no PTY log (`CapabilityTerminalLog` unsupported).
 
+## Daemon (optional)
+
+`claudia broker serve` (or `claudia broker install` for a launchd user
+agent) runs a host-wide daemon that owns every consumer's agent
+processes: Sessions become named grants that survive the consumer's
+restart, Tasks run on the daemon, plan usage is fetched once per host,
+and after a reboot the daemon resumes the seats it held and tells them
+so. The library API is unchanged; with no socket (or
+`CLAUDIA_NO_BROKER=1`) everything runs in-process as before. See the
+[agents guide](agents-guide.md#daemon-claudia-broker-optional-host-wide).
+
 ## Registry
 
 For long-lived programs that manage several persistent agents

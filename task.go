@@ -228,6 +228,8 @@ type Task struct {
 	resolvedModel string
 	onRawLog      RawLogFunc
 	backend       taskBackend
+	// direct skips the broker consult: the daemon's own runs.
+	direct bool
 }
 
 type taskRunRequest struct {
@@ -397,10 +399,6 @@ func (t *Task) Run(ctx context.Context, prompt string) (<-chan TaskEvent, error)
 	t.status = TaskStatusRunning
 	t.mu.Unlock()
 
-	if usingBroker() {
-		considerBroker()
-	}
-
 	cmdCtx, cancel := context.WithCancel(ctx)
 
 	t.mu.Lock()
@@ -408,7 +406,7 @@ func (t *Task) Run(ctx context.Context, prompt string) (<-chan TaskEvent, error)
 	rawFn := t.onRawLog
 	t.mu.Unlock()
 
-	run, err := t.backend.RunTask(cmdCtx, taskRunRequest{
+	req := taskRunRequest{
 		WorkDir:        t.workDir,
 		Model:          t.model,
 		SandboxMode:    t.sandbox,
@@ -417,7 +415,26 @@ func (t *Task) Run(ctx context.Context, prompt string) (<-chan TaskEvent, error)
 		SessionID:      cid,
 		Prompt:         prompt,
 		RawLog:         rawFn,
-	})
+	}
+	var run *taskRun
+	var err error
+	// A listening daemon owns the run (🎯T2.10). A bare protocol server, or
+	// no socket, is the direct path — today's behaviour, byte for byte.
+	var bb *brokerTaskBackend
+	if !t.direct {
+		bb = taskBackendConsideringBroker(TaskConfig{ID: t.id, Name: t.name, Provider: t.provider})
+	}
+	if bb != nil {
+		run, err = bb.RunTask(cmdCtx, req)
+		if err != nil && brokerFellThrough(err) {
+			bb.client.Close()
+			run, err = t.backend.RunTask(cmdCtx, req)
+		} else if err != nil {
+			bb.client.Close()
+		}
+	} else {
+		run, err = t.backend.RunTask(cmdCtx, req)
+	}
 	if err != nil {
 		cancel()
 		t.mu.Lock()

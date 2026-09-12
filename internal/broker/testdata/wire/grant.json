@@ -1,0 +1,1 @@
+{"v":1,"type":"grant","id":"g5","body":{"name":"jv-worker-1","def":{"name":"jv-worker-1","workdir":"/w","provider":"claude"},"adopt":true,"fallback":true}}

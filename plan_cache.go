@@ -66,6 +66,18 @@ func LoadPlanUsage(ctx context.Context, args *PlanUsageCacheArgs) ([]PlanUsage, 
 	if args == nil {
 		args = &PlanUsageCacheArgs{}
 	}
+	// A listening daemon is the one evaluator on the host (🎯T2.9); the
+	// filesystem cache below is the brokerless path. A test that injects
+	// Fetch is asking for the cache and never reaches the socket.
+	if args.Fetch == nil && args.Dir == "" {
+		usage, _, err := brokerUsage(ctx, false)
+		if err == nil {
+			return usage, nil
+		}
+		if !brokerFellThrough(err) {
+			return nil, err
+		}
+	}
 	ttl := args.TTL
 	if ttl <= 0 {
 		ttl = DefaultPlanCacheTTL

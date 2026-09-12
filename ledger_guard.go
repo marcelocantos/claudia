@@ -50,10 +50,10 @@ type permissionTool struct {
 func parsePermissionTool(params json.RawMessage) permissionTool {
 	var p struct {
 		ToolCall struct {
-			Title    string `json:"title"`
-			Kind     string `json:"kind"`
-			ToolName string `json:"toolName"`
-			RawInput map[string]any `json:"rawInput"`
+			Title     string         `json:"title"`
+			Kind      string         `json:"kind"`
+			ToolName  string         `json:"toolName"`
+			RawInput  map[string]any `json:"rawInput"`
 			Locations []struct {
 				Path string `json:"path"`
 			} `json:"locations"`

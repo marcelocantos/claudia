@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -256,10 +257,14 @@ func (r *SpawnRequest) Validate() error {
 	return nil
 }
 
-// ReleaseRequest returns an agent to the broker.
+// ReleaseRequest returns an agent to the broker. Wire v1 keyed it by the
+// spawn session id; the grant protocol keys it by grant name. Exactly one of
+// the two is required.
 type ReleaseRequest struct {
 	// SessionID names the agent, as returned by SpawnResponse.
-	SessionID string `json:"session_id"`
+	SessionID string `json:"session_id,omitempty"`
+	// Name names a granted seat (🎯T2.10).
+	Name string `json:"name,omitempty"`
 	// Disposition is what to do with it.
 	Disposition Disposition `json:"disposition"`
 }
@@ -268,19 +273,19 @@ type ReleaseRequest struct {
 // can honour a syntactically valid disposition is a capability question, and is
 // answered by the server (DispositionReuse needs the shared pool, 🎯T2.3).
 func (r *ReleaseRequest) Validate() error {
-	if strings.TrimSpace(r.SessionID) == "" {
+	if strings.TrimSpace(r.SessionID) == "" && strings.TrimSpace(r.Name) == "" {
 		return &ProtocolError{Code: CodeMissingField, Field: "session_id",
-			Msg: "session_id is required"}
+			Msg: "session_id (spawned agent) or name (granted seat) is required"}
 	}
 	switch r.Disposition {
 	case "":
 		return &ProtocolError{Code: CodeMissingField, Field: "disposition",
-			Msg: fmt.Sprintf("disposition is required (%q or %q)", DispositionStop, DispositionReuse)}
-	case DispositionStop, DispositionReuse:
+			Msg: fmt.Sprintf("disposition is required (%q, %q or %q)", DispositionStop, DispositionReuse, DispositionDetach)}
+	case DispositionStop, DispositionReuse, DispositionDetach:
 		return nil
 	default:
 		return &ProtocolError{Code: CodeUnsupportedValue, Field: "disposition", Value: string(r.Disposition),
-			Msg: fmt.Sprintf("disposition %q is not one of %q, %q", r.Disposition, DispositionStop, DispositionReuse)}
+			Msg: fmt.Sprintf("disposition %q is not one of %q, %q, %q", r.Disposition, DispositionStop, DispositionReuse, DispositionDetach)}
 	}
 }
 
@@ -306,8 +311,10 @@ type SpawnResponse struct {
 
 // ReleaseResponse confirms a release, echoing what the broker actually did.
 type ReleaseResponse struct {
-	// SessionID is the released agent.
-	SessionID string `json:"session_id"`
+	// SessionID is the released agent (spawn path).
+	SessionID string `json:"session_id,omitempty"`
+	// Name is the released seat (grant path).
+	Name string `json:"name,omitempty"`
 	// Disposition is what the broker performed, not merely what was asked.
 	Disposition Disposition `json:"disposition"`
 }
@@ -350,6 +357,14 @@ type StatusResponse struct {
 	WarmPool int `json:"warm_pool"`
 	// Sessions is every agent the broker currently holds.
 	Sessions []SessionStatus `json:"sessions"`
+	// Grants is every named seat the daemon holds (🎯T2.10). Absent on a
+	// bare protocol server.
+	Grants []GrantStatus `json:"grants,omitempty"`
+	// Tasks is how many task runs are in flight.
+	Tasks int `json:"tasks,omitempty"`
+	// UsageFetchedAt is when the daemon last refreshed plan usage (🎯T2.9).
+	// Zero when it never has.
+	UsageFetchedAt time.Time `json:"usage_fetched_at,omitzero"`
 }
 
 // EventMessage is one lifecycle event on a tail connection.
@@ -358,6 +373,11 @@ type EventMessage struct {
 	Kind EventKind `json:"kind"`
 	// SessionID is the agent it happened to.
 	SessionID string `json:"session_id,omitempty"`
+	// Name is the grant it happened to (grant protocol events).
+	Name string `json:"name,omitempty"`
+	// Detail is a short human-readable qualifier (a provider name on
+	// usage_update, a reason on agent_gone).
+	Detail string `json:"detail,omitempty"`
 	// At is stamped from the broker's injected Clock, never the wall clock,
 	// so a replayed tape is reproducible (🎯T2.8).
 	At time.Time `json:"at"`
@@ -436,14 +456,25 @@ type Request struct {
 	ID string
 	// Type is the discriminator.
 	Type MessageType
-	// Spawn is set when Type is TypeSpawn.
-	Spawn *SpawnRequest
-	// Release is set when Type is TypeRelease.
-	Release *ReleaseRequest
-	// Status is set when Type is TypeStatus.
-	Status *StatusRequest
-	// Tail is set when Type is TypeTail.
-	Tail *TailRequest
+
+	Spawn         *SpawnRequest
+	Release       *ReleaseRequest
+	Status        *StatusRequest
+	Tail          *TailRequest
+	Usage         *UsageRequest
+	Resolve       *ResolveRequest
+	TaskRun       *TaskRunRequest
+	TaskCancel    *TaskCancelRequest
+	Grant         *GrantRequest
+	Send          *SendRequest
+	Interrupt     *NamedRequest
+	SetModel      *SetModelRequest
+	Migrate       *MigrateRequest
+	AgentInfo     *NamedRequest
+	TermSubscribe *NamedRequest
+	Resize        *ResizeRequest
+	Grants        *GrantsRequest
+	CloseGoal     *NamedRequest
 }
 
 // Response is a decoded broker → client message. Exactly one of the body
@@ -453,18 +484,133 @@ type Response struct {
 	ID string
 	// Type is the discriminator.
 	Type MessageType
-	// Spawned is set when Type is TypeSpawned.
-	Spawned *SpawnResponse
-	// Released is set when Type is TypeReleased.
-	Released *ReleaseResponse
-	// Status is set when Type is TypeStatusResult.
-	Status *StatusResponse
-	// Tailing is set when Type is TypeTailing.
-	Tailing *TailResponse
-	// Event is set when Type is TypeEvent.
-	Event *EventMessage
-	// Error is set when Type is TypeError.
-	Error *ErrorMessage
+
+	Spawned        *SpawnResponse
+	Released       *ReleaseResponse
+	Status         *StatusResponse
+	Tailing        *TailResponse
+	Event          *EventMessage
+	Error          *ErrorMessage
+	Usage          *UsageResponse
+	Resolved       *ResolveResponse
+	TaskStarted    *TaskStartedResponse
+	TaskEvent      *TaskEventMessage
+	TaskDone       *TaskDoneMessage
+	TaskCancelled  *TaskCancelledResponse
+	Granted        *GrantResponse
+	AgentEvent     *AgentEventMessage
+	AgentTerm      *AgentTermMessage
+	AgentGone      *AgentGoneMessage
+	Sent           *NamedResponse
+	Interrupted    *NamedResponse
+	ModelSet       *NamedResponse
+	Migrated       *MigrateResponse
+	AgentInfo      *AgentInfoResponse
+	TermSubscribed *TermSubscribedResponse
+	Resized        *NamedResponse
+	Grants         *GrantsResponse
+	GoalClosed     *NamedResponse
+}
+
+// validator is implemented by bodies that normalise defaults or refuse
+// values on receipt.
+type validator interface{ Validate() error }
+
+// bodySpec binds one message type to its body slot. alloc creates the body
+// and stores it on the message; get returns the stored body (nil when the
+// slot is empty); noBody marks types whose canonical encoding omits the
+// body entirely (status, tail, tailing) — the transport still accepts an
+// empty object for them.
+type bodySpec[M any] struct {
+	what   string
+	alloc  func(*M) any
+	get    func(*M) any
+	noBody bool
+}
+
+func spec[M, B any](what string, slot func(*M) **B, noBody bool) bodySpec[M] {
+	return bodySpec[M]{
+		what: what,
+		alloc: func(m *M) any {
+			b := new(B)
+			*slot(m) = b
+			return b
+		},
+		get: func(m *M) any {
+			if p := *slot(m); p != nil {
+				return p
+			}
+			return nil
+		},
+		noBody: noBody,
+	}
+}
+
+// requestSpecs is the client → broker namespace. TestEveryMessageTypeHasAVector
+// walks it, so a type added here without a golden vector fails the build.
+var requestSpecs = map[MessageType]bodySpec[Request]{
+	TypeSpawn:         spec("spawn body", func(r *Request) **SpawnRequest { return &r.Spawn }, false),
+	TypeRelease:       spec("release body", func(r *Request) **ReleaseRequest { return &r.Release }, false),
+	TypeStatus:        spec("status body", func(r *Request) **StatusRequest { return &r.Status }, true),
+	TypeTail:          spec("tail body", func(r *Request) **TailRequest { return &r.Tail }, true),
+	TypeUsage:         spec("usage body", func(r *Request) **UsageRequest { return &r.Usage }, false),
+	TypeResolve:       spec("resolve body", func(r *Request) **ResolveRequest { return &r.Resolve }, false),
+	TypeTaskRun:       spec("task_run body", func(r *Request) **TaskRunRequest { return &r.TaskRun }, false),
+	TypeTaskCancel:    spec("task_cancel body", func(r *Request) **TaskCancelRequest { return &r.TaskCancel }, false),
+	TypeGrant:         spec("grant body", func(r *Request) **GrantRequest { return &r.Grant }, false),
+	TypeSend:          spec("send body", func(r *Request) **SendRequest { return &r.Send }, false),
+	TypeInterrupt:     spec("interrupt body", func(r *Request) **NamedRequest { return &r.Interrupt }, false),
+	TypeSetModel:      spec("set_model body", func(r *Request) **SetModelRequest { return &r.SetModel }, false),
+	TypeMigrate:       spec("migrate body", func(r *Request) **MigrateRequest { return &r.Migrate }, false),
+	TypeAgentInfo:     spec("agent_info body", func(r *Request) **NamedRequest { return &r.AgentInfo }, false),
+	TypeTermSubscribe: spec("term_subscribe body", func(r *Request) **NamedRequest { return &r.TermSubscribe }, false),
+	TypeResize:        spec("resize body", func(r *Request) **ResizeRequest { return &r.Resize }, false),
+	TypeGrants:        spec("grants body", func(r *Request) **GrantsRequest { return &r.Grants }, true),
+	TypeCloseGoal:     spec("close_goal body", func(r *Request) **NamedRequest { return &r.CloseGoal }, false),
+}
+
+// responseSpecs is the broker → client namespace.
+var responseSpecs = map[MessageType]bodySpec[Response]{
+	TypeSpawned:         spec("spawned body", func(r *Response) **SpawnResponse { return &r.Spawned }, false),
+	TypeReleased:        spec("released body", func(r *Response) **ReleaseResponse { return &r.Released }, false),
+	TypeStatusResult:    spec("status_result body", func(r *Response) **StatusResponse { return &r.Status }, false),
+	TypeTailing:         spec("tailing body", func(r *Response) **TailResponse { return &r.Tailing }, true),
+	TypeEvent:           spec("event body", func(r *Response) **EventMessage { return &r.Event }, false),
+	TypeError:           spec("error body", func(r *Response) **ErrorMessage { return &r.Error }, false),
+	TypeUsageResult:     spec("usage_result body", func(r *Response) **UsageResponse { return &r.Usage }, false),
+	TypeResolved:        spec("resolved body", func(r *Response) **ResolveResponse { return &r.Resolved }, false),
+	TypeTaskStarted:     spec("task_started body", func(r *Response) **TaskStartedResponse { return &r.TaskStarted }, false),
+	TypeTaskEvent:       spec("task_event body", func(r *Response) **TaskEventMessage { return &r.TaskEvent }, false),
+	TypeTaskDone:        spec("task_done body", func(r *Response) **TaskDoneMessage { return &r.TaskDone }, false),
+	TypeTaskCancelled:   spec("task_cancelled body", func(r *Response) **TaskCancelledResponse { return &r.TaskCancelled }, false),
+	TypeGranted:         spec("granted body", func(r *Response) **GrantResponse { return &r.Granted }, false),
+	TypeAgentEvent:      spec("agent_event body", func(r *Response) **AgentEventMessage { return &r.AgentEvent }, false),
+	TypeAgentTerm:       spec("agent_term body", func(r *Response) **AgentTermMessage { return &r.AgentTerm }, false),
+	TypeAgentGone:       spec("agent_gone body", func(r *Response) **AgentGoneMessage { return &r.AgentGone }, false),
+	TypeSent:            spec("sent body", func(r *Response) **NamedResponse { return &r.Sent }, false),
+	TypeInterrupted:     spec("interrupted body", func(r *Response) **NamedResponse { return &r.Interrupted }, false),
+	TypeModelSet:        spec("model_set body", func(r *Response) **NamedResponse { return &r.ModelSet }, false),
+	TypeMigrated:        spec("migrated body", func(r *Response) **MigrateResponse { return &r.Migrated }, false),
+	TypeAgentInfoResult: spec("agent_info_result body", func(r *Response) **AgentInfoResponse { return &r.AgentInfo }, false),
+	TypeTermSubscribed:  spec("term_subscribed body", func(r *Response) **TermSubscribedResponse { return &r.TermSubscribed }, false),
+	TypeResized:         spec("resized body", func(r *Response) **NamedResponse { return &r.Resized }, false),
+	TypeGrantsResult:    spec("grants_result body", func(r *Response) **GrantsResponse { return &r.Grants }, false),
+	TypeGoalClosed:      spec("goal_closed body", func(r *Response) **NamedResponse { return &r.GoalClosed }, false),
+}
+
+// RequestTypes lists every client → broker type in this wire version.
+func RequestTypes() []MessageType { return sortedTypes(requestSpecs) }
+
+// ResponseTypes lists every broker → client type in this wire version.
+func ResponseTypes() []MessageType { return sortedTypes(responseSpecs) }
+
+func sortedTypes[M any](m map[MessageType]bodySpec[M]) []MessageType {
+	out := make([]MessageType, 0, len(m))
+	for t := range m {
+		out = append(out, t)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
 }
 
 // unknownFieldPrefix is encoding/json's wording for the rejection
@@ -524,6 +670,20 @@ func parseEnvelope(line []byte) (*Envelope, error) {
 	return &env, nil
 }
 
+// parseBody allocates, decodes and validates one body under its spec.
+func parseBody[M any](env *Envelope, sp bodySpec[M], m *M) error {
+	body := sp.alloc(m)
+	if err := decodeBody(env.Body, body, sp.what); err != nil {
+		return withID(err, env.ID)
+	}
+	if v, ok := body.(validator); ok {
+		if err := v.Validate(); err != nil {
+			return withID(err, env.ID)
+		}
+	}
+	return nil
+}
+
 // ParseRequest decodes one newline-delimited-JSON line as a client → broker
 // message, validating the body. The returned error is always a *ProtocolError,
 // carrying the envelope id when one was readable.
@@ -533,42 +693,18 @@ func ParseRequest(line []byte) (*Request, error) {
 		return nil, err
 	}
 	req := &Request{ID: env.ID, Type: env.Type}
-	fail := func(code ErrorCode, msg string) (*Request, error) {
-		return nil, &ProtocolError{Code: code, Field: "type", Value: string(env.Type), ID: env.ID, Msg: msg}
+	if sp, ok := requestSpecs[env.Type]; ok {
+		if err := parseBody(env, sp, req); err != nil {
+			return nil, err
+		}
+		return req, nil
 	}
-	switch env.Type {
-	case TypeSpawn:
-		req.Spawn = &SpawnRequest{}
-		if err := decodeBody(env.Body, req.Spawn, "spawn body"); err != nil {
-			return nil, withID(err, env.ID)
-		}
-		if err := req.Spawn.Validate(); err != nil {
-			return nil, withID(err, env.ID)
-		}
-	case TypeRelease:
-		req.Release = &ReleaseRequest{}
-		if err := decodeBody(env.Body, req.Release, "release body"); err != nil {
-			return nil, withID(err, env.ID)
-		}
-		if err := req.Release.Validate(); err != nil {
-			return nil, withID(err, env.ID)
-		}
-	case TypeStatus:
-		req.Status = &StatusRequest{}
-		if err := decodeBody(env.Body, req.Status, "status body"); err != nil {
-			return nil, withID(err, env.ID)
-		}
-	case TypeTail:
-		req.Tail = &TailRequest{}
-		if err := decodeBody(env.Body, req.Tail, "tail body"); err != nil {
-			return nil, withID(err, env.ID)
-		}
-	case TypeSpawned, TypeReleased, TypeStatusResult, TypeTailing, TypeEvent, TypeError:
-		return fail(CodeNotARequest, fmt.Sprintf("%q is a broker → client message; the broker does not accept it", env.Type))
-	default:
-		return fail(CodeUnknownType, fmt.Sprintf("%q is not a request type in wire version %d", env.Type, Version))
+	if _, ok := responseSpecs[env.Type]; ok {
+		return nil, &ProtocolError{Code: CodeNotARequest, Field: "type", Value: string(env.Type), ID: env.ID,
+			Msg: fmt.Sprintf("%q is a broker → client message; the broker does not accept it", env.Type)}
 	}
-	return req, nil
+	return nil, &ProtocolError{Code: CodeUnknownType, Field: "type", Value: string(env.Type), ID: env.ID,
+		Msg: fmt.Sprintf("%q is not a request type in wire version %d", env.Type, Version)}
 }
 
 // ParseResponse decodes one line as a broker → client message. Clients use it;
@@ -580,46 +716,18 @@ func ParseResponse(line []byte) (*Response, error) {
 		return nil, err
 	}
 	resp := &Response{ID: env.ID, Type: env.Type}
-	fail := func(code ErrorCode, msg string) (*Response, error) {
-		return nil, &ProtocolError{Code: code, Field: "type", Value: string(env.Type), ID: env.ID, Msg: msg}
+	if sp, ok := responseSpecs[env.Type]; ok {
+		if err := parseBody(env, sp, resp); err != nil {
+			return nil, err
+		}
+		return resp, nil
 	}
-	switch env.Type {
-	case TypeSpawned:
-		resp.Spawned = &SpawnResponse{}
-		if err := decodeBody(env.Body, resp.Spawned, "spawned body"); err != nil {
-			return nil, withID(err, env.ID)
-		}
-	case TypeReleased:
-		resp.Released = &ReleaseResponse{}
-		if err := decodeBody(env.Body, resp.Released, "released body"); err != nil {
-			return nil, withID(err, env.ID)
-		}
-	case TypeStatusResult:
-		resp.Status = &StatusResponse{}
-		if err := decodeBody(env.Body, resp.Status, "status_result body"); err != nil {
-			return nil, withID(err, env.ID)
-		}
-	case TypeTailing:
-		resp.Tailing = &TailResponse{}
-		if err := decodeBody(env.Body, resp.Tailing, "tailing body"); err != nil {
-			return nil, withID(err, env.ID)
-		}
-	case TypeEvent:
-		resp.Event = &EventMessage{}
-		if err := decodeBody(env.Body, resp.Event, "event body"); err != nil {
-			return nil, withID(err, env.ID)
-		}
-	case TypeError:
-		resp.Error = &ErrorMessage{}
-		if err := decodeBody(env.Body, resp.Error, "error body"); err != nil {
-			return nil, withID(err, env.ID)
-		}
-	case TypeSpawn, TypeRelease, TypeStatus, TypeTail:
-		return fail(CodeNotAResponse, fmt.Sprintf("%q is a client → broker message; a broker never sends it", env.Type))
-	default:
-		return fail(CodeUnknownType, fmt.Sprintf("%q is not a response type in wire version %d", env.Type, Version))
+	if _, ok := requestSpecs[env.Type]; ok {
+		return nil, &ProtocolError{Code: CodeNotAResponse, Field: "type", Value: string(env.Type), ID: env.ID,
+			Msg: fmt.Sprintf("%q is a client → broker message; a broker never sends it", env.Type)}
 	}
-	return resp, nil
+	return nil, &ProtocolError{Code: CodeUnknownType, Field: "type", Value: string(env.Type), ID: env.ID,
+		Msg: fmt.Sprintf("%q is not a response type in wire version %d", env.Type, Version)}
 }
 
 // withID stamps the envelope id onto a *ProtocolError so the server can echo it
@@ -651,40 +759,29 @@ func encodeMessage(t MessageType, id string, body any) ([]byte, error) {
 	return line, nil
 }
 
-// Encode renders the request canonically. Status and tail carry no body, so
-// their canonical form omits it entirely.
-func (r *Request) Encode() ([]byte, error) {
-	switch r.Type {
-	case TypeSpawn:
-		return encodeMessage(r.Type, r.ID, r.Spawn)
-	case TypeRelease:
-		return encodeMessage(r.Type, r.ID, r.Release)
-	case TypeStatus, TypeTail:
-		return encodeMessage(r.Type, r.ID, nil)
-	default:
-		return nil, &ProtocolError{Code: CodeUnknownType, Field: "type", Value: string(r.Type),
-			Msg: fmt.Sprintf("%q is not a request type in wire version %d", r.Type, Version)}
+// encodeUnder renders a message under its spec. Body-less types encode with no
+// body at all; every other type encodes whatever sits in its slot, so a nil
+// slot on a typed message renders as an absent body — the same bytes the
+// parser accepts as the empty object.
+func encodeUnder[M any](specs map[MessageType]bodySpec[M], t MessageType, id string, m *M, direction string) ([]byte, error) {
+	sp, ok := specs[t]
+	if !ok {
+		return nil, &ProtocolError{Code: CodeUnknownType, Field: "type", Value: string(t),
+			Msg: fmt.Sprintf("%q is not a %s type in wire version %d", t, direction, Version)}
 	}
+	if sp.noBody {
+		return encodeMessage(t, id, nil)
+	}
+	return encodeMessage(t, id, sp.get(m))
+}
+
+// Encode renders the request canonically. Status, tail and grants carry no
+// body, so their canonical form omits it entirely.
+func (r *Request) Encode() ([]byte, error) {
+	return encodeUnder(requestSpecs, r.Type, r.ID, r, "request")
 }
 
 // Encode renders the response canonically.
 func (r *Response) Encode() ([]byte, error) {
-	switch r.Type {
-	case TypeSpawned:
-		return encodeMessage(r.Type, r.ID, r.Spawned)
-	case TypeReleased:
-		return encodeMessage(r.Type, r.ID, r.Released)
-	case TypeStatusResult:
-		return encodeMessage(r.Type, r.ID, r.Status)
-	case TypeTailing:
-		// No body, for the same reason the tail request has none.
-		return encodeMessage(r.Type, r.ID, nil)
-	case TypeEvent:
-		return encodeMessage(r.Type, r.ID, r.Event)
-	case TypeError:
-		return encodeMessage(r.Type, r.ID, r.Error)
-	default:
-		return nil, &ProtocolError{Code: CodeUnknownType, Field: "type", Value: string(r.Type),
-			Msg: fmt.Sprintf("%q is not a response type in wire version %d", r.Type, Version)}
-	}
+	return encodeUnder(responseSpecs, r.Type, r.ID, r, "response")
 }

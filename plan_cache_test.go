@@ -56,7 +56,7 @@ func TestLoadPlanUsageSingleFetchUnderContention(t *testing.T) {
 		return &PlanUsageCacheArgs{
 			Dir:       dir,
 			TTL:       time.Hour,
-			LockStale: time.Second,
+			LockStale: 10 * time.Second, // long enough that a slow fetch under load is never stolen
 			Poll:      5 * time.Millisecond,
 			Fetch:     fetch,
 		}

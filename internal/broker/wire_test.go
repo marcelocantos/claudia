@@ -88,6 +88,50 @@ var requestVectors = map[string]requestVector{
 	},
 	"status": {msg: &Request{ID: "r5", Type: TypeStatus, Status: &StatusRequest{}}},
 	"tail":   {msg: &Request{ID: "r6", Type: TypeTail, Tail: &TailRequest{}}},
+
+	// Grant protocol (🎯T2.9 / 🎯T2.10). Embedded claudia payloads are
+	// opaque here; their field sets are pinned in the claudia package.
+	"release_detach": {
+		msg: &Request{
+			ID: "g0", Type: TypeRelease,
+			Release: &ReleaseRequest{Name: "jv-worker-1", Disposition: DispositionDetach},
+		},
+	},
+	"usage":         {msg: &Request{ID: "g1", Type: TypeUsage, Usage: &UsageRequest{}}},
+	"usage_refresh": {msg: &Request{ID: "g1", Type: TypeUsage, Usage: &UsageRequest{Refresh: true}}},
+	"resolve": {
+		msg: &Request{
+			ID: "g2", Type: TypeResolve,
+			Resolve: &ResolveRequest{Predicates: json.RawMessage(`{"mode":"task","prefer_plan":true}`)},
+		},
+	},
+	"task_run": {
+		msg: &Request{
+			ID: "g3", Type: TypeTaskRun,
+			TaskRun: &TaskRunRequest{Task: json.RawMessage(`{"provider":"grok","workdir":"/w"}`), Prompt: "summarise"},
+		},
+	},
+	"task_cancel": {msg: &Request{ID: "g4", Type: TypeTaskCancel, TaskCancel: &TaskCancelRequest{RunID: "run-1"}}},
+	"grant": {
+		msg: &Request{
+			ID: "g5", Type: TypeGrant,
+			Grant: &GrantRequest{
+				Name:     "jv-worker-1",
+				Def:      json.RawMessage(`{"name":"jv-worker-1","workdir":"/w","provider":"claude"}`),
+				Adopt:    true,
+				Fallback: true,
+			},
+		},
+	},
+	"send":           {msg: &Request{ID: "g6", Type: TypeSend, Send: &SendRequest{Name: "jv-worker-1", Text: "hello"}}},
+	"interrupt":      {msg: &Request{ID: "g7", Type: TypeInterrupt, Interrupt: &NamedRequest{Name: "jv-worker-1"}}},
+	"set_model":      {msg: &Request{ID: "g8", Type: TypeSetModel, SetModel: &SetModelRequest{Name: "jv-worker-1", Model: "sonnet"}}},
+	"migrate":        {msg: &Request{ID: "g9", Type: TypeMigrate, Migrate: &MigrateRequest{Name: "jv-worker-1", Provider: "grok", Model: "grok-4", Reason: "hot"}}},
+	"agent_info":     {msg: &Request{ID: "g10", Type: TypeAgentInfo, AgentInfo: &NamedRequest{Name: "jv-worker-1"}}},
+	"term_subscribe": {msg: &Request{ID: "g11", Type: TypeTermSubscribe, TermSubscribe: &NamedRequest{Name: "jv-worker-1"}}},
+	"resize":         {msg: &Request{ID: "g12", Type: TypeResize, Resize: &ResizeRequest{Name: "jv-worker-1", Cols: 120, Rows: 40}}},
+	"grants":         {msg: &Request{ID: "g13", Type: TypeGrants, Grants: &GrantsRequest{}}},
+	"close_goal":     {msg: &Request{ID: "g14", Type: TypeCloseGoal, CloseGoal: &NamedRequest{Name: "jv-worker-1"}}},
 }
 
 // responseVectors is every broker → client message, in canonical form.
@@ -145,6 +189,89 @@ var responseVectors = map[string]*Response{
 	"error_not_owner": {
 		ID: "r9", Type: TypeError,
 		Error: &ErrorMessage{Code: CodeNotOwner, Message: "session s-1 belongs to another connection", Field: "session_id", Value: "s-1"},
+	},
+
+	// Grant protocol.
+	"released_detach": {
+		ID: "g0", Type: TypeReleased,
+		Released: &ReleaseResponse{Name: "jv-worker-1", Disposition: DispositionDetach},
+	},
+	"usage_result": {
+		ID: "g1", Type: TypeUsageResult,
+		Usage: &UsageResponse{FetchedAt: goldenAt, Backends: json.RawMessage(`[{"provider":"claude","status":"available"}]`)},
+	},
+	"usage_result_never": {
+		ID: "g1", Type: TypeUsageResult,
+		Usage: &UsageResponse{Backends: json.RawMessage(`[]`), Error: "not fetched yet"},
+	},
+	"resolved": {
+		ID: "g2", Type: TypeResolved,
+		Resolved: &ResolveResponse{Pick: json.RawMessage(`{"provider":"grok","model":"grok-4"}`)},
+	},
+	"task_started": {ID: "g3", Type: TypeTaskStarted, TaskStarted: &TaskStartedResponse{RunID: "run-1"}},
+	"task_event": {
+		Type:      TypeTaskEvent,
+		TaskEvent: &TaskEventMessage{RunID: "run-1", Event: json.RawMessage(`{"type":"text","content":"hi"}`)},
+	},
+	"task_done":       {Type: TypeTaskDone, TaskDone: &TaskDoneMessage{RunID: "run-1"}},
+	"task_done_error": {Type: TypeTaskDone, TaskDone: &TaskDoneMessage{RunID: "run-1", Error: "spawn failed"}},
+	"task_cancelled":  {ID: "g4", Type: TypeTaskCancelled, TaskCancelled: &TaskCancelledResponse{RunID: "run-1"}},
+	"granted": {
+		ID: "g5", Type: TypeGranted,
+		Granted: &GrantResponse{
+			Name: "jv-worker-1", SessionID: "sid-1", Provider: ProviderClaude, Model: "opus",
+			WindowID: "@7", JSONLPath: "/h/.claude/projects/-w/sid-1.jsonl", TermLogPath: "/h/.local/state/claudia/terms/-w/sid-1.term",
+			AttachCommand: "tmux -L claudia attach -t @7",
+		},
+	},
+	"granted_reclaimed": {
+		ID: "g5", Type: TypeGranted,
+		Granted: &GrantResponse{Name: "jv-worker-1", SessionID: "sid-1", Provider: "grok", Reclaimed: true, Replayed: 3, Lagged: true, ConnectURL: "ws://127.0.0.1:1/ws", ConnectPID: 99},
+	},
+	"agent_event": {
+		Type:       TypeAgentEvent,
+		AgentEvent: &AgentEventMessage{Name: "jv-worker-1", Event: json.RawMessage(`{"type":"assistant","text":"hi"}`)},
+	},
+	"agent_term":  {Type: TypeAgentTerm, AgentTerm: &AgentTermMessage{Name: "jv-worker-1", Data: []byte("\x1b[2J")}},
+	"agent_gone":  {Type: TypeAgentGone, AgentGone: &AgentGoneMessage{Name: "jv-worker-1", Reason: "process exited"}},
+	"sent":        {ID: "g6", Type: TypeSent, Sent: &NamedResponse{Name: "jv-worker-1"}},
+	"interrupted": {ID: "g7", Type: TypeInterrupted, Interrupted: &NamedResponse{Name: "jv-worker-1"}},
+	"model_set":   {ID: "g8", Type: TypeModelSet, ModelSet: &NamedResponse{Name: "jv-worker-1"}},
+	"migrated": {
+		ID: "g9", Type: TypeMigrated,
+		Migrated: &MigrateResponse{Name: "jv-worker-1", SessionID: "sid-2", Provider: "grok", Model: "grok-4"},
+	},
+	"agent_info_result": {
+		ID: "g10", Type: TypeAgentInfoResult,
+		AgentInfo: &AgentInfoResponse{
+			Name: "jv-worker-1", SessionID: "sid-1", Provider: ProviderClaude, Model: "claude-opus-5",
+			Alive: true, PromptInFlight: false, Usage: json.RawMessage(`{"input_tokens":1,"output_tokens":2}`),
+			WindowID: "@7",
+		},
+	},
+	"term_subscribed": {ID: "g11", Type: TypeTermSubscribed, TermSubscribed: &TermSubscribedResponse{Name: "jv-worker-1", History: []byte("$ ")}},
+	"resized":         {ID: "g12", Type: TypeResized, Resized: &NamedResponse{Name: "jv-worker-1"}},
+	"grants_result": {
+		ID: "g13", Type: TypeGrantsResult,
+		Grants: &GrantsResponse{Grants: []GrantStatus{{
+			Name: "jv-worker-1", Provider: ProviderClaude, Model: "opus", SessionID: "sid-1",
+			WorkDir: "/w", Purpose: "work", Parent: "jevons-po", Owned: true, Alive: true,
+		}, {
+			Name: "jv-worker-2", Provider: "grok", SessionID: "sid-2", WorkDir: "/w", Pending: 4,
+		}}},
+	},
+	"grants_result_empty": {ID: "g13", Type: TypeGrantsResult, Grants: &GrantsResponse{Grants: []GrantStatus{}}},
+	"goal_closed":         {ID: "g14", Type: TypeGoalClosed, GoalClosed: &NamedResponse{Name: "jv-worker-1"}},
+	"event_grant":         {Type: TypeEvent, Event: &EventMessage{Kind: EventGrant, Name: "jv-worker-1", At: goldenAt}},
+	"event_detach":        {Type: TypeEvent, Event: &EventMessage{Kind: EventDetach, Name: "jv-worker-1", At: goldenAt}},
+	"event_usage":         {Type: TypeEvent, Event: &EventMessage{Kind: EventUsageUpdate, Detail: "claude", At: goldenAt}},
+	"error_grant_held": {
+		ID: "g5", Type: TypeError,
+		Error: &ErrorMessage{Code: CodeGrantHeld, Message: "grant jv-worker-1 is owned by another connection", Field: "name", Value: "jv-worker-1"},
+	},
+	"error_not_available": {
+		ID: "g1", Type: TypeError,
+		Error: &ErrorMessage{Code: CodeNotAvailable, Message: "this broker has no daemon runtime behind it", Field: "type", Value: "usage"},
 	},
 }
 
@@ -267,10 +394,7 @@ func TestEveryMessageTypeHasAVector(t *testing.T) {
 	for _, r := range responseVectors {
 		covered[r.Type] = true
 	}
-	all := []MessageType{
-		TypeSpawn, TypeRelease, TypeStatus, TypeTail,
-		TypeSpawned, TypeReleased, TypeStatusResult, TypeTailing, TypeEvent, TypeError,
-	}
+	all := append(RequestTypes(), ResponseTypes()...)
 	for _, mt := range all {
 		if !covered[mt] {
 			t.Errorf("message type %q has no golden vector", mt)

@@ -1,0 +1,1 @@
+{"v":1,"type":"agent_info_result","id":"g10","body":{"name":"jv-worker-1","session_id":"sid-1","provider":"claude","model":"claude-opus-5","alive":true,"prompt_in_flight":false,"usage":{"input_tokens":1,"output_tokens":2},"window_id":"@7"}}

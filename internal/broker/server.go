@@ -28,12 +28,80 @@ type ServeArgs struct {
 	Listener net.Listener
 	// Clock stamps tail events. Nil means SystemClock.
 	Clock Clock
+	// Handler answers the grant protocol (🎯T2.10). Nil is a bare protocol
+	// server: v1 spawn/release/status/tail work in-memory and every other
+	// request is refused with CodeNotAvailable, so a client can tell "no
+	// daemon behind this socket" from "unknown message".
+	Handler Handler
+}
+
+// Handler is the daemon runtime behind a Server. The server owns framing,
+// version checks and the v1 in-memory table; the handler owns everything
+// that needs a provider process or a usage evaluator.
+type Handler interface {
+	// HandleRequest answers req on c. It returns false to let the server's
+	// built-in v1 handling take the request instead.
+	HandleRequest(c *ClientConn, req *Request) bool
+	// ConnClosed runs after a connection goes away, once the server has
+	// reclaimed its v1 spawns. Grants owned by the connection are the
+	// handler's to detach (🎯T2.11: the seat keeps running).
+	ConnClosed(c *ClientConn)
+}
+
+// ClientConn is one accepted connection as the handler sees it: the framed
+// socket plus a small per-connection bag the handler may use for ownership
+// bookkeeping. Writes are serialised by Conn, so a handler may push
+// agent_event messages from any goroutine while a request is in flight.
+type ClientConn struct {
+	*Conn
+	// ID is unique per accepted connection for the life of the server.
+	ID int
+
+	mu   sync.Mutex
+	data map[string]any
+}
+
+// Set stores a handler value on the connection.
+func (c *ClientConn) Set(key string, v any) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.data == nil {
+		c.data = map[string]any{}
+	}
+	c.data[key] = v
+}
+
+// Get reads a handler value stored with Set.
+func (c *ClientConn) Get(key string) (any, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	v, ok := c.data[key]
+	return v, ok
+}
+
+// Reply writes one response.
+func (c *ClientConn) Reply(resp *Response) error { return c.WriteResponse(resp) }
+
+// Fail writes a typed refusal for request id. A non-ProtocolError becomes
+// CodeAgentFailed carrying the error text, so a provider failure reaches the
+// client as the provider's own words rather than "malformed".
+func (c *ClientConn) Fail(id string, err error) bool {
+	pe, ok := err.(*ProtocolError)
+	if !ok {
+		pe = &ProtocolError{Code: CodeAgentFailed, Msg: err.Error()}
+	}
+	if pe.ID == "" {
+		pe.ID = id
+	}
+	return c.WriteResponse(&Response{ID: pe.ID, Type: TypeError, Error: pe.Wire()}) == nil
 }
 
 // Server accepts broker connections on a Unix socket.
 type Server struct {
-	ln    net.Listener
-	clock Clock
+	ln      net.Listener
+	clock   Clock
+	handler Handler
+	connSeq int
 
 	mu       sync.Mutex
 	seq      int
@@ -86,6 +154,7 @@ func Serve(args *ServeArgs) (*Server, error) {
 	s := &Server{
 		ln:       args.Listener,
 		clock:    clock,
+		handler:  args.Handler,
 		sessions: map[string]*managedSession{},
 		conns:    map[net.Conn]struct{}{},
 		done:     make(chan struct{}),
@@ -123,6 +192,12 @@ func (s *Server) Close() error {
 	return err
 }
 
+// Clock is the server's injected clock, for handlers stamping events.
+func (s *Server) Clock() Clock { return s.clock }
+
+// Emit pushes one lifecycle event to every tail subscriber.
+func (s *Server) Emit(ev EventMessage) { s.emit(ev) }
+
 // RequestCount is how many wire requests this server has handled. Tests use
 // it to observe whether the library consult reached the socket.
 func (s *Server) RequestCount() int {
@@ -157,10 +232,17 @@ func (s *Server) acceptLoop() {
 }
 
 func (s *Server) handleConn(nc net.Conn) {
-	c := NewConn(nc)
+	s.mu.Lock()
+	s.connSeq++
+	cc := &ClientConn{Conn: NewConn(nc), ID: s.connSeq}
+	s.mu.Unlock()
+	c := cc.Conn
 	owner := &connState{held: map[string]struct{}{}}
 	defer func() {
 		s.reclaim(owner)
+		if s.handler != nil {
+			s.handler.ConnClosed(cc)
+		}
 		s.dropConn(nc)
 		_ = nc.Close()
 	}()
@@ -184,12 +266,23 @@ func (s *Server) handleConn(nc net.Conn) {
 			// honoured; we keep reading only to notice the client hang-up.
 			continue
 		}
+		if s.handler != nil && s.handler.HandleRequest(cc, req) {
+			continue
+		}
 		switch req.Type {
 		case TypeSpawn:
 			if !s.handleSpawn(c, owner, req) {
 				return
 			}
 		case TypeRelease:
+			if req.Release.SessionID == "" {
+				// A release by grant name is the handler's; without one
+				// there is no grant to release.
+				if !replyErr(c, req.ID, notAvailable(req.Type)) {
+					return
+				}
+				continue
+			}
 			if !s.handleRelease(c, owner, req) {
 				return
 			}
@@ -202,8 +295,18 @@ func (s *Server) handleConn(nc net.Conn) {
 				return
 			}
 			tailing = true
+		default:
+			if !replyErr(c, req.ID, notAvailable(req.Type)) {
+				return
+			}
 		}
 	}
+}
+
+// notAvailable is the bare server's answer to a grant-protocol request.
+func notAvailable(t MessageType) *ProtocolError {
+	return &ProtocolError{Code: CodeNotAvailable, Field: "type", Value: string(t),
+		Msg: "this broker has no daemon runtime behind it; " + string(t) + " needs `claudia broker serve`"}
 }
 
 func (s *Server) handleSpawn(c *Conn, owner *connState, req *Request) bool {

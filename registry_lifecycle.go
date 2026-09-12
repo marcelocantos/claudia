@@ -92,6 +92,7 @@ func (r *Registry) beginLifecycle(ctx context.Context, name string, stop bool) (
 
 func cloneAgentDef(def AgentDef) AgentDef {
 	def.DisallowTools = slices.Clone(def.DisallowTools)
+	def.ExtraArgs = slices.Clone(def.ExtraArgs)
 	def.SandboxWritableRoots = slices.Clone(def.SandboxWritableRoots)
 	def.MCPServers = slices.Clone(def.MCPServers)
 	for i := range def.MCPServers {
@@ -116,12 +117,15 @@ func sameLaunchDefinition(a, b AgentDef) bool {
 
 func registryConfig(def *AgentDef, requireResume bool) Config {
 	return Config{
+		Name:     def.Name,
 		Provider: def.Provider, WorkDir: def.WorkDir, SessionID: def.SessionID,
 		RequireResume: requireResume, Model: def.Model, DisallowTools: def.DisallowTools,
 		MCPServers: def.MCPServers, MCPExclusive: def.MCPExclusive,
 		GrokConnect: def.GrokConnect || def.ConnectURL != "", ConnectURL: def.ConnectURL,
 		ConnectPID: def.ConnectPID, SandboxMode: def.SandboxMode,
 		SandboxWritableRoots: def.SandboxWritableRoots, SandboxNetworkAccess: def.SandboxNetworkAccess,
-		Goal: def.Goal,
+		Goal:           def.Goal,
+		PermissionMode: def.PermissionMode, MCPConfig: def.MCPConfig,
+		ExtraArgs: def.ExtraArgs, TermLogPath: def.TermLogPath,
 	}
 }

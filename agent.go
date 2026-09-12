@@ -60,6 +60,13 @@ type Config struct {
 	// ProviderCursor uses ACP over `agent acp`.
 	Provider Provider
 
+	// Name is the grant key when a claudia daemon holds the seat (🎯T2.10):
+	// a consumer that restarts reclaims the running agent by this name
+	// instead of starting another. Registry sets it to the AgentDef name.
+	// Empty means an anonymous grant keyed by session id. Direct (no
+	// daemon) Start does not use it.
+	Name string
+
 	// WorkDir is the working directory for the Claude Code process.
 	// Defaults to ".".
 	WorkDir string
@@ -209,6 +216,18 @@ type Agent struct {
 	connectURL string
 	connectPID int
 
+	// brokerGrant is the daemon grant name when this handle is a socket
+	// client of a seat the daemon owns (🎯T2.10). Empty on the direct path.
+	brokerGrant string
+	// termSubscribed records that the daemon was asked to stream terminal
+	// bytes for this seat (once per handle).
+	termSubscribed bool
+	// onSubscribe runs once, on the first SubscribeEvents: the broker
+	// backend holds a reclaim's replayed history until the consumer has
+	// attached a subscriber (or a short grace elapses), so a consumer that
+	// Starts and then subscribes sees what the seat said while unowned.
+	onSubscribe func()
+
 	// mcpCleanup removes process-private MCP materialisation created at Start.
 	mcpCleanup func()
 
@@ -309,6 +328,16 @@ type agentOps struct {
 	// setModel switches the in-session model within the same provider
 	// (🎯T54). Nil → SetModel refuses after the capability check.
 	setModel func(*Agent, string) error
+	// migrate is set only by the broker backend: the daemon performs the
+	// provider swap and this handle re-points at the destination. Nil →
+	// Migrate runs the in-process swap.
+	migrate func(*Agent, *MigrateArgs) error
+	// subscribeTerminal is set only by the broker backend: the first
+	// SubscribeTerminal asks the daemon to stream raw bytes.
+	subscribeTerminal func(*Agent)
+	// closeGoal is set only by the broker backend: CloseGoal tells the
+	// daemon to stop continuing the seat's Goal.
+	closeGoal func(*Agent)
 }
 
 type agentStartRequest struct {
@@ -346,6 +375,12 @@ type agentStart struct {
 	// files, ephemeral GROK_HOME). Codex exclusive homes persist under
 	// XDG state so Stop does not delete the rollout. Called from Agent.Stop.
 	Cleanup func()
+	// GrantName marks a broker-held seat and names it (🎯T2.10).
+	GrantName string
+	// TermLogPath, when non-empty, is the daemon's terminal log for a
+	// broker-held seat: reported by TermLogPath, never written by this
+	// process.
+	TermLogPath string
 }
 
 type agentBackend interface {
@@ -500,6 +535,20 @@ func StartContext(ctx context.Context, cfg Config) (*Agent, error) {
 	return startConsideringBrokerContext(ctx, cfg, agentBackendForProvider(cfg.Provider))
 }
 
+// startDirectContext is StartContext without the broker consult: the path
+// the daemon itself takes to start a provider process.
+func startDirectContext(ctx context.Context, cfg Config) (*Agent, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if _, known := providerCapabilityClaims[cfg.Provider]; known || cfg.Provider == "" {
+		if err := CheckCapability(cfg.Provider, CapabilitySession); err != nil {
+			return nil, err
+		}
+	}
+	return startWithBackendContext(ctx, cfg, agentBackendForProvider(cfg.Provider))
+}
+
 func startWithBackend(cfg Config, backend agentBackend) (*Agent, error) {
 	return startWithBackendContext(context.Background(), cfg, backend)
 }
@@ -632,6 +681,13 @@ func startWithBackendContext(ctx context.Context, cfg Config, backend agentBacke
 	a.connectURL = start.ConnectURL
 	a.connectPID = start.ConnectPID
 	a.mcpCleanup = start.Cleanup
+	a.brokerGrant = start.GrantName
+	if start.TermLogPath != "" {
+		a.termMu.Lock()
+		a.termLogPath = start.TermLogPath
+		a.termLogLive = true
+		a.termMu.Unlock()
+	}
 
 	// Store session ID on the window for crash-survival recovery.
 	if start.StoreSessionInWindow {
@@ -1353,7 +1409,12 @@ func (a *Agent) SubscribeEvents(fn EventFunc) int64 {
 		a.eventSubs = make(map[int64]EventFunc)
 	}
 	a.eventSubs[id] = fn
+	hook := a.onSubscribe
+	a.onSubscribe = nil
 	a.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 	return id
 }
 
@@ -1530,6 +1591,14 @@ func (a *Agent) SetModel(model string) error {
 	}
 	if err := a.ops.setModel(a, model); err != nil {
 		return err
+	}
+	if a.brokerGrant != "" {
+		// The daemon's Agent published the switch event; it arrives on
+		// the stream. Publishing again here would double it.
+		a.mu.Lock()
+		a.model = model
+		a.mu.Unlock()
+		return nil
 	}
 	a.publishEvent(Event{
 		Type:      "system",
@@ -1776,6 +1845,9 @@ func (a *Agent) Stop() {
 // [RewindSession]: tool-result entries are not counted as turns, so a rewind
 // never lands mid-tool-use, and the pre-rewind transcript is backed up.
 func (a *Agent) Rewind(n int, cfg Config) (*Agent, error) {
+	if a.brokerGrant != "" {
+		return nil, fmt.Errorf("Rewind: seat %s is held by the claudia daemon; rewind the transcript with RewindSession and re-grant", a.brokerGrant)
+	}
 	// Either provider naming a non-Claude runtime is enough to refuse:
 	// rewinding means truncating a Claude-shaped JSONL transcript, which
 	// is meaningless — and, for providers whose state is private,
@@ -1842,6 +1914,15 @@ func (a *Agent) pushTermOutput(data []byte) {
 // output and the buffered recent output. Call
 // [Agent.UnsubscribeTerminal] when done.
 func (a *Agent) SubscribeTerminal() (history []byte, ch chan []byte) {
+	if a.ops.subscribeTerminal != nil {
+		a.termMu.Lock()
+		first := !a.termSubscribed
+		a.termSubscribed = true
+		a.termMu.Unlock()
+		if first {
+			a.ops.subscribeTerminal(a)
+		}
+	}
 	a.termMu.Lock()
 	defer a.termMu.Unlock()
 

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 )
 
 // Where the broker lives, and whether to use it at all (🎯T2.1).
@@ -74,6 +75,19 @@ var negativeEnvValues = map[string]bool{"": true, "0": true, "false": true, "no"
 func Disabled() bool {
 	return !negativeEnvValues[strings.ToLower(strings.TrimSpace(os.Getenv(NoBrokerEnv)))]
 }
+
+// selfHosted marks the process that IS the daemon. Its library calls must
+// take the direct path: a daemon that dialled its own socket to start an
+// agent would deadlock on itself, and setting NoBrokerEnv instead would leak
+// into every provider process it spawns, sending their claudia consumers
+// around the daemon.
+var selfHosted atomic.Bool
+
+// MarkSelfHosted declares this process the daemon.
+func MarkSelfHosted() { selfHosted.Store(true) }
+
+// SelfHosted reports whether this process is the daemon.
+func SelfHosted() bool { return selfHosted.Load() }
 
 // StateDir returns claudia's state directory, honouring StateHomeEnv and
 // falling back to ~/.local/state/claudia.

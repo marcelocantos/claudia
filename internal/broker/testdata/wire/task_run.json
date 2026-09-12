@@ -1,0 +1,1 @@
+{"v":1,"type":"task_run","id":"g3","body":{"task":{"provider":"grok","workdir":"/w"},"prompt":"summarise"}}

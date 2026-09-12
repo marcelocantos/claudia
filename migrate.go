@@ -284,6 +284,9 @@ func (a *Agent) migrateWithBackend(args *MigrateArgs, destBackend agentBackend) 
 		(a.provider == ProviderClaude && args.Provider == "") {
 		return fmt.Errorf("Migrate: same provider %s; use SetModel", a.provider)
 	}
+	if a.ops.migrate != nil {
+		return a.ops.migrate(a, args)
+	}
 	<-a.ready
 	if a.readyErr != nil {
 		return fmt.Errorf("agent not ready: %w", a.readyErr)

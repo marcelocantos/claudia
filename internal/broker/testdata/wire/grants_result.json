@@ -1,0 +1,1 @@
+{"v":1,"type":"grants_result","id":"g13","body":{"grants":[{"name":"jv-worker-1","provider":"claude","model":"opus","session_id":"sid-1","workdir":"/w","purpose":"work","parent":"jevons-po","owned":true,"alive":true},{"name":"jv-worker-2","provider":"grok","session_id":"sid-2","workdir":"/w","owned":false,"alive":false,"pending":4}]}}
