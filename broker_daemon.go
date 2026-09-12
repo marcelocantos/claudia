@@ -894,14 +894,44 @@ func (d *BrokerDaemon) resumeSeats() {
 	wg.Wait()
 }
 
+func (d *BrokerDaemon) remintUnresumableSeat(name string) (oldSession, newSession string, err error) {
+	def := d.reg.Def(name)
+	if def == nil {
+		return "", "", fmt.Errorf("remint %s: not registered", name)
+	}
+	oldSession = def.SessionID
+	next := *def
+	next.SessionID = uuid.NewString()
+	next.Materialized = false
+	next.ConnectURL = ""
+	next.ConnectPID = 0
+	if err := d.reg.Register(next); err != nil {
+		return oldSession, "", err
+	}
+	d.log.Warn("seat conversation unresumable; reminted on a fresh session",
+		"grant", name, "old_session", oldSession, "new_session", next.SessionID)
+	return oldSession, next.SessionID, nil
+}
+
 func (d *BrokerDaemon) resumeSeat(name, nudge string) {
 	proc, err := d.reg.Adopt(name)
 	launched := false
+	how := "adopted"
 	if err != nil {
 		ctx, cancel := context.WithTimeout(d.ctx, grantStartTimeout)
 		proc, err = d.reg.LaunchContext(ctx, name)
 		cancel()
 		launched = true
+		how = "launched"
+	}
+	if err != nil && IsCursorResumeDenied(err) {
+		if _, _, rerr := d.remintUnresumableSeat(name); rerr == nil {
+			ctx, cancel := context.WithTimeout(d.ctx, grantStartTimeout)
+			proc, err = d.reg.LaunchContext(ctx, name)
+			cancel()
+			launched = true
+			how = "reminted"
+		}
 	}
 	if err != nil {
 		d.log.Warn("seat resume failed", "grant", name, "err", err)
@@ -923,12 +953,8 @@ func (d *BrokerDaemon) resumeSeat(name, nudge string) {
 		g.sub = proc.SubscribeEvents(d.forwarder(name))
 	}
 	d.mu.Unlock()
-	detail := "adopted"
-	if launched {
-		detail = "launched"
-	}
-	d.log.Info("seat resumed", "grant", name, "how", detail, "session", proc.SessionID())
-	d.emit(broker.EventMessage{Kind: broker.EventResume, Name: name, SessionID: proc.SessionID(), Detail: detail})
+	d.log.Info("seat resumed", "grant", name, "how", how, "session", proc.SessionID())
+	d.emit(broker.EventMessage{Kind: broker.EventResume, Name: name, SessionID: proc.SessionID(), Detail: how})
 	if launched && nudge != "-" {
 		if err := proc.Send(nudge); err != nil {
 			d.log.Warn("restart nudge failed", "grant", name, "err", err)

@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -486,6 +487,42 @@ func TestBrokerDaemonResumesSeatsOnBoot(t *testing.T) {
 	t.Cleanup(a.Stop)
 	if f.backend(2) != nil {
 		t.Fatal("consumer reclaim started a third process")
+	}
+}
+
+// TestBrokerDaemonRemintsCursorSeatWhenLoadIsRefused: a standing AutoStart
+// Cursor seat whose session/load is definitively refused is reminted onto
+// a fresh session — not left dead for the owner to recover by hand.
+func TestBrokerDaemonRemintsCursorSeatWhenLoadIsRefused(t *testing.T) {
+	f := startDaemon(t, true, nil)
+	old := "b54f134f-f7ef-4780-a077-37132cd64d14"
+	var starts int
+	prev := registryStartDirect
+	registryStartDirect = func(ctx context.Context, cfg Config) (*Agent, error) {
+		starts++
+		if cfg.RequireResume {
+			return nil, fmt.Errorf("acp session/load %s: Invalid params (%w)", cfg.SessionID, ErrCursorResumeDenied)
+		}
+		return prev(ctx, cfg)
+	}
+	writeGrantsTable(t, f.state, []AgentDef{{
+		Name: "jevons-po", WorkDir: t.TempDir(), SessionID: old,
+		AutoStart: true, Materialized: true, Provider: ProviderCursor,
+	}})
+	f.boot(t, true, nil)
+	waitFor(t, "reminted seat alive", func() bool { return f.backend(0) != nil })
+	if starts < 2 {
+		t.Fatalf("starts = %d, want resume-fail then remint", starts)
+	}
+	def := f.d.reg.Def("jevons-po")
+	if def == nil {
+		t.Fatal("reminted seat missing from registry")
+	}
+	if def.SessionID == "" || def.SessionID == old {
+		t.Fatalf("seat kept the unresumable session %q", def.SessionID)
+	}
+	if f.d.reg.Get("jevons-po") == nil {
+		t.Fatal("reminted seat has no process")
 	}
 }
 
