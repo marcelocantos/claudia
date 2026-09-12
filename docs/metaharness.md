@@ -169,3 +169,36 @@ the daemon present it no longer stops or reaps seats on its own exit.
 - 🎯T2.3 (warm pool) is written as a tmux mechanism and needs a
   provider-neutral restatement or an explicit Claude-only scope before
   it is built.
+
+## Handoff (2026-09-12, end of session)
+
+State at HEAD: `claudia broker serve` is installed as a launchd user
+agent (`com.marcelocantos.claudia-broker`, binary `~/go/bin/claudia`,
+log `~/.local/state/claudia/broker.log`, grants in
+`~/.local/state/claudia/grants.json`). Jevons (69bc2499) and ytt
+(4dcb3f1) consume it through the library; both carry
+`replace github.com/marcelocantos/claudia => ../claudia` until the next
+claudia tag.
+
+Ledger: 🎯T3, 🎯T2.9 achieved (vcheck PASS at 940a66e / 5e02893).
+🎯T2.11 and 🎯T2.14 have vcheck PASS at 940a66e but the graph orders
+them behind 🎯T2.10, whose re-check at 5e02893 was still running when
+the session ended. Next session: read that verdict (agent
+`vcheck3-T2-10`, or re-run `/vcheck T2.10 --claim-file
+<scratchpad>/vcheck-T2.10.claim.txt`), then `bullseye_commit
+op=achieve` T2.10, T2.11, T2.14 with the attestations drafted in this
+session's transcript (mnemo), and commit the ledger with the next code
+change. Then 🎯T62 (TLA+ grant/reclaim), 🎯T63 (Jevons restart journey
+against a clean-tree jevonsd), 🎯T64 (Acquire/pool over the socket),
+🎯T2.7 (brew services formula), and a claudia release so the consumers
+can drop their replace directives.
+
+Hazards learned: an installed daemon is reachable from every `go test`
+on the machine — consumer hermetic suites must set
+`CLAUDIA_NO_BROKER=1` (claudia, jevons and ytt now do); the launchd
+service needs the shell environment (TERM, LANG, SHELL, …) or Claude's
+TUI paints blank; the Claude plan window drains fast when the ytt
+ingest runs four synopsis Tasks in parallel through the daemon
+(HTTP 429 on the usage endpoint at 07:00Z), and Claude Session live
+tests then fail on readiness — that is plan capacity, not the wire.
+Codex live is blocked until 2026-09-15 by an exhausted ChatGPT plan.
