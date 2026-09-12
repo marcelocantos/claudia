@@ -6,6 +6,7 @@ package claudia
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -564,5 +565,62 @@ func TestResolveIdenticalAcrossDaemonAndCache(t *testing.T) {
 	}
 	if pickDaemon.Provider == "" || pickDaemon.Model == "" {
 		t.Fatalf("empty pick on both branches: %+v", pickDaemon)
+	}
+}
+
+// TestT70UnownedStreamSurvivesBounceRing: more than the old 256-event
+// bound arrives while unowned; reclaim is not Lagged and WaitForResponse
+// sees the turn's answer (🎯T70).
+func TestT70UnownedStreamSurvivesBounceRing(t *testing.T) {
+	f := startDaemon(t, false, nil)
+	f.boot(t, false, nil)
+	first, err := Start(Config{Name: "stream", WorkDir: t.TempDir(), SessionID: "sid-stream", TermLogPath: "-"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := f.backend(0)
+	if err := first.Send("do the thing"); err != nil {
+		t.Fatal(err)
+	}
+	backend.inFlight.Store(true)
+	first.mcpCleanup()
+	waitFor(t, "detached", func() bool {
+		f.d.mu.Lock()
+		defer f.d.mu.Unlock()
+		g := f.d.grants["stream"]
+		return g != nil && g.owner == nil
+	})
+	proc := f.d.reg.Get("stream")
+	if proc == nil || !proc.Alive() {
+		t.Fatal("seat died when the consumer left")
+	}
+	const n = 300
+	for i := 0; i < n-1; i++ {
+		proc.PublishEvent(Event{Type: "progress", ProgressType: "tool_use", ToolTitle: fmt.Sprintf("t%d", i)})
+	}
+	backend.inFlight.Store(false)
+	proc.PublishEvent(Event{Type: "assistant", Text: "the answer", StopReason: "end_turn"})
+
+	f.d.mu.Lock()
+	g := f.d.grants["stream"]
+	ring, lagged := len(g.ring), g.lag
+	f.d.mu.Unlock()
+	if ring != n || lagged {
+		t.Fatalf("unowned ring=%d lagged=%v, want %d unlagged (old cap was 256)", ring, lagged, n)
+	}
+
+	second, err := Start(Config{Name: "stream", WorkDir: t.TempDir(), SessionID: "sid-stream", TermLogPath: "-"})
+	if err != nil {
+		t.Fatalf("reclaim: %v", err)
+	}
+	t.Cleanup(second.Stop)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	text, err := second.WaitForResponse(ctx)
+	if err != nil || text != "the answer" {
+		t.Fatalf("WaitForResponse after reclaim = %q, %v", text, err)
+	}
+	if f.backend(1) != nil {
+		t.Fatal("reclaim started a second provider process")
 	}
 }

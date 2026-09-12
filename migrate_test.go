@@ -196,6 +196,31 @@ func TestMigrateRefusedPair(t *testing.T) {
 	}
 }
 
+// TestT553MigrateContinuesWithoutConsumerSend: after Migrate the
+// destination has exactly one Send (the inert continue seed) and
+// PromptInFlight is true before any consumer Send (🎯T55.3).
+func TestT553MigrateContinuesWithoutConsumerSend(t *testing.T) {
+	src, _ := startMigrateFixture(t, ProviderClaude, "fake-claude")
+	src.PublishEvent(Event{Type: "user", Text: "keep going on T55.3"})
+	src.PublishEvent(Event{Type: "assistant", Text: "was mid-edit"})
+	dest := &fakeAgentBackend{name: "fake-grok", assignedSession: "grok-t553"}
+	if err := src.migrateWithBackend(&MigrateArgs{Provider: ProviderGrok, Reason: "explicit"}, dest); err != nil {
+		t.Fatal(err)
+	}
+	dest.mu.Lock()
+	sends := append([]string(nil), dest.sends...)
+	dest.mu.Unlock()
+	if len(sends) != 1 {
+		t.Fatalf("dest sends = %d, want exactly the inert seed", len(sends))
+	}
+	if !strings.Contains(sends[0], "INERT PREDECESSOR") || !strings.Contains(sends[0], "Continue from that") {
+		t.Fatalf("seed is not a continue: %s", sends[0])
+	}
+	if !src.PromptInFlight() {
+		t.Fatal("destination is not in an active turn after Migrate — consumer would have to Send a continue")
+	}
+}
+
 func TestMigrateEmptyJSONLPathStillSeedsFromEvents(t *testing.T) {
 	src, _ := startMigrateFixture(t, ProviderGrok, "fake-grok")
 	src.jsonlPath = ""

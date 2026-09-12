@@ -73,10 +73,12 @@ const DefaultRestartNudge = "[claudia] The host restarted at %s. This session wa
 
 // Daemon internals.
 const (
-	// brokerRingSize is how many events an unowned seat retains for the
-	// next reclaim. Beyond it the oldest are dropped and the reclaim is
-	// marked lagged, never silently truncated.
-	brokerRingSize = 256
+	// brokerUnownedRingCap is how many events an unowned seat retains for
+	// the next reclaim. A jevonsd-length bounce can stream far more than
+	// the old 256-event bound; overflowing that marked Lagged and dropped
+	// the live turn (🎯T70). Beyond this cap the oldest are dropped and
+	// the reclaim is marked lagged, never silently truncated.
+	brokerUnownedRingCap = 100_000
 	// brokerPumpSize bounds the per-owner outbound queue. A consumer that
 	// stops reading is detached, not allowed to stall the seat.
 	brokerPumpSize = 1024
@@ -485,11 +487,21 @@ func (d *BrokerDaemon) forwarder(name string) EventFunc {
 				d.detachLocked(g)
 			}
 		}
-		g.ring = append(g.ring, raw)
-		if len(g.ring) > brokerRingSize {
-			g.ring = g.ring[len(g.ring)-brokerRingSize:]
-			g.lag = true
-		}
+		g.retainUnowned(raw)
+	}
+}
+
+// retainUnowned appends one event to the reclaim ring. d.mu / caller
+// must hold the grant lock. A live bounce stream must not mark Lagged
+// at the old 256 bound (🎯T70).
+func (g *brokerGrant) retainUnowned(raw []byte) {
+	if g == nil {
+		return
+	}
+	g.ring = append(g.ring, raw)
+	if len(g.ring) > brokerUnownedRingCap {
+		g.ring = g.ring[len(g.ring)-brokerUnownedRingCap:]
+		g.lag = true
 	}
 }
 
@@ -502,7 +514,7 @@ func (d *BrokerDaemon) runPump(g *brokerGrant, c *broker.ClientConn, pump chan [
 			if g.owner == c {
 				d.detachLocked(g)
 			}
-			g.ring = append(g.ring, raw)
+			g.retainUnowned(raw)
 			d.mu.Unlock()
 			return
 		}

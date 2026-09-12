@@ -208,6 +208,7 @@ func (b *fakeAgentBackend) ops() agentOps {
 			b.mu.Lock()
 			b.sends = append(b.sends, msg)
 			b.mu.Unlock()
+			b.inFlight.Store(true)
 			return nil
 		},
 		resize: func(_ *Agent, cols, rows uint16) error {

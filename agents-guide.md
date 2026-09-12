@@ -631,7 +631,8 @@ process.
   host-local paths the daemon reported. `Rewind` is refused on a
   daemon-held seat.
 - **Seats outlive the consumer.** If the consumer exits or crashes,
-  the seat keeps running unowned and retains up to 256 events. A new
+  the seat keeps running unowned and retains the in-flight stream (up
+  to 100000 events) so a consumer bounce does not drop a live turn. A new
   process that `Start`s or `Launch`es the same `Config.Name` reclaims
   it — same session, history replayed ahead of live events — for
   every Session provider, including the stdio ones (Codex, Cursor)
