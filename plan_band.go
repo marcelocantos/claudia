@@ -49,7 +49,7 @@ type PlanThresholds struct {
 	WasteLockedLn            float64
 }
 
-// DefaultPlanThresholds matches the Jevons T596 calibration.
+// DefaultPlanThresholds matches the owner-tuned Spend Pressure Map (🎯T641).
 func DefaultPlanThresholds() PlanThresholds {
 	return PlanThresholds{
 		WarmupElapsedPercent:     5,
@@ -58,11 +58,11 @@ func DefaultPlanThresholds() PlanThresholds {
 		CriticalRemainingPercent: 5,
 		DampLambdaPercent:        5,
 		AheadMarginPercent:       2,
-		ShrinkPriorK:             40,
-		PanicAmberLn:             0.25,
-		PanicRedLn:               0.85,
+		ShrinkPriorK:             100,
+		PanicAmberLn:             0.49,
+		PanicRedLn:               1.00,
 		WasteUnderLn:             -0.60,
-		WasteLockedLn:            -2.00,
+		WasteLockedLn:            -1.50,
 	}
 }
 

@@ -123,3 +123,27 @@ func TestPressureSpentIsInf(t *testing.T) {
 		t.Fatalf("spent window pressure = %v want +Inf", p)
 	}
 }
+
+func TestT641WeekStartIsOK(t *testing.T) {
+	th := DefaultPlanThresholds()
+	if th.ShrinkPriorK != 100 || th.PanicAmberLn != 0.49 || th.PanicRedLn != 1 || th.WasteLockedLn != -1.5 {
+		t.Fatalf("defaults moved: %+v", th)
+	}
+	now := time.Date(2026, 9, 12, 11, 26, 0, 0, time.UTC)
+	week := func(rem, used float64, remTimePct float64) PlanWindow {
+		resets := now.Add(time.Duration(remTimePct/100*float64(defaultWeeklyWindow)) * time.Second)
+		return PlanWindow{
+			Name:             PlanWindowWeekly,
+			RemainingPercent: floatPtr(rem),
+			UsedPercent:      floatPtr(used),
+			ResetsAt:         &resets,
+			LimitWindow:      defaultWeeklyWindow,
+		}
+	}
+	if got := ClassifyWindow(week(88, 12, 98.06), now, th); got != PlanBandOK {
+		t.Fatalf("Codex week-start 12/1.94 → %s, want ok", got)
+	}
+	if got := ClassifyWindow(week(85, 15, 94.32), now, th); got != PlanBandOK {
+		t.Fatalf("Grok week-start 15/5.68 → %s, want ok", got)
+	}
+}
