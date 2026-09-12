@@ -110,46 +110,85 @@ func appendClaudeLedgerSettings(args []string) []string {
 
 // permissionMutatesBullseye reports whether a session/request_permission
 // params blob is a mutating tool call on bullseye.yaml (Cursor StrReplace
-// / Write / Edit). Read and Grep are not this refuse.
+// / Write / Edit). Read and Grep are not this refuse. Unparseable or
+// shifted envelopes that still mention the ledger fail closed (🎯T69).
 func permissionMutatesBullseye(params json.RawMessage) bool {
 	if len(params) == 0 {
 		return false
 	}
-	info := parsePermissionTool(params)
-	if !info.mutating {
+	info, err := parsePermissionTool(params)
+	if err != nil {
+		return rawMentionsLedger(params)
+	}
+	if info.recognizedRead {
 		return false
 	}
-	for _, p := range info.paths {
-		if IsBullseyeYAML(p) {
-			return true
+	if info.mutating {
+		for _, p := range info.paths {
+			if IsBullseyeYAML(p) {
+				return true
+			}
 		}
+	}
+	// Path in an unrecognized nest, or a mutating tool whose file we
+	// could not extract: a plausible ledger mention must not allow.
+	if rawMentionsLedger(params) && (!info.classified || info.mutating) {
+		return true
 	}
 	return false
 }
 
-type permissionTool struct {
-	mutating bool
-	paths    []string
+// permissionUnparseable reports a toolCall (or params blob) that is not
+// valid JSON for the known ACP shape. Empty / missing toolCall is the
+// legacy Grok options-only envelope and is not this refuse.
+func permissionUnparseable(params json.RawMessage) bool {
+	if len(params) == 0 {
+		return false
+	}
+	_, err := parsePermissionTool(params)
+	return err != nil
 }
 
-func parsePermissionTool(params json.RawMessage) permissionTool {
+type permissionTool struct {
+	mutating       bool
+	classified     bool
+	recognizedRead bool
+	paths          []string
+}
+
+func parsePermissionTool(params json.RawMessage) (permissionTool, error) {
+	if len(params) == 0 {
+		return permissionTool{}, nil
+	}
 	var p struct {
-		ToolCall struct {
-			Title     string         `json:"title"`
-			Kind      string         `json:"kind"`
-			ToolName  string         `json:"toolName"`
-			RawInput  map[string]any `json:"rawInput"`
-			Locations []struct {
-				Path string `json:"path"`
-			} `json:"locations"`
-		} `json:"toolCall"`
+		ToolCall json.RawMessage `json:"toolCall"`
 	}
 	if err := json.Unmarshal(params, &p); err != nil {
-		return permissionTool{}
+		return permissionTool{}, err
 	}
-	tc := p.ToolCall
+	if len(p.ToolCall) == 0 {
+		return permissionTool{}, nil
+	}
+	var tc struct {
+		Title     string         `json:"title"`
+		Kind      string         `json:"kind"`
+		ToolName  string         `json:"toolName"`
+		RawInput  map[string]any `json:"rawInput"`
+		Locations []struct {
+			Path string `json:"path"`
+		} `json:"locations"`
+	}
+	if err := json.Unmarshal(p.ToolCall, &tc); err != nil {
+		return permissionTool{}, err
+	}
 	name := firstNonEmpty(tc.ToolName, tc.Title, tc.Kind)
-	out := permissionTool{mutating: isMutatingLedgerTool(name, tc.Kind)}
+	out := permissionTool{
+		mutating:   isMutatingLedgerTool(name, tc.Kind),
+		classified: name != "" || strings.TrimSpace(tc.Kind) != "",
+	}
+	if out.classified && !out.mutating {
+		out.recognizedRead = isRecognizedReadTool(name, tc.Kind)
+	}
 	for _, loc := range tc.Locations {
 		if loc.Path != "" {
 			out.paths = append(out.paths, loc.Path)
@@ -165,7 +204,25 @@ func parsePermissionTool(params json.RawMessage) permissionTool {
 			out.paths = append(out.paths, "bullseye.yaml")
 		}
 	}
-	return out
+	return out, nil
+}
+
+func isRecognizedReadTool(name, kind string) bool {
+	n := strings.ToLower(strings.TrimSpace(name))
+	k := strings.ToLower(strings.TrimSpace(kind))
+	switch k {
+	case "read", "search", "think":
+		return true
+	}
+	switch n {
+	case "read", "grep", "glob", "search":
+		return true
+	}
+	return false
+}
+
+func rawMentionsLedger(params json.RawMessage) bool {
+	return strings.Contains(strings.ToLower(string(params)), "bullseye.yaml")
 }
 
 func commandMentionsLedger(s string) bool {

@@ -136,6 +136,48 @@ func TestSelectPermissionAllowsReadOfLedger(t *testing.T) {
 	}
 }
 
+// 🎯T69 / Fable F8: a new Cursor/Grok envelope must not fail-open to allow.
+
+func TestSelectPermissionRejectsShiftedSchemaLedgerPath(t *testing.T) {
+	// Path lives under input.target_file, not locations/rawInput. Today
+	// parsePermissionTool misses it and selectPermissionOptionID allows.
+	params := json.RawMessage(`{
+		"toolCall": {
+			"title": "Write",
+			"kind": "edit",
+			"input": {"target_file": "/tmp/repo/bullseye.yaml"}
+		},
+		"options": [
+			{"optionId": "allow-always"},
+			{"optionId": "reject-once"}
+		]
+	}`)
+	got := selectPermissionOptionID(params)
+	if got != "reject-once" {
+		t.Fatalf("shifted-schema ledger path fail-opened: got %q, want reject-once (🎯T69)", got)
+	}
+	reply := permissionSelectedReply(params)
+	meta, _ := reply["_meta"].(map[string]any)
+	reason, _ := meta["reason"].(string)
+	if !strings.Contains(reason, "T546") {
+		t.Fatalf("shifted-schema refuse must carry LedgerRefuseReason: %q", reason)
+	}
+}
+
+func TestSelectPermissionRejectsUnparseableToolCall(t *testing.T) {
+	params := json.RawMessage(`{
+		"toolCall": "Write /tmp/repo/bullseye.yaml",
+		"options": [
+			{"optionId": "allow-always"},
+			{"optionId": "reject-once"}
+		]
+	}`)
+	got := selectPermissionOptionID(params)
+	if got != "reject-once" {
+		t.Fatalf("unparseable toolCall fail-opened: got %q, want reject-once (🎯T69)", got)
+	}
+}
+
 // 🎯T67 / Fable F2: Claude Session/Task must emit a T546 deny rule.
 // bypassPermissions / --dangerously-skip-permissions are not coverage.
 

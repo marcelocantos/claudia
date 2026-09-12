@@ -314,10 +314,11 @@ func (c *grokACPClient) handleServerRequest(msg acpRPCMessage) {
 // selectPermissionOptionID chooses an allow option from a
 // session/request_permission params blob. Preference: generic
 // allow_always, then any allow_always_* (bash/mcp/domain), then
-// allow_once, then any other allow_*. Empty or unparseable params fall
-// back to allow_always (legacy Grok shape).
+// allow_once, then any other allow_*. Empty params (legacy Grok
+// options-only) fall back to allow_always. Unparseable toolCall
+// fails closed (🎯T69) — it must not disable T546.
 func selectPermissionOptionID(params json.RawMessage) string {
-	if permissionMutatesBullseye(params) {
+	if permissionMutatesBullseye(params) || permissionUnparseable(params) {
 		return selectRejectPermissionOptionID(params)
 	}
 	ids := permissionOptionIDs(params)
