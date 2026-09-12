@@ -582,12 +582,16 @@ func claudeTaskArgs(req taskRunRequest) []string {
 		"--output-format", "stream-json",
 		"--include-partial-messages",
 		"--dangerously-skip-permissions",
+	}
+	// --settings must precede variadic --disallowedTools (🎯T49 / 🎯T67).
+	args = appendClaudeLedgerSettings(args)
+	args = append(args,
 		// Task mode previously passed NO tool restriction at all, while
 		// the package documented Agent and friends as always disallowed
 		// — that guarantee lived only in Session mode. Callers reading
 		// the docs reasonably believed they were protected and were not.
 		"--disallowedTools", disallowedToolList(req.DisallowTools),
-	}
+	)
 	if req.SessionID != "" {
 		args = append(args, "--resume", req.SessionID)
 	}

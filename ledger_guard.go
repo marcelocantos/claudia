@@ -23,6 +23,91 @@ func IsBullseyeYAML(path string) bool {
 	return strings.EqualFold(base, "bullseye.yaml")
 }
 
+// ClaudeLedgerDenyRules are the Claude Code permission deny rules that
+// refuse mutation of bullseye.yaml even under bypassPermissions /
+// --dangerously-skip-permissions (jevons 🎯T546 / 🎯T67). Edit rules
+// cover Write/Edit/MultiEdit; Bash catches shell writes that name the
+// ledger. Exported next to IsBullseyeYAML so a deleted rule fails the
+// hermetic oracle rather than hiding behind skip-permissions.
+func ClaudeLedgerDenyRules() []string {
+	return []string{
+		"Edit(**/bullseye.yaml)",
+		"Edit(bullseye.yaml)",
+		"Bash(*bullseye.yaml*)",
+	}
+}
+
+// ClaudeLedgerSettingsJSON is the --settings payload applied on every
+// Claude Session and Task spawn.
+func ClaudeLedgerSettingsJSON() string {
+	type perms struct {
+		Deny []string `json:"deny"`
+	}
+	type settings struct {
+		Permissions perms `json:"permissions"`
+	}
+	b, err := json.Marshal(settings{Permissions: perms{Deny: ClaudeLedgerDenyRules()}})
+	if err != nil {
+		return `{"permissions":{"deny":["Edit(**/bullseye.yaml)","Edit(bullseye.yaml)","Bash(*bullseye.yaml*)"]}}`
+	}
+	return string(b)
+}
+
+// ClaudeToolCallDeniedByLedger reports whether a Claude Write/Edit/Bash
+// (or MultiEdit) invocation is refused by ClaudeLedgerDenyRules.
+func ClaudeToolCallDeniedByLedger(tool, pathOrCommand string) bool {
+	for _, rule := range ClaudeLedgerDenyRules() {
+		if claudeDenyRuleMatches(rule, tool, pathOrCommand) {
+			return true
+		}
+	}
+	return false
+}
+
+func claudeDenyRuleMatches(rule, tool, input string) bool {
+	name, pattern, ok := parseClaudePermissionRule(rule)
+	if !ok {
+		return false
+	}
+	if strings.EqualFold(name, "Edit") {
+		switch strings.ToLower(strings.TrimSpace(tool)) {
+		case "edit", "write", "multiedit", "notebookedit":
+			return claudePathPatternMatches(pattern, input)
+		}
+		return false
+	}
+	if strings.EqualFold(name, "Bash") && strings.EqualFold(strings.TrimSpace(tool), "Bash") {
+		return claudeCommandPatternMatches(pattern, input)
+	}
+	return false
+}
+
+func parseClaudePermissionRule(rule string) (name, pattern string, ok bool) {
+	open := strings.Index(rule, "(")
+	if open <= 0 || !strings.HasSuffix(rule, ")") {
+		return "", "", false
+	}
+	return rule[:open], rule[open+1 : len(rule)-1], true
+}
+
+func claudePathPatternMatches(pattern, path string) bool {
+	if pattern == "**/bullseye.yaml" || pattern == "bullseye.yaml" {
+		return IsBullseyeYAML(path)
+	}
+	return false
+}
+
+func claudeCommandPatternMatches(pattern, command string) bool {
+	if pattern == "*bullseye.yaml*" {
+		return commandMentionsLedger(command)
+	}
+	return false
+}
+
+func appendClaudeLedgerSettings(args []string) []string {
+	return append(args, "--settings", ClaudeLedgerSettingsJSON())
+}
+
 // permissionMutatesBullseye reports whether a session/request_permission
 // params blob is a mutating tool call on bullseye.yaml (Cursor StrReplace
 // / Write / Edit). Read and Grep are not this refuse.

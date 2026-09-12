@@ -742,6 +742,11 @@ Design record: [docs/metaharness.md](docs/metaharness.md).
    sessions would fight over PTY ownership and transcript tailing.
    Don't try to re-enable these.
 
+   Claude Session and Task also pass `--settings` with a deny rule for
+   `bullseye.yaml` (Write/Edit/Bash). `bypassPermissions` /
+   `--dangerously-skip-permissions` do not replace that refuse
+   (🎯T546 / 🎯T67).
+
    Those are Claude Code tool names, and `BaseDisallowedTools` is
    applied on Claude only — never on Codex, Grok, Cursor, Bedrock, or
    Ollama. Rather than pretend otherwise, the non-Claude providers

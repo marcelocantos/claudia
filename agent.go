@@ -767,8 +767,10 @@ func claudeAgentArgs(req agentStartRequest) []string {
 func claudeAgentArgsWithMCP(req agentStartRequest, mcpConfig string) []string {
 	args := []string{
 		"--permission-mode", req.Config.PermissionMode,
-		"--disallowedTools", req.DisallowedTools,
 	}
+	// --settings must precede variadic --disallowedTools (🎯T49 / 🎯T67).
+	args = appendClaudeLedgerSettings(args)
+	args = append(args, "--disallowedTools", req.DisallowedTools)
 	if req.Resuming {
 		args = append(args, "--resume", req.SessionID)
 	} else {

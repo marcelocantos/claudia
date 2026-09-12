@@ -225,8 +225,9 @@ func spawnPoolWindow(_ context.Context, cfg Config, workDir, disallowed, windowN
 
 	args := []string{
 		"--permission-mode", cfg.PermissionMode,
-		"--disallowedTools", disallowed,
 	}
+	args = appendClaudeLedgerSettings(args)
+	args = append(args, "--disallowedTools", disallowed)
 	if cfg.MCPConfig != "" {
 		args = append(args, "--mcp-config", cfg.MCPConfig)
 	}

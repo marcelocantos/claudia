@@ -5,6 +5,7 @@ package claudia
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -133,4 +134,135 @@ func TestSelectPermissionAllowsReadOfLedger(t *testing.T) {
 	if got != "allow-always" {
 		t.Fatalf("Read of ledger must not hit the mutate refuse: got %q", got)
 	}
+}
+
+// 🎯T67 / Fable F2: Claude Session/Task must emit a T546 deny rule.
+// bypassPermissions / --dangerously-skip-permissions are not coverage.
+
+func TestClaudeTaskArgsIncludeLedgerDeny(t *testing.T) {
+	argv := claudeTaskArgs(taskRunRequest{Prompt: "summarise this"})
+	if !slices.Contains(argv, "--dangerously-skip-permissions") {
+		t.Fatal("task argv lost --dangerously-skip-permissions; T67 covers the deny rule, not a mode change")
+	}
+	assertClaudeArgvRefusesLedgerMutation(t, argv)
+}
+
+func TestClaudeSessionArgsIncludeLedgerDeny(t *testing.T) {
+	argv := claudeAgentArgs(agentStartRequest{
+		SessionID:       "t67-session",
+		DisallowedTools: BaseDisallowedTools,
+		Config:          Config{PermissionMode: "bypassPermissions"},
+	})
+	if !argvHolds(argv, "bypassPermissions") {
+		t.Fatal("session argv lost bypassPermissions; T67 covers the deny rule, not a mode change")
+	}
+	assertClaudeArgvRefusesLedgerMutation(t, argv)
+}
+
+func TestClaudeBypassPermissionsIsNotLedgerCoverage(t *testing.T) {
+	// A spawn that only has skip/bypass must fail the oracle. This is the
+	// "deleting the rule fails" check: empty deny settings are not T546.
+	if claudeArgvRefusesLedgerMutation([]string{
+		"--dangerously-skip-permissions",
+		"--permission-mode", "bypassPermissions",
+		"--disallowedTools", BaseDisallowedTools,
+	}) {
+		t.Fatal("bypass/skip-permissions alone must not count as T546 coverage")
+	}
+}
+
+func TestClaudeLedgerSettingsRefuseWriteEditBash(t *testing.T) {
+	rules := ClaudeLedgerDenyRules()
+	if len(rules) == 0 {
+		t.Fatal("ClaudeLedgerDenyRules is empty; deleting the rule must fail this oracle")
+	}
+	cases := []struct {
+		tool, input string
+		want        bool
+	}{
+		{"Write", "/tmp/repo/bullseye.yaml", true},
+		{"Edit", "bullseye.yaml", true},
+		{"MultiEdit", `/Users/x/work/jevons/bullseye.yaml`, true},
+		{"Bash", `python -c "open('bullseye.yaml','w').write('x')"`, true},
+		{"Write", "/tmp/foo.go", false},
+		{"Bash", "ls", false},
+		{"Read", "/tmp/bullseye.yaml", false},
+	}
+	for _, tc := range cases {
+		got := ClaudeToolCallDeniedByLedger(tc.tool, tc.input)
+		if got != tc.want {
+			t.Errorf("%s %q denied=%v, want %v (rules=%v)", tc.tool, tc.input, got, tc.want, rules)
+		}
+	}
+}
+
+func TestClaudeLedgerSettingsJSONComesFromDenyRules(t *testing.T) {
+	raw := ClaudeLedgerSettingsJSON()
+	if len(ClaudeLedgerDenyRules()) == 0 {
+		t.Fatal("deny rules deleted")
+	}
+	for _, rule := range ClaudeLedgerDenyRules() {
+		if !strings.Contains(raw, rule) {
+			t.Errorf("settings JSON missing rule %q: %s", rule, raw)
+		}
+	}
+}
+
+func TestClaudeLedgerSettingsFlagBeforeDisallowedTools(t *testing.T) {
+	task := claudeTaskArgs(taskRunRequest{Prompt: "the prompt"})
+	session := claudeAgentArgs(agentStartRequest{
+		SessionID:       "t67-order",
+		DisallowedTools: BaseDisallowedTools,
+		Config:          Config{PermissionMode: "bypassPermissions"},
+	})
+	for name, argv := range map[string][]string{"task": task, "session": session} {
+		settingsAt := slices.Index(argv, "--settings")
+		disallowAt := slices.Index(argv, "--disallowedTools")
+		if settingsAt < 0 || disallowAt < 0 {
+			t.Fatalf("%s argv missing --settings or --disallowedTools: %v", name, argv)
+		}
+		if settingsAt > disallowAt {
+			t.Errorf("%s: --settings at %d comes after variadic --disallowedTools at %d: %v",
+				name, settingsAt, disallowAt, argv)
+		}
+	}
+}
+
+func assertClaudeArgvRefusesLedgerMutation(t *testing.T, argv []string) {
+	t.Helper()
+	if !claudeArgvRefusesLedgerMutation(argv) {
+		t.Fatalf("Claude spawn argv does not refuse bullseye.yaml mutation: %v", argv)
+	}
+}
+
+func claudeArgvRefusesLedgerMutation(argv []string) bool {
+	i := slices.Index(argv, "--settings")
+	if i < 0 || i+1 >= len(argv) {
+		return false
+	}
+	var settings struct {
+		Permissions struct {
+			Deny []string `json:"deny"`
+		} `json:"permissions"`
+	}
+	if json.Unmarshal([]byte(argv[i+1]), &settings) != nil {
+		return false
+	}
+	return ledgerDenyRulesCoverWriteEditBash(settings.Permissions.Deny)
+}
+
+func ledgerDenyRulesCoverWriteEditBash(rules []string) bool {
+	var hasEdit, hasBash bool
+	for _, rule := range rules {
+		if !strings.Contains(rule, "bullseye.yaml") {
+			continue
+		}
+		if strings.HasPrefix(rule, "Edit(") {
+			hasEdit = true
+		}
+		if strings.HasPrefix(rule, "Bash(") {
+			hasBash = true
+		}
+	}
+	return hasEdit && hasBash
 }
