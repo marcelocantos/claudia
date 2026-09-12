@@ -51,6 +51,57 @@ func TestSupervisorInstallRendersProgram(t *testing.T) {
 	}
 }
 
+func TestSupervisorInstallPinsClaudiaBin(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join("..", "..", "supervisor", "install.sh")
+	cmd := exec.Command(script)
+	cmd.Env = append(os.Environ(),
+		"SUPERVISOR_SKIP_CTL=1",
+		"SUPERVISOR_CONF_DIR="+dir,
+		"CLAUDIA_BIN=/tmp/claudia-dev",
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("install.sh: %v\n%s", err, out)
+	}
+	body, err := os.ReadFile(filepath.Join(dir, "claudia.ini"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), `CLAUDIA_BIN="/tmp/claudia-dev"`) {
+		t.Fatalf("CLAUDIA_BIN not pinned:\n%s", body)
+	}
+}
+
+func TestSupervisorInstallPreservesExistingPin(t *testing.T) {
+	dir := t.TempDir()
+	dest := filepath.Join(dir, "claudia.ini")
+	if err := os.WriteFile(dest, []byte(`environment=HOME="/tmp",LANG="en_US.UTF-8",CLAUDIA_BIN="/tmp/kept"`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join("..", "..", "supervisor", "install.sh")
+	cmd := exec.Command(script)
+	env := []string{"SUPERVISOR_SKIP_CTL=1", "SUPERVISOR_CONF_DIR=" + dir}
+	for _, e := range os.Environ() {
+		if strings.HasPrefix(e, "CLAUDIA_BIN=") || strings.HasPrefix(e, "SUPERVISOR_SKIP_CTL=") || strings.HasPrefix(e, "SUPERVISOR_CONF_DIR=") {
+			continue
+		}
+		env = append(env, e)
+	}
+	cmd.Env = env
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("install.sh: %v\n%s", err, out)
+	}
+	body, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), `CLAUDIA_BIN="/tmp/kept"`) {
+		t.Fatalf("existing CLAUDIA_BIN pin not preserved:\n%s\n%s", body, out)
+	}
+}
+
 func TestSupervisorRunScriptPrefersHomebrewOpt(t *testing.T) {
 	body, err := os.ReadFile(filepath.Join("..", "..", "supervisor", "run-claudia.sh"))
 	if err != nil {

@@ -19,8 +19,20 @@ mkdir -p "$CONF_DIR"
 mkdir -p "$HOME/.local/var/log"
 chmod +x "$REPO/supervisor/run-claudia.sh" "$REPO/supervisor/install.sh"
 
+# Keep a host CLAUDIA_BIN pin across re-renders (this machine runs the
+# remint-capable tree build until the next Cellar ships it).
+if [ -z "${CLAUDIA_BIN:-}" ] && [ -f "$DEST" ]; then
+  CLAUDIA_BIN="$(sed -n 's/.*CLAUDIA_BIN="\([^"]*\)".*/\1/p' "$DEST" | head -n 1)"
+fi
+
 rm -f "$DEST"
 sed "s|@REPO@|$REPO|g" "$TEMPLATE" >"$DEST"
+if [ -n "${CLAUDIA_BIN:-}" ]; then
+  tmp="$(mktemp)"
+  sed "s|LANG=\"en_US.UTF-8\"|LANG=\"en_US.UTF-8\",CLAUDIA_BIN=\"$CLAUDIA_BIN\"|" "$DEST" >"$tmp"
+  mv "$tmp" "$DEST"
+  echo "pinned CLAUDIA_BIN=$CLAUDIA_BIN"
+fi
 echo "rendered $DEST (from $TEMPLATE)"
 
 if [ "${SUPERVISOR_SKIP_CTL:-}" = 1 ]; then
