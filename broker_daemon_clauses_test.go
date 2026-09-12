@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -495,5 +496,73 @@ func TestBrokerDaemonUsageUpdateOnTail(t *testing.T) {
 	}
 	if !seen["claude"] || !seen["grok"] {
 		t.Fatalf("usage_update details = %v", seen)
+	}
+}
+
+// TestResolveIdenticalAcrossDaemonAndCache (🎯T2.9 clause 3): the same
+// snapshot yields the same ModelPick whether Resolve reads it from the
+// daemon over the socket or from the filesystem cache with no daemon.
+func TestResolveIdenticalAcrossDaemonAndCache(t *testing.T) {
+	low, high := 12.0, 80.0
+	snapshot := []PlanUsage{
+		{Provider: ProviderClaude, Status: PlanUsageAvailable, Windows: []PlanWindow{{Name: PlanWindowWeekly, RemainingPercent: &low}}},
+		{Provider: ProviderGrok, Status: PlanUsageAvailable, Windows: []PlanWindow{{Name: PlanWindowWeekly, RemainingPercent: &high}}},
+		{Provider: ProviderCodex, Status: PlanUsageUnavailable, Reason: "signed out"},
+	}
+	pred := ModelPredicates{Mode: CapabilityTask, PreferPlan: true, PreferProvider: ProviderClaude}
+
+	// Daemon branch: the socket answers with the daemon's snapshot.
+	f := startDaemon(t, false, snapshot)
+	f.boot(t, false, snapshot)
+	waitFor(t, "daemon fetched", func() bool { return f.fetchCount() == 1 })
+	viaDaemon, err := LoadPlanUsage(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("LoadPlanUsage via daemon: %v", err)
+	}
+	pickDaemon, err := Resolve(context.Background(), pred)
+	if err != nil {
+		t.Fatalf("Resolve via daemon: %v", err)
+	}
+	if f.fetchCount() != 1 {
+		t.Fatalf("daemon branch reached the vendor fetch %d times", f.fetchCount())
+	}
+
+	// Cache branch: no daemon (CLAUDIA_NO_BROKER=1), a fresh cache dir,
+	// the same snapshot from the T61 fetch seam.
+	t.Setenv(broker.NoBrokerEnv, "1")
+	cacheFetches := 0
+	cache := &PlanUsageCacheArgs{Dir: t.TempDir(), Fetch: func(context.Context) ([]PlanUsage, error) {
+		cacheFetches++
+		return snapshot, nil
+	}}
+	viaCache, err := LoadPlanUsage(context.Background(), cache)
+	if err != nil {
+		t.Fatalf("LoadPlanUsage via cache: %v", err)
+	}
+	pred.Cache = cache
+	pickCache, err := Resolve(context.Background(), pred)
+	if err != nil {
+		t.Fatalf("Resolve via cache: %v", err)
+	}
+	if cacheFetches != 1 {
+		t.Fatalf("cache branch fetched %d times", cacheFetches)
+	}
+
+	normalize := func(us []PlanUsage) []PlanUsage {
+		out := make([]PlanUsage, len(us))
+		for i, u := range us {
+			u.FetchedAt = time.Time{}
+			out[i] = u
+		}
+		return out
+	}
+	if !reflect.DeepEqual(normalize(viaDaemon), normalize(viaCache)) {
+		t.Fatalf("usage differs by branch\n daemon: %+v\n cache:  %+v", viaDaemon, viaCache)
+	}
+	if !reflect.DeepEqual(pickDaemon, pickCache) {
+		t.Fatalf("ModelPick differs by branch\n daemon: %+v\n cache:  %+v", pickDaemon, pickCache)
+	}
+	if pickDaemon.Provider == "" || pickDaemon.Model == "" {
+		t.Fatalf("empty pick on both branches: %+v", pickDaemon)
 	}
 }
