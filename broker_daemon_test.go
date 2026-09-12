@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -275,6 +276,87 @@ func TestBrokerDaemonReclaimAfterConsumerRestart(t *testing.T) {
 	var pe *broker.ProtocolError
 	if !errors.As(err, &pe) || pe.Code != broker.CodeGrantHeld {
 		t.Fatalf("second owner: err = %v, want grant_held", err)
+	}
+}
+
+// TestBrokerDaemonConcurrentGrantDoesNotSteal is Fable F1 / 🎯T2.10
+// no-double-ownership under overlap: handleGrant used to drop the lock for
+// Launch (up to grantStartTimeout), swallow ErrLifecycleInProgress, then
+// detach-and-overwrite whoever took the seat. Sequential steal is already
+// covered above; this is two Starts of the same name racing a slow Launch.
+func TestBrokerDaemonConcurrentGrantDoesNotSteal(t *testing.T) {
+	f := startDaemon(t, false, nil)
+
+	var entered atomic.Int32
+	hold := make(chan struct{})
+	var release sync.Once
+	releaseHold := func() { release.Do(func() { close(hold) }) }
+
+	prev := registryStartDirect
+	registryStartDirect = func(ctx context.Context, cfg Config) (*Agent, error) {
+		entered.Add(1)
+		<-hold
+		return prev(ctx, cfg)
+	}
+	t.Cleanup(func() { registryStartDirect = prev })
+	f.boot(t, false, nil)
+	// Close waits for in-flight grants; release before that cleanup runs.
+	t.Cleanup(releaseHold)
+
+	cfg := Config{Name: "seat-race", WorkDir: t.TempDir(), SessionID: "sid-race", TermLogPath: "-"}
+	type outcome struct {
+		a   *Agent
+		err error
+	}
+	firstCh := make(chan outcome, 1)
+	go func() {
+		a, err := Start(cfg)
+		firstCh <- outcome{a, err}
+	}()
+	waitFor(t, "first grant in Launch", func() bool { return entered.Load() >= 1 })
+
+	var secondReady atomic.Bool
+	var second outcome
+	go func() {
+		a, err := Start(cfg)
+		second = outcome{a, err}
+		secondReady.Store(true)
+	}()
+	waitFor(t, "second grant progressed", func() bool {
+		if secondReady.Load() {
+			return true
+		}
+		f.d.reg.mu.Lock()
+		defer f.d.reg.mu.Unlock()
+		op := f.d.reg.lifecycle["seat-race"]
+		return op != nil && op.refs >= 2
+	})
+	releaseHold()
+
+	first := <-firstCh
+	waitFor(t, "second grant returned", func() bool { return secondReady.Load() })
+	if first.err != nil {
+		t.Fatalf("first grant: %v", first.err)
+	}
+	t.Cleanup(first.a.Stop)
+
+	var pe *broker.ProtocolError
+	if !errors.As(second.err, &pe) || pe.Code != broker.CodeGrantHeld {
+		t.Fatalf("overlapping grant: err = %v, want grant_held", second.err)
+	}
+	if second.a != nil {
+		t.Fatal("overlapping grant returned a handle")
+	}
+
+	got := collectEvents(first.a)
+	proc := f.d.reg.Get("seat-race")
+	if proc == nil {
+		t.Fatal("seat vanished")
+	}
+	proc.PublishEvent(Event{Type: "assistant", Text: "first owner still pumping", StopReason: "end_turn"})
+	waitFor(t, "first owner still pumping", func() bool { return len(got()) >= 1 })
+	if got()[0].Text != "first owner still pumping" {
+		t.Fatalf("first owner's pump lost the seat: %+v", got())
 	}
 }
 

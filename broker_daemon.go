@@ -6,7 +6,6 @@ package claudia
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -113,13 +112,17 @@ type BrokerDaemon struct {
 type brokerGrant struct {
 	name  string
 	owner *broker.ClientConn
-	pump  chan []byte
-	proc  *Agent
-	sub   int64
-	ring  [][]byte
-	lag   bool
-	gone  bool
-	termQ chan []byte
+	// starting is the connection that reserved this name across
+	// Register+Launch. A second grant treats this as held so overlapping
+	// Starts cannot detach the first owner (Fable F1 / 🎯T2.10).
+	starting *broker.ClientConn
+	pump     chan []byte
+	proc     *Agent
+	sub      int64
+	ring     [][]byte
+	lag      bool
+	gone     bool
+	termQ    chan []byte
 }
 
 type brokerDaemonTask struct {
@@ -287,6 +290,9 @@ func (d *BrokerDaemon) ConnClosed(c *broker.ClientConn) {
 	d.mu.Lock()
 	var detached []string
 	for name, g := range d.grants {
+		if g.starting == c {
+			g.starting = nil
+		}
 		if g.owner == c {
 			d.detachLocked(g)
 			detached = append(detached, name)
@@ -323,6 +329,18 @@ func (d *BrokerDaemon) detachLocked(g *brokerGrant) {
 	}
 }
 
+func grantIsHeldByOther(g *brokerGrant, c *broker.ClientConn) bool {
+	if g == nil {
+		return false
+	}
+	return g.owner != nil && g.owner != c || g.starting != nil && g.starting != c
+}
+
+func grantHeldErr(name string) *broker.ProtocolError {
+	return &broker.ProtocolError{Code: broker.CodeGrantHeld, Field: "name", Value: name,
+		Msg: fmt.Sprintf("grant %s is owned by another connection", name)}
+}
+
 // ownedBy records name on the connection so status can show who holds what.
 func ownedBy(c *broker.ClientConn, name string) {
 	v, _ := c.Get(connOwnedKey)
@@ -354,13 +372,28 @@ func (d *BrokerDaemon) handleGrant(c *broker.ClientConn, req *broker.Request) {
 
 	d.mu.Lock()
 	g := d.grants[name]
-	if g != nil && g.owner != nil && g.owner != c {
+	if grantIsHeldByOther(g, c) {
 		d.mu.Unlock()
-		_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeGrantHeld, Field: "name", Value: name,
-			Msg: fmt.Sprintf("grant %s is owned by another connection", name)})
+		_ = c.Fail(req.ID, grantHeldErr(name))
 		return
 	}
+	if g == nil {
+		g = &brokerGrant{name: name}
+		d.grants[name] = g
+	}
+	g.starting = c
 	d.mu.Unlock()
+
+	clearStart := func() {
+		d.mu.Lock()
+		if cur := d.grants[name]; cur != nil && cur.starting == c {
+			cur.starting = nil
+			if cur.owner == nil && cur.proc == nil && len(cur.ring) == 0 {
+				delete(d.grants, name)
+			}
+		}
+		d.mu.Unlock()
+	}
 
 	// Merge the daemon's runtime knowledge onto the consumer's definition:
 	// the consumer does not know the connect-mode endpoint or that the
@@ -373,7 +406,8 @@ func (d *BrokerDaemon) handleGrant(c *broker.ClientConn, req *broker.Request) {
 			def.GrokConnect = def.GrokConnect || existing.GrokConnect
 		}
 	}
-	if err := d.reg.Register(def); err != nil && !errors.Is(err, ErrLifecycleInProgress) {
+	if err := d.reg.Register(def); err != nil {
+		clearStart()
 		_ = c.Fail(req.ID, err)
 		return
 	}
@@ -390,6 +424,7 @@ func (d *BrokerDaemon) handleGrant(c *broker.ClientConn, req *broker.Request) {
 		proc, err = d.reg.LaunchContext(ctx, name)
 	}
 	if err != nil {
+		clearStart()
 		_ = c.Fail(req.ID, err)
 		return
 	}
@@ -400,6 +435,11 @@ func (d *BrokerDaemon) handleGrant(c *broker.ClientConn, req *broker.Request) {
 		g = &brokerGrant{name: name}
 		d.grants[name] = g
 	}
+	if g.starting != c {
+		d.mu.Unlock()
+		_ = c.Fail(req.ID, grantHeldErr(name))
+		return
+	}
 	reclaimed := g.proc == proc && g.proc != nil
 	if g.proc != proc {
 		if g.proc != nil && g.sub != 0 {
@@ -409,11 +449,9 @@ func (d *BrokerDaemon) handleGrant(c *broker.ClientConn, req *broker.Request) {
 		g.gone = false
 		g.sub = proc.SubscribeEvents(d.forwarder(name))
 	}
-	if g.owner != nil && g.owner != c {
-		d.detachLocked(g)
-	}
 	ring, lagged := g.ring, g.lag
 	g.ring, g.lag = nil, false
+	g.starting = nil
 	g.owner = c
 	pump := make(chan []byte, brokerPumpSize)
 	g.pump = pump
