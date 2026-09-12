@@ -75,19 +75,29 @@ func parsePermissionTool(params json.RawMessage) permissionTool {
 			out.paths = append(out.paths, s)
 		}
 	}
+	for _, key := range []string{"command", "cmd", "input"} {
+		if s, ok := tc.RawInput[key].(string); ok && commandMentionsLedger(s) {
+			out.paths = append(out.paths, "bullseye.yaml")
+		}
+	}
 	return out
+}
+
+func commandMentionsLedger(s string) bool {
+	return strings.Contains(strings.ToLower(s), "bullseye.yaml")
 }
 
 func isMutatingLedgerTool(name, kind string) bool {
 	n := strings.ToLower(strings.TrimSpace(name))
 	k := strings.ToLower(strings.TrimSpace(kind))
 	switch k {
-	case "edit", "write", "delete":
+	case "edit", "write", "delete", "execute":
 		return true
 	}
 	switch n {
 	case "strreplace", "write", "edit", "multiedit", "notebookedit",
-		"write_file", "writefile", "search_replace", "searchreplace":
+		"write_file", "writefile", "search_replace", "searchreplace",
+		"bash", "run_terminal_command", "shell":
 		return true
 	}
 	if strings.Contains(n, "strreplace") || strings.Contains(n, "search_replace") {

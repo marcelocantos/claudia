@@ -72,6 +72,50 @@ func TestSelectPermissionAllowsCursorEditOfOtherFile(t *testing.T) {
 	}
 }
 
+func TestSelectPermissionRejectsBashWriteOfLedger(t *testing.T) {
+	params := json.RawMessage(`{
+		"toolCall": {
+			"title": "Bash",
+			"kind": "execute",
+			"toolName": "run_terminal_command",
+			"rawInput": {"command": "python -c \"open('bullseye.yaml','w').write('x')\""}
+		},
+		"options": [
+			{"optionId": "allow_always"},
+			{"optionId": "allow_always_bash"},
+			{"optionId": "reject-once"}
+		]
+	}`)
+	got := selectPermissionOptionID(params)
+	if got != "reject-once" {
+		t.Fatalf("got %q, want reject-once (🎯T546 shell write)", got)
+	}
+	reply := permissionSelectedReply(params)
+	meta, _ := reply["_meta"].(map[string]any)
+	reason, _ := meta["reason"].(string)
+	if !strings.Contains(reason, "T546") {
+		t.Fatalf("shell ledger refuse must carry LedgerRefuseReason: %q", reason)
+	}
+}
+
+func TestSelectPermissionAllowsBashWithoutLedger(t *testing.T) {
+	params := json.RawMessage(`{
+		"toolCall": {
+			"title": "Bash",
+			"kind": "execute",
+			"rawInput": {"command": "ls"}
+		},
+		"options": [
+			{"optionId": "allow_always"},
+			{"optionId": "reject-once"}
+		]
+	}`)
+	got := selectPermissionOptionID(params)
+	if got != "allow_always" {
+		t.Fatalf("unrelated shell must stay allow-always: got %q", got)
+	}
+}
+
 func TestSelectPermissionAllowsReadOfLedger(t *testing.T) {
 	params := json.RawMessage(`{
 		"toolCall": {
