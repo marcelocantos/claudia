@@ -30,6 +30,7 @@ func TestHomebrewFormulaStartsBrokerServe(t *testing.T) {
 		`"broker"`,
 		`"serve"`,
 		"keep_alive true",
+		"std_service_path_env",
 	} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("tapper/formula_includes.rb missing %q:\n%s", want, s)

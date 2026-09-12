@@ -80,6 +80,13 @@ live:
 # must be green AND every fault-injection mutant must be caught — a spec that
 # stays green on known-broken code is toothless. Requires Java + tla2tools.jar
 # (see scripts/tlc.sh). CI runs this in .github/workflows/specs.yml.
+.PHONY: release-dist release-tap
+release-dist:
+	@scripts/release-package.sh
+
+release-tap:
+	@tapper push --version "v$$(sed -n 's/^const Version = "\([0-9.]*\)"/\1/p' version.go)"
+
 .PHONY: verify-specs
 verify-specs:
 	@scripts/tlc.sh AgentLifecycle.tla AgentLifecycle.cfg >/dev/null && \

@@ -666,10 +666,12 @@ does. Tests that want a daemon start one on a temp socket
 (`NewBrokerDaemon` with `SocketPath`) and re-enable the consult with
 `t.Setenv("CLAUDIA_NO_BROKER", "")`.
 
+Install the daemon with `brew install marcelocantos/tap/claudia`.
 Operate it with `brew services start claudia` (Homebrew launchd
 plist, 🎯T2.7) or `claudia broker install` (owner-installed launchd
 user agent on macOS), then `status`, `grants`, `usage [--refresh]`,
 `tail` (NDJSON lifecycle events), `release NAME [--detach]`, `socket`.
+`claudia --help-agent` prints this guide after the CLI usage text.
 Not covered by
 the daemon: `Acquire` / the in-process pool, `Rewind`,
 `Config.GoalCompleteCheck` (the daemon runs `ParseGoalStatus`).

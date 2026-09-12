@@ -301,6 +301,13 @@ Codex Session have no PTY log (`CapabilityTerminalLog` unsupported).
 
 ## Daemon (optional)
 
+Install the daemon with Homebrew, then start it as a user service:
+
+```bash
+brew install marcelocantos/tap/claudia
+brew services start claudia
+```
+
 `claudia broker serve` (or `brew services start claudia` / `claudia
 broker install` for a launchd user agent) runs a host-wide daemon that
 owns every consumer's agent processes: Sessions become named grants that survive the consumer's
@@ -368,7 +375,8 @@ See [Requirements](#requirements) above for runtime dependencies.
 If you use an agentic coding tool, include
 [`agents-guide.md`](agents-guide.md) in your project context — it
 covers the API surface, common patterns, and gotchas in a form
-designed for LLM consumption.
+designed for LLM consumption. The installed CLI also prints it via
+`claudia --help-agent`.
 
 The public API surface and its stability are tracked in
 [`STABILITY.md`](STABILITY.md). claudia is pre-1.0; breaking changes

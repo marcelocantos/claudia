@@ -34,32 +34,45 @@ import (
 )
 
 func main() {
-	if len(os.Args) < 2 {
+	os.Exit(run(os.Args[1:]))
+}
+
+func run(args []string) int {
+	if len(args) < 1 {
 		usage()
-		os.Exit(2)
+		return 2
 	}
 	var err error
-	switch os.Args[1] {
+	switch args[0] {
 	case "broker":
-		err = brokerCmd(os.Args[2:])
-	case "version":
+		err = brokerCmd(args[1:])
+	case "version", "--version", "-v":
 		fmt.Println(claudia.Version)
 	case "-h", "--help", "help":
 		usage()
+	case "--help-agent":
+		fmt.Print(usageText())
+		fmt.Print(claudia.AgentsGuide)
 	default:
 		usage()
-		os.Exit(2)
+		return 2
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "claudia:", err)
-		os.Exit(1)
+		return 1
 	}
+	return 0
+}
+
+func usageText() string {
+	return `usage: claudia broker <serve|status|grants|tail|usage|release|install|uninstall|socket> [flags]
+       claudia version
+       claudia --help-agent
+`
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `usage: claudia broker <serve|status|grants|tail|usage|release|install|uninstall|socket> [flags]
-       claudia version
-`)
+	fmt.Fprint(os.Stderr, usageText())
 }
 
 func brokerCmd(args []string) error {
