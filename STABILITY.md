@@ -693,8 +693,10 @@ have doc comments, and `example_test.go` adds `ExampleRun`, `ExampleNewTask`,
   CLIs (Claude Code, Codex, Grok Build, Cursor Agent) plus Task-only API paths
   (Bedrock ConverseStream, Ollama `/api/generate`). The `grok`
   subpackage covers Realtime voice only and is not a generic LLM SDK.
-- **Being an HTTP server.** claudia is a library. `NewMCPProxy`
-  returns an `http.Handler` the host mounts; Claudia does not listen.
+- **Being a generic HTTP API server.** The library still does not
+  listen. `NewMCPProxy` returns an `http.Handler`. The daemon
+  (`claudia broker serve`) does listen on loopback to host MCP
+  connections (🎯T2.16). That is not an OpenRouter-style public API.
 - **Windows support for the tmux-backed Agent.** The tmux substrate
   is Unix-only. Windows consumers who want the Agent must use WSL.
   This is a deliberate tradeoff for the crash-survival and

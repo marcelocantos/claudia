@@ -40,7 +40,7 @@ not the architecture.
 | Lifecycle | spawn, grant, reclaim, reap, preempt | request a seat: name, purpose, parent, workdir |
 | Usage | track, classify, report | read |
 | Routing | `Resolve` on grant; rebind when the snapshot would violate the grant | set predicates once; pin if needed |
-| MCP / tools | attach as configured on the grant | choose the config |
+| MCP / tools | host the connections; rewrite the grant to loopback URLs (🎯T2.16) | choose the config (jevonsmcp stays the consumer) |
 | Prompt / Goal / UI | execute | decide content and fleet topology |
 
 "Switch when tokens run low" is on the daemon **only** as

@@ -13,8 +13,9 @@ import (
 	"sync"
 )
 
-// MCPProxyArgs configures [NewMCPProxy]. The host (jevonsd) mounts the
-// handler and tells it how the outside world addresses it.
+// MCPProxyArgs configures [NewMCPProxy]. The daemon mounts this handler
+// on its MCP loopback (🎯T2.16); another host (jevonsd) may still mount
+// it during the transition.
 type MCPProxyArgs struct {
 	// Prefix is the mount path the host routes to this handler
 	// (e.g. "/upstream"). Incoming paths have this prefix stripped
@@ -45,10 +46,10 @@ type MCPProxyArgs struct {
 
 // MCPProxy is an http.Handler that reverse-proxies named HTTP MCP
 // servers. A host mounts it and supplies Prefix + PublicBase (🎯T43).
-// Tokens live in memory on the handler; Claudia does not persist them.
-// On access-token expiry the proxy refreshes silently when a refresh
-// token is present; Authorize (browser) runs only when there is no
-// refresh token or refresh fails (jevons 🎯T520).
+// Tokens live in memory on the handler; the daemon persists them under
+// its state directory (🎯T2.16). On access-token expiry the proxy
+// refreshes silently when a refresh token is present; Authorize
+// (browser) runs only when there is no refresh token or refresh fails.
 type MCPProxy struct {
 	prefix        string
 	publicBase    string

@@ -40,10 +40,11 @@ type MCPProbe struct {
 	Scopes               []string
 }
 
-// MCPToken is the result of an owner-present authorization. Claudia
-// does not persist it (🎯T42); the host (jevonsd) stores and reseeds.
+// MCPToken is the result of an owner-present authorization. The
+// library does not persist it (🎯T42); the daemon stores and reseeds
+// tokens under its state directory (🎯T2.16).
 // ClientID / TokenURL / Resource are stamped so [RefreshMCPToken] can
-// renew without re-running browser OAuth (jevons 🎯T520).
+// renew without re-running browser OAuth.
 type MCPToken struct {
 	AccessToken  string
 	RefreshToken string

@@ -63,6 +63,11 @@ type BrokerDaemonOptions struct {
 	// resumeGate, when set, holds the boot resume until closed (tests
 	// subscribe to the tail first).
 	resumeGate chan struct{}
+	// DisableMCPHost skips the loopback MCP listener (tests that do not
+	// want a port). Production serve always hosts MCP (🎯T2.16).
+	DisableMCPHost bool
+	// MCPListenAddr overrides the MCP loopback bind (default 127.0.0.1:0).
+	MCPListenAddr string
 }
 
 // DefaultRestartNudge is what a relaunched seat is told on boot.
@@ -99,6 +104,7 @@ type BrokerDaemon struct {
 	srv   *broker.Server
 	usage *brokerUsageService
 	path  string
+	mcp   *mcpHost
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -196,6 +202,19 @@ func NewBrokerDaemon(opts BrokerDaemonOptions) (*BrokerDaemon, error) {
 		return nil, err
 	}
 	d.srv = srv
+	if !opts.DisableMCPHost {
+		h, err := newMCPHost(mcpHostOptions{
+			StateDir:   stateDir,
+			ListenAddr: opts.MCPListenAddr,
+			Logger:     func(msg string, args ...any) { log.Warn(msg, args...) },
+		})
+		if err != nil {
+			_ = srv.Close()
+			return nil, fmt.Errorf("broker daemon: mcp host: %w", err)
+		}
+		d.mcp = h
+		log.Info("claudia mcp host listening", "addr", h.Addr())
+	}
 	d.wg.Add(2)
 	go func() { defer d.wg.Done(); d.usage.run(d.ctx) }()
 	go func() { defer d.wg.Done(); d.monitor() }()
@@ -236,7 +255,21 @@ func (d *BrokerDaemon) Close() error {
 		t.cancel()
 	}
 	d.wg.Wait()
+	if d.mcp != nil {
+		if cerr := d.mcp.Close(); err == nil {
+			err = cerr
+		}
+	}
 	return err
+}
+
+// attachMCP rewrites owner-map MCPServers onto the daemon's loopback
+// host (🎯T2.16). No-op without a host or an empty list.
+func (d *BrokerDaemon) attachMCP(def *AgentDef) {
+	if d == nil || d.mcp == nil || def == nil {
+		return
+	}
+	def.MCPServers = d.mcp.Attach(def.MCPServers)
 }
 
 func (d *BrokerDaemon) emit(ev broker.EventMessage) {
@@ -375,6 +408,7 @@ func (d *BrokerDaemon) handleGrant(c *broker.ClientConn, req *broker.Request) {
 			def.GrokConnect = def.GrokConnect || existing.GrokConnect
 		}
 	}
+	d.attachMCP(&def)
 	if err := d.reg.Register(def); err != nil && !errors.Is(err, ErrLifecycleInProgress) {
 		_ = c.Fail(req.ID, err)
 		return
@@ -917,6 +951,7 @@ func (d *BrokerDaemon) remintUnresumableSeat(name string) (oldSession, newSessio
 	next.Materialized = false
 	next.ConnectURL = ""
 	next.ConnectPID = 0
+	d.attachMCP(&next)
 	if err := d.reg.Register(next); err != nil {
 		return oldSession, "", err
 	}
@@ -926,6 +961,11 @@ func (d *BrokerDaemon) remintUnresumableSeat(name string) (oldSession, newSessio
 }
 
 func (d *BrokerDaemon) resumeSeat(name, nudge string) {
+	if def := d.reg.Def(name); def != nil {
+		next := *def
+		d.attachMCP(&next)
+		_ = d.reg.Register(next)
+	}
 	proc, err := d.reg.Adopt(name)
 	launched := false
 	how := "adopted"

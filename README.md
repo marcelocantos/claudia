@@ -225,9 +225,11 @@ mux.Handle("/upstream/", p)
 ```
 
 `LoadMCP` tags each server with origin `Providers` (Codex-only
-computer-use stays off Claude). `NewMCPProxy` is an `http.Handler` the host process
-mounts — Claudia is not a server. Owner-present OAuth is
-`AuthorizeMCP`; token refresh without the owner is the host's job.
+computer-use stays off Claude). `NewMCPProxy` is an `http.Handler`.
+On `claudia broker serve` the daemon mounts it, hosts stdio MCP, and
+rewrites grant `MCPServers` to loopback URLs (🎯T2.16). Direct mode
+still attaches the caller's list. Owner-present OAuth is
+`AuthorizeMCP`; the daemon persists refresh tokens.
 `Config.MCPServers` is the only Session attach path (inline/temp
 `--mcp-config`, ACP `mcpServers`, or process-private Codex home) —
 Claudia never writes user or project MCP files.

@@ -230,19 +230,20 @@ Bedrock and Ollama have no Session MCP surface.
 HTTP MCP OAuth (🎯T42): `ProbeMCP` classifies a URL as `open`,
 `static`, or `oauth` from one unauthenticated initialize.
 `AuthorizeMCP` is owner-present PKCE (browser + local redirect);
-Claudia returns tokens and does not store them. `RefreshMCPToken`
-exchanges a stored refresh_token without a browser. Host persistence
-and loopback mount are jevons 🎯T520. Stdio MCP is out of scope.
+tokens are returned to the caller. `RefreshMCPToken` exchanges a
+stored refresh_token without a browser.
 
-HTTP MCP proxy (🎯T43): `NewMCPProxy` returns an `http.Handler`.
-The host mounts it (for example `mux.Handle("/upstream/",
-http.StripPrefix("/upstream", p))` or pass `Prefix: "/upstream"`)
-and sets `PublicBase` to the advertised origin
-(`http://127.0.0.1:13705`). `Advertised()` is the inventory with
-loopback URLs for the host to stamp on `Config.MCPServers`. On 401 the proxy refreshes when a
-refresh token is present; Authorize runs only when refresh is
-impossible or fails. `SetToken` / `OnTokenChange` are the host
-persistence hooks. Claudia is not a server; the host process is.
+HTTP MCP proxy (🎯T43) remains an `http.Handler` (`NewMCPProxy`) for
+hosts that still mount it themselves. On the daemon path (🎯T2.16)
+`claudia broker serve` is that host: it listens on loopback, proxies
+HTTP remotes, keeps one stdio process per server recipe, persists
+OAuth tokens under the claudia state directory (seeded from
+`~/.jevons` when empty), and rewrites a grant's owner-map
+`MCPServers` to `http://<mcp.addr>/upstream/<name>`. Consumer servers
+named `jevonsmcp*` keep the caller's URL. Direct mode (no socket /
+`CLAUDIA_NO_BROKER=1`) does not rewrite — today's attach list is the
+fallback. A different recipe under an already-hosted name is left
+unrewritten so an isolate cannot steal the daily backend.
 
 Pass `SessionID` to attempt `session/load`. A materialized resume
 (`RequireResume`) never mints a replacement session: load failure is an
