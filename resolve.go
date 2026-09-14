@@ -111,20 +111,21 @@ func Resolve(ctx context.Context, pred ModelPredicates) (ModelPick, error) {
 			continue
 		}
 		band := PlanBandUnpublished
+		var pressure float64
 		if has {
 			band = ClassifyPlan(u, now, pred.Thresholds).Weekly
+			pressure = weeklyPressure(u, now, pred.Thresholds)
 		}
-		candidates = append(candidates, catalogCand{row: row, band: band})
+		candidates = append(candidates, catalogCand{row: row, band: band, pressure: pressure})
 	}
 	if len(candidates) == 0 {
 		return ModelPick{}, fmt.Errorf("resolve: no catalog model matches predicates")
 	}
 
 	best := candidates[0]
-	bestScore := resolveScore(best.row, pred.PreferProvider, wantQ)
 	for _, c := range candidates[1:] {
-		if s := resolveScore(c.row, pred.PreferProvider, wantQ); s > bestScore {
-			best, bestScore = c, s
+		if catalogBetter(c, best, pred.PreferProvider, wantQ) {
+			best = c
 		}
 	}
 	reason := fmt.Sprintf("quality=%s access=%s band=%s", best.row.Quality, best.row.Access, best.band)
@@ -142,8 +143,27 @@ func Resolve(ctx context.Context, pred ModelPredicates) (ModelPick, error) {
 }
 
 type catalogCand struct {
-	row  CatalogModel
-	band PlanBand
+	row      CatalogModel
+	band     PlanBand
+	pressure float64
+}
+
+func catalogBetter(c, best catalogCand, prefer Provider, wantQ ModelQuality) bool {
+	if better, ok := slackDecides(c.pressure, best.pressure); ok {
+		return better
+	}
+	return resolveScore(c.row, prefer, wantQ) > resolveScore(best.row, prefer, wantQ)
+}
+
+func slackDecides(c, best float64) (cBetter bool, decided bool) {
+	const slackEps = 0.05
+	if c < best-slackEps {
+		return true, true
+	}
+	if c > best+slackEps {
+		return false, true
+	}
+	return false, false
 }
 
 func resolveUsage(ctx context.Context, pred ModelPredicates) ([]PlanUsage, error) {
@@ -346,12 +366,8 @@ func purposeHasCatalogSeries(obs []ModelObservation, purpose ModelPurpose) bool 
 
 func intelBetter(c, best intelCand, prefer Provider) bool {
 	// Lower pressure (blue/purple slack) wins before research cost.
-	const slackEps = 0.05
-	if c.pressure < best.pressure-slackEps {
-		return true
-	}
-	if c.pressure > best.pressure+slackEps {
-		return false
+	if better, ok := slackDecides(c.pressure, best.pressure); ok {
+		return better
 	}
 	cc, bc := costOrInf(c.cost, c.hasScore), costOrInf(best.cost, best.hasScore)
 	if cc != bc {

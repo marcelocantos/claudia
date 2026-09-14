@@ -332,7 +332,9 @@ ok := claudia.HasAvailableTokens(pu, time.Now(), nil)
 
 **Picking a model.** Pass predicates, not a model id. Available-tokens is
 automatic (known-exhausted / weekly-hot / session-low are skipped;
-unpublished is not a veto). Resolve does not spawn.
+unpublished is not a veto). Among the survivors, lower plan pressure
+(blue/purple slack) wins — on the catalog path and the purpose-quality
+path. Resolve does not spawn.
 
 ```go
 pick, err := claudia.Resolve(ctx, claudia.ModelPredicates{
