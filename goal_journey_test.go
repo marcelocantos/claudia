@@ -45,7 +45,14 @@ func (b *scriptedGoalBackend) ops() agentOps {
 		}
 		// Deliver after Send returns so the host timer is the only
 		// continuation trigger (same shape as a live turn/completed).
-		go a.PublishEvent(replies[n-1])
+		// Clear in-flight first: a finished turn is idle before the
+		// Event is observed (T70's fake Send leaves inFlight set).
+		go func(ev Event) {
+			if ev.IsTerminalStop() {
+				b.inFlight.Store(false)
+			}
+			a.PublishEvent(ev)
+		}(replies[n-1])
 		return nil
 	}
 	return base
@@ -168,7 +175,7 @@ func TestGoalJourneyEverySessionBackend(t *testing.T) {
 			if err := agent.Send("begin"); err != nil {
 				t.Fatalf("Send: %v", err)
 			}
-			agent.PublishEvent(tc.terminal)
+			publishIdleTurn(agent, backend, tc.terminal)
 			sends := waitBackendSends(t, backend, 2)
 			if sends[0] != "begin" {
 				t.Fatalf("brief = %q", sends[0])
@@ -284,7 +291,7 @@ func TestGoalJourneyCodexTurnCompleted(t *testing.T) {
 	if !ok {
 		t.Fatal("turn/completed produced no agent event")
 	}
-	agent.PublishEvent(ev)
+	publishIdleTurn(agent, backend, ev)
 	sends := waitBackendSends(t, backend, 2)
 	if sends[0] != "first cycle" {
 		t.Fatalf("brief = %q", sends[0])
@@ -302,7 +309,7 @@ func TestGoalJourneyStopMidSequence(t *testing.T) {
 	if err := agent.Send("go"); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
-	agent.PublishEvent(unfinishedTurn("halfway"))
+	publishIdleTurn(agent, backend, unfinishedTurn("halfway"))
 	_ = waitBackendSends(t, backend, 2)
 	agent.Stop()
 	time.Sleep(waitSettleDuration + 50*time.Millisecond)

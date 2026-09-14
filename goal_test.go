@@ -38,6 +38,17 @@ func waitGoalSettle(t *testing.T) {
 	time.Sleep(waitSettleDuration + 50*time.Millisecond)
 }
 
+// publishIdleTurn is the fake-backend counterpart of a provider
+// finishing a turn: PromptInFlight goes false, then the terminal
+// Event is published. T70's fake Send sets inFlight; leaving it set
+// makes maybeContinueGoal refuse the host continuation.
+func publishIdleTurn(agent *Agent, backend *fakeAgentBackend, ev Event) {
+	if ev.IsTerminalStop() {
+		backend.inFlight.Store(false)
+	}
+	agent.PublishEvent(ev)
+}
+
 func backendSends(t *testing.T, b *fakeAgentBackend) []string {
 	t.Helper()
 	b.mu.Lock()
@@ -97,7 +108,7 @@ func TestGoalIssuesContinuationAfterTerminalTurn(t *testing.T) {
 	if err := agent.Send("start work"); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
-	agent.PublishEvent(Event{Type: "assistant", Text: "looked at files", StopReason: "end_turn"})
+	publishIdleTurn(agent, backend, Event{Type: "assistant", Text: "looked at files", StopReason: "end_turn"})
 	waitGoalSettle(t)
 	sends := backendSends(t, backend)
 	if len(sends) != 2 {
@@ -122,7 +133,7 @@ func TestEmptyGoalStaysSingleTurn(t *testing.T) {
 	if err := agent.Send("one shot"); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
-	agent.PublishEvent(Event{Type: "assistant", Text: "done", StopReason: "end_turn"})
+	publishIdleTurn(agent, backend, Event{Type: "assistant", Text: "done", StopReason: "end_turn"})
 	waitGoalSettle(t)
 	if n := len(backendSends(t, backend)); n != 1 {
 		t.Fatalf("sends = %d, want 1", n)
@@ -134,7 +145,7 @@ func TestGoalCompleteStatusEndsLoop(t *testing.T) {
 	if err := agent.Send("go"); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
-	agent.PublishEvent(Event{
+	publishIdleTurn(agent, backend, Event{
 		Type:       "assistant",
 		Text:       "tests green\n" + GoalStatusComplete,
 		StopReason: "end_turn",
@@ -156,7 +167,7 @@ func TestGoalCompleteCheckEndsLoopWithoutStatus(t *testing.T) {
 	if err := agent.Send("go"); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
-	agent.PublishEvent(Event{
+	publishIdleTurn(agent, backend, Event{
 		Type:       "assistant",
 		Text:       "workers finished; ledger achieved",
 		StopReason: "end_turn",
@@ -175,7 +186,7 @@ func TestGoalBlockedStatusEndsLoop(t *testing.T) {
 	if err := agent.Send("go"); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
-	agent.PublishEvent(Event{
+	publishIdleTurn(agent, backend, Event{
 		Type:       "assistant",
 		Text:       GoalStatusBlocked,
 		StopReason: "end_turn",
@@ -197,7 +208,7 @@ func TestGoalInterruptEndsLoop(t *testing.T) {
 	if err := agent.Interrupt(); err != nil {
 		t.Fatalf("Interrupt: %v", err)
 	}
-	agent.PublishEvent(Event{Type: "assistant", Text: "stopped", StopReason: "end_turn"})
+	publishIdleTurn(agent, backend, Event{Type: "assistant", Text: "stopped", StopReason: "end_turn"})
 	waitGoalSettle(t)
 	if n := len(backendSends(t, backend)); n != 1 {
 		t.Fatalf("sends = %d, want 1 after interrupt", n)
@@ -212,8 +223,8 @@ func TestGoalDebouncesMultipleTerminalEvents(t *testing.T) {
 	if err := agent.Send("go"); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
-	agent.PublishEvent(Event{Type: "assistant", Text: "part a", StopReason: "end_turn"})
-	agent.PublishEvent(Event{Type: "assistant", Text: "part b", StopReason: "end_turn"})
+	publishIdleTurn(agent, backend, Event{Type: "assistant", Text: "part a", StopReason: "end_turn"})
+	publishIdleTurn(agent, backend, Event{Type: "assistant", Text: "part b", StopReason: "end_turn"})
 	waitGoalSettle(t)
 	if n := len(backendSends(t, backend)); n != 2 {
 		t.Fatalf("sends = %d, want 2 (one continuation despite two terminals)", n)
