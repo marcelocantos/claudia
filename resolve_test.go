@@ -139,6 +139,39 @@ func TestResolveClaudeFirstWhenHeadroom(t *testing.T) {
 	}
 }
 
+func TestResolveBlueCursorBeatsUnpublishedCatalogFirst(t *testing.T) {
+	now := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
+	week := now.Add(3*24*time.Hour + 12*time.Hour)
+	got, err := Resolve(context.Background(), ModelPredicates{
+		Mode:       CapabilityTask,
+		Quality:    ModelQualityStandard,
+		PreferPlan: true,
+		Now:        now,
+		Usage: []PlanUsage{
+			{Provider: ProviderClaude, Status: PlanUsageUnavailable, Reason: "unpublished"},
+			{Provider: ProviderGrok, Status: PlanUsageUnavailable, Reason: "unpublished"},
+			{Provider: ProviderCodex, Status: PlanUsageUnavailable, Reason: "unpublished"},
+			{
+				Provider: ProviderCursor,
+				Status:   PlanUsageAvailable,
+				Windows: []PlanWindow{{
+					Name:             PlanWindowWeekly,
+					RemainingPercent: floatPtr(80),
+					UsedPercent:      floatPtr(20),
+					ResetsAt:         &week,
+					LimitWindow:      defaultWeeklyWindow,
+				}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Provider != ProviderCursor || got.Model != "composer-2.5" {
+		t.Fatalf("blue Cursor must beat unpublished catalog-first Claude; got %+v", got)
+	}
+}
+
 func TestResolveCatalogPathPrefersPlanSlack(t *testing.T) {
 	now := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
 	week := now.Add(3*24*time.Hour + 12*time.Hour)

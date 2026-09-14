@@ -233,19 +233,63 @@ func TestResolveFallsBackToGeneralWhenPurposeSeriesMissing(t *testing.T) {
 	}
 }
 
+func TestResolvePurposePicksBlueCursorMissingFromIntel(t *testing.T) {
+	// YTT asks for analysis+standard with no PreferProvider. AA has no
+	// composer row; Cursor must still win when it is the only blue plan.
+	intel := &ModelIntelArgs{Latest: []ModelObservation{
+		{Generation: "claude-sonnet-5", Effort: ModelEffortHigh, Purpose: ModelPurposeAnalysis, Value: 70, CostUSD: 0.20},
+		{Generation: "grok-4.6", Effort: ModelEffortHigh, Purpose: ModelPurposeAnalysis, Value: 80, CostUSD: 0.10},
+	}}
+	now := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
+	week := now.Add(3*24*time.Hour + 12*time.Hour)
+	weekly := func(p Provider, rem, used float64) PlanUsage {
+		return PlanUsage{
+			Provider: p, Status: PlanUsageAvailable,
+			Windows: []PlanWindow{{
+				Name: PlanWindowWeekly, RemainingPercent: floatPtr(rem), UsedPercent: floatPtr(used),
+				ResetsAt: &week, LimitWindow: defaultWeeklyWindow,
+			}},
+		}
+	}
+	got, err := Resolve(context.Background(), ModelPredicates{
+		Mode: CapabilityTask, Purpose: ModelPurposeAnalysis, Quality: ModelQualityStandard,
+		PreferPlan: true, Intel: intel, Now: now,
+		Usage: []PlanUsage{
+			weekly(ProviderClaude, 50, 50),
+			weekly(ProviderGrok, 20, 80),
+			weekly(ProviderCursor, 80, 20),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Provider != ProviderCursor || got.Model != "composer-2.5" {
+		t.Fatalf("blue Cursor must win analysis even without an AA score; got %+v", got)
+	}
+	if got.Purpose != ModelPurposeAnalysis {
+		t.Fatalf("purpose %+v", got)
+	}
+}
+
 func TestResolveDoesNotFallBackWhenPurposeSeriesExists(t *testing.T) {
 	intel := &ModelIntelArgs{Latest: []ModelObservation{
 		{Generation: "claude-sonnet-5", Effort: ModelEffortHigh, Purpose: ModelPurposeAnalysis, Value: 70, CostUSD: 0.20},
 		{Generation: "grok-4.6", Effort: ModelEffortHigh, Purpose: ModelPurposeGeneral, Value: 80, CostUSD: 0.10},
 	}}
-	_, err := Resolve(context.Background(), ModelPredicates{
+	got, err := Resolve(context.Background(), ModelPredicates{
 		Mode: CapabilityTask, Purpose: ModelPurposeAnalysis, Quality: ModelQualityStandard,
 		PreferPlan: true, Intel: intel, Usage: []PlanUsage{{
 			Provider: ProviderClaude, Status: PlanUsageAvailable, Reason: "429 rate limited",
 		}},
 	})
-	if err == nil {
-		t.Fatal("analysis series exists; exhausted analysis must fail closed, not yield to general")
+	if err != nil {
+		return
+	}
+	if got.Purpose != ModelPurposeAnalysis {
+		t.Fatalf("analysis series exists; must not yield to general: %+v", got)
+	}
+	if got.Model == "grok-4.6" {
+		t.Fatal("must not use the general-series grok-4.6 score as analysis")
 	}
 }
 

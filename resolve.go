@@ -147,14 +147,27 @@ func pickCatalog(cands []catalogCand, prefer Provider) (catalogCand, error) {
 	if len(cands) == 0 {
 		return catalogCand{}, fmt.Errorf("resolve: no catalog model matches predicates")
 	}
-	bestP := cands[0].pressure
-	for _, c := range cands[1:] {
+	// Unpublished pressure is 0 ("unknown"), not blue. Only rank
+	// published bands against each other; if none are published,
+	// PreferProvider is the remaining predicate.
+	var published []catalogCand
+	for _, c := range cands {
+		if publishedPlanBand(c.band) {
+			published = append(published, c)
+		}
+	}
+	pool := cands
+	if len(published) > 0 {
+		pool = published
+	}
+	bestP := pool[0].pressure
+	for _, c := range pool[1:] {
 		if c.pressure < bestP {
 			bestP = c.pressure
 		}
 	}
 	var slack []catalogCand
-	for _, c := range cands {
+	for _, c := range pool {
 		if _, decided := slackDecides(c.pressure, bestP); !decided {
 			slack = append(slack, c)
 		}
@@ -190,6 +203,22 @@ func slackDecides(c, best float64) (cBetter bool, decided bool) {
 		return false, true
 	}
 	return false, false
+}
+
+func slackDecidesPublished(cPress float64, cBand PlanBand, bestPress float64, bestBand PlanBand) (cBetter bool, decided bool) {
+	cPub := publishedPlanBand(cBand)
+	bPub := publishedPlanBand(bestBand)
+	if cPub != bPub {
+		return cPub, true
+	}
+	if !cPub {
+		return false, false
+	}
+	return slackDecides(cPress, bestPress)
+}
+
+func publishedPlanBand(b PlanBand) bool {
+	return b != "" && b != PlanBandUnpublished
 }
 
 func resolveUsage(ctx context.Context, pred ModelPredicates) ([]PlanUsage, error) {
@@ -274,6 +303,10 @@ func resolveFromIntel(pred ModelPredicates, byProv map[Provider]PlanUsage, now t
 			pool = append(pool, intelCand{row: pinRow, effort: pred.Effort})
 		}
 	}
+	// AA does not score every spawnable row (Cursor composer is the
+	// usual gap). Shelf-matching catalog rows stay in the set so
+	// token slack can pick them. Catalog declaration order is not a rank.
+	pool = appendCatalogShelf(pool, wantQ)
 
 	exclude := map[Provider]bool{}
 	for _, p := range pred.ExcludeProviders {
@@ -334,7 +367,7 @@ func resolveFromIntel(pred ModelPredicates, byProv map[Provider]PlanUsage, now t
 		if haveFloor && c.hasScore && c.value < floor {
 			continue
 		}
-		if haveFloor && !c.hasScore && pred.Purpose != "" {
+		if !c.hasScore && c.row.Quality != wantQ {
 			continue
 		}
 		kept = append(kept, c)
@@ -390,9 +423,29 @@ func purposeHasCatalogSeries(obs []ModelObservation, purpose ModelPurpose) bool 
 	return false
 }
 
+func appendCatalogShelf(pool []intelCand, wantQ ModelQuality) []intelCand {
+	seen := map[string]bool{}
+	for _, c := range pool {
+		seen[string(c.row.Provider)+"/"+c.row.Model] = true
+	}
+	for _, row := range ModelCatalog() {
+		if row.Quality != wantQ {
+			continue
+		}
+		id := string(row.Provider) + "/" + row.Model
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		pool = append(pool, intelCand{row: row, effort: ModelEffortUnspecified})
+	}
+	return pool
+}
+
 func intelBetter(c, best intelCand, prefer Provider) bool {
 	// Lower pressure (blue/purple slack) wins before research cost.
-	if better, ok := slackDecides(c.pressure, best.pressure); ok {
+	// A published band beats unpublished: pressure 0 is "unknown", not blue.
+	if better, ok := slackDecidesPublished(c.pressure, c.band, best.pressure, best.band); ok {
 		return better
 	}
 	cc, bc := costOrInf(c.cost, c.hasScore), costOrInf(best.cost, best.hasScore)
