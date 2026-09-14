@@ -17,7 +17,8 @@ type ModelPredicates struct {
 	Mode Capability
 	// Purpose selects which quality series to use (coding, general, …).
 	// Empty keeps the catalog-shelf path. Set a purpose to pick from
-	// intel: generation and effort become outputs (🎯T71).
+	// intel: generation and effort become outputs (🎯T71). A purpose
+	// with no catalog-overlapping observations yields to general.
 	Purpose ModelPurpose
 	// Quality is the band: frontier / standard / economy.
 	// Empty means standard. On the catalog path this is a generation
@@ -172,17 +173,23 @@ type intelCand struct {
 }
 
 func resolveFromIntel(pred ModelPredicates, byProv map[Provider]PlanUsage, now time.Time) (ModelPick, error) {
-	purpose := pred.Purpose
-	if purpose == "" {
+	obs, err := LatestModelIntel(pred.Intel)
+	if err != nil {
+		return ModelPick{}, err
+	}
+	requested := pred.Purpose
+	if requested == "" {
+		requested = ModelPurposeGeneral
+	}
+	purpose := requested
+	var fallbackFrom ModelPurpose
+	if requested != ModelPurposeGeneral && !purposeHasCatalogSeries(obs, requested) && purposeHasCatalogSeries(obs, ModelPurposeGeneral) {
 		purpose = ModelPurposeGeneral
+		fallbackFrom = requested
 	}
 	wantQ := pred.Quality
 	if wantQ == "" {
 		wantQ = ModelQualityStandard
-	}
-	obs, err := LatestModelIntel(pred.Intel)
-	if err != nil {
-		return ModelPick{}, err
 	}
 	pinRow, hasPin := CatalogModel{}, false
 	if pred.Model != "" {
@@ -300,6 +307,9 @@ func resolveFromIntel(pred ModelPredicates, byProv map[Provider]PlanUsage, now t
 		}
 	}
 	reason := formatIntelReason(purpose, wantQ, best.effort, best.cost, best.band)
+	if fallbackFrom != "" {
+		reason += " purpose_fallback_from=" + string(fallbackFrom)
+	}
 	if pred.PreferProvider != "" && best.row.Provider == pred.PreferProvider {
 		reason += " prefer_provider"
 	}
@@ -320,6 +330,18 @@ func resolveFromIntel(pred ModelPredicates, byProv map[Provider]PlanUsage, now t
 		CostUSD:  best.cost,
 		Reason:   reason,
 	}, nil
+}
+
+func purposeHasCatalogSeries(obs []ModelObservation, purpose ModelPurpose) bool {
+	for _, o := range obs {
+		if o.Purpose != purpose {
+			continue
+		}
+		if _, ok := MatchCatalogGeneration(o.Generation); ok {
+			return true
+		}
+	}
+	return false
 }
 
 func intelBetter(c, best intelCand, prefer Provider) bool {

@@ -344,7 +344,7 @@ pick, err := claudia.Resolve(ctx, claudia.ModelPredicates{
 task := claudia.NewTask(claudia.TaskConfig{Provider: pick.Provider, Model: pick.Model, WorkDir: dir})
 ```
 
-**Purpose-quality (🎯T71).** Set `Purpose` (`coding`, `analysis`, `agent`, `browse`, `general`) to pick from the daily intel series. Quality is then a floor on that purpose, not a generation shelf. Generation and effort come back on the pick; the host does not specify them unless pinning. Resolve chooses the cheapest token-eligible pair (research `$` per task, then plan slack so weekly-hot / red yields to under / locked). Empty `Purpose` keeps the catalog-shelf path above.
+**Purpose-quality (🎯T71).** Set `Purpose` (`coding`, `analysis`, `agent`, `browse`, `general`) to pick from the daily intel series. Quality is then a floor on that purpose, not a generation shelf. Generation and effort come back on the pick; the host does not specify them unless pinning. A purpose with no catalog-overlapping observations yields to `general` (hosts can ask for `analysis` without a host-side fallback). A series that exists but misses the floor still fails closed. Resolve chooses the cheapest token-eligible pair (research `$` per task, then plan slack so weekly-hot / red yields to under / locked). Empty `Purpose` keeps the catalog-shelf path above.
 
 ```go
 pick, err := claudia.Resolve(ctx, claudia.ModelPredicates{

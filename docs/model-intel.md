@@ -17,6 +17,9 @@ case.
 
 Empty `Quality` means `standard`. Empty `Purpose` is **not** `general`
 on the catalog path — set `ModelPurposeGeneral` when the job is broad.
+A requested purpose with no catalog-overlapping observations yields to
+`general` (the usual gap is `analysis` / HLE). A series that exists but
+misses the floor still fails closed.
 
 Available-tokens still veto weekly-hot, session-low, and exhausted.
 Among the rest, lower plan pressure (blue/purple slack) beats research
@@ -69,5 +72,5 @@ yesterday.
 ## Oracles
 
 ```bash
-go test ./... -count=1 -run 'TestParseModelSlug|TestRefreshModelIntel|TestDriftModelIntel|TestResolvePurpose|TestResolveRedYields|TestResolvePinMisses|TestResolveCatalogPath'
+go test ./... -count=1 -run 'TestParseModelSlug|TestRefreshModelIntel|TestDriftModelIntel|TestResolvePurpose|TestResolveRedYields|TestResolvePinMisses|TestResolveFallsBack|TestResolveDoesNotFallBack|TestResolveCatalogPath'
 ```

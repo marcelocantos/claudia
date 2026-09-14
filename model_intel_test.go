@@ -7,6 +7,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -209,6 +210,42 @@ func TestResolvePinMissesFloorFailsClosed(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestResolveFallsBackToGeneralWhenPurposeSeriesMissing(t *testing.T) {
+	intel := &ModelIntelArgs{Latest: []ModelObservation{
+		{Generation: "grok-4.6", Effort: ModelEffortHigh, Purpose: ModelPurposeGeneral, Value: 80, CostUSD: 0.10},
+		{Generation: "claude-sonnet-5", Effort: ModelEffortHigh, Purpose: ModelPurposeGeneral, Value: 70, CostUSD: 0.20},
+	}}
+	got, err := Resolve(context.Background(), ModelPredicates{
+		Mode: CapabilityTask, Purpose: ModelPurposeAnalysis, Quality: ModelQualityStandard,
+		PreferPlan: true, Intel: intel, Usage: []PlanUsage{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Purpose != ModelPurposeGeneral || got.Provider != ProviderGrok || got.Model != "grok-4.6" {
+		t.Fatalf("want general fallback grok-4.6, got %+v", got)
+	}
+	if !strings.Contains(got.Reason, "purpose_fallback_from=analysis") {
+		t.Fatalf("reason missing fallback: %s", got.Reason)
+	}
+}
+
+func TestResolveDoesNotFallBackWhenPurposeSeriesExists(t *testing.T) {
+	intel := &ModelIntelArgs{Latest: []ModelObservation{
+		{Generation: "claude-sonnet-5", Effort: ModelEffortHigh, Purpose: ModelPurposeAnalysis, Value: 70, CostUSD: 0.20},
+		{Generation: "grok-4.6", Effort: ModelEffortHigh, Purpose: ModelPurposeGeneral, Value: 80, CostUSD: 0.10},
+	}}
+	_, err := Resolve(context.Background(), ModelPredicates{
+		Mode: CapabilityTask, Purpose: ModelPurposeAnalysis, Quality: ModelQualityStandard,
+		PreferPlan: true, Intel: intel, Usage: []PlanUsage{{
+			Provider: ProviderClaude, Status: PlanUsageAvailable, Reason: "429 rate limited",
+		}},
+	})
+	if err == nil {
+		t.Fatal("analysis series exists; exhausted analysis must fail closed, not yield to general")
 	}
 }
 
