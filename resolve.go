@@ -21,6 +21,9 @@ type ModelPredicates struct {
 	// intel: generation and effort become outputs (🎯T71). A purpose
 	// with no catalog-overlapping observations yields to general.
 	Purpose ModelPurpose
+	// Skill is a client alias for Purpose (`skill=analysis`). Purpose
+	// wins when both are set.
+	Skill ModelPurpose
 	// Quality is the band: frontier / standard / economy.
 	// Empty means standard. On the catalog path this is a generation
 	// shelf. With Purpose set it is a floor on that purpose's scores.
@@ -64,6 +67,7 @@ type ModelPick struct {
 // SetModel, or Migrate. Known-exhausted / weekly-hot / session-low
 // candidates are skipped automatically.
 func Resolve(ctx context.Context, pred ModelPredicates) (ModelPick, error) {
+	pred = normalizePredicates(pred)
 	now := pred.Now
 	if now.IsZero() {
 		now = time.Now()
@@ -221,6 +225,13 @@ func publishedPlanBand(b PlanBand) bool {
 	return b != "" && b != PlanBandUnpublished
 }
 
+func normalizePredicates(pred ModelPredicates) ModelPredicates {
+	if pred.Purpose == "" && pred.Skill != "" {
+		pred.Purpose = pred.Skill
+	}
+	return pred
+}
+
 func resolveUsage(ctx context.Context, pred ModelPredicates) ([]PlanUsage, error) {
 	if pred.Usage != nil {
 		return pred.Usage, nil
@@ -258,7 +269,10 @@ func resolveFromIntel(pred ModelPredicates, byProv map[Provider]PlanUsage, now t
 	}
 	purpose := requested
 	var fallbackFrom ModelPurpose
-	if requested != ModelPurposeGeneral && !purposeHasCatalogSeries(obs, requested) && purposeHasCatalogSeries(obs, ModelPurposeGeneral) {
+	if requested != ModelPurposeGeneral && !purposeHasCatalogSeries(obs, requested) {
+		// No series for the named skill (AA often omits math/HLE).
+		// Interpret as general — even when general is empty too, so
+		// the catalog shelf is scored as general, not a phantom analysis.
 		purpose = ModelPurposeGeneral
 		fallbackFrom = requested
 	}

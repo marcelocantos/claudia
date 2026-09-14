@@ -213,6 +213,43 @@ func TestResolvePinMissesFloorFailsClosed(t *testing.T) {
 	}
 }
 
+func TestResolveSkillAliasYieldsToGeneralWhenAnalysisMissing(t *testing.T) {
+	intel := &ModelIntelArgs{Latest: []ModelObservation{
+		{Generation: "grok-4.6", Effort: ModelEffortHigh, Purpose: ModelPurposeGeneral, Value: 80, CostUSD: 0.10},
+	}}
+	got, err := Resolve(context.Background(), ModelPredicates{
+		Mode: CapabilityTask, Skill: ModelPurposeAnalysis, Quality: ModelQualityStandard,
+		PreferPlan: true, Intel: intel, Usage: []PlanUsage{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Purpose != ModelPurposeGeneral || got.Model != "grok-4.6" {
+		t.Fatalf("skill=analysis with no analysis series: %+v", got)
+	}
+	if !strings.Contains(got.Reason, "purpose_fallback_from=analysis") {
+		t.Fatalf("reason: %s", got.Reason)
+	}
+}
+
+func TestResolveFallsBackToGeneralWhenAnalysisHasNoDataAtAll(t *testing.T) {
+	got, err := Resolve(context.Background(), ModelPredicates{
+		Mode: CapabilityTask, Purpose: ModelPurposeAnalysis, Quality: ModelQualityStandard,
+		PreferPlan: true, Intel: &ModelIntelArgs{Latest: []ModelObservation{}},
+		PreferProvider: ProviderGrok,
+		Usage:          []PlanUsage{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Purpose != ModelPurposeGeneral {
+		t.Fatalf("empty intel must be read as general, got %+v", got)
+	}
+	if !strings.Contains(got.Reason, "purpose_fallback_from=analysis") {
+		t.Fatalf("reason: %s", got.Reason)
+	}
+}
+
 func TestResolveFallsBackToGeneralWhenPurposeSeriesMissing(t *testing.T) {
 	intel := &ModelIntelArgs{Latest: []ModelObservation{
 		{Generation: "grok-4.6", Effort: ModelEffortHigh, Purpose: ModelPurposeGeneral, Value: 80, CostUSD: 0.10},

@@ -245,9 +245,10 @@ predicates (plan remaining is applied automatically). With `Purpose` set
 `Effort`: quality is a floor on that job, and generation/effort are
 outputs. The daemon refreshes published scores daily into
 `StateDir/model-intel` (`claudia models intel …`; needs
-`CLAUDIA_AA_API_KEY`). A purpose with no catalog-overlapping
-observations yields to `general`. Empty `Purpose` keeps the catalog-shelf
-path. See [docs/model-intel.md](docs/model-intel.md).
+`CLAUDIA_AA_API_KEY`). `skill` is a wire alias for `purpose`. A purpose
+with no catalog-overlapping observations is interpreted as `general`.
+Empty `Purpose` keeps the catalog-shelf path. See
+[docs/model-intel.md](docs/model-intel.md).
 
 The one-shot helper `claudia.Run(ctx, prompt, cfg)` bundles `Start` +
 `Send` + `WaitForResponse` + `Stop` for session mode if you want a

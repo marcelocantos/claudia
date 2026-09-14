@@ -194,6 +194,7 @@ func decodeGrantDefWire(raw json.RawMessage) (grantDefWire, error) {
 type predicatesWire struct {
 	Mode             Capability      `json:"mode,omitempty"`
 	Purpose          ModelPurpose    `json:"purpose,omitempty"`
+	Skill            ModelPurpose    `json:"skill,omitempty"`
 	Quality          ModelQuality    `json:"quality,omitempty"`
 	Model            string          `json:"model,omitempty"`
 	Effort           ModelEffort     `json:"effort,omitempty"`
@@ -213,8 +214,9 @@ var predicatesNotOnWire = map[string]string{
 }
 
 func encodePredicatesWire(p ModelPredicates) (json.RawMessage, error) {
+	p = normalizePredicates(p)
 	return json.Marshal(predicatesWire{
-		Mode: p.Mode, Purpose: p.Purpose, Quality: p.Quality,
+		Mode: p.Mode, Purpose: p.Purpose, Skill: p.Skill, Quality: p.Quality,
 		Model: p.Model, Effort: p.Effort, PreferPlan: p.PreferPlan,
 		PreferProvider: p.PreferProvider, ExcludeProviders: p.ExcludeProviders,
 		Thresholds: p.Thresholds,
@@ -226,8 +228,12 @@ func decodePredicatesWire(raw json.RawMessage) (ModelPredicates, error) {
 	if err := json.Unmarshal(raw, &w); err != nil {
 		return ModelPredicates{}, fmt.Errorf("broker predicates: %w", err)
 	}
+	purpose := w.Purpose
+	if purpose == "" {
+		purpose = w.Skill
+	}
 	return ModelPredicates{
-		Mode: w.Mode, Purpose: w.Purpose, Quality: w.Quality,
+		Mode: w.Mode, Purpose: purpose, Skill: w.Skill, Quality: w.Quality,
 		Model: w.Model, Effort: w.Effort, PreferPlan: w.PreferPlan,
 		PreferProvider: w.PreferProvider, ExcludeProviders: w.ExcludeProviders,
 		Thresholds: w.Thresholds,

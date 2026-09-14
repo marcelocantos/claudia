@@ -599,3 +599,20 @@ func TestBrokerWireMirrorsAreComplete(t *testing.T) {
 		t.Fatalf("empty fields must be omitted on the wire: %s", raw)
 	}
 }
+
+func TestDecodePredicatesWireSkillAlias(t *testing.T) {
+	got, err := decodePredicatesWire([]byte(`{"skill":"analysis","quality":"standard"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Purpose != ModelPurposeAnalysis || got.Skill != ModelPurposeAnalysis {
+		t.Fatalf("skill alias: %+v", got)
+	}
+	raw, err := encodePredicatesWire(ModelPredicates{Skill: ModelPurposeAnalysis})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"purpose":"analysis"`) {
+		t.Fatalf("encode must materialize purpose from skill: %s", raw)
+	}
+}

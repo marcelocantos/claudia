@@ -12,14 +12,18 @@ case.
 | You pass | Resolve does |
 |---|---|
 | `Purpose` + `Quality` | Search the `(generation, effort)` grid; emit both |
+| `Skill` | Alias for `Purpose` on the Go API and the daemon wire (`skill=analysis`) |
 | `Model` and/or `Effort` | Pin; fail closed if a quality floor is set and missed |
 | neither Purpose nor pins | Catalog-shelf path (🎯T61.3) — unchanged |
 
 Empty `Quality` means `standard`. Empty `Purpose` is **not** `general`
 on the catalog path — set `ModelPurposeGeneral` when the job is broad.
-A requested purpose with no catalog-overlapping observations yields to
-`general` (the usual gap is `analysis` / HLE). A series that exists but
-misses the floor still fails closed.
+A requested purpose (or `skill`) with no catalog-overlapping
+observations is interpreted as `general` — even when the general series
+is empty too, so the catalog shelf is not scored as a phantom analysis.
+The pick records `purpose_fallback_from`. A series that exists but
+misses the floor or is token-exhausted fails closed; it does not yield
+to general.
 
 Available-tokens still veto weekly-hot, session-low, and exhausted.
 Among the rest, lower plan pressure (blue/purple slack) ranks first —
@@ -77,5 +81,5 @@ yesterday.
 ## Oracles
 
 ```bash
-go test ./... -count=1 -run 'TestParseModelSlug|TestRefreshModelIntel|TestDriftModelIntel|TestResolvePurpose|TestResolveRedYields|TestResolvePinMisses|TestResolveFallsBack|TestResolveDoesNotFallBack|TestResolveCatalogPath'
+go test ./... -count=1 -run 'TestParseModelSlug|TestRefreshModelIntel|TestDriftModelIntel|TestResolvePurpose|TestResolveRedYields|TestResolvePinMisses|TestResolveFallsBack|TestResolveDoesNotFallBack|TestResolveSkillAlias|TestResolveCatalogPath'
 ```
