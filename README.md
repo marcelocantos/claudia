@@ -365,7 +365,9 @@ connect-mode (`Config.GrokConnect`) is the analogous outlive-the-consumer
 path for Grok; Codex Session is process-local stdio.
 
 Session-id chains across resume/rotate are filesystem-backed via
-`RegisterChain` / `LookupChain`. There is no `claudiad` daemon.
+`RegisterChain` / `LookupChain`. The tmux server is not a `claudiad`
+sidecar — Claude Session lifetime is tmux. The optional host-wide
+process is `claudia broker serve` (see [Daemon](#daemon-optional)).
 
 ## grok subpackage
 

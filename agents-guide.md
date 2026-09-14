@@ -86,10 +86,11 @@ Headless `streaming-json` maps `text` → `TaskEventText`, terminal
 `end.sessionId` → `TaskEventInit` then `TaskEventResult`, and
 `error` → `TaskEventError`. Thought deltas are ignored. Tool-use
 and cost/usage are not present on this public stream — do not expect
-Claude-parity accounting or tool events. SuperGrok weekly limit /
-Extra Credits / Auto Top Up (`/usage` in the TUI) is a separate
-consumer-billing surface with **no documented API**;
-`grok -p "/usage"` is only a model prompt, not the slash command.
+Claude-parity accounting or tool events. SuperGrok weekly remaining
+is still not a Task stream: `QueryPlanUsage(ProviderGrok)` always
+fetches the undocumented billing endpoint and fails loud (unavailable
++ reason) when it breaks — never a fabricated percent.
+`grok -p "/usage"` is only a model prompt, not the TUI slash command.
 Console API team prepaid balance uses the Management API, not the
 Grok Build CLI. Details: [docs/grok-usage-billing.md](docs/grok-usage-billing.md).
 
@@ -360,7 +361,8 @@ Refresh the series with `claudia models intel refresh` (needs `CLAUDIA_AA_API_KE
 | --- | --- |
 | Claude | OAuth `GET /api/oauth/usage` → session (5h) + weekly (7d) when signed into Claude.ai |
 | Codex | ChatGPT `wham/usage` → windows classified by `limit_window_seconds` |
-| Grok | **Unavailable** (no documented SuperGrok remaining API) |
+| Grok | SuperGrok weekly pool via undocumented `cli-chat-proxy` billing (always fetched; break → unavailable + reason) |
+| Cursor | Billing-cycle remaining via undocumented dashboard `GetCurrentPeriodUsage` (always fetched; break → unavailable + reason) |
 | Bedrock | **Unavailable** (no subscription remaining surface) |
 | Ollama | **Unavailable** (local inference; no subscription remaining surface) |
 
@@ -848,7 +850,8 @@ This is the primary debugging tool when an agent is misbehaving.
 ### Session-chain tracker
 
 `RegisterChain` / `LookupChain` persist session-id chains on the
-filesystem. There is no `claudiad` sidecar.
+filesystem. That tracker is not a `claudiad` sidecar; the optional
+host-wide process is `claudia broker serve`.
 
 ## grok subpackage
 
