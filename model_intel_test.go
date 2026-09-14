@@ -251,7 +251,8 @@ func TestResolveDoesNotFallBackWhenPurposeSeriesExists(t *testing.T) {
 
 func TestResolveCatalogPathUnchangedWithoutPurpose(t *testing.T) {
 	got, err := Resolve(context.Background(), ModelPredicates{
-		Mode: CapabilityTask, Quality: ModelQualityStandard, PreferPlan: true, Usage: []PlanUsage{},
+		Mode: CapabilityTask, Quality: ModelQualityStandard, PreferPlan: true,
+		PreferProvider: ProviderClaude, Usage: []PlanUsage{},
 	})
 	if err != nil {
 		t.Fatal(err)

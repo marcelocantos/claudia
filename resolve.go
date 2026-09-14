@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -118,15 +119,9 @@ func Resolve(ctx context.Context, pred ModelPredicates) (ModelPick, error) {
 		}
 		candidates = append(candidates, catalogCand{row: row, band: band, pressure: pressure})
 	}
-	if len(candidates) == 0 {
-		return ModelPick{}, fmt.Errorf("resolve: no catalog model matches predicates")
-	}
-
-	best := candidates[0]
-	for _, c := range candidates[1:] {
-		if catalogBetter(c, best, pred.PreferProvider, wantQ) {
-			best = c
-		}
+	best, err := pickCatalog(candidates, pred.PreferProvider)
+	if err != nil {
+		return ModelPick{}, err
 	}
 	reason := fmt.Sprintf("quality=%s access=%s band=%s", best.row.Quality, best.row.Access, best.band)
 	if pred.PreferProvider != "" && best.row.Provider == pred.PreferProvider {
@@ -148,11 +143,42 @@ type catalogCand struct {
 	pressure float64
 }
 
-func catalogBetter(c, best catalogCand, prefer Provider, wantQ ModelQuality) bool {
-	if better, ok := slackDecides(c.pressure, best.pressure); ok {
-		return better
+func pickCatalog(cands []catalogCand, prefer Provider) (catalogCand, error) {
+	if len(cands) == 0 {
+		return catalogCand{}, fmt.Errorf("resolve: no catalog model matches predicates")
 	}
-	return resolveScore(c.row, prefer, wantQ) > resolveScore(best.row, prefer, wantQ)
+	bestP := cands[0].pressure
+	for _, c := range cands[1:] {
+		if c.pressure < bestP {
+			bestP = c.pressure
+		}
+	}
+	var slack []catalogCand
+	for _, c := range cands {
+		if _, decided := slackDecides(c.pressure, bestP); !decided {
+			slack = append(slack, c)
+		}
+	}
+	if prefer != "" {
+		var pref []catalogCand
+		for _, c := range slack {
+			if c.row.Provider == prefer {
+				pref = append(pref, c)
+			}
+		}
+		if len(pref) > 0 {
+			slack = pref
+		}
+	}
+	if len(slack) == 1 {
+		return slack[0], nil
+	}
+	ids := make([]string, len(slack))
+	for i, c := range slack {
+		ids[i] = string(c.row.Provider) + "/" + c.row.Model
+	}
+	sort.Strings(ids)
+	return catalogCand{}, fmt.Errorf("resolve: token-tied models %s; set PreferProvider", strings.Join(ids, " "))
 }
 
 func slackDecides(c, best float64) (cBetter bool, decided bool) {
@@ -442,27 +468,4 @@ func weeklyPressure(u PlanUsage, now time.Time, th *PlanThresholds) float64 {
 		return 0
 	}
 	return Pressure(*used, 100-rtp, thresholds)
-}
-
-func resolveScore(row CatalogModel, prefer Provider, want ModelQuality) int {
-	score := 0
-	if prefer != "" && row.Provider == prefer {
-		score += 1000
-	}
-	switch {
-	case row.Quality == want:
-		score += 100
-	case want == ModelQualityStandard && row.Quality == ModelQualityEconomy:
-		score += 40
-	case want == ModelQualityStandard && row.Quality == ModelQualityFrontier:
-		score += 20
-	case want == ModelQualityFrontier && row.Quality == ModelQualityStandard:
-		score += 40
-	case want == ModelQualityEconomy && row.Quality == ModelQualityStandard:
-		score += 40
-	}
-	if row.Access == ModelAccessPlan {
-		score += 5
-	}
-	return score
 }

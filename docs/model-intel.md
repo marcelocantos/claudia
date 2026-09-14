@@ -24,7 +24,9 @@ misses the floor still fails closed.
 Available-tokens still veto weekly-hot, session-low, and exhausted.
 Among the rest, lower plan pressure (blue/purple slack) ranks first —
 on the catalog path too, not only when a purpose series is present.
-Research cost is the next key on the intel path only.
+`PreferProvider` only breaks a slack tie. A remaining tie fails closed
+(the catalog is a set, not a ranking). Research cost is the next key
+on the intel path only.
 
 ## Store
 

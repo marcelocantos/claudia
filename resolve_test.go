@@ -5,6 +5,7 @@ package claudia
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -51,44 +52,56 @@ func TestResolveSkipsHotClaude(t *testing.T) {
 		Now:            now,
 		Usage: []PlanUsage{
 			hotClaude,
-			{Provider: ProviderGrok, Status: PlanUsageUnavailable, Reason: "unpublished"},
+			{
+				Provider: ProviderGrok, Status: PlanUsageAvailable,
+				Windows: []PlanWindow{{
+					Name: PlanWindowWeekly, RemainingPercent: floatPtr(80), UsedPercent: floatPtr(20),
+					ResetsAt: &week, LimitWindow: defaultWeeklyWindow,
+				}},
+			},
 		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got.Provider != ProviderGrok {
-		t.Fatalf("hot Claude must not win; got %+v", got)
+		t.Fatalf("hot Claude must yield to slack, not catalog order; got %+v", got)
 	}
 }
 
-func TestResolveExcludeWalksNext(t *testing.T) {
-	now := time.Now()
-	first, err := Resolve(context.Background(), ModelPredicates{
-		Mode:           CapabilityTask,
-		PreferPlan:     true,
-		PreferProvider: ProviderGrok,
-		Now:            now,
-		Usage:          []PlanUsage{{Provider: ProviderGrok, Status: PlanUsageUnavailable, Reason: "x"}},
-	})
-	if err != nil {
-		t.Fatal(err)
+func TestResolveExcludeDropsSlackWinner(t *testing.T) {
+	now := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
+	week := now.Add(3*24*time.Hour + 12*time.Hour)
+	weekly := func(p Provider, rem, used float64) PlanUsage {
+		return PlanUsage{
+			Provider: p, Status: PlanUsageAvailable,
+			Windows: []PlanWindow{{
+				Name: PlanWindowWeekly, RemainingPercent: floatPtr(rem), UsedPercent: floatPtr(used),
+				ResetsAt: &week, LimitWindow: defaultWeeklyWindow,
+			}},
+		}
 	}
-	second, err := Resolve(context.Background(), ModelPredicates{
-		Mode:             CapabilityTask,
-		PreferPlan:       true,
-		ExcludeProviders: []Provider{first.Provider},
-		Now:              now,
+	got, err := Resolve(context.Background(), ModelPredicates{
+		Mode: CapabilityTask, Quality: ModelQualityStandard, PreferPlan: true, Now: now,
+		ExcludeProviders: []Provider{ProviderCursor},
 		Usage: []PlanUsage{
-			{Provider: ProviderGrok, Status: PlanUsageUnavailable, Reason: "x"},
-			{Provider: ProviderClaude, Status: PlanUsageUnavailable, Reason: "x"},
+			weekly(ProviderCursor, 80, 20),
+			weekly(ProviderClaude, 50, 50),
+			weekly(ProviderGrok, 20, 80),
+			{
+				Provider: ProviderCodex, Status: PlanUsageAvailable,
+				Windows: []PlanWindow{{
+					Name: PlanWindowWeekly, RemainingPercent: floatPtr(0), UsedPercent: floatPtr(100),
+					ResetsAt: &week, LimitWindow: defaultWeeklyWindow,
+				}},
+			},
 		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if second.Provider == first.Provider {
-		t.Fatalf("exclude did not walk: first=%s second=%s", first.Provider, second.Provider)
+	if got.Provider != ProviderClaude {
+		t.Fatalf("excluding the slack winner must leave the next slack, got %+v", got)
 	}
 }
 
@@ -171,21 +184,34 @@ func TestResolveCatalogPathPrefersPlanSlack(t *testing.T) {
 	}
 }
 
-func TestResolveStandardPicksSonnetNotOpusOrHaiku(t *testing.T) {
-	got, err := Resolve(context.Background(), ModelPredicates{
+func TestResolveStandardFailsClosedWhenSlackTied(t *testing.T) {
+	_, err := Resolve(context.Background(), ModelPredicates{
 		Mode:       CapabilityTask,
 		Quality:    ModelQualityStandard,
 		PreferPlan: true,
 		Usage:      []PlanUsage{},
 	})
+	if err == nil {
+		t.Fatal("equal slack must not pick by catalog order")
+	}
+	if !strings.Contains(err.Error(), "token-tied") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestResolveStandardQualityExcludesOpusAndHaiku(t *testing.T) {
+	got, err := Resolve(context.Background(), ModelPredicates{
+		Mode:           CapabilityTask,
+		Quality:        ModelQualityStandard,
+		PreferPlan:     true,
+		PreferProvider: ProviderClaude,
+		Usage:          []PlanUsage{},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Quality != ModelQualityStandard {
-		t.Fatalf("standard request leaked %s (%s/%s)", got.Quality, got.Provider, got.Model)
-	}
-	if got.Model == "claude-haiku-4-5" || got.Model == "grok-4" || got.Model == "claude-opus-5" {
-		t.Fatalf("standard request picked %s", got.Model)
+	if got.Quality != ModelQualityStandard || got.Model != "claude-sonnet-5" {
+		t.Fatalf("standard+prefer claude: %+v", got)
 	}
 }
 

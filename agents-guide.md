@@ -330,11 +330,13 @@ v := claudia.ClassifyPlan(pu, time.Now(), nil)
 ok := claudia.HasAvailableTokens(pu, time.Now(), nil)
 ```
 
-**Picking a model.** Pass predicates, not a model id. Available-tokens is
-automatic (known-exhausted / weekly-hot / session-low are skipped;
-unpublished is not a veto). Among the survivors, lower plan pressure
-(blue/purple slack) wins — on the catalog path and the purpose-quality
-path. Resolve does not spawn.
+**Picking a model.** Pass predicates, not a model id. The catalog is a
+set of spawnable rows, not a ranking. Available-tokens is automatic
+(known-exhausted / weekly-hot / session-low are skipped; unpublished is
+not a veto). Among the survivors, lower plan pressure (blue/purple slack)
+wins. `PreferProvider` only breaks a slack tie. A remaining tie fails
+closed — Resolve will not pick the first catalog row. Resolve does not
+spawn.
 
 ```go
 pick, err := claudia.Resolve(ctx, claudia.ModelPredicates{
