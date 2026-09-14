@@ -239,6 +239,15 @@ for hermetic Claude/Grok/Codex isolation. Cursor exclusive is ACP
 `mcpServers` only (no project mcp.json / HOME rewrite; real-home auth
 or `CURSOR_API_KEY`).
 
+**Picking a model.** `Resolve` chooses a catalog `(Provider, Model)` from
+predicates (plan remaining is applied automatically). With `Purpose` set
+(`coding`, `analysis`, `agent`, `browse`, `general`) it also returns
+`Effort`: quality is a floor on that job, and generation/effort are
+outputs. The daemon refreshes published scores daily into
+`StateDir/model-intel` (`claudia models intel …`; needs
+`CLAUDIA_AA_API_KEY`). Empty `Purpose` keeps the catalog-shelf path.
+See [docs/model-intel.md](docs/model-intel.md).
+
 The one-shot helper `claudia.Run(ctx, prompt, cfg)` bundles `Start` +
 `Send` + `WaitForResponse` + `Stop` for session mode if you want a
 single call.
