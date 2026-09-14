@@ -108,8 +108,11 @@ this API.
 `$CLAUDIA_PLAN_CACHE` or `UserCacheDir()/claudia/plan-usage/`. A fresh
 snapshot (default TTL 5m) is returned without vendor calls. A miss takes
 an exclusive lease (`lock.json` + flock); the holder heartbeats; a quiet
-holder (default 20s) is stolen; waiters poll until the lease is released
-and then read the snapshot. This is the brokerless fallback — not a daemon.
+holder (default 20s) is stolen. The holder writes the snapshot before
+releasing the lease and rechecks under the lock before fetching, so a
+waiter that observed a miss does not call the vendor again. Unique tmp
+names keep overlapping writers (lease steal) from clobbering. This is
+the brokerless fallback — not a daemon.
 When a broker is listening, the daemon is the one evaluator and this
 cache is the degraded path (🎯T2.9; see [metaharness.md](metaharness.md)).
 
@@ -122,8 +125,12 @@ not keep a second copy of the vertices.
 and session-low/exhausted and 429 reasons; unpublished usage stays eligible.
 
 `Resolve` picks a catalog `(Provider, Model)` from predicates. It does not
-`Start`, `SetModel`, or `Migrate`. With `Purpose` set it reads the 🎯T71
-intel series and also returns `Effort` — see [model-intel.md](model-intel.md).
+`Start`, `SetModel`, or `Migrate`. The catalog is a set: available-tokens
+is a veto, then lower plan slack wins; `PreferProvider` only breaks a
+slack tie. With `Purpose` (or wire `skill`) set it reads the 🎯T71 intel
+series and also returns `Effort`. A purpose with no catalog-overlapping
+observations is interpreted as `general` (`purpose_fallback_from` on the
+pick). See [model-intel.md](model-intel.md).
 
 ## Residual / honesty
 

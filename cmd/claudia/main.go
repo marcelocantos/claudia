@@ -70,7 +70,8 @@ func run(args []string) int {
 func usageText() string {
 	return `usage: claudia broker <serve|status|grants|tail|usage|release|install|uninstall|socket> [flags]
        claudia models intel <refresh|latest|history|drift> [flags]
-       claudia version
+       claudia version | --version | -v
+       claudia --help | -h
        claudia --help-agent
 `
 }

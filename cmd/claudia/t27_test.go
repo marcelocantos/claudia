@@ -263,15 +263,25 @@ func startCLIDaemon(t *testing.T, usage []claudia.PlanUsage) (string, *claudia.B
 
 func captureStdout(t *testing.T, fn func() error) string {
 	t.Helper()
+	return captureFD(t, &os.Stdout, fn)
+}
+
+func captureStderr(t *testing.T, fn func() error) string {
+	t.Helper()
+	return captureFD(t, &os.Stderr, fn)
+}
+
+func captureFD(t *testing.T, fd **os.File, fn func() error) string {
+	t.Helper()
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
 	}
-	old := os.Stdout
-	os.Stdout = w
+	old := *fd
+	*fd = w
 	fnErr := fn()
 	_ = w.Close()
-	os.Stdout = old
+	*fd = old
 	body, _ := io.ReadAll(r)
 	if fnErr != nil {
 		t.Fatal(fnErr)

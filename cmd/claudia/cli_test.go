@@ -24,6 +24,22 @@ func TestCLIVersionFlags(t *testing.T) {
 	}
 }
 
+func TestCLIHelp(t *testing.T) {
+	for _, flag := range []string{"--help", "-h", "help"} {
+		errOut := captureStderr(t, func() error {
+			if code := run([]string{flag}); code != 0 {
+				t.Fatalf("%s: exit %d", flag, code)
+			}
+			return nil
+		})
+		for _, want := range []string{"usage: claudia broker", "--version", "--help-agent"} {
+			if !strings.Contains(errOut, want) {
+				t.Fatalf("%s missing %q:\n%s", flag, want, errOut)
+			}
+		}
+	}
+}
+
 func TestCLIHelpAgent(t *testing.T) {
 	out := captureStdout(t, func() error {
 		if code := run([]string{"--help-agent"}); code != 0 {

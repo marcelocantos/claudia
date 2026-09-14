@@ -191,8 +191,9 @@ bullseye.yaml is dirty — commit the ledger with the next code change.
 Next: 🎯T2.7 (brew-services stanza landing this session), then a
 claudia release so jevons and ytt can drop `replace`, then 🎯T63
 (jevonsd restart on a clean tree against that tag), 🎯T62 (TLA+),
-🎯T64 (Acquire/pool; blocked on T2.3), 🎯T65 (plan-cache `-race`
-flake).
+🎯T64 (Acquire/pool; blocked on T2.3). 🎯T65's plan-cache `-race`
+flake is fixed on v0.33.0 (write-before-release + recheck under lease);
+the target stays open pending vcheck.
 
 Hazards learned: an installed daemon is reachable from every `go test`
 on the machine — consumer hermetic suites must set

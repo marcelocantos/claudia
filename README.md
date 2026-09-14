@@ -248,8 +248,10 @@ tie. With `Purpose` set
 outputs. The daemon refreshes published scores daily into
 `StateDir/model-intel` (`claudia models intel …`; needs
 `CLAUDIA_AA_API_KEY`). `skill` is a wire alias for `purpose`. A purpose
-with no catalog-overlapping observations is interpreted as `general`.
-Empty `Purpose` keeps the catalog-shelf path. See
+with no catalog-overlapping observations is interpreted as `general`
+(`purpose_fallback_from` on the pick), even when the general series is
+empty. A series that exists but misses the floor or is token-exhausted
+fails closed. Empty `Purpose` keeps the catalog-shelf path. See
 [docs/model-intel.md](docs/model-intel.md).
 
 The one-shot helper `claudia.Run(ctx, prompt, cfg)` bundles `Start` +

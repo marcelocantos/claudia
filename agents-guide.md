@@ -316,7 +316,8 @@ all, err := claudia.QueryAllPlanUsage(ctx, nil)
 ```
 
 Shared refresh (TTL cache under the user cache dir, exclusive lease,
-heartbeat steal if the holder goes quiet, waiters poll):
+heartbeat steal if the holder goes quiet, write-then-release, recheck
+under the lock before a second fetch, waiters poll):
 
 ```go
 all, err := claudia.LoadPlanUsage(ctx, nil) // CLAUDIA_PLAN_CACHE overrides the dir
