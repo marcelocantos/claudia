@@ -23,7 +23,7 @@ floors:            # per-dimension held-tier ratchet; below floor => DRIFT
   build: 2
   docs: 2
   perf: 0          # no benchmark suite yet
-  vcs: 0           # no committed git hooks yet
+  vcs: 2           # committed pre-push hook is the owner gate
   agent: 2
 
 tiers:
@@ -364,6 +364,15 @@ items:
     evidence: {absent: {make_target: bench}}
 
   # ============================== VCS / HISTORY =========================
+  - id: vcs.pre-push-hook
+    dim: vcs
+    desc: Committed pre-push hook runs make gate before origin push
+    state: enforced
+    cadence: once-must-hold
+    enforce: blocking
+    tier: 2
+    evidence: {file: {path: scripts/hooks/pre-push}}
+
   - id: vcs.pre-commit-hook
     dim: vcs
     desc: Committed git hooks (scripts/hooks) gate locally before commit
@@ -371,7 +380,7 @@ items:
     cadence: once-must-hold
     enforce: informational
     tier: 3
-    reason: No scripts/hooks; core.hooksPath is the default .git/hooks.
+    reason: Owner gate is pre-push (make gate), not pre-commit.
     evidence: {absent: {file: {path: scripts/hooks/pre-commit}}}
 
   # =================== AGENT-READINESS / ONBOARDING ====================

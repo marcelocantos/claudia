@@ -15,7 +15,8 @@ make supervisor-install        # host daemon under supervisord (evicts brew/laun
 Owner ships to `master` by gated push (`make gate`, then
 `git push origin master`). Ship only when asked. Do not open an owner
 release-prep PR. Inbound PRs from others stay. After clone:
-`git config core.hooksPath scripts/hooks`.
+`make hooks` (or `git config core.hooksPath scripts/hooks`).
+Flow: [docs/gate.md](docs/gate.md).
 
 ## Live tests (backend changes)
 

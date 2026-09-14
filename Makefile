@@ -2,7 +2,10 @@
 # Pre-push runs this. Does not require a clean tree — /ship does.
 # Never pipe go test: `go test ... | tail` reports tail's status, so a
 # failing suite can print green and exit 0.
-.PHONY: gate gate-full bullseye
+.PHONY: gate gate-full bullseye hooks
+hooks:
+	@git config core.hooksPath scripts/hooks && echo "✓ core.hooksPath=scripts/hooks"
+
 gate:
 	@go vet ./... && echo "✓ vet"
 	@go test -race -count=1 ./... && echo "✓ tests"

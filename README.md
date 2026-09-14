@@ -240,7 +240,9 @@ for hermetic Claude/Grok/Codex isolation. Cursor exclusive is ACP
 or `CURSOR_API_KEY`).
 
 **Picking a model.** `Resolve` chooses a catalog `(Provider, Model)` from
-predicates (plan remaining is applied automatically). With `Purpose` set
+predicates. The catalog is a set, not a ranking: available-tokens is a
+veto, then lower plan slack wins. `PreferProvider` only breaks a slack
+tie. With `Purpose` set
 (`coding`, `analysis`, `agent`, `browse`, `general`) it also returns
 `Effort`: quality is a floor on that job, and generation/effort are
 outputs. The daemon refreshes published scores daily into
