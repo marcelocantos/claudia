@@ -126,6 +126,24 @@ func TestResolveClaudeFirstWhenHeadroom(t *testing.T) {
 	}
 }
 
+func TestResolveStandardPicksSonnetNotOpusOrHaiku(t *testing.T) {
+	got, err := Resolve(context.Background(), ModelPredicates{
+		Mode:       CapabilityTask,
+		Quality:    ModelQualityStandard,
+		PreferPlan: true,
+		Usage:      []PlanUsage{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Quality != ModelQualityStandard {
+		t.Fatalf("standard request leaked %s (%s/%s)", got.Quality, got.Provider, got.Model)
+	}
+	if got.Model == "claude-haiku-4-5" || got.Model == "grok-4" || got.Model == "claude-opus-5" {
+		t.Fatalf("standard request picked %s", got.Model)
+	}
+}
+
 func TestResolveFailsClosed(t *testing.T) {
 	_, err := Resolve(context.Background(), ModelPredicates{
 		Mode:             CapabilityTask,

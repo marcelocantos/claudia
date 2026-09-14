@@ -336,6 +336,7 @@ unpublished is not a veto). Resolve does not spawn.
 ```go
 pick, err := claudia.Resolve(ctx, claudia.ModelPredicates{
     Mode:           claudia.CapabilityTask, // or CapabilitySession
+    Quality:        claudia.ModelQualityStandard, // hard filter; empty means standard
     PreferPlan:     true,
     PreferProvider: claudia.ProviderGrok, // optional host preference
 })

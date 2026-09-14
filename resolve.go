@@ -14,7 +14,10 @@ import (
 type ModelPredicates struct {
 	// Mode is CapabilityTask or CapabilitySession. Empty means either.
 	Mode Capability
-	// Quality is frontier / standard / economy. Empty means standard.
+	// Quality is the intelligence band: frontier / standard / economy.
+	// Empty means standard. Resolve treats this as a hard filter, not a
+	// soft preference — economy (Haiku-class) never substitutes for
+	// standard, and frontier is not selected unless asked for.
 	Quality ModelQuality
 	// PreferPlan prefers subscription-harness rows over direct APIs.
 	PreferPlan bool
@@ -80,6 +83,9 @@ func Resolve(ctx context.Context, pred ModelPredicates) (ModelPick, error) {
 			continue
 		}
 		if pred.PreferPlan && row.Access != ModelAccessPlan {
+			continue
+		}
+		if row.Quality != wantQ {
 			continue
 		}
 		u, has := byProv[row.Provider]
