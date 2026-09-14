@@ -59,9 +59,9 @@ type planCacheLease struct {
 
 // LoadPlanUsage returns a host-shared plan-usage snapshot (🎯T61.2).
 // Fresh cache hits do not call vendor endpoints. A miss takes an exclusive
-// lease: the holder fetches and writes the snapshot before releasing, so a
-// waiter cannot start a second fetch in the publish window. Waiters poll
-// until the lease is released or goes quiet (heartbeat older than
+// lease, rechecks the snapshot, then fetches and writes before releasing
+// so a waiter cannot start a second fetch in the publish window. Waiters
+// poll until the lease is released or goes quiet (heartbeat older than
 // LockStale), then either steal or read the new snapshot.
 func LoadPlanUsage(ctx context.Context, args *PlanUsageCacheArgs) ([]PlanUsage, error) {
 	if args == nil {
@@ -142,6 +142,14 @@ func LoadPlanUsage(ctx context.Context, args *PlanUsageCacheArgs) ([]PlanUsage, 
 			return nil, err
 		}
 		if held != nil {
+			// Recheck under the lease. A sibling can publish and
+			// release in the window between the miss above and
+			// tryHoldPlanLease; fetching again would break
+			// single-flight (🎯T65).
+			if snap, ok := readFreshPlanSnapshot(snapPath, clockNow(args.Now), ttl); ok {
+				held.release()
+				return snap.Backends, nil
+			}
 			backends, ferr := fetch(ctx)
 			writePlanLeaseHeartbeat(leasePath, clockNow(args.Now))
 			if ferr != nil {
