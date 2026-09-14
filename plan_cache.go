@@ -59,9 +59,10 @@ type planCacheLease struct {
 
 // LoadPlanUsage returns a host-shared plan-usage snapshot (🎯T61.2).
 // Fresh cache hits do not call vendor endpoints. A miss takes an exclusive
-// lease: the holder fetches and writes; waiters poll until the lease is
-// released or goes quiet (heartbeat older than LockStale), then either
-// steal or read the new snapshot.
+// lease: the holder fetches and writes the snapshot before releasing, so a
+// waiter cannot start a second fetch in the publish window. Waiters poll
+// until the lease is released or goes quiet (heartbeat older than
+// LockStale), then either steal or read the new snapshot.
 func LoadPlanUsage(ctx context.Context, args *PlanUsageCacheArgs) ([]PlanUsage, error) {
 	if args == nil {
 		args = &PlanUsageCacheArgs{}
@@ -143,15 +144,17 @@ func LoadPlanUsage(ctx context.Context, args *PlanUsageCacheArgs) ([]PlanUsage, 
 		if held != nil {
 			backends, ferr := fetch(ctx)
 			writePlanLeaseHeartbeat(leasePath, clockNow(args.Now))
-			held.release()
 			if ferr != nil {
+				held.release()
 				if snap, err2 := readPlanSnapshot(snapPath); err2 == nil && snap != nil {
 					return snap.Backends, ferr
 				}
 				return nil, ferr
 			}
 			doc := planCacheSnapshot{FetchedAt: clockNow(args.Now), Backends: backends}
-			if err := writePlanSnapshot(snapPath, doc); err != nil {
+			err := writePlanSnapshot(snapPath, doc)
+			held.release()
+			if err != nil {
 				return backends, err
 			}
 			return backends, nil
@@ -227,11 +230,32 @@ func writePlanSnapshot(path string, doc planCacheSnapshot) error {
 		return err
 	}
 	raw = append(raw, '\n')
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+	// Unique tmp so two overlapping writers (lease steal) cannot
+	// rename each other's snapshot.json.tmp out from under them.
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp.*")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(raw); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	return nil
 }
 
 type planLeaseHold struct {
