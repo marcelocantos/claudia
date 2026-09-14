@@ -343,6 +343,19 @@ pick, err := claudia.Resolve(ctx, claudia.ModelPredicates{
 task := claudia.NewTask(claudia.TaskConfig{Provider: pick.Provider, Model: pick.Model, WorkDir: dir})
 ```
 
+**Purpose-quality (🎯T71).** Set `Purpose` (`coding`, `analysis`, `agent`, `browse`, `general`) to pick from the daily intel series. Quality is then a floor on that purpose, not a generation shelf. Generation and effort come back on the pick; the host does not specify them unless pinning. Resolve chooses the cheapest token-eligible pair (research `$` per task, then plan slack so weekly-hot / red yields to under / locked). Empty `Purpose` keeps the catalog-shelf path above.
+
+```go
+pick, err := claudia.Resolve(ctx, claudia.ModelPredicates{
+    Mode:    claudia.CapabilityTask,
+    Purpose: claudia.ModelPurposeCoding,
+    Quality: claudia.ModelQualityStandard,
+})
+// pick.Model and pick.Effort are outputs
+```
+
+Refresh the series with `claudia models intel refresh` (needs `CLAUDIA_AA_API_KEY`). The daemon repeats that at most daily into `StateDir/model-intel`. History and drift are first-class: a later fetch appends; a source-revision change is a board event, not a model move. See [docs/model-intel.md](docs/model-intel.md).
+
 | Provider | Behaviour |
 | --- | --- |
 | Claude | OAuth `GET /api/oauth/usage` → session (5h) + weekly (7d) when signed into Claude.ai |

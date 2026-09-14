@@ -193,7 +193,10 @@ func decodeGrantDefWire(raw json.RawMessage) (grantDefWire, error) {
 // clock. Thresholds travel because they change the pick.
 type predicatesWire struct {
 	Mode             Capability      `json:"mode,omitempty"`
+	Purpose          ModelPurpose    `json:"purpose,omitempty"`
 	Quality          ModelQuality    `json:"quality,omitempty"`
+	Model            string          `json:"model,omitempty"`
+	Effort           ModelEffort     `json:"effort,omitempty"`
 	PreferPlan       bool            `json:"prefer_plan,omitempty"`
 	PreferProvider   Provider        `json:"prefer_provider,omitempty"`
 	ExcludeProviders []Provider      `json:"exclude_providers,omitempty"`
@@ -205,12 +208,14 @@ type predicatesWire struct {
 var predicatesNotOnWire = map[string]string{
 	"Usage": "the daemon answers from its own snapshot",
 	"Cache": "the daemon is the cache",
+	"Intel": "the daemon reads StateDir/model-intel",
 	"Now":   "the daemon reads its own clock",
 }
 
 func encodePredicatesWire(p ModelPredicates) (json.RawMessage, error) {
 	return json.Marshal(predicatesWire{
-		Mode: p.Mode, Quality: p.Quality, PreferPlan: p.PreferPlan,
+		Mode: p.Mode, Purpose: p.Purpose, Quality: p.Quality,
+		Model: p.Model, Effort: p.Effort, PreferPlan: p.PreferPlan,
 		PreferProvider: p.PreferProvider, ExcludeProviders: p.ExcludeProviders,
 		Thresholds: p.Thresholds,
 	})
@@ -222,7 +227,8 @@ func decodePredicatesWire(raw json.RawMessage) (ModelPredicates, error) {
 		return ModelPredicates{}, fmt.Errorf("broker predicates: %w", err)
 	}
 	return ModelPredicates{
-		Mode: w.Mode, Quality: w.Quality, PreferPlan: w.PreferPlan,
+		Mode: w.Mode, Purpose: w.Purpose, Quality: w.Quality,
+		Model: w.Model, Effort: w.Effort, PreferPlan: w.PreferPlan,
 		PreferProvider: w.PreferProvider, ExcludeProviders: w.ExcludeProviders,
 		Thresholds: w.Thresholds,
 	}, nil
@@ -233,8 +239,11 @@ type pickWire struct {
 	Provider Provider     `json:"provider"`
 	Model    string       `json:"model"`
 	Quality  ModelQuality `json:"quality,omitempty"`
+	Purpose  ModelPurpose `json:"purpose,omitempty"`
+	Effort   ModelEffort  `json:"effort,omitempty"`
 	Access   ModelAccess  `json:"access,omitempty"`
 	Band     PlanBand     `json:"band,omitempty"`
+	CostUSD  float64      `json:"cost_usd,omitempty"`
 	Reason   string       `json:"reason,omitempty"`
 }
 

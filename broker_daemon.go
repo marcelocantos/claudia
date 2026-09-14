@@ -68,6 +68,13 @@ type BrokerDaemonOptions struct {
 	DisableMCPHost bool
 	// MCPListenAddr overrides the MCP loopback bind (default 127.0.0.1:0).
 	MCPListenAddr string
+	// IntelInterval is how often the daemon refreshes model intel.
+	// Zero uses DefaultModelIntelInterval (24h).
+	IntelInterval time.Duration
+	// DisableIntel skips the daily ingest (tests).
+	DisableIntel bool
+	// IntelRefresh replaces RefreshModelIntel (tests).
+	IntelRefresh func(context.Context) error
 }
 
 // DefaultRestartNudge is what a relaunched seat is told on boot.
@@ -218,6 +225,10 @@ func NewBrokerDaemon(opts BrokerDaemonOptions) (*BrokerDaemon, error) {
 	d.wg.Add(2)
 	go func() { defer d.wg.Done(); d.usage.run(d.ctx) }()
 	go func() { defer d.wg.Done(); d.monitor() }()
+	if !opts.DisableIntel {
+		d.wg.Add(1)
+		go func() { defer d.wg.Done(); d.intelLoop() }()
+	}
 	if !opts.DisableResume {
 		d.wg.Add(1)
 		go func() { defer d.wg.Done(); defer close(d.resumeDone); d.resumeSeats() }()
@@ -238,6 +249,36 @@ func (d *BrokerDaemon) Run(ctx context.Context) error {
 	case <-d.ctx.Done():
 	}
 	return d.Close()
+}
+
+func (d *BrokerDaemon) intelLoop() {
+	interval := d.opts.IntelInterval
+	if interval <= 0 {
+		interval = DefaultModelIntelInterval
+	}
+	d.maybeIntel(d.ctx)
+	for {
+		select {
+		case <-d.ctx.Done():
+			return
+		case <-d.clock.After(interval):
+			d.maybeIntel(d.ctx)
+		}
+	}
+}
+
+func (d *BrokerDaemon) maybeIntel(ctx context.Context) {
+	if d.opts.IntelRefresh != nil {
+		if err := d.opts.IntelRefresh(ctx); err != nil {
+			d.log.Warn("model intel refresh failed", "err", err)
+		}
+		return
+	}
+	dir := filepath.Join(d.opts.StateDir, modelIntelDirName)
+	_, err := RefreshModelIntel(ctx, &ModelIntelArgs{Dir: dir, Now: d.clock.Now()})
+	if err != nil {
+		d.log.Debug("model intel refresh skipped", "err", err)
+	}
 }
 
 // Close stops serving. Seats are left running: tmux windows and
@@ -812,6 +853,9 @@ func (d *BrokerDaemon) handleResolve(c *broker.ClientConn, req *broker.Request) 
 	}
 	pred.Usage = usage
 	pred.Now = d.clock.Now()
+	if pred.Purpose != "" || pred.Model != "" || pred.Effort != "" {
+		pred.Intel = &ModelIntelArgs{Dir: filepath.Join(d.opts.StateDir, modelIntelDirName), Now: pred.Now}
+	}
 	pick, err := Resolve(d.ctx, pred)
 	if err != nil {
 		_ = c.Fail(req.ID, err)

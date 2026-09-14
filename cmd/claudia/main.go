@@ -11,6 +11,7 @@
 //	claudia broker release NAME [--detach]
 //	claudia broker install|uninstall  launchd user agent (macOS)
 //	claudia broker socket           print the socket path
+//	claudia models intel …          purpose-quality series (🎯T71)
 package main
 
 import (
@@ -46,6 +47,8 @@ func run(args []string) int {
 	switch args[0] {
 	case "broker":
 		err = brokerCmd(args[1:])
+	case "models":
+		err = modelsCmd(args[1:])
 	case "version", "--version", "-v":
 		fmt.Println(claudia.Version)
 	case "-h", "--help", "help":
@@ -66,6 +69,7 @@ func run(args []string) int {
 
 func usageText() string {
 	return `usage: claudia broker <serve|status|grants|tail|usage|release|install|uninstall|socket> [flags]
+       claudia models intel <refresh|latest|history|drift> [flags]
        claudia version
        claudia --help-agent
 `
@@ -457,7 +461,7 @@ var launchdEnv = []string{
 	"XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME",
 	"CLAUDE_BIN", "CODEX_BIN", "GROK_BIN", "CURSOR_BIN", "GROK_HOME",
 	"CLAUDIA_GROK_CONNECT",
-	"CLAUDIA_PLAN_CACHE", "CLAUDIA_CODEX_AUTH_PATH",
+	"CLAUDIA_PLAN_CACHE", "CLAUDIA_CODEX_AUTH_PATH", "CLAUDIA_MODEL_INTEL",
 }
 
 // launchdEnvXML renders the captured environment as plist dict entries.

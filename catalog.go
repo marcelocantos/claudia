@@ -13,7 +13,9 @@ const (
 	ModelAccessDirect ModelAccess = "direct"
 )
 
-// ModelQuality is a coarse capability tier.
+// ModelQuality is a capability floor. On the catalog path it is a
+// generation shelf. When Resolve is given a Purpose it is a floor on
+// that purpose's intel series (🎯T71).
 type ModelQuality string
 
 const (

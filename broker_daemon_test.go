@@ -86,6 +86,7 @@ func (f *daemonFixture) boot(t *testing.T, resume bool, usage []PlanUsage) {
 		SocketPath:    f.sock,
 		StateDir:      f.state,
 		DisableResume: !resume,
+		DisableIntel:  true,
 		RestartNudge:  "restart-nudge",
 		UsageFetch: func(context.Context) ([]PlanUsage, error) {
 			f.mu.Lock()

@@ -1,0 +1,95 @@
+{
+  "data": [
+    {
+      "name": "Claude Opus 4.6 (High)",
+      "slug": "claude-opus-4-6",
+      "intelligence_index_version": 4.3,
+      "evaluations": {
+        "artificial_analysis_intelligence_index": 82,
+        "artificial_analysis_coding_index": 80,
+        "artificial_analysis_agentic_index": 79
+      },
+      "artificial_analysis_intelligence_index_cost": {
+        "cost_per_task": { "total_cost": 0.5 }
+      }
+    },
+    {
+      "name": "Claude Opus 4.6 (Adaptive)",
+      "slug": "claude-opus-4-6-adaptive",
+      "intelligence_index_version": 4.3,
+      "evaluations": {
+        "artificial_analysis_intelligence_index": 74,
+        "artificial_analysis_coding_index": 71,
+        "artificial_analysis_agentic_index": 70
+      },
+      "artificial_analysis_intelligence_index_cost": {
+        "cost_per_task": { "total_cost": 0.2 }
+      }
+    },
+    {
+      "name": "Claude Sonnet 4.6 (High)",
+      "slug": "claude-sonnet-4-6-high",
+      "intelligence_index_version": 4.3,
+      "evaluations": {
+        "artificial_analysis_intelligence_index": 72,
+        "artificial_analysis_coding_index": 71,
+        "artificial_analysis_agentic_index": 68
+      },
+      "artificial_analysis_intelligence_index_cost": {
+        "cost_per_task": { "total_cost": 0.15 }
+      }
+    },
+    {
+      "name": "Claude Sonnet 4.6 (Max)",
+      "slug": "claude-sonnet-4-6-max",
+      "intelligence_index_version": 4.3,
+      "evaluations": {
+        "artificial_analysis_intelligence_index": 77,
+        "artificial_analysis_coding_index": 76,
+        "artificial_analysis_agentic_index": 73
+      },
+      "artificial_analysis_intelligence_index_cost": {
+        "cost_per_task": { "total_cost": 0.25 }
+      }
+    },
+    {
+      "name": "Claude Haiku 4.5",
+      "slug": "claude-haiku-4-5",
+      "intelligence_index_version": 4.3,
+      "evaluations": {
+        "artificial_analysis_intelligence_index": 48,
+        "artificial_analysis_coding_index": 40,
+        "artificial_analysis_agentic_index": 38
+      },
+      "artificial_analysis_intelligence_index_cost": {
+        "cost_per_task": { "total_cost": 0.02 }
+      }
+    },
+    {
+      "name": "Grok 4.6 (High)",
+      "slug": "grok-4.6",
+      "intelligence_index_version": 4.3,
+      "evaluations": {
+        "artificial_analysis_intelligence_index": 80,
+        "artificial_analysis_coding_index": 78,
+        "artificial_analysis_agentic_index": 76
+      },
+      "artificial_analysis_intelligence_index_cost": {
+        "cost_per_task": { "total_cost": 0.1 }
+      }
+    },
+    {
+      "name": "GPT-5 Codex (High)",
+      "slug": "gpt-5-codex",
+      "intelligence_index_version": 4.3,
+      "evaluations": {
+        "artificial_analysis_intelligence_index": 69,
+        "artificial_analysis_coding_index": 68,
+        "artificial_analysis_agentic_index": 66
+      },
+      "artificial_analysis_intelligence_index_cost": {
+        "cost_per_task": { "total_cost": 0.12 }
+      }
+    }
+  ]
+}

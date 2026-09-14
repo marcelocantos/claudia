@@ -248,6 +248,7 @@ func startCLIDaemon(t *testing.T, usage []claudia.PlanUsage) (string, *claudia.B
 		SocketPath:    sock,
 		StateDir:      filepath.Join(dir, "state"),
 		DisableResume: true,
+		DisableIntel:  true,
 		UsageTTL:      time.Hour,
 		UsageFetch: func(context.Context) ([]claudia.PlanUsage, error) {
 			return usage, nil

@@ -122,7 +122,8 @@ not keep a second copy of the vertices.
 and session-low/exhausted and 429 reasons; unpublished usage stays eligible.
 
 `Resolve` picks a catalog `(Provider, Model)` from predicates. It does not
-`Start`, `SetModel`, or `Migrate`.
+`Start`, `SetModel`, or `Migrate`. With `Purpose` set it reads the 🎯T71
+intel series and also returns `Effort` — see [model-intel.md](model-intel.md).
 
 ## Residual / honesty
 

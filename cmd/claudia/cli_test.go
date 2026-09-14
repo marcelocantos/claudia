@@ -33,6 +33,7 @@ func TestCLIHelpAgent(t *testing.T) {
 	})
 	for _, want := range []string{
 		"usage: claudia broker",
+		"claudia models intel",
 		"Daemon: `claudia broker`",
 		"CLAUDIA_NO_BROKER=1",
 	} {
