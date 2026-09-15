@@ -1,0 +1,1 @@
+{"v":1,"type":"grants_result","id":"g13","body":{"grants":[{"name":"jv-worker-1","provider":"grok","session_id":"sid-1","workdir":"/w","owned":true,"alive":true,"turn_caps":{"can_interrupt":true,"can_steer":true,"steer_policy":"finish_slice","busy_on_second_submit":"supersede"}}]}}

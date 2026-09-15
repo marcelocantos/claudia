@@ -1,0 +1,1 @@
+{"v":1,"type":"error","id":"g6","body":{"code":"unsupported_value","message":"mode \"nudge\" is not one of \"submit\", \"steer\", \"interrupt\", \"queue\"","field":"mode","value":"nudge"}}

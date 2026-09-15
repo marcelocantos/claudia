@@ -501,7 +501,7 @@ type Response struct {
 	AgentEvent     *AgentEventMessage
 	AgentTerm      *AgentTermMessage
 	AgentGone      *AgentGoneMessage
-	Sent           *NamedResponse
+	Sent           *SentResponse
 	Interrupted    *NamedResponse
 	ModelSet       *NamedResponse
 	Migrated       *MigrateResponse
@@ -587,7 +587,7 @@ var responseSpecs = map[MessageType]bodySpec[Response]{
 	TypeAgentEvent:      spec("agent_event body", func(r *Response) **AgentEventMessage { return &r.AgentEvent }, false),
 	TypeAgentTerm:       spec("agent_term body", func(r *Response) **AgentTermMessage { return &r.AgentTerm }, false),
 	TypeAgentGone:       spec("agent_gone body", func(r *Response) **AgentGoneMessage { return &r.AgentGone }, false),
-	TypeSent:            spec("sent body", func(r *Response) **NamedResponse { return &r.Sent }, false),
+	TypeSent:            spec("sent body", func(r *Response) **SentResponse { return &r.Sent }, false),
 	TypeInterrupted:     spec("interrupted body", func(r *Response) **NamedResponse { return &r.Interrupted }, false),
 	TypeModelSet:        spec("model_set body", func(r *Response) **NamedResponse { return &r.ModelSet }, false),
 	TypeMigrated:        spec("migrated body", func(r *Response) **MigrateResponse { return &r.Migrated }, false),

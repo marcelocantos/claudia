@@ -261,6 +261,9 @@ type GrantResponse struct {
 	// unowned: some events were lost and the consumer must not treat the
 	// replayed history as complete.
 	Lagged bool `json:"lagged,omitempty"`
+	// TurnCaps is what the seat's provider can do with a busy turn
+	// (🎯T72.3). Absent from a daemon that predates it.
+	TurnCaps *TurnCaps `json:"turn_caps,omitempty"`
 }
 
 // AgentEventMessage is one claudia.Event on a grant connection.
@@ -301,18 +304,84 @@ type NamedResponse struct {
 	Name string `json:"name"`
 }
 
+// SendMode is the host intent for one user-text delivery (🎯T72.3). It is
+// the wire spelling of claudia.DeliveryMode, converted at the daemon
+// boundary the way Provider is; this package cannot import claudia.
+type SendMode string
+
+// Send modes. An absent mode normalises to SendModeSubmit on receipt, so a
+// pre-🎯T72 client keeps today's behaviour without knowing the field exists.
+const (
+	// SendModeSubmit starts a turn when the seat is idle (today's send).
+	SendModeSubmit SendMode = "submit"
+	// SendModeSteer folds the text into the running turn.
+	SendModeSteer SendMode = "steer"
+	// SendModeInterrupt cancels the open turn, then submits the text.
+	SendModeInterrupt SendMode = "interrupt"
+	// SendModeQueue asks the daemon to acknowledge a host-side enqueue;
+	// nothing is written to the seat.
+	SendModeQueue SendMode = "queue"
+)
+
+// SendModes lists every mode in wire order. TestEverySendModeHasAVector
+// walks it.
+func SendModes() []SendMode {
+	return []SendMode{SendModeSubmit, SendModeSteer, SendModeInterrupt, SendModeQueue}
+}
+
 // SendRequest writes a user turn.
 type SendRequest struct {
 	Name string `json:"name"`
 	Text string `json:"text"`
+	// Mode is the delivery intent. Empty normalises to SendModeSubmit.
+	Mode SendMode `json:"mode,omitempty"`
 }
 
-// Validate checks the name.
+// Validate checks the name and normalises the mode.
 func (r *SendRequest) Validate() error {
 	if strings.TrimSpace(r.Name) == "" {
 		return &ProtocolError{Code: CodeMissingField, Field: "name", Msg: "grant name is required"}
 	}
+	switch r.Mode {
+	case "":
+		r.Mode = SendModeSubmit
+	case SendModeSubmit, SendModeSteer, SendModeInterrupt, SendModeQueue:
+	default:
+		return &ProtocolError{Code: CodeUnsupportedValue, Field: "mode", Value: string(r.Mode),
+			Msg: fmt.Sprintf("mode %q is not one of %q, %q, %q, %q", r.Mode,
+				SendModeSubmit, SendModeSteer, SendModeInterrupt, SendModeQueue)}
+	}
 	return nil
+}
+
+// SentResponse acknowledges a send and reports what the daemon actually
+// did with it. Mode, Mechanism and PhaseBefore are additive (🎯T72.3): a
+// daemon that predates them answers with the name alone.
+type SentResponse struct {
+	Name string `json:"name"`
+	// Mode is the delivery mode the daemon acted on, after normalisation.
+	Mode SendMode `json:"mode,omitempty"`
+	// Mechanism records what ran on the provider (claudia
+	// DeliveryOutcome.Mechanism), for logs and UI; it is not a second
+	// source of truth for the seat's state.
+	Mechanism string `json:"mechanism,omitempty"`
+	// PhaseBefore is the seat's turn phase observed before delivery
+	// (claudia.TurnPhase: "idle" or "in_turn").
+	PhaseBefore string `json:"phase_before,omitempty"`
+}
+
+// TurnCaps is the wire form of claudia.TurnCaps: what the seat's provider
+// can do with a busy turn, for UI hinting. Field for field with the
+// claudia type; the claudia package pins the mirror in its census.
+type TurnCaps struct {
+	CanInterrupt bool `json:"can_interrupt"`
+	CanSteer     bool `json:"can_steer"`
+	// SteerPolicy is claudia.SteerPolicy: breakpoint, finish_slice,
+	// queue_until_idle or none.
+	SteerPolicy string `json:"steer_policy,omitempty"`
+	// BusyOnSecondSubmit is what the provider does with a second submit
+	// while in a turn: reject, supersede or queue.
+	BusyOnSecondSubmit string `json:"busy_on_second_submit,omitempty"`
 }
 
 // SetModelRequest switches the model within the provider.
@@ -380,6 +449,9 @@ type AgentInfoResponse struct {
 	AttachCommand string          `json:"attach_command,omitempty"`
 	ConnectURL    string          `json:"connect_url,omitempty"`
 	ConnectPID    int             `json:"connect_pid,omitempty"`
+	// TurnCaps is what the seat's provider can do with a busy turn
+	// (🎯T72.3). Absent from a daemon that predates it.
+	TurnCaps *TurnCaps `json:"turn_caps,omitempty"`
 }
 
 // TermSubscribedResponse carries the retained terminal history.
@@ -425,6 +497,9 @@ type GrantStatus struct {
 	Alive bool `json:"alive"`
 	// Pending is how many events sit in the replay ring for an unowned seat.
 	Pending int `json:"pending,omitempty"`
+	// TurnCaps is what the seat's provider can do with a busy turn
+	// (🎯T72.3). Absent for a seat with no live process.
+	TurnCaps *TurnCaps `json:"turn_caps,omitempty"`
 }
 
 // GrantsResponse lists every grant.

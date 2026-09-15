@@ -691,7 +691,7 @@ func (d *BrokerDaemon) handleAgentOp(c *broker.ClientConn, req *broker.Request) 
 			_ = c.Fail(req.ID, err)
 			return
 		}
-		_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeSent, Sent: named})
+		_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeSent, Sent: &broker.SentResponse{Name: name}})
 	case broker.TypeInterrupt:
 		if err := proc.Interrupt(); err != nil {
 			_ = c.Fail(req.ID, err)

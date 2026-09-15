@@ -123,7 +123,17 @@ var requestVectors = map[string]requestVector{
 			},
 		},
 	},
-	"send":           {msg: &Request{ID: "g6", Type: TypeSend, Send: &SendRequest{Name: "jv-worker-1", Text: "hello"}}},
+	// A pre-🎯T72 send carries no mode; the bytes are unchanged and the
+	// parsed form comes back normalised to submit, the same way an
+	// omitted provider comes back as claude.
+	"send": {
+		msg:    &Request{ID: "g6", Type: TypeSend, Send: &SendRequest{Name: "jv-worker-1", Text: "hello"}},
+		parsed: &Request{ID: "g6", Type: TypeSend, Send: &SendRequest{Name: "jv-worker-1", Text: "hello", Mode: SendModeSubmit}},
+	},
+	"send_submit":    {msg: &Request{ID: "g6", Type: TypeSend, Send: &SendRequest{Name: "jv-worker-1", Text: "hello", Mode: SendModeSubmit}}},
+	"send_steer":     {msg: &Request{ID: "g6", Type: TypeSend, Send: &SendRequest{Name: "jv-worker-1", Text: "also check the tests", Mode: SendModeSteer}}},
+	"send_interrupt": {msg: &Request{ID: "g6", Type: TypeSend, Send: &SendRequest{Name: "jv-worker-1", Text: "stop and summarise", Mode: SendModeInterrupt}}},
+	"send_queue":     {msg: &Request{ID: "g6", Type: TypeSend, Send: &SendRequest{Name: "jv-worker-1", Text: "after this turn", Mode: SendModeQueue}}},
 	"interrupt":      {msg: &Request{ID: "g7", Type: TypeInterrupt, Interrupt: &NamedRequest{Name: "jv-worker-1"}}},
 	"set_model":      {msg: &Request{ID: "g8", Type: TypeSetModel, SetModel: &SetModelRequest{Name: "jv-worker-1", Model: "sonnet"}}},
 	"migrate":        {msg: &Request{ID: "g9", Type: TypeMigrate, Migrate: &MigrateRequest{Name: "jv-worker-1", Provider: "grok", Model: "grok-4", Reason: "hot"}}},
@@ -232,11 +242,16 @@ var responseVectors = map[string]*Response{
 		Type:       TypeAgentEvent,
 		AgentEvent: &AgentEventMessage{Name: "jv-worker-1", Event: json.RawMessage(`{"type":"assistant","text":"hi"}`)},
 	},
-	"agent_term":  {Type: TypeAgentTerm, AgentTerm: &AgentTermMessage{Name: "jv-worker-1", Data: []byte("\x1b[2J")}},
-	"agent_gone":  {Type: TypeAgentGone, AgentGone: &AgentGoneMessage{Name: "jv-worker-1", Reason: "process exited"}},
-	"sent":        {ID: "g6", Type: TypeSent, Sent: &NamedResponse{Name: "jv-worker-1"}},
-	"interrupted": {ID: "g7", Type: TypeInterrupted, Interrupted: &NamedResponse{Name: "jv-worker-1"}},
-	"model_set":   {ID: "g8", Type: TypeModelSet, ModelSet: &NamedResponse{Name: "jv-worker-1"}},
+	"agent_term": {Type: TypeAgentTerm, AgentTerm: &AgentTermMessage{Name: "jv-worker-1", Data: []byte("\x1b[2J")}},
+	"agent_gone": {Type: TypeAgentGone, AgentGone: &AgentGoneMessage{Name: "jv-worker-1", Reason: "process exited"}},
+	// A pre-🎯T72 daemon answers with the name alone; the vector is unchanged.
+	"sent":           {ID: "g6", Type: TypeSent, Sent: &SentResponse{Name: "jv-worker-1"}},
+	"sent_submit":    {ID: "g6", Type: TypeSent, Sent: &SentResponse{Name: "jv-worker-1", Mode: SendModeSubmit, Mechanism: "send", PhaseBefore: "idle"}},
+	"sent_steer":     {ID: "g6", Type: TypeSent, Sent: &SentResponse{Name: "jv-worker-1", Mode: SendModeSteer, Mechanism: "acp_session_prompt_supersede", PhaseBefore: "in_turn"}},
+	"sent_interrupt": {ID: "g6", Type: TypeSent, Sent: &SentResponse{Name: "jv-worker-1", Mode: SendModeInterrupt, Mechanism: "session_cancel+prompt", PhaseBefore: "in_turn"}},
+	"sent_queue":     {ID: "g6", Type: TypeSent, Sent: &SentResponse{Name: "jv-worker-1", Mode: SendModeQueue, Mechanism: "client_queue", PhaseBefore: "in_turn"}},
+	"interrupted":    {ID: "g7", Type: TypeInterrupted, Interrupted: &NamedResponse{Name: "jv-worker-1"}},
+	"model_set":      {ID: "g8", Type: TypeModelSet, ModelSet: &NamedResponse{Name: "jv-worker-1"}},
 	"migrated": {
 		ID: "g9", Type: TypeMigrated,
 		Migrated: &MigrateResponse{Name: "jv-worker-1", SessionID: "sid-2", Provider: "grok", Model: "grok-4"},
@@ -247,6 +262,21 @@ var responseVectors = map[string]*Response{
 			Name: "jv-worker-1", SessionID: "sid-1", Provider: ProviderClaude, Model: "claude-opus-5",
 			Alive: true, PromptInFlight: false, Usage: json.RawMessage(`{"input_tokens":1,"output_tokens":2}`),
 			WindowID: "@7",
+		},
+	},
+	"agent_info_result_turn_caps": {
+		ID: "g10", Type: TypeAgentInfoResult,
+		AgentInfo: &AgentInfoResponse{
+			Name: "jv-worker-1", SessionID: "sid-1", Provider: "cursor", Model: "gpt-5",
+			Alive: true, PromptInFlight: true, ConnectURL: "ws://127.0.0.1:1/ws", ConnectPID: 99,
+			TurnCaps: &TurnCaps{CanInterrupt: true, CanSteer: true, SteerPolicy: "breakpoint", BusyOnSecondSubmit: "supersede"},
+		},
+	},
+	"granted_turn_caps": {
+		ID: "g5", Type: TypeGranted,
+		Granted: &GrantResponse{
+			Name: "jv-worker-1", SessionID: "sid-1", Provider: ProviderClaude, Model: "opus", WindowID: "@7",
+			TurnCaps: &TurnCaps{CanInterrupt: true, SteerPolicy: "queue_until_idle", BusyOnSecondSubmit: "queue"},
 		},
 	},
 	"term_subscribed": {ID: "g11", Type: TypeTermSubscribed, TermSubscribed: &TermSubscribedResponse{Name: "jv-worker-1", History: []byte("$ ")}},
@@ -261,10 +291,21 @@ var responseVectors = map[string]*Response{
 		}}},
 	},
 	"grants_result_empty": {ID: "g13", Type: TypeGrantsResult, Grants: &GrantsResponse{Grants: []GrantStatus{}}},
-	"goal_closed":         {ID: "g14", Type: TypeGoalClosed, GoalClosed: &NamedResponse{Name: "jv-worker-1"}},
-	"event_grant":         {Type: TypeEvent, Event: &EventMessage{Kind: EventGrant, Name: "jv-worker-1", At: goldenAt}},
-	"event_detach":        {Type: TypeEvent, Event: &EventMessage{Kind: EventDetach, Name: "jv-worker-1", At: goldenAt}},
-	"event_usage":         {Type: TypeEvent, Event: &EventMessage{Kind: EventUsageUpdate, Detail: "claude", At: goldenAt}},
+	"grants_result_turn_caps": {
+		ID: "g13", Type: TypeGrantsResult,
+		Grants: &GrantsResponse{Grants: []GrantStatus{{
+			Name: "jv-worker-1", Provider: "grok", SessionID: "sid-1", WorkDir: "/w", Owned: true, Alive: true,
+			TurnCaps: &TurnCaps{CanInterrupt: true, CanSteer: true, SteerPolicy: "finish_slice", BusyOnSecondSubmit: "supersede"},
+		}}},
+	},
+	"error_send_bad_mode": {
+		ID: "g6", Type: TypeError,
+		Error: &ErrorMessage{Code: CodeUnsupportedValue, Message: `mode "nudge" is not one of "submit", "steer", "interrupt", "queue"`, Field: "mode", Value: "nudge"},
+	},
+	"goal_closed":  {ID: "g14", Type: TypeGoalClosed, GoalClosed: &NamedResponse{Name: "jv-worker-1"}},
+	"event_grant":  {Type: TypeEvent, Event: &EventMessage{Kind: EventGrant, Name: "jv-worker-1", At: goldenAt}},
+	"event_detach": {Type: TypeEvent, Event: &EventMessage{Kind: EventDetach, Name: "jv-worker-1", At: goldenAt}},
+	"event_usage":  {Type: TypeEvent, Event: &EventMessage{Kind: EventUsageUpdate, Detail: "claude", At: goldenAt}},
 	"error_grant_held": {
 		ID: "g5", Type: TypeError,
 		Error: &ErrorMessage{Code: CodeGrantHeld, Message: "grant jv-worker-1 is owned by another connection", Field: "name", Value: "jv-worker-1"},
@@ -522,6 +563,9 @@ func TestParseRequestRefusals(t *testing.T) {
 		{"release without session", `{"v":1,"type":"release","body":{"disposition":"stop"}}`, CodeMissingField, "session_id"},
 		{"release without disposition", `{"v":1,"type":"release","body":{"session_id":"s"}}`, CodeMissingField, "disposition"},
 		{"release bad disposition", `{"v":1,"type":"release","body":{"session_id":"s","disposition":"burn"}}`, CodeUnsupportedValue, "disposition"},
+		{"send without name", `{"v":1,"type":"send","body":{"text":"hi"}}`, CodeMissingField, "name"},
+		{"send bad mode", `{"v":1,"type":"send","body":{"name":"s","text":"hi","mode":"nudge"}}`, CodeUnsupportedValue, "mode"},
+		{"send unknown field", `{"v":1,"type":"send","body":{"name":"s","text":"hi","steer":true}}`, CodeUnknownField, "steer"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -596,6 +640,56 @@ func TestSpawnRequestValidateNormalises(t *testing.T) {
 	}
 	if req.Intent != IntentAuto {
 		t.Errorf("Intent = %q, want %q", req.Intent, IntentAuto)
+	}
+}
+
+// TestSendRequestValidateNormalises pins "absent mode means submit" (🎯T72.3)
+// so a pre-🎯T72 client keeps today's behaviour by contract, not by accident,
+// and the mode reaches the daemon already decided.
+func TestSendRequestValidateNormalises(t *testing.T) {
+	req := &SendRequest{Name: "s", Text: "hi"}
+	if err := req.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if req.Mode != SendModeSubmit {
+		t.Errorf("Mode = %q, want %q", req.Mode, SendModeSubmit)
+	}
+	for _, m := range SendModes() {
+		req := &SendRequest{Name: "s", Text: "hi", Mode: m}
+		if err := req.Validate(); err != nil {
+			t.Errorf("mode %q refused: %v", m, err)
+		}
+		if req.Mode != m {
+			t.Errorf("mode %q rewritten to %q", m, req.Mode)
+		}
+	}
+}
+
+// TestEverySendModeHasAVector stops a mode being added to SendModes without a
+// pinned request and a pinned sent response, the same way message types are
+// held to a vector.
+func TestEverySendModeHasAVector(t *testing.T) {
+	requested, answered := map[SendMode]bool{}, map[SendMode]bool{}
+	for _, v := range requestVectors {
+		if v.msg.Type == TypeSend && v.msg.Send.Mode != "" {
+			requested[v.msg.Send.Mode] = true
+		}
+	}
+	for _, r := range responseVectors {
+		if r.Type == TypeSent && r.Sent.Mode != "" {
+			answered[r.Sent.Mode] = true
+		}
+	}
+	for _, m := range SendModes() {
+		if !requested[m] {
+			t.Errorf("send mode %q has no request vector", m)
+		}
+		if !answered[m] {
+			t.Errorf("send mode %q has no sent-response vector", m)
+		}
+	}
+	if len(requested) != len(SendModes()) || len(answered) != len(SendModes()) {
+		t.Errorf("vectors name a mode outside SendModes: requests %v, responses %v", requested, answered)
 	}
 }
 

@@ -1,0 +1,1 @@
+{"v":1,"type":"agent_info_result","id":"g10","body":{"name":"jv-worker-1","session_id":"sid-1","provider":"cursor","model":"gpt-5","alive":true,"prompt_in_flight":true,"connect_url":"ws://127.0.0.1:1/ws","connect_pid":99,"turn_caps":{"can_interrupt":true,"can_steer":true,"steer_policy":"breakpoint","busy_on_second_submit":"supersede"}}}

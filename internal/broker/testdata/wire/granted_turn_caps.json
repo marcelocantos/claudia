@@ -1,0 +1,1 @@
+{"v":1,"type":"granted","id":"g5","body":{"name":"jv-worker-1","session_id":"sid-1","provider":"claude","model":"opus","window_id":"@7","reclaimed":false,"turn_caps":{"can_interrupt":true,"can_steer":false,"steer_policy":"queue_until_idle","busy_on_second_submit":"queue"}}}
