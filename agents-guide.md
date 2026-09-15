@@ -480,6 +480,72 @@ It bundles Start + Send + WaitForResponse + Stop.
 killing the process. Claude Session sends ESC to the PTY; Grok ACP
 and Codex app-server use their interrupt RPCs.
 
+### Steer, interrupt, queue: `SendMode` and `TurnCaps` (🎯T72.2)
+
+`Send` conflates three host intents while a turn is open: start a turn,
+hold text until the turn ends, or cancel the turn and start over. The
+delivery API names them (design:
+`docs/design/steer-interrupt-turn-api.md`):
+
+```go
+phase := agent.TurnPhase()          // TurnIdle | TurnInTurn (a reading, not a promise)
+caps  := agent.TurnCaps()           // what THIS handle can do to an open turn
+
+out, err := agent.SendMode(text, claudia.DeliverySteer)      // fold into the open turn
+out, err  = agent.SendMode(text, claudia.DeliveryInterrupt)  // hard-stop, then submit
+out, err  = agent.Steer(text)                                // steer only; ErrTurnIdle when idle
+err        = agent.Send(text)                                // == SendMode(text, DeliverySubmit)
+```
+
+| Mode | Idle seat | Open turn |
+|------|-----------|-----------|
+| `DeliverySubmit` | starts a turn | the provider's own busy behaviour (`TurnCaps.BusyOnSecondSubmit`): Claude queues, ACP and Codex reject |
+| `DeliverySteer` | plain submit | `Steer`: provider steer mechanism, or `ErrSteerUnsupported` |
+| `DeliveryInterrupt` | plain submit | `Interrupt()` then submit; an interrupt failure aborts before any submit |
+| `DeliveryQueue` | `ErrQueueHostSide` | `ErrQueueHostSide` — claudia holds no queue; nothing reaches the wire and the caller keeps the text |
+
+`DeliveryOutcome` reports `Mode`, `PhaseBefore`, and `Mechanism` — what
+actually ran (`submit`, `interrupt+submit`, `client_queue`,
+`codex_turn_steer`, the ACP supersede label, or `steer_unsupported`) — plus
+`SupersededTurnID` when an ACP steer pushed a second prompt over the
+first. The outcome is also carried in its `Err` field so it can be logged
+whole. `Mechanism` is a label for logs and UI, not a second source of
+truth about the turn: events are.
+
+**Per-provider `TurnCaps`** (`ProviderTurnCaps(p)` is the contract;
+`agent.TurnCaps()` is what the live handle has wired, and is the one to
+believe):
+
+| Provider | Interrupt | Steer | `SteerPolicy` | Busy on second submit |
+|----------|-----------|-------|---------------|-----------------------|
+| Claude tmux | ESC | no | `queue_until_idle` — Claude Code queues the text itself | `queue` |
+| Cursor ACP | `session/cancel` | second `session/prompt` supersedes (🎯T72.1) | `breakpoint` | `reject` |
+| Grok ACP | `session/cancel` | second `session/prompt` (🎯T72.1) | `finish_slice` | `reject` |
+| Codex app-server | `turn/interrupt` | `turn/steer` when the installed CLI lists it | `finish_slice`, else `queue_until_idle` | `reject` |
+| Bedrock / Ollama | none (Task-only) | no | `none` | — |
+
+`CanSteer` is true only when `Steer` reaches the wire. A provider whose
+contract can steer but whose mechanism is not wired for this handle (the
+ACP seam before 🎯T72.1 lands; a Codex CLI whose
+`app-server generate-json-schema` dump has no `turn/steer`) reports
+`CanSteer=false, SteerPolicy=queue_until_idle`, and `Steer` returns
+`ErrSteerUnsupported` with `Mechanism=steer_unsupported`. Codex is probed
+once per binary path at `Start`. A plain `Send` while an ACP or Codex
+turn is open is refused by the provider (the ACP clients wrap that as
+`ErrTurnInFlight`, 🎯T72.1); the host queues — claudia never auto-steers
+a submit.
+
+`TurnPhase` reads the provider's prompt-in-flight signal (Claude: the
+pane; ACP and Codex: the open RPC). Unknown reads as idle, so
+`DeliveryInterrupt` on a phase the handle cannot see is a plain submit
+rather than a stray hard-stop.
+
+**Testing a host path**: `NewStubAgentOps(&StubAgentOps{Send, Steer,
+Interrupt, TurnPhase, TurnCaps})` builds an alive stub whose every verb
+is observable, so a dependent package can assert which of
+Send / Steer / Interrupt its broker or composer path ran, on the same
+`SendMode` path the product uses.
+
 **Terminal output**: Claude Session mode captures the raw PTY byte
 stream to a log file at
 `$XDG_STATE_HOME/claudia/terms/<escaped-workdir>/<sessionID>.term`
@@ -649,7 +715,8 @@ process.
   the daemon starts the provider process as its parent and streams
   `Event`s back. The returned `*Agent` is a handle: `Send`,
   `Interrupt`, `WaitForResponse`, `SetModel`, `Migrate`, `Usage`,
-  `SubscribeTerminal` all work; `JSONLPath` / `AttachCommand` name
+  `SubscribeTerminal` all work (`SendMode` / `Steer` / `TurnCaps` ride
+  the `send.mode` wire, 🎯T72.3); `JSONLPath` / `AttachCommand` name
   host-local paths the daemon reported. `Rewind` is refused on a
   daemon-held seat.
 - **Seats outlive the consumer.** If the consumer exits or crashes,

@@ -45,11 +45,11 @@ continuation that only the live TUI paste path could show.
 | Gate | Surfaces | Must include |
 |------|----------|--------------|
 | `CLAUDIA_LIVE=1` | Claude Task + Session | `TestAgentSendAndWaitForResponse`, `TestClaudeTaskDisallowToolsLiveSmoke`, `TestGoalJourneyLiveBackends/claude`, `TestMCPLiveLoadAndSessionSeesMnemo/claude` |
-| `CLAUDIA_GROK_LIVE=1` | Grok Task + Session | `TestGrokSessionLiveSmoke`, `TestGoalJourneyLiveBackends/grok`, `TestMCPLiveLoadAndSessionSeesMnemo/grok`, `TestMCPExclusiveSessionRoundTrip` |
+| `CLAUDIA_GROK_LIVE=1` | Grok Task + Session | `TestGrokSessionLiveSmoke`, `TestGrokSessionLiveSmokeSteer`, `TestGoalJourneyLiveBackends/grok`, `TestMCPLiveLoadAndSessionSeesMnemo/grok`, `TestMCPExclusiveSessionRoundTrip` |
 | `CLAUDIA_CODEX_LIVE=1` | Codex Task + Session | `TestCodexSessionLiveSmoke`, `TestGoalJourneyLiveBackends/codex`, `TestMCPLiveLoadAndSessionSeesMnemo/codex` |
 | `CLAUDIA_BEDROCK_LIVE=1` | Bedrock Task | `TestBedrockTaskLiveSmoke` |
 | `CLAUDIA_OLLAMA_LIVE=1` | Ollama Task | `TestOllamaTaskLiveSmoke` |
-| `CLAUDIA_CURSOR_LIVE=1` | Cursor Task + Session | `TestCursorTaskLiveSmoke`, `TestCursorSessionLiveSmoke`, `TestGoalJourneyLiveBackends/cursor`, `TestMCPLiveLoadAndSessionSeesMnemo/cursor`, `TestMCPExclusiveCursorSessionRoundTrip` |
+| `CLAUDIA_CURSOR_LIVE=1` | Cursor Task + Session | `TestCursorTaskLiveSmoke`, `TestCursorSessionLiveSmoke`, `TestCursorSessionLiveSmokeSteer`, `TestGoalJourneyLiveBackends/cursor`, `TestMCPLiveLoadAndSessionSeesMnemo/cursor`, `TestMCPExclusiveCursorSessionRoundTrip` |
 
 ```bash
 # the backend you just changed

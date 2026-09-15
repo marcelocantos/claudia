@@ -11,6 +11,14 @@ import signal
 import sys
 
 REJECT_RESUME = os.environ.get("FAKE_CODEX_REJECT_RESUME") == "1"
+# FAKE_CODEX_STEER=1: the CLI "has" turn/steer — the schema probe finds
+# v2/TurnSteerParams.json and the method answers. Unset, the probe finds
+# nothing and turn/steer is refused, like a CLI that predates it.
+STEER = os.environ.get("FAKE_CODEX_STEER") == "1"
+# FAKE_CODEX_HOLD_TURN=1: turn/start does not complete on its own; the
+# turn stays in flight until turn/steer or turn/interrupt lands, so a
+# test can observe the in_turn phase.
+HOLD_TURN = os.environ.get("FAKE_CODEX_HOLD_TURN") == "1"
 thread_id = "thr_fake"
 
 
@@ -66,8 +74,60 @@ def emit(obj: dict) -> None:
     sys.stdout.flush()
 
 
+def _generate_json_schema(argv: list[str]) -> None:
+    """`codex app-server generate-json-schema --out DIR`: the probe claudia
+    runs at Start to learn whether this CLI lists turn/steer."""
+    out = ""
+    for i, arg in enumerate(argv):
+        if arg == "--out" and i + 1 < len(argv):
+            out = argv[i + 1]
+    if not out:
+        sys.exit(2)
+    os.makedirs(os.path.join(out, "v2"), exist_ok=True)
+    with open(os.path.join(out, "v2", "TurnStartParams.json"), "w", encoding="utf-8") as fh:
+        fh.write(json.dumps({"title": "TurnStartParams"}))
+    if STEER:
+        with open(os.path.join(out, "v2", "TurnSteerParams.json"), "w", encoding="utf-8") as fh:
+            fh.write(json.dumps({"title": "TurnSteerParams"}))
+
+
+def _complete_turn(tid: str, turn: str) -> None:
+    emit(
+        {
+            "method": "item/completed",
+            "params": {
+                "threadId": tid,
+                "turnId": turn,
+                "item": {
+                    "id": "item_msg",
+                    "type": "agent_message",
+                    "text": "Final answer.",
+                },
+            },
+        }
+    )
+    emit(
+        {
+            "method": "turn/completed",
+            "params": {
+                "threadId": tid,
+                "turn": {"id": turn, "status": "completed"},
+                "usage": {
+                    "input_tokens": 10,
+                    "cached_input_tokens": 4,
+                    "output_tokens": 5,
+                },
+            },
+        }
+    )
+
+
 def main() -> None:
     global thread_id
+    if "generate-json-schema" in sys.argv:
+        _generate_json_schema(sys.argv)
+        return
+    steer_log = os.environ.get("FAKE_CODEX_STEER_LOG")
     for raw in sys.stdin:
         line = raw.strip()
         if not line:
@@ -155,34 +215,22 @@ def main() -> None:
                     "params": {"threadId": tid, "turn": {"id": turn}},
                 }
             )
-            emit(
-                {
-                    "method": "item/completed",
-                    "params": {
-                        "threadId": tid,
-                        "turnId": turn,
-                        "item": {
-                            "id": "item_msg",
-                            "type": "agent_message",
-                            "text": "Final answer.",
-                        },
-                    },
-                }
-            )
-            emit(
-                {
-                    "method": "turn/completed",
-                    "params": {
-                        "threadId": tid,
-                        "turn": {"id": turn, "status": "completed"},
-                        "usage": {
-                            "input_tokens": 10,
-                            "cached_input_tokens": 4,
-                            "output_tokens": 5,
-                        },
-                    },
-                }
-            )
+            if not HOLD_TURN:
+                _complete_turn(tid, turn)
+        elif method == "turn/steer":
+            tid = params.get("threadId") or thread_id
+            expected = params.get("expectedTurnId") or ""
+            if not STEER:
+                emit({"id": mid, "error": {"code": -32601, "message": "Method not found: turn/steer"}})
+                continue
+            if steer_log:
+                with open(steer_log, "a", encoding="utf-8") as fh:
+                    fh.write(json.dumps(params, separators=(",", ":")) + "\n")
+            if expected != "turn_success":
+                emit({"id": mid, "error": {"message": "turn " + expected + " is not the active turn"}})
+                continue
+            emit({"id": mid, "result": {"turnId": expected}})
+            _complete_turn(tid, expected)
         elif method == "turn/interrupt":
             tid = params.get("threadId") or thread_id
             turn = params.get("turnId") or "turn_interrupted"

@@ -338,6 +338,18 @@ type agentOps struct {
 	// closeGoal is set only by the broker backend: CloseGoal tells the
 	// daemon to stop continuing the seat's Goal.
 	closeGoal func(*Agent)
+	// steer folds text into the open turn (🎯T72.2). Nil → Steer reports
+	// ErrSteerUnsupported and TurnCaps withdraws the steer claim. Direct
+	// backends set it with steerOp(client); the broker handle forwards
+	// mode=steer over the wire and fills the outcome from the response.
+	steer func(*Agent, string) (DeliveryOutcome, error)
+	// turnCaps refines the provider contract for this handle (a Codex CLI
+	// without turn/steer; the daemon's answer for a broker seat). Nil →
+	// ProviderTurnCaps.
+	turnCaps func(*Agent) TurnCaps
+	// turnPhase reports the open-turn phase. Nil → derived from
+	// promptInFlight.
+	turnPhase func(*Agent) TurnPhase
 }
 
 type agentStartRequest struct {
@@ -1046,6 +1058,9 @@ func startCodexAgent(req agentStartRequest) (*agentStart, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The steer claim is per install: only a CLI whose app-server schema
+	// lists turn/steer gets the mechanism wired (🎯T72.2).
+	steerSupported := codexAppServerSupportsSteer(bin)
 
 	var bind acpBind
 
@@ -1101,6 +1116,12 @@ func startCodexAgent(req agentStartRequest) (*agentStart, error) {
 		setModel: func(_ *Agent, model string) error {
 			return client.SetModel(model)
 		},
+		turnCaps: func(*Agent) TurnCaps {
+			return codexTurnCaps(steerSupported)
+		},
+	}
+	if steerSupported {
+		ops.steer = steerOp(client)
 	}
 	return &agentStart{
 		Cleanup:   mcpCleanup,
@@ -1198,6 +1219,9 @@ func startGrokAgent(req agentStartRequest) (*agentStart, error) {
 		setModel: func(_ *Agent, model string) error {
 			return client.SetModel(model)
 		},
+		// Nil until grokACPClient satisfies turnSteerer (🎯T72.1); then
+		// this same line wires Steer without an edit here.
+		steer: steerOp(client),
 	}
 
 	return &agentStart{
@@ -1480,17 +1504,12 @@ func (a *Agent) PromptInFlight() bool {
 // If readiness detection failed (process exited during startup, or
 // the overall timeout elapsed) Send returns the detection error
 // without writing anything.
+//
+// Send is [Agent.SendMode] with [DeliverySubmit]; the steer and
+// interrupt intents live there and on [Agent.Steer] (🎯T72.2).
 func (a *Agent) Send(msg string) error {
-	<-a.ready
-	if a.readyErr != nil {
-		return fmt.Errorf("claude not ready: %w", a.readyErr)
-	}
-
-	a.mu.Lock()
-	alive := a.alive
-	a.mu.Unlock()
-	if !alive {
-		return fmt.Errorf("claude process not running")
+	if err := a.deliverable(); err != nil {
+		return err
 	}
 	if a.ops.send == nil {
 		return unsupportedCapability(a.provider, "send", "provider did not supply a send operation")

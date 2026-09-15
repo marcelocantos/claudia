@@ -559,6 +559,39 @@ yet export Agent.Migrate, MigrateArgs, or CapabilityMigrate — those are
 HEAD. agents-guide.md is the consumer contract until the next snapshot
 retarget. SetModel (🎯T54) is likewise HEAD-only.
 
+Turn delivery (🎯T72.2, docs/design/steer-interrupt-turn-api.md) is
+HEAD-only: the surface checker derives the tables above from the
+snapshot tag, so these items are listed here, all assessed **Fluid**,
+until the next retarget.
+
+- Types: `TurnPhase` (`TurnIdle`, `TurnInTurn`); `SteerPolicy`
+  (`SteerBreakpoint`, `SteerFinishSlice`, `SteerQueueUntilIdle`,
+  `SteerNone`); `TurnCaps` (`CanInterrupt, CanSteer bool`,
+  `SteerPolicy SteerPolicy`, `BusyOnSecondSubmit string` with
+  `BusySubmitReject` / `BusySubmitSupersede` / `BusySubmitQueue`);
+  `DeliveryMode` (`DeliverySubmit`, `DeliverySteer`, `DeliveryInterrupt`,
+  `DeliveryQueue`); `DeliveryOutcome` (`Mode DeliveryMode`,
+  `PhaseBefore TurnPhase`, `Mechanism, SupersededTurnID string`,
+  `Err error`) with Mechanism labels `MechanismSubmit`,
+  `MechanismInterruptThenSubmit`, `MechanismClientQueue`,
+  `MechanismCodexTurnSteer`, `MechanismSteerUnsupported`, `MechanismNone`.
+- Sentinel errors: `ErrSteerUnsupported`, `ErrTurnIdle`,
+  `ErrQueueHostSide`, `ErrUnknownDeliveryMode`. `ErrTurnInFlight`, the
+  ACP busy sentinel, lands with 🎯T72.1.
+- Functions: `ProviderTurnCaps(provider Provider) TurnCaps` — the provider
+  contract; `Agent.TurnCaps` is what a live handle has wired.
+- Agent methods: `TurnPhase() TurnPhase` (open-turn reading; unknown
+  reads idle); `TurnCaps() TurnCaps` (contract narrowed to what this
+  handle has wired); `SendMode(text string, mode DeliveryMode)
+  (DeliveryOutcome, error)` — `Send` is `SendMode(text, DeliverySubmit)`;
+  `Steer(text string) (DeliveryOutcome, error)` — fold into the open
+  turn, `ErrTurnIdle` when idle, `ErrSteerUnsupported` when unwired.
+- Test seam: `StubAgentOps` args struct (`Provider Provider`,
+  `Send func(string) error`, `Steer func(string) (DeliveryOutcome, error)`,
+  `Interrupt func() error`, `TurnPhase func() TurnPhase`,
+  `TurnCaps func() TurnCaps`) and `NewStubAgentOps(args *StubAgentOps)
+  *Agent` — `NewStubAgent` with every delivery verb observable.
+
 ## Gaps and prerequisites for 1.0
 
 Concrete items that must be addressed before cutting 1.0.

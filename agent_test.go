@@ -202,6 +202,9 @@ func (b *fakeAgentBackend) ops() agentOps {
 			b.mu.Lock()
 			b.interrupts++
 			b.mu.Unlock()
+			// A hard-stop closes the turn, as every real provider's does;
+			// SendMode(DeliveryInterrupt) waits for that before submitting.
+			b.inFlight.Store(false)
 			return nil
 		},
 		send: func(_ *Agent, msg string) error {

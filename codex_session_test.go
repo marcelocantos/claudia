@@ -28,7 +28,7 @@ func writeFakeCodexAppServer(t *testing.T) string {
 	}
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "codex")
-	script := "#!/bin/sh\nexec python3 \"" + py + "\"\n"
+	script := "#!/bin/sh\nexec python3 \"" + py + "\" \"$@\"\n"
 	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}

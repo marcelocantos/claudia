@@ -860,6 +860,8 @@ func startCursorAgent(req agentStartRequest) (*agentStart, error) {
 		setModel: func(_ *Agent, model string) error {
 			return client.SetModel(model)
 		},
+		// 🎯T72.2 seam over the 🎯T72.1 prompt-id stack.
+		steer: steerOp(client),
 	}
 	return &agentStart{
 		WindowID:   "cursor-acp-" + sid,
