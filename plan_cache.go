@@ -45,6 +45,10 @@ type PlanUsageCacheArgs struct {
 	Fetch func(ctx context.Context) ([]PlanUsage, error)
 	// All is passed to QueryAllPlanUsage when Fetch is nil.
 	All *AllPlanUsageArgs
+	// Refresh forces a fetch even when the snapshot is still within TTL
+	// (cockpit reload after grok login, 🎯T653). The broker path uses
+	// UsageRequest.Refresh; the filesystem cache skips the fresh-hit return.
+	Refresh bool
 }
 
 type planCacheSnapshot struct {
@@ -71,7 +75,7 @@ func LoadPlanUsage(ctx context.Context, args *PlanUsageCacheArgs) ([]PlanUsage, 
 	// filesystem cache below is the brokerless path. A test that injects
 	// Fetch is asking for the cache and never reaches the socket.
 	if args.Fetch == nil && args.Dir == "" {
-		usage, _, err := brokerUsage(ctx, false)
+		usage, _, err := brokerUsage(ctx, args.Refresh)
 		if err == nil {
 			return usage, nil
 		}
@@ -106,8 +110,10 @@ func LoadPlanUsage(ctx context.Context, args *PlanUsageCacheArgs) ([]PlanUsage, 
 	leasePath := filepath.Join(dir, planCacheLockFile)
 	flockPath := filepath.Join(dir, planCacheFlockFile)
 
-	if snap, ok := readFreshPlanSnapshot(snapPath, now, ttl); ok {
-		return snap.Backends, nil
+	if !args.Refresh {
+		if snap, ok := readFreshPlanSnapshot(snapPath, now, ttl); ok {
+			return snap.Backends, nil
+		}
 	}
 
 	fetch := args.Fetch
@@ -133,8 +139,10 @@ func LoadPlanUsage(ctx context.Context, args *PlanUsageCacheArgs) ([]PlanUsage, 
 			}
 			return nil, err
 		}
-		if snap, ok := readFreshPlanSnapshot(snapPath, clockNow(args.Now), ttl); ok {
-			return snap.Backends, nil
+		if !args.Refresh {
+			if snap, ok := readFreshPlanSnapshot(snapPath, clockNow(args.Now), ttl); ok {
+				return snap.Backends, nil
+			}
 		}
 
 		held, err := tryHoldPlanLease(leasePath, flockPath, stale, clockNow(args.Now))
@@ -146,9 +154,11 @@ func LoadPlanUsage(ctx context.Context, args *PlanUsageCacheArgs) ([]PlanUsage, 
 			// release in the window between the miss above and
 			// tryHoldPlanLease; fetching again would break
 			// single-flight (🎯T65).
-			if snap, ok := readFreshPlanSnapshot(snapPath, clockNow(args.Now), ttl); ok {
-				held.release()
-				return snap.Backends, nil
+			if !args.Refresh {
+				if snap, ok := readFreshPlanSnapshot(snapPath, clockNow(args.Now), ttl); ok {
+					held.release()
+					return snap.Backends, nil
+				}
 			}
 			backends, ferr := fetch(ctx)
 			writePlanLeaseHeartbeat(leasePath, clockNow(args.Now))

@@ -123,3 +123,36 @@ func TestLoadPlanUsageStealsQuietLease(t *testing.T) {
 		t.Fatalf("got %+v", got)
 	}
 }
+
+func TestLoadPlanUsageRefreshBypassesFreshHit(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Date(2026, 9, 15, 7, 0, 0, 0, time.UTC)
+	if err := writePlanSnapshot(dir+"/"+planCacheSnapshotFile, planCacheSnapshot{
+		FetchedAt: now,
+		Backends:  []PlanUsage{{Provider: ProviderGrok, Status: PlanUsageUnavailable, Reason: "401", FetchedAt: now}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var fetches atomic.Int32
+	got, err := LoadPlanUsage(context.Background(), &PlanUsageCacheArgs{
+		Dir:     dir,
+		TTL:     time.Hour,
+		Now:     now.Add(time.Minute),
+		Refresh: true,
+		Fetch: func(context.Context) ([]PlanUsage, error) {
+			fetches.Add(1)
+			return []PlanUsage{{
+				Provider: ProviderGrok, Status: PlanUsageAvailable, Reason: "after login", FetchedAt: now.Add(time.Minute),
+			}}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fetches.Load() != 1 {
+		t.Fatalf("refresh must fetch, fetches=%d", fetches.Load())
+	}
+	if len(got) != 1 || got[0].Reason != "after login" {
+		t.Fatalf("got %+v", got)
+	}
+}
