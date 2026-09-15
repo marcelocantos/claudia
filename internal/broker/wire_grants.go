@@ -368,6 +368,9 @@ type SentResponse struct {
 	// PhaseBefore is the seat's turn phase observed before delivery
 	// (claudia.TurnPhase: "idle" or "in_turn").
 	PhaseBefore string `json:"phase_before,omitempty"`
+	// SupersededTurnID is set when a steer superseded an in-flight prompt
+	// RPC (ACP); empty for mechanisms that fold text into the same turn.
+	SupersededTurnID string `json:"superseded_turn_id,omitempty"`
 }
 
 // TurnCaps is the wire form of claudia.TurnCaps: what the seat's provider

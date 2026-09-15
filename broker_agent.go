@@ -219,6 +219,42 @@ func (b *brokerAgentBackend) ops() agentOps {
 			_, err := b.opCall(&broker.Request{Type: broker.TypeSetModel, SetModel: &broker.SetModelRequest{Name: b.named().Name, Model: model}})
 			return err
 		},
+		// steer forwards mode=steer (🎯T72.3); the daemon runs the
+		// provider's mechanism and the outcome comes back on the sent
+		// response. A daemon that predates send.mode answers the bare
+		// name, which reads as a submit that was not steered.
+		steer: func(_ *Agent, text string) (DeliveryOutcome, error) {
+			resp, err := b.opCall(&broker.Request{Type: broker.TypeSend,
+				Send: &broker.SendRequest{Name: b.named().Name, Text: text, Mode: broker.SendModeSteer}})
+			if err != nil {
+				return DeliveryOutcome{}, err
+			}
+			if resp.Sent == nil {
+				return DeliveryOutcome{}, fmt.Errorf("broker: send answered with %s", resp.Type)
+			}
+			return DeliveryOutcome{
+				Mode:             DeliveryMode(resp.Sent.Mode),
+				PhaseBefore:      TurnPhase(resp.Sent.PhaseBefore),
+				Mechanism:        resp.Sent.Mechanism,
+				SupersededTurnID: resp.Sent.SupersededTurnID,
+			}, nil
+		},
+		// turnCaps is the daemon's answer for the seat it actually runs;
+		// a daemon that predates turn_caps falls back to the provider
+		// contract, which is what a direct handle would start from.
+		turnCaps: func(*Agent) TurnCaps {
+			resp, err := b.opCall(&broker.Request{Type: broker.TypeAgentInfo, AgentInfo: b.named()})
+			if err != nil || resp.AgentInfo == nil || resp.AgentInfo.TurnCaps == nil {
+				return ProviderTurnCaps(b.cfg.Provider)
+			}
+			w := resp.AgentInfo.TurnCaps
+			return TurnCaps{
+				CanInterrupt:       w.CanInterrupt,
+				CanSteer:           w.CanSteer,
+				SteerPolicy:        SteerPolicy(w.SteerPolicy),
+				BusyOnSecondSubmit: w.BusyOnSecondSubmit,
+			}
+		},
 		migrate: b.migrate,
 		closeGoal: func(*Agent) {
 			if _, err := b.opCall(&broker.Request{Type: broker.TypeCloseGoal, CloseGoal: b.named()}); err != nil {

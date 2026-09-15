@@ -518,6 +518,7 @@ func (d *BrokerDaemon) handleGrant(c *broker.ClientConn, req *broker.Request) {
 		Reclaimed:     reclaimed,
 		Replayed:      len(ring),
 		Lagged:        lagged,
+		TurnCaps:      turnCapsWire(proc),
 	}
 	_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeGranted, Granted: resp})
 	d.emit(broker.EventMessage{Kind: broker.EventGrant, Name: name, SessionID: resp.SessionID,
@@ -642,6 +643,50 @@ func (d *BrokerDaemon) handleRelease(c *broker.ClientConn, req *broker.Request) 
 		Released: &broker.ReleaseResponse{Name: name, Disposition: req.Release.Disposition}})
 }
 
+// deliverSend dispatches one send by its mode (🎯T72.3). submit is
+// Agent.Send (SendMode with DeliverySubmit is that call plus the outcome);
+// steer and interrupt are the 🎯T72.2 verbs, which fold an idle seat down
+// to a plain submit and say so in the mechanism; queue is ack-only, because
+// the design keeps the queue host-side and the daemon holds none. The
+// returned response has every field but Name.
+func deliverSend(proc *Agent, req *broker.SendRequest) (*broker.SentResponse, error) {
+	var out DeliveryOutcome
+	var err error
+	switch req.Mode {
+	case broker.SendModeSubmit:
+		out, err = proc.SendMode(req.Text, DeliverySubmit)
+	case broker.SendModeSteer:
+		out, err = proc.SendMode(req.Text, DeliverySteer)
+	case broker.SendModeInterrupt:
+		out, err = proc.SendMode(req.Text, DeliveryInterrupt)
+	case broker.SendModeQueue:
+		out = DeliveryOutcome{Mode: DeliveryQueue, PhaseBefore: proc.TurnPhase(), Mechanism: MechanismClientQueue}
+	default:
+		return nil, &broker.ProtocolError{Code: broker.CodeUnsupportedValue, Field: "mode", Value: string(req.Mode),
+			Msg: fmt.Sprintf("send mode %q is not one the daemon dispatches", req.Mode)}
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &broker.SentResponse{
+		Mode:             broker.SendMode(out.Mode),
+		Mechanism:        out.Mechanism,
+		PhaseBefore:      string(out.PhaseBefore),
+		SupersededTurnID: out.SupersededTurnID,
+	}, nil
+}
+
+// turnCapsWire is the seat's TurnCaps as the wire spells them.
+func turnCapsWire(proc *Agent) *broker.TurnCaps {
+	caps := proc.TurnCaps()
+	return &broker.TurnCaps{
+		CanInterrupt:       caps.CanInterrupt,
+		CanSteer:           caps.CanSteer,
+		SteerPolicy:        string(caps.SteerPolicy),
+		BusyOnSecondSubmit: caps.BusyOnSecondSubmit,
+	}
+}
+
 // seatFor resolves a request's grant and, when needOwner, checks c owns it.
 func (d *BrokerDaemon) seatFor(c *broker.ClientConn, id, name string, needOwner bool) (*brokerGrant, *Agent, bool) {
 	d.mu.Lock()
@@ -687,11 +732,13 @@ func (d *BrokerDaemon) handleAgentOp(c *broker.ClientConn, req *broker.Request) 
 	named := &broker.NamedResponse{Name: name}
 	switch req.Type {
 	case broker.TypeSend:
-		if err := proc.Send(req.Send.Text); err != nil {
+		sent, err := deliverSend(proc, req.Send)
+		if err != nil {
 			_ = c.Fail(req.ID, err)
 			return
 		}
-		_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeSent, Sent: &broker.SentResponse{Name: name}})
+		sent.Name = name
+		_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeSent, Sent: sent})
 	case broker.TypeInterrupt:
 		if err := proc.Interrupt(); err != nil {
 			_ = c.Fail(req.ID, err)
@@ -730,6 +777,7 @@ func (d *BrokerDaemon) handleAgentOp(c *broker.ClientConn, req *broker.Request) 
 			Alive: proc.Alive(), PromptInFlight: proc.PromptInFlight(), Usage: usage,
 			WindowID: proc.WindowID(), JSONLPath: proc.JSONLPath(), TermLogPath: proc.TermLogPath(),
 			AttachCommand: proc.AttachCommand(), ConnectURL: proc.ConnectURL(), ConnectPID: proc.PID(),
+			TurnCaps: turnCapsWire(proc),
 		}})
 	case broker.TypeTermSubscribe:
 		history, ch := proc.SubscribeTerminal()
@@ -898,6 +946,7 @@ func (d *BrokerDaemon) grantList() []broker.GrantStatus {
 			st.Pending = len(g.ring)
 			if g.proc != nil {
 				st.Alive = g.proc.Alive()
+				st.TurnCaps = turnCapsWire(g.proc)
 			}
 		}
 		d.mu.Unlock()

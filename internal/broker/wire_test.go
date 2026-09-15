@@ -246,9 +246,9 @@ var responseVectors = map[string]*Response{
 	"agent_gone": {Type: TypeAgentGone, AgentGone: &AgentGoneMessage{Name: "jv-worker-1", Reason: "process exited"}},
 	// A pre-🎯T72 daemon answers with the name alone; the vector is unchanged.
 	"sent":           {ID: "g6", Type: TypeSent, Sent: &SentResponse{Name: "jv-worker-1"}},
-	"sent_submit":    {ID: "g6", Type: TypeSent, Sent: &SentResponse{Name: "jv-worker-1", Mode: SendModeSubmit, Mechanism: "send", PhaseBefore: "idle"}},
-	"sent_steer":     {ID: "g6", Type: TypeSent, Sent: &SentResponse{Name: "jv-worker-1", Mode: SendModeSteer, Mechanism: "acp_session_prompt_supersede", PhaseBefore: "in_turn"}},
-	"sent_interrupt": {ID: "g6", Type: TypeSent, Sent: &SentResponse{Name: "jv-worker-1", Mode: SendModeInterrupt, Mechanism: "session_cancel+prompt", PhaseBefore: "in_turn"}},
+	"sent_submit":    {ID: "g6", Type: TypeSent, Sent: &SentResponse{Name: "jv-worker-1", Mode: SendModeSubmit, Mechanism: "submit", PhaseBefore: "idle"}},
+	"sent_steer":     {ID: "g6", Type: TypeSent, Sent: &SentResponse{Name: "jv-worker-1", Mode: SendModeSteer, Mechanism: "acp_session_prompt_supersede", PhaseBefore: "in_turn", SupersededTurnID: "t-9"}},
+	"sent_interrupt": {ID: "g6", Type: TypeSent, Sent: &SentResponse{Name: "jv-worker-1", Mode: SendModeInterrupt, Mechanism: "interrupt+submit", PhaseBefore: "in_turn"}},
 	"sent_queue":     {ID: "g6", Type: TypeSent, Sent: &SentResponse{Name: "jv-worker-1", Mode: SendModeQueue, Mechanism: "client_queue", PhaseBefore: "in_turn"}},
 	"interrupted":    {ID: "g7", Type: TypeInterrupted, Interrupted: &NamedResponse{Name: "jv-worker-1"}},
 	"model_set":      {ID: "g8", Type: TypeModelSet, ModelSet: &NamedResponse{Name: "jv-worker-1"}},

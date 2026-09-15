@@ -34,7 +34,42 @@ type daemonFixture struct {
 
 	mu       sync.Mutex
 	backends []*fakeAgentBackend
+	modes    []*modeBackend
 	fetches  int
+}
+
+// modeBackend is fakeAgentBackend plus the 🎯T72.2 turn hooks, so the
+// daemon-side Agent can steer and a test can see which verb ran (🎯T72.3).
+// Its caps are a Cursor-shaped contract; the fake underneath still counts
+// sends and interrupts.
+type modeBackend struct {
+	*fakeAgentBackend
+	mu     sync.Mutex
+	steers []string
+}
+
+// modeBackendCaps is what a modeBackend seat reports.
+var modeBackendCaps = TurnCaps{CanInterrupt: true, CanSteer: true, SteerPolicy: SteerBreakpoint, BusyOnSecondSubmit: BusySubmitSupersede}
+
+func (b *modeBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
+	start, err := b.fakeAgentBackend.StartAgent(req)
+	if err != nil {
+		return nil, err
+	}
+	start.Ops.steer = func(_ *Agent, text string) (DeliveryOutcome, error) {
+		b.mu.Lock()
+		b.steers = append(b.steers, text)
+		b.mu.Unlock()
+		return DeliveryOutcome{Mechanism: "fake_steer", SupersededTurnID: "t-1"}, nil
+	}
+	start.Ops.turnCaps = func(*Agent) TurnCaps { return modeBackendCaps }
+	return start, nil
+}
+
+func (b *modeBackend) steered() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]string(nil), b.steers...)
 }
 
 func (f *daemonFixture) backend(i int) *fakeAgentBackend {
@@ -44,6 +79,15 @@ func (f *daemonFixture) backend(i int) *fakeAgentBackend {
 		return nil
 	}
 	return f.backends[i]
+}
+
+func (f *daemonFixture) mode(i int) *modeBackend {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if i >= len(f.modes) {
+		return nil
+	}
+	return f.modes[i]
 }
 
 func (f *daemonFixture) fetchCount() int {
@@ -67,10 +111,12 @@ func startDaemon(t *testing.T, resume bool, usage []PlanUsage) *daemonFixture {
 	prevStart, prevAdopt := registryStartDirect, registryAdopt
 	registryStartDirect = func(ctx context.Context, cfg Config) (*Agent, error) {
 		b := &fakeAgentBackend{name: "fake-claude"}
+		m := &modeBackend{fakeAgentBackend: b}
 		f.mu.Lock()
 		f.backends = append(f.backends, b)
+		f.modes = append(f.modes, m)
 		f.mu.Unlock()
-		return startWithBackendContext(ctx, cfg, b)
+		return startWithBackendContext(ctx, cfg, m)
 	}
 	registryAdopt = func(cfg Config) (*Agent, error) { return nil, ErrNoSessionWindow }
 	t.Cleanup(func() { registryStartDirect, registryAdopt = prevStart, prevAdopt })
@@ -221,6 +267,252 @@ func TestBrokerDaemonGrantIsDifferentialWithDirectStart(t *testing.T) {
 		if !reflect.DeepEqual(g, w) {
 			t.Errorf("event %d differs\n daemon: %+v\n direct: %+v", i, g, w)
 		}
+	}
+}
+
+// rawSeat grants name over a raw wire connection and returns the
+// connection, which owns the seat. Push messages (agent_event and friends)
+// are id-less and interleave with answers, so callers use rawCall.
+func rawSeat(t *testing.T, sock, name string) *broker.Conn {
+	t.Helper()
+	c, err := broker.Dial(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	def, err := encodeGrantDefWire(configToGrantDef(name, Config{WorkDir: t.TempDir(), SessionID: "sid-" + name, TermLogPath: "-"}, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := rawCall(t, c, &broker.Request{ID: "grant", Type: broker.TypeGrant,
+		Grant: &broker.GrantRequest{Name: name, Def: def}})
+	if resp.Type != broker.TypeGranted {
+		t.Fatalf("grant answered %s: %+v", resp.Type, resp.Error)
+	}
+	return c
+}
+
+// rawCall writes req and returns the answer carrying its id, skipping
+// pushed messages.
+func rawCall(t *testing.T, c *broker.Conn, req *broker.Request) *broker.Response {
+	t.Helper()
+	if err := c.WriteRequest(req); err != nil {
+		t.Fatal(err)
+	}
+	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
+	for {
+		resp, err := c.ReadResponse()
+		if err != nil {
+			t.Fatalf("waiting for %s answer: %v", req.ID, err)
+		}
+		if resp.ID == req.ID {
+			return resp
+		}
+	}
+}
+
+// TestBrokerDaemonSendModeDispatch is 🎯T72.3's daemon clause, over the raw
+// wire so the sent response is read as bytes rather than through the
+// handle: each mode reaches the verb the design maps it to, and the
+// response names the mechanism that ran. The fake flips itself busy on
+// its first send, so phase_before moves from idle to in_turn as it would
+// on a real seat.
+func TestBrokerDaemonSendModeDispatch(t *testing.T) {
+	f := startDaemon(t, false, nil)
+	f.boot(t, false, nil)
+	c := rawSeat(t, f.sock, "modes")
+	seat, mode := f.backend(0), f.mode(0)
+	if seat == nil {
+		t.Fatal("daemon started no provider backend")
+	}
+	counts := func() (sends []string, interrupts int) {
+		seat.mu.Lock()
+		defer seat.mu.Unlock()
+		return append([]string(nil), seat.sends...), seat.interrupts
+	}
+	send := func(id, text string, m broker.SendMode) *broker.SentResponse {
+		t.Helper()
+		resp := rawCall(t, c, &broker.Request{ID: id, Type: broker.TypeSend, Send: &broker.SendRequest{Name: "modes", Text: text, Mode: m}})
+		if resp.Type != broker.TypeSent {
+			t.Fatalf("%s answered %s: %+v", id, resp.Type, resp.Error)
+		}
+		return resp.Sent
+	}
+	expect := func(what string, got, want *broker.SentResponse) {
+		t.Helper()
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: sent = %+v, want %+v", what, got, want)
+		}
+	}
+
+	// Steer on an idle seat folds to a submit and says so.
+	expect("steer idle", send("st0", "first", broker.SendModeSteer),
+		&broker.SentResponse{Name: "modes", Mode: broker.SendModeSteer, Mechanism: MechanismSubmit, PhaseBefore: string(TurnIdle)})
+	// Absent mode is submit: today's client keeps today's behaviour.
+	expect("submit", send("s1", "one", ""),
+		&broker.SentResponse{Name: "modes", Mode: broker.SendModeSubmit, Mechanism: MechanismSubmit, PhaseBefore: string(TurnInTurn)})
+	// Steer with a turn open runs the provider's steer, not Send.
+	expect("steer", send("st1", "also", broker.SendModeSteer),
+		&broker.SentResponse{Name: "modes", Mode: broker.SendModeSteer, Mechanism: "fake_steer", PhaseBefore: string(TurnInTurn), SupersededTurnID: "t-1"})
+	sends, interrupts := counts()
+	if !reflect.DeepEqual(sends, []string{"first", "one"}) || interrupts != 0 || !reflect.DeepEqual(mode.steered(), []string{"also"}) {
+		t.Fatalf("after steer: sends=%v interrupts=%d steers=%v", sends, interrupts, mode.steered())
+	}
+	// Interrupt with a turn open hard-stops, then submits.
+	expect("interrupt", send("i1", "stop", broker.SendModeInterrupt),
+		&broker.SentResponse{Name: "modes", Mode: broker.SendModeInterrupt, Mechanism: MechanismInterruptThenSubmit, PhaseBefore: string(TurnInTurn)})
+	sends, interrupts = counts()
+	if !reflect.DeepEqual(sends, []string{"first", "one", "stop"}) || interrupts != 1 {
+		t.Fatalf("after interrupt: sends=%v interrupts=%d", sends, interrupts)
+	}
+	// Queue is ack-only: the seat never sees the text.
+	expect("queue", send("q1", "later", broker.SendModeQueue),
+		&broker.SentResponse{Name: "modes", Mode: broker.SendModeQueue, Mechanism: MechanismClientQueue, PhaseBefore: string(TurnInTurn)})
+	// The bare interrupt request is untouched by send.mode.
+	resp := rawCall(t, c, &broker.Request{ID: "i2", Type: broker.TypeInterrupt, Interrupt: &broker.NamedRequest{Name: "modes"}})
+	if resp.Type != broker.TypeInterrupted || resp.Interrupted.Name != "modes" {
+		t.Fatalf("interrupt answered %s: %+v", resp.Type, resp.Error)
+	}
+	// An unknown mode is refused at the wire, never reaching the seat.
+	resp = rawCall(t, c, &broker.Request{ID: "x1", Type: broker.TypeSend, Send: &broker.SendRequest{Name: "modes", Text: "?", Mode: "nudge"}})
+	if resp.Type != broker.TypeError || resp.Error.Code != broker.CodeUnsupportedValue || resp.Error.Field != "mode" {
+		t.Fatalf("bad mode answered %s %+v", resp.Type, resp.Error)
+	}
+	sends, interrupts = counts()
+	if len(sends) != 3 || interrupts != 2 || len(mode.steered()) != 1 {
+		t.Errorf("seat saw sends=%v interrupts=%d steers=%v after queue, interrupt and a refused mode", sends, interrupts, mode.steered())
+	}
+
+	// turn_caps rides agent_info, and the grants snapshot, from the seat.
+	want := &broker.TurnCaps{CanInterrupt: true, CanSteer: true, SteerPolicy: string(SteerBreakpoint), BusyOnSecondSubmit: BusySubmitSupersede}
+	info := rawCall(t, c, &broker.Request{ID: "ai", Type: broker.TypeAgentInfo, AgentInfo: &broker.NamedRequest{Name: "modes"}})
+	if info.AgentInfo == nil || !reflect.DeepEqual(info.AgentInfo.TurnCaps, want) {
+		t.Errorf("agent_info turn_caps = %+v, want %+v", info.AgentInfo, want)
+	}
+	if got := f.d.grantList(); len(got) != 1 || !reflect.DeepEqual(got[0].TurnCaps, want) {
+		t.Errorf("grants turn_caps = %+v, want %+v", got, want)
+	}
+}
+
+// TestBrokerHandleForwardsSteerAndTurnCaps is the client half of 🎯T72.3:
+// a broker-held handle's Steer, SendMode and TurnCaps reach the daemon's
+// seat through send.mode and turn_caps, with the daemon's outcome on the
+// handle, rather than answering from the provider contract alone.
+func TestBrokerHandleForwardsSteerAndTurnCaps(t *testing.T) {
+	f := startDaemon(t, false, nil)
+	f.boot(t, false, nil)
+	a, err := Start(Config{Name: "seat-m", WorkDir: t.TempDir(), SessionID: "sid-m", TermLogPath: "-"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(a.Stop)
+	seat, mode := f.backend(0), f.mode(0)
+
+	if caps := a.TurnCaps(); caps != modeBackendCaps {
+		t.Fatalf("TurnCaps via daemon = %+v, want %+v", caps, modeBackendCaps)
+	}
+	if got := f.d.reg.Get("seat-m").TurnPhase(); got != TurnIdle {
+		t.Fatalf("seat phase = %s before any send", got)
+	}
+	if _, err := a.Steer("early"); !errors.Is(err, ErrTurnIdle) {
+		t.Fatalf("Steer on an idle seat: err = %v, want ErrTurnIdle", err)
+	}
+	if err := a.Send("go"); err != nil {
+		t.Fatal(err)
+	}
+	out, err := a.Steer("and this")
+	if err != nil {
+		t.Fatalf("Steer: %v", err)
+	}
+	if out.Mechanism != "fake_steer" || out.SupersededTurnID != "t-1" || out.PhaseBefore != TurnInTurn || out.Mode != DeliverySteer {
+		t.Fatalf("Steer outcome = %+v", out)
+	}
+	if !reflect.DeepEqual(mode.steered(), []string{"and this"}) {
+		t.Fatalf("seat steers = %v", mode.steered())
+	}
+	out, err = a.SendMode("now", DeliveryInterrupt)
+	if err != nil {
+		t.Fatalf("SendMode interrupt: %v", err)
+	}
+	if out.Mechanism != MechanismInterruptThenSubmit {
+		t.Fatalf("interrupt outcome = %+v", out)
+	}
+	seat.mu.Lock()
+	sends, interrupts := append([]string(nil), seat.sends...), seat.interrupts
+	seat.mu.Unlock()
+	if !reflect.DeepEqual(sends, []string{"go", "now"}) || interrupts != 1 {
+		t.Fatalf("seat saw sends=%v interrupts=%d", sends, interrupts)
+	}
+}
+
+// TestDeliverSendOnStubAgent is the dispatch table on a stub whose every
+// verb is observable (🎯T72.3): each wire mode runs exactly the Agent verb
+// the design maps it to, the sent response carries the mechanism the verb
+// reported, and turn_caps is the stub's own answer. The daemon suite above
+// proves the same over the socket; this pins the table without one.
+func TestDeliverSendOnStubAgent(t *testing.T) {
+	var ran []string
+	phase := TurnInTurn
+	stub := NewStubAgentOps(&StubAgentOps{
+		Provider: ProviderCursor,
+		Send:     func(text string) error { ran = append(ran, "send:"+text); return nil },
+		Steer: func(text string) (DeliveryOutcome, error) {
+			ran = append(ran, "steer:"+text)
+			return DeliveryOutcome{Mechanism: "stub_steer", SupersededTurnID: "t-2"}, nil
+		},
+		Interrupt: func() error { ran = append(ran, "interrupt"); phase = TurnIdle; return nil },
+		TurnPhase: func() TurnPhase { return phase },
+		TurnCaps:  func() TurnCaps { return modeBackendCaps },
+	})
+	cases := []struct {
+		mode broker.SendMode
+		text string
+		want *broker.SentResponse
+		ran  []string
+	}{
+		{broker.SendModeSteer, "fold", &broker.SentResponse{Mode: broker.SendModeSteer, Mechanism: "stub_steer", PhaseBefore: "in_turn", SupersededTurnID: "t-2"}, []string{"steer:fold"}},
+		{broker.SendModeQueue, "hold", &broker.SentResponse{Mode: broker.SendModeQueue, Mechanism: MechanismClientQueue, PhaseBefore: "in_turn"}, nil},
+		{broker.SendModeInterrupt, "stop", &broker.SentResponse{Mode: broker.SendModeInterrupt, Mechanism: MechanismInterruptThenSubmit, PhaseBefore: "in_turn"}, []string{"interrupt", "send:stop"}},
+		{broker.SendModeSubmit, "go", &broker.SentResponse{Mode: broker.SendModeSubmit, Mechanism: MechanismSubmit, PhaseBefore: "idle"}, []string{"send:go"}},
+	}
+	for _, tc := range cases {
+		ran = nil
+		got, err := deliverSend(stub, &broker.SendRequest{Name: "stub", Text: tc.text, Mode: tc.mode})
+		if err != nil {
+			t.Fatalf("%s: %v", tc.mode, err)
+		}
+		if !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("%s: sent = %+v, want %+v", tc.mode, got, tc.want)
+		}
+		if !reflect.DeepEqual(ran, tc.ran) {
+			t.Errorf("%s: verbs ran = %v, want %v", tc.mode, ran, tc.ran)
+		}
+	}
+	if _, err := deliverSend(stub, &broker.SendRequest{Name: "stub", Text: "?", Mode: "nudge"}); err == nil {
+		t.Error("unknown mode was dispatched")
+	}
+	want := &broker.TurnCaps{CanInterrupt: true, CanSteer: true, SteerPolicy: string(SteerBreakpoint), BusyOnSecondSubmit: BusySubmitSupersede}
+	if got := turnCapsWire(stub); !reflect.DeepEqual(got, want) {
+		t.Errorf("turn_caps = %+v, want %+v", got, want)
+	}
+}
+
+// TestBrokerTurnCapsMirrorIsComplete keeps broker.TurnCaps field for field
+// with TurnCaps, the way the other wire mirrors are held (🎯T24: a field
+// added to one side without the other would vanish on the socket).
+func TestBrokerTurnCapsMirrorIsComplete(t *testing.T) {
+	wire := map[string]bool{}
+	for f := range reflect.TypeFor[broker.TurnCaps]().Fields() {
+		wire[f.Name] = true
+	}
+	for f := range reflect.TypeFor[TurnCaps]().Fields() {
+		if !wire[f.Name] {
+			t.Errorf("TurnCaps.%s has no slot on broker.TurnCaps", f.Name)
+		}
+		delete(wire, f.Name)
+	}
+	for name := range wire {
+		t.Errorf("broker.TurnCaps.%s is not a TurnCaps field", name)
 	}
 }
 
