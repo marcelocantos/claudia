@@ -16,6 +16,10 @@ const (
 	ProgressPromptAccepted = "prompt_accepted"
 	ProgressPermission     = "permission"
 	ProgressToolUse        = "tool_use"
+	// ProgressPromptSuperseded: a steered-over session/prompt returned
+	// its JSON-RPC result while the turn continued on the steer's id
+	// (🎯T72.1). Raw is that result; it is never a terminal stop.
+	ProgressPromptSuperseded = "prompt_superseded"
 )
 
 type acpUpdateProbe struct {
@@ -134,6 +138,20 @@ func acpPromptAcceptedEvent(sessionID string, promptID int64) Event {
 		SessionID:    sessionID,
 		TurnID:       strconv.FormatInt(promptID, 10),
 		ProgressType: ProgressPromptAccepted,
+	}
+}
+
+func acpPromptSupersededEvent(sessionID string, promptID int64, msg acpRPCMessage) Event {
+	raw := msg.Result
+	if msg.Error != nil {
+		raw, _ = json.Marshal(msg.Error)
+	}
+	return Event{
+		Type:         "progress",
+		SessionID:    sessionID,
+		TurnID:       strconv.FormatInt(promptID, 10),
+		Raw:          raw,
+		ProgressType: ProgressPromptSuperseded,
 	}
 }
 

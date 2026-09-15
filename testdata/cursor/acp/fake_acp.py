@@ -19,6 +19,7 @@ def send(obj: dict) -> None:
 def main() -> None:
     session_id = "sess-fake-cursor-1"
     authed = False
+    held = None
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -61,7 +62,11 @@ def main() -> None:
                 continue
             authed = True
             send({"jsonrpc": "2.0", "id": mid, "result": {}})
-        elif method in ("notifications/initialized", "session/cancel"):
+        elif method == "session/cancel":
+            if held is not None:
+                send({"jsonrpc": "2.0", "id": held, "result": {"stopReason": "cancelled"}})
+                held = None
+        elif method == "notifications/initialized":
             pass
         elif method == "session/new":
             if not authed:
@@ -110,6 +115,46 @@ def main() -> None:
                 if isinstance(block, dict) and block.get("type") == "text":
                     text = block.get("text") or ""
                     break
+
+            if os.environ.get("FAKE_ACP_STEER"):
+                # 🎯T72.1 steer fake: hold the first prompt open (stream one
+                # chunk, no result). A second session/prompt while held is a
+                # steer: settle the held id as cancelled, then answer the new
+                # id with text that reflects the steer. session/cancel while
+                # held settles it as cancelled with no new turn.
+                if held is None:
+                    held = mid
+                    send(
+                        {
+                            "jsonrpc": "2.0",
+                            "method": "session/update",
+                            "params": {
+                                "sessionId": sid,
+                                "update": {
+                                    "sessionUpdate": "agent_message_chunk",
+                                    "content": {"type": "text", "text": "drafting the essay"},
+                                },
+                            },
+                        }
+                    )
+                    continue
+                send({"jsonrpc": "2.0", "id": held, "result": {"stopReason": "cancelled"}})
+                held = None
+                send(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "session/update",
+                        "params": {
+                            "sessionId": sid,
+                            "update": {
+                                "sessionUpdate": "agent_message_chunk",
+                                "content": {"type": "text", "text": "STEERED: " + text},
+                            },
+                        },
+                    }
+                )
+                send({"jsonrpc": "2.0", "id": mid, "result": {"stopReason": "end_turn"}})
+                continue
 
             if os.environ.get("FAKE_ACP_CURSOR_PERMISSION"):
                 perm_id = 900001

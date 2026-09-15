@@ -24,11 +24,11 @@ func TestT50_1ThoughtPlanThenToolThenAssistantInOrder(t *testing.T) {
 		feed func(on EventFunc, params json.RawMessage)
 	}{
 		{"grok", func(on EventFunc, params json.RawMessage) {
-			c := &grokACPClient{sessionID: "s1", promptID: 7, onEvent: on}
+			c := &grokACPClient{sessionID: "s1", prompts: acpPromptStack{ids: []int64{7}}, onEvent: on}
 			c.handleSessionUpdate(params)
 		}},
 		{"cursor", func(on EventFunc, params json.RawMessage) {
-			c := &cursorACPClient{sessionID: "s1", promptID: 7, onEvent: on}
+			c := &cursorACPClient{sessionID: "s1", prompts: acpPromptStack{ids: []int64{7}}, onEvent: on}
 			c.handleSessionUpdate(params)
 		}},
 	} {
@@ -77,7 +77,7 @@ func TestT50_2PromptAcceptedBeforeWriteAndPermissionBeforeReply(t *testing.T) {
 			t.Fatal("PromptInFlight false after dispatch")
 		}
 		c.mu.Lock()
-		pid := c.promptID
+		pid := c.prompts.top()
 		c.mu.Unlock()
 		id := int64(99)
 		c.handleServerRequest(acpRPCMessage{ID: &id, Method: "session/request_permission", Params: perm})
@@ -99,7 +99,7 @@ func TestT50_2PromptAcceptedBeforeWriteAndPermissionBeforeReply(t *testing.T) {
 			t.Fatal("PromptInFlight false after dispatch")
 		}
 		c.mu.Lock()
-		pid := c.promptID
+		pid := c.prompts.top()
 		c.mu.Unlock()
 		id := int64(99)
 		c.handleServerRequest(acpRPCMessage{ID: &id, Method: "session/request_permission", Params: perm})
@@ -142,9 +142,9 @@ func TestT50_3ToolIdentityAndUsageWithoutParsingRaw(t *testing.T) {
 		feed := func(params json.RawMessage) {
 			switch name {
 			case "grok":
-				(&grokACPClient{sessionID: "s1", promptID: 3, onEvent: on}).handleSessionUpdate(params)
+				(&grokACPClient{sessionID: "s1", prompts: acpPromptStack{ids: []int64{3}}, onEvent: on}).handleSessionUpdate(params)
 			case "cursor":
-				(&cursorACPClient{sessionID: "s1", promptID: 3, onEvent: on}).handleSessionUpdate(params)
+				(&cursorACPClient{sessionID: "s1", prompts: acpPromptStack{ids: []int64{3}}, onEvent: on}).handleSessionUpdate(params)
 			}
 		}
 		feed(with)

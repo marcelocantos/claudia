@@ -58,9 +58,9 @@ type grokACPClient struct {
 	onEvent   func(Event)
 	onClose   func()
 
-	// promptID is the in-flight session/prompt request id; when its
-	// response arrives, a terminal assistant event is published.
-	promptID int64
+	// prompts is the open turn's session/prompt id stack; the top id's
+	// response publishes the terminal assistant event (🎯T72.1).
+	prompts acpPromptStack
 }
 
 type acpRPCMessage struct {
@@ -259,15 +259,16 @@ func (c *grokACPClient) dispatchMessage(line []byte) {
 		if ch != nil {
 			delete(c.pending, *msg.ID)
 		}
-		isPrompt := c.promptID == *msg.ID
-		promptID := c.promptID
+		settle := c.prompts.settle(*msg.ID)
 		sessionID := c.sessionID
-		if isPrompt {
-			c.promptID = 0
-		}
 		c.mu.Unlock()
-		if isPrompt {
-			c.publishPromptResult(msg, sessionID, strconv.FormatInt(promptID, 10))
+		switch settle {
+		case acpPromptTurnDone:
+			c.publishPromptResult(msg, sessionID, strconv.FormatInt(*msg.ID, 10))
+		case acpPromptSuperseded:
+			// A steered-over prompt answered early (Cursor: cancelled).
+			// The turn continues on the top id; no terminal event.
+			publishEvent(c.onEvent, acpPromptSupersededEvent(sessionID, *msg.ID, msg))
 		}
 		if ch != nil {
 			select {
@@ -287,7 +288,7 @@ func (c *grokACPClient) handleServerRequest(msg acpRPCMessage) {
 	switch msg.Method {
 	case "session/request_permission":
 		c.mu.Lock()
-		sid, promptID := c.sessionID, c.promptID
+		sid, promptID := c.sessionID, c.prompts.top()
 		c.mu.Unlock()
 		publishEvent(c.onEvent, acpPermissionEvent(sid, promptID, msg.Params))
 		// Auto-approve for unattended embedding. Must pick an optionId that
@@ -409,7 +410,7 @@ func (c *grokACPClient) handleSessionUpdate(params json.RawMessage) {
 		return
 	}
 	c.mu.Lock()
-	promptID := c.promptID
+	promptID := c.prompts.top()
 	clientSessionID := c.sessionID
 	c.mu.Unlock()
 	sessionID := clientSessionID
@@ -574,27 +575,58 @@ func (c *grokACPClient) Prompt(text string) error {
 		c.mu.Unlock()
 		return fmt.Errorf("grok acp: no session")
 	}
-	if c.promptID != 0 {
+	if c.prompts.inFlight() {
 		c.mu.Unlock()
-		return fmt.Errorf("grok acp: prompt already in flight")
+		return fmt.Errorf("grok acp: %w", ErrTurnInFlight)
 	}
 	id := atomic.AddInt64(&c.nextID, 1)
-	c.promptID = id
+	c.prompts.push(id)
 	// No pending channel: completion is handled in readLoop via promptID.
 	c.mu.Unlock()
 	publishEvent(c.onEvent, acpPromptAcceptedEvent(sid, id))
+	return c.write(acpPromptRequest(id, sid, text))
+}
 
-	return c.write(map[string]any{
-		"jsonrpc": "2.0",
-		"id":      id,
-		"method":  "session/prompt",
-		"params": map[string]any{
-			"sessionId": sid,
-			"prompt": []map[string]any{
-				{"type": "text", "text": text},
-			},
-		},
-	})
+// Steer folds text into the running turn by writing a second
+// session/prompt whose id supersedes the one in flight (🎯T72.1). No
+// session/cancel is sent: Grok finishes its current slice, then takes up the new text. The
+// superseded prompt's own JSON-RPC result, when it arrives, does not end
+// the turn; the new top id does. On an idle session Steer is a plain
+// Prompt and reports acpSubmitMechanism.
+func (c *grokACPClient) Steer(ctx context.Context, text string) (mechanism string, err error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	c.mu.Lock()
+	sid := c.sessionID
+	if c.closed {
+		c.mu.Unlock()
+		return "", fmt.Errorf("grok acp: client closed")
+	}
+	if sid == "" {
+		c.mu.Unlock()
+		return "", fmt.Errorf("grok acp: no session")
+	}
+	mechanism = acpSubmitMechanism
+	if c.prompts.inFlight() {
+		mechanism = acpSteerMechanism
+	}
+	id := atomic.AddInt64(&c.nextID, 1)
+	c.prompts.push(id)
+	c.mu.Unlock()
+	publishEvent(c.onEvent, acpPromptAcceptedEvent(sid, id))
+	if err := c.write(acpPromptRequest(id, sid, text)); err != nil {
+		return "", err
+	}
+	return mechanism, nil
+}
+
+// SupersededTurnID is the turn id the most recent Steer pushed over, or
+// "" when no steer has happened on this client.
+func (c *grokACPClient) SupersededTurnID() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.prompts.supersededTurnID()
 }
 
 func (c *grokACPClient) publishPromptResult(msg acpRPCMessage, sessionID, turnID string) {
@@ -667,7 +699,7 @@ func (c *grokACPClient) publishPromptResult(msg acpRPCMessage, sessionID, turnID
 func (c *grokACPClient) Cancel() error {
 	c.mu.Lock()
 	sid := c.sessionID
-	c.promptID = 0
+	c.prompts.clear()
 	c.mu.Unlock()
 	if sid == "" {
 		return nil
@@ -687,7 +719,7 @@ func (c *grokACPClient) SetModel(model string) error {
 func (c *grokACPClient) promptInFlight() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.promptID != 0
+	return c.prompts.inFlight()
 }
 
 func (c *grokACPClient) Close() {

@@ -107,7 +107,7 @@ func TestGrokACPEventsCarryPromptBracketIdentity(t *testing.T) {
 	var got []Event
 	c := &grokACPClient{
 		sessionID: "sess-identity",
-		promptID:  41,
+		prompts:   acpPromptStack{ids: []int64{41}},
 		onEvent:   func(ev Event) { got = append(got, ev) },
 	}
 	update := []byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess-identity","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"chunk"}}}}`)
@@ -118,12 +118,12 @@ func TestGrokACPEventsCarryPromptBracketIdentity(t *testing.T) {
 	// with its session but must not inherit the completed prompt id.
 	c.dispatchMessage(update)
 	c.mu.Lock()
-	c.promptID = 42
+	c.prompts = acpPromptStack{ids: []int64{42}}
 	c.mu.Unlock()
 	c.dispatchMessage(update)
 	c.dispatchMessage([]byte(`{"jsonrpc":"2.0","id":42,"result":{"stopReason":"end_turn"}}`))
 	c.mu.Lock()
-	c.promptID = 43
+	c.prompts = acpPromptStack{ids: []int64{43}}
 	c.mu.Unlock()
 	c.dispatchMessage([]byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess-other","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"foreign"}}}}`))
 
