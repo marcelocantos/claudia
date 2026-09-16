@@ -67,7 +67,16 @@ unavailable-with-reason — fix the parser, do not gate the read.
 
 - Auth: the `grok login` OIDC token from `~/.grok/auth.json` (the long-lived
   `key` under the `auth.x.ai::…` entry), or `PlanUsageArgs.GrokAccessToken`.
-  grok owns refreshing it; an expired token yields 401 → unavailable.
+  xAI issues a **six-hour** access token plus a refresh token, and the CLI
+  rotates the pair only when it starts. A 401 therefore usually means the
+  token expired with no grok session since — so the fetch rotates it
+  itself (🎯T74): one headless `grok -p` turn in a throwaway directory,
+  which rewrites `auth.json` the way the CLI does on start, then a reload
+  and one retry. Rate-limited to one rotation per ten minutes per process;
+  never for a non-401 failure. `PlanUsageArgs.GrokTokenRefresh` replaces
+  the one-shot (tests, consumers), `GrokRefreshDisabled` turns it off. A
+  401 that survives the rotation means the refresh token itself is gone:
+  that is when `grok login` is needed.
 - Endpoint: `GET https://cli-chat-proxy.grok.com/v1/billing?format=credits`
   with `Authorization: Bearer <token>` and `X-XAI-Token-Auth: xai-grok-cli`.
 - Only a **weekly** SuperGrok pool is published (no rolling session window).

@@ -5,10 +5,12 @@ package claudia
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -144,5 +146,110 @@ func TestGrokPlanUsageLive(t *testing.T) {
 		if pu.Reason == "" {
 			t.Error("unavailable must carry a reason")
 		}
+	}
+}
+
+// 🎯T74: a billing 401 rotates the login token through the injected refresher
+// and retries with the new bearer; a persistent 401 inside the window does
+// not spend a second rotation; a non-401 failure never rotates.
+func TestGrokPlanUsage401RotatesTokenAndRetries(t *testing.T) {
+	grokRefreshGate.reset()
+	t.Cleanup(grokRefreshGate.reset)
+	pad := strings.Repeat("A", 210)
+	oldTok, newTok := "old-"+pad, "new-"+pad
+	var bearers []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		bearers = append(bearers, b)
+		if b != newTok {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"config":{"creditUsagePercent":71,` +
+			`"currentPeriod":{"type":"USAGE_PERIOD_TYPE_WEEKLY","end":"2026-09-19T01:53:09.930537Z"}}}`))
+	}))
+	defer srv.Close()
+	authPath := filepath.Join(t.TempDir(), "auth.json")
+	write := func(tok string) {
+		if err := os.WriteFile(authPath, []byte(`{"https://auth.x.ai::client":{"key":"`+tok+`"}}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(oldTok)
+	rotations := 0
+	now := time.Date(2026, 9, 16, 12, 5, 0, 0, time.UTC)
+	args := func() *PlanUsageArgs {
+		return &PlanUsageArgs{
+			Provider: ProviderGrok, GrokAuthPath: authPath, GrokBillingURL: srv.URL, Now: now,
+			GrokTokenRefresh: func(context.Context) error {
+				rotations++
+				write(newTok) // what the CLI does on start with an expired token
+				return nil
+			},
+		}
+	}
+
+	pu, err := QueryPlanUsage(context.Background(), args())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pu.Status != PlanUsageAvailable {
+		t.Fatalf("status=%q reason=%q, want available after rotation", pu.Status, pu.Reason)
+	}
+	if rotations != 1 || len(bearers) != 2 || bearers[0] != oldTok || bearers[1] != newTok {
+		t.Fatalf("rotations=%d bearers=%v, want one rotation and the retry with the new bearer", rotations, bearers)
+	}
+	if *pu.Windows[0].RemainingPercent != 29 {
+		t.Fatalf("remaining=%v, want 29", *pu.Windows[0].RemainingPercent)
+	}
+
+	// The rotated token stops working again inside the window: no second
+	// rotation, and the 401 is reported as such.
+	write(oldTok)
+	a := args()
+	a.Now = now.Add(time.Minute)
+	pu, _ = QueryPlanUsage(context.Background(), a)
+	if pu.Status != PlanUsageUnavailable || !strings.Contains(pu.Reason, "401") || rotations != 1 {
+		t.Fatalf("inside the window: status=%q reason=%q rotations=%d", pu.Status, pu.Reason, rotations)
+	}
+	// After the window a rotation may run again.
+	a = args()
+	a.Now = now.Add(grokRefreshWindow + time.Second)
+	pu, _ = QueryPlanUsage(context.Background(), a)
+	if pu.Status != PlanUsageAvailable || rotations != 2 {
+		t.Fatalf("after the window: status=%q rotations=%d", pu.Status, rotations)
+	}
+
+	// A rotation that fails leaves a loud 401 naming the attempt.
+	grokRefreshGate.reset()
+	write(oldTok)
+	a = args()
+	a.GrokTokenRefresh = func(context.Context) error { return errors.New("simulated: cannot reach auth.x.ai") }
+	pu, _ = QueryPlanUsage(context.Background(), a)
+	if pu.Status != PlanUsageUnavailable || !strings.Contains(pu.Reason, "rotation") || !strings.Contains(pu.Reason, "401") {
+		t.Fatalf("failed rotation: status=%q reason=%q", pu.Status, pu.Reason)
+	}
+}
+
+func TestGrokPlanUsageNon401DoesNotRotate(t *testing.T) {
+	grokRefreshGate.reset()
+	t.Cleanup(grokRefreshGate.reset)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer srv.Close()
+	authPath := filepath.Join(t.TempDir(), "auth.json")
+	if err := os.WriteFile(authPath, []byte(`{"https://auth.x.ai::client":{"key":"`+strings.Repeat("k", 210)+`"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rotations := 0
+	pu, _ := QueryPlanUsage(context.Background(), &PlanUsageArgs{
+		Provider: ProviderGrok, GrokAuthPath: authPath, GrokBillingURL: srv.URL,
+		Now:              time.Date(2026, 9, 16, 12, 5, 0, 0, time.UTC),
+		GrokTokenRefresh: func(context.Context) error { rotations++; return nil },
+	})
+	if pu.Status != PlanUsageUnavailable || !strings.Contains(pu.Reason, "502") || rotations != 0 {
+		t.Fatalf("502: status=%q reason=%q rotations=%d", pu.Status, pu.Reason, rotations)
 	}
 }

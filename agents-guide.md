@@ -80,7 +80,11 @@ For Grok Build CLI, `Task.Run` shells out to
 discovery: `GROK_BIN`, then `grok` on `$PATH`, then known installs
 including `~/.grok/bin/grok`. Auth is whatever the installed CLI uses
 (`grok login` or `XAI_API_KEY`). Resume uses `TaskConfig.ClaudeID`
-as the Grok session id with `--resume`.
+as the Grok session id with `--resume`. Plan-usage fetches rotate an
+expired login token themselves — a billing 401 runs one headless grok
+turn, which rewrites `auth.json`, then retries (🎯T74; see
+`docs/plan-usage.md`) — so `grok login` is only needed when the refresh
+token itself is gone.
 
 Headless `streaming-json` maps `text` → `TaskEventText`, terminal
 `end.sessionId` → `TaskEventInit` then `TaskEventResult`, and

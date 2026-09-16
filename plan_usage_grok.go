@@ -10,7 +10,10 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
+	"sync"
 	"time"
 )
 
@@ -103,7 +106,16 @@ func queryGrokPlanUsage(ctx context.Context, args *PlanUsageArgs, now time.Time)
 // fetchGrokBilling GETs the Grok billing endpoint with the grok login OIDC token
 // (from ~/.grok/auth.json), the same way the CLI's /usage panel does. The grok
 // agent normally owns this call; we replicate it read-only with the user's own
-// token. A non-200 (e.g. 401 on an expired token) is a loud error, not a guess.
+// token.
+//
+// 🎯T74: xAI issues a six-hour access token plus a refresh token, and the CLI
+// rotates the pair only when it starts. A 401 here therefore usually means
+// "the token expired and nothing has run grok since", not "the login is gone".
+// So a 401 rotates the token through the CLI (args.GrokTokenRefresh; the
+// default runs one headless grok turn), reloads it, and retries once —
+// rate-limited to one rotation per grokRefreshWindow per process. A 401 that
+// survives the rotation, or a rotation that fails, is a loud error naming the
+// attempt. Any other non-200 stays a loud error with no rotation.
 func fetchGrokBilling(ctx context.Context, args *PlanUsageArgs) ([]byte, error) {
 	tok := args.GrokAccessToken
 	if tok == "" {
@@ -113,13 +125,55 @@ func fetchGrokBilling(ctx context.Context, args *PlanUsageArgs) ([]byte, error) 
 		}
 		tok = t
 	}
+	status, body, err := grokBillingGET(ctx, args, tok)
+	if err != nil {
+		return nil, err
+	}
+	if status == http.StatusUnauthorized && !args.GrokRefreshDisabled {
+		now := args.Now
+		if now.IsZero() {
+			now = time.Now()
+		}
+		if grokRefreshGate.allow(now) {
+			refresh := args.GrokTokenRefresh
+			if refresh == nil {
+				refresh = defaultGrokTokenRefresh
+			}
+			if rerr := refresh(ctx); rerr != nil {
+				return nil, fmt.Errorf("HTTP 401; token rotation via a grok one-shot failed: %v (run `grok login`)", rerr)
+			}
+			if args.GrokAccessToken == "" {
+				t, lerr := loadGrokToken(args.GrokAuthPath)
+				if lerr != nil {
+					return nil, fmt.Errorf("HTTP 401; token rotated but auth.json unreadable: %w", lerr)
+				}
+				tok = t
+			}
+			status, body, err = grokBillingGET(ctx, args, tok)
+			if err != nil {
+				return nil, err
+			}
+			if status != http.StatusOK {
+				return nil, fmt.Errorf("HTTP %d after rotating the token (run `grok login`)", status)
+			}
+			return body, nil
+		}
+	}
+	if status != http.StatusOK {
+		return nil, fmt.Errorf("HTTP %d (token may be expired — run `grok login`)", status)
+	}
+	return body, nil
+}
+
+// grokBillingGET is one GET with the bearer token; the caller reads the status.
+func grokBillingGET(ctx context.Context, args *PlanUsageArgs, tok string) (int, []byte, error) {
 	url := args.GrokBillingURL
 	if url == "" {
 		url = grokBillingURL
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, err
+		return 0, nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+tok)
 	req.Header.Set("X-XAI-Token-Auth", "xai-grok-cli")
@@ -131,14 +185,76 @@ func fetchGrokBilling(ctx context.Context, args *PlanUsageArgs) ([]byte, error) 
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return 0, nil, err
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d (token may be expired — run `grok login`)", resp.StatusCode)
+	return resp.StatusCode, body, nil
+}
+
+// grokRefreshWindow is the least time between two token rotations in one
+// process: a persistent 401 must not spend a model call on every poll.
+const grokRefreshWindow = 10 * time.Minute
+
+// grokOneShotTimeout bounds the headless grok turn.
+const grokOneShotTimeout = 90 * time.Second
+
+type refreshGate struct {
+	mu   sync.Mutex
+	last time.Time
+}
+
+// allow reports whether a rotation may run now and records it.
+func (g *refreshGate) allow(now time.Time) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if !g.last.IsZero() && now.Sub(g.last) < grokRefreshWindow {
+		return false
 	}
-	return body, nil
+	g.last = now
+	return true
+}
+
+func (g *refreshGate) reset() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.last = time.Time{}
+}
+
+var grokRefreshGate = &refreshGate{}
+
+// defaultGrokTokenRefresh runs one headless grok turn in a throwaway
+// directory. On start the CLI checks auth.json and, with the token past
+// expires_at, exchanges the refresh token and rewrites the file — the same
+// path an interactive session takes. Verified 2026-09-16: with expires_at in
+// the past, one such call rewrote the token and the next billing GET answered.
+func defaultGrokTokenRefresh(ctx context.Context) error {
+	bin, err := resolveGrokBin()
+	if err != nil {
+		return err
+	}
+	dir, err := os.MkdirTemp("", "claudia-grok-token-refresh-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(dir)
+	ctx, cancel := context.WithTimeout(ctx, grokOneShotTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin,
+		"-p", "Reply with the single word OK.",
+		"--max-turns", "1",
+		"--permission-mode", "bypassPermissions",
+	)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		tail := strings.TrimSpace(string(out))
+		if len(tail) > 300 {
+			tail = tail[len(tail)-300:]
+		}
+		return fmt.Errorf("grok one-shot: %w: %s", err, tail)
+	}
+	return nil
 }
 
 // loadGrokToken reads the grok login access token (the long-lived OIDC "key")
