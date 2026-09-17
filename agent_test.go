@@ -139,6 +139,10 @@ type fakeAgentBackend struct {
 	// SessionID/JSONLPath on agentStart (the request destID must still
 	// land on Agent after swap).
 	omitStartIDs bool
+	// connectURL / connectPID, when set, are reported as a connect-mode
+	// serve endpoint (Grok's durable reattach identity).
+	connectURL string
+	connectPID int
 
 	// inFlight is what ops.promptInFlight reports (daemon-side truth for
 	// the broker tests).
@@ -172,11 +176,13 @@ func (b *fakeAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error
 		startSID = ""
 	}
 	return &agentStart{
-		WindowID:  b.name + "-window",
-		SessionID: startSID,
-		Control:   b.control,
-		Ops:       b.ops(),
-		TailJSONL: b.tailJSONL,
+		WindowID:   b.name + "-window",
+		SessionID:  startSID,
+		Control:    b.control,
+		Ops:        b.ops(),
+		TailJSONL:  b.tailJSONL,
+		ConnectURL: b.connectURL,
+		ConnectPID: b.connectPID,
 		DetectReady: func(a *Agent) {
 			close(a.ready)
 		},
