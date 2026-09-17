@@ -855,13 +855,20 @@ func TestBrokerWireMirrorsAreComplete(t *testing.T) {
 		if defFields[f.Name] || f.Name == "RequireResume" {
 			continue
 		}
-		if _, ok := configNotOnGrantWire[f.Name]; !ok {
-			t.Errorf("Config.%s is neither on AgentDef (the grant wire) nor declared local in configNotOnGrantWire", f.Name)
+		_, local := configNotOnGrantWire[f.Name]
+		_, callback := configByCallback[f.Name]
+		if !local && !callback {
+			t.Errorf("Config.%s is neither on AgentDef (the grant wire), declared local in configNotOnGrantWire, nor honoured by callback in configByCallback", f.Name)
+		}
+		if local && callback {
+			t.Errorf("Config.%s is declared both not carried and honoured by callback", f.Name)
 		}
 	}
-	for name := range configNotOnGrantWire {
-		if _, ok := reflect.TypeFor[Config]().FieldByName(name); !ok {
-			t.Errorf("configNotOnGrantWire names %s, which Config no longer has", name)
+	for _, declared := range []map[string]string{configNotOnGrantWire, configByCallback} {
+		for name := range declared {
+			if _, ok := reflect.TypeFor[Config]().FieldByName(name); !ok {
+				t.Errorf("%s is declared off the grant wire, but Config no longer has it", name)
+			}
 		}
 	}
 	predFields := map[string]bool{}

@@ -119,6 +119,7 @@ type BrokerDaemon struct {
 	mu     sync.Mutex
 	grants map[string]*brokerGrant
 	tasks  map[string]*brokerDaemonTask
+	checks map[string]pendingGoalCheck
 }
 
 // brokerGrant is the daemon's ownership record for one seat.
@@ -187,6 +188,7 @@ func NewBrokerDaemon(opts BrokerDaemonOptions) (*BrokerDaemon, error) {
 		stateDir: stateDir,
 		grants:   map[string]*brokerGrant{},
 		tasks:    map[string]*brokerDaemonTask{},
+		checks:   map[string]pendingGoalCheck{},
 	}
 	d.ctx, d.cancel = context.WithCancel(context.Background())
 	d.resumeDone = make(chan struct{})
@@ -313,6 +315,8 @@ func (d *BrokerDaemon) HandleRequest(c *broker.ClientConn, req *broker.Request) 
 	case broker.TypeSend, broker.TypeInterrupt, broker.TypeSetModel, broker.TypeMigrate,
 		broker.TypeAgentInfo, broker.TypeTermSubscribe, broker.TypeResize, broker.TypeCloseGoal, broker.TypeRewind:
 		d.handleAgentOp(c, req)
+	case broker.TypeGoalVerdict:
+		d.handleGoalVerdict(c, req)
 	case broker.TypeTaskRun:
 		d.handleTaskRun(c, req)
 	case broker.TypeTaskCancel:
@@ -459,11 +463,7 @@ func (d *BrokerDaemon) handleGrant(c *broker.ClientConn, req *broker.Request) {
 	}
 	reclaimed := g.proc == proc && g.proc != nil
 	if g.proc != proc {
-		if g.proc != nil && g.sub != 0 {
-			g.proc.UnsubscribeEvents(g.sub)
-		}
-		g.proc = proc
-		g.sub = proc.SubscribeEvents(d.forwarder(name))
+		d.bindSeatLocked(g, proc)
 	}
 	if g.owner != nil && g.owner != c {
 		d.detachLocked(g)
@@ -509,6 +509,88 @@ func procProvider(a *Agent) Provider {
 		return p
 	}
 	return ProviderClaude
+}
+
+// bindSeatLocked points grant g at proc: the seat's events flow to g's
+// owner, and its Goal loop asks g's owner for a completeness verdict
+// (🎯T75.9). d.mu held.
+func (d *BrokerDaemon) bindSeatLocked(g *brokerGrant, proc *Agent) {
+	if g.proc != nil && g.sub != 0 {
+		g.proc.UnsubscribeEvents(g.sub)
+	}
+	g.proc = proc
+	g.sub = proc.SubscribeEvents(d.forwarder(g.name))
+	proc.SetGoalCompleteCheck(d.askOwnerGoalCheck(g.name))
+}
+
+// goalCheckTimeout bounds how long a seat's Goal loop waits for its owner's
+// verdict before continuing as if there were none.
+const goalCheckTimeout = 30 * time.Second
+
+// pendingGoalCheck is one goal_check awaiting its owner's verdict.
+type pendingGoalCheck struct {
+	owner   *broker.ClientConn
+	verdict chan bool
+}
+
+// askOwnerGoalCheck is the GoalCompleteCheck a daemon-held seat runs: it
+// asks whichever connection owns the seat at the time. No owner, an owner
+// without a check, a lost connection or no answer in time all mean "not
+// complete", which leaves the seat on ParseGoalStatus as before.
+func (d *BrokerDaemon) askOwnerGoalCheck(name string) func(goal, turnText string) bool {
+	return func(goal, turnText string) bool {
+		d.mu.Lock()
+		g := d.grants[name]
+		if g == nil || g.owner == nil {
+			d.mu.Unlock()
+			return false
+		}
+		owner := g.owner
+		id := newRunID()
+		verdict := make(chan bool, 1)
+		d.checks[id] = pendingGoalCheck{owner: owner, verdict: verdict}
+		d.mu.Unlock()
+		defer func() {
+			d.mu.Lock()
+			delete(d.checks, id)
+			d.mu.Unlock()
+		}()
+		if err := owner.Reply(&broker.Response{Type: broker.TypeGoalCheck, GoalCheck: &broker.GoalCheckMessage{
+			Name: name, CheckID: id, Goal: goal, TurnText: turnText,
+		}}); err != nil {
+			return false
+		}
+		select {
+		case complete := <-verdict:
+			return complete
+		case <-d.clock.After(goalCheckTimeout):
+			d.log.Warn("goal check unanswered; continuing", "grant", name)
+			return false
+		case <-d.ctx.Done():
+			return false
+		}
+	}
+}
+
+// handleGoalVerdict delivers an owner's answer to the check that asked.
+// A verdict for a check that already gave up is acknowledged and dropped.
+func (d *BrokerDaemon) handleGoalVerdict(c *broker.ClientConn, req *broker.Request) {
+	v := req.GoalVerdict
+	d.mu.Lock()
+	p, ok := d.checks[v.CheckID]
+	d.mu.Unlock()
+	if ok && p.owner != c {
+		_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeNotOwner, Field: "check_id", Value: v.CheckID,
+			Msg: "goal check was sent to another connection"})
+		return
+	}
+	if ok {
+		select {
+		case p.verdict <- v.Answered && v.Complete:
+		default:
+		}
+	}
+	_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeGoalVerdictNoted, GoalVerdictNoted: &broker.NamedResponse{Name: v.Name}})
 }
 
 // forwarder is the daemon-side event subscriber for one seat.
@@ -787,11 +869,7 @@ func (d *BrokerDaemon) handleAgentOp(c *broker.ClientConn, req *broker.Request) 
 			// The Registry relaunched the seat: the grant follows the new
 			// process, so the owner's stream continues from it.
 			d.mu.Lock()
-			if g.proc != nil && g.sub != 0 {
-				g.proc.UnsubscribeEvents(g.sub)
-			}
-			g.proc = next
-			g.sub = next.SubscribeEvents(d.forwarder(name))
+			d.bindSeatLocked(g, next)
 			d.mu.Unlock()
 		}
 		if err != nil {
@@ -1012,11 +1090,7 @@ func (d *BrokerDaemon) onSeatEvent(ev SeatEvent) {
 			d.grants[ev.Name] = g
 		}
 		if g.proc != ev.Agent {
-			if g.proc != nil && g.sub != 0 {
-				g.proc.UnsubscribeEvents(g.sub)
-			}
-			g.proc = ev.Agent
-			g.sub = ev.Agent.SubscribeEvents(d.forwarder(ev.Name))
+			d.bindSeatLocked(g, ev.Agent)
 		}
 		d.mu.Unlock()
 		d.log.Info("seat resumed", "grant", ev.Name, "how", ev.How, "session", ev.SessionID)

@@ -114,9 +114,9 @@ func decodeTaskConfigWire(raw json.RawMessage) (TaskConfig, error) {
 
 // grantDefWire is what a grant carries: the persistent AgentDef, which is
 // the whole Session Config except three fields. Config.GoalCompleteCheck is
-// a func and stays on the consumer (the daemon runs ParseGoalStatus);
-// PoolPolicy / PoolCap belong to Acquire, which is not brokered.
-// RequireResume is the consumer Registry's verdict for this launch.
+// a func: it stays on the consumer's handle and the daemon calls back to it
+// (configByCallback). PoolPolicy / PoolCap belong to Acquire, which is not
+// brokered. RequireResume is the consumer Registry's verdict for this launch.
 type grantDefWire struct {
 	AgentDef
 	RequireResume bool `json:"require_resume,omitempty"`
@@ -126,9 +126,15 @@ type grantDefWire struct {
 // carry, with the reason. TestBrokerWireMirrorsAreComplete refuses any other
 // omission.
 var configNotOnGrantWire = map[string]string{
-	"GoalCompleteCheck": "func value; the daemon runs ParseGoalStatus",
-	"PoolPolicy":        "Acquire pool policy; Acquire is not brokered",
-	"PoolCap":           "Acquire pool cap; Acquire is not brokered",
+	"PoolPolicy": "Acquire pool policy; Acquire is not brokered",
+	"PoolCap":    "Acquire pool cap; Acquire is not brokered",
+}
+
+// configByCallback lists the Config fields a grant cannot carry as data but
+// the daemon honours by calling back to the owning connection, with the
+// message that does it. TestBrokerWireMirrorsAreComplete accepts these.
+var configByCallback = map[string]string{
+	"GoalCompleteCheck": "goal_check / goal_verdict: the daemon's Goal loop asks the owner (🎯T75.9)",
 }
 
 // configToGrantDef builds the grant from cfg, over the consumer's own

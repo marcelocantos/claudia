@@ -413,6 +413,10 @@ func (b *brokerAgentBackend) deliver(a *Agent, resp *broker.Response) {
 		a.publishEvent(ev)
 	case broker.TypeAgentTerm:
 		a.pushTermOutput(resp.AgentTerm.Data)
+	case broker.TypeGoalCheck:
+		// The consumer's check is user code and may block; the queue
+		// must keep delivering the seat's events meanwhile.
+		go b.answerGoalCheck(a, resp.GoalCheck)
 	case broker.TypeAgentGone:
 		b.mu.Lock()
 		b.gone = true
@@ -421,6 +425,25 @@ func (b *brokerAgentBackend) deliver(a *Agent, resp *broker.Response) {
 		a.alive = false
 		a.mu.Unlock()
 		slog.Info("broker seat gone", "grant", b.named().Name, "reason", resp.AgentGone.Reason)
+	}
+}
+
+// answerGoalCheck runs this handle's GoalCompleteCheck for the daemon's
+// Goal loop and sends the verdict (🎯T75.9).
+func (b *brokerAgentBackend) answerGoalCheck(a *Agent, m *broker.GoalCheckMessage) {
+	a.mu.Lock()
+	check := a.goalCompleteCheck
+	a.mu.Unlock()
+	complete := check != nil && check(m.Goal, m.TurnText)
+	if complete {
+		// The daemon closes the seat's Goal on this verdict; GoalActive on
+		// the handle reports the same, as it does in direct mode.
+		a.closeGoal()
+	}
+	if _, err := b.opCall(&broker.Request{Type: broker.TypeGoalVerdict, GoalVerdict: &broker.GoalVerdictRequest{
+		Name: m.Name, CheckID: m.CheckID, Complete: complete, Answered: check != nil,
+	}}); err != nil {
+		slog.Warn("broker goal_verdict failed", "grant", m.Name, "err", err)
 	}
 }
 
@@ -444,10 +467,10 @@ func startViaBrokerContext(ctx context.Context, cfg Config) (*Agent, error) {
 	// The Goal stays on the handle so Goal() / GoalActive() report the
 	// seat's contract; noteGoalEvent does not run the continuation loop
 	// on a broker-held handle (the daemon's Agent does), and CloseGoal
-	// forwards to the daemon.
+	// forwards to the daemon. GoalCompleteCheck stays too: the daemon's
+	// loop asks this handle for its verdict over goal_check (🎯T75.9).
 	local := cfg
 	local.TermLogPath = "-"
-	local.GoalCompleteCheck = nil
 	a, err := startWithBackendContext(ctx, local, backend)
 	if err != nil {
 		client.Close()

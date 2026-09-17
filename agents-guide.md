@@ -778,9 +778,12 @@ same shape as bullseye/mnemo/jevonsd. Elsewhere, operate it with
 macOS). Then `status`, `grants`, `usage [--refresh]`,
 `tail` (NDJSON lifecycle events), `release NAME [--detach]`, `socket`.
 `claudia --help-agent` prints this guide after the CLI usage text.
-Not covered by
-the daemon: `Acquire` / the in-process pool,
-`Config.GoalCompleteCheck` (the daemon runs `ParseGoalStatus`).
+Not covered by the daemon: `Acquire` / the in-process pool. A seat's
+Goal loop runs on the daemon; after a terminal turn with no
+`GOAL_STATUS` line it asks the owning handle's `GoalCompleteCheck`
+(set on `Config` or with `SetGoalCompleteCheck`), and with no owner
+connected, no check, or no answer within 30s it continues as if the
+check said not complete.
 Design record: [docs/metaharness.md](docs/metaharness.md).
 
 ## Gotchas

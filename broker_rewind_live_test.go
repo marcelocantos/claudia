@@ -28,23 +28,7 @@ func TestBrokerDaemonRewindLive(t *testing.T) {
 	if _, err := exec.LookPath("claude"); err != nil {
 		t.Skip("claude binary not on PATH")
 	}
-	dir, err := os.MkdirTemp("/tmp", "cbrl")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	sock := filepath.Join(dir, "b.sock")
-	d, err := NewBrokerDaemon(BrokerDaemonOptions{
-		SocketPath: sock, StateDir: filepath.Join(dir, "state"),
-		DisableResume: true, DisableIntel: true, DisableMCPHost: true,
-		UsageFetch: func(context.Context) ([]PlanUsage, error) { return nil, nil },
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = d.Close() })
-	t.Setenv(broker.SocketPathEnv, sock)
-	t.Setenv(broker.NoBrokerEnv, "")
+	startLiveDaemon(t)
 
 	a, err := Start(Config{Name: "rewind-live-" + newRunID(), WorkDir: t.TempDir(), Model: "haiku"})
 	if err != nil {
@@ -86,4 +70,29 @@ func TestBrokerDaemonRewindLive(t *testing.T) {
 	if strings.Contains(recall, "BRAVO") {
 		t.Error("the relaunched seat resurfaced the rewound turn (BRAVO)")
 	}
+}
+
+// startLiveDaemon runs a daemon in this process on a temp socket and points
+// the consumer API at it, so a live test exercises the daemon path without
+// touching an installed daemon.
+func startLiveDaemon(t *testing.T) *BrokerDaemon {
+	t.Helper()
+	dir, err := os.MkdirTemp("/tmp", "cbl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	sock := filepath.Join(dir, "b.sock")
+	d, err := NewBrokerDaemon(BrokerDaemonOptions{
+		SocketPath: sock, StateDir: filepath.Join(dir, "state"),
+		DisableResume: true, DisableIntel: true, DisableMCPHost: true,
+		UsageFetch: func(context.Context) ([]PlanUsage, error) { return nil, nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	t.Setenv(broker.SocketPathEnv, sock)
+	t.Setenv(broker.NoBrokerEnv, "")
+	return d
 }

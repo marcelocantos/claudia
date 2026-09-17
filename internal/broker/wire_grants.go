@@ -57,6 +57,9 @@ const (
 	TypeCloseGoal MessageType = "close_goal"
 	// TypeRewind rolls the seat back by whole user turns and relaunches it.
 	TypeRewind MessageType = "rewind"
+	// TypeGoalVerdict answers a goal_check push with the owner's
+	// completeness verdict.
+	TypeGoalVerdict MessageType = "goal_verdict"
 )
 
 // Response types (broker → client) added by the grant protocol.
@@ -82,6 +85,10 @@ const (
 	TypeGrantsResult    MessageType = "grants_result"
 	TypeGoalClosed      MessageType = "goal_closed"
 	TypeRewound         MessageType = "rewound"
+	// TypeGoalCheck asks the seat's owner whether its Goal is complete
+	// after a terminal turn that carried no GOAL_STATUS line.
+	TypeGoalCheck        MessageType = "goal_check"
+	TypeGoalVerdictNoted MessageType = "goal_verdict_noted"
 )
 
 // Error codes added by the grant protocol.
@@ -440,6 +447,37 @@ func (r *MigrateRequest) Validate() error {
 }
 
 // MigrateResponse reports the destination the seat now runs on.
+// GoalCheckMessage asks the owner of a seat to judge its Goal against the
+// turn that just ended (claudia.Config.GoalCompleteCheck). The owner answers
+// with goal_verdict carrying the same CheckID.
+type GoalCheckMessage struct {
+	Name     string `json:"name"`
+	CheckID  string `json:"check_id"`
+	Goal     string `json:"goal"`
+	TurnText string `json:"turn_text"`
+}
+
+// GoalVerdictRequest is the owner's answer to a goal_check. Answered is
+// false when the owner has no check installed, which the daemon treats as
+// not complete.
+type GoalVerdictRequest struct {
+	Name     string `json:"name"`
+	CheckID  string `json:"check_id"`
+	Complete bool   `json:"complete,omitempty"`
+	Answered bool   `json:"answered,omitempty"`
+}
+
+// Validate checks the fields.
+func (r *GoalVerdictRequest) Validate() error {
+	if strings.TrimSpace(r.Name) == "" {
+		return &ProtocolError{Code: CodeMissingField, Field: "name", Msg: "grant name is required"}
+	}
+	if strings.TrimSpace(r.CheckID) == "" {
+		return &ProtocolError{Code: CodeMissingField, Field: "check_id", Msg: "check id is required"}
+	}
+	return nil
+}
+
 // RewindRequest rolls a seat back by Turns user turns.
 type RewindRequest struct {
 	Name  string `json:"name"`

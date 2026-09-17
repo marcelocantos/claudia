@@ -820,3 +820,67 @@ func TestBrokerDaemonRewindsHeldSeat(t *testing.T) {
 		return false
 	})
 }
+
+// TestBrokerDaemonHonoursOwnerGoalCompleteCheck (🎯T75.9): the daemon's Goal
+// loop asks the owning handle's GoalCompleteCheck, in both directions, and
+// falls back to ParseGoalStatus when the handle has none.
+func TestBrokerDaemonHonoursOwnerGoalCompleteCheck(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		check     func(goal, text string) bool
+		text      string
+		wantSends int
+		wantOpen  bool
+	}{
+		{"check says complete", func(string, string) bool { return true }, "workers finished", 1, false},
+		{"check says not complete", func(string, string) bool { return false }, "workers finished", 2, true},
+		{"no check falls back to status", nil, "workers finished", 2, true},
+		{"status line still wins", func(string, string) bool { return false }, "done\n" + GoalStatusComplete, 1, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := startDaemon(t, false, nil)
+			f.boot(t, false, nil)
+			var mu sync.Mutex
+			var asked []string
+			cfg := Config{Name: "goal-seat", WorkDir: t.TempDir(), SessionID: "sid-goal", TermLogPath: "-", Goal: "ship T75"}
+			if tc.check != nil {
+				cfg.GoalCompleteCheck = func(goal, text string) bool {
+					mu.Lock()
+					asked = append(asked, goal+"|"+text)
+					mu.Unlock()
+					return tc.check(goal, text)
+				}
+			}
+			a, err := Start(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(a.Stop)
+			collectEvents(a) // a subscribed consumer, so pushes are not held for replay
+			if err := a.Send("go"); err != nil {
+				t.Fatal(err)
+			}
+			proc, backend := f.d.reg.Get("goal-seat"), f.backend(0)
+			backend.inFlight.Store(false)
+			proc.PublishEvent(Event{Type: "assistant", Text: tc.text, StopReason: "end_turn"})
+			if tc.wantOpen {
+				waitFor(t, "continuation", func() bool { return len(backendSends(t, backend)) >= tc.wantSends })
+			} else {
+				waitFor(t, "goal closed", func() bool { return !proc.GoalActive() })
+			}
+			waitGoalSettle(t) // nothing further arrives
+
+			if got := len(backendSends(t, backend)); got != tc.wantSends {
+				t.Fatalf("provider sends = %d (%q), want %d", got, backendSends(t, backend), tc.wantSends)
+			}
+			if proc.GoalActive() != tc.wantOpen {
+				t.Fatalf("daemon-side goal active = %v, want %v", proc.GoalActive(), tc.wantOpen)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if tc.check != nil && tc.text == "workers finished" && (len(asked) != 1 || asked[0] != "ship T75|workers finished") {
+				t.Fatalf("owner check asked %q, want once with the goal and the turn text", asked)
+			}
+		})
+	}
+}

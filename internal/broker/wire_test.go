@@ -149,6 +149,8 @@ var requestVectors = map[string]requestVector{
 	"grants":         {msg: &Request{ID: "g13", Type: TypeGrants, Grants: &GrantsRequest{}}},
 	"close_goal":     {msg: &Request{ID: "g14", Type: TypeCloseGoal, CloseGoal: &NamedRequest{Name: "jv-worker-1"}}},
 	"rewind":         {msg: &Request{ID: "g15", Type: TypeRewind, Rewind: &RewindRequest{Name: "jv-worker-1", Turns: 2}}},
+	"goal_verdict": {msg: &Request{ID: "g16", Type: TypeGoalVerdict,
+		GoalVerdict: &GoalVerdictRequest{Name: "jv-worker-1", CheckID: "c-1", Complete: true, Answered: true}}},
 }
 
 // responseVectors is every broker → client message, in canonical form.
@@ -263,6 +265,11 @@ var responseVectors = map[string]*Response{
 	"sent_queue":     {ID: "g6", Type: TypeSent, Sent: &SentResponse{Name: "jv-worker-1", Mode: SendModeQueue, Mechanism: "client_queue", PhaseBefore: "in_turn"}},
 	"interrupted":    {ID: "g7", Type: TypeInterrupted, Interrupted: &NamedResponse{Name: "jv-worker-1"}},
 	"model_set":      {ID: "g8", Type: TypeModelSet, ModelSet: &NamedResponse{Name: "jv-worker-1"}},
+	"goal_check": {
+		Type:      TypeGoalCheck,
+		GoalCheck: &GoalCheckMessage{Name: "jv-worker-1", CheckID: "c-1", Goal: "ship T75", TurnText: "all done"},
+	},
+	"goal_verdict_noted": {ID: "g16", Type: TypeGoalVerdictNoted, GoalVerdictNoted: &NamedResponse{Name: "jv-worker-1"}},
 	"rewound": {
 		ID: "g15", Type: TypeRewound,
 		Rewound: &RewindResponse{
