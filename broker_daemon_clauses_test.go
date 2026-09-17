@@ -4,6 +4,7 @@
 package claudia
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -770,4 +771,52 @@ func TestBrokerDaemonCarriesTaskRawLog(t *testing.T) {
 	if fakes[1].request(t).RawLog != nil {
 		t.Fatal("a run without a raw-log func asked the daemon for raw lines")
 	}
+}
+
+// TestBrokerDaemonRewindsHeldSeat (🎯T75.8): Rewind on a daemon-held seat
+// is the daemon's Registry.Rewind. The handle is kept and re-pointed, the
+// transcript loses one turn, the daemon holds the relaunched process, and
+// events from it reach the owner.
+func TestBrokerDaemonRewindsHeldSeat(t *testing.T) {
+	f := startDaemon(t, false, nil)
+	f.boot(t, false, nil)
+	a, err := Start(Config{Name: "seat-rw", WorkDir: t.TempDir(), SessionID: "sid-rw", TermLogPath: "-"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(a.Stop)
+	old := f.d.reg.Get("seat-rw")
+	if old == nil {
+		t.Fatal("daemon holds no proc")
+	}
+	transcript := old.JSONLPath()
+	writeSeatTranscript(t, transcript)
+	events := collectEvents(a)
+
+	got, err := a.Rewind(1, Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != a {
+		t.Fatal("a daemon-held rewind must keep the handle")
+	}
+	next := f.d.reg.Get("seat-rw")
+	if next == nil || next == old {
+		t.Fatalf("daemon registry holds %p, old %p", next, old)
+	}
+	if b := mustRead(t, transcript); bytes.Contains(b, []byte("CHARLIE")) || !bytes.Contains(b, []byte("turn2")) {
+		t.Fatalf("transcript not rewound:\n%s", b)
+	}
+	if a.SessionID() != "sid-rw" || !a.Alive() {
+		t.Fatalf("handle after rewind: session=%q alive=%v", a.SessionID(), a.Alive())
+	}
+	next.PublishEvent(Event{Type: "assistant", Text: "after rewind"})
+	waitFor(t, "event from relaunched process", func() bool {
+		for _, ev := range events() {
+			if ev.Text == "after rewind" {
+				return true
+			}
+		}
+		return false
+	})
 }

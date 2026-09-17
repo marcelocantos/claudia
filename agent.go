@@ -336,6 +336,9 @@ type agentOps struct {
 	// provider swap and this handle re-points at the destination. Nil →
 	// Migrate runs the in-process swap.
 	migrate func(*Agent, *MigrateArgs) error
+	// rewind is set only by the broker backend: the daemon rolls the seat
+	// back and relaunches it, and this handle re-points (🎯T75.8).
+	rewind func(*Agent, int) (*RewindResult, error)
 	// subscribeTerminal is set only by the broker backend: the first
 	// SubscribeTerminal asks the daemon to stream raw bytes.
 	subscribeTerminal func(*Agent)
@@ -1688,6 +1691,14 @@ func (a *Agent) publishEvent(ev Event) {
 	}
 }
 
+// rewindOnBroker asks the daemon holding this seat to rewind it.
+func (a *Agent) rewindOnBroker(n int) (*RewindResult, error) {
+	if a.ops.rewind == nil {
+		return nil, fmt.Errorf("Rewind: seat %s handle cannot reach the daemon's rewind", a.brokerGrant)
+	}
+	return a.ops.rewind(a, n)
+}
+
 // EventSubscriberCount returns how many live event subscribers are registered.
 // Hermetic oracle for fan-out idempotency (e.g. single chat attach after re-attach).
 func (a *Agent) EventSubscriberCount() int {
@@ -1876,10 +1887,13 @@ func (a *Agent) Stop() {
 // this agent's session id. Turn-boundary and undo semantics are those of
 // [RewindSession]: tool-result entries are not counted as turns, so a rewind
 // never lands mid-tool-use, and the pre-rewind transcript is backed up.
+//
+// On a seat held by a claudia daemon the daemon rewinds and relaunches it,
+// and the returned Agent is the receiver itself, re-pointed at the relaunched
+// process with its subscriptions kept: the grant never lapses. For a seat a
+// [Registry] launched, use [Registry.Rewind], which keeps the Registry's
+// handle current.
 func (a *Agent) Rewind(n int, cfg Config) (*Agent, error) {
-	if a.brokerGrant != "" {
-		return nil, fmt.Errorf("Rewind: seat %s is held by the claudia daemon; rewind the transcript with RewindSession and re-grant", a.brokerGrant)
-	}
 	// Either provider naming a non-Claude runtime is enough to refuse:
 	// rewinding means truncating a Claude-shaped JSONL transcript, which
 	// is meaningless — and, for providers whose state is private,
@@ -1888,6 +1902,12 @@ func (a *Agent) Rewind(n int, cfg Config) (*Agent, error) {
 		if err := CheckCapability(provider, CapabilityRewind); err != nil {
 			return nil, err
 		}
+	}
+	if a.brokerGrant != "" {
+		if _, err := a.rewindOnBroker(n); err != nil {
+			return nil, err
+		}
+		return a, nil
 	}
 	a.Stop()
 	if _, err := rewindJSONL(a.jsonlPath, n); err != nil {

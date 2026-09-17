@@ -311,7 +311,7 @@ func (d *BrokerDaemon) HandleRequest(c *broker.ClientConn, req *broker.Request) 
 		}
 		d.handleRelease(c, req)
 	case broker.TypeSend, broker.TypeInterrupt, broker.TypeSetModel, broker.TypeMigrate,
-		broker.TypeAgentInfo, broker.TypeTermSubscribe, broker.TypeResize, broker.TypeCloseGoal:
+		broker.TypeAgentInfo, broker.TypeTermSubscribe, broker.TypeResize, broker.TypeCloseGoal, broker.TypeRewind:
 		d.handleAgentOp(c, req)
 	case broker.TypeTaskRun:
 		d.handleTaskRun(c, req)
@@ -702,6 +702,8 @@ func (d *BrokerDaemon) handleAgentOp(c *broker.ClientConn, req *broker.Request) 
 		name = req.Resize.Name
 	case broker.TypeCloseGoal:
 		name = req.CloseGoal.Name
+	case broker.TypeRewind:
+		name = req.Rewind.Name
 	}
 	g, proc, ok := d.seatFor(c, req.ID, name, req.Type != broker.TypeAgentInfo)
 	if !ok {
@@ -777,6 +779,30 @@ func (d *BrokerDaemon) handleAgentOp(c *broker.ClientConn, req *broker.Request) 
 		}()
 		_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeTermSubscribed,
 			TermSubscribed: &broker.TermSubscribedResponse{Name: name, History: history}})
+	case broker.TypeRewind:
+		ctx, cancel := context.WithTimeout(d.ctx, grantStartTimeout)
+		next, res, err := d.reg.Rewind(ctx, name, req.Rewind.Turns)
+		cancel()
+		if next != nil && next != proc {
+			// The Registry relaunched the seat: the grant follows the new
+			// process, so the owner's stream continues from it.
+			d.mu.Lock()
+			if g.proc != nil && g.sub != 0 {
+				g.proc.UnsubscribeEvents(g.sub)
+			}
+			g.proc = next
+			g.sub = next.SubscribeEvents(d.forwarder(name))
+			d.mu.Unlock()
+		}
+		if err != nil {
+			_ = c.Fail(req.ID, err)
+			return
+		}
+		_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeRewound, Rewound: &broker.RewindResponse{
+			Name: name, SessionID: next.SessionID(), Provider: broker.Provider(procProvider(next)), Model: next.Model(),
+			WindowID: next.WindowID(), JSONLPath: next.JSONLPath(), TermLogPath: next.TermLogPath(), AttachCommand: next.AttachCommand(),
+			TurnsRemoved: res.TurnsRemoved, LinesRemoved: res.LinesRemoved, BytesRemoved: res.BytesRemoved, BackupPath: res.BackupPath,
+		}})
 	case broker.TypeCloseGoal:
 		proc.CloseGoal()
 		_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeGoalClosed, GoalClosed: named})

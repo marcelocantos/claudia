@@ -6,6 +6,7 @@ package broker
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -54,6 +55,8 @@ const (
 	TypeGrants MessageType = "grants"
 	// TypeCloseGoal stops the seat's host Goal continuation.
 	TypeCloseGoal MessageType = "close_goal"
+	// TypeRewind rolls the seat back by whole user turns and relaunches it.
+	TypeRewind MessageType = "rewind"
 )
 
 // Response types (broker → client) added by the grant protocol.
@@ -78,6 +81,7 @@ const (
 	TypeResized         MessageType = "resized"
 	TypeGrantsResult    MessageType = "grants_result"
 	TypeGoalClosed      MessageType = "goal_closed"
+	TypeRewound         MessageType = "rewound"
 )
 
 // Error codes added by the grant protocol.
@@ -436,6 +440,39 @@ func (r *MigrateRequest) Validate() error {
 }
 
 // MigrateResponse reports the destination the seat now runs on.
+// RewindRequest rolls a seat back by Turns user turns.
+type RewindRequest struct {
+	Name  string `json:"name"`
+	Turns int    `json:"turns"`
+}
+
+// Validate checks the fields.
+func (r *RewindRequest) Validate() error {
+	if strings.TrimSpace(r.Name) == "" {
+		return &ProtocolError{Code: CodeMissingField, Field: "name", Msg: "grant name is required"}
+	}
+	if r.Turns < 1 {
+		return &ProtocolError{Code: CodeUnsupportedValue, Field: "turns", Value: strconv.Itoa(r.Turns), Msg: "turns must be at least 1"}
+	}
+	return nil
+}
+
+// RewindResponse names the relaunched seat and what the rewind removed.
+type RewindResponse struct {
+	Name          string   `json:"name"`
+	SessionID     string   `json:"session_id"`
+	Provider      Provider `json:"provider"`
+	Model         string   `json:"model,omitempty"`
+	WindowID      string   `json:"window_id,omitempty"`
+	JSONLPath     string   `json:"jsonl_path,omitempty"`
+	TermLogPath   string   `json:"term_log_path,omitempty"`
+	AttachCommand string   `json:"attach_command,omitempty"`
+	TurnsRemoved  int      `json:"turns_removed"`
+	LinesRemoved  int      `json:"lines_removed"`
+	BytesRemoved  int64    `json:"bytes_removed"`
+	BackupPath    string   `json:"backup_path,omitempty"`
+}
+
 type MigrateResponse struct {
 	Name          string   `json:"name"`
 	SessionID     string   `json:"session_id"`

@@ -148,6 +148,7 @@ var requestVectors = map[string]requestVector{
 	"resize":         {msg: &Request{ID: "g12", Type: TypeResize, Resize: &ResizeRequest{Name: "jv-worker-1", Cols: 120, Rows: 40}}},
 	"grants":         {msg: &Request{ID: "g13", Type: TypeGrants, Grants: &GrantsRequest{}}},
 	"close_goal":     {msg: &Request{ID: "g14", Type: TypeCloseGoal, CloseGoal: &NamedRequest{Name: "jv-worker-1"}}},
+	"rewind":         {msg: &Request{ID: "g15", Type: TypeRewind, Rewind: &RewindRequest{Name: "jv-worker-1", Turns: 2}}},
 }
 
 // responseVectors is every broker → client message, in canonical form.
@@ -262,6 +263,14 @@ var responseVectors = map[string]*Response{
 	"sent_queue":     {ID: "g6", Type: TypeSent, Sent: &SentResponse{Name: "jv-worker-1", Mode: SendModeQueue, Mechanism: "client_queue", PhaseBefore: "in_turn"}},
 	"interrupted":    {ID: "g7", Type: TypeInterrupted, Interrupted: &NamedResponse{Name: "jv-worker-1"}},
 	"model_set":      {ID: "g8", Type: TypeModelSet, ModelSet: &NamedResponse{Name: "jv-worker-1"}},
+	"rewound": {
+		ID: "g15", Type: TypeRewound,
+		Rewound: &RewindResponse{
+			Name: "jv-worker-1", SessionID: "sid-1", Provider: ProviderClaude, WindowID: "@8",
+			JSONLPath: "/h/.claude/projects/-w/sid-1.jsonl", TurnsRemoved: 2, LinesRemoved: 9, BytesRemoved: 4096,
+			BackupPath: "/h/.claude/projects/-w/sid-1.jsonl.rewind-bak",
+		},
+	},
 	"migrated": {
 		ID: "g9", Type: TypeMigrated,
 		Migrated: &MigrateResponse{Name: "jv-worker-1", SessionID: "sid-2", Provider: "grok", Model: "grok-4"},

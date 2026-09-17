@@ -312,6 +312,12 @@ func (r *Registry) startLifecycle(ctx context.Context, name string, adopt, fallb
 		return nil, err
 	}
 	defer finish()
+	return r.startHeld(ctx, op, name, adopt, fallback)
+}
+
+// startHeld is the body of a start under a reservation the caller holds.
+func (r *Registry) startHeld(ctx context.Context, op *registryLifecycle, name string, adopt, fallback bool) (*Agent, error) {
+	var err error
 	r.mu.Lock()
 	registered, ok := r.agents[name]
 	if !ok {
@@ -544,6 +550,11 @@ func (r *Registry) stopLifecycle(name string, remove bool) error {
 		return err
 	}
 	defer finish()
+	return r.stopHeld(name, remove)
+}
+
+// stopHeld is the body of a stop under a reservation the caller holds.
+func (r *Registry) stopHeld(name string, remove bool) error {
 	r.mu.Lock()
 	proc := r.procs[name]
 	var def *AgentDef

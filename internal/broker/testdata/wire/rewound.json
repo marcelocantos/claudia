@@ -1,0 +1,1 @@
+{"v":1,"type":"rewound","id":"g15","body":{"name":"jv-worker-1","session_id":"sid-1","provider":"claude","window_id":"@8","jsonl_path":"/h/.claude/projects/-w/sid-1.jsonl","turns_removed":2,"lines_removed":9,"bytes_removed":4096,"backup_path":"/h/.claude/projects/-w/sid-1.jsonl.rewind-bak"}}

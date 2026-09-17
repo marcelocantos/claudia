@@ -256,6 +256,7 @@ func (b *brokerAgentBackend) ops() agentOps {
 			}
 		},
 		migrate: b.migrate,
+		rewind:  b.rewind,
 		closeGoal: func(*Agent) {
 			if _, err := b.opCall(&broker.Request{Type: broker.TypeCloseGoal, CloseGoal: b.named()}); err != nil {
 				slog.Warn("broker close_goal failed", "grant", b.named().Name, "err", err)
@@ -289,28 +290,63 @@ func (b *brokerAgentBackend) migrate(a *Agent, args *MigrateArgs) error {
 	if m == nil {
 		return fmt.Errorf("broker: migrate answered with %s", resp.Type)
 	}
+	b.repoint(a, seatWhere{provider: Provider(m.Provider), sessionID: m.SessionID, model: m.Model, windowID: m.WindowID,
+		jsonlPath: m.JSONLPath, termLogPath: m.TermLogPath, attach: m.AttachCommand})
+	return nil
+}
+
+// rewind asks the daemon to roll the seat back and relaunch it, then
+// re-points this handle at the relaunched process (🎯T75.8).
+func (b *brokerAgentBackend) rewind(a *Agent, n int) (*RewindResult, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), grantStartTimeout)
+	defer cancel()
+	resp, err := b.client.call(ctx, &broker.Request{Type: broker.TypeRewind, Rewind: &broker.RewindRequest{Name: b.named().Name, Turns: n}})
+	if err != nil {
+		return nil, err
+	}
+	w := resp.Rewound
+	if w == nil {
+		return nil, fmt.Errorf("broker: rewind answered with %s", resp.Type)
+	}
+	b.repoint(a, seatWhere{provider: Provider(w.Provider), sessionID: w.SessionID, model: w.Model, windowID: w.WindowID,
+		jsonlPath: w.JSONLPath, termLogPath: w.TermLogPath, attach: w.AttachCommand})
+	return &RewindResult{
+		SessionID: w.SessionID, JSONLPath: w.JSONLPath, TurnsRemoved: w.TurnsRemoved,
+		LinesRemoved: w.LinesRemoved, BytesRemoved: w.BytesRemoved, BackupPath: w.BackupPath,
+	}, nil
+}
+
+// seatWhere is where a daemon says a seat now lives.
+type seatWhere struct {
+	provider                                                   Provider
+	sessionID, model, windowID, jsonlPath, termLogPath, attach string
+}
+
+// repoint makes this handle describe the seat's new process after the
+// daemon swapped it (Migrate, Rewind). Subscriptions are the handle's and
+// stay.
+func (b *brokerAgentBackend) repoint(a *Agent, w seatWhere) {
 	b.mu.Lock()
-	b.attach = m.AttachCommand
+	b.attach = w.attach
 	b.mu.Unlock()
 	a.mu.Lock()
 	a.backendGen.Add(1)
-	a.provider = Provider(m.Provider)
-	a.sessionID = m.SessionID
-	a.jsonlPath = m.JSONLPath
-	a.tmuxWindowID = m.WindowID
-	if m.Model != "" {
-		a.model = m.Model
+	a.provider = w.provider
+	a.sessionID = w.sessionID
+	a.jsonlPath = w.jsonlPath
+	a.tmuxWindowID = w.windowID
+	if w.model != "" {
+		a.model = w.model
 	}
 	a.mu.Unlock()
 	a.termMu.Lock()
-	if m.TermLogPath != "" {
-		a.termLogPath = m.TermLogPath
+	if w.termLogPath != "" {
+		a.termLogPath = w.termLogPath
 		a.termLogLive = true
 	} else {
 		a.termLogLive = false
 	}
 	a.termMu.Unlock()
-	return nil
 }
 
 // brokerClientQueue bounds pushed messages waiting for the handle. It is

@@ -668,6 +668,13 @@ turns, so a rewind never lands mid-tool-use. The full pre-rewind
 transcript is copied to a `.rewind-bak` sidecar, so the rewind is
 undoable with `claudia.Unrewind(path)`.
 
+A seat a `Registry` holds is rewound with `reg.Rewind(ctx, name, n)`,
+which stops, truncates and relaunches under the seat's reservation (a
+racing `Launch` waits rather than starting the old conversation) and
+keeps the Registry's handle current. On a daemon-held seat both calls
+go to the daemon, and the returned `*Agent` is the same handle,
+re-pointed, with its subscriptions.
+
 For a transcript-level rewind decoupled from the process lifecycle (e.g.
 Task mode, or rewinding a stopped session before the next `Run`), use the
 package function directly — stop any live process on the session first:
@@ -721,8 +728,8 @@ process.
   `Interrupt`, `WaitForResponse`, `SetModel`, `Migrate`, `Usage`,
   `SubscribeTerminal` all work (`SendMode` / `Steer` / `TurnCaps` ride
   the `send.mode` wire, 🎯T72.3); `JSONLPath` / `AttachCommand` name
-  host-local paths the daemon reported. `Rewind` is refused on a
-  daemon-held seat.
+  host-local paths the daemon reported. `Rewind` rewinds and
+  relaunches the seat on the daemon and re-points the handle.
 - **Seats outlive the consumer.** If the consumer exits or crashes,
   the seat keeps running unowned and retains the in-flight stream (up
   to 100000 events) so a consumer bounce does not drop a live turn. A new
@@ -772,7 +779,7 @@ macOS). Then `status`, `grants`, `usage [--refresh]`,
 `tail` (NDJSON lifecycle events), `release NAME [--detach]`, `socket`.
 `claudia --help-agent` prints this guide after the CLI usage text.
 Not covered by
-the daemon: `Acquire` / the in-process pool, `Rewind`,
+the daemon: `Acquire` / the in-process pool,
 `Config.GoalCompleteCheck` (the daemon runs `ParseGoalStatus`).
 Design record: [docs/metaharness.md](docs/metaharness.md).
 

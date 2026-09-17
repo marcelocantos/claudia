@@ -475,6 +475,7 @@ type Request struct {
 	Resize        *ResizeRequest
 	Grants        *GrantsRequest
 	CloseGoal     *NamedRequest
+	Rewind        *RewindRequest
 }
 
 // Response is a decoded broker → client message. Exactly one of the body
@@ -511,6 +512,7 @@ type Response struct {
 	Resized        *NamedResponse
 	Grants         *GrantsResponse
 	GoalClosed     *NamedResponse
+	Rewound        *RewindResponse
 }
 
 // validator is implemented by bodies that normalise defaults or refuse
@@ -568,6 +570,7 @@ var requestSpecs = map[MessageType]bodySpec[Request]{
 	TypeResize:        spec("resize body", func(r *Request) **ResizeRequest { return &r.Resize }, false),
 	TypeGrants:        spec("grants body", func(r *Request) **GrantsRequest { return &r.Grants }, true),
 	TypeCloseGoal:     spec("close_goal body", func(r *Request) **NamedRequest { return &r.CloseGoal }, false),
+	TypeRewind:        spec("rewind body", func(r *Request) **RewindRequest { return &r.Rewind }, false),
 }
 
 // responseSpecs is the broker → client namespace.
@@ -598,6 +601,7 @@ var responseSpecs = map[MessageType]bodySpec[Response]{
 	TypeResized:         spec("resized body", func(r *Response) **NamedResponse { return &r.Resized }, false),
 	TypeGrantsResult:    spec("grants_result body", func(r *Response) **GrantsResponse { return &r.Grants }, false),
 	TypeGoalClosed:      spec("goal_closed body", func(r *Response) **NamedResponse { return &r.GoalClosed }, false),
+	TypeRewound:         spec("rewound body", func(r *Response) **RewindResponse { return &r.Rewound }, false),
 }
 
 // RequestTypes lists every client → broker type in this wire version.
