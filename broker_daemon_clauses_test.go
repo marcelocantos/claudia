@@ -661,3 +661,43 @@ func TestBrokerDaemonForwardsSeatGone(t *testing.T) {
 		t.Fatalf("tail for seat-g = %v, want one gone", kinds(tail(), "seat-g"))
 	}
 }
+
+// TestBrokerDaemonDefaultStateDirHoldsModelIntel: a daemon built with an
+// empty StateDir, as `claudia broker serve` builds it, keeps model intel in
+// the resolved state directory. It used to join the empty option, writing
+// ./model-intel into whatever directory the daemon ran from and resolving
+// against that rather than the store consumers read.
+func TestBrokerDaemonDefaultStateDirHoldsModelIntel(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "cbi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	t.Setenv(broker.StateHomeEnv, filepath.Join(dir, "xdg"))
+	t.Setenv(modelIntelEnvAAKey, "")
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+
+	d, err := NewBrokerDaemon(BrokerDaemonOptions{
+		SocketPath:     filepath.Join(dir, "b.sock"),
+		DisableResume:  true,
+		DisableMCPHost: true,
+		UsageFetch:     func(context.Context) ([]PlanUsage, error) { return nil, nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+
+	want, err := DefaultModelIntelDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "intel run recorded", func() bool {
+		_, err := os.Stat(filepath.Join(want, modelIntelRunsFile))
+		return err == nil
+	})
+	if _, err := os.Stat(filepath.Join(cwd, modelIntelDirName)); err == nil {
+		t.Fatal("daemon wrote model intel relative to its working directory")
+	}
+}

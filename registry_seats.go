@@ -3,6 +3,8 @@
 
 package claudia
 
+//claudia:policy
+
 import (
 	"context"
 	"fmt"

@@ -103,7 +103,10 @@ type BrokerDaemon struct {
 	srv   *broker.Server
 	usage *brokerUsageService
 	path  string
-	mcp   *mcpHost
+	// stateDir is the resolved state directory. opts.StateDir is empty on a
+	// default serve and must not be read after construction.
+	stateDir string
+	mcp      *mcpHost
 	// seatSub is the daemon's subscription to its Registry's seat events.
 	seatSub int64
 
@@ -176,13 +179,14 @@ func NewBrokerDaemon(opts BrokerDaemonOptions) (*BrokerDaemon, error) {
 		return nil, err
 	}
 	d := &BrokerDaemon{
-		opts:   opts,
-		log:    log,
-		clock:  clock,
-		reg:    reg,
-		path:   path,
-		grants: map[string]*brokerGrant{},
-		tasks:  map[string]*brokerDaemonTask{},
+		opts:     opts,
+		log:      log,
+		clock:    clock,
+		reg:      reg,
+		path:     path,
+		stateDir: stateDir,
+		grants:   map[string]*brokerGrant{},
+		tasks:    map[string]*brokerDaemonTask{},
 	}
 	d.ctx, d.cancel = context.WithCancel(context.Background())
 	d.resumeDone = make(chan struct{})
@@ -221,7 +225,16 @@ func NewBrokerDaemon(opts BrokerDaemonOptions) (*BrokerDaemon, error) {
 	go func() { defer d.wg.Done(); d.usage.run(d.ctx) }()
 	if !opts.DisableIntel {
 		d.wg.Add(1)
-		go func() { defer d.wg.Done(); d.intelLoop() }()
+		go func() {
+			defer d.wg.Done()
+			RunModelIntelRefresher(d.ctx, &ModelIntelRefresherArgs{
+				Dir:      filepath.Join(stateDir, modelIntelDirName),
+				Interval: opts.IntelInterval,
+				Clock:    clock,
+				Refresh:  opts.IntelRefresh,
+				OnError:  func(err error) { log.Debug("model intel refresh skipped", "err", err) },
+			})
+		}()
 	}
 	if !opts.DisableResume {
 		d.wg.Add(1)
@@ -243,36 +256,6 @@ func (d *BrokerDaemon) Run(ctx context.Context) error {
 	case <-d.ctx.Done():
 	}
 	return d.Close()
-}
-
-func (d *BrokerDaemon) intelLoop() {
-	interval := d.opts.IntelInterval
-	if interval <= 0 {
-		interval = DefaultModelIntelInterval
-	}
-	d.maybeIntel(d.ctx)
-	for {
-		select {
-		case <-d.ctx.Done():
-			return
-		case <-d.clock.After(interval):
-			d.maybeIntel(d.ctx)
-		}
-	}
-}
-
-func (d *BrokerDaemon) maybeIntel(ctx context.Context) {
-	if d.opts.IntelRefresh != nil {
-		if err := d.opts.IntelRefresh(ctx); err != nil {
-			d.log.Warn("model intel refresh failed", "err", err)
-		}
-		return
-	}
-	dir := filepath.Join(d.opts.StateDir, modelIntelDirName)
-	_, err := RefreshModelIntel(ctx, &ModelIntelArgs{Dir: dir, Now: d.clock.Now()})
-	if err != nil {
-		d.log.Debug("model intel refresh skipped", "err", err)
-	}
 }
 
 // Close stops serving. Seats are left running: tmux windows and
@@ -889,7 +872,7 @@ func (d *BrokerDaemon) handleResolve(c *broker.ClientConn, req *broker.Request) 
 	pred.Usage = usage
 	pred.Now = d.clock.Now()
 	if pred.Purpose != "" || pred.Model != "" || pred.Effort != "" {
-		pred.Intel = &ModelIntelArgs{Dir: filepath.Join(d.opts.StateDir, modelIntelDirName), Now: pred.Now}
+		pred.Intel = &ModelIntelArgs{Dir: filepath.Join(d.stateDir, modelIntelDirName), Now: pred.Now}
 	}
 	pick, err := Resolve(d.ctx, pred)
 	if err != nil {
