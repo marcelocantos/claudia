@@ -413,6 +413,9 @@ func (r *Registry) startLifecycle(ctx context.Context, name string, adopt, fallb
 	r.procs[name] = proc
 	materialized := current.Materialized
 	r.mu.Unlock()
+	proc.mu.Lock()
+	proc.onMigrated = func() { r.recordMigrate(name, proc) }
+	proc.mu.Unlock()
 	message := "agent adopted"
 	if started {
 		message = "agent started"
@@ -420,6 +423,30 @@ func (r *Registry) startLifecycle(ctx context.Context, name string, adopt, fallb
 	slog.Info(message, "name", name, "provider", def.Provider, "session", proc.SessionID(),
 		"connect_pid", proc.PID(), "connect_url_set", proc.ConnectURL() != "", "window", proc.WindowID(), "materialized", materialized)
 	return proc, nil
+}
+
+// recordMigrate persists the backend a seat moved to (🎯T75.3). Without it
+// the definition keeps naming the source provider and session, and the next
+// launch resumes a conversation the seat is no longer on. Materialized is
+// cleared because the destination is a new native session with no durable
+// transcript yet.
+func (r *Registry) recordMigrate(name string, proc *Agent) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	def := r.agents[name]
+	if def == nil || r.procs[name] != proc {
+		return
+	}
+	def.Provider = proc.Provider()
+	if def.Provider == "" {
+		def.Provider = ProviderClaude
+	}
+	def.SessionID, def.Model = proc.SessionID(), proc.Model()
+	def.ConnectURL, def.ConnectPID = proc.ConnectURL(), proc.PID()
+	def.Materialized = false
+	if err := r.save(); err != nil {
+		slog.Warn("persist migrated agent def", "name", name, "err", err)
+	}
 }
 
 // MarkMaterialized records that name has hosted a real conversation and

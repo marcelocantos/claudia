@@ -285,7 +285,11 @@ func (a *Agent) migrateWithBackend(args *MigrateArgs, destBackend agentBackend) 
 		return fmt.Errorf("Migrate: same provider %s; use SetModel", a.provider)
 	}
 	if a.ops.migrate != nil {
-		return a.ops.migrate(a, args)
+		if err := a.ops.migrate(a, args); err != nil {
+			return err
+		}
+		a.notifyMigrated()
+		return nil
 	}
 	<-a.ready
 	if a.readyErr != nil {
@@ -380,11 +384,25 @@ func (a *Agent) migrateWithBackend(args *MigrateArgs, destBackend agentBackend) 
 		Text: fmt.Sprintf("migrate: %s → %s (%s); from_session=%s to_session=%s",
 			fromProvider, args.Provider, reason, fromSession, toSession),
 	})
+	// The handle names the destination from here on, whether or not the
+	// seed lands, so the launching Registry records it now (🎯T75.3).
+	a.notifyMigrated()
 
 	if err := a.Send(seedText); err != nil {
 		return fmt.Errorf("Migrate: destination started but seed send failed: %w", err)
 	}
 	return nil
+}
+
+// notifyMigrated tells the Registry that launched this agent that the
+// handle now names a different backend.
+func (a *Agent) notifyMigrated() {
+	a.mu.Lock()
+	fn := a.onMigrated
+	a.mu.Unlock()
+	if fn != nil {
+		fn()
+	}
 }
 
 func migrateDestConfig(src Config, args *MigrateArgs) Config {

@@ -269,6 +269,10 @@ type Agent struct {
 	// backendGen increments on Migrate so source control/JSONL/TUI
 	// goroutines do not mark the destination dead when they exit.
 	backendGen atomic.Uint64
+	// onMigrated is set by the Registry that launched this agent (🎯T75.3):
+	// it runs once the handle names the destination, so the persisted
+	// definition follows the seat. Guarded by mu.
+	onMigrated func()
 	// inertTurns is the bounded live-turn log Migrate distills (🎯T55.1).
 	inertTurns []inertTurn
 

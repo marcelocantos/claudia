@@ -757,15 +757,8 @@ func (d *BrokerDaemon) handleAgentOp(c *broker.ClientConn, req *broker.Request) 
 			_ = c.Fail(req.ID, err)
 			return
 		}
-		// The definition now names the destination, so a boot resume
-		// brings back the seat the consumer is actually on.
-		if def := d.reg.Def(name); def != nil {
-			def.Provider, def.SessionID, def.Model = procProvider(proc), proc.SessionID(), proc.Model()
-			def.ConnectURL, def.ConnectPID, def.Materialized = proc.ConnectURL(), proc.PID(), false
-			if err := d.reg.Register(*def); err != nil {
-				d.log.Warn("persist migrated seat", "grant", name, "err", err)
-			}
-		}
+		// The Registry recorded the destination (🎯T75.3), so a boot
+		// resume brings back the seat the consumer is actually on.
 		_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeMigrated, Migrated: &broker.MigrateResponse{
 			Name: name, SessionID: proc.SessionID(), Provider: broker.Provider(procProvider(proc)), Model: proc.Model(),
 			WindowID: proc.WindowID(), JSONLPath: proc.JSONLPath(), TermLogPath: proc.TermLogPath(), AttachCommand: proc.AttachCommand(),
