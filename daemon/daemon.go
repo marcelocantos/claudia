@@ -1,10 +1,12 @@
 // Copyright 2026 Marcelo Cantos
 // SPDX-License-Identifier: Apache-2.0
 
-package claudia
+package daemon
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +20,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/marcelocantos/claudia"
 	"github.com/marcelocantos/claudia/internal/broker"
 )
 
@@ -35,9 +38,9 @@ import (
 // under the daemon's state directory. A seat is a registered definition
 // plus the daemon's ownership record.
 
-// BrokerDaemonOptions configures a daemon. Zero values are the defaults a
+// Options configures a daemon. Zero values are the defaults a
 // `claudia broker serve` gets.
-type BrokerDaemonOptions struct {
+type Options struct {
 	// SocketPath overrides the socket (default: broker.SocketPath, which
 	// honours CLAUDIA_BROKER_SOCKET).
 	SocketPath string
@@ -47,7 +50,7 @@ type BrokerDaemonOptions struct {
 	// DefaultPlanCacheTTL.
 	UsageTTL time.Duration
 	// UsageFetch replaces the vendor usage query (tests).
-	UsageFetch func(context.Context) ([]PlanUsage, error)
+	UsageFetch func(context.Context) ([]claudia.PlanUsage, error)
 	// DisableResume skips bringing back the seats held before the daemon
 	// last stopped.
 	DisableResume bool
@@ -64,6 +67,9 @@ type BrokerDaemonOptions struct {
 	// resumeGate, when set, holds the boot resume until closed (tests
 	// subscribe to the tail first).
 	resumeGate chan struct{}
+	// launchers, when set, start and adopt the daemon's seats instead of
+	// the providers (tests).
+	launchers *claudia.RegistryLaunchers
 	// DisableMCPHost skips the loopback MCP listener (tests that do not
 	// want a port). Production serve always hosts MCP (🎯T2.16).
 	DisableMCPHost bool
@@ -83,6 +89,9 @@ type BrokerDaemonOptions struct {
 
 // Daemon internals.
 const (
+	// grantStartTimeout bounds starting one seat for a grant, resume or
+	// rewind. Claude readiness detection alone can take a minute.
+	grantStartTimeout = 90 * time.Second
 	// brokerUnownedRingCap is how many events an unowned seat retains for
 	// the next reclaim. A jevonsd-length bounce can stream far more than
 	// the old 256-event bound; overflowing that marked Lagged and dropped
@@ -98,19 +107,19 @@ const (
 	connOwnedKey = "owned"
 )
 
-// BrokerDaemon is a running daemon.
-type BrokerDaemon struct {
-	opts  BrokerDaemonOptions
+// Daemon is a running daemon.
+type Daemon struct {
+	opts  Options
 	log   *slog.Logger
 	clock broker.Clock
-	reg   *Registry
+	reg   *claudia.Registry
 	srv   *broker.Server
-	usage *PlanUsageMonitor
+	usage *claudia.PlanUsageMonitor
 	path  string
 	// stateDir is the resolved state directory. opts.StateDir is empty on a
 	// default serve and must not be read after construction.
 	stateDir string
-	mcp      *MCPHost
+	mcp      *claudia.MCPHost
 	// seatSub is the daemon's subscription to its Registry's seat events.
 	seatSub int64
 
@@ -131,7 +140,7 @@ type brokerGrant struct {
 	name  string
 	owner *broker.ClientConn
 	pump  chan []byte
-	proc  *Agent
+	proc  *claudia.Agent
 	sub   int64
 	ring  [][]byte
 	lag   bool
@@ -139,13 +148,13 @@ type brokerGrant struct {
 }
 
 type brokerDaemonTask struct {
-	task   *Task
+	task   *claudia.Task
 	cancel context.CancelFunc
 	owner  *broker.ClientConn
 }
 
-// NewBrokerDaemon binds the socket and starts serving. Close stops it.
-func NewBrokerDaemon(opts BrokerDaemonOptions) (*BrokerDaemon, error) {
+// New binds the socket and starts serving. Close stops it.
+func New(opts Options) (*Daemon, error) {
 	log := opts.Logger
 	if log == nil {
 		log = slog.Default()
@@ -173,17 +182,20 @@ func NewBrokerDaemon(opts BrokerDaemonOptions) (*BrokerDaemon, error) {
 		}
 		path = p
 	}
-	reg, err := NewRegistry(filepath.Join(stateDir, grantsFile))
+	reg, err := claudia.NewRegistry(filepath.Join(stateDir, grantsFile))
 	if err != nil {
 		return nil, fmt.Errorf("broker daemon: grants: %w", err)
 	}
-	reg.direct = true
+	reg.SetDirect(true)
+	if opts.launchers != nil {
+		reg.SetLaunchers(opts.launchers)
+	}
 
 	ln, err := broker.Listen(path)
 	if err != nil {
 		return nil, err
 	}
-	d := &BrokerDaemon{
+	d := &Daemon{
 		opts:     opts,
 		log:      log,
 		clock:    clock,
@@ -196,9 +208,9 @@ func NewBrokerDaemon(opts BrokerDaemonOptions) (*BrokerDaemon, error) {
 	}
 	d.ctx, d.cancel = context.WithCancel(context.Background())
 	d.resumeDone = make(chan struct{})
-	d.usage = NewPlanUsageMonitor(&PlanUsageMonitorArgs{
+	d.usage = claudia.NewPlanUsageMonitor(&claudia.PlanUsageMonitorArgs{
 		TTL: opts.UsageTTL, Fetch: opts.UsageFetch, Clock: clock,
-		OnUpdate: func(fetched []PlanUsage, err error) {
+		OnUpdate: func(fetched []claudia.PlanUsage, err error) {
 			if err != nil {
 				d.log.Warn("plan usage fetch failed", "err", err)
 				return
@@ -221,7 +233,7 @@ func NewBrokerDaemon(opts BrokerDaemonOptions) (*BrokerDaemon, error) {
 			// seed an empty store so Atlassian and friends do not re-prompt.
 			seeds = append(seeds, filepath.Join(home, ".jevons"))
 		}
-		h, err := NewMCPHost(&MCPHostArgs{
+		h, err := claudia.NewMCPHost(&claudia.MCPHostArgs{
 			StateDir:      stateDir,
 			ListenAddr:    opts.MCPListenAddr,
 			ConsumerOwned: consumerOwnedByPrefix(opts.MCPConsumerOwnedPrefixes),
@@ -236,7 +248,7 @@ func NewBrokerDaemon(opts BrokerDaemonOptions) (*BrokerDaemon, error) {
 		reg.SetMCPHost(h)
 		log.Info("claudia mcp host listening", "addr", h.Addr())
 	}
-	reg.clock = clock
+	reg.SetClock(clock)
 	d.seatSub = reg.SubscribeSeatEvents(d.onSeatEvent)
 	d.wg.Add(1)
 	go func() { defer d.wg.Done(); d.usage.Run(d.ctx) }()
@@ -244,8 +256,8 @@ func NewBrokerDaemon(opts BrokerDaemonOptions) (*BrokerDaemon, error) {
 		d.wg.Add(1)
 		go func() {
 			defer d.wg.Done()
-			RunModelIntelRefresher(d.ctx, &ModelIntelRefresherArgs{
-				Dir:      filepath.Join(stateDir, ModelIntelDirName),
+			claudia.RunModelIntelRefresher(d.ctx, &claudia.ModelIntelRefresherArgs{
+				Dir:      filepath.Join(stateDir, claudia.ModelIntelDirName),
 				Interval: opts.IntelInterval,
 				Clock:    clock,
 				Refresh:  opts.IntelRefresh,
@@ -264,10 +276,10 @@ func NewBrokerDaemon(opts BrokerDaemonOptions) (*BrokerDaemon, error) {
 }
 
 // SocketPath is where the daemon listens.
-func (d *BrokerDaemon) SocketPath() string { return d.path }
+func (d *Daemon) SocketPath() string { return d.path }
 
 // Run blocks until ctx is done, then closes.
-func (d *BrokerDaemon) Run(ctx context.Context) error {
+func (d *Daemon) Run(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
 	case <-d.ctx.Done():
@@ -279,7 +291,7 @@ func (d *BrokerDaemon) Run(ctx context.Context) error {
 // connect-mode serves survive for the next daemon (resume adopts them);
 // stdio children die with this process and are relaunched from their
 // transcripts on the next boot (resumeSeats).
-func (d *BrokerDaemon) Close() error {
+func (d *Daemon) Close() error {
 	d.cancel()
 	d.reg.UnsubscribeSeatEvents(d.seatSub)
 	err := d.srv.Close()
@@ -302,11 +314,11 @@ func (d *BrokerDaemon) Close() error {
 // consumerOwnedByPrefix is the daemon's MCPHostArgs.ConsumerOwned: a server
 // whose name starts with one of prefixes (case-insensitive) stays on the
 // consumer's URL.
-func consumerOwnedByPrefix(prefixes []string) func(MCPServer) bool {
+func consumerOwnedByPrefix(prefixes []string) func(claudia.MCPServer) bool {
 	if prefixes == nil {
 		prefixes = defaultMCPConsumerOwnedPrefixes
 	}
-	return func(s MCPServer) bool {
+	return func(s claudia.MCPServer) bool {
 		name := strings.ToLower(strings.TrimSpace(s.Name))
 		for _, p := range prefixes {
 			if p != "" && strings.HasPrefix(name, strings.ToLower(p)) {
@@ -321,7 +333,7 @@ func consumerOwnedByPrefix(prefixes []string) func(MCPServer) bool {
 // jevonsd for each consumer) on the consumer's URL.
 var defaultMCPConsumerOwnedPrefixes = []string{"jevonsmcp"}
 
-func (d *BrokerDaemon) emit(ev broker.EventMessage) {
+func (d *Daemon) emit(ev broker.EventMessage) {
 	if ev.At.IsZero() {
 		ev.At = d.clock.Now()
 	}
@@ -329,7 +341,7 @@ func (d *BrokerDaemon) emit(ev broker.EventMessage) {
 }
 
 // HandleRequest implements broker.Handler.
-func (d *BrokerDaemon) HandleRequest(c *broker.ClientConn, req *broker.Request) bool {
+func (d *Daemon) HandleRequest(c *broker.ClientConn, req *broker.Request) bool {
 	switch req.Type {
 	case broker.TypeGrant:
 		d.handleGrant(c, req)
@@ -369,7 +381,7 @@ func (d *BrokerDaemon) HandleRequest(c *broker.ClientConn, req *broker.Request) 
 }
 
 // ConnClosed implements broker.Handler: seats stay running, unowned.
-func (d *BrokerDaemon) ConnClosed(c *broker.ClientConn) {
+func (d *Daemon) ConnClosed(c *broker.ClientConn) {
 	d.mu.Lock()
 	var detached []string
 	for name, g := range d.grants {
@@ -396,7 +408,7 @@ func (d *BrokerDaemon) ConnClosed(c *broker.ClientConn) {
 }
 
 // detachLocked drops ownership and stops the owner's pump. d.mu held.
-func (d *BrokerDaemon) detachLocked(g *brokerGrant) {
+func (d *Daemon) detachLocked(g *brokerGrant) {
 	g.owner = nil
 	if g.pump != nil {
 		close(g.pump)
@@ -416,9 +428,9 @@ func ownedBy(c *broker.ClientConn, name string) {
 	c.Set(connOwnedKey, append(names, name))
 }
 
-func (d *BrokerDaemon) handleGrant(c *broker.ClientConn, req *broker.Request) {
+func (d *Daemon) handleGrant(c *broker.ClientConn, req *broker.Request) {
 	name := req.Grant.Name
-	wire, err := DecodeGrantDefinition(req.Grant.Def)
+	wire, err := claudia.DecodeGrantDefinition(req.Grant.Def)
 	if err != nil {
 		_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeMalformed, Field: "def", Msg: err.Error()})
 		return
@@ -459,14 +471,14 @@ func (d *BrokerDaemon) handleGrant(c *broker.ClientConn, req *broker.Request) {
 			def.GrokConnect = def.GrokConnect || existing.GrokConnect
 		}
 	}
-	if err := d.reg.Register(def); err != nil && !errors.Is(err, ErrLifecycleInProgress) {
+	if err := d.reg.Register(def); err != nil && !errors.Is(err, claudia.ErrLifecycleInProgress) {
 		_ = c.Fail(req.ID, err)
 		return
 	}
 
 	ctx, cancel := context.WithTimeout(d.ctx, grantStartTimeout)
 	defer cancel()
-	var proc *Agent
+	var proc *claudia.Agent
 	switch {
 	case req.Grant.Adopt && req.Grant.Fallback:
 		proc, err = d.reg.AdoptOrLaunchContext(ctx, name)
@@ -529,17 +541,17 @@ func (d *BrokerDaemon) handleGrant(c *broker.ClientConn, req *broker.Request) {
 		Detail: map[bool]string{true: "reclaimed", false: "started"}[reclaimed]})
 }
 
-func procProvider(a *Agent) Provider {
+func procProvider(a *claudia.Agent) claudia.Provider {
 	if p := a.Provider(); p != "" {
 		return p
 	}
-	return ProviderClaude
+	return claudia.ProviderClaude
 }
 
 // bindSeatLocked points grant g at proc: the seat's events flow to g's
 // owner, and its Goal loop asks g's owner for a completeness verdict
 // (🎯T75.9). d.mu held.
-func (d *BrokerDaemon) bindSeatLocked(g *brokerGrant, proc *Agent) {
+func (d *Daemon) bindSeatLocked(g *brokerGrant, proc *claudia.Agent) {
 	if g.proc != nil && g.sub != 0 {
 		g.proc.UnsubscribeEvents(g.sub)
 	}
@@ -562,7 +574,7 @@ type pendingGoalCheck struct {
 // asks whichever connection owns the seat at the time. No owner, an owner
 // without a check, a lost connection or no answer in time all mean "not
 // complete", which leaves the seat on ParseGoalStatus as before.
-func (d *BrokerDaemon) askOwnerGoalCheck(name string) func(goal, turnText string) bool {
+func (d *Daemon) askOwnerGoalCheck(name string) func(goal, turnText string) bool {
 	return func(goal, turnText string) bool {
 		d.mu.Lock()
 		g := d.grants[name]
@@ -599,7 +611,7 @@ func (d *BrokerDaemon) askOwnerGoalCheck(name string) func(goal, turnText string
 
 // handleGoalVerdict delivers an owner's answer to the check that asked.
 // A verdict for a check that already gave up is acknowledged and dropped.
-func (d *BrokerDaemon) handleGoalVerdict(c *broker.ClientConn, req *broker.Request) {
+func (d *Daemon) handleGoalVerdict(c *broker.ClientConn, req *broker.Request) {
 	v := req.GoalVerdict
 	d.mu.Lock()
 	p, ok := d.checks[v.CheckID]
@@ -619,16 +631,16 @@ func (d *BrokerDaemon) handleGoalVerdict(c *broker.ClientConn, req *broker.Reque
 }
 
 // forwarder is the daemon-side event subscriber for one seat.
-func (d *BrokerDaemon) forwarder(name string) EventFunc {
-	return func(ev Event) {
-		if ev.Type == "system" && ev.ProgressType == ProgressStuck {
+func (d *Daemon) forwarder(name string) claudia.EventFunc {
+	return func(ev claudia.Event) {
+		if ev.Type == "system" && ev.ProgressType == claudia.ProgressStuck {
 			// Synthesized by the daemon-side Agent from the event before
 			// it, which also invalidated the daemon's usage monitor; the
 			// consumer's Agent synthesizes its own from the same event,
 			// so forwarding this one would double it.
 			return
 		}
-		raw, err := EncodeEventWire(ev)
+		raw, err := claudia.EncodeEventWire(ev)
 		if err != nil {
 			d.log.Warn("event not encodable", "grant", name, "err", err)
 			return
@@ -668,7 +680,7 @@ func (g *brokerGrant) retainUnowned(raw []byte) {
 
 // runPump writes queued events to the owner until detached or the write
 // fails.
-func (d *BrokerDaemon) runPump(g *brokerGrant, c *broker.ClientConn, pump chan []byte) {
+func (d *Daemon) runPump(g *brokerGrant, c *broker.ClientConn, pump chan []byte) {
 	for raw := range pump {
 		if err := c.Reply(&broker.Response{Type: broker.TypeAgentEvent, AgentEvent: &broker.AgentEventMessage{Name: g.name, Event: raw}}); err != nil {
 			d.mu.Lock()
@@ -682,7 +694,7 @@ func (d *BrokerDaemon) runPump(g *brokerGrant, c *broker.ClientConn, pump chan [
 	}
 }
 
-func (d *BrokerDaemon) handleRelease(c *broker.ClientConn, req *broker.Request) {
+func (d *Daemon) handleRelease(c *broker.ClientConn, req *broker.Request) {
 	name := req.Release.Name
 	d.mu.Lock()
 	g := d.grants[name]
@@ -734,18 +746,18 @@ func (d *BrokerDaemon) handleRelease(c *broker.ClientConn, req *broker.Request) 
 // to a plain submit and say so in the mechanism; queue is ack-only, because
 // the design keeps the queue host-side and the daemon holds none. The
 // returned response has every field but Name.
-func deliverSend(proc *Agent, req *broker.SendRequest) (*broker.SentResponse, error) {
-	var out DeliveryOutcome
+func deliverSend(proc *claudia.Agent, req *broker.SendRequest) (*broker.SentResponse, error) {
+	var out claudia.DeliveryOutcome
 	var err error
 	switch req.Mode {
 	case broker.SendModeSubmit:
-		out, err = proc.SendMode(req.Text, DeliverySubmit)
+		out, err = proc.SendMode(req.Text, claudia.DeliverySubmit)
 	case broker.SendModeSteer:
-		out, err = proc.SendMode(req.Text, DeliverySteer)
+		out, err = proc.SendMode(req.Text, claudia.DeliverySteer)
 	case broker.SendModeInterrupt:
-		out, err = proc.SendMode(req.Text, DeliveryInterrupt)
+		out, err = proc.SendMode(req.Text, claudia.DeliveryInterrupt)
 	case broker.SendModeQueue:
-		out = DeliveryOutcome{Mode: DeliveryQueue, PhaseBefore: proc.TurnPhase(), Mechanism: MechanismClientQueue}
+		out = claudia.DeliveryOutcome{Mode: claudia.DeliveryQueue, PhaseBefore: proc.TurnPhase(), Mechanism: claudia.MechanismClientQueue}
 	default:
 		return nil, &broker.ProtocolError{Code: broker.CodeUnsupportedValue, Field: "mode", Value: string(req.Mode),
 			Msg: fmt.Sprintf("send mode %q is not one the daemon dispatches", req.Mode)}
@@ -762,7 +774,7 @@ func deliverSend(proc *Agent, req *broker.SendRequest) (*broker.SentResponse, er
 }
 
 // turnCapsWire is the seat's TurnCaps as the wire spells them.
-func turnCapsWire(proc *Agent) *broker.TurnCaps {
+func turnCapsWire(proc *claudia.Agent) *broker.TurnCaps {
 	caps := proc.TurnCaps()
 	return &broker.TurnCaps{
 		CanInterrupt:       caps.CanInterrupt,
@@ -773,7 +785,7 @@ func turnCapsWire(proc *Agent) *broker.TurnCaps {
 }
 
 // seatFor resolves a request's grant and, when needOwner, checks c owns it.
-func (d *BrokerDaemon) seatFor(c *broker.ClientConn, id, name string, needOwner bool) (*brokerGrant, *Agent, bool) {
+func (d *Daemon) seatFor(c *broker.ClientConn, id, name string, needOwner bool) (*brokerGrant, *claudia.Agent, bool) {
 	d.mu.Lock()
 	g := d.grants[name]
 	d.mu.Unlock()
@@ -790,7 +802,7 @@ func (d *BrokerDaemon) seatFor(c *broker.ClientConn, id, name string, needOwner 
 	return g, g.proc, true
 }
 
-func (d *BrokerDaemon) handleAgentOp(c *broker.ClientConn, req *broker.Request) {
+func (d *Daemon) handleAgentOp(c *broker.ClientConn, req *broker.Request) {
 	var name string
 	switch req.Type {
 	case broker.TypeSend:
@@ -839,7 +851,7 @@ func (d *BrokerDaemon) handleAgentOp(c *broker.ClientConn, req *broker.Request) 
 		}
 		_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeModelSet, ModelSet: named})
 	case broker.TypeMigrate:
-		if err := proc.Migrate(&MigrateArgs{Provider: Provider(req.Migrate.Provider), Model: req.Migrate.Model,
+		if err := proc.Migrate(&claudia.MigrateArgs{Provider: claudia.Provider(req.Migrate.Provider), Model: req.Migrate.Model,
 			Reason: req.Migrate.Reason, Force: req.Migrate.Force}); err != nil {
 			_ = c.Fail(req.ID, err)
 			return
@@ -918,8 +930,8 @@ func (d *BrokerDaemon) handleAgentOp(c *broker.ClientConn, req *broker.Request) 
 	}
 }
 
-func (d *BrokerDaemon) handleTaskRun(c *broker.ClientConn, req *broker.Request) {
-	cfg, err := DecodeTaskConfigWire(req.TaskRun.Task)
+func (d *Daemon) handleTaskRun(c *broker.ClientConn, req *broker.Request) {
+	cfg, err := claudia.DecodeTaskConfigWire(req.TaskRun.Task)
 	if err != nil {
 		_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeMalformed, Field: "task", Msg: err.Error()})
 		return
@@ -949,7 +961,7 @@ func (d *BrokerDaemon) handleTaskRun(c *broker.ClientConn, req *broker.Request) 
 		defer d.wg.Done()
 		defer cancel()
 		for ev := range ch {
-			raw, err := EncodeTaskEventWire(ev)
+			raw, err := claudia.EncodeTaskEventWire(ev)
 			if err != nil {
 				continue
 			}
@@ -968,13 +980,13 @@ func (d *BrokerDaemon) handleTaskRun(c *broker.ClientConn, req *broker.Request) 
 
 // daemonNewTask builds a direct-mode Task for one run. Hermetic tests point
 // it at a fake backend.
-var daemonNewTask = func(cfg TaskConfig) *Task {
-	t := NewTask(cfg)
-	t.direct = true
+var daemonNewTask = func(cfg claudia.TaskConfig) *claudia.Task {
+	t := claudia.NewTask(cfg)
+	t.SetDirect(true)
 	return t
 }
 
-func (d *BrokerDaemon) handleTaskCancel(c *broker.ClientConn, req *broker.Request) {
+func (d *Daemon) handleTaskCancel(c *broker.ClientConn, req *broker.Request) {
 	d.mu.Lock()
 	t := d.tasks[req.TaskCancel.RunID]
 	d.mu.Unlock()
@@ -995,31 +1007,31 @@ func (d *BrokerDaemon) handleTaskCancel(c *broker.ClientConn, req *broker.Reques
 	_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeTaskCancelled, TaskCancelled: &broker.TaskCancelledResponse{RunID: req.TaskCancel.RunID}})
 }
 
-func (d *BrokerDaemon) handleResolve(c *broker.ClientConn, req *broker.Request) {
-	pred, err := DecodePredicatesWire(req.Resolve.Predicates)
+func (d *Daemon) handleResolve(c *broker.ClientConn, req *broker.Request) {
+	pred, err := claudia.DecodePredicatesWire(req.Resolve.Predicates)
 	if err != nil {
 		_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeMalformed, Field: "predicates", Msg: err.Error()})
 		return
 	}
 	usage := d.usage.Read(d.ctx, false).Backends
 	if usage == nil {
-		usage = []PlanUsage{}
+		usage = []claudia.PlanUsage{}
 	}
 	pred.Usage = usage
 	pred.Now = d.clock.Now()
 	if pred.Purpose != "" || pred.Model != "" || pred.Effort != "" {
-		pred.Intel = &ModelIntelArgs{Dir: filepath.Join(d.stateDir, ModelIntelDirName), Now: pred.Now}
+		pred.Intel = &claudia.ModelIntelArgs{Dir: filepath.Join(d.stateDir, claudia.ModelIntelDirName), Now: pred.Now}
 	}
-	pick, err := Resolve(d.ctx, pred)
+	pick, err := claudia.Resolve(d.ctx, pred)
 	if err != nil {
 		_ = c.Fail(req.ID, err)
 		return
 	}
-	raw, _ := EncodePickWire(pick)
+	raw, _ := claudia.EncodePickWire(pick)
 	_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeResolved, Resolved: &broker.ResolveResponse{Pick: raw}})
 }
 
-func (d *BrokerDaemon) handleStatus(c *broker.ClientConn, req *broker.Request) {
+func (d *Daemon) handleStatus(c *broker.ClientConn, req *broker.Request) {
 	at := d.usage.Read(d.ctx, false).FetchedAt
 	d.mu.Lock()
 	tasks := len(d.tasks)
@@ -1034,7 +1046,7 @@ func (d *BrokerDaemon) handleStatus(c *broker.ClientConn, req *broker.Request) {
 }
 
 // grantList is every registered seat with its ownership and liveness.
-func (d *BrokerDaemon) grantList() []broker.GrantStatus {
+func (d *Daemon) grantList() []broker.GrantStatus {
 	defs := d.reg.List()
 	sort.Slice(defs, func(i, j int) bool { return defs[i].Name < defs[j].Name })
 	out := make([]broker.GrantStatus, 0, len(defs))
@@ -1065,7 +1077,7 @@ func (d *BrokerDaemon) grantList() []broker.GrantStatus {
 // stopped. The work is the Registry's (ResumeAll), including attaching each
 // seat's MCP to this process's host, whose loopback listener moved with the
 // restart.
-func (d *BrokerDaemon) resumeSeats() {
+func (d *Daemon) resumeSeats() {
 	if d.opts.resumeGate != nil {
 		select {
 		case <-d.opts.resumeGate:
@@ -1083,13 +1095,13 @@ func (d *BrokerDaemon) resumeSeats() {
 		return
 	}
 	d.log.Info("resuming seats held before the last stop", "count", held)
-	outcomes := d.reg.ResumeAll(d.ctx, &ResumeArgs{
+	outcomes := d.reg.ResumeAll(d.ctx, &claudia.ResumeArgs{
 		Concurrency: d.opts.ResumeConcurrency,
 		Nudge:       d.opts.RestartNudge,
 		Now:         d.clock.Now(),
 	})
 	for _, o := range outcomes {
-		if o.How == ResumeReminted {
+		if o.How == claudia.ResumeReminted {
 			d.log.Warn("seat conversation unresumable; reminted on a fresh session",
 				"grant", o.Name, "old_session", o.OldSessionID, "new_session", o.Agent.SessionID())
 		}
@@ -1102,9 +1114,9 @@ func (d *BrokerDaemon) resumeSeats() {
 // onSeatEvent forwards the Registry's seat lifecycle onto the tail, and
 // takes hold of a resumed seat before it is nudged so the turn the nudge
 // starts is retained for whoever reclaims the seat.
-func (d *BrokerDaemon) onSeatEvent(ev SeatEvent) {
+func (d *Daemon) onSeatEvent(ev claudia.SeatEvent) {
 	switch ev.Kind {
-	case SeatResumed:
+	case claudia.SeatResumed:
 		d.mu.Lock()
 		g := d.grants[ev.Name]
 		if g == nil {
@@ -1117,12 +1129,12 @@ func (d *BrokerDaemon) onSeatEvent(ev SeatEvent) {
 		d.mu.Unlock()
 		d.log.Info("seat resumed", "grant", ev.Name, "how", ev.How, "session", ev.SessionID)
 		d.emit(broker.EventMessage{Kind: broker.EventResume, Name: ev.Name, SessionID: ev.SessionID, Detail: string(ev.How), At: ev.At})
-	case SeatResumeFailed:
+	case claudia.SeatResumeFailed:
 		d.log.Warn("seat resume failed", "grant", ev.Name, "err", ev.Err)
 		d.emit(broker.EventMessage{Kind: broker.EventResumeFailed, Name: ev.Name, Detail: ev.Err.Error(), At: ev.At})
-	case SeatNudged:
+	case claudia.SeatNudged:
 		d.emit(broker.EventMessage{Kind: broker.EventNudge, Name: ev.Name, At: ev.At})
-	case SeatGone:
+	case claudia.SeatGone:
 		const reason = "process not alive"
 		d.log.Warn("seat process gone", "grant", ev.Name)
 		d.mu.Lock()
@@ -1136,4 +1148,13 @@ func (d *BrokerDaemon) onSeatEvent(ev SeatEvent) {
 		}
 		d.emit(broker.EventMessage{Kind: broker.EventGone, Name: ev.Name, Detail: reason, At: ev.At})
 	}
+}
+
+// newRunID is a short random id for task runs and goal checks.
+func newRunID() string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "r0"
+	}
+	return hex.EncodeToString(b[:])
 }

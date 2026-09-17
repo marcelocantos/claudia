@@ -42,7 +42,7 @@ func moduleRoot(t *testing.T) string {
 func testMCPHost(t *testing.T) *MCPHost {
 	t.Helper()
 	h, err := NewMCPHost(&MCPHostArgs{StateDir: t.TempDir(), ListenAddr: "127.0.0.1:0",
-		ConsumerOwned: consumerOwnedByPrefix(nil)})
+		ConsumerOwned: func(s MCPServer) bool { return strings.HasPrefix(s.Name, "jevonsmcp") }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,45 +119,6 @@ func TestMCPHostDoesNotStealDifferentRecipe(t *testing.T) {
 	again := h.Attach([]MCPServer{{Name: "fixture", Command: bin, Args: []string{"a"}}})
 	if again[0].URL != first[0].URL {
 		t.Fatalf("same recipe did not reuse %q vs %q", again[0].URL, first[0].URL)
-	}
-}
-
-func TestBrokerDaemonGrantAttachesHostedMCP(t *testing.T) {
-	bin := buildMCPStdioFixture(t)
-	f := startDaemon(t, false, nil)
-	f.boot(t, false, nil)
-	if f.d.mcp == nil {
-		t.Fatal("daemon has no mcp host")
-	}
-	a, err := Start(Config{
-		Name:        "mcp-seat",
-		WorkDir:     t.TempDir(),
-		SessionID:   "sid-mcp",
-		TermLogPath: "-",
-		MCPServers: []MCPServer{
-			{Name: "fixture", Command: bin},
-			{Name: "jevonsmcp", Type: "http", URL: "http://127.0.0.1:13705/mcp"},
-		},
-	})
-	if err != nil {
-		t.Fatalf("Start via daemon: %v", err)
-	}
-	t.Cleanup(a.Stop)
-	req := f.backend(0).request(t)
-	var fixture, jevons MCPServer
-	for _, s := range req.Config.MCPServers {
-		switch s.Name {
-		case "fixture":
-			fixture = s
-		case "jevonsmcp":
-			jevons = s
-		}
-	}
-	if fixture.Command != "" || !strings.HasSuffix(fixture.URL, "/upstream/fixture") {
-		t.Fatalf("daemon did not host fixture: %+v", req.Config.MCPServers)
-	}
-	if jevons.URL != "http://127.0.0.1:13705/mcp" {
-		t.Fatalf("jevonsmcp rewritten: %+v", jevons)
 	}
 }
 

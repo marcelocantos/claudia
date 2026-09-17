@@ -1,22 +1,25 @@
 // Copyright 2026 Marcelo Cantos
 // SPDX-License-Identifier: Apache-2.0
 
-package claudia
+package daemon
 
 import (
 	"os"
 	"os/exec"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/marcelocantos/claudia"
 )
 
-// TestBrokerDaemonGoalCompleteCheckLive is 🎯T75.9's live gate: a real
-// Claude seat held by an in-process daemon runs its Goal loop on the daemon,
-// which asks the consumer's GoalCompleteCheck after each terminal turn. A
-// check that says not complete gets a continuation turn; one that says
-// complete ends the Goal with no further turn.
-func TestBrokerDaemonGoalCompleteCheckLive(t *testing.T) {
+// TestGoalCompleteCheckLive is 🎯T75.9's live gate: a real Claude seat held
+// by an in-process daemon runs its Goal loop on the daemon, which asks the
+// consumer's GoalCompleteCheck after each terminal turn. A check that says
+// not complete gets a continuation turn; one that says complete ends the
+// Goal with no further turn.
+func TestGoalCompleteCheckLive(t *testing.T) {
 	if os.Getenv("CLAUDIA_LIVE") == "" {
 		t.Skip("CLAUDIA_LIVE not set (this test spends API credit)")
 	}
@@ -35,8 +38,8 @@ func TestBrokerDaemonGoalCompleteCheckLive(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			startLiveDaemon(t)
 			var asked atomic.Int32
-			a, err := Start(Config{
-				Name: "goal-live-" + newRunID(), Provider: ProviderClaude, Model: "haiku", WorkDir: t.TempDir(),
+			a, err := claudia.Start(claudia.Config{
+				Name: "goal-live-" + newRunID(), Provider: claudia.ProviderClaude, Model: "haiku", WorkDir: t.TempDir(),
 				Goal: "Produce three numbered observations about this workspace, one per turn.",
 				GoalCompleteCheck: func(goal, text string) bool {
 					asked.Add(1)
@@ -47,18 +50,26 @@ func TestBrokerDaemonGoalCompleteCheckLive(t *testing.T) {
 				t.Fatalf("Start via daemon: %v", err)
 			}
 			defer a.Stop()
-			if a.brokerGrant == "" {
+			if !a.DaemonHeld() {
 				t.Fatal("seat is not daemon-held")
 			}
-			var terminals atomic.Int32
-			var afterFirst atomic.Int32
-			tok := a.SubscribeEvents(func(ev Event) {
-				if ev.IsTerminalStop() {
-					terminals.Add(1)
-					return
-				}
-				if terminals.Load() >= 1 && (ev.Type == "assistant" || ev.ProgressType == "tool_use") {
+			// afterFirst counts events of any turn after the first. Terminal
+			// events alone cannot say that: Claude repeats one terminal
+			// message across its content blocks, so the first turn can end
+			// more than once. Its turn id, or the continuation prompt showing
+			// up in the stream, can.
+			var terminals, afterFirst atomic.Int32
+			var firstTurn atomic.Value
+			tok := a.SubscribeEvents(func(ev claudia.Event) {
+				first, _ := firstTurn.Load().(string)
+				if terminals.Load() >= 1 && ((ev.TurnID != "" && first != "" && ev.TurnID != first) ||
+					strings.Contains(string(ev.Raw), "Continue the open objective")) {
 					afterFirst.Add(1)
+				}
+				if ev.IsTerminalStop() {
+					if terminals.Add(1) == 1 {
+						firstTurn.Store(ev.TurnID)
+					}
 				}
 			})
 			defer a.UnsubscribeEvents(tok)

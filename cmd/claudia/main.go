@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/marcelocantos/claudia"
+	"github.com/marcelocantos/claudia/daemon"
 	"github.com/marcelocantos/claudia/internal/broker"
 )
 
@@ -138,7 +139,7 @@ func serve(args []string) error {
 	// send their claudia consumers around it.
 	broker.MarkSelfHosted()
 
-	d, err := claudia.NewBrokerDaemon(claudia.BrokerDaemonOptions{
+	d, err := daemon.New(daemon.Options{
 		SocketPath:    *socket,
 		StateDir:      *stateDir,
 		UsageTTL:      *usageTTL,

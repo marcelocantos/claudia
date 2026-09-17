@@ -6,6 +6,7 @@ package claudia
 import (
 	"os"
 	"testing"
+	"time"
 
 	"github.com/marcelocantos/claudia/internal/broker"
 )
@@ -31,4 +32,17 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 	_ = os.RemoveAll(cache)
 	os.Exit(code)
+}
+
+// waitFor polls cond until it holds or five seconds pass.
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", what)
 }

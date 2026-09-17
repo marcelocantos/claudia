@@ -44,7 +44,7 @@ continuation that only the live TUI paste path could show.
 
 | Gate | Surfaces | Must include |
 |------|----------|--------------|
-| `CLAUDIA_LIVE=1` | Claude Task + Session | `TestAgentSendAndWaitForResponse`, `TestBrokerDaemonRewindLive`, `TestBrokerDaemonGoalCompleteCheckLive`, `TestClaudeTaskDisallowToolsLiveSmoke`, `TestGoalJourneyLiveBackends/claude`, `TestMCPLiveLoadAndSessionSeesMnemo/claude`, `TestMCPHostLiveSeatsSeeMnemo/claude` |
+| `CLAUDIA_LIVE=1` | Claude Task + Session | `TestAgentSendAndWaitForResponse`, `daemon.TestRewindLive`, `daemon.TestGoalCompleteCheckLive`, `TestClaudeTaskDisallowToolsLiveSmoke`, `TestGoalJourneyLiveBackends/claude`, `TestMCPLiveLoadAndSessionSeesMnemo/claude`, `TestMCPHostLiveSeatsSeeMnemo/claude` |
 | `CLAUDIA_GROK_LIVE=1` | Grok Task + Session | `TestGrokSessionLiveSmoke`, `TestGrokSessionLiveSmokeSteer`, `TestGoalJourneyLiveBackends/grok`, `TestMCPLiveLoadAndSessionSeesMnemo/grok`, `TestMCPHostLiveSeatsSeeMnemo/grok`, `TestMCPExclusiveSessionRoundTrip` |
 | `CLAUDIA_CODEX_LIVE=1` | Codex Task + Session | `TestCodexSessionLiveSmoke`, `TestGoalJourneyLiveBackends/codex`, `TestMCPLiveLoadAndSessionSeesMnemo/codex`, `TestMCPHostLiveSeatsSeeMnemo/codex` |
 | `CLAUDIA_BEDROCK_LIVE=1` | Bedrock Task | `TestBedrockTaskLiveSmoke` |

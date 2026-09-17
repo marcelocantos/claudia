@@ -77,7 +77,7 @@ verify-mutation-evidence:
 # Cursor: CLAUDIA_CURSOR_LIVE=1
 .PHONY: live
 live:
-	go test -count=1 -timeout 15m -run 'TestTaskRunSmoke|TestAgentSendAndWaitForResponse|TestBrokerDaemonRewindLive|TestBrokerDaemonGoalCompleteCheckLive|TestGrokTaskRunSmoke|TestGrokSessionLiveSmoke|TestCodexTaskRunSmoke|TestCodexSessionLiveSmoke|TestBedrockTaskLiveSmoke|TestOllamaTaskLiveSmoke|TestCursorTaskLiveSmoke|TestCursorSessionLiveSmoke|TestCursorSavedSessionResumeLive|TestGoalJourneyLiveBackends|TestMCPLiveLoadAndSessionSeesMnemo|TestMCPHostLiveSeatsSeeMnemo|TestMCPExclusiveGrokInspectJourney|TestMCPExclusiveSessionRoundTrip|TestExclusiveGrokSessionResumeLive|TestMCPExclusiveCursorSessionRoundTrip' .
+	go test -count=1 -timeout 15m -run 'TestTaskRunSmoke|TestAgentSendAndWaitForResponse|TestRewindLive|TestGoalCompleteCheckLive|TestGrokTaskRunSmoke|TestGrokSessionLiveSmoke|TestCodexTaskRunSmoke|TestCodexSessionLiveSmoke|TestBedrockTaskLiveSmoke|TestOllamaTaskLiveSmoke|TestCursorTaskLiveSmoke|TestCursorSessionLiveSmoke|TestCursorSavedSessionResumeLive|TestGoalJourneyLiveBackends|TestMCPLiveLoadAndSessionSeesMnemo|TestMCPHostLiveSeatsSeeMnemo|TestMCPExclusiveGrokInspectJourney|TestMCPExclusiveSessionRoundTrip|TestExclusiveGrokSessionResumeLive|TestMCPExclusiveCursorSessionRoundTrip' . ./daemon/
 
 # Model-check the broker lifecycle spec (T2.0/T2.8 oracle). The correct config
 # must be green AND every fault-injection mutant must be caught — a spec that

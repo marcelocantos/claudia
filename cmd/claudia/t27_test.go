@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/marcelocantos/claudia"
+	"github.com/marcelocantos/claudia/daemon"
 	"github.com/marcelocantos/claudia/internal/broker"
 )
 
@@ -236,7 +237,7 @@ func TestBrokerTailStreamsNDJSON(t *testing.T) {
 	}
 }
 
-func startCLIDaemon(t *testing.T, usage []claudia.PlanUsage) (string, *claudia.BrokerDaemon) {
+func startCLIDaemon(t *testing.T, usage []claudia.PlanUsage) (string, *daemon.Daemon) {
 	t.Helper()
 	dir, err := os.MkdirTemp("/tmp", "cbd")
 	if err != nil {
@@ -244,7 +245,7 @@ func startCLIDaemon(t *testing.T, usage []claudia.PlanUsage) (string, *claudia.B
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	sock := filepath.Join(dir, "b.sock")
-	d, err := claudia.NewBrokerDaemon(claudia.BrokerDaemonOptions{
+	d, err := daemon.New(daemon.Options{
 		SocketPath:    sock,
 		StateDir:      filepath.Join(dir, "state"),
 		DisableResume: true,

@@ -258,7 +258,7 @@ reg.SetMCPHost(host) // seats reg starts in-process attach through host
 owner. Attaching is opt-in: a Registry without a host, and `Start`,
 pass servers through unchanged. On the daemon path (🎯T2.16)
 `claudia broker serve` runs one host for every seat it holds, keeps
-`jevonsmcp*` on the caller's URL (`BrokerDaemonOptions.MCPConsumerOwnedPrefixes`),
+`jevonsmcp*` on the caller's URL (`daemon.Options.MCPConsumerOwnedPrefixes`),
 and seeds from `~/.jevons`.
 
 Pass `SessionID` to attempt `session/load`. A materialized resume
@@ -764,11 +764,21 @@ process.
   adopts what still runs (tmux, connect-mode), relaunches the rest
   with session resume, and sends a relaunched seat a restart nudge
   (`--restart-nudge`; `-` disables) so it picks its work back up.
-- **Direct mode is unchanged.** No socket, `CLAUDIA_NO_BROKER=1`, or a
-  socket with no daemon runtime behind it (`not_available`) is today's
-  in-process path. The library never auto-switches models; only the
-  daemon rebinds, and only to keep a grant's predicates true (🎯T2.12,
-  not yet built).
+- **Direct mode has the same capabilities.** No socket, a socket with
+  no daemon runtime behind it (`not_available`), `CLAUDIA_NO_BROKER=1`
+  for the whole process, or `Registry.SetDirect(true)`,
+  `Task.SetDirect(true)` and `StartDirect` for one Registry, Task or
+  start, is the in-process path. Everything that does not imply a server
+  is library code the daemon passes through (🎯T75): seat resume
+  (`Registry.ResumeAll`), seat lifecycle events
+  (`Registry.SubscribeSeatEvents`), `Registry.Rewind`, the plan-usage
+  monitor (`PlanUsageMonitor`), MCP hosting (`MCPHost`), and the
+  model-intel refresher (`RunModelIntelRefresher`). What only a daemon
+  gives is a seat that outlives its consumer (`Agent.Detach` lets go of
+  one for a later reclaim), one seat owner at a time, one usage evaluator
+  for the host, and the socket. Auto-actuating policy (rebind 🎯T2.12,
+  reaping, preemption) will be opt-in library code, off in direct mode
+  unless enabled; none is built yet.
 
 **Test suites must opt out.** A running daemon is reachable from
 `go test` like from any process, so a consumer's hermetic suite that
@@ -776,8 +786,12 @@ launches agents through the Registry would be granted real seats with
 real provider processes behind them. Set `CLAUDIA_NO_BROKER=1` in the
 suite (a `TestMain`, or the Makefile test rule); claudia's own suite
 does. Tests that want a daemon start one on a temp socket
-(`NewBrokerDaemon` with `SocketPath`) and re-enable the consult with
-`t.Setenv("CLAUDIA_NO_BROKER", "")`.
+(`daemon.New` from `github.com/marcelocantos/claudia/daemon`, with
+`SocketPath`) and re-enable the consult with
+`t.Setenv("CLAUDIA_NO_BROKER", "")`. A test that needs agents without
+provider processes starts them with `claudia.StartStub` (the real Start
+machinery with stub verbs) or `claudia.NewStubTask`, and a Registry
+launches stubs with `Registry.SetLaunchers`.
 
 Install the daemon with `brew install marcelocantos/tap/claudia`.
 On a supervisor-hosted machine, `make supervisor-install` (or
