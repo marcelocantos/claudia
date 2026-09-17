@@ -29,8 +29,9 @@ func (b *brokerTaskBackend) Capabilities() providerCapabilities {
 	return taskBackendForProvider(b.cfg.Provider).Capabilities()
 }
 
-// RunTask sends task_run and adapts the stream to a taskRun. RawLog is not
-// carried: raw NDJSON stays on the daemon (see docs/metaharness.md, residue).
+// RunTask sends task_run and adapts the stream to a taskRun. A raw-log func
+// asks the daemon for the provider's raw lines, which arrive as task_raw
+// pushes and are delivered to it in order (🎯T75.10).
 func (b *brokerTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*taskRun, error) {
 	cfg := b.cfg
 	cfg.WorkDir = req.WorkDir
@@ -58,6 +59,10 @@ func (b *brokerTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*t
 			case events <- ev:
 			case <-ctx.Done():
 			}
+		case broker.TypeTaskRaw:
+			if req.RawLog != nil {
+				req.RawLog([]byte(resp.TaskRaw.Line))
+			}
 		case broker.TypeTaskDone:
 			if resp.TaskDone.Error != "" {
 				select {
@@ -68,7 +73,7 @@ func (b *brokerTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*t
 			close(done)
 		}
 	})
-	resp, err := b.client.call(ctx, &broker.Request{Type: broker.TypeTaskRun, TaskRun: &broker.TaskRunRequest{Task: raw, Prompt: req.Prompt}})
+	resp, err := b.client.call(ctx, &broker.Request{Type: broker.TypeTaskRun, TaskRun: &broker.TaskRunRequest{Task: raw, Prompt: req.Prompt, RawLog: req.RawLog != nil}})
 	if err != nil {
 		return nil, err
 	}

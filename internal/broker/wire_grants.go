@@ -63,6 +63,7 @@ const (
 	TypeTaskStarted     MessageType = "task_started"
 	TypeTaskEvent       MessageType = "task_event"
 	TypeTaskDone        MessageType = "task_done"
+	TypeTaskRaw         MessageType = "task_raw"
 	TypeTaskCancelled   MessageType = "task_cancelled"
 	TypeGranted         MessageType = "granted"
 	TypeAgentEvent      MessageType = "agent_event"
@@ -165,6 +166,9 @@ type TaskRunRequest struct {
 	Task json.RawMessage `json:"task"`
 	// Prompt is the turn.
 	Prompt string `json:"prompt"`
+	// RawLog asks for the provider's raw output lines as task_raw pushes
+	// (claudia.Task.SetRawLog). Omitted, nothing extra crosses the wire.
+	RawLog bool `json:"raw_log,omitempty"`
 }
 
 // Validate checks the required fields.
@@ -184,6 +188,13 @@ type TaskStartedResponse struct {
 type TaskEventMessage struct {
 	RunID string          `json:"run_id"`
 	Event json.RawMessage `json:"event"`
+}
+
+// TaskRawMessage is one raw provider output line on a task_run connection
+// that asked for them. Lines arrive in the order the provider wrote them.
+type TaskRawMessage struct {
+	RunID string `json:"run_id"`
+	Line  string `json:"line"`
 }
 
 // TaskDoneMessage ends a task_run stream.

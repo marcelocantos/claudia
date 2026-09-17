@@ -797,6 +797,12 @@ func (d *BrokerDaemon) handleTaskRun(c *broker.ClientConn, req *broker.Request) 
 	}
 	task := daemonNewTask(cfg)
 	runID := newRunID()
+	if req.TaskRun.RawLog {
+		// The line is only valid during the call; the push copies it.
+		task.SetRawLog(func(line []byte) {
+			_ = c.Reply(&broker.Response{Type: broker.TypeTaskRaw, TaskRaw: &broker.TaskRawMessage{RunID: runID, Line: string(line)}})
+		})
+	}
 	ctx, cancel := context.WithCancel(d.ctx)
 	ch, err := task.Run(ctx, req.TaskRun.Prompt)
 	if err != nil {

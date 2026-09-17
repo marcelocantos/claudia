@@ -662,8 +662,10 @@ func TestTaskClaudeID(t *testing.T) {
 }
 
 type fakeTaskBackend struct {
-	name         string
-	events       []TaskEvent
+	name   string
+	events []TaskEvent
+	// rawLines are handed to the run's RawLog, in order, before events.
+	rawLines     []string
 	ready        chan struct{}
 	release      chan struct{}
 	interruptErr error
@@ -689,6 +691,11 @@ func (b *fakeTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*tas
 			case <-b.release:
 			case <-ctx.Done():
 				return
+			}
+		}
+		if req.RawLog != nil {
+			for _, line := range b.rawLines {
+				req.RawLog([]byte(line))
 			}
 		}
 		for _, ev := range b.events {

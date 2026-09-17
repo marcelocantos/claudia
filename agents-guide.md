@@ -736,8 +736,8 @@ process.
   reconnect.
 - **Tasks run on the daemon.** `Task.Run` streams the run over its
   own connection; `Cancel` reaches it; a dropped connection cancels
-  the run. `Task.SetRawLog` is not carried (raw NDJSON stays on the
-  daemon).
+  the run. `Task.SetRawLog` receives the provider's raw lines from the
+  daemon, in order; without it they stay on the daemon.
 - **Plan usage is the daemon's.** `LoadPlanUsage` and `Resolve` read
   the daemon's snapshot; the daemon refreshes on a TTL and immediately
   when any seat reports a rate limit or quota stop. The filesystem

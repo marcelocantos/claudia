@@ -111,6 +111,12 @@ var requestVectors = map[string]requestVector{
 			TaskRun: &TaskRunRequest{Task: json.RawMessage(`{"provider":"grok","workdir":"/w"}`), Prompt: "summarise"},
 		},
 	},
+	"task_run_raw_log": {
+		msg: &Request{
+			ID: "g3", Type: TypeTaskRun,
+			TaskRun: &TaskRunRequest{Task: json.RawMessage(`{"provider":"claude","workdir":"/w"}`), Prompt: "summarise", RawLog: true},
+		},
+	},
 	"task_cancel": {msg: &Request{ID: "g4", Type: TypeTaskCancel, TaskCancel: &TaskCancelRequest{RunID: "run-1"}}},
 	"grant": {
 		msg: &Request{
@@ -222,6 +228,10 @@ var responseVectors = map[string]*Response{
 	"task_event": {
 		Type:      TypeTaskEvent,
 		TaskEvent: &TaskEventMessage{RunID: "run-1", Event: json.RawMessage(`{"type":"text","content":"hi"}`)},
+	},
+	"task_raw": {
+		Type:    TypeTaskRaw,
+		TaskRaw: &TaskRawMessage{RunID: "run-1", Line: `{"type":"system","subtype":"init"}`},
 	},
 	"task_done":       {Type: TypeTaskDone, TaskDone: &TaskDoneMessage{RunID: "run-1"}},
 	"task_done_error": {Type: TypeTaskDone, TaskDone: &TaskDoneMessage{RunID: "run-1", Error: "spawn failed"}},

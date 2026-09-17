@@ -496,6 +496,7 @@ type Response struct {
 	TaskStarted    *TaskStartedResponse
 	TaskEvent      *TaskEventMessage
 	TaskDone       *TaskDoneMessage
+	TaskRaw        *TaskRawMessage
 	TaskCancelled  *TaskCancelledResponse
 	Granted        *GrantResponse
 	AgentEvent     *AgentEventMessage
@@ -582,6 +583,7 @@ var responseSpecs = map[MessageType]bodySpec[Response]{
 	TypeTaskStarted:     spec("task_started body", func(r *Response) **TaskStartedResponse { return &r.TaskStarted }, false),
 	TypeTaskEvent:       spec("task_event body", func(r *Response) **TaskEventMessage { return &r.TaskEvent }, false),
 	TypeTaskDone:        spec("task_done body", func(r *Response) **TaskDoneMessage { return &r.TaskDone }, false),
+	TypeTaskRaw:         spec("task_raw body", func(r *Response) **TaskRawMessage { return &r.TaskRaw }, false),
 	TypeTaskCancelled:   spec("task_cancelled body", func(r *Response) **TaskCancelledResponse { return &r.TaskCancelled }, false),
 	TypeGranted:         spec("granted body", func(r *Response) **GrantResponse { return &r.Granted }, false),
 	TypeAgentEvent:      spec("agent_event body", func(r *Response) **AgentEventMessage { return &r.AgentEvent }, false),

@@ -1,0 +1,1 @@
+{"v":1,"type":"task_run","id":"g3","body":{"task":{"provider":"claude","workdir":"/w"},"prompt":"summarise","raw_log":true}}

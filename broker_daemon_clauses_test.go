@@ -701,3 +701,73 @@ func TestBrokerDaemonDefaultStateDirHoldsModelIntel(t *testing.T) {
 		t.Fatal("daemon wrote model intel relative to its working directory")
 	}
 }
+
+// TestBrokerDaemonCarriesTaskRawLog (🎯T75.10): a raw-log func on a Task
+// run through the daemon sees every line the direct path sees for the same
+// backend, in order; a run without one does not ask the daemon for lines.
+func TestBrokerDaemonCarriesTaskRawLog(t *testing.T) {
+	lines := []string{`{"type":"system","subtype":"init"}`, `{"type":"assistant","n":1}`, `{"type":"result"}`}
+	newFake := func() *fakeTaskBackend {
+		return &fakeTaskBackend{name: "fake-claude", rawLines: lines, events: []TaskEvent{
+			{Type: TaskEventInit, SessionID: "raw-sid"},
+			{Type: TaskEventResult, Content: "done"},
+		}}
+	}
+	collect := func(task *Task) func() []string {
+		var mu sync.Mutex
+		var got []string
+		task.SetRawLog(func(line []byte) {
+			mu.Lock()
+			got = append(got, string(line))
+			mu.Unlock()
+		})
+		return func() []string {
+			mu.Lock()
+			defer mu.Unlock()
+			return append([]string(nil), got...)
+		}
+	}
+	drain := func(task *Task) {
+		t.Helper()
+		ch, err := task.Run(context.Background(), "go")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for range ch {
+		}
+	}
+
+	direct := newTaskWithBackend(TaskConfig{ID: "direct", WorkDir: t.TempDir()}, newFake())
+	direct.direct = true
+	directLines := collect(direct)
+	drain(direct)
+
+	f := startDaemon(t, false, nil)
+	f.boot(t, false, nil)
+	var fakes []*fakeTaskBackend
+	prev := daemonNewTask
+	daemonNewTask = func(cfg TaskConfig) *Task {
+		fake := newFake()
+		fakes = append(fakes, fake)
+		tk := newTaskWithBackend(cfg, fake)
+		tk.direct = true
+		return tk
+	}
+	t.Cleanup(func() { daemonNewTask = prev })
+
+	brokered := NewTask(TaskConfig{ID: "brokered", WorkDir: t.TempDir()})
+	brokeredLines := collect(brokered)
+	drain(brokered)
+	if got, want := brokeredLines(), directLines(); !reflect.DeepEqual(got, want) || len(want) != len(lines) {
+		t.Fatalf("raw lines through the daemon = %q, direct = %q", got, want)
+	}
+
+	plain := NewTask(TaskConfig{ID: "plain", WorkDir: t.TempDir()})
+	drain(plain)
+	if len(fakes) != 2 {
+		t.Fatalf("daemon ran %d tasks, want 2", len(fakes))
+	}
+	if fakes[1].request(t).RawLog != nil {
+		t.Fatal("a run without a raw-log func asked the daemon for raw lines")
+	}
+}
