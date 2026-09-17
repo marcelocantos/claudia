@@ -6,6 +6,7 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -766,6 +767,117 @@ func TestHonoursOwnerGoalCompleteCheck(t *testing.T) {
 			defer mu.Unlock()
 			if tc.check != nil && tc.text == "workers finished" && (len(asked) != 1 || asked[0] != "ship T75|workers finished") {
 				t.Fatalf("owner check asked %q, want once with the goal and the turn text", asked)
+			}
+		})
+	}
+}
+
+// TestRewindOnHeldSeatRefusesLikeDirectAndReturnsResult (🎯T75.8): capability
+// refusal is the same on a daemon-held seat as on one started in-process,
+// and a consumer Registry's Rewind of a daemon-held seat returns what the
+// daemon removed, keeps the handle, and leaves the seat persisted on the
+// daemon.
+func TestRewindOnHeldSeatRefusesLikeDirectAndReturnsResult(t *testing.T) {
+	f := newFixture(t)
+	f.boot(t, nil)
+
+	// Refusal: Grok has no rewind, held or direct.
+	held, err := claudia.Start(claudia.Config{Name: "grok-seat", Provider: claudia.ProviderGrok, WorkDir: t.TempDir(), SessionID: "sid-grok", TermLogPath: "-"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(held.Stop)
+	if !held.DaemonHeld() {
+		t.Fatal("grok seat is not daemon-held")
+	}
+	direct, err := claudia.StartStub(context.Background(), claudia.Config{Provider: claudia.ProviderGrok, WorkDir: t.TempDir(), SessionID: "sid-grok-direct", TermLogPath: "-"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(direct.Stop)
+	_, heldErr := held.Rewind(1, claudia.Config{})
+	_, directErr := direct.Rewind(1, claudia.Config{})
+	if heldErr == nil || directErr == nil || heldErr.Error() != directErr.Error() {
+		t.Fatalf("rewind refusal held = %v, direct = %v; want the same capability error", heldErr, directErr)
+	}
+	var capErr *claudia.CapabilityError
+	if !errors.As(heldErr, &capErr) {
+		t.Fatalf("held refusal is %T, want *claudia.CapabilityError", heldErr)
+	}
+
+	// Result through a consumer Registry.
+	reg, err := claudia.NewRegistry(filepath.Join(t.TempDir(), "agents.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.Register(claudia.AgentDef{Name: "rw-seat", WorkDir: t.TempDir(), SessionID: "sid-rwr", TermLogPath: "-"}); err != nil {
+		t.Fatal(err)
+	}
+	proc, err := reg.Launch("rw-seat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { reg.Stop("rw-seat") })
+	writeTranscript(t, f.d.reg.Get("rw-seat").JSONLPath())
+	got, res, err := reg.Rewind(context.Background(), "rw-seat", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != proc || res == nil || res.TurnsRemoved != 1 || res.BackupPath == "" || res.BytesRemoved <= 0 {
+		t.Fatalf("Registry.Rewind via daemon = handle %p (was %p), result %+v", got, proc, res)
+	}
+	if def := readGrantsTable(t, f.state)["rw-seat"]; def.SessionID != "sid-rwr" || !def.AutoStart {
+		t.Fatalf("daemon's persisted seat after rewind = %+v", def)
+	}
+}
+
+// TestGoalCheckWithNoOwnerFallsBackToStatus (🎯T75.9): a seat whose
+// consumer has gone has no owner to ask, so its Goal loop runs on
+// ParseGoalStatus alone — continuing without a status line and closing on
+// one.
+func TestGoalCheckWithNoOwnerFallsBackToStatus(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		text      string
+		wantSends int
+		wantOpen  bool
+	}{
+		{"no status continues", "workers finished", 2, true},
+		{"status closes", "done\n" + claudia.GoalStatusComplete, 1, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			f.boot(t, nil)
+			var asked atomic.Int32
+			a, err := claudia.Start(claudia.Config{Name: "orphan-goal", WorkDir: t.TempDir(), SessionID: "sid-og", TermLogPath: "-", Goal: "ship T75",
+				GoalCompleteCheck: func(string, string) bool { asked.Add(1); return true }})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := a.Send("go"); err != nil {
+				t.Fatal(err)
+			}
+			if err := a.Detach(); err != nil {
+				t.Fatal(err)
+			}
+			waitFor(t, "detached", func() bool { return !f.owned("orphan-goal") })
+			proc, s := f.d.reg.Get("orphan-goal"), f.seat(0)
+			s.inFlight.Store(false)
+			proc.PublishEvent(claudia.Event{Type: "assistant", Text: tc.text, StopReason: "end_turn"})
+			if tc.wantOpen {
+				waitFor(t, "continuation", func() bool { return len(s.sent()) >= tc.wantSends })
+			} else {
+				waitFor(t, "goal closed", func() bool { return !proc.GoalActive() })
+			}
+			time.Sleep(goalSettle)
+			if got := len(s.sent()); got != tc.wantSends {
+				t.Fatalf("provider sends = %d (%q), want %d", got, s.sent(), tc.wantSends)
+			}
+			if proc.GoalActive() != tc.wantOpen {
+				t.Fatalf("goal active = %v, want %v", proc.GoalActive(), tc.wantOpen)
+			}
+			if n := asked.Load(); n != 0 {
+				t.Fatalf("a departed consumer's check was asked %d time(s)", n)
 			}
 		})
 	}
