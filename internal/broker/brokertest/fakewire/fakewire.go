@@ -66,6 +66,10 @@ type Scenario struct {
 	CostUSD     float64      `json:"cost_usd"`
 	RateLimited bool         `json:"rate_limited"`
 	ExitCode    int          `json:"exit_code"`
+	// Linger keeps the process running after its output until stdin
+	// closes, the way an interactive claude sits at its prompt (a pool
+	// window).
+	Linger bool `json:"linger"`
 }
 
 // Prompt-box glyphs, spelled once. The rule is U+2500 BOX DRAWINGS LIGHT

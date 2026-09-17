@@ -132,8 +132,8 @@ type GrantDefinition struct {
 // carry, with the reason. TestBrokerWireMirrorsAreComplete refuses any other
 // omission.
 var configNotOnGrantWire = map[string]string{
-	"PoolPolicy": "Acquire pool policy; Acquire is not brokered",
-	"PoolCap":    "Acquire pool cap; Acquire is not brokered",
+	"PoolPolicy": "Acquire pool policy; carried as grant.pool on an acquire, not on the definition",
+	"PoolCap":    "Acquire pool cap; carried as grant.pool on an acquire, not on the definition",
 }
 
 // configByCallback lists the Config fields a grant cannot carry as data but
@@ -182,7 +182,9 @@ func configToGrantDef(name string, cfg Config, base *AgentDef) GrantDefinition {
 	}
 }
 
-func grantDefToConfig(def GrantDefinition) Config {
+// Config is the Session Config a grant describes: what the daemon starts
+// the seat with.
+func (def GrantDefinition) Config() Config {
 	cfg := registryConfig(&def.AgentDef, def.RequireResume)
 	cfg.Name = def.Name
 	return cfg

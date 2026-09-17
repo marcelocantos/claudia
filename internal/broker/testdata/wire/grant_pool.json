@@ -1,0 +1,1 @@
+{"v":1,"type":"grant","id":"g5p","body":{"name":"sid:3f1c","def":{"name":"sid:3f1c","workdir":"/w"},"pool":{"policy":"spawn","cap":2}}}

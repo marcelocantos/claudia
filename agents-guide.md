@@ -803,7 +803,11 @@ same shape as bullseye/mnemo/jevonsd. Elsewhere, operate it with
 macOS). Then `status`, `grants`, `usage [--refresh]`,
 `tail` (NDJSON lifecycle events), `release NAME [--detach]`, `socket`.
 `claudia --help-agent` prints this guide after the CLI usage text.
-Not covered by the daemon: `Acquire` / the in-process pool. A seat's
+`Acquire` draws from a pool the daemon runs: every consumer on the
+host shares its warm windows, `Agent.Release` returns or drops the seat
+on the daemon, and a consumer that goes away returns what it held.
+`AcquireDirect` keeps the pool in-process. A pooled agent does not yet
+publish turn events on either path (🎯T78). A seat's
 Goal loop runs on the daemon; after a terminal turn with no
 `GOAL_STATUS` line it asks the owning handle's `GoalCompleteCheck`
 (set on `Config` or with `SetGoalCompleteCheck`), and with no owner

@@ -13,6 +13,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/marcelocantos/claudia/internal/broker/brokertest/fakewire"
@@ -38,5 +39,9 @@ func run() int {
 		fmt.Fprintln(os.Stderr, "fake-claude:", err)
 		return 2
 	}
-	return fakewire.Render(s, os.Stdout, os.Stderr)
+	code := fakewire.Render(s, os.Stdout, os.Stderr)
+	if s.Linger {
+		_, _ = io.Copy(io.Discard, os.Stdin)
+	}
+	return code
 }

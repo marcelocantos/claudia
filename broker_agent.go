@@ -9,6 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -31,6 +33,9 @@ type grantHint struct {
 	// role, target) so the daemon's table shows the seat as the consumer
 	// knows it. Nil for a plain Start.
 	def *AgentDef
+	// pool, when set, asks for a warm seat from the daemon's pool
+	// (Acquire) instead of a named seat.
+	pool *broker.PoolGrant
 }
 
 type grantHintKey struct{}
@@ -129,7 +134,7 @@ func (b *brokerAgentBackend) StartAgent(req agentStartRequest) (*agentStart, err
 	resp, err := b.client.call(ctx, &broker.Request{
 		Type: broker.TypeGrant,
 		Grant: &broker.GrantRequest{
-			Name: name, Def: def, Adopt: b.hint.adopt, Fallback: b.hint.fallback,
+			Name: name, Def: def, Adopt: b.hint.adopt, Fallback: b.hint.fallback, Pool: b.hint.pool,
 		},
 	})
 	if err != nil {
@@ -257,6 +262,7 @@ func (b *brokerAgentBackend) ops() agentOps {
 		},
 		migrate: b.migrate,
 		rewind:  b.rewind,
+		release: b.release,
 		closeGoal: func(*Agent) {
 			if _, err := b.opCall(&broker.Request{Type: broker.TypeCloseGoal, CloseGoal: b.named()}); err != nil {
 				slog.Warn("broker close_goal failed", "grant", b.named().Name, "err", err)
@@ -314,6 +320,43 @@ func (b *brokerAgentBackend) rewind(a *Agent, n int) (*RewindResult, error) {
 		SessionID: w.SessionID, JSONLPath: w.JSONLPath, TurnsRemoved: w.TurnsRemoved,
 		LinesRemoved: w.LinesRemoved, BytesRemoved: w.BytesRemoved, BackupPath: w.BackupPath,
 	}, nil
+}
+
+// release hands an acquired seat back to the daemon's pool, mapping
+// Agent.Release's dispositions onto the wire: return and keep_alive_for
+// are reuse, drop is stop. A named seat has no pool to go back to.
+func (b *brokerAgentBackend) release(a *Agent, disposition string) error {
+	if b.hint.pool == nil {
+		return fmt.Errorf("pool: seat %s was not acquired from a pool; use Stop", b.named().Name)
+	}
+	req := &broker.ReleaseRequest{Name: b.named().Name}
+	switch {
+	case disposition == "return":
+		req.Disposition = broker.DispositionReuse
+	case disposition == "drop":
+		req.Disposition = broker.DispositionStop
+	case strings.HasPrefix(disposition, "keep_alive_for:"):
+		secs, err := strconv.ParseInt(strings.TrimPrefix(disposition, "keep_alive_for:"), 10, 64)
+		if err != nil || secs <= 0 {
+			return fmt.Errorf("pool: invalid keep_alive_for seconds %q", strings.TrimPrefix(disposition, "keep_alive_for:"))
+		}
+		req.Disposition, req.KeepAliveSeconds = broker.DispositionReuse, secs
+	default:
+		return fmt.Errorf("pool: unknown disposition %q (want: return, drop, keep_alive_for:<secs>)", disposition)
+	}
+	_, err := b.opCall(&broker.Request{Type: broker.TypeRelease, Release: req})
+	b.client.Close()
+	a.mu.Lock()
+	a.alive = false
+	a.mu.Unlock()
+	return err
+}
+
+// acquireViaBroker asks the daemon for a warm seat from its pool (🎯T64).
+// errNoBroker / errBrokerNotAvailable mean Acquire takes its own pool.
+func acquireViaBroker(ctx context.Context, cfg Config) (*Agent, error) {
+	hint := grantHint{pool: &broker.PoolGrant{Policy: cfg.PoolPolicy, Cap: cfg.PoolCap}}
+	return startViaBrokerContext(withGrantHint(ctx, hint), cfg)
 }
 
 // seatWhere is where a daemon says a seat now lives.

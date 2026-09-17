@@ -89,7 +89,25 @@ const poolWindowPrefix = "claudia-pool-"
 // Config.PoolCap (0 = unlimited) caps the total number of idle pool
 // windows for this key. When exceeded on Acquire the oldest idle
 // window is evicted before a new one is created.
+//
+// When a claudia daemon is listening, the daemon runs the pool and the
+// returned Agent is a handle onto the warm seat it granted (🎯T64): every
+// consumer on the host draws from, and returns to, the same pool, and a
+// consumer that goes away returns its seats. [AcquireDirect] keeps the
+// pool in this process.
 func Acquire(ctx context.Context, cfg Config) (*Agent, error) {
+	if usingBroker() {
+		a, err := acquireViaBroker(ctx, cfg)
+		if err == nil || !brokerFellThrough(err) {
+			return a, err
+		}
+	}
+	return AcquireDirect(ctx, cfg)
+}
+
+// AcquireDirect is [Acquire] from the pool in this process even when a
+// claudia daemon is listening.
+func AcquireDirect(ctx context.Context, cfg Config) (*Agent, error) {
 	if err := checkTmux(); err != nil {
 		return nil, err
 	}
@@ -373,6 +391,10 @@ func buildPoolAgent(cfg Config, workDir, windowID string, waitForReady bool) (*A
 // Release closes the control-mode connection in all cases. For "drop"
 // it also closes any open term log.
 func (a *Agent) Release(disposition string) error {
+	if a.ops.release != nil {
+		// A daemon-held pooled seat: the daemon runs the pool.
+		return a.ops.release(a, disposition)
+	}
 	windowID := a.tmuxWindowID
 
 	switch {

@@ -339,6 +339,9 @@ type agentOps struct {
 	// rewind is set only by the broker backend: the daemon rolls the seat
 	// back and relaunches it, and this handle re-points (🎯T75.8).
 	rewind func(*Agent, int) (*RewindResult, error)
+	// release is set only by the broker backend for an acquired seat: the
+	// daemon returns it to, or drops it from, the pool it runs (🎯T64).
+	release func(*Agent, string) error
 	// subscribeTerminal is set only by the broker backend: the first
 	// SubscribeTerminal asks the daemon to stream raw bytes.
 	subscribeTerminal func(*Agent)

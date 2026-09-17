@@ -247,6 +247,19 @@ type GrantRequest struct {
 	Adopt bool `json:"adopt,omitempty"`
 	// Fallback lets a failed adopt fall through to a cold start.
 	Fallback bool `json:"fallback,omitempty"`
+	// Pool, when set, grants a warm seat from the daemon's pool
+	// (claudia.Acquire) instead of starting a named seat. The seat is not
+	// persisted and is returned to the pool, not stopped, when released
+	// with reuse or when its owner's connection closes (🎯T64).
+	Pool *PoolGrant `json:"pool,omitempty"`
+}
+
+// PoolGrant carries claudia.Config's pool policy for an acquire.
+type PoolGrant struct {
+	// Policy is claudia.Config.PoolPolicy: spawn (default), wait or error.
+	Policy string `json:"policy,omitempty"`
+	// Cap is claudia.Config.PoolCap; zero is unlimited.
+	Cap int `json:"cap,omitempty"`
 }
 
 // Validate checks the required fields.

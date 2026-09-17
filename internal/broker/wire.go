@@ -267,6 +267,10 @@ type ReleaseRequest struct {
 	Name string `json:"name,omitempty"`
 	// Disposition is what to do with it.
 	Disposition Disposition `json:"disposition"`
+	// KeepAliveSeconds, with reuse on a pooled seat, keeps the returned
+	// seat warm for this long before the pool may evict it
+	// (claudia.Agent.Release "keep_alive_for:<secs>").
+	KeepAliveSeconds int64 `json:"keep_alive_seconds,omitempty"`
 }
 
 // Validate checks the request is well formed on the wire. Whether this broker
@@ -281,7 +285,17 @@ func (r *ReleaseRequest) Validate() error {
 	case "":
 		return &ProtocolError{Code: CodeMissingField, Field: "disposition",
 			Msg: fmt.Sprintf("disposition is required (%q, %q or %q)", DispositionStop, DispositionReuse, DispositionDetach)}
-	case DispositionStop, DispositionReuse, DispositionDetach:
+	case DispositionStop, DispositionDetach:
+		if r.KeepAliveSeconds != 0 {
+			return &ProtocolError{Code: CodeUnsupportedValue, Field: "keep_alive_seconds", Value: strconv.FormatInt(r.KeepAliveSeconds, 10),
+				Msg: "keep_alive_seconds applies only to reuse"}
+		}
+		return nil
+	case DispositionReuse:
+		if r.KeepAliveSeconds < 0 {
+			return &ProtocolError{Code: CodeUnsupportedValue, Field: "keep_alive_seconds", Value: strconv.FormatInt(r.KeepAliveSeconds, 10),
+				Msg: "keep_alive_seconds must not be negative"}
+		}
 		return nil
 	default:
 		return &ProtocolError{Code: CodeUnsupportedValue, Field: "disposition", Value: string(r.Disposition),
