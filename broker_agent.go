@@ -104,7 +104,7 @@ func (b *brokerAgentBackend) StartAgent(req agentStartRequest) (*agentStart, err
 	cfg.WorkDir = req.WorkDir
 	cfg.RequireResume = req.Config.RequireResume
 	name := grantNameFor(cfg, req.SessionID)
-	def, err := encodeGrantDefWire(configToGrantDef(name, cfg, b.hint.def))
+	def, err := EncodeGrantDefinition(configToGrantDef(name, cfg, b.hint.def))
 	if err != nil {
 		return nil, err
 	}
@@ -405,7 +405,7 @@ func (b *brokerAgentBackend) drain() {
 func (b *brokerAgentBackend) deliver(a *Agent, resp *broker.Response) {
 	switch resp.Type {
 	case broker.TypeAgentEvent:
-		ev, err := decodeEventWire(resp.AgentEvent.Event)
+		ev, err := DecodeEventWire(resp.AgentEvent.Event)
 		if err != nil {
 			slog.Warn("broker agent event undecodable", "grant", b.named().Name, "err", err)
 			return

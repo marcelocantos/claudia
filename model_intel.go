@@ -84,7 +84,6 @@ type ModelIntelArgs struct {
 }
 
 const (
-	modelIntelDirName          = "model-intel"
 	modelIntelObsFile          = "observations.jsonl"
 	modelIntelRunsFile         = "ingest_runs.jsonl"
 	modelIntelSourceAA         = "aa"
@@ -95,6 +94,10 @@ const (
 	modelIntelDriftIndexPoints = 1.0
 )
 
+// ModelIntelDirName is the model-intel store's directory name under a
+// claudia state directory.
+const ModelIntelDirName = "model-intel"
+
 // DefaultModelIntelDir is where the daemon and Resolve share the series.
 func DefaultModelIntelDir() (string, error) {
 	if p := os.Getenv(modelIntelEnvDir); p != "" {
@@ -104,7 +107,7 @@ func DefaultModelIntelDir() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(state, modelIntelDirName), nil
+	return filepath.Join(state, ModelIntelDirName), nil
 }
 
 func intelDir(args *ModelIntelArgs) (string, error) {

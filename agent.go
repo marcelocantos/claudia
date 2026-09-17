@@ -556,6 +556,44 @@ func StartContext(ctx context.Context, cfg Config) (*Agent, error) {
 
 // startDirectContext is StartContext without the broker consult: the path
 // the daemon itself takes to start a provider process.
+// StartDirect is [Start] in this process even when a claudia daemon is
+// listening. Unlike CLAUDIA_NO_BROKER it affects only this call and is not
+// inherited by the processes the agent starts.
+func StartDirect(cfg Config) (*Agent, error) {
+	return startDirectContext(context.Background(), cfg)
+}
+
+// StartDirectContext is [StartDirect] with cooperative startup cancellation.
+func StartDirectContext(ctx context.Context, cfg Config) (*Agent, error) {
+	return startDirectContext(ctx, cfg)
+}
+
+// DaemonHeld reports whether a claudia daemon holds this seat, so this
+// Agent is a handle onto a process the daemon parents.
+func (a *Agent) DaemonHeld() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.brokerGrant != ""
+}
+
+// Detach lets go of a daemon-held seat without stopping it: the seat keeps
+// running unowned, keeps what it says for whoever reclaims it, and a later
+// Start or Registry launch with the same Config.Name reclaims it. This
+// handle stops reporting alive. It is how a consumer restarts or upgrades
+// without bouncing its agents. An agent this process started is not
+// daemon-held, and Detach refuses it: stopping this process ends it.
+func (a *Agent) Detach() error {
+	if !a.DaemonHeld() {
+		return fmt.Errorf("Detach: agent is not held by a claudia daemon")
+	}
+	if a.mcpCleanup != nil {
+		// A broker handle's cleanup closes its connection, which the
+		// daemon treats as the owner going away, not as a release.
+		a.mcpCleanup()
+	}
+	return nil
+}
+
 func startDirectContext(ctx context.Context, cfg Config) (*Agent, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err

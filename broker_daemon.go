@@ -245,7 +245,7 @@ func NewBrokerDaemon(opts BrokerDaemonOptions) (*BrokerDaemon, error) {
 		go func() {
 			defer d.wg.Done()
 			RunModelIntelRefresher(d.ctx, &ModelIntelRefresherArgs{
-				Dir:      filepath.Join(stateDir, modelIntelDirName),
+				Dir:      filepath.Join(stateDir, ModelIntelDirName),
 				Interval: opts.IntelInterval,
 				Clock:    clock,
 				Refresh:  opts.IntelRefresh,
@@ -418,7 +418,7 @@ func ownedBy(c *broker.ClientConn, name string) {
 
 func (d *BrokerDaemon) handleGrant(c *broker.ClientConn, req *broker.Request) {
 	name := req.Grant.Name
-	wire, err := decodeGrantDefWire(req.Grant.Def)
+	wire, err := DecodeGrantDefinition(req.Grant.Def)
 	if err != nil {
 		_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeMalformed, Field: "def", Msg: err.Error()})
 		return
@@ -628,7 +628,7 @@ func (d *BrokerDaemon) forwarder(name string) EventFunc {
 			// so forwarding this one would double it.
 			return
 		}
-		raw, err := encodeEventWire(ev)
+		raw, err := EncodeEventWire(ev)
 		if err != nil {
 			d.log.Warn("event not encodable", "grant", name, "err", err)
 			return
@@ -919,7 +919,7 @@ func (d *BrokerDaemon) handleAgentOp(c *broker.ClientConn, req *broker.Request) 
 }
 
 func (d *BrokerDaemon) handleTaskRun(c *broker.ClientConn, req *broker.Request) {
-	cfg, err := decodeTaskConfigWire(req.TaskRun.Task)
+	cfg, err := DecodeTaskConfigWire(req.TaskRun.Task)
 	if err != nil {
 		_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeMalformed, Field: "task", Msg: err.Error()})
 		return
@@ -949,7 +949,7 @@ func (d *BrokerDaemon) handleTaskRun(c *broker.ClientConn, req *broker.Request) 
 		defer d.wg.Done()
 		defer cancel()
 		for ev := range ch {
-			raw, err := encodeTaskEventWire(ev)
+			raw, err := EncodeTaskEventWire(ev)
 			if err != nil {
 				continue
 			}
@@ -996,7 +996,7 @@ func (d *BrokerDaemon) handleTaskCancel(c *broker.ClientConn, req *broker.Reques
 }
 
 func (d *BrokerDaemon) handleResolve(c *broker.ClientConn, req *broker.Request) {
-	pred, err := decodePredicatesWire(req.Resolve.Predicates)
+	pred, err := DecodePredicatesWire(req.Resolve.Predicates)
 	if err != nil {
 		_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeMalformed, Field: "predicates", Msg: err.Error()})
 		return
@@ -1008,14 +1008,14 @@ func (d *BrokerDaemon) handleResolve(c *broker.ClientConn, req *broker.Request) 
 	pred.Usage = usage
 	pred.Now = d.clock.Now()
 	if pred.Purpose != "" || pred.Model != "" || pred.Effort != "" {
-		pred.Intel = &ModelIntelArgs{Dir: filepath.Join(d.stateDir, modelIntelDirName), Now: pred.Now}
+		pred.Intel = &ModelIntelArgs{Dir: filepath.Join(d.stateDir, ModelIntelDirName), Now: pred.Now}
 	}
 	pick, err := Resolve(d.ctx, pred)
 	if err != nil {
 		_ = c.Fail(req.ID, err)
 		return
 	}
-	raw, _ := encodePickWire(pick)
+	raw, _ := EncodePickWire(pick)
 	_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeResolved, Resolved: &broker.ResolveResponse{Pick: raw}})
 }
 

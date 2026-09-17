@@ -46,11 +46,13 @@ type eventWire struct {
 	StuckClass    string   `json:"stuck_class,omitempty"`
 }
 
-func encodeEventWire(ev Event) (json.RawMessage, error) {
+// EncodeEventWire is an Event in its daemon-protocol form (agent_event).
+func EncodeEventWire(ev Event) (json.RawMessage, error) {
 	return json.Marshal(eventWire(ev))
 }
 
-func decodeEventWire(raw json.RawMessage) (Event, error) {
+// DecodeEventWire reverses [EncodeEventWire].
+func DecodeEventWire(raw json.RawMessage) (Event, error) {
 	var w eventWire
 	if err := json.Unmarshal(raw, &w); err != nil {
 		return Event{}, fmt.Errorf("broker event: %w", err)
@@ -74,11 +76,13 @@ type taskEventWire struct {
 	Model      string        `json:"model,omitempty"`
 }
 
-func encodeTaskEventWire(ev TaskEvent) (json.RawMessage, error) {
+// EncodeTaskEventWire is a TaskEvent in its daemon-protocol form (task_event).
+func EncodeTaskEventWire(ev TaskEvent) (json.RawMessage, error) {
 	return json.Marshal(taskEventWire(ev))
 }
 
-func decodeTaskEventWire(raw json.RawMessage) (TaskEvent, error) {
+// DecodeTaskEventWire reverses [EncodeTaskEventWire].
+func DecodeTaskEventWire(raw json.RawMessage) (TaskEvent, error) {
 	var w taskEventWire
 	if err := json.Unmarshal(raw, &w); err != nil {
 		return TaskEvent{}, fmt.Errorf("broker task event: %w", err)
@@ -100,11 +104,13 @@ type taskConfigWire struct {
 	LastResult     string   `json:"last_result,omitempty"`
 }
 
-func encodeTaskConfigWire(cfg TaskConfig) (json.RawMessage, error) {
+// EncodeTaskConfigWire is a TaskConfig in its daemon-protocol form (task_run).
+func EncodeTaskConfigWire(cfg TaskConfig) (json.RawMessage, error) {
 	return json.Marshal(taskConfigWire(cfg))
 }
 
-func decodeTaskConfigWire(raw json.RawMessage) (TaskConfig, error) {
+// DecodeTaskConfigWire reverses [EncodeTaskConfigWire].
+func DecodeTaskConfigWire(raw json.RawMessage) (TaskConfig, error) {
 	var w taskConfigWire
 	if err := json.Unmarshal(raw, &w); err != nil {
 		return TaskConfig{}, fmt.Errorf("broker task config: %w", err)
@@ -112,12 +118,12 @@ func decodeTaskConfigWire(raw json.RawMessage) (TaskConfig, error) {
 	return TaskConfig(w), nil
 }
 
-// grantDefWire is what a grant carries: the persistent AgentDef, which is
+// GrantDefinition is what a grant carries: the persistent AgentDef, which is
 // the whole Session Config except three fields. Config.GoalCompleteCheck is
 // a func: it stays on the consumer's handle and the daemon calls back to it
 // (configByCallback). PoolPolicy / PoolCap belong to Acquire, which is not
 // brokered. RequireResume is the consumer Registry's verdict for this launch.
-type grantDefWire struct {
+type GrantDefinition struct {
 	AgentDef
 	RequireResume bool `json:"require_resume,omitempty"`
 }
@@ -139,12 +145,12 @@ var configByCallback = map[string]string{
 
 // configToGrantDef builds the grant from cfg, over the consumer's own
 // definition when it has one (labels the Config cannot carry).
-func configToGrantDef(name string, cfg Config, base *AgentDef) grantDefWire {
+func configToGrantDef(name string, cfg Config, base *AgentDef) GrantDefinition {
 	var labels AgentDef
 	if base != nil {
 		labels = cloneAgentDef(*base)
 	}
-	return grantDefWire{
+	return GrantDefinition{
 		AgentDef: AgentDef{
 			Name:                 name,
 			Parent:               labels.Parent,
@@ -176,20 +182,22 @@ func configToGrantDef(name string, cfg Config, base *AgentDef) grantDefWire {
 	}
 }
 
-func grantDefToConfig(def grantDefWire) Config {
+func grantDefToConfig(def GrantDefinition) Config {
 	cfg := registryConfig(&def.AgentDef, def.RequireResume)
 	cfg.Name = def.Name
 	return cfg
 }
 
-func encodeGrantDefWire(def grantDefWire) (json.RawMessage, error) {
+// EncodeGrantDefinition is a grant in its daemon-protocol form (grant.def).
+func EncodeGrantDefinition(def GrantDefinition) (json.RawMessage, error) {
 	return json.Marshal(def)
 }
 
-func decodeGrantDefWire(raw json.RawMessage) (grantDefWire, error) {
-	var w grantDefWire
+// DecodeGrantDefinition reverses [EncodeGrantDefinition].
+func DecodeGrantDefinition(raw json.RawMessage) (GrantDefinition, error) {
+	var w GrantDefinition
 	if err := json.Unmarshal(raw, &w); err != nil {
-		return grantDefWire{}, fmt.Errorf("broker grant def: %w", err)
+		return GrantDefinition{}, fmt.Errorf("broker grant def: %w", err)
 	}
 	return w, nil
 }
@@ -219,7 +227,9 @@ var predicatesNotOnWire = map[string]string{
 	"Now":   "the daemon reads its own clock",
 }
 
-func encodePredicatesWire(p ModelPredicates) (json.RawMessage, error) {
+// EncodePredicatesWire is the portable half of ModelPredicates in its
+// daemon-protocol form (resolve).
+func EncodePredicatesWire(p ModelPredicates) (json.RawMessage, error) {
 	p = normalizePredicates(p)
 	return json.Marshal(predicatesWire{
 		Mode: p.Mode, Purpose: p.Purpose, Skill: p.Skill, Quality: p.Quality,
@@ -229,7 +239,9 @@ func encodePredicatesWire(p ModelPredicates) (json.RawMessage, error) {
 	})
 }
 
-func decodePredicatesWire(raw json.RawMessage) (ModelPredicates, error) {
+// DecodePredicatesWire reverses [EncodePredicatesWire]; the fields the
+// daemon supplies itself are zero.
+func DecodePredicatesWire(raw json.RawMessage) (ModelPredicates, error) {
 	var w predicatesWire
 	if err := json.Unmarshal(raw, &w); err != nil {
 		return ModelPredicates{}, fmt.Errorf("broker predicates: %w", err)
@@ -259,9 +271,11 @@ type pickWire struct {
 	Reason   string       `json:"reason,omitempty"`
 }
 
-func encodePickWire(p ModelPick) (json.RawMessage, error) { return json.Marshal(pickWire(p)) }
+// EncodePickWire is a ModelPick in its daemon-protocol form (resolved).
+func EncodePickWire(p ModelPick) (json.RawMessage, error) { return json.Marshal(pickWire(p)) }
 
-func decodePickWire(raw json.RawMessage) (ModelPick, error) {
+// DecodePickWire reverses [EncodePickWire].
+func DecodePickWire(raw json.RawMessage) (ModelPick, error) {
 	var w pickWire
 	if err := json.Unmarshal(raw, &w); err != nil {
 		return ModelPick{}, fmt.Errorf("broker pick: %w", err)

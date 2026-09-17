@@ -79,9 +79,19 @@ const (
 	// defaultResumeConcurrency bounds provider starts during a resume: a
 	// host coming back with dozens of seats must not start them all at once.
 	defaultResumeConcurrency = 2
-	// seatWatchInterval is how often subscribed Registries probe liveness.
-	seatWatchInterval = 5 * time.Second
 )
+
+// DefaultSeatWatchInterval is how often a Registry with seat-event
+// subscribers probes its seats' liveness.
+const DefaultSeatWatchInterval = 5 * time.Second
+
+// seatClock is the Registry's clock, read under seatMu because SetClock may
+// replace it.
+func (r *Registry) seatClock() Clock {
+	r.seatMu.Lock()
+	defer r.seatMu.Unlock()
+	return r.clock
+}
 
 // SubscribeSeatEvents registers fn for this Registry's seat lifecycle
 // events and returns an id for [Registry.UnsubscribeSeatEvents]. fn runs on
@@ -122,7 +132,7 @@ func (r *Registry) UnsubscribeSeatEvents(id int64) {
 
 func (r *Registry) publishSeatEvent(ev SeatEvent) {
 	if ev.At.IsZero() {
-		ev.At = r.clock.Now()
+		ev.At = r.seatClock().Now()
 	}
 	r.seatMu.Lock()
 	ids := make([]int64, 0, len(r.seatSubs))
@@ -149,7 +159,7 @@ func (r *Registry) watchSeats(stop <-chan struct{}) {
 		select {
 		case <-stop:
 			return
-		case <-r.clock.After(seatWatchInterval):
+		case <-r.seatClock().After(DefaultSeatWatchInterval):
 		}
 		r.mu.Lock()
 		procs := make(map[string]*Agent, len(r.procs))
@@ -233,7 +243,7 @@ func (r *Registry) ResumeAll(ctx context.Context, args *ResumeArgs) []ResumeOutc
 	if nudge == "" {
 		now := args.Now
 		if now.IsZero() {
-			now = r.clock.Now()
+			now = r.seatClock().Now()
 		}
 		nudge = fmt.Sprintf(DefaultRestartNudge, now.Format(time.RFC3339))
 	}

@@ -308,7 +308,7 @@ func TestRegistryPublishesSeatGone(t *testing.T) {
 	dies.mu.Unlock()
 
 	for range 3 {
-		clock.Advance(seatWatchInterval)
+		clock.Advance(DefaultSeatWatchInterval)
 		time.Sleep(20 * time.Millisecond)
 	}
 	waitFor(t, "gone event", func() bool {

@@ -280,7 +280,7 @@ func rawSeat(t *testing.T, sock, name string) *broker.Conn {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = c.Close() })
-	def, err := encodeGrantDefWire(configToGrantDef(name, Config{WorkDir: t.TempDir(), SessionID: "sid-" + name, TermLogPath: "-"}, nil))
+	def, err := EncodeGrantDefinition(configToGrantDef(name, Config{WorkDir: t.TempDir(), SessionID: "sid-" + name, TermLogPath: "-"}, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -886,11 +886,11 @@ func TestBrokerWireMirrorsAreComplete(t *testing.T) {
 	// Wire codecs round-trip.
 	ev := Event{Type: "assistant", Text: "x", Raw: []byte(`{"a":1}`), Usage: Usage{InputTokens: 1},
 		WarningCodes: []string{"w"}, StuckClass: StuckClassQuota, FromProvider: ProviderGrok}
-	raw, err := encodeEventWire(ev)
+	raw, err := EncodeEventWire(ev)
 	if err != nil {
 		t.Fatal(err)
 	}
-	back, err := decodeEventWire(raw)
+	back, err := DecodeEventWire(raw)
 	if err != nil || !reflect.DeepEqual(back, ev) {
 		t.Fatalf("event round trip: %+v vs %+v (%v)", back, ev, err)
 	}
@@ -900,14 +900,14 @@ func TestBrokerWireMirrorsAreComplete(t *testing.T) {
 }
 
 func TestDecodePredicatesWireSkillAlias(t *testing.T) {
-	got, err := decodePredicatesWire([]byte(`{"skill":"analysis","quality":"standard"}`))
+	got, err := DecodePredicatesWire([]byte(`{"skill":"analysis","quality":"standard"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got.Purpose != ModelPurposeAnalysis || got.Skill != ModelPurposeAnalysis {
 		t.Fatalf("skill alias: %+v", got)
 	}
-	raw, err := encodePredicatesWire(ModelPredicates{Skill: ModelPurposeAnalysis})
+	raw, err := EncodePredicatesWire(ModelPredicates{Skill: ModelPurposeAnalysis})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -174,6 +174,9 @@ type Registry struct {
 	// mcpHost, when set, attaches the MCP servers of seats started in this
 	// process. Guarded by mu.
 	mcpHost *MCPHost
+	// launchers, when set, replace the providers for this Registry's
+	// starts and adopts. Guarded by mu.
+	launchers *RegistryLaunchers
 	// Seat lifecycle subscribers (registry_seats.go). seatMu is separate
 	// from mu because subscribers are called while lifecycle operations
 	// that take mu are in flight.
@@ -219,6 +222,67 @@ func (r *Registry) save() error {
 		return err
 	}
 	return os.WriteFile(r.path, data, 0o644)
+}
+
+// processSeams is how this Registry starts and adopts processes: its
+// launchers when set, otherwise the providers (in this process when the
+// Registry is direct).
+func (r *Registry) processSeams() (start func(context.Context, Config) (*Agent, error), adopt func(Config) (*Agent, error)) {
+	r.mu.Lock()
+	l, direct := r.launchers, r.direct
+	r.mu.Unlock()
+	start, adopt = registryStart, registryAdopt
+	if direct {
+		start = registryStartDirect
+	}
+	if l != nil && l.Start != nil {
+		start = l.Start
+	}
+	if l != nil && l.Adopt != nil {
+		adopt = l.Adopt
+	}
+	return start, adopt
+}
+
+// RegistryLaunchers replaces how a [Registry] starts and adopts seat
+// processes. A nil field keeps the providers.
+type RegistryLaunchers struct {
+	// Start launches a seat from its resolved Config. [StartStub] fits.
+	Start func(ctx context.Context, cfg Config) (*Agent, error)
+	// Adopt rebuilds a handle for a seat whose process survived, or returns
+	// an error wrapping [ErrNoSessionWindow] when there is none.
+	Adopt func(cfg Config) (*Agent, error)
+}
+
+// SetLaunchers makes this Registry start and adopt seats through l instead
+// of the providers: tests of code built on a Registry, and embedders that
+// manage processes themselves. Nil restores the providers. Seats the
+// Registry grants through a claudia daemon are unaffected.
+func (r *Registry) SetLaunchers(l *RegistryLaunchers) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.launchers = l
+}
+
+// SetDirect makes this Registry start every seat in this process even when
+// a claudia daemon is listening (true), or consult the daemon as usual
+// (false, the default). Unlike CLAUDIA_NO_BROKER it affects only this
+// Registry and is not inherited by the processes its seats start.
+func (r *Registry) SetDirect(direct bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.direct = direct
+}
+
+// SetClock sets the clock the Registry's liveness watch and seat events
+// read. Nil restores the wall clock.
+func (r *Registry) SetClock(c Clock) {
+	if c == nil {
+		c = SystemClock{}
+	}
+	r.seatMu.Lock()
+	defer r.seatMu.Unlock()
+	r.clock = c
 }
 
 // SetMCPHost makes seats this Registry starts in-process reach their MCP
@@ -358,7 +422,10 @@ func (r *Registry) startHeld(ctx context.Context, op *registryLifecycle, name st
 	// launch are one grant, and the daemon decides whether the process is
 	// still there. Without a daemon the per-provider adopt logic below is
 	// what survival looks like.
-	if usingBroker() && !r.direct {
+	r.mu.Lock()
+	direct := r.direct
+	r.mu.Unlock()
+	if usingBroker() && !direct {
 		proc, err = startViaBrokerContext(withGrantHint(ctx, grantHint{adopt: adopt, fallback: fallback, def: &def}), cfg)
 		if err == nil || !brokerFellThrough(err) {
 			adopt, started = false, true
@@ -377,12 +444,13 @@ func (r *Registry) startHeld(ctx context.Context, op *registryLifecycle, name st
 			cfg.MCPServers = host.Attach(cfg.MCPServers)
 		}
 	}
+	startProc, adoptProc := r.processSeams()
 	if proc == nil && err == nil && adopt {
 		switch {
 		case isClaudeProvider(def.Provider):
-			proc, err = registryAdopt(cfg)
+			proc, err = adoptProc(cfg)
 		case def.Provider == ProviderGrok && (def.ConnectURL != "" || def.ConnectPID > 0):
-			proc, err = registryStart(ctx, cfg)
+			proc, err = startProc(ctx, cfg)
 		case def.Provider == ProviderCursor:
 			reapCursorACPDef(&def)
 			err = fmt.Errorf("%w: %s", ErrNoSessionWindow, def.SessionID)
@@ -395,11 +463,7 @@ func (r *Registry) startHeld(ctx context.Context, op *registryLifecycle, name st
 		if err != nil && !errors.Is(err, ErrNoSessionWindow) {
 			slog.Warn("adopt failed; falling back to launch", "agent", name, "err", err)
 		}
-		if r.direct {
-			proc, err = registryStartDirect(ctx, cfg)
-		} else {
-			proc, err = registryStart(ctx, cfg)
-		}
+		proc, err = startProc(ctx, cfg)
 	}
 	r.mu.Lock()
 	// Stop/Remove intent wins even if a backend ignored cancellation and

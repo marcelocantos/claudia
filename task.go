@@ -372,6 +372,15 @@ func (t *Task) Model() string {
 	return t.resolvedModel
 }
 
+// SetDirect makes this Task run in this process even when a claudia daemon
+// is listening (true), or consult the daemon as usual (false, the default).
+// Unlike CLAUDIA_NO_BROKER it affects only this Task.
+func (t *Task) SetDirect(direct bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.direct = direct
+}
+
 // SetRawLog sets the callback for raw NDJSON lines from the Claude process.
 func (t *Task) SetRawLog(fn RawLogFunc) {
 	t.mu.Lock()
@@ -421,7 +430,10 @@ func (t *Task) Run(ctx context.Context, prompt string) (<-chan TaskEvent, error)
 	// A listening daemon owns the run (🎯T2.10). A bare protocol server, or
 	// no socket, is the direct path — today's behaviour, byte for byte.
 	var bb *brokerTaskBackend
-	if !t.direct {
+	t.mu.Lock()
+	direct := t.direct
+	t.mu.Unlock()
+	if !direct {
 		bb = taskBackendConsideringBroker(TaskConfig{ID: t.id, Name: t.name, Provider: t.provider})
 	}
 	if bb != nil {

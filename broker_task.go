@@ -40,7 +40,7 @@ func (b *brokerTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*t
 	cfg.ApprovalPolicy = req.ApprovalPolicy
 	cfg.DisallowTools = req.DisallowTools
 	cfg.ClaudeID = req.SessionID
-	raw, err := encodeTaskConfigWire(cfg)
+	raw, err := EncodeTaskConfigWire(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -50,7 +50,7 @@ func (b *brokerTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*t
 	b.client.setPush(func(resp *broker.Response) {
 		switch resp.Type {
 		case broker.TypeTaskEvent:
-			ev, err := decodeTaskEventWire(resp.TaskEvent.Event)
+			ev, err := DecodeTaskEventWire(resp.TaskEvent.Event)
 			if err != nil {
 				slog.Warn("broker task event undecodable", "run", runID, "err", err)
 				return

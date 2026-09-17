@@ -647,7 +647,7 @@ func TestBrokerDaemonForwardsSeatGone(t *testing.T) {
 	proc.mu.Unlock()
 
 	for range 3 {
-		f.clock.Advance(seatWatchInterval)
+		f.clock.Advance(DefaultSeatWatchInterval)
 		time.Sleep(20 * time.Millisecond)
 	}
 	waitFor(t, "handle not alive", func() bool { return !a.Alive() })
@@ -698,7 +698,7 @@ func TestBrokerDaemonDefaultStateDirHoldsModelIntel(t *testing.T) {
 		_, err := os.Stat(filepath.Join(want, modelIntelRunsFile))
 		return err == nil
 	})
-	if _, err := os.Stat(filepath.Join(cwd, modelIntelDirName)); err == nil {
+	if _, err := os.Stat(filepath.Join(cwd, ModelIntelDirName)); err == nil {
 		t.Fatal("daemon wrote model intel relative to its working directory")
 	}
 }
