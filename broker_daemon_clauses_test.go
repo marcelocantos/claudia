@@ -624,3 +624,40 @@ func TestT70UnownedStreamSurvivesBounceRing(t *testing.T) {
 		t.Fatal("reclaim started a second provider process")
 	}
 }
+
+// TestBrokerDaemonForwardsSeatGone (🎯T75.6): the daemon's liveness watch
+// is its Registry's. A granted seat whose process dies reaches the owner as
+// agent_gone (its handle stops reporting alive) and the tail as gone, once.
+func TestBrokerDaemonForwardsSeatGone(t *testing.T) {
+	f := startDaemon(t, false, nil)
+	f.boot(t, false, nil)
+	tail := tailEvents(t, f.sock)
+	a, err := Start(Config{Name: "seat-g", WorkDir: t.TempDir(), SessionID: "sid-g", TermLogPath: "-"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(a.Stop)
+	proc := f.d.reg.Get("seat-g")
+	if proc == nil {
+		t.Fatal("daemon holds no proc")
+	}
+	proc.mu.Lock()
+	proc.alive = false
+	proc.mu.Unlock()
+
+	for range 3 {
+		f.clock.Advance(seatWatchInterval)
+		time.Sleep(20 * time.Millisecond)
+	}
+	waitFor(t, "handle not alive", func() bool { return !a.Alive() })
+	waitFor(t, "gone on tail", func() bool { return len(kinds(tail(), "seat-g")) >= 2 })
+	var gone int
+	for _, k := range kinds(tail(), "seat-g") {
+		if strings.HasPrefix(k, string(broker.EventGone)+"/") {
+			gone++
+		}
+	}
+	if gone != 1 {
+		t.Fatalf("tail for seat-g = %v, want one gone", kinds(tail(), "seat-g"))
+	}
+}

@@ -14,6 +14,8 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/marcelocantos/claudia/internal/broker"
+
 	"github.com/marcelocantos/claudia/internal/tmuxagent"
 )
 
@@ -166,6 +168,16 @@ type Registry struct {
 	// when a daemon listens. The daemon's own registry is direct: it IS
 	// the daemon, and dialling itself would wait on itself.
 	direct bool
+
+	// clock times the seat liveness watch and stamps seat events.
+	clock broker.Clock
+	// Seat lifecycle subscribers (registry_seats.go). seatMu is separate
+	// from mu because subscribers are called while lifecycle operations
+	// that take mu are in flight.
+	seatMu        sync.Mutex
+	seatSubs      map[int64]func(SeatEvent)
+	seatNextID    int64
+	seatWatchStop chan struct{}
 }
 
 // NewRegistry loads or creates an agent registry at the given path.
@@ -177,6 +189,7 @@ func NewRegistry(path string) (*Registry, error) {
 		procs:        make(map[string]*Agent),
 		resumeDenied: make(map[string]error),
 		freshSession: make(map[string]string),
+		clock:        broker.SystemClock{},
 	}
 
 	data, err := os.ReadFile(path)

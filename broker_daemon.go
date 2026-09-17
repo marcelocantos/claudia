@@ -51,8 +51,8 @@ type BrokerDaemonOptions struct {
 	// last stopped.
 	DisableResume bool
 	// RestartNudge is the message sent to a seat the daemon had to relaunch
-	// from its transcript on boot. Empty uses DefaultRestartNudge; "-"
-	// sends nothing.
+	// from its transcript on boot. Empty uses DefaultRestartNudge;
+	// NoRestartNudge ("-") sends nothing.
 	RestartNudge string
 	// ResumeConcurrency bounds how many seats resume at once. Zero means 2.
 	ResumeConcurrency int
@@ -77,12 +77,6 @@ type BrokerDaemonOptions struct {
 	IntelRefresh func(context.Context) error
 }
 
-// DefaultRestartNudge is what a relaunched seat is told on boot.
-const DefaultRestartNudge = "[claudia] The host restarted at %s. This session was resumed from its saved transcript; " +
-	"any tool call, build or process that was running before the restart did not finish. " +
-	"Review where you were and continue the task you were working on. If you were waiting on " +
-	"something (a build, a test, another agent), check its state again before assuming it completed."
-
 // Daemon internals.
 const (
 	// brokerUnownedRingCap is how many events an unowned seat retains for
@@ -94,8 +88,6 @@ const (
 	// brokerPumpSize bounds the per-owner outbound queue. A consumer that
 	// stops reading is detached, not allowed to stall the seat.
 	brokerPumpSize = 1024
-	// brokerMonitorInterval is how often the daemon probes seat liveness.
-	brokerMonitorInterval = 5 * time.Second
 	// grantsFile is the daemon's registry under StateDir.
 	grantsFile = "grants.json"
 	// connOwnedKey is the per-connection list of grant names it owns.
@@ -112,6 +104,8 @@ type BrokerDaemon struct {
 	usage *brokerUsageService
 	path  string
 	mcp   *mcpHost
+	// seatSub is the daemon's subscription to its Registry's seat events.
+	seatSub int64
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -133,7 +127,6 @@ type brokerGrant struct {
 	sub   int64
 	ring  [][]byte
 	lag   bool
-	gone  bool
 	termQ chan []byte
 }
 
@@ -222,9 +215,10 @@ func NewBrokerDaemon(opts BrokerDaemonOptions) (*BrokerDaemon, error) {
 		d.mcp = h
 		log.Info("claudia mcp host listening", "addr", h.Addr())
 	}
-	d.wg.Add(2)
+	reg.clock = clock
+	d.seatSub = reg.SubscribeSeatEvents(d.onSeatEvent)
+	d.wg.Add(1)
 	go func() { defer d.wg.Done(); d.usage.run(d.ctx) }()
-	go func() { defer d.wg.Done(); d.monitor() }()
 	if !opts.DisableIntel {
 		d.wg.Add(1)
 		go func() { defer d.wg.Done(); d.intelLoop() }()
@@ -287,6 +281,7 @@ func (d *BrokerDaemon) maybeIntel(ctx context.Context) {
 // transcripts on the next boot (resumeSeats).
 func (d *BrokerDaemon) Close() error {
 	d.cancel()
+	d.reg.UnsubscribeSeatEvents(d.seatSub)
 	err := d.srv.Close()
 	d.mu.Lock()
 	tasks := d.tasks
@@ -483,7 +478,6 @@ func (d *BrokerDaemon) handleGrant(c *broker.ClientConn, req *broker.Request) {
 			g.proc.UnsubscribeEvents(g.sub)
 		}
 		g.proc = proc
-		g.gone = false
 		g.sub = proc.SubscribeEvents(d.forwarder(name))
 	}
 	if g.owner != nil && g.owner != c {
@@ -948,40 +942,10 @@ func (d *BrokerDaemon) grantList() []broker.GrantStatus {
 	return out
 }
 
-// monitor probes seat liveness and tells owners when a seat goes away.
-func (d *BrokerDaemon) monitor() {
-	for {
-		select {
-		case <-d.ctx.Done():
-			return
-		case <-d.clock.After(brokerMonitorInterval):
-		}
-		d.mu.Lock()
-		var gone []*brokerGrant
-		for _, g := range d.grants {
-			if g.proc != nil && !g.gone && !g.proc.Alive() {
-				g.gone = true
-				gone = append(gone, g)
-			}
-		}
-		d.mu.Unlock()
-		for _, g := range gone {
-			d.log.Warn("seat process gone", "grant", g.name)
-			d.mu.Lock()
-			owner := g.owner
-			d.mu.Unlock()
-			if owner != nil {
-				_ = owner.Reply(&broker.Response{Type: broker.TypeAgentGone, AgentGone: &broker.AgentGoneMessage{Name: g.name, Reason: "process not alive"}})
-			}
-			d.emit(broker.EventMessage{Kind: broker.EventGone, Name: g.name, Detail: "process not alive"})
-		}
-	}
-}
-
 // resumeSeats brings back every seat the daemon held before it last
-// stopped: adopt what is still running (a daemon-only restart), relaunch
-// the rest from their transcripts (a host reboot), and tell the relaunched
-// ones what happened so they pick their work back up.
+// stopped. The work is the Registry's (ResumeAll); the daemon first
+// re-points each seat's hosted MCP at this process's loopback listener,
+// which moved with the restart.
 func (d *BrokerDaemon) resumeSeats() {
 	if d.opts.resumeGate != nil {
 		select {
@@ -990,114 +954,74 @@ func (d *BrokerDaemon) resumeSeats() {
 			return
 		}
 	}
-	var names []string
+	held := 0
 	for _, def := range d.reg.List() {
-		if def.AutoStart {
-			names = append(names, def.Name)
+		if !def.AutoStart {
+			continue
 		}
+		held++
+		d.attachMCP(&def)
+		_ = d.reg.Register(def)
 	}
-	sort.Strings(names)
-	if len(names) == 0 {
+	if held == 0 {
 		return
 	}
-	nudge := d.opts.RestartNudge
-	if nudge == "" {
-		nudge = fmt.Sprintf(DefaultRestartNudge, d.clock.Now().Format(time.RFC3339))
-	}
-	conc := d.opts.ResumeConcurrency
-	if conc <= 0 {
-		conc = 2
-	}
-	d.log.Info("resuming seats held before the last stop", "count", len(names))
-	sem := make(chan struct{}, conc)
-	var wg sync.WaitGroup
-	for _, name := range names {
-		if d.ctx.Err() != nil {
-			break
+	d.log.Info("resuming seats held before the last stop", "count", held)
+	outcomes := d.reg.ResumeAll(d.ctx, &ResumeArgs{
+		Concurrency: d.opts.ResumeConcurrency,
+		Nudge:       d.opts.RestartNudge,
+		Now:         d.clock.Now(),
+	})
+	for _, o := range outcomes {
+		if o.How == ResumeReminted {
+			d.log.Warn("seat conversation unresumable; reminted on a fresh session",
+				"grant", o.Name, "old_session", o.OldSessionID, "new_session", o.Agent.SessionID())
 		}
-		sem <- struct{}{}
-		wg.Add(1)
-		go func(name string) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			d.resumeSeat(name, nudge)
-		}(name)
+		if o.NudgeErr != nil {
+			d.log.Warn("restart nudge failed", "grant", o.Name, "err", o.NudgeErr)
+		}
 	}
-	wg.Wait()
 }
 
-func (d *BrokerDaemon) remintUnresumableSeat(name string) (oldSession, newSession string, err error) {
-	def := d.reg.Def(name)
-	if def == nil {
-		return "", "", fmt.Errorf("remint %s: not registered", name)
-	}
-	oldSession = def.SessionID
-	next := *def
-	next.SessionID = uuid.NewString()
-	next.Materialized = false
-	next.ConnectURL = ""
-	next.ConnectPID = 0
-	d.attachMCP(&next)
-	if err := d.reg.Register(next); err != nil {
-		return oldSession, "", err
-	}
-	d.log.Warn("seat conversation unresumable; reminted on a fresh session",
-		"grant", name, "old_session", oldSession, "new_session", next.SessionID)
-	return oldSession, next.SessionID, nil
-}
-
-func (d *BrokerDaemon) resumeSeat(name, nudge string) {
-	if def := d.reg.Def(name); def != nil {
-		next := *def
-		d.attachMCP(&next)
-		_ = d.reg.Register(next)
-	}
-	proc, err := d.reg.Adopt(name)
-	launched := false
-	how := "adopted"
-	if err != nil {
-		ctx, cancel := context.WithTimeout(d.ctx, grantStartTimeout)
-		proc, err = d.reg.LaunchContext(ctx, name)
-		cancel()
-		launched = true
-		how = "launched"
-	}
-	if err != nil && IsCursorResumeDenied(err) {
-		if _, _, rerr := d.remintUnresumableSeat(name); rerr == nil {
-			ctx, cancel := context.WithTimeout(d.ctx, grantStartTimeout)
-			proc, err = d.reg.LaunchContext(ctx, name)
-			cancel()
-			launched = true
-			how = "reminted"
+// onSeatEvent forwards the Registry's seat lifecycle onto the tail, and
+// takes hold of a resumed seat before it is nudged so the turn the nudge
+// starts is retained for whoever reclaims the seat.
+func (d *BrokerDaemon) onSeatEvent(ev SeatEvent) {
+	switch ev.Kind {
+	case SeatResumed:
+		d.mu.Lock()
+		g := d.grants[ev.Name]
+		if g == nil {
+			g = &brokerGrant{name: ev.Name}
+			d.grants[ev.Name] = g
 		}
-	}
-	if err != nil {
-		d.log.Warn("seat resume failed", "grant", name, "err", err)
-		d.emit(broker.EventMessage{Kind: broker.EventResumeFailed, Name: name, Detail: err.Error()})
-		return
-	}
-	d.mu.Lock()
-	g := d.grants[name]
-	if g == nil {
-		g = &brokerGrant{name: name}
-		d.grants[name] = g
-	}
-	if g.proc != proc {
-		if g.proc != nil && g.sub != 0 {
-			g.proc.UnsubscribeEvents(g.sub)
+		if g.proc != ev.Agent {
+			if g.proc != nil && g.sub != 0 {
+				g.proc.UnsubscribeEvents(g.sub)
+			}
+			g.proc = ev.Agent
+			g.sub = ev.Agent.SubscribeEvents(d.forwarder(ev.Name))
 		}
-		g.proc = proc
-		g.gone = false
-		g.sub = proc.SubscribeEvents(d.forwarder(name))
-	}
-	d.mu.Unlock()
-	d.log.Info("seat resumed", "grant", name, "how", how, "session", proc.SessionID())
-	d.emit(broker.EventMessage{Kind: broker.EventResume, Name: name, SessionID: proc.SessionID(), Detail: how})
-	if launched && nudge != "-" {
-		if err := proc.Send(nudge); err != nil {
-			d.log.Warn("restart nudge failed", "grant", name, "err", err)
-			return
+		d.mu.Unlock()
+		d.log.Info("seat resumed", "grant", ev.Name, "how", ev.How, "session", ev.SessionID)
+		d.emit(broker.EventMessage{Kind: broker.EventResume, Name: ev.Name, SessionID: ev.SessionID, Detail: string(ev.How), At: ev.At})
+	case SeatResumeFailed:
+		d.log.Warn("seat resume failed", "grant", ev.Name, "err", ev.Err)
+		d.emit(broker.EventMessage{Kind: broker.EventResumeFailed, Name: ev.Name, Detail: ev.Err.Error(), At: ev.At})
+	case SeatNudged:
+		d.emit(broker.EventMessage{Kind: broker.EventNudge, Name: ev.Name, At: ev.At})
+	case SeatGone:
+		const reason = "process not alive"
+		d.log.Warn("seat process gone", "grant", ev.Name)
+		d.mu.Lock()
+		var owner *broker.ClientConn
+		if g := d.grants[ev.Name]; g != nil && g.proc == ev.Agent {
+			owner = g.owner
 		}
-		d.emit(broker.EventMessage{Kind: broker.EventNudge, Name: name})
+		d.mu.Unlock()
+		if owner != nil {
+			_ = owner.Reply(&broker.Response{Type: broker.TypeAgentGone, AgentGone: &broker.AgentGoneMessage{Name: ev.Name, Reason: reason}})
+		}
+		d.emit(broker.EventMessage{Kind: broker.EventGone, Name: ev.Name, Detail: reason, At: ev.At})
 	}
 }
