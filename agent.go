@@ -1659,6 +1659,15 @@ func (a *Agent) publishEvent(ev Event) {
 	}
 
 	if class, detail := classifyStuckEvent(ev); class != "" {
+		// The provider just said the plan is exhausted, so every usage
+		// snapshot on the host is wrong until re-read. A broker handle
+		// leaves that to the daemon, whose own agent saw the same event.
+		a.mu.Lock()
+		brokered := a.brokerGrant != ""
+		a.mu.Unlock()
+		if !brokered {
+			invalidatePlanUsage()
+		}
 		stuck := Event{
 			Type:         "system",
 			ProgressType: ProgressStuck,

@@ -20,5 +20,15 @@ func TestMain(m *testing.M) {
 	if os.Getenv(broker.NoBrokerEnv) == "" {
 		_ = os.Setenv(broker.NoBrokerEnv, "1")
 	}
-	os.Exit(m.Run())
+	// Fixtures publish rate-limit errors, and a direct agent that sees one
+	// marks the default plan-usage cache stale (🎯T75.4). Keep that off the
+	// developer's real cache.
+	cache, err := os.MkdirTemp("", "claudia-plan-cache")
+	if err != nil {
+		panic(err)
+	}
+	_ = os.Setenv("CLAUDIA_PLAN_CACHE", cache)
+	code := m.Run()
+	_ = os.RemoveAll(cache)
+	os.Exit(code)
 }

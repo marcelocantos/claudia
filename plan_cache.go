@@ -82,6 +82,15 @@ func LoadPlanUsage(ctx context.Context, args *PlanUsageCacheArgs) ([]PlanUsage, 
 		if !brokerFellThrough(err) {
 			return nil, err
 		}
+		// No daemon: a monitor running in this process is the evaluator
+		// (🎯T75.4), which is how the daemon itself answers.
+		if m := runningPlanUsageMonitor(); m != nil {
+			snap := m.Read(ctx, args.Refresh)
+			if snap.FetchedAt.IsZero() && snap.Err != "" {
+				return nil, fmt.Errorf("plan usage: %s", snap.Err)
+			}
+			return snap.Backends, nil
+		}
 	}
 	ttl := args.TTL
 	if ttl <= 0 {
@@ -376,6 +385,24 @@ func leaseQuiet(path string, stale time.Duration, now time.Time) bool {
 		return true
 	}
 	return now.Sub(doc.Heartbeat) > stale
+}
+
+// markDefaultPlanCacheStale rewrites the default cache's snapshot with a
+// zero FetchedAt: its backends stay as the fallback LoadPlanUsage returns
+// when a fetch fails or times out, but no reader treats it as current.
+// Best-effort; a missing snapshot or directory has nothing to invalidate.
+func markDefaultPlanCacheStale() {
+	dir, err := planCacheDir("")
+	if err != nil {
+		return
+	}
+	path := filepath.Join(dir, planCacheSnapshotFile)
+	snap, err := readPlanSnapshot(path)
+	if err != nil || snap == nil || snap.FetchedAt.IsZero() {
+		return
+	}
+	snap.FetchedAt = time.Time{}
+	_ = writePlanSnapshot(path, *snap)
 }
 
 // errNoPlanCache is reserved for tests that want a distinct miss.

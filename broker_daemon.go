@@ -101,7 +101,7 @@ type BrokerDaemon struct {
 	clock broker.Clock
 	reg   *Registry
 	srv   *broker.Server
-	usage *brokerUsageService
+	usage *PlanUsageMonitor
 	path  string
 	// stateDir is the resolved state directory. opts.StateDir is empty on a
 	// default serve and must not be read after construction.
@@ -190,16 +190,18 @@ func NewBrokerDaemon(opts BrokerDaemonOptions) (*BrokerDaemon, error) {
 	}
 	d.ctx, d.cancel = context.WithCancel(context.Background())
 	d.resumeDone = make(chan struct{})
-	d.usage = newBrokerUsageService(clock, opts.UsageTTL, opts.UsageFetch)
-	d.usage.onUpdate = func(fetched []PlanUsage, err error) {
-		if err != nil {
-			d.log.Warn("plan usage fetch failed", "err", err)
-			return
-		}
-		for _, u := range fetched {
-			d.emit(broker.EventMessage{Kind: broker.EventUsageUpdate, Detail: string(u.Provider)})
-		}
-	}
+	d.usage = NewPlanUsageMonitor(&PlanUsageMonitorArgs{
+		TTL: opts.UsageTTL, Fetch: opts.UsageFetch, Clock: clock,
+		OnUpdate: func(fetched []PlanUsage, err error) {
+			if err != nil {
+				d.log.Warn("plan usage fetch failed", "err", err)
+				return
+			}
+			for _, u := range fetched {
+				d.emit(broker.EventMessage{Kind: broker.EventUsageUpdate, Detail: string(u.Provider)})
+			}
+		},
+	})
 	srv, err := broker.Serve(&broker.ServeArgs{Listener: ln, Clock: clock, Handler: d})
 	if err != nil {
 		_ = ln.Close()
@@ -222,7 +224,7 @@ func NewBrokerDaemon(opts BrokerDaemonOptions) (*BrokerDaemon, error) {
 	reg.clock = clock
 	d.seatSub = reg.SubscribeSeatEvents(d.onSeatEvent)
 	d.wg.Add(1)
-	go func() { defer d.wg.Done(); d.usage.run(d.ctx) }()
+	go func() { defer d.wg.Done(); d.usage.Run(d.ctx) }()
 	if !opts.DisableIntel {
 		d.wg.Add(1)
 		go func() {
@@ -316,10 +318,10 @@ func (d *BrokerDaemon) HandleRequest(c *broker.ClientConn, req *broker.Request) 
 	case broker.TypeTaskCancel:
 		d.handleTaskCancel(c, req)
 	case broker.TypeUsage:
-		usage, at, lastErr := d.usage.read(d.ctx, req.Usage.Refresh)
-		raw, _ := json.Marshal(usage)
+		snap := d.usage.Read(d.ctx, req.Usage.Refresh)
+		raw, _ := json.Marshal(snap.Backends)
 		_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeUsageResult,
-			Usage: &broker.UsageResponse{FetchedAt: at, Backends: raw, Error: lastErr}})
+			Usage: &broker.UsageResponse{FetchedAt: snap.FetchedAt, Backends: raw, Error: snap.Err}})
 	case broker.TypeResolve:
 		d.handleResolve(c, req)
 	case broker.TypeStatus:
@@ -514,10 +516,9 @@ func (d *BrokerDaemon) forwarder(name string) EventFunc {
 	return func(ev Event) {
 		if ev.Type == "system" && ev.ProgressType == ProgressStuck {
 			// Synthesized by the daemon-side Agent from the event before
-			// it; the consumer's Agent synthesizes its own from the same
-			// event, so forwarding this one would double it. It is,
-			// however, the signal that the usage snapshot is stale.
-			d.usage.invalidate()
+			// it, which also invalidated the daemon's usage monitor; the
+			// consumer's Agent synthesizes its own from the same event,
+			// so forwarding this one would double it.
 			return
 		}
 		raw, err := encodeEventWire(ev)
@@ -865,7 +866,7 @@ func (d *BrokerDaemon) handleResolve(c *broker.ClientConn, req *broker.Request) 
 		_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeMalformed, Field: "predicates", Msg: err.Error()})
 		return
 	}
-	usage, _, _ := d.usage.read(d.ctx, false)
+	usage := d.usage.Read(d.ctx, false).Backends
 	if usage == nil {
 		usage = []PlanUsage{}
 	}
@@ -884,7 +885,7 @@ func (d *BrokerDaemon) handleResolve(c *broker.ClientConn, req *broker.Request) 
 }
 
 func (d *BrokerDaemon) handleStatus(c *broker.ClientConn, req *broker.Request) {
-	_, at, _ := d.usage.read(d.ctx, false)
+	at := d.usage.Read(d.ctx, false).FetchedAt
 	d.mu.Lock()
 	tasks := len(d.tasks)
 	d.mu.Unlock()
