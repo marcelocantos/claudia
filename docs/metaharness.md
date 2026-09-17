@@ -2,10 +2,10 @@
 
 Status: design record for the 🎯T2 reframe (owner decision, 2026-09-12).
 First implementation landed the same day: `claudia broker serve`
-(`broker_daemon.go`), the grant wire (`internal/broker/wire_grants.go`),
+(now package `daemon`), the grant wire (`internal/broker/wire_grants.go`),
 the socket-backed Session and Task backends (`broker_agent.go`,
-`broker_task.go`), and the daemon's usage evaluator
-(`broker_daemon_usage.go`). Operator surface: `cmd/claudia`.
+`broker_task.go`), and the usage evaluator (now `PlanUsageMonitor`,
+`plan_usage_monitor.go`). Operator surface: `cmd/claudia`.
 It follows on from [plan-usage.md](plan-usage.md) (🎯T61) and
 [broker-oracles.md](broker-oracles.md) (🎯T2.8).
 
@@ -28,12 +28,54 @@ library cannot do.
 |---|---|---|
 | Plan usage is host-global | 🎯T61's flock+TTL cache stops five processes hitting vendor endpoints, but the evaluator still runs inside whichever client won the flock. That client can stall the host picture, stampede a refresh, die mid-fetch, and cannot invalidate on a 429 it never saw. | 🎯T2.9 |
 | Consumer upgrade without a fleet bounce | Jevons pays for the inverse: a daemon-path rebuild restarts `jevonsd`, then T171 rehydrates POs and workers and the fleet is amnesiac rather than dead. Only Claude (tmux) and Grok (connect-mode `serve`) can be re-adopted; Cursor `agent acp` and `codex app-server` are stdio children and die with the consumer (`registry.go` `startLifecycle`, adopt switch → `ErrNoSessionWindow`). | 🎯T2.11 |
-| Standing contract on a seat | A process owner can keep "this grant satisfies these predicates, including has-tokens" true. A library that switches model mid-call surprises every consumer that is not the fleet, so the library never auto-actuates. | 🎯T2.12 |
+| Standing contract on a seat | A process owner can keep "this grant satisfies these predicates, including has-tokens" true for every consumer at once. A library that switched model mid-call unasked would surprise every consumer that is not the fleet, so in the library the policy is opt-in (🎯T75). | 🎯T2.12 |
 
 The cache in 🎯T61 is the brokerless fallback for the first row. It is
 not the architecture.
 
+## Library first (🎯T75, owner 2026-09-17)
+
+Some applications embed claudia as a library with no daemon, so the
+split below is a split of *scope*, not of *code*. Everything that can
+feasibly be implemented in the library is, future work included, and the
+daemon exposes it by pass-through.
+
+What only a server gives, and so stays in `claudia/daemon`:
+
+- the socket and the wire (`internal/broker`);
+- one owner per seat at a time (`grant_held`, `not_owner`);
+- a seat that outlives its consumer, with the in-flight stream retained
+  for whoever reclaims it by name;
+- one usage evaluator for the whole host;
+- service install and the `claudia broker` CLI.
+
+Everything else is library API the daemon calls:
+
+| Capability | Library | Daemon's part |
+|---|---|---|
+| Seat resume after a restart, nudge, remint | `Registry.ResumeAll` | calls it on boot, maps outcomes onto the tail |
+| Seat lifecycle events, liveness watch | `Registry.SubscribeSeatEvents` | forwards to the tail and to the owner (`agent_gone`) |
+| Migrate persistence | `Registry` records `Migrate` on its seats | nothing |
+| Rewind | `Registry.Rewind` | `rewind` op, moves the grant's subscription |
+| Plan-usage monitor, 429 invalidation | `PlanUsageMonitor`, invalidation on a direct agent's stuck event | runs one instance host-wide |
+| MCP hosting | `MCPHost`, `Registry.SetMCPHost` | runs one host, sets `jevonsmcp` as consumer-owned |
+| Model-intel refresh | `RunModelIntelRefresher` | runs it |
+| Goal completeness | `Config.GoalCompleteCheck` | asks the owning handle (`goal_check`) |
+| Task raw lines | `Task.SetRawLog` | pushes `task_raw` |
+| Warm pool | `AcquireDirect` / `Agent.Release` | runs the pool for every consumer (`grant.pool`) |
+
+Auto-actuating policy not yet built (rebind 🎯T2.12, AIMD 🎯T2.2, reaping
+🎯T2.5, preemption 🎯T2.6, cost 🎯T2.4, adaptive pool 🎯T2.3) is library
+code too: opt-in and off by default in direct mode, switched on by the
+daemon for the seats it holds.
+
+The boundary is structural: the daemon is a separate package that
+compiles only against exported API, and `make gate` fails if it imports
+any other package of this module (`daemon/imports_test.go`).
+
 ## Responsibility split
+
+Scope, per the section above: the mechanism in each row is library code.
 
 | | Daemon (metaharness) | Client (Jevons, YTT, …) |
 |---|---|---|
@@ -115,8 +157,10 @@ tell: tools run inside the harness Claudia started. Claudia routes
   reason.
 - Pinned grant → never rebound. No satisfiable candidate → `stuck`
   Event with `StuckClass`, Send refused with a typed error.
-- Library path (no socket) → never rebinds. Same predicates, hot band:
-  publishes `stuck`, does not switch.
+- The mechanism is library code (🎯T75). It is opt-in and off by
+  default in direct mode: a library application that has not enabled it
+  never has its model switched (same predicates, hot band → `stuck`, no
+  switch). The daemon enables it for the grants it holds.
 - `AgentLifecycle.tla` gains a Rebind action: ownership unchanged,
   backend identity changes, no Send lost or duplicated, no rebind while
   a turn is open. A mutant that rebinds mid-turn must be caught.
@@ -142,8 +186,10 @@ the direct path. 🎯T47.6 (probe-then-ignore) is subsumed when 🎯T3 lands.
 
 ## What does not change
 
-- Direct mode stays a fully supported path (🎯T3, 🎯T13). No socket or
-  `CLAUDIA_NO_BROKER=1` → today's behaviour, no auto-rebind.
+- Direct mode stays a fully supported path with the same capabilities
+  (🎯T3, 🎯T13, 🎯T75). No socket, `CLAUDIA_NO_BROKER=1`, or
+  `SetDirect` / `StartDirect` / `AcquireDirect` → in-process; no
+  auto-actuation unless the application enables it.
 - 🎯T2.8's seams still gate every policy path: Clock, BackpressureSource,
   the brokertest fake. Usage refresh and rebind read time and 429s only
   through them.
@@ -166,9 +212,9 @@ the daemon present it no longer stops or reaps seats on its own exit.
 - Upgrading the daemon itself still bounces the fleet unless the daemon
   can detach from its children. The win is making that bounce rare:
   Claudia's wire changes slowly; consumer policy does not.
-- 🎯T2.3 (warm pool) is written as a tmux mechanism and needs a
-  provider-neutral restatement or an explicit Claude-only scope before
-  it is built.
+- The warm pool is still a Claude tmux mechanism. 🎯T64 serves it
+  through the daemon as it is; 🎯T2.3 generalises the library pool, and
+  🎯T78 makes a pooled agent publish its turn events.
 
 ## Handoff (2026-09-12, end of session)
 
