@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -68,6 +69,9 @@ type BrokerDaemonOptions struct {
 	DisableMCPHost bool
 	// MCPListenAddr overrides the MCP loopback bind (default 127.0.0.1:0).
 	MCPListenAddr string
+	// MCPConsumerOwnedPrefixes names MCP servers (by name prefix) the host
+	// leaves on the consumer's URL. Nil keeps jevonsmcp*; empty hosts all.
+	MCPConsumerOwnedPrefixes []string
 	// IntelInterval is how often the daemon refreshes model intel.
 	// Zero uses DefaultModelIntelInterval (24h).
 	IntelInterval time.Duration
@@ -106,7 +110,7 @@ type BrokerDaemon struct {
 	// stateDir is the resolved state directory. opts.StateDir is empty on a
 	// default serve and must not be read after construction.
 	stateDir string
-	mcp      *mcpHost
+	mcp      *MCPHost
 	// seatSub is the daemon's subscription to its Registry's seat events.
 	seatSub int64
 
@@ -211,16 +215,25 @@ func NewBrokerDaemon(opts BrokerDaemonOptions) (*BrokerDaemon, error) {
 	}
 	d.srv = srv
 	if !opts.DisableMCPHost {
-		h, err := newMCPHost(mcpHostOptions{
-			StateDir:   stateDir,
-			ListenAddr: opts.MCPListenAddr,
-			Logger:     func(msg string, args ...any) { log.Warn(msg, args...) },
+		var seeds []string
+		if home, err := os.UserHomeDir(); err == nil {
+			// Jevons owned MCP connections before the daemon did; its tokens
+			// seed an empty store so Atlassian and friends do not re-prompt.
+			seeds = append(seeds, filepath.Join(home, ".jevons"))
+		}
+		h, err := NewMCPHost(&MCPHostArgs{
+			StateDir:      stateDir,
+			ListenAddr:    opts.MCPListenAddr,
+			ConsumerOwned: consumerOwnedByPrefix(opts.MCPConsumerOwnedPrefixes),
+			SeedStateDirs: seeds,
+			Logger:        func(msg string, args ...any) { log.Warn(msg, args...) },
 		})
 		if err != nil {
 			_ = srv.Close()
 			return nil, fmt.Errorf("broker daemon: mcp host: %w", err)
 		}
 		d.mcp = h
+		reg.SetMCPHost(h)
 		log.Info("claudia mcp host listening", "addr", h.Addr())
 	}
 	reg.clock = clock
@@ -286,14 +299,27 @@ func (d *BrokerDaemon) Close() error {
 	return err
 }
 
-// attachMCP rewrites owner-map MCPServers onto the daemon's loopback
-// host (🎯T2.16). No-op without a host or an empty list.
-func (d *BrokerDaemon) attachMCP(def *AgentDef) {
-	if d == nil || d.mcp == nil || def == nil {
-		return
+// consumerOwnedByPrefix is the daemon's MCPHostArgs.ConsumerOwned: a server
+// whose name starts with one of prefixes (case-insensitive) stays on the
+// consumer's URL.
+func consumerOwnedByPrefix(prefixes []string) func(MCPServer) bool {
+	if prefixes == nil {
+		prefixes = defaultMCPConsumerOwnedPrefixes
 	}
-	def.MCPServers = d.mcp.Attach(def.MCPServers)
+	return func(s MCPServer) bool {
+		name := strings.ToLower(strings.TrimSpace(s.Name))
+		for _, p := range prefixes {
+			if p != "" && strings.HasPrefix(name, strings.ToLower(p)) {
+				return true
+			}
+		}
+		return false
+	}
 }
+
+// defaultMCPConsumerOwnedPrefixes keeps Jevons's own MCP server (served by
+// jevonsd for each consumer) on the consumer's URL.
+var defaultMCPConsumerOwnedPrefixes = []string{"jevonsmcp"}
 
 func (d *BrokerDaemon) emit(ev broker.EventMessage) {
 	if ev.At.IsZero() {
@@ -433,7 +459,6 @@ func (d *BrokerDaemon) handleGrant(c *broker.ClientConn, req *broker.Request) {
 			def.GrokConnect = def.GrokConnect || existing.GrokConnect
 		}
 	}
-	d.attachMCP(&def)
 	if err := d.reg.Register(def); err != nil && !errors.Is(err, ErrLifecycleInProgress) {
 		_ = c.Fail(req.ID, err)
 		return
@@ -1037,9 +1062,9 @@ func (d *BrokerDaemon) grantList() []broker.GrantStatus {
 }
 
 // resumeSeats brings back every seat the daemon held before it last
-// stopped. The work is the Registry's (ResumeAll); the daemon first
-// re-points each seat's hosted MCP at this process's loopback listener,
-// which moved with the restart.
+// stopped. The work is the Registry's (ResumeAll), including attaching each
+// seat's MCP to this process's host, whose loopback listener moved with the
+// restart.
 func (d *BrokerDaemon) resumeSeats() {
 	if d.opts.resumeGate != nil {
 		select {
@@ -1050,12 +1075,9 @@ func (d *BrokerDaemon) resumeSeats() {
 	}
 	held := 0
 	for _, def := range d.reg.List() {
-		if !def.AutoStart {
-			continue
+		if def.AutoStart {
+			held++
 		}
-		held++
-		d.attachMCP(&def)
-		_ = d.reg.Register(def)
 	}
 	if held == 0 {
 		return

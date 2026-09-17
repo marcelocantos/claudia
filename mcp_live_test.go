@@ -8,9 +8,12 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // Live 🎯T40: LoadMCP reads the real Claude user map (mnemo is assumed
@@ -156,4 +159,81 @@ func liveMnemoDirectURL() string {
 		return ""
 	}
 	return url
+}
+
+// TestMCPHostLiveSeatsSeeMnemo is 🎯T75.5's live gate: a Registry with an
+// in-process MCPHost and no daemon starts a real seat whose mnemo server is
+// attached through the host's loopback proxy, and the seat lists mnemo's
+// tools, which only works if initialize and tools/list crossed the host.
+func TestMCPHostLiveSeatsSeeMnemo(t *testing.T) {
+	cases := []struct {
+		name  string
+		gate  string
+		def   AgentDef
+		found func() error
+	}{
+		{"claude", "CLAUDIA_LIVE", AgentDef{Provider: ProviderClaude, Model: "haiku"}, func() error { _, err := exec.LookPath("claude"); return err }},
+		{"grok", "CLAUDIA_GROK_LIVE", AgentDef{Provider: ProviderGrok}, func() error { _, err := resolveGrokBin(); return err }},
+		{"codex", "CLAUDIA_CODEX_LIVE", AgentDef{Provider: ProviderCodex}, func() error { _, err := resolveCodexBin(); return err }},
+		{"cursor", "CLAUDIA_CURSOR_LIVE", AgentDef{Provider: ProviderCursor}, func() error { _, err := resolveCursorBin(); return err }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if os.Getenv(tc.gate) == "" {
+				t.Skipf("%s not set", tc.gate)
+			}
+			if err := tc.found(); err != nil {
+				t.Skip(err)
+			}
+			mnemo := MCPServer{Name: "mnemo", Type: "http", URL: liveMnemoDirectURL()}
+			if mnemo.URL == "" {
+				t.Skip("no local mnemo daemon on 127.0.0.1:19419")
+			}
+			host, err := NewMCPHost(&MCPHostArgs{StateDir: t.TempDir()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer host.Close()
+			reg, err := NewRegistry(filepath.Join(t.TempDir(), "agents.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			reg.SetMCPHost(host)
+			def := tc.def
+			def.Name, def.WorkDir, def.TermLogPath = "hosted-"+tc.name, t.TempDir(), "-"
+			def.SessionID = uuid.NewString()
+			def.MCPServers, def.MCPExclusive = []MCPServer{mnemo}, true
+			if err := reg.Register(def); err != nil {
+				t.Fatal(err)
+			}
+			agent, err := reg.Launch(def.Name)
+			if err != nil {
+				t.Fatalf("Launch: %v", err)
+			}
+			defer reg.StopAll()
+			agent.mu.Lock()
+			started := agent.startCfg.MCPServers
+			agent.mu.Unlock()
+			if len(started) != 1 || !strings.HasPrefix(started[0].URL, "http://"+host.Addr()+"/upstream/") {
+				t.Fatalf("seat was not started on the host's URL: %+v", started)
+			}
+			if err := agent.WaitReady(t.Context()); err != nil {
+				t.Fatalf("WaitReady: %v", err)
+			}
+			if err := agent.Send("List your MCP tool names. If any name contains mnemo, reply with exactly: MNEMO-OK"); err != nil {
+				t.Fatalf("Send: %v", err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+			defer cancel()
+			reply, err := agent.WaitForResponse(ctx)
+			if err != nil {
+				t.Fatalf("WaitForResponse: %v", err)
+			}
+			compact := strings.ToLower(strings.Join(strings.Fields(reply), ""))
+			if !strings.Contains(compact, "mnemo-ok") && !strings.Contains(compact, "mcp__mnemo") {
+				t.Fatalf("reply does not show mnemo attached through the host: %q", reply)
+			}
+			t.Logf("hosted mnemo reply: %q (host %s)", reply, host.Addr())
+		})
+	}
 }

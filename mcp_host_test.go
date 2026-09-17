@@ -39,9 +39,10 @@ func moduleRoot(t *testing.T) string {
 	return wd
 }
 
-func testMCPHost(t *testing.T) *mcpHost {
+func testMCPHost(t *testing.T) *MCPHost {
 	t.Helper()
-	h, err := newMCPHost(mcpHostOptions{StateDir: t.TempDir(), ListenAddr: "127.0.0.1:0"})
+	h, err := NewMCPHost(&MCPHostArgs{StateDir: t.TempDir(), ListenAddr: "127.0.0.1:0",
+		ConsumerOwned: consumerOwnedByPrefix(nil)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,5 +179,83 @@ func TestDirectModeDoesNotRewriteMCP(t *testing.T) {
 	got := direct.request(t).Config.MCPServers
 	if len(got) != 1 || got[0].Command != bin || got[0].URL != "" {
 		t.Fatalf("direct mode rewrote MCP: %+v", got)
+	}
+}
+
+// TestRegistryMCPHostSharesOneStdioProcessWithoutDaemon (🎯T75.5): two seats
+// a direct-mode Registry starts, naming the same stdio recipe, both reach
+// one hosted process; the persisted definitions keep the recipe, not the
+// loopback URL, so a later host can attach them again.
+func TestRegistryMCPHostSharesOneStdioProcessWithoutDaemon(t *testing.T) {
+	bin := buildMCPStdioFixture(t)
+	f := newSeatFixture(t)
+	f.open(t, []AgentDef{
+		{Name: "one", WorkDir: t.TempDir(), SessionID: "sid-1", MCPServers: []MCPServer{{Name: "fixture", Command: bin}}},
+		{Name: "two", WorkDir: t.TempDir(), SessionID: "sid-2", MCPServers: []MCPServer{{Name: "fixture", Command: bin}}},
+	})
+	h := testMCPHost(t)
+	f.reg.SetMCPHost(h)
+	for _, name := range []string{"one", "two"} {
+		if _, err := f.reg.Launch(name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	urls := map[string]bool{}
+	for _, name := range []string{"one", "two"} {
+		f.mu.Lock()
+		req := f.backends[name].request(t)
+		f.mu.Unlock()
+		got := req.Config.MCPServers
+		if len(got) != 1 || got[0].Command != "" || !strings.HasSuffix(got[0].URL, "/upstream/fixture") {
+			t.Fatalf("%s started with %+v, want the hosted URL", name, got)
+		}
+		urls[got[0].URL] = true
+		if def := f.reg.Def(name); def.MCPServers[0].Command != bin || def.MCPServers[0].URL != "" {
+			t.Fatalf("%s definition was rewritten: %+v", name, def.MCPServers)
+		}
+	}
+	if len(urls) != 1 {
+		t.Fatalf("seats reach different hosted URLs: %v", urls)
+	}
+	h.mu.Lock()
+	n := len(h.stdio)
+	h.mu.Unlock()
+	if n != 1 {
+		t.Fatalf("hosted stdio backends = %d, want 1 shared", n)
+	}
+}
+
+// TestMCPHostCarriesNoConsumerNames (🎯T75.5, 🎯T13): with no ConsumerOwned
+// option the library hosts a server whatever it is called; leaving
+// jevonsmcp on the caller's URL is the daemon's configuration.
+func TestMCPHostCarriesNoConsumerNames(t *testing.T) {
+	h, err := NewMCPHost(&MCPHostArgs{StateDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = h.Close() })
+	got := h.Attach([]MCPServer{{Name: "jevonsmcp", Type: "http", URL: "http://127.0.0.1:13705/mcp"}})
+	if !strings.HasSuffix(got[0].URL, "/upstream/jevonsmcp") {
+		t.Fatalf("library host special-cased a consumer name: %+v", got[0])
+	}
+	if _, err := NewMCPHost(&MCPHostArgs{}); err == nil {
+		t.Fatal("a host without a state directory must be refused")
+	}
+}
+
+// TestMCPHostSeedsEmptyStoresFromPreviousOwner: an empty token store is
+// seeded from the first seed directory that has one.
+func TestMCPHostSeedsEmptyStoresFromPreviousOwner(t *testing.T) {
+	seed := t.TempDir()
+	if err := os.WriteFile(filepath.Join(seed, mcpTokensFile), []byte(`{"atlassian":{"AccessToken":"tok"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h, err := NewMCPHost(&MCPHostArgs{StateDir: t.TempDir(), SeedStateDirs: []string{filepath.Join(t.TempDir(), "absent"), seed}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = h.Close() })
+	if tok := h.tokens.Get("atlassian"); tok == nil || tok.AccessToken != "tok" {
+		t.Fatalf("token store not seeded: %+v", tok)
 	}
 }

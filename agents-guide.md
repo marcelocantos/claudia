@@ -239,16 +239,27 @@ tokens are returned to the caller. `RefreshMCPToken` exchanges a
 stored refresh_token without a browser.
 
 HTTP MCP proxy (🎯T43) remains an `http.Handler` (`NewMCPProxy`) for
-hosts that still mount it themselves. On the daemon path (🎯T2.16)
-`claudia broker serve` is that host: it listens on loopback, proxies
-HTTP remotes, keeps one stdio process per server recipe, persists
-OAuth tokens under the claudia state directory (seeded from
-`~/.jevons` when empty), and rewrites a grant's owner-map
-`MCPServers` to `http://<mcp.addr>/upstream/<name>`. Consumer servers
-named `jevonsmcp*` keep the caller's URL. Direct mode (no socket /
-`CLAUDIA_NO_BROKER=1`) does not rewrite — today's attach list is the
-fallback. A different recipe under an already-hosted name is left
-unrewritten so an isolate cannot steal the daily backend.
+hosts that still mount it themselves. `MCPHost` owns MCP connections
+for many seats: it listens on loopback, proxies HTTP remotes, keeps one
+stdio process per server recipe, persists OAuth tokens under its state
+directory, and `Attach` rewrites servers to
+`http://<addr>/upstream/<name>`. A different recipe under an
+already-hosted name is left unrewritten so an isolate cannot steal the
+daily backend.
+
+```go
+host, err := claudia.NewMCPHost(&claudia.MCPHostArgs{StateDir: dir})
+reg.SetMCPHost(host) // seats reg starts in-process attach through host
+// or, without a Registry: cfg.MCPServers = host.Attach(cfg.MCPServers)
+```
+
+`MCPHostArgs.ConsumerOwned` names servers to leave on the caller's URL;
+`SeedStateDirs` seeds empty token/upstream stores from a previous
+owner. Attaching is opt-in: a Registry without a host, and `Start`,
+pass servers through unchanged. On the daemon path (🎯T2.16)
+`claudia broker serve` runs one host for every seat it holds, keeps
+`jevonsmcp*` on the caller's URL (`BrokerDaemonOptions.MCPConsumerOwnedPrefixes`),
+and seeds from `~/.jevons`.
 
 Pass `SessionID` to attempt `session/load`. A materialized resume
 (`RequireResume`) never mints a replacement session: load failure is an

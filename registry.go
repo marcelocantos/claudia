@@ -171,6 +171,9 @@ type Registry struct {
 
 	// clock times the seat liveness watch and stamps seat events.
 	clock broker.Clock
+	// mcpHost, when set, attaches the MCP servers of seats started in this
+	// process. Guarded by mu.
+	mcpHost *MCPHost
 	// Seat lifecycle subscribers (registry_seats.go). seatMu is separate
 	// from mu because subscribers are called while lifecycle operations
 	// that take mu are in flight.
@@ -216,6 +219,17 @@ func (r *Registry) save() error {
 		return err
 	}
 	return os.WriteFile(r.path, data, 0o644)
+}
+
+// SetMCPHost makes seats this Registry starts in-process reach their MCP
+// servers through h: stdio servers run once in h and are shared by every
+// seat naming the same recipe, and HTTP remotes are proxied with h's OAuth
+// tokens (🎯T75.5). Nil detaches. Seats held by a claudia daemon use the
+// daemon's host instead.
+func (r *Registry) SetMCPHost(h *MCPHost) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.mcpHost = h
 }
 
 // Register adds or updates an agent definition and persists the registry.
@@ -350,6 +364,17 @@ func (r *Registry) startHeld(ctx context.Context, op *registryLifecycle, name st
 			adopt, started = false, true
 		} else {
 			proc, err = nil, nil
+		}
+	}
+	if proc == nil && err == nil {
+		// Starting in this process: seats reach MCP through this
+		// Registry's host when it has one (🎯T75.5). The definition keeps
+		// the servers as registered, so a later host can attach them again.
+		r.mu.Lock()
+		host := r.mcpHost
+		r.mu.Unlock()
+		if host != nil {
+			cfg.MCPServers = host.Attach(cfg.MCPServers)
 		}
 	}
 	if proc == nil && err == nil && adopt {

@@ -15,19 +15,23 @@ import (
 	"sync"
 )
 
-// mcpHost is the daemon's MCP connection owner (🎯T2.16). It listens on
-// loopback, proxies HTTP remotes, keeps one stdio process per recipe, and
-// rewrites a grant's MCPServers to those loopback URLs. Consumer servers
-// named jevonsmcp* stay on the caller's URL.
-type mcpHost struct {
-	publicBase string
-	addr       string
-	ln         net.Listener
-	srv        *http.Server
-	proxy      *MCPProxy
-	tokens     *mcpTokenStore
-	upstreams  *mcpUpstreamStore
-	log        func(string, ...any)
+// MCPHost owns MCP connections for the seats attached to it (🎯T2.16,
+// 🎯T75.5). It listens on loopback, proxies HTTP remotes (with OAuth tokens
+// kept under its state directory), runs one stdio process per recipe, and
+// rewrites a seat's MCPServers to its loopback URLs, so ten seats naming the
+// same stdio server share one process instead of spawning ten. The daemon
+// runs one for the host; an application that embeds claudia can run its own
+// and attach seats with [Registry.SetMCPHost] or [MCPHost.Attach].
+type MCPHost struct {
+	publicBase    string
+	addr          string
+	ln            net.Listener
+	srv           *http.Server
+	proxy         *MCPProxy
+	tokens        *mcpTokenStore
+	upstreams     *mcpUpstreamStore
+	log           func(string, ...any)
+	consumerOwned func(MCPServer) bool
 
 	mu     sync.Mutex
 	stdio  map[string]*mcpStdioBackend
@@ -45,13 +49,32 @@ func (a mcpRecipe) equal(b mcpRecipe) bool {
 	return a.kind == b.kind && a.command == b.command && a.args == b.args && a.url == b.url
 }
 
-type mcpHostOptions struct {
-	StateDir   string
-	ListenAddr string // default 127.0.0.1:0
-	Logger     func(string, ...any)
+// MCPHostArgs configures [NewMCPHost].
+type MCPHostArgs struct {
+	// StateDir holds OAuth tokens, remembered upstream URLs and mcp.addr.
+	// Required.
+	StateDir string
+	// ListenAddr is the loopback bind. Empty is 127.0.0.1 on a free port.
+	ListenAddr string
+	// ConsumerOwned reports servers the host must leave on the caller's
+	// URL: ones the consumer serves itself and wants each seat to reach
+	// directly. Nil hosts every server it can.
+	ConsumerOwned func(MCPServer) bool
+	// SeedStateDirs are state directories of a previous owner. When this
+	// host's token or upstream store is empty it is seeded from the first
+	// of these that has one, so moving ownership does not re-prompt OAuth.
+	SeedStateDirs []string
+	// Logger receives serve errors. Nil discards them.
+	Logger func(msg string, args ...any)
 }
 
-func newMCPHost(opts mcpHostOptions) (*mcpHost, error) {
+// NewMCPHost starts listening. Close stops the listener and every hosted
+// stdio process.
+func NewMCPHost(args *MCPHostArgs) (*MCPHost, error) {
+	if args == nil || strings.TrimSpace(args.StateDir) == "" {
+		return nil, fmt.Errorf("mcp host: StateDir is required")
+	}
+	opts := args
 	addr := strings.TrimSpace(opts.ListenAddr)
 	if addr == "" {
 		addr = "127.0.0.1:0"
@@ -70,12 +93,12 @@ func newMCPHost(opts mcpHostOptions) (*mcpHost, error) {
 		host = "127.0.0.1"
 	}
 	publicBase := "http://" + net.JoinHostPort(host, port)
-	tokens, err := openMCPTokenStore(filepath.Join(opts.StateDir, "mcp_oauth_tokens.json"))
+	tokens, err := openMCPTokenStore(filepath.Join(opts.StateDir, mcpTokensFile), opts.SeedStateDirs)
 	if err != nil {
 		_ = ln.Close()
 		return nil, err
 	}
-	upstreams, err := openMCPUpstreamStore(filepath.Join(opts.StateDir, "mcp_upstreams.json"))
+	upstreams, err := openMCPUpstreamStore(filepath.Join(opts.StateDir, mcpUpstreamsFile), opts.SeedStateDirs)
 	if err != nil {
 		_ = ln.Close()
 		return nil, err
@@ -92,16 +115,17 @@ func newMCPHost(opts mcpHostOptions) (*mcpHost, error) {
 	for name, tok := range tokens.all() {
 		_ = proxy.SetToken(name, &tok)
 	}
-	h := &mcpHost{
-		publicBase: publicBase,
-		addr:       net.JoinHostPort(host, port),
-		ln:         ln,
-		proxy:      proxy,
-		tokens:     tokens,
-		upstreams:  upstreams,
-		log:        opts.Logger,
-		stdio:      map[string]*mcpStdioBackend{},
-		recipe:     map[string]mcpRecipe{},
+	h := &MCPHost{
+		publicBase:    publicBase,
+		addr:          net.JoinHostPort(host, port),
+		ln:            ln,
+		proxy:         proxy,
+		tokens:        tokens,
+		upstreams:     upstreams,
+		log:           opts.Logger,
+		consumerOwned: opts.ConsumerOwned,
+		stdio:         map[string]*mcpStdioBackend{},
+		recipe:        map[string]mcpRecipe{},
 	}
 	if h.log == nil {
 		h.log = func(string, ...any) {}
@@ -112,15 +136,15 @@ func newMCPHost(opts mcpHostOptions) (*mcpHost, error) {
 			h.log("mcp host serve", "err", err)
 		}
 	}()
-	if opts.StateDir != "" {
-		_ = os.WriteFile(filepath.Join(opts.StateDir, "mcp.addr"), []byte(h.addr+"\n"), 0o644)
-	}
+	_ = os.WriteFile(filepath.Join(opts.StateDir, "mcp.addr"), []byte(h.addr+"\n"), 0o644)
 	return h, nil
 }
 
-func (h *mcpHost) Addr() string { return h.addr }
+// Addr is the loopback address the host listens on.
+func (h *MCPHost) Addr() string { return h.addr }
 
-func (h *mcpHost) Close() error {
+// Close stops the listener and every hosted stdio process.
+func (h *MCPHost) Close() error {
 	h.mu.Lock()
 	for _, b := range h.stdio {
 		b.close()
@@ -136,9 +160,12 @@ func (h *mcpHost) Close() error {
 	return nil
 }
 
-// Attach rewrites hosted owner-map servers to this process's loopback
-// URLs. jevonsmcp* and a same-name different recipe are left alone.
-func (h *mcpHost) Attach(servers []MCPServer) []MCPServer {
+// Attach returns servers with each one this host can serve rewritten to its
+// loopback URL, starting the stdio process or registering the HTTP remote
+// on first use. Consumer-owned servers, and a server whose name the host
+// already serves with a different recipe, are returned unchanged. The input
+// is not modified.
+func (h *MCPHost) Attach(servers []MCPServer) []MCPServer {
 	if h == nil || len(servers) == 0 {
 		return servers
 	}
@@ -159,8 +186,8 @@ func (h *mcpHost) Attach(servers []MCPServer) []MCPServer {
 	return out
 }
 
-func (h *mcpHost) ensure(s MCPServer) (string, bool) {
-	if strings.TrimSpace(s.Name) == "" || consumerOwnedMCP(s) {
+func (h *MCPHost) ensure(s MCPServer) (string, bool) {
+	if strings.TrimSpace(s.Name) == "" || (h.consumerOwned != nil && h.consumerOwned(s)) {
 		return "", false
 	}
 	recipe, ok := recipeOf(s, h.upstreams)
@@ -190,11 +217,11 @@ func (h *mcpHost) ensure(s MCPServer) (string, bool) {
 	return h.publicURLLocked(s.Name), true
 }
 
-func (h *mcpHost) publicURLLocked(name string) string {
+func (h *MCPHost) publicURLLocked(name string) string {
 	return h.publicBase + "/upstream/" + name
 }
 
-func (h *mcpHost) isOurURLLocked(raw string) bool {
+func (h *MCPHost) isOurURLLocked(raw string) bool {
 	raw = strings.TrimSpace(raw)
 	if raw == "" || h.publicBase == "" {
 		return false
@@ -202,7 +229,7 @@ func (h *mcpHost) isOurURLLocked(raw string) bool {
 	return strings.HasPrefix(raw, h.publicBase+"/upstream/")
 }
 
-func (h *mcpHost) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (h *MCPHost) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	name, ok := mcpUpstreamName(r.URL.Path)
 	if !ok {
 		http.NotFound(w, r)
@@ -228,10 +255,6 @@ func mcpUpstreamName(path string) (string, bool) {
 		return "", false
 	}
 	return name, true
-}
-
-func consumerOwnedMCP(s MCPServer) bool {
-	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(s.Name)), "jevonsmcp")
 }
 
 func recipeOf(s MCPServer, ups *mcpUpstreamStore) (mcpRecipe, bool) {
@@ -291,15 +314,16 @@ type mcpTokenStore struct {
 	by   map[string]MCPToken
 }
 
-func openMCPTokenStore(path string) (*mcpTokenStore, error) {
+func openMCPTokenStore(path string, seedDirs []string) (*mcpTokenStore, error) {
 	s := &mcpTokenStore{path: path, by: map[string]MCPToken{}}
 	if err := s.load(); err != nil {
 		return nil, err
 	}
-	if len(s.by) == 0 {
-		if home, err := os.UserHomeDir(); err == nil {
-			_ = s.loadFile(filepath.Join(home, ".jevons", "mcp_oauth_tokens.json"))
+	for _, dir := range seedDirs {
+		if len(s.by) > 0 {
+			break
 		}
+		_ = s.loadFile(filepath.Join(dir, mcpTokensFile))
 	}
 	return s, nil
 }
@@ -384,18 +408,26 @@ type mcpUpstreamStore struct {
 	by   map[string]string
 }
 
-func openMCPUpstreamStore(path string) (*mcpUpstreamStore, error) {
+func openMCPUpstreamStore(path string, seedDirs []string) (*mcpUpstreamStore, error) {
 	s := &mcpUpstreamStore{path: path, by: map[string]string{}}
 	if err := s.loadFile(path); err != nil {
 		return nil, err
 	}
-	if len(s.by) == 0 {
-		if home, err := os.UserHomeDir(); err == nil {
-			_ = s.loadFile(filepath.Join(home, ".jevons", "mcp_upstreams.json"))
+	for _, dir := range seedDirs {
+		if len(s.by) > 0 {
+			break
 		}
+		_ = s.loadFile(filepath.Join(dir, mcpUpstreamsFile))
 	}
 	return s, nil
 }
+
+// The host's store files under its state directory. A seed directory is
+// read with the same names.
+const (
+	mcpTokensFile    = "mcp_oauth_tokens.json"
+	mcpUpstreamsFile = "mcp_upstreams.json"
+)
 
 func (s *mcpUpstreamStore) loadFile(path string) error {
 	b, err := os.ReadFile(path)
