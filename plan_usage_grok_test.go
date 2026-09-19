@@ -253,3 +253,42 @@ func TestGrokPlanUsageNon401DoesNotRotate(t *testing.T) {
 		t.Fatalf("502: status=%q reason=%q rotations=%d", pu.Status, pu.Reason, rotations)
 	}
 }
+
+// TestParseGrokBillingRolloverIsZeroUsed is 🎯T81: a weekly period with
+// nothing spent yet carries no creditUsagePercent at all. This fixture is a
+// live 200 response captured on 2026-09-19, hours after the period rolled
+// over, at a moment when Grok's own usage panel read "0% used" and reset at
+// the end this payload carries. grok CLI 1.0.34 still reads the field, so
+// it is omitted, not withdrawn. Absence is only read as zero when the
+// weekly descriptor says this really is the weekly view.
+func TestParseGrokBillingRolloverIsZeroUsed(t *testing.T) {
+	raw, err := os.ReadFile("testdata/grok/billing_rollover.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pu := parseGrokBilling(raw, time.Date(2026, 9, 19, 3, 0, 0, 0, time.UTC))
+	if pu.Status != PlanUsageAvailable {
+		t.Fatalf("status=%q reason=%q, want available", pu.Status, pu.Reason)
+	}
+	if len(pu.Windows) != 1 || pu.Windows[0].Name != PlanWindowWeekly {
+		t.Fatalf("windows=%+v, want exactly one weekly window", pu.Windows)
+	}
+	w := pu.Windows[0]
+	if w.UsedPercent == nil || *w.UsedPercent != 0 {
+		t.Errorf("UsedPercent=%v, want 0", w.UsedPercent)
+	}
+	if w.RemainingPercent == nil || *w.RemainingPercent != 100 {
+		t.Errorf("RemainingPercent=%v, want 100 (fresh period)", w.RemainingPercent)
+	}
+	wantReset := time.Date(2026, 9, 26, 1, 53, 9, 930537000, time.UTC)
+	if w.ResetsAt == nil || !w.ResetsAt.Equal(wantReset) {
+		t.Errorf("ResetsAt=%v, want %v", w.ResetsAt, wantReset)
+	}
+
+	// Without the weekly descriptor, an absent percent is still a surface
+	// that may have changed — absence alone never becomes a number.
+	bare := parseGrokBilling([]byte(`{"config":{"billingPeriodEnd":"2026-09-26T01:53:09Z"}}`), time.Now())
+	if bare.Status != PlanUsageUnavailable || bare.Reason == "" {
+		t.Fatalf("payload with no weekly period = %+v, want unavailable with a reason", bare)
+	}
+}

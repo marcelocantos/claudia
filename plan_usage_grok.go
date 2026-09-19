@@ -28,6 +28,9 @@ const grokBillingURL = "https://cli-chat-proxy.grok.com/v1/billing?format=credit
 // Only the fields this maps are declared; unknown fields (productUsage,
 // onDemand*, prepaidBalance, …) are ignored. Grok publishes only the weekly
 // SuperGrok pool here — there is no rolling session window.
+// grokWeeklyPeriod is the currentPeriod.type of the weekly SuperGrok pool.
+const grokWeeklyPeriod = "USAGE_PERIOD_TYPE_WEEKLY"
+
 type grokBillingConfig struct {
 	Config struct {
 		// CreditUsagePercent is the weekly pool USED percent (0–100), NOT
@@ -55,11 +58,27 @@ func parseGrokBilling(raw []byte, now time.Time) PlanUsage {
 	if err := json.Unmarshal(raw, &r); err != nil {
 		return unavailablePlan(ProviderGrok, now, "grok billing: unparseable response: "+err.Error())
 	}
-	if r.Config.CreditUsagePercent == nil {
+	used := 0.0
+	switch {
+	case r.Config.CreditUsagePercent != nil:
+		used = *r.Config.CreditUsagePercent
+	case r.Config.CurrentPeriod.Type == grokWeeklyPeriod:
+		// A weekly period with nothing spent yet carries no percent at all.
+		// Observed 2026-09-19, hours after a period rolled over: the
+		// endpoint answered 200 with the weekly descriptor and no percent
+		// while Grok's own usage panel read "0% used", resetting at exactly
+		// the end this payload carries. Whether the field is dropped as a
+		// zero-valued scalar (the payload is protobuf-JSON) or returned as
+		// null until the period has entries to sum is not established; both
+		// mean the same thing here. It is omitted, not withdrawn: grok CLI
+		// 1.0.34 still reads it. The weekly descriptor is the anchor that
+		// says this really is the weekly view, so absence means zero rather
+		// than a surprise.
+		used = 0
+	default:
 		return unavailablePlan(ProviderGrok, now,
 			"grok billing: response carries no creditUsagePercent (private surface may have changed)")
 	}
-	used := *r.Config.CreditUsagePercent
 	if used < 0 || used > 100 {
 		return unavailablePlan(ProviderGrok, now,
 			fmt.Sprintf("grok billing: creditUsagePercent %.2f is outside 0–100 (surface may have changed)", used))
