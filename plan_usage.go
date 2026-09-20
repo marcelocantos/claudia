@@ -6,6 +6,7 @@ package claudia
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -138,6 +139,17 @@ type PlanUsageArgs struct {
 	CursorUsageURL string
 	// CursorUsageRaw injects a captured usage response for tests.
 	CursorUsageRaw json.RawMessage
+	// ThrottleDir names the directory holding this host's shared
+	// plan-usage state: the cross-process request floor (🎯T85) and the
+	// retained raw payloads (🎯T84). Empty disables both, which is what
+	// makes a hermetic test against its own httptest server run at full
+	// speed; the production paths — the plan cache, the daemon's monitor
+	// and cmd/usage — all name the shared cache directory.
+	ThrottleDir string
+	// Forced is the caller's explicit refresh. It waives the interval
+	// floor but never a rate-limit penalty: the usage endpoint publishes
+	// no Retry-After, and re-asking is how the refusal is extended.
+	Forced bool
 }
 
 // AllPlanUsageArgs configures [QueryAllPlanUsage].
@@ -177,17 +189,46 @@ type AllPlanUsageArgs struct {
 	// Providers limits which providers to query. Empty means all supported
 	// providers (Claude, Codex, Grok, Bedrock, Cursor).
 	Providers []Provider
-	// ThrottleDir enables the cross-process request floor (🎯T85) and
-	// names the directory holding its state; empty disables it. The
-	// shared cache path sets it to its own directory, so every fetch
-	// that reaches a vendor is paced. Direct callers and unit tests that
-	// leave it empty are unthrottled, which is what makes a hermetic
-	// test with its own httptest server run at full speed.
+	// ThrottleDir names the directory holding this host's shared
+	// plan-usage state: the cross-process request floor (🎯T85), the last
+	// reading each provider published, and the retained raw payloads
+	// (🎯T84). Empty disables all three. The plan cache, the daemon's
+	// monitor and cmd/usage all name the shared cache directory, so every
+	// fetch that reaches a vendor from this host is paced; unit tests
+	// leave it empty, which is what lets a hermetic test with its own
+	// httptest server run at full speed.
 	ThrottleDir string
+	// Forced is the caller's explicit refresh; see [PlanUsageArgs.Forced].
+	Forced bool
 	// ThrottleSkipped, when non-nil, receives one entry per provider
 	// withheld by the throttle, so the caller can carry a previous
 	// reading forward instead of publishing a hole.
 	ThrottleSkipped map[Provider]string
+}
+
+// PlanThrottledError reports a request the host request floor withheld
+// (🎯T85). It is not a provider failure and must never be published as a
+// reading: the caller carries the previous reading forward.
+type PlanThrottledError struct {
+	Provider Provider
+	// RetryAt is the earliest time this provider may be asked again.
+	RetryAt time.Time
+	Reason  string
+}
+
+func (e *PlanThrottledError) Error() string { return e.Reason }
+
+// DefaultPlanFetchArgs is how a long-lived fetcher reaches vendors: named
+// onto this host's shared plan-usage state directory, so the daemon's own
+// refresh loop obeys the same request floor as every other door (🎯T85)
+// and its responses land in the same store (🎯T84). A host with no cache
+// directory at all is unpaced rather than broken.
+func DefaultPlanFetchArgs() *AllPlanUsageArgs {
+	dir, err := planCacheDir("")
+	if err != nil {
+		return &AllPlanUsageArgs{}
+	}
+	return &AllPlanUsageArgs{ThrottleDir: dir}
 }
 
 // QueryPlanUsage returns subscription plan remaining for one provider.
@@ -203,6 +244,18 @@ func QueryPlanUsage(ctx context.Context, args *PlanUsageArgs) (PlanUsage, error)
 	now := args.Now
 	if now.IsZero() {
 		now = time.Now()
+	}
+	// 🎯T85: the vendor counts requests per account, not per process, so
+	// the floor is consulted before the request is built — and it is
+	// consulted here, in the one function every fetch goes through, so a
+	// caller cannot reach a vendor by taking a different door.
+	paced := args.ThrottleDir != "" && providerFetches(args.Provider)
+	if paced {
+		if d := CheckPlanThrottle(args.ThrottleDir, args.Provider, now, args.Forced); !d.Allowed {
+			return PlanUsage{}, &PlanThrottledError{
+				Provider: args.Provider, RetryAt: d.RetryAt, Reason: d.Reason,
+			}
+		}
 	}
 	client := args.HTTPClient
 	if client == nil {
@@ -221,6 +274,11 @@ func QueryPlanUsage(ctx context.Context, args *PlanUsageArgs) (PlanUsage, error)
 			return pu, err
 		}
 		pu.HTTPStatus, pu.RawBody = rec.result()
+		if paced {
+			RecordPlanAttempt(args.ThrottleDir, args.Provider, now, pu.HTTPStatus)
+			RecordPlanRawPayload(args.ThrottleDir, args.Provider, now, pu.HTTPStatus, pu.RawBody)
+			savePlanLastReading(args.ThrottleDir, pu)
+		}
 		return pu, nil
 	}
 
@@ -262,20 +320,10 @@ func QueryAllPlanUsage(ctx context.Context, args *AllPlanUsageArgs) ([]PlanUsage
 	}
 	out := make([]PlanUsage, 0, len(providers))
 	for _, p := range providers {
-		// 🎯T85: the vendor counts requests per account, not per process,
-		// so the floor is consulted before the request is built. A
-		// withheld provider is omitted, never published as a hole: the
-		// caller carries its previous reading forward.
-		if args.ThrottleDir != "" && providerFetches(p) {
-			if d := CheckPlanThrottle(args.ThrottleDir, p, now, false); !d.Allowed {
-				if args.ThrottleSkipped != nil {
-					args.ThrottleSkipped[p] = d.Reason
-				}
-				continue
-			}
-		}
 		pu, err := QueryPlanUsage(ctx, &PlanUsageArgs{
 			Provider:            p,
+			ThrottleDir:         args.ThrottleDir,
+			Forced:              args.Forced,
 			HTTPClient:          args.HTTPClient,
 			ClaudeAccessToken:   args.ClaudeAccessToken,
 			CodexAccessToken:    args.CodexAccessToken,
@@ -295,12 +343,31 @@ func QueryAllPlanUsage(ctx context.Context, args *AllPlanUsageArgs) ([]PlanUsage
 			CursorUsageURL:      args.CursorUsageURL,
 			CursorUsageRaw:      args.CursorUsageRaw,
 		})
-		if err != nil {
+		var throttled *PlanThrottledError
+		switch {
+		case errors.As(err, &throttled):
+			// 🎯T85: withheld is not a reading. The provider was simply
+			// not asked, so its previous answer is published again with
+			// its ORIGINAL FetchedAt — a hole here is what parked a live
+			// worker on 2026-09-20 — and the reason says why the number
+			// is not moving. With nothing to carry, it is omitted rather
+			// than invented.
+			if args.ThrottleSkipped != nil {
+				args.ThrottleSkipped[p] = throttled.Reason
+			}
+			if held, ok := loadPlanLastReading(args.ThrottleDir, p); ok {
+				held.RawBody = ""
+				if held.Reason == "" {
+					held.Reason = throttled.Reason
+				} else {
+					held.Reason += "; " + throttled.Reason
+				}
+				out = append(out, held)
+			}
+			continue
+		case err != nil:
 			// Programmer / unknown-provider errors propagate.
 			return nil, err
-		}
-		if args.ThrottleDir != "" && providerFetches(p) {
-			RecordPlanAttempt(args.ThrottleDir, p, now, pu.HTTPStatus)
 		}
 		out = append(out, pu)
 	}

@@ -40,6 +40,13 @@ const (
 	// PlanThrottleMaxPenalty caps the doubling.
 	PlanThrottleMaxPenalty = 2 * time.Hour
 
+	// PlanThrottleForcedInterval is the floor an explicit refresh still
+	// obeys. A refresh button that waived the floor outright would be a
+	// second way to produce the burst this whole mechanism exists to
+	// prevent — eight probes in two minutes is what a person clicking
+	// reload looks like — so a forced refresh is prompt, not unlimited.
+	PlanThrottleForcedInterval = time.Minute
+
 	planThrottleFile = "throttle.json"
 )
 
@@ -112,9 +119,10 @@ func writePlanThrottle(path string, doc planThrottleDoc) error {
 }
 
 // CheckPlanThrottle reports whether provider p may be fetched at now.
-// forced is the caller's explicit refresh: it waives the ordinary
-// interval floor but never a penalty, because a penalty means the vendor
-// has already said no and asking harder is how the refusal is extended.
+// forced is the caller's explicit refresh: it shortens the interval floor
+// to PlanThrottleForcedInterval, and never waives a penalty, because a
+// penalty means the vendor has already said no and asking harder is how
+// the refusal is extended.
 func CheckPlanThrottle(dirOverride string, p Provider, now time.Time, forced bool) PlanThrottleDecision {
 	path, err := planThrottlePath(dirOverride)
 	if err != nil {
@@ -137,16 +145,17 @@ func CheckPlanThrottle(dirOverride string, p Provider, now time.Time, forced boo
 				p, e.Refusals, e.NextAllowedAt.UTC().Format(time.RFC3339)),
 		}
 	}
+	floor := PlanThrottleMinInterval
 	if forced {
-		return PlanThrottleDecision{Allowed: true}
+		floor = PlanThrottleForcedInterval
 	}
-	if next := e.LastAttempt.Add(PlanThrottleMinInterval); now.Before(next) {
+	if next := e.LastAttempt.Add(floor); now.Before(next) {
 		return PlanThrottleDecision{
 			Allowed: false,
 			RetryAt: next,
 			Reason: fmt.Sprintf(
 				"last %s usage request was %s ago; the floor between requests from this host is %s",
-				p, now.Sub(e.LastAttempt).Round(time.Second), PlanThrottleMinInterval),
+				p, now.Sub(e.LastAttempt).Round(time.Second), floor),
 		}
 	}
 	return PlanThrottleDecision{Allowed: true}
@@ -154,8 +163,9 @@ func CheckPlanThrottle(dirOverride string, p Provider, now time.Time, forced boo
 
 // RecordPlanAttempt writes the outcome of one request. status is the HTTP
 // status, or 0 when the request never completed. A 429 (or 529) escalates
-// the penalty; anything else clears it, because a provider that answered
-// at all is not refusing us.
+// the penalty; any other answered status clears it, because a provider
+// that answered at all is not refusing us. A request that never completed
+// leaves an outstanding penalty exactly where it was.
 func RecordPlanAttempt(dirOverride string, p Provider, now time.Time, status int) {
 	path, err := planThrottlePath(dirOverride)
 	if err != nil {
@@ -167,18 +177,99 @@ func RecordPlanAttempt(dirOverride string, p Provider, now time.Time, status int
 	e := doc.Providers[string(p)]
 	e.LastAttempt = now
 	e.LastStatus = status
-	switch status {
-	case 429, 529:
+	switch {
+	case status == 429 || status == 529:
 		e.Refusals++
 		penalty := PlanThrottleFirstPenalty << (e.Refusals - 1)
 		if penalty > PlanThrottleMaxPenalty || penalty <= 0 {
 			penalty = PlanThrottleMaxPenalty
 		}
 		e.NextAllowedAt = now.Add(penalty)
+	case status == 0:
+		// Nothing answered: a DNS failure, a timeout, a missing
+		// credential that stopped the request before it was built. That
+		// is not the provider withdrawing its refusal, so an outstanding
+		// penalty stands — clearing it here would let a flaky network
+		// hand back the allowance the vendor took away.
+		if e.Refusals == 0 {
+			e.NextAllowedAt = now.Add(PlanThrottleMinInterval)
+		}
 	default:
 		e.Refusals = 0
 		e.NextAllowedAt = now.Add(PlanThrottleMinInterval)
 	}
 	doc.Providers[string(p)] = e
 	_ = writePlanThrottle(path, doc)
+}
+
+// 🎯T85: what a withheld provider publishes instead.
+//
+// A provider the floor withheld has not changed its mind about anything;
+// it simply was not asked. Publishing a hole for it blanks a working
+// gauge every cycle the floor bites, and a blank gauge is what parked a
+// live worker on 2026-09-20. So the last reading is kept beside the
+// floor that withholds it, and carried forward with its ORIGINAL
+// FetchedAt: age is then visible rather than forged.
+
+const planLastReadingFile = "readings.json"
+
+type planLastReadingDoc struct {
+	Providers map[string]PlanUsage `json:"providers"`
+}
+
+var planLastReadingMu sync.Mutex
+
+func planLastReadingPath(dir string) (string, error) {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, planLastReadingFile), nil
+}
+
+// savePlanLastReading keeps pu as provider pu.Provider's carry-forward
+// value. The body is dropped: it belongs to one request, and the raw
+// store (🎯T84) is where responses live.
+func savePlanLastReading(dir string, pu PlanUsage) {
+	if dir == "" || pu.Provider == "" {
+		return
+	}
+	path, err := planLastReadingPath(dir)
+	if err != nil {
+		return
+	}
+	pu.RawBody = ""
+	planLastReadingMu.Lock()
+	defer planLastReadingMu.Unlock()
+	doc := readPlanLastReadings(path)
+	doc.Providers[string(pu.Provider)] = pu
+	raw, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, append(raw, '\n'), 0o600); err != nil {
+		return
+	}
+	_ = os.Rename(tmp, path)
+}
+
+// loadPlanLastReading returns the carried reading for p, if any.
+func loadPlanLastReading(dir string, p Provider) (PlanUsage, bool) {
+	if dir == "" {
+		return PlanUsage{}, false
+	}
+	pu, ok := readPlanLastReadings(filepath.Join(dir, planLastReadingFile)).Providers[string(p)]
+	return pu, ok
+}
+
+func readPlanLastReadings(path string) planLastReadingDoc {
+	doc := planLastReadingDoc{Providers: map[string]PlanUsage{}}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return doc
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil || doc.Providers == nil {
+		return planLastReadingDoc{Providers: map[string]PlanUsage{}}
+	}
+	return doc
 }

@@ -23,7 +23,11 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	all, err := claudia.QueryAllPlanUsage(ctx, &claudia.AllPlanUsageArgs{})
+	// 🎯T85: a person running this in a loop while debugging is one of the
+	// ways the vendor sees a burst, so the CLI is paced by the same
+	// host-shared floor as the daemon. Inside the floor it reprints the
+	// last reading with the reason appended, rather than asking again.
+	all, err := claudia.QueryAllPlanUsage(ctx, claudia.DefaultPlanFetchArgs())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "usage:", err)
 		os.Exit(1)
@@ -40,6 +44,14 @@ func main() {
 			label = fmt.Sprintf("%s (%s)", pu.Provider, pu.PlanType)
 		}
 		fmt.Println(label)
+		// An available reading that still carries a reason was withheld by
+		// the request floor and carried forward (🎯T85). Its age is real,
+		// so say so — a number that silently stops moving is worse than a
+		// number labelled stale.
+		if pu.Reason != "" {
+			fmt.Printf("  (as of %s ago) %s\n",
+				now.Sub(pu.FetchedAt).Round(time.Second), pu.Reason)
+		}
 		for _, w := range pu.Windows {
 			rem := "?"
 			switch {

@@ -77,7 +77,7 @@ func NewPlanUsageMonitor(args *PlanUsageMonitorArgs) *PlanUsageMonitor {
 		// Grok and Cursor unofficial surfaces are always fetched; a break
 		// is unavailable-with-reason, never gated off.
 		m.fetch = func(ctx context.Context) ([]PlanUsage, error) {
-			return QueryAllPlanUsage(ctx, &AllPlanUsageArgs{})
+			return QueryAllPlanUsage(ctx, DefaultPlanFetchArgs())
 		}
 	}
 	return m

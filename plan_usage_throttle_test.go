@@ -10,7 +10,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -21,8 +23,6 @@ import (
 const t85Body = `{"five_hour":{"utilization":33,"resets_at":"2026-09-20T18:00:00Z"},` +
 	`"seven_day":{"utilization":13,"resets_at":"2026-09-26T00:00:00Z"},` +
 	`"seven_day_fable_five":{"utilization":100,"resets_at":"2026-09-26T00:00:00Z"}}`
-
-func t85Pct(v float64) *float64 { return &v }
 
 func t85At(t *testing.T, s string) time.Time {
 	t.Helper()
@@ -205,44 +205,184 @@ func TestT84RefusalKeepsItsBodyAndStatus(t *testing.T) {
 // blanking, and the reason says why the number is not moving.
 func TestT85ThrottledProviderCarriesItsLastReadingForward(t *testing.T) {
 	dir := t.TempDir()
-	snapPath := filepath.Join(dir, planCacheSnapshotFile)
-	earlier := t85At(t, "2026-09-20T11:00:00Z")
-	prev := planCacheSnapshot{FetchedAt: earlier, Backends: []PlanUsage{{
-		Provider:  ProviderClaude,
-		Status:    PlanUsageAvailable,
-		FetchedAt: earlier,
-		RawBody:   t85Body,
-		Windows:   []PlanWindow{{Name: PlanWindowWeekly, RemainingPercent: t85Pct(41)}},
-	}}}
-	if err := writePlanSnapshot(snapPath, prev); err != nil {
-		t.Fatal(err)
-	}
+	base := t85At(t, "2026-09-20T12:00:00Z")
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		fmt.Fprint(w, t85Body)
+	}))
+	defer srv.Close()
 
-	fresh := []PlanUsage{{Provider: ProviderGrok, Status: PlanUsageAvailable}}
-	out := carryForwardThrottled(snapPath, fresh,
-		map[Provider]string{ProviderClaude: "holding off until 12:15"})
-
-	var claude *PlanUsage
-	for i := range out {
-		if out[i].Provider == ProviderClaude {
-			claude = &out[i]
+	all := func(now time.Time) *AllPlanUsageArgs {
+		return &AllPlanUsageArgs{
+			Providers:         []Provider{ProviderClaude},
+			ClaudeAccessToken: "test-token",
+			ClaudeUsageURL:    srv.URL,
+			Now:               now,
+			ThrottleDir:       dir,
+			ThrottleSkipped:   map[Provider]string{},
 		}
 	}
-	if claude == nil {
-		t.Fatal("the withheld provider vanished from the snapshot")
+
+	first := all(base)
+	got, err := QueryAllPlanUsage(context.Background(), first)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if len(claude.Windows) != 1 || claude.Windows[0].RemainingPercent == nil ||
-		*claude.Windows[0].RemainingPercent != 41 {
-		t.Fatalf("carried reading lost its windows: %+v", claude.Windows)
+	if len(got) != 1 || got[0].Status != PlanUsageAvailable {
+		t.Fatalf("first read: %+v", got)
 	}
-	if !claude.FetchedAt.Equal(earlier) {
+
+	// A minute later the floor bites. The gauge must not blank: a hole
+	// here is what parked a live worker on 2026-09-20.
+	second := all(base.Add(time.Minute))
+	got, err = QueryAllPlanUsage(context.Background(), second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hits != 1 {
+		t.Fatalf("the withheld read still reached the vendor: %d requests", hits)
+	}
+	if len(got) != 1 {
+		t.Fatalf("the withheld provider vanished from the reading: %+v", got)
+	}
+	held := got[0]
+	if held.Status != PlanUsageAvailable || len(held.Windows) == 0 {
+		t.Fatalf("withheld provider published a hole or a zero: %+v", held)
+	}
+	if !held.FetchedAt.Equal(base) {
 		t.Fatalf("FetchedAt = %s, want the original %s: age must be visible, not forged",
-			claude.FetchedAt, earlier)
+			held.FetchedAt, base)
 	}
-	if claude.RawBody != "" {
+	if held.RawBody != "" {
 		t.Fatal("the carried reading kept a body belonging to an earlier request")
 	}
-	if claude.Reason == "" {
+	if held.Reason == "" {
 		t.Fatal("nothing says why this provider's number is not moving")
 	}
+	if second.ThrottleSkipped[ProviderClaude] == "" {
+		t.Fatal("the caller was not told which provider was withheld")
+	}
+
+	// Past the floor it asks again, and the reading is fresh.
+	third := all(base.Add(PlanThrottleMinInterval + time.Second))
+	got, err = QueryAllPlanUsage(context.Background(), third)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hits != 2 {
+		t.Fatalf("past the floor the vendor saw %d requests, want 2", hits)
+	}
+	if got[0].Reason != "" || !got[0].FetchedAt.Equal(third.Now) {
+		t.Fatalf("the fresh reading still looks carried: %+v", got[0])
+	}
+}
+
+// An explicit refresh is prompt but not unlimited: it shortens the floor,
+// it does not remove it, because a reload button is the other way a
+// person produces the burst this mechanism exists to prevent.
+func TestT85ForcedRefreshStillObeysAShortFloor(t *testing.T) {
+	dir := t.TempDir()
+	base := t85At(t, "2026-09-20T12:00:00Z")
+	RecordPlanAttempt(dir, ProviderClaude, base, http.StatusOK)
+
+	if d := CheckPlanThrottle(dir, ProviderClaude, base.Add(5*time.Second), true); d.Allowed {
+		t.Fatal("a refresh five seconds later reached the vendor")
+	}
+	if d := CheckPlanThrottle(dir, ProviderClaude, base.Add(PlanThrottleForcedInterval+time.Second), true); !d.Allowed {
+		t.Fatalf("a refresh past the forced floor was still refused: %s", d.Reason)
+	}
+	// The unforced floor is still the long one.
+	if d := CheckPlanThrottle(dir, ProviderClaude, base.Add(PlanThrottleForcedInterval+time.Second), false); d.Allowed {
+		t.Fatal("an ordinary read took the forced floor")
+	}
+}
+
+// A request that never completed says nothing about the vendor's mood.
+// Clearing a penalty on it would let a flaky network hand back the
+// allowance the vendor took away.
+func TestT85TransportFailureDoesNotClearAPenalty(t *testing.T) {
+	dir := t.TempDir()
+	base := t85At(t, "2026-09-20T12:00:00Z")
+	RecordPlanAttempt(dir, ProviderClaude, base, http.StatusTooManyRequests)
+	RecordPlanAttempt(dir, ProviderClaude, base.Add(time.Minute), 0)
+
+	d := CheckPlanThrottle(dir, ProviderClaude, base.Add(2*time.Minute), false)
+	if d.Allowed {
+		t.Fatal("a transport failure waived the rate-limit penalty")
+	}
+	if want := base.Add(PlanThrottleFirstPenalty); !d.RetryAt.Equal(want) {
+		t.Fatalf("penalty ends %s, want the untouched %s", d.RetryAt, want)
+	}
+}
+
+// 🎯T85, the headline: a SECOND OS PROCESS, born with no memory, is
+// refused the request its predecessor already spent — and the refusal
+// costs no request, which the vendor's own hit counter proves.
+//
+// The child is this test binary re-executed; CLAUDIA_T85_CHILD tells it
+// which half to run.
+func TestT85SecondProcessIsRefusedWithoutIssuingARequest(t *testing.T) {
+	if os.Getenv("CLAUDIA_T85_CHILD") != "" {
+		t85ChildFetch(t)
+		return
+	}
+	dir := t.TempDir()
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		fmt.Fprint(w, t85Body)
+	}))
+	defer srv.Close()
+
+	if _, err := QueryAllPlanUsage(context.Background(), &AllPlanUsageArgs{
+		Providers:         []Provider{ProviderClaude},
+		ClaudeAccessToken: "test-token",
+		ClaudeUsageURL:    srv.URL,
+		Now:               time.Now(),
+		ThrottleDir:       dir,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if hits != 1 {
+		t.Fatalf("first process made %d requests, want 1", hits)
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=TestT85SecondProcessIsRefusedWithoutIssuingARequest")
+	cmd.Env = append(os.Environ(),
+		"CLAUDIA_T85_CHILD=1",
+		"CLAUDIA_T85_DIR="+dir,
+		"CLAUDIA_T85_URL="+srv.URL,
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("child process failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "T85-CHILD-WITHHELD") {
+		t.Fatalf("the second process was not refused:\n%s", out)
+	}
+	if hits != 1 {
+		t.Fatalf("the second process issued %d requests; the floor must refuse without asking", hits-1)
+	}
+}
+
+// t85ChildFetch is the second process: it shares only the state directory
+// on disk, and must be refused by it.
+func t85ChildFetch(t *testing.T) {
+	skipped := map[Provider]string{}
+	if _, err := QueryAllPlanUsage(context.Background(), &AllPlanUsageArgs{
+		Providers:         []Provider{ProviderClaude},
+		ClaudeAccessToken: "test-token",
+		ClaudeUsageURL:    os.Getenv("CLAUDIA_T85_URL"),
+		Now:               time.Now(),
+		ThrottleDir:       os.Getenv("CLAUDIA_T85_DIR"),
+		ThrottleSkipped:   skipped,
+	}); err != nil {
+		t.Fatalf("child fetch failed: %v", err)
+	}
+	if reason := skipped[ProviderClaude]; reason != "" {
+		fmt.Println("T85-CHILD-WITHHELD", reason)
+		return
+	}
+	t.Fatal("the child process was allowed to re-ask the vendor")
 }

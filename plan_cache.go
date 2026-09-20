@@ -141,13 +141,9 @@ func LoadPlanUsage(ctx context.Context, args *PlanUsageCacheArgs) ([]PlanUsage, 
 		if all.ThrottleDir == "" {
 			all.ThrottleDir = dir
 		}
+		all.Forced = args.Refresh
 		fetch = func(ctx context.Context) ([]PlanUsage, error) {
-			all.ThrottleSkipped = map[Provider]string{}
-			backends, err := QueryAllPlanUsage(ctx, all)
-			if err != nil {
-				return nil, err
-			}
-			return carryForwardThrottled(snapPath, backends, all.ThrottleSkipped), nil
+			return QueryAllPlanUsage(ctx, all)
 		}
 	}
 
@@ -213,49 +209,6 @@ func LoadPlanUsage(ctx context.Context, args *PlanUsageCacheArgs) ([]PlanUsage, 
 		case <-time.After(poll):
 		}
 	}
-}
-
-// carryForwardThrottled fills the gaps the throttle left.
-//
-// A provider withheld to protect the rate limit has not changed its mind
-// about anything; it simply was not asked. Publishing a hole for it would
-// blank a working gauge every cycle the floor bites, so the previous
-// snapshot's reading is carried forward instead — with its original
-// FetchedAt, so age is visible rather than forged, and with the reason
-// appended so a reader can see why the number is not moving.
-func carryForwardThrottled(snapPath string, fresh []PlanUsage, skipped map[Provider]string) []PlanUsage {
-	if len(skipped) == 0 {
-		return fresh
-	}
-	prev, err := readPlanSnapshot(snapPath)
-	if err != nil || prev == nil {
-		return fresh
-	}
-	have := make(map[Provider]bool, len(fresh))
-	for _, pu := range fresh {
-		have[pu.Provider] = true
-	}
-	for _, old := range prev.Backends {
-		if have[old.Provider] {
-			continue
-		}
-		reason, withheld := skipped[old.Provider]
-		if !withheld {
-			continue
-		}
-		held := old
-		// The body is the one thing not worth carrying: it belongs to the
-		// earlier request and re-storing it would multiply one response
-		// into many rows downstream (🎯T84).
-		held.RawBody = ""
-		if held.Reason == "" {
-			held.Reason = reason
-		} else {
-			held.Reason = held.Reason + "; " + reason
-		}
-		fresh = append(fresh, held)
-	}
-	return fresh
 }
 
 func planCacheDir(override string) (string, error) {
