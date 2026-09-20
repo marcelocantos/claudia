@@ -37,6 +37,12 @@ import (
 // local fixture read.
 //
 // time.Sleep is not flagged — it delays a test but cannot by itself fail one.
+//
+// This guard sees clocks a test writes for itself. It cannot see one a test
+// merely arms: 🎯T93 was a product timeout in package claudia that
+// codex_session_test.go assigned 200ms, with nothing deadline-shaped in the
+// test source at all. That half is guarded by
+// TestHermeticTestsDeclareTheProductBoundsTheyShorten in the root package.
 func TestHermeticTestsHaveNoWallClockDeadline(t *testing.T) {
 	// Constructs whose expiry can turn a slow machine into a failed assertion.
 	banned := map[string]string{

@@ -18,11 +18,31 @@ import (
 	"time"
 )
 
-// Handshake RPCs (initialize / thread/start / thread/resume) must not
-// block the caller's MCP tools/call forever. Cursor's client deadline is
-// ~60s; a hang here wedges every later jevons_* call (jevons 🎯T545.1.1).
-// Prompt/turn stays unbounded — those are the work, not the mint.
-var codexAppServerHandshakeTimeout = 20 * time.Second
+// Handshake RPCs (initialize / thread/start / thread/resume /
+// thread/name/set) must not block the caller's MCP tools/call forever.
+// Cursor's client deadline is ~60s; a hang here wedges every later
+// jevons_* call (jevons 🎯T545.1.1). Prompt/turn stays unbounded —
+// those are the work, not the mint.
+//
+// The handshake is bounded in two named halves rather than by one knob
+// (🎯T93). They are different waits: initialize is a local round trip to
+// a process claudia has just forked, answered out of memory; the thread/*
+// RPCs open or reload a session and can reach the backend. Sharing one
+// bound also made the two indistinguishable to a test. A hermetic test
+// shortens the bound whose expiry it asserts, and a loaded host expired
+// the other one first — TestHermeticCodexThreadStartTimesOut was a green
+// test of thread/start on an idle machine and a red test of initialize at
+// load average 122, with nothing in the run to tell the two apart.
+//
+// Both are vars only so hermetics can shorten one of them; nothing in
+// production writes either. Production keeps them equal at 20s: the split
+// is about which step a bound speaks for, not about the numbers. What a
+// test must not do is move both, and what load must not do is invert
+// them.
+var (
+	codexAppServerInitializeTimeout = 20 * time.Second
+	codexAppServerThreadTimeout     = 20 * time.Second
+)
 
 // codexAppServerClient is a JSONL JSON-RPC client for `codex app-server`.
 // Transport is parent-owned stdio. Notifications become [Event]s via
@@ -291,7 +311,7 @@ func (c *codexAppServerClient) request(req codexAppServerRequest) ([]byte, error
 	return c.parseRPCResult(line, req.Method)
 }
 
-func (c *codexAppServerClient) requestHandshake(req codexAppServerRequest) ([]byte, error) {
+func (c *codexAppServerClient) requestHandshake(req codexAppServerRequest, timeout time.Duration) ([]byte, error) {
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
@@ -310,7 +330,7 @@ func (c *codexAppServerClient) requestHandshake(req codexAppServerRequest) ([]by
 		c.mu.Unlock()
 		return nil, err
 	}
-	line, err := c.waitPending(ch, id, req.Method, codexAppServerHandshakeTimeout)
+	line, err := c.waitPending(ch, id, req.Method, timeout)
 	if err != nil {
 		return nil, err
 	}
@@ -371,7 +391,7 @@ func (c *codexAppServerClient) initialize() error {
 		Name:    "claudia",
 		Title:   "claudia",
 		Version: Version,
-	}))
+	}), codexAppServerInitializeTimeout)
 	if err != nil {
 		return err
 	}
@@ -389,7 +409,7 @@ func (c *codexAppServerClient) openThread(workDir, model, sessionID string, requ
 			Model:          model,
 			ApprovalPolicy: "never",
 			Sandbox:        c.sandboxMode(),
-		}))
+		}), codexAppServerThreadTimeout)
 		if err == nil {
 			c.applyThreadResult(line, sessionID)
 			return nil
@@ -406,7 +426,7 @@ func (c *codexAppServerClient) openThread(workDir, model, sessionID string, requ
 		ApprovalPolicy: "never",
 		Sandbox:        c.sandboxMode(),
 		Ephemeral:      &ephemeral,
-	}))
+	}), codexAppServerThreadTimeout)
 	if err != nil {
 		return err
 	}
@@ -433,7 +453,7 @@ func (c *codexAppServerClient) persistStartRollout() {
 	if findCodexRollout(home, tid) != "" {
 		return
 	}
-	if _, err := c.requestHandshake(codexAppServerThreadNameSet(0, tid, tid)); err != nil {
+	if _, err := c.requestHandshake(codexAppServerThreadNameSet(0, tid, tid), codexAppServerThreadTimeout); err != nil {
 		slog.Warn("persist Codex start rollout", "home", home, "thread", tid, "err", err)
 	}
 	deadline := time.Now().Add(2 * time.Second)

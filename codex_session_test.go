@@ -540,30 +540,41 @@ func TestHermeticCodexResumeEmptyHomeNamesPath(t *testing.T) {
 // 🎯T545.1.1: a thread/start that never replies must fail loud inside the
 // handshake window, not block the caller's MCP tools/call until the client
 // gives up.
+//
+// 🎯T93: only the thread bound is shortened. This test once moved the one
+// knob that bounded the whole handshake, so at load average 122 the fake
+// peer's initialize — a python process the host had not got round to
+// scheduling — expired first and Start failed a step earlier than the
+// subject. Leaving codexAppServerInitializeTimeout at its production 20s
+// means a loaded host would have to be 100x slower than the bound this
+// test arms before it could answer for the wrong step again.
+//
+// The assertion reads both halves of the error, the step and the duration,
+// because the step alone does not say which bound produced it. There is no
+// elapsed-time assertion: the message naming 200ms is the proof the
+// handshake window closed, and `go test -timeout` is the only clock
+// allowed to decide a hermetic verdict (🎯T33).
 func TestHermeticCodexThreadStartTimesOut(t *testing.T) {
-	prev := codexAppServerHandshakeTimeout
-	codexAppServerHandshakeTimeout = 200 * time.Millisecond
-	t.Cleanup(func() { codexAppServerHandshakeTimeout = prev })
+	const threadBound = 200 * time.Millisecond
+	prev := codexAppServerThreadTimeout
+	codexAppServerThreadTimeout = threadBound
+	t.Cleanup(func() { codexAppServerThreadTimeout = prev })
 
 	bin := writeFakeCodexAppServer(t)
 	t.Setenv("CODEX_BIN", bin)
 	t.Setenv("FAKE_CODEX_HANG_START", "1")
 	writeFakeCodexSubscriptionAuth(t)
 
-	started := time.Now()
 	_, err := Start(Config{
 		Provider:    ProviderCodex,
 		WorkDir:     t.TempDir(),
 		TermLogPath: "-",
 	})
-	elapsed := time.Since(started)
 	if err == nil {
 		t.Fatal("Start succeeded against a hanging thread/start")
 	}
-	if !strings.Contains(err.Error(), "timeout waiting for thread/start") {
-		t.Fatalf("Start err = %v, want timeout waiting for thread/start", err)
-	}
-	if elapsed > 2*time.Second {
-		t.Fatalf("Start hung %s, want handshake timeout", elapsed)
+	want := "timeout waiting for thread/start after " + threadBound.String()
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("Start err = %v, want %q", err, want)
 	}
 }
