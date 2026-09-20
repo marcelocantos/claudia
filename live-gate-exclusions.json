@@ -1,0 +1,33 @@
+{
+  "//": "Live tests deliberately released from an obligation that internal/livegate otherwise enforces (T100). Every live test must be reachable from `make live` and named in AGENTS.md's live-test table; an entry here waives one or both, and must say why. `make gate` fails on an entry with no reason, on one naming a test that is not live, and on one whose obligation is in fact already met — a stale exclusion is how this list would rot into the silence it exists to prevent.",
+  "exclusions": [
+    {
+      "test": "TestProbeMCPLiveAtlassian",
+      "waives": [
+        "make-live"
+      ],
+      "reason": "A vendor probe, not an oracle for claudia. It asks mcp.atlassian.com what auth it advertises and asserts the answer is OAuth with resource metadata — so it goes red when Atlassian changes its server, which is not a defect in this repo and must not be able to fail a claudia live gate. It keeps its AGENTS.md row under shared surfaces, because someone changing ProbeMCP should still be told it exists, and runs by name with CLAUDIA_MCP_OAUTH_LIVE=1."
+    },
+    {
+      "test": "TestT96MeasureSilenceClaude",
+      "waives": [
+        "make-live"
+      ],
+      "reason": "A measurement probe, not an oracle. It drives one live Claude turn around a long silent tool call and prints the longest gap inside it — the quantity turnSilenceBound is set from — and asserts nothing, so running it on every live gate would spend a turn for a verdict it cannot give. Its own file says so. Run it by hand when the constant is questioned: `go test -run TestT96MeasureSilence -v -timeout 30m .` with the gates set. It keeps its AGENTS.md row under shared surfaces."
+    },
+    {
+      "test": "TestT96MeasureSilenceGrok",
+      "waives": [
+        "make-live"
+      ],
+      "reason": "A measurement probe, not an oracle. It drives one live Grok turn around a long silent tool call and prints the longest gap inside it — the quantity turnSilenceBound is set from — and asserts nothing, so running it on every live gate would spend a turn for a verdict it cannot give. Its own file says so. Run it by hand when the constant is questioned: `go test -run TestT96MeasureSilence -v -timeout 30m .` with the gates set. It keeps its AGENTS.md row under shared surfaces."
+    },
+    {
+      "test": "TestT96MeasureSilenceCursor",
+      "waives": [
+        "make-live"
+      ],
+      "reason": "A measurement probe, not an oracle. It drives one live Cursor turn around a long silent tool call and prints the longest gap inside it — the quantity turnSilenceBound is set from — and asserts nothing, so running it on every live gate would spend a turn for a verdict it cannot give. Its own file says so. Run it by hand when the constant is questioned: `go test -run TestT96MeasureSilence -v -timeout 30m .` with the gates set. It keeps its AGENTS.md row under shared surfaces."
+    }
+  ]
+}

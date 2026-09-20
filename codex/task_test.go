@@ -216,6 +216,10 @@ func writeHermeticAuth(t *testing.T) string {
 
 // hermeticResolve returns ResolveArgs with fixture auth and no OPENAI_API_KEY
 // fall-through, independent of the host environment.
+// Its os.Getenv is the host-environment fall-through of a fixture Getenv, not
+// a gate — nothing it reads un-skips anything.
+//
+//livegate:hermetic a fixture Getenv's fall-through, not a gate
 func hermeticResolve(t *testing.T, bin string) *ResolveArgs {
 	t.Helper()
 	authPath := writeHermeticAuth(t)

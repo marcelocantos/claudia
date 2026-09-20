@@ -42,6 +42,9 @@ import (
 // from every spawned agent environment; see package testctlenv and
 // TestEnsureServerStripsTestControlEnv.
 func TestNoTestControlEnvLeak(t *testing.T) {
+	// It reads the helper registry and reports what leaked; it spends
+	// nothing and un-skips nothing, so it is not itself a live test.
+	//livegate:hermetic reports what leaked; it un-skips nothing
 	leaked := testctlenv.LeakedHelpers(os.LookupEnv)
 	if len(leaked) == 0 {
 		return

@@ -69,6 +69,15 @@ verify-mutation-evidence:
 # is the default. Run this when changing a provider backend — spawn,
 # protocol, Start/Send/Goal, event mapping. Each test skips unless its
 # gate is set; a skip is residue, not a pass. CI never sets the gates.
+#
+# The -run names and AGENTS.md's table are checked against the source by
+# internal/livegate under `make gate` (T100): a live test this expression
+# cannot reach fails the hermetic gate, so the list cannot quietly fall
+# behind the tests again. The package pattern is ./... deliberately —
+# `. ./daemon/` left the codex and grok sub-package live tests unreachable
+# by name alone, and a wildcard cannot develop that hole. TestCrashSurvival
+# is anchored because the unanchored name also selects its own helper
+# subprocess entry point, TestCrashSurvivalHelper.
 # Claude: CLAUDIA_LIVE=1
 # Grok:   CLAUDIA_GROK_LIVE=1
 # Codex:  CLAUDIA_CODEX_LIVE=1
@@ -77,7 +86,7 @@ verify-mutation-evidence:
 # Cursor: CLAUDIA_CURSOR_LIVE=1
 .PHONY: live
 live:
-	go test -count=1 -timeout 15m -run 'TestTaskRunSmoke|TestAgentSendAndWaitForResponse|TestRewindLive|TestGoalCompleteCheckLive|TestAcquireLive|TestPoolAgentEventsLive|TestGrokTaskRunSmoke|TestGrokSessionLiveSmoke|TestCodexTaskRunSmoke|TestCodexSessionLiveSmoke|TestBedrockTaskLiveSmoke|TestOllamaTaskLiveSmoke|TestCursorTaskLiveSmoke|TestCursorSessionLiveSmoke|TestCursorSavedSessionResumeLive|TestGoalJourneyLiveBackends|TestMCPLiveLoadAndSessionSeesMnemo|TestMCPHostLiveSeatsSeeMnemo|TestMCPExclusiveGrokInspectJourney|TestMCPExclusiveSessionRoundTrip|TestExclusiveGrokSessionResumeLive|TestMCPExclusiveCursorSessionRoundTrip' . ./daemon/
+	go test -count=1 -timeout 30m -run 'TestTaskRunSmoke|TestClaudeTaskDisallowToolsLiveSmoke|TestModelObservableLive|TestModelNotFoundLiveFailLoud|TestAgentReadinessSmoke|TestAgentReadinessFailureOnDeadProcess|TestAgentSendAndWaitForResponse|TestAgentMultiTurn|TestRunHelper|TestCrashSurvival$|TestRewindSessionLive|TestRewindLive|TestGoalCompleteCheckLive|TestAcquireLive|TestPoolAgentEventsLive|TestAcquireColdAndReturn|TestAcquireDropKillsWindow|TestAcquireKeepAliveFor|TestAcquireConcurrentDifferentKeys|TestAcquireHeldWindowNotReused|TestAcquirePoolCapEviction|TestAcquireErrorPolicy|TestPoolCrashSurvival$|TestGrokTaskRunSmoke|TestGrokSessionLiveSmoke|TestGrokSessionLiveSmokeSteer|TestExclusiveGrokSessionResumeLive|TestGrokPlanUsageLive|TestLiveConnect|TestCodexTaskRunSmoke|TestCodexSessionLiveSmoke|TestLiveCodexTaskRun|TestBedrockTaskLiveSmoke|TestOllamaTaskLiveSmoke|TestCursorTaskLiveSmoke|TestCursorSessionLiveSmoke|TestCursorSessionLiveSmokeSteer|TestCursorSavedSessionResumeLive|TestGoalJourneyLiveBackends|TestBrokerReclaimLiveBackends|TestT30LargePayloadSubmitsOnRealPath|TestMCPLiveLoadAndSessionSeesMnemo|TestMCPHostLiveSeatsSeeMnemo|TestMCPExclusiveGrokInspectJourney|TestMCPExclusiveSessionRoundTrip|TestMCPExclusiveCursorSessionRoundTrip' ./...
 
 # Model-check the broker lifecycle spec (T2.0/T2.8 oracle). The correct config
 # must be green AND every fault-injection mutant must be caught — a spec that

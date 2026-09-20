@@ -55,6 +55,14 @@ func Helpers() []string {
 // LiveGates un-skip tests that spend API credit or need a real
 // provider binary. A human may set these deliberately; an agent must
 // never inherit them by accident.
+//
+// This is the whole set, not the six backend gates: internal/livegate
+// reads every live gate the module's tests actually consult and fails
+// `make gate` when one is missing here (T100). CLAUDIA_LIVE_SEND and
+// CLAUDIA_MCP_OAUTH_LIVE had been un-skipping tests for months while
+// this list did not name them, so they were never stripped from a
+// spawned agent's environment — precisely the leak the package exists
+// to close.
 func LiveGates() []string {
 	return []string{
 		"CLAUDIA_LIVE",
@@ -63,6 +71,8 @@ func LiveGates() []string {
 		"CLAUDIA_GROK_LIVE",
 		"CLAUDIA_OLLAMA_LIVE",
 		"CLAUDIA_CURSOR_LIVE",
+		"CLAUDIA_LIVE_SEND",
+		"CLAUDIA_MCP_OAUTH_LIVE",
 	}
 }
 

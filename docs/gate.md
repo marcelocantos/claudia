@@ -18,6 +18,13 @@ on `pull_request` is courtesy for those.
 `make live` (opt-in env gates) and are a release-time owner check when
 the provider wire changed — not the hook.
 
+The live gate's own coverage rides the hermetic suite:
+`internal/livegate` reads every live test out of the source and fails
+when one is unreachable from `make live` or unnamed in AGENTS.md's
+table, so the two documents that tell an agent what to run cannot
+quietly fall behind the tests (T100). Deliberate exceptions live in
+`live-gate-exclusions.json` with a stated reason.
+
 `make gate-full` adds the TLA+ broker spec (`verify-specs`).
 
 A stray `.go` file cannot take this gate down with it: in-repo scratch

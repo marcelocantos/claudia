@@ -42,14 +42,42 @@ not just the one you had in mind. T39: hermetic journeys plus live
 Grok and Codex were green while Claude hung on a multi-line
 continuation that only the live TUI paste path could show.
 
+**Backend wires.** Each row is one gate variable and the tests it
+un-skips. If you touched the surface, the row is what you must run.
+
 | Gate | Surfaces | Must include |
 |------|----------|--------------|
-| `CLAUDIA_LIVE=1` | Claude Task + Session | `TestAgentSendAndWaitForResponse`, `daemon.TestRewindLive`, `daemon.TestGoalCompleteCheckLive`, `daemon.TestAcquireLive`, `TestPoolAgentEventsLive`, `TestClaudeTaskDisallowToolsLiveSmoke`, `TestGoalJourneyLiveBackends/claude`, `TestMCPLiveLoadAndSessionSeesMnemo/claude`, `TestMCPHostLiveSeatsSeeMnemo/claude` |
-| `CLAUDIA_GROK_LIVE=1` | Grok Task + Session | `TestGrokSessionLiveSmoke`, `TestGrokSessionLiveSmokeSteer`, `TestGoalJourneyLiveBackends/grok`, `TestMCPLiveLoadAndSessionSeesMnemo/grok`, `TestMCPHostLiveSeatsSeeMnemo/grok`, `TestMCPExclusiveSessionRoundTrip` |
-| `CLAUDIA_CODEX_LIVE=1` | Codex Task + Session | `TestCodexSessionLiveSmoke`, `TestGoalJourneyLiveBackends/codex`, `TestMCPLiveLoadAndSessionSeesMnemo/codex`, `TestMCPHostLiveSeatsSeeMnemo/codex` |
+| `CLAUDIA_LIVE=1` | Claude Task, Session and Pool | `TestTaskRunSmoke`, `TestClaudeTaskDisallowToolsLiveSmoke`, `TestModelObservableLive`, `TestModelNotFoundLiveFailLoud`, `TestAgentReadinessSmoke`, `TestAgentReadinessFailureOnDeadProcess`, `TestAgentSendAndWaitForResponse`, `TestAgentMultiTurn`, `TestRunHelper`, `TestCrashSurvival`, `TestRewindSessionLive`, `daemon.TestRewindLive`, `daemon.TestGoalCompleteCheckLive`, `daemon.TestAcquireLive`, `TestPoolAgentEventsLive`, `TestAcquireColdAndReturn`, `TestAcquireDropKillsWindow`, `TestAcquireKeepAliveFor`, `TestAcquireConcurrentDifferentKeys`, `TestAcquireHeldWindowNotReused`, `TestAcquirePoolCapEviction`, `TestAcquireErrorPolicy`, `TestPoolCrashSurvival`, `TestGoalJourneyLiveBackends/claude`, `TestMCPLiveLoadAndSessionSeesMnemo/claude`, `TestMCPHostLiveSeatsSeeMnemo/claude` |
+| `CLAUDIA_GROK_LIVE=1` | Grok Task + Session, xAI Realtime | `TestGrokTaskRunSmoke`, `TestGrokSessionLiveSmoke`, `TestGrokSessionLiveSmokeSteer`, `TestExclusiveGrokSessionResumeLive`, `TestGrokPlanUsageLive`, `grok.TestLiveConnect` (also needs `XAI_API_KEY`), `TestGoalJourneyLiveBackends/grok`, `TestMCPLiveLoadAndSessionSeesMnemo/grok`, `TestMCPHostLiveSeatsSeeMnemo/grok`, `TestMCPExclusiveSessionRoundTrip` |
+| `CLAUDIA_CODEX_LIVE=1` | Codex Task + Session | `TestCodexTaskRunSmoke`, `TestCodexSessionLiveSmoke`, `codex.TestLiveCodexTaskRun`, `TestGoalJourneyLiveBackends/codex`, `TestMCPLiveLoadAndSessionSeesMnemo/codex`, `TestMCPHostLiveSeatsSeeMnemo/codex` |
 | `CLAUDIA_BEDROCK_LIVE=1` | Bedrock Task | `TestBedrockTaskLiveSmoke` |
 | `CLAUDIA_OLLAMA_LIVE=1` | Ollama Task | `TestOllamaTaskLiveSmoke` |
-| `CLAUDIA_CURSOR_LIVE=1` | Cursor Task + Session | `TestCursorTaskLiveSmoke`, `TestCursorSessionLiveSmoke`, `TestCursorSessionLiveSmokeSteer`, `TestGoalJourneyLiveBackends/cursor`, `TestMCPLiveLoadAndSessionSeesMnemo/cursor`, `TestMCPHostLiveSeatsSeeMnemo/cursor`, `TestMCPExclusiveCursorSessionRoundTrip` |
+| `CLAUDIA_CURSOR_LIVE=1` | Cursor Task + Session | `TestCursorTaskLiveSmoke`, `TestCursorSessionLiveSmoke`, `TestCursorSessionLiveSmokeSteer`, `TestCursorSavedSessionResumeLive`, `TestGoalJourneyLiveBackends/cursor`, `TestMCPLiveLoadAndSessionSeesMnemo/cursor`, `TestMCPHostLiveSeatsSeeMnemo/cursor`, `TestMCPExclusiveCursorSessionRoundTrip` |
+
+**Shared surfaces.** Some wires are not a backend — they are one
+mechanism several backends run through, and the table above cannot
+carry them: an agent that changed plan-usage fetching or the tmux
+paste-submit path would read six backend rows and find nothing about
+what it touched. That is exactly the silence T100 was filed for, so
+those surfaces get rows keyed by the surface, naming the gate that
+un-skips each one.
+
+| Surface | Gate | Must include |
+|---------|------|--------------|
+| Plan-usage fetching (`PlanUsage`, pacing, the direct-caller path) | `CLAUDIA_GROK_LIVE=1` | `TestGrokPlanUsageLive` — the only backend with a live plan-usage oracle; Claude, Codex and Cursor usage paths are hermetic-only residue |
+| Goal continuation across backends | the gate of each backend you touched | `TestGoalJourneyLiveBackends` (per-backend subtests) |
+| Broker seat grant, death and reclaim | the gate of each backend you touched, plus `CLAUDIA_NO_BROKER=0` and a running `claudia broker serve` | `TestBrokerReclaimLiveBackends` |
+| tmux paste-submit framing for large payloads | `CLAUDIA_LIVE_SEND=1` | `TestT30LargePayloadSubmitsOnRealPath` — its own gate because it spends a turn on a 6400-byte send; `CLAUDIA_LIVE=1` alone does not un-skip it |
+| MCP attach and host seats | the gate of each backend you touched | `TestMCPLiveLoadAndSessionSeesMnemo`, `TestMCPHostLiveSeatsSeeMnemo`, `TestMCPExclusiveSessionRoundTrip`, `TestMCPExclusiveCursorSessionRoundTrip` |
+| The turn-silence bound (`turnSilenceBound`, `cursorPromptSilenceBound`) | `CLAUDIA_LIVE=1`, `CLAUDIA_GROK_LIVE=1`, `CLAUDIA_CURSOR_LIVE=1` | `TestT96MeasureSilenceClaude`, `TestT96MeasureSilenceGrok`, `TestT96MeasureSilenceCursor` — measurement probes that assert nothing, deliberately outside `make live`; run them by hand when the constant is questioned |
+| MCP OAuth discovery against a real server | `CLAUDIA_MCP_OAUTH_LIVE=1` | `TestProbeMCPLiveAtlassian` — a vendor probe, deliberately outside `make live`; see `live-gate-exclusions.json` |
+
+This table is not maintained by hand alone. `internal/livegate` reads
+every live test out of the source under `make gate` and fails when one
+is missing from either this table or `make live`'s `-run` expression —
+so a live test added without a row here turns the hermetic gate red
+(T100). A test that genuinely should not be in one of the two is
+recorded, with its reason, in `live-gate-exclusions.json`.
 
 ```bash
 # the backend you just changed

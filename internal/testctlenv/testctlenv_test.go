@@ -28,6 +28,13 @@ func TestRegistryMembershipPinned(t *testing.T) {
 		"CLAUDIA_GROK_LIVE",
 		"CLAUDIA_OLLAMA_LIVE",
 		"CLAUDIA_CURSOR_LIVE",
+		// Two more live gates, found by internal/livegate reading the
+		// tests rather than this list (T100): they had been un-skipping
+		// TestT30LargePayloadSubmitsOnRealPath and
+		// TestProbeMCPLiveAtlassian while All() did not name them, so
+		// nothing stripped them from a spawned agent.
+		"CLAUDIA_LIVE_SEND",
+		"CLAUDIA_MCP_OAUTH_LIVE",
 	}
 	// Configuration an agent legitimately needs. Stripping any of
 	// these breaks the agent instead of protecting it.
