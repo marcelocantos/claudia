@@ -259,7 +259,10 @@ func (c *grokACPClient) dispatchMessage(line []byte) {
 		if ch != nil {
 			delete(c.pending, *msg.ID)
 		}
-		settle := c.prompts.settle(*msg.ID)
+		// Grok has no silence re-issue, so no delivery is ever abandoned
+		// and the answered flag only ever reaches the steer paths, which
+		// do not read it.
+		settle := c.prompts.settle(*msg.ID, acpResultAnswersTurn(msg))
 		sessionID := c.sessionID
 		c.mu.Unlock()
 		switch settle {

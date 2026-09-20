@@ -318,7 +318,7 @@ func TestACPSteerThenCancelClearsStack(t *testing.T) {
 
 func TestACPPromptStack(t *testing.T) {
 	var s acpPromptStack
-	if s.inFlight() || s.top() != 0 || s.settle(1) != acpPromptNotOurs {
+	if s.inFlight() || s.top() != 0 || s.settle(1, true) != acpPromptNotOurs {
 		t.Fatal("empty stack is not idle")
 	}
 	s.push(1)
@@ -327,17 +327,104 @@ func TestACPPromptStack(t *testing.T) {
 	if s.top() != 3 || s.supersededTurnID() != "2" {
 		t.Fatalf("top=%d superseded=%q", s.top(), s.supersededTurnID())
 	}
-	if got := s.settle(1); got != acpPromptSuperseded {
+	if got := s.settle(1, true); got != acpPromptSuperseded {
 		t.Fatalf("settle(1) = %v, want superseded", got)
 	}
-	if got := s.settle(1); got != acpPromptNotOurs {
+	if got := s.settle(1, true); got != acpPromptNotOurs {
 		t.Fatalf("settle(1) twice = %v, want not ours", got)
 	}
-	if got := s.settle(3); got != acpPromptTurnDone || s.inFlight() {
+	if got := s.settle(3, true); got != acpPromptTurnDone || s.inFlight() {
 		t.Fatalf("settle(top) = %v inFlight=%v", got, s.inFlight())
 	}
-	if got := s.settle(2); got != acpPromptNotOurs {
+	if got := s.settle(2, true); got != acpPromptNotOurs {
 		t.Fatalf("settle after the turn ended = %v, want not ours", got)
+	}
+}
+
+// 🎯T92. A re-issue is not a steer: the two deliveries carry the same
+// text and only one answer is coming, so whichever id the peer answers
+// ends the turn. The stack is where that distinction lives.
+func TestACPPromptStackReissueKeepsTheAbandonedDeliveryRedeemable(t *testing.T) {
+	var s acpPromptStack
+	s.push(4)
+	s.reissue(5)
+	if s.top() != 5 || !s.inFlight() {
+		t.Fatalf("after reissue top=%d inFlight=%v, want the turn open on 5", s.top(), s.inFlight())
+	}
+
+	// The peer was slow, not deaf: it answered the delivery we gave up
+	// on. Before the fix this id was gone from the stack entirely and
+	// settled as acpPromptNotOurs — no terminal event, caller parked.
+	if got := s.settle(4, true); got != acpPromptRedeemed {
+		t.Fatalf("settle(abandoned, answered) = %v, want redeemed", got)
+	}
+	if s.inFlight() {
+		t.Fatal("a redeemed delivery must end the turn")
+	}
+	if got := s.settle(5, true); got != acpPromptNotOurs {
+		t.Fatalf("the surviving delivery answering a finished turn = %v, want not ours", got)
+	}
+}
+
+// The cancellation acknowledgement the re-issue path provokes itself is
+// not an answer, and ending the turn on it would hand the caller an
+// empty reply.
+func TestACPPromptStackCancelledAbandonedDeliveryLeavesTheTurnOpen(t *testing.T) {
+	var s acpPromptStack
+	s.push(4)
+	s.reissue(5)
+	if got := s.settle(4, false); got != acpPromptSuperseded {
+		t.Fatalf("settle(abandoned, cancelled) = %v, want superseded", got)
+	}
+	if !s.inFlight() || s.top() != 5 {
+		t.Fatalf("top=%d inFlight=%v: the surviving delivery still owes a terminal event",
+			s.top(), s.inFlight())
+	}
+	if got := s.settle(5, true); got != acpPromptTurnDone {
+		t.Fatalf("settle(surviving) = %v, want turn done", got)
+	}
+}
+
+// A straggler from a turn that is over belongs to nobody. Redeeming it
+// into the next turn would end that one on an answer to a question
+// nobody asked.
+func TestACPPromptStackAbandonedIDDiesWithItsTurn(t *testing.T) {
+	var s acpPromptStack
+	s.push(4)
+	s.reissue(5)
+	if got := s.settle(5, true); got != acpPromptTurnDone {
+		t.Fatalf("settle(surviving) = %v, want turn done", got)
+	}
+	s.push(6)
+	if got := s.settle(4, true); got != acpPromptNotOurs {
+		t.Fatalf("settle(stale abandoned id) = %v, want not ours", got)
+	}
+	if !s.inFlight() || s.top() != 6 {
+		t.Fatalf("the new turn was ended by a straggler: top=%d inFlight=%v", s.top(), s.inFlight())
+	}
+}
+
+func TestACPResultAnswersTurn(t *testing.T) {
+	answers := func(result string) bool {
+		t.Helper()
+		return acpResultAnswersTurn(acpRPCMessage{Result: json.RawMessage(result)})
+	}
+	if !answers(`{"stopReason":"end_turn"}`) {
+		t.Error("end_turn is the turn's answer")
+	}
+	if answers(`{"stopReason":"cancelled"}`) {
+		t.Error("a cancellation acknowledgement is not the turn's answer")
+	}
+	if !answers(`{}`) {
+		t.Error("a result with no stopReason is still a result")
+	}
+	failed := acpRPCMessage{}
+	failed.Error = &struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+	}{Code: -32000, Message: "cancelled"}
+	if acpResultAnswersTurn(failed) {
+		t.Error("a JSON-RPC error on an abandoned delivery is not the turn's answer")
 	}
 }
 

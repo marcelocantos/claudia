@@ -4,6 +4,7 @@
 package claudia
 
 import (
+	"encoding/json"
 	"errors"
 	"strconv"
 )
@@ -36,6 +37,11 @@ const (
 	acpPromptSuperseded
 	// acpPromptTurnDone: the top id returned. The turn is over.
 	acpPromptTurnDone
+	// acpPromptRedeemed: a delivery the silence re-issue abandoned came
+	// back with the turn's answer after all. The turn is over, but the
+	// terminal event belongs to the surviving delivery's id, because that
+	// is the id the turn's chunks were published under.
+	acpPromptRedeemed
 )
 
 // acpPromptStack tracks the session/prompt request ids that share one
@@ -49,6 +55,18 @@ type acpPromptStack struct {
 	// lastSuperseded is the id the most recent steer pushed over, kept as
 	// DeliveryOutcome.SupersededTurnID. Zero until the first steer.
 	lastSuperseded int64
+	// abandoned holds ids the 🎯T83 silence re-issue gave up on. They are
+	// not steered-over prompts: a steer is new work that supersedes old
+	// work, while a re-issue is the SAME text delivered twice because the
+	// peer said nothing the first time. Only one answer is coming, and it
+	// may well come back under the delivery this client stopped waiting
+	// for — a peer that was merely slow answers what it was asked.
+	//
+	// Dropping those ids outright is what 🎯T92 was filed for. Their
+	// results then settled as acpPromptNotOurs and published nothing at
+	// all, so a caller in WaitForResponse had no terminal event left to
+	// wait for: the reply was on the wire and the turn never ended.
+	abandoned map[int64]bool
 }
 
 // top returns the id that settles the turn, or 0 when idle.
@@ -72,22 +90,57 @@ func (s *acpPromptStack) push(id int64) {
 	s.ids = append(s.ids, id)
 }
 
-// clear forgets every id: the turn was cancelled or settled.
+// clear forgets every id: the turn was cancelled or settled. Abandoned
+// deliveries go with it — once the turn is over, a straggler belongs to
+// nobody and must not redeem itself into whatever comes next.
 func (s *acpPromptStack) clear() {
 	s.ids = nil
+	s.abandoned = nil
+}
+
+// reissue replaces the open turn's deliveries with a single fresh one
+// after the silence watch gave up, keeping the old ids redeemable
+// (🎯T92). It is one critical section with the caller's decision to
+// abandon, so a reply racing the re-delivery is either seen before the
+// swap — nothing to re-establish — or arrives to find its id still known.
+func (s *acpPromptStack) reissue(id int64) {
+	for _, old := range s.ids {
+		if s.abandoned == nil {
+			s.abandoned = make(map[int64]bool, 1)
+		}
+		s.abandoned[old] = true
+	}
+	s.ids = []int64{id}
 }
 
 // settle removes id from the stack and reports what its result means.
 // A top-id result clears the whole stack: any superseded prompt that has
 // not answered yet belongs to a turn that is over, and its late result is
 // then acpPromptNotOurs.
-func (s *acpPromptStack) settle(id int64) acpPromptSettle {
-	if id == 0 || len(s.ids) == 0 {
+//
+// answered says the result carries the peer's answer rather than its
+// acknowledgement of a cancellation. It decides only the abandoned case:
+// the re-issue path writes session/cancel before re-delivering, so the
+// abandoned id comes back either as the reply this client nearly lost or
+// as the cancel landing. Reading the second as the first would end the
+// turn with nothing in it — `reply ""` by a different road (🎯T92).
+func (s *acpPromptStack) settle(id int64, answered bool) acpPromptSettle {
+	if id == 0 {
 		return acpPromptNotOurs
 	}
-	if s.top() == id {
+	if len(s.ids) > 0 && s.top() == id {
 		s.clear()
 		return acpPromptTurnDone
+	}
+	if s.abandoned[id] {
+		delete(s.abandoned, id)
+		if !answered || len(s.ids) == 0 {
+			// The cancel landed (or the turn is already over). The
+			// surviving delivery still owes the caller a terminal event.
+			return acpPromptSuperseded
+		}
+		s.clear()
+		return acpPromptRedeemed
 	}
 	for i, v := range s.ids {
 		if v == id {
@@ -96,6 +149,24 @@ func (s *acpPromptStack) settle(id int64) acpPromptSettle {
 		}
 	}
 	return acpPromptNotOurs
+}
+
+// acpResultAnswersTurn reports whether a session/prompt result carries
+// the peer's answer to the prompt rather than its acknowledgement that
+// the prompt was cancelled. A JSON-RPC error is not an answer either:
+// on an abandoned delivery the likeliest thing behind one is the
+// re-issue path's own session/cancel.
+func acpResultAnswersTurn(msg acpRPCMessage) bool {
+	if msg.Error != nil {
+		return false
+	}
+	var meta struct {
+		StopReason string `json:"stopReason"`
+	}
+	if len(msg.Result) > 0 {
+		_ = json.Unmarshal(msg.Result, &meta)
+	}
+	return meta.StopReason != "cancelled"
 }
 
 // supersededTurnID formats lastSuperseded for DeliveryOutcome, "" if none.

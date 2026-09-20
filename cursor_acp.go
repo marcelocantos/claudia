@@ -297,17 +297,30 @@ func (c *cursorACPClient) dispatchMessage(line []byte) {
 		return
 	}
 	if msg.ID != nil {
+		answered := acpResultAnswersTurn(msg)
 		c.mu.Lock()
 		ch := c.pending[*msg.ID]
 		if ch != nil {
 			delete(c.pending, *msg.ID)
 		}
-		settle := c.prompts.settle(*msg.ID)
+		// Read the surviving id BEFORE settling: a redeemed delivery's
+		// terminal event belongs to the id the turn's chunks went out
+		// under, not to the delivery this client had stopped waiting for.
+		surviving := c.prompts.top()
+		settle := c.prompts.settle(*msg.ID, answered)
 		sessionID := c.sessionID
 		c.mu.Unlock()
 		switch settle {
 		case acpPromptTurnDone:
 			c.publishPromptResult(msg, sessionID, strconv.FormatInt(*msg.ID, 10))
+		case acpPromptRedeemed:
+			// The peer was slow, not deaf: it answered the delivery the
+			// silence watch gave up on. That answer is the turn's, and
+			// ends it — dropping it left the caller with no terminal
+			// event to wait for at all (🎯T92).
+			slog.Warn("cursor acp abandoned delivery answered after the re-issue; ending the turn on it",
+				"session", sessionID, "prompt", *msg.ID, "turn", surviving)
+			c.publishPromptResult(msg, sessionID, strconv.FormatInt(surviving, 10))
 		case acpPromptSuperseded:
 			// A steered-over prompt answered early (Cursor: cancelled).
 			// The turn continues on the top id; no terminal event.
@@ -609,18 +622,34 @@ func (c *cursorACPClient) promptWatchingForSilence(sid string, id int64, text st
 		return nil
 	}
 
-	slog.Warn("cursor acp opening prompt drew no response; re-establishing the turn",
-		"session", sid, "prompt", id, "bound", cursorPromptSilenceBound, "observed", first.String())
-
-	// Drop the vanished turn on both sides before re-issuing, so the
-	// retry is a fresh prompt rather than a second one stacked on a turn
-	// the peer may still believe is open.
-	_ = c.notify("session/cancel", map[string]any{"sessionId": sid})
+	// Abandoning this delivery and swapping in its replacement is ONE
+	// critical section, and it happens before anything else goes on the
+	// wire (🎯T92). Two races close here.
+	//
+	// A reply that lands in the instant the bound just closed is seen
+	// immediately below, and there is then nothing to re-establish: the
+	// peer answered, late, and the caller gets its answer.
+	//
+	// A reply that lands any later arrives to find its id still known to
+	// the turn and still able to end it. The old code cleared the stack
+	// first, so that reply settled as acpPromptNotOurs and published
+	// nothing: the answer was on the wire and the turn never ended.
+	//
+	// Cancelling before the swap would reopen both windows, and add a
+	// third — the cancel's own result would arrive while the abandoned
+	// id was still the top of the stack, and end the turn with nothing
+	// in it.
 	c.mu.Lock()
-	c.prompts.clear()
+	if c.peerSeq > seq {
+		c.firstDone = true
+		c.mu.Unlock()
+		slog.Warn("cursor acp opening prompt spoke as its bound expired; keeping the turn",
+			"session", sid, "prompt", id, "bound", cursorPromptSilenceBound)
+		return nil
+	}
 	closed := c.closed
 	retryID := atomic.AddInt64(&c.nextID, 1)
-	c.prompts.push(retryID)
+	c.prompts.reissue(retryID)
 	c.mu.Unlock()
 	if closed {
 		c.mu.Lock()
@@ -628,6 +657,15 @@ func (c *cursorACPClient) promptWatchingForSilence(sid string, id int64, text st
 		c.mu.Unlock()
 		return fmt.Errorf("cursor acp: client closed")
 	}
+
+	slog.Warn("cursor acp opening prompt drew no response; re-establishing the turn",
+		"session", sid, "prompt", id, "retry", retryID,
+		"bound", cursorPromptSilenceBound, "observed", first.String())
+
+	// Drop the vanished turn on the peer's side too, so the retry is a
+	// fresh prompt rather than a second one stacked on a turn the peer
+	// may still believe is open.
+	_ = c.notify("session/cancel", map[string]any{"sessionId": sid})
 	publishEvent(c.onEvent, acpPromptAcceptedEvent(sid, retryID))
 	seq = c.peerSeqNow()
 	if err := c.write(acpPromptRequest(retryID, sid, text)); err != nil {

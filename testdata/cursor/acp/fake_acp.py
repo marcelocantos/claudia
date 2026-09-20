@@ -22,6 +22,7 @@ def main() -> None:
     authed = False
     held = None
     swallowed_first_prompt = False
+    slow_prompt = None
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -119,6 +120,41 @@ def main() -> None:
             # slow-but-healthy peer, which a bound must never call stuck.
             if os.environ.get("FAKE_ACP_SWALLOW_FIRST_PROMPT") and not swallowed_first_prompt:
                 swallowed_first_prompt = True
+                continue
+
+            # 🎯T92: the peer that was merely slow, not deaf. It holds the
+            # opening delivery without saying anything, waits for the
+            # harness to give up and re-deliver, and then answers the
+            # delivery the harness ABANDONED. Nothing here watches a
+            # clock: the re-delivery is the signal, and the harness
+            # causes it. A client that drops the abandoned id leaves its
+            # caller with the reply on the wire and no terminal event to
+            # stop waiting for.
+            if os.environ.get("FAKE_ACP_ANSWER_ABANDONED"):
+                if slow_prompt is None:
+                    slow_prompt = mid
+                    continue
+                answer_id, slow_prompt = slow_prompt, None
+                send(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "session/update",
+                        "params": {
+                            "sessionId": sid,
+                            "update": {
+                                "sessionUpdate": "agent_message_chunk",
+                                "content": {"type": "text", "text": "pong"},
+                            },
+                        },
+                    }
+                )
+                send(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": answer_id,
+                        "result": {"stopReason": "end_turn"},
+                    }
+                )
                 continue
             if delay_ms := os.environ.get("FAKE_ACP_PROMPT_DELAY_MS"):
                 time.sleep(int(delay_ms) / 1000.0)
