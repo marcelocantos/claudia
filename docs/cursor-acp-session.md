@@ -35,6 +35,37 @@ before `acp` when `Config.Model` is set.
 8. `session/cancel` on `Interrupt`
 9. Process kill on `Stop`
 
+### The opening prompt is watched (🎯T83)
+
+A `session/prompt` write returning without error means a line reached a
+pipe, not that the seat took the work. A mint could answer `session/new`,
+swallow the first prompt and then say nothing forever; the prompt id
+stayed in flight, so every later `Send` returned `ErrTurnInFlight`, which
+reads as *busy*. The seat looked alive and permanently mid-turn and could
+only be cleared by destroying it.
+
+So the session's **first** prompt waits for the peer to say anything at
+all about it — a thought, a chunk, a tool call, a result. Silence gets the
+brief once more on a re-established turn (`session/cancel`, then a fresh
+prompt id). Silence twice leaves the seat **idle** and returns
+[`ErrCursorPromptStuck`], so a consumer can retry in place instead of
+stopping, parking, restarting, killing and reminting.
+
+| | |
+| --- | --- |
+| What is bounded | Silence before the **first inbound message** of the turn |
+| What is **not** bounded | Turn duration — the first message disarms the wait |
+| Scope | The opening prompt only; later `Send`s are a plain write |
+| On failure | Seat idle, typed error, never `ErrTurnInFlight` |
+
+`cursorPromptSilenceBound` is measured, not chosen. Three real
+`cursor-agent` mints answered their first prompt in **14.0s, 14.1s and
+18.3s**, and the first thing to arrive is an `agent_thought_chunk`, not
+reply text. A bound in the single-digit seconds — the intuitive choice —
+would call every healthy mint stuck. The shipped value is 120s, about
+6.5x the worst observed: a false positive costs one retry, a false
+negative costs a pinned seat.
+
 ### Auto-approve
 
 `--force` plus replies to `session/request_permission` keep unattended
@@ -96,6 +127,12 @@ even static config were ignored on some CLI builds — live
 ### Oracles
 
 - Hermetic Session: `testdata/cursor/acp/fake_acp.py` + `TestHermeticCursorSession*`
+- Streamed chunk join (🎯T79): `TestHermeticCursorSessionMultiChunkReply`
+  (`FAKE_ACP_CHUNKS`) and the pure `TestAppendTurnText`
+- Stuck opening prompt (🎯T83): `TestCursorStuckFirstPrompt*`,
+  `TestCursorSlowFirstPromptIsNotStuck`, `TestCursorSecondPromptIsNotWatched`
+  (`FAKE_ACP_WITHHOLD`, `FAKE_ACP_SWALLOW_FIRST_PROMPT`,
+  `FAKE_ACP_PROMPT_DELAY_MS`)
 - Hermetic Task: `testdata/cursor/print/fake_print.py` + `TestHermeticCursorTaskRun`
 - Resume identity: `TestHermeticCursorLoadFailsClosedWhenRequireResume`,
   `TestHermeticCursorLoadFallsThroughForMintedID`
