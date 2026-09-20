@@ -550,13 +550,28 @@ func (c *cursorACPClient) Prompt(text string) error {
 	// opening brief falls into a peer that never speaks. Once a seat has
 	// demonstrably taken work, a plain write is the right thing again, and
 	// Send stays non-blocking for the rest of the seat's life.
-	watch := !c.firstDone
+	//
+	// The watch also needs something to watch (🎯T91). peerSeq only moves
+	// from readLoop, and readLoop only exists on a client that owns a
+	// transport — the same constructor that installs peerWoke. On a client
+	// assembled without one, no message can ever arrive during the call, so
+	// the wait is not a wait: its verdict is fixed before it starts, and it
+	// would spend both deliveries' bounds to report a healthy peer stuck.
+	// Arm the watch only where the peer can disarm it.
+	watch := !c.firstDone && c.peerWoke != nil
+	unwatchable := !c.firstDone && c.peerWoke == nil
 	id := atomic.AddInt64(&c.nextID, 1)
 	c.prompts.push(id)
 	c.mu.Unlock()
 	publishEvent(c.onEvent, acpPromptAcceptedEvent(sid, id))
 
 	if !watch {
+		if unwatchable {
+			// Loud, because on a transport-owning client this would be a
+			// silent loss of the 🎯T83 guarantee rather than a stub.
+			slog.Warn("cursor acp opening prompt not watched for silence: client has no peer wake path",
+				"session", sid, "prompt", id, "owns_process", c.ownsProcess)
+		}
 		return c.write(acpPromptRequest(id, sid, text))
 	}
 	return c.promptWatchingForSilence(sid, id, text)
@@ -586,7 +601,8 @@ func (c *cursorACPClient) promptWatchingForSilence(sid string, id int64, text st
 		c.mu.Unlock()
 		return err
 	}
-	if c.awaitPeerActivity(seq, cursorPromptSilenceBound) {
+	first := c.awaitPeerActivity(seq, cursorPromptSilenceBound)
+	if first.spoke {
 		c.mu.Lock()
 		c.firstDone = true
 		c.mu.Unlock()
@@ -594,7 +610,7 @@ func (c *cursorACPClient) promptWatchingForSilence(sid string, id int64, text st
 	}
 
 	slog.Warn("cursor acp opening prompt drew no response; re-establishing the turn",
-		"session", sid, "prompt", id, "waited", cursorPromptSilenceBound)
+		"session", sid, "prompt", id, "bound", cursorPromptSilenceBound, "observed", first.String())
 
 	// Drop the vanished turn on both sides before re-issuing, so the
 	// retry is a fresh prompt rather than a second one stacked on a turn
@@ -620,7 +636,8 @@ func (c *cursorACPClient) promptWatchingForSilence(sid string, id int64, text st
 		c.mu.Unlock()
 		return err
 	}
-	if c.awaitPeerActivity(seq, cursorPromptSilenceBound) {
+	second := c.awaitPeerActivity(seq, cursorPromptSilenceBound)
+	if second.spoke {
 		c.mu.Lock()
 		c.firstDone = true
 		c.mu.Unlock()
@@ -633,8 +650,12 @@ func (c *cursorACPClient) promptWatchingForSilence(sid string, id int64, text st
 	c.mu.Lock()
 	c.prompts.clear()
 	c.mu.Unlock()
-	return fmt.Errorf("%w: session %s went silent for %v across two deliveries",
-		ErrCursorPromptStuck, sid, cursorPromptSilenceBound)
+	// Name what was waited for, not just how long (🎯T91). Whoever reads
+	// this next needs to know which deliveries went out, what each wait
+	// actually observed, and whether the transport was still alive — a
+	// bare duration sends them back to the wire to find out.
+	return fmt.Errorf("%w: session %s took two deliveries (prompt %d: %s; prompt %d: %s) with a %v bound on each",
+		ErrCursorPromptStuck, sid, id, first, retryID, second, cursorPromptSilenceBound)
 }
 
 // peerSeqNow samples the inbound-message counter.
@@ -644,34 +665,71 @@ func (c *cursorACPClient) peerSeqNow() uint64 {
 	return c.peerSeq
 }
 
-// awaitPeerActivity reports whether the peer sent anything after the
-// counter read start, within d. A closed transport ends the wait
-// immediately: a dead peer is not a silent one, and the caller's own
-// error path is better than burning the bound.
-func (c *cursorACPClient) awaitPeerActivity(start uint64, d time.Duration) bool {
+// peerWaitOutcome is what a silence wait observed. A bare "the peer did
+// not speak" is the wrong thing to report from here (🎯T91): silence, a
+// transport that died under the wait, and a wait that could never have
+// been woken at all are three different faults with three different
+// repairs, and the bound alone cannot tell them apart.
+type peerWaitOutcome struct {
+	spoke    bool          // the peer said something after the snapshot
+	closed   bool          // the transport died while parked
+	observed uint64        // inbound messages seen during the wait
+	waited   time.Duration // wall time actually spent parked
+}
+
+// String renders the outcome for a log line or an error, naming what the
+// wait was watching rather than only how long it watched.
+func (o peerWaitOutcome) String() string {
+	switch {
+	case o.spoke:
+		return fmt.Sprintf("peer spoke after %v (%d inbound)", o.waited.Round(time.Millisecond), o.observed)
+	case o.closed:
+		return fmt.Sprintf("transport closed after %v with no inbound message", o.waited.Round(time.Millisecond))
+	default:
+		return fmt.Sprintf("no inbound message of any kind in %v", o.waited.Round(time.Millisecond))
+	}
+}
+
+// awaitPeerActivity waits for the peer to send anything after the counter
+// read start, up to d, and reports what it saw.
+//
+// Two things end it early. A closed transport: a dead peer is not a silent
+// one, and the caller's own error path beats burning the bound. And a
+// client with no wake channel: nothing can ever move peerSeq on such a
+// client, so parking on it is a sleep with a predetermined verdict, not a
+// wait. Callers arm the watch only when the wake path exists (see Prompt),
+// and this is the second line of that defence.
+func (c *cursorACPClient) awaitPeerActivity(start uint64, d time.Duration) peerWaitOutcome {
 	c.mu.Lock()
 	ch := c.peerWoke
 	c.mu.Unlock()
 
+	began := time.Now()
+	report := func() peerWaitOutcome {
+		c.mu.Lock()
+		seq, closed := c.peerSeq, c.closed
+		c.mu.Unlock()
+		return peerWaitOutcome{
+			spoke:    seq > start,
+			closed:   closed,
+			observed: seq - start,
+			waited:   time.Since(began),
+		}
+	}
+	if ch == nil {
+		return report()
+	}
+
 	deadline := time.NewTimer(d)
 	defer deadline.Stop()
 	for {
-		c.mu.Lock()
-		moved, closed := c.peerSeq > start, c.closed
-		c.mu.Unlock()
-		if moved {
-			return true
-		}
-		if closed {
-			return false
+		if out := report(); out.spoke || out.closed {
+			return out
 		}
 		select {
 		case <-ch:
 		case <-deadline.C:
-			c.mu.Lock()
-			moved := c.peerSeq > start
-			c.mu.Unlock()
-			return moved
+			return report()
 		}
 	}
 }
