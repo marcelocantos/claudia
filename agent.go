@@ -1834,7 +1834,12 @@ func (a *Agent) WaitForResponse(ctx context.Context) (string, error) {
 	// arm, so a consumer passing a long-lived context — daemon code, or a
 	// test's t.Context() — waited for the life of the process.
 	started := a.now()
-	bound := a.silenceBound()
+	// The bound answers to the deadline this wait is actually running
+	// under (🎯T103): under `go test` that is the test binary's own
+	// timeout, and a thirty-minute bound inside a ten-minute binary is a
+	// diagnosis nobody ever hears. In production there is no such
+	// deadline and the configured bound is untouched.
+	bound := a.waitBound(started)
 
 	// A wait that BEGAN on a live agent is woken by that agent's death: a
 	// dead agent provably cannot publish the terminal event, so there is
@@ -1986,7 +1991,17 @@ func (a *Agent) WaitForResponse(ctx context.Context) (string, error) {
 	for {
 		select {
 		case <-ctx.Done():
-			return "", ctx.Err()
+			if out, ok := answered(); ok {
+				// The turn landed in the same instant the caller's
+				// context ended. An agent that said its piece said it.
+				return out.text, out.err
+			}
+			// The caller's own deadline is the other deadline a wait runs
+			// under, and a bare context.DeadlineExceeded names nothing:
+			// not the session, not the turn, not what last arrived
+			// (🎯T103). The cause is still wrapped, so errors.Is keeps
+			// working for callers that test for it.
+			return fail(ctx.Err(), a.now(), lastActivity())
 
 		case out := <-ch:
 			return out.text, out.err

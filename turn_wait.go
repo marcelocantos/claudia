@@ -5,6 +5,7 @@ package claudia
 
 import (
 	"errors"
+	"flag"
 	"fmt"
 	"strings"
 	"sync"
@@ -168,7 +169,13 @@ func (a *Agent) turnWaitError(cause error, w turnSeen, now, started, lastActivit
 	}
 	if errors.Is(cause, ErrTurnAbandoned) {
 		fmt.Fprintf(&b, "; nothing arrived for %s (silence bound %s — raise Config.TurnSilenceBound if this agent is legitimately silent for longer)",
-			roundDur(now.Sub(lastActivity)), bound)
+			roundDur(now.Sub(lastActivity)), roundDur(bound))
+	} else {
+		// A death, or a caller's context ending the wait. Neither is a
+		// conviction, so neither names the bound — but how long the
+		// agent had been quiet is the same question the reader has, and
+		// answering it is why this error exists at all (🎯T103).
+		fmt.Fprintf(&b, "; nothing arrived for %s", roundDur(now.Sub(lastActivity)))
 	}
 	return fmt.Errorf("%s: %w", b.String(), cause)
 }
@@ -253,4 +260,116 @@ func (a *Agent) lastTermActivity() time.Time {
 	a.termMu.Lock()
 	defer a.termMu.Unlock()
 	return a.termActivityAt
+}
+
+// processStart is as close to this process's birth as this package can
+// observe: its own package initialisation. Under `go test` the testing
+// package arms its timeout later still, in m.Run, so a deadline measured
+// from here lands slightly EARLY — the safe direction, since the cost of
+// being early is a diagnosis a little sooner and the cost of being late
+// is the panic this exists to beat.
+var processStart = time.Now()
+
+// processDeadline is when the process running a wait will be killed out
+// from under it, if anything will.
+//
+// Under `go test` something will: the test binary's own -timeout panics
+// the whole process, and takes every other test's result with it. That is
+// 🎯T103. [turnSilenceBound] is thirty minutes because that is what
+// healthy-turn silence measures; `go test` allows ten by default, so
+// inside the suite — the one place an abandoned turn has actually bitten,
+// twice — 🎯T96's named diagnosis was correct and unreachable. The wait
+// knew the session, the turn, the last event and its age, and was never
+// asked, because the process died first.
+//
+// Nothing else in this codebase sets such a deadline, so outside a test
+// binary there is none and production bounds are untouched. The flag is
+// testing's own, registered by testing.Init before any test runs and
+// absent from any other build: asking for it is how this reads "am I
+// inside a test binary, and how long does it have" without the product
+// importing testing.
+func processDeadline() (time.Time, bool) {
+	f := flag.Lookup("test.timeout")
+	if f == nil {
+		return time.Time{}, false
+	}
+	var d time.Duration
+	if g, ok := f.Value.(flag.Getter); ok {
+		d, _ = g.Get().(time.Duration)
+	}
+	if d == 0 {
+		// -timeout 0 disables the panic entirely; so does a value this
+		// cannot read, and both mean the same thing here — no deadline
+		// to fit inside.
+		parsed, err := time.ParseDuration(f.Value.String())
+		if err != nil || parsed <= 0 {
+			return time.Time{}, false
+		}
+		d = parsed
+	}
+	return processStart.Add(d), true
+}
+
+// waitDeadline is the instant this wait's process dies, when there is one
+// and when this agent's timers are measured against the same clock.
+//
+// The second half is not a formality. A hermetic fixture runs a
+// [ManualClock]: its bound is manual-clock time and the process deadline
+// is wall-clock time, so subtracting one from the other would make the
+// bound a function of how long the test BINARY had been running — a
+// verdict decided by how fast the host is, which is the whole 🎯T33 /
+// 🎯T92 / 🎯T93 family this fix must not rejoin. A wait on a manual clock
+// is bounded by the test that drives it, and needs nothing from here.
+func (a *Agent) waitDeadline() (time.Time, bool) {
+	if !a.onWallClock() {
+		return time.Time{}, false
+	}
+	return processDeadline()
+}
+
+// onWallClock reports whether this agent's timers run on real time.
+func (a *Agent) onWallClock() bool {
+	if a.clk == nil {
+		return true
+	}
+	_, ok := a.clk.(SystemClock)
+	return ok
+}
+
+// boundUnderDeadline shortens a silence bound to fit inside a deadline the
+// wait cannot outlive, and never lengthens one.
+//
+// The reserve is half of what is left, and a proportion rather than a
+// fixed margin on purpose: what the reserve has to cover is how much the
+// process still has to do after this wait reports, which the wait cannot
+// know. A proportion does not need to know it. Half is the one that makes
+// the guarantee statable without knowing when the park happened —
+// however late in a run a turn is abandoned, the wait hands back half of
+// whatever budget remained, and a second park in the same run hands back
+// half of that again.
+//
+// A deadline already past returns zero: the panic is imminent, so the
+// only useful bound is now.
+func boundUnderDeadline(bound time.Duration, now, deadline time.Time) time.Duration {
+	left := deadline.Sub(now)
+	if left <= 0 {
+		return 0
+	}
+	if budget := left / 2; budget < bound {
+		return budget
+	}
+	return bound
+}
+
+// waitBound is the silence bound one [Agent.WaitForResponse] call will
+// actually run under: [Agent.silenceBound], shortened to fit inside the
+// deadline the wait is living under. A bound that outlives its own
+// deadline reports nothing at all, which is 🎯T103's whole defect.
+func (a *Agent) waitBound(started time.Time) time.Duration {
+	bound := a.silenceBound()
+	deadline, ok := a.waitDeadline()
+	if !ok {
+		return bound
+	}
+	return boundUnderDeadline(bound, started, deadline)
 }
