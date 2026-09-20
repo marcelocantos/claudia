@@ -1863,7 +1863,7 @@ func (a *Agent) WaitForResponse(ctx context.Context) (string, error) {
 	// only once it is already listening is a wake no test can prove is
 	// there, and this one exists precisely because its absence is
 	// invisible until a suite hangs.
-	silence := a.after(bound)
+	silence := a.after(bound.effective)
 
 	emitOnce := func(out outcome) {
 		mu.Lock()
@@ -2045,11 +2045,11 @@ func (a *Agent) WaitForResponse(ctx context.Context) (string, error) {
 			default:
 			}
 			now, last := a.now(), lastActivity()
-			if idle := now.Sub(last); idle < bound {
+			if idle := now.Sub(last); idle < bound.effective {
 				// Something arrived while the timer ran: this is a bound
 				// on SILENCE, so the clock restarts from that activity,
 				// not from the wait.
-				silence = a.after(bound - idle)
+				silence = a.after(bound.effective - idle)
 				continue
 			}
 			return fail(ErrTurnAbandoned, now, last)

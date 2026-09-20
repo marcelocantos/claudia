@@ -100,12 +100,15 @@ func TestWaitBoundFitsInsideTheTestBinaryTimeout(t *testing.T) {
 	}
 	now := time.Now()
 	got := a.waitBound(now)
-	if got >= turnSilenceBound {
+	if got.effective >= turnSilenceBound {
 		t.Fatalf("waitBound = %v, the full production bound, inside a binary that has %v left: the diagnosis cannot arrive",
-			got, roundDur(deadline.Sub(now)))
+			got.effective, roundDur(deadline.Sub(now)))
 	}
-	if want := boundUnderDeadline(turnSilenceBound, now, deadline); got != want {
-		t.Fatalf("waitBound = %v, want %v", got, want)
+	if want := boundUnderDeadline(turnSilenceBound, now, deadline); got.effective != want {
+		t.Fatalf("waitBound = %v, want %v", got.effective, want)
+	}
+	if !got.cut() {
+		t.Fatalf("waitBound did not record that %v was cut from the configured %v", got.effective, got.configured)
 	}
 }
 
@@ -122,8 +125,12 @@ func TestAWaitOnAManualClockIgnoresTheProcessDeadline(t *testing.T) {
 	if d, ok := a.waitDeadline(); ok {
 		t.Fatalf("a manual-clock wait took the wall-clock deadline %v: its bound would now depend on how long the binary had been running", d)
 	}
-	if got := a.waitBound(a.now()); got != turnSilenceBound {
-		t.Fatalf("waitBound = %v on a manual clock, want the configured %v untouched", got, turnSilenceBound)
+	got := a.waitBound(a.now())
+	if got.effective != turnSilenceBound {
+		t.Fatalf("waitBound = %v on a manual clock, want the configured %v untouched", got.effective, turnSilenceBound)
+	}
+	if got.cut() {
+		t.Fatal("waitBound reported a cut on a manual clock, where no wall-clock deadline applies")
 	}
 }
 
@@ -288,4 +295,95 @@ func TestT103ChildStillReportsAfterTheParkedWait(t *testing.T) {
 	if os.Getenv(t103ChildEnv) == "" {
 		t.Skip("child of TestT103AbandonedTurnIsNamedInsideThePackageTimeout")
 	}
+}
+
+// A conviction under a CUT bound is not the same claim as a conviction
+// under the measured one, and must not read like it.
+//
+// This is not hypothetical arithmetic. `make live` runs with -timeout 30m
+// and every live backend shares that one binary, so a live test starting
+// late in the run is handed a bound of a couple of minutes — below the
+// 2m34.2s of healthy silence measured off a real Cursor mint
+// (turn_wait.go's turnSilenceBound). Cutting is still better than the
+// process-wide panic, which reports nothing at all; presenting the result
+// as "the agent went quiet for longer than a healthy turn ever does" is
+// not, because that sends the reader after the wrong defect.
+//
+// Both causes are wrapped, so 🎯T103's acceptance (errors.Is
+// ErrTurnAbandoned) holds while a caller that needs to know can ask.
+func TestAConvictionUnderACutBoundSaysSo(t *testing.T) {
+	a := waitFixture(NewManualClock(time.Now()), turnSilenceBound, false)
+	now := a.now()
+	// The shape of a live test starting 27 minutes into `make live`.
+	bound := turnBound{
+		effective:  90 * time.Second,
+		configured: turnSilenceBound,
+		deadline:   now.Add(3 * time.Minute),
+	}
+	if !bound.cut() {
+		t.Fatal("a bound of 90s against a configured 30m does not report itself as cut")
+	}
+
+	err := a.turnWaitError(ErrTurnAbandoned, turnSeen{events: 2, lastAt: now.Add(-90 * time.Second), lastType: "assistant", turnID: "turn-live"},
+		now, now.Add(-2*time.Minute), now.Add(-90*time.Second), bound)
+
+	if !errors.Is(err, ErrTurnAbandoned) {
+		t.Fatalf("err = %v, want errors.Is ErrTurnAbandoned — 🎯T103's acceptance names that error", err)
+	}
+	if !errors.Is(err, ErrSilenceBoundCutShort) {
+		t.Fatalf("err = %v, want errors.Is ErrSilenceBoundCutShort: a caller cannot tell a short budget from a silent agent", err)
+	}
+	for _, want := range []string{"cut from the configured 30m", "ran out of process, not out of patience"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not say %q", err, want)
+		}
+	}
+}
+
+// The other half: a conviction under the bound the consumer configured
+// carries no such qualifier, and must not claim one. A message that cried
+// "cut short" on every abandoned turn would be as useless as one that
+// never did.
+func TestAConvictionUnderTheConfiguredBoundClaimsNoCut(t *testing.T) {
+	a := waitFixture(NewManualClock(time.Now()), turnSilenceBound, false)
+	now := a.now()
+	bound := turnBound{effective: turnSilenceBound, configured: turnSilenceBound}
+	if bound.cut() {
+		t.Fatal("an uncut bound reports itself as cut")
+	}
+
+	err := a.turnWaitError(ErrTurnAbandoned, turnSeen{events: 1, lastAt: now.Add(-turnSilenceBound), lastType: "assistant", turnID: "turn-7"},
+		now, now.Add(-turnSilenceBound), now.Add(-turnSilenceBound), bound)
+
+	if errors.Is(err, ErrSilenceBoundCutShort) {
+		t.Fatalf("err = %v claims its bound was cut short when it ran the configured %v", err, turnSilenceBound)
+	}
+	if !strings.Contains(err.Error(), "raise Config.TurnSilenceBound") {
+		t.Errorf("error %q drops the lever a consumer with legitimately slower turns needs", err)
+	}
+}
+
+// The live gate's own arithmetic, pinned. `make live` passes -timeout 30m
+// (Makefile), and what that leaves a wait late in the run is the number
+// that decides whether a healthy Cursor turn survives. This test does not
+// forbid the cut — it fails if anyone believes the cut bound still clears
+// measured healthy silence, because it does not, which is exactly why the
+// error above has to say so.
+func TestTheLiveGateBudgetCanFallBelowMeasuredHealthySilence(t *testing.T) {
+	// Measured off a real Cursor mint; see turnSilenceBound's table.
+	const measuredCursorSilence = 2*time.Minute + 34*time.Second
+	const liveGateTimeout = 30 * time.Minute
+
+	start := time.Now()
+	deadline := start.Add(liveGateTimeout)
+	late := start.Add(27 * time.Minute)
+
+	got := boundUnderDeadline(turnSilenceBound, late, deadline)
+	if got >= measuredCursorSilence {
+		t.Fatalf("a wait starting 27m into `make live` gets %v, which clears the measured %v — "+
+			"if that is now true, ErrSilenceBoundCutShort's warning is overstated and should be revisited",
+			got, measuredCursorSilence)
+	}
+	t.Logf("27m into `make live` a wait is bounded at %v, below the measured %v: a healthy Cursor turn is convicted there, and the error says so",
+		got, measuredCursorSilence)
 }

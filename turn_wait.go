@@ -27,6 +27,24 @@ var ErrTurnAbandoned = errors.New("turn went silent and never ended")
 // than sitting out any bound.
 var ErrAgentGone = errors.New("agent died before the turn ended")
 
+// ErrSilenceBoundCutShort accompanies [ErrTurnAbandoned] when the bound
+// that fired was not the configured one but a shorter one, fitted to the
+// deadline the wait was running under (🎯T103).
+//
+// The distinction is the whole reason this error exists. A conviction
+// under the measured [turnSilenceBound] says the agent stopped talking
+// for longer than a healthy turn ever does. A conviction under a cut
+// bound says only that the wait ran out of PROCESS — `make live` runs
+// with -timeout 30m, so a live test starting late in that binary can be
+// handed a bound below the 2m34.2s of healthy silence measured off a real
+// Cursor mint, and would convict a turn that was working.
+//
+// Cutting the bound is still right: the alternative is the process-wide
+// panic, which reports nothing about anything. What is not right is
+// letting the two convictions look identical. Callers tell them apart
+// with errors.Is, and the message says which one it was either way.
+var ErrSilenceBoundCutShort = errors.New("silence bound was cut short to fit the wait's own deadline")
+
 // turnSilenceBound is how long [Agent.WaitForResponse] will sit with
 // NOTHING arriving from the agent before it declares the turn
 // abandoned. Raise it per agent with [Config.TurnSilenceBound].
@@ -86,6 +104,22 @@ const turnSilenceBound = 30 * time.Minute
 // cadence costs at most one tmux exec per seat per interval and
 // usually none: the daemon's converge loop is already asking.
 const turnLivenessPollInterval = windowCheckTTL
+
+// turnBound is the silence bound one wait ran under, together with what
+// it was configured to be. The two differ only when a deadline cut it
+// down, and a report that could not tell them apart would present a wait
+// that ran out of process as an agent that went quiet.
+type turnBound struct {
+	// effective is the bound the wait actually armed.
+	effective time.Duration
+	// configured is [Agent.silenceBound] before any deadline cut it.
+	configured time.Duration
+	// deadline is what did the cutting; zero when nothing did.
+	deadline time.Time
+}
+
+// cut reports whether a deadline shortened this bound.
+func (b turnBound) cut() bool { return b.effective < b.configured }
 
 // turnWitness records what one [Agent.WaitForResponse] call has seen.
 // A wait that ends without the turn's terminal event reports what it
@@ -147,7 +181,7 @@ func (w *turnWitness) snapshot() turnSeen {
 // turnWaitError explains a wait that ended without the turn's terminal
 // event. cause is [ErrTurnAbandoned] or [ErrAgentGone]; the returned
 // error wraps it, so callers can tell the two apart with errors.Is.
-func (a *Agent) turnWaitError(cause error, w turnSeen, now, started, lastActivity time.Time, bound time.Duration) error {
+func (a *Agent) turnWaitError(cause error, w turnSeen, now, started, lastActivity time.Time, bound turnBound) error {
 	turn := w.turnID
 	if turn == "" {
 		turn = "(no turn id seen)"
@@ -168,14 +202,26 @@ func (a *Agent) turnWaitError(cause error, w turnSeen, now, started, lastActivit
 		b.WriteString(", no terminal stop_reason")
 	}
 	if errors.Is(cause, ErrTurnAbandoned) {
-		fmt.Fprintf(&b, "; nothing arrived for %s (silence bound %s — raise Config.TurnSilenceBound if this agent is legitimately silent for longer)",
-			roundDur(now.Sub(lastActivity)), roundDur(bound))
+		fmt.Fprintf(&b, "; nothing arrived for %s (silence bound %s",
+			roundDur(now.Sub(lastActivity)), roundDur(bound.effective))
+		if bound.cut() {
+			fmt.Fprintf(&b, ", cut from the configured %s to fit this process's own deadline %s from now — the wait ran out of process, not out of patience, and a turn legitimately silent for longer is convicted here)",
+				roundDur(bound.configured), roundDur(bound.deadline.Sub(now)))
+		} else {
+			b.WriteString(" — raise Config.TurnSilenceBound if this agent is legitimately silent for longer)")
+		}
 	} else {
 		// A death, or a caller's context ending the wait. Neither is a
 		// conviction, so neither names the bound — but how long the
 		// agent had been quiet is the same question the reader has, and
 		// answering it is why this error exists at all (🎯T103).
 		fmt.Fprintf(&b, "; nothing arrived for %s", roundDur(now.Sub(lastActivity)))
+	}
+	if errors.Is(cause, ErrTurnAbandoned) && bound.cut() {
+		// Both causes are wrapped: the acceptance's ErrTurnAbandoned still
+		// matches, and a caller that must know the bound was not the
+		// measured one can ask.
+		return fmt.Errorf("%s: %w: %w", b.String(), cause, ErrSilenceBoundCutShort)
 	}
 	return fmt.Errorf("%s: %w", b.String(), cause)
 }
@@ -365,11 +411,15 @@ func boundUnderDeadline(bound time.Duration, now, deadline time.Time) time.Durat
 // actually run under: [Agent.silenceBound], shortened to fit inside the
 // deadline the wait is living under. A bound that outlives its own
 // deadline reports nothing at all, which is 🎯T103's whole defect.
-func (a *Agent) waitBound(started time.Time) time.Duration {
-	bound := a.silenceBound()
+func (a *Agent) waitBound(started time.Time) turnBound {
+	configured := a.silenceBound()
 	deadline, ok := a.waitDeadline()
 	if !ok {
-		return bound
+		return turnBound{effective: configured, configured: configured}
 	}
-	return boundUnderDeadline(bound, started, deadline)
+	return turnBound{
+		effective:  boundUnderDeadline(configured, started, deadline),
+		configured: configured,
+		deadline:   deadline,
+	}
 }
