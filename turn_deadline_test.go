@@ -194,7 +194,17 @@ const t103ChildEnv = "CLAUDIA_T103_CHILD"
 // fix the child could only die on `panic: test timed out`; with it, the bound
 // becomes half of what the child has left and the wait answers at roughly
 // half this, leaving the other half for the rest of the child's run.
-const t103ChildTimeout = 8 * time.Second
+//
+// Cost and margin are the same number here — the reserve is half, so the
+// answer lands at t103ChildTimeout/2 and what remains is the starvation
+// this test can absorb. Twenty seconds buys ten, and ten is chosen against
+// this machine rather than in the abstract: AGENTS.md's 🎯T101 table
+// measured a `send-keys -l` echo taking up to 2.4s, and Start to a drawn
+// composer 16.6s, at load average ~200 — which is this fleet's ordinary
+// state, not its bad day. A four-second margin against a host that slow is
+// a red nobody can attribute, on the gate that decides whether anything
+// here is citable at all.
+const t103ChildTimeout = 20 * time.Second
 
 // The acceptance, end to end, on the real path: a parked turn inside a test
 // binary produces a NAMED failure and the rest of the binary still reports.
