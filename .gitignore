@@ -1,3 +1,11 @@
 .claude/
 .vera/
 dist/
+
+# In-repo scratch and local build output. The leading underscore on
+# _scratchpad/ is what keeps a stray .go file out of `go vet ./...` — the go
+# command ignores "_"- and "."-prefixed directories and never reads this file
+# (T99). These entries are hygiene, not the mechanism.
+_scratchpad/
+bin/
+model-intel/

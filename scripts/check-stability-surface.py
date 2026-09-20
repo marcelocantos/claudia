@@ -162,7 +162,9 @@ def main():
         pkgs = ["."]
         for name in sorted(os.listdir(work)):
             d = os.path.join(work, name)
-            if name.startswith(".") or name in NON_PUBLIC_DIRS:
+            # "_" and "." prefixes are the go command's own rule for a
+            # directory it never compiles (T99); agree with it here.
+            if name.startswith((".", "_")) or name in NON_PUBLIC_DIRS:
                 continue
             if os.path.isdir(d) and any(f.endswith(".go") for f in os.listdir(d)):
                 pkgs.append("./" + name)

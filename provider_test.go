@@ -11,6 +11,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/marcelocantos/claudia/internal/gowalk"
 )
 
 func TestResolveCodexBin(t *testing.T) {
@@ -442,8 +444,10 @@ func TestGrokProviderDoesNotReadPrivateStorage(t *testing.T) {
 			return err
 		}
 		if entry.IsDir() {
-			switch path {
-			case ".git", "docs", "testdata":
+			// gowalk.IgnoredDir keeps this walk to the files the toolchain
+			// compiles, so a scratch copy of a provider file cannot fail it
+			// on a token it only quotes (T99).
+			if path != "." && (gowalk.IgnoredDir(entry.Name()) || path == "docs") {
 				return filepath.SkipDir
 			}
 			return nil
@@ -479,8 +483,10 @@ func TestCodexProviderDoesNotReadPrivateStorage(t *testing.T) {
 			return err
 		}
 		if entry.IsDir() {
-			switch path {
-			case ".git", "docs", "testdata":
+			// gowalk.IgnoredDir keeps this walk to the files the toolchain
+			// compiles, so a scratch copy of a provider file cannot fail it
+			// on a token it only quotes (T99).
+			if path != "." && (gowalk.IgnoredDir(entry.Name()) || path == "docs") {
 				return filepath.SkipDir
 			}
 			return nil

@@ -68,6 +68,41 @@ A skipped live test is not a pass.
 
 Not this rule: parser fixtures, capability-census tables, docs-only.
 
+## Scratch files stay invisible to the toolchain
+
+Your harness gives you a scratchpad outside this repo. Use it. When
+something must live in the checkout, it goes under `_scratchpad/` —
+never at the module root, never in a new plain-named directory.
+
+The leading underscore is the whole mechanism: `go vet ./...` and
+`go test ./...` skip directories whose names begin with `_` or `.`
+(and `testdata`). `.gitignore` does nothing here — the go command does
+not read it, so an ignored-but-plainly-named directory is still
+compiled. A scratch copy of a library file at the module root declares
+`package claudia` a second time and fails vet for every other seat:
+
+```
+vet: scratchpad/agent-head.go:62:11: undefined: Provider
+```
+
+That is a RED gate that is nobody's defect, and it cost a clean
+full-suite citation on 2026-09-20 (T99).
+
+Programs under `_scratchpad/` still build and run by explicit path —
+`go run ./_scratchpad/tui-structure-exp` — but wildcards do not reach
+them: `./_scratchpad/...` matches no packages. Name the package. A
+scratch program carrying its own `go.mod` builds from inside its own
+directory with `GOWORK=off`, because the parent `go.work` claims the
+directory for this module; that is the workspace, not the underscore,
+and it was true under the old name too.
+
+Tree-walking tests use `internal/gowalk.IgnoredDir` rather than a
+hand-kept list of directory names, so the suite reads exactly the files
+the toolchain compiles. `scratch_invisible_test.go` pins the property:
+it drops the incident's file at the scratch root and asserts the gate
+stays green, with a throwaway module proving the same file in a
+plainly-named directory still goes RED.
+
 ## Gates
 
 profile: library

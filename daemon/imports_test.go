@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/marcelocantos/claudia/internal/gowalk"
 )
 
 // The library-first boundary (🎯T75.1). The daemon is a separate package, so
@@ -89,16 +91,18 @@ func TestDaemonImportsOnlyTheLibraryAndTheWire(t *testing.T) {
 	}
 
 	daemonPath := module + "/daemon"
+	walked := 0
 	err = filepath.WalkDir("..", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if d.IsDir() {
-			switch d.Name() {
-			case "daemon", "cmd", "scratchpad", "testdata", ".git", "bin":
-				if path != ".." {
-					return filepath.SkipDir
-				}
+			// gowalk.IgnoredDir is the go command's own rule, so this walk
+			// reads exactly the files `./...` compiles and no agent's scratch
+			// copy of a library file can fail it (T99). daemon and cmd are
+			// skipped because they are not the library.
+			if path != ".." && (gowalk.IgnoredDir(d.Name()) || d.Name() == "daemon" || d.Name() == "cmd") {
+				return filepath.SkipDir
 			}
 			return nil
 		}
@@ -109,6 +113,7 @@ func TestDaemonImportsOnlyTheLibraryAndTheWire(t *testing.T) {
 		if err != nil {
 			return err
 		}
+		walked++
 		for _, imp := range f.Imports {
 			if p, _ := strconv.Unquote(imp.Path.Value); p == daemonPath {
 				t.Errorf("%s imports the daemon; the library must not depend on its server", path)
@@ -118,5 +123,9 @@ func TestDaemonImportsOnlyTheLibraryAndTheWire(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	// A walk that skipped everything would pass silently.
+	if walked == 0 {
+		t.Fatal("walked the module and read no library source files")
 	}
 }

@@ -19,3 +19,8 @@ on `pull_request` is courtesy for those.
 the provider wire changed — not the hook.
 
 `make gate-full` adds the TLA+ broker spec (`verify-specs`).
+
+A stray `.go` file cannot take this gate down with it: in-repo scratch
+lives under `_scratchpad/`, which the go command ignores, and
+`scratch_invisible_test.go` holds that property. See AGENTS.md,
+"Scratch files stay invisible to the toolchain".
