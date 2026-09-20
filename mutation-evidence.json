@@ -367,5 +367,25 @@
       ],
       "note": "Only the guard's own test is declared red, and the omission is deliberate. The other ManualClock waits in this package would still pass under this mutation in a FRESH binary \u2014 half of a full -timeout is far longer than their one-minute fixtures \u2014 and would begin failing only deep into a long run. That is precisely the hazard, and it is also why they cannot be cited as evidence here: a test whose colour under the mutation depends on how much of the binary's budget is left is not evidence of anything. The green declared instead is the pure arithmetic, which the mutation cannot reach."
     }
+,
+    {
+      "target": "T93",
+      "mutation": "initialize-shares-the-shortened-bound",
+      "what": "initialize is handed the same bound the hermetic test shortens, so the earlier handshake step is armed against an assertion about the later one \u2014 \ud83c\udfafT93's defect exactly as it stood before 02cec52 split the bound in two",
+      "quoted_by": "529548e",
+      "package": ".",
+      "edits": [
+        {
+          "file": "codex_session.go",
+          "find": "\t}), codexAppServerInitializeTimeout)",
+          "replace": "\t}), codexAppServerThreadTimeout)"
+        }
+      ],
+      "tests": [
+        {"name": "TestShortenedBoundDoesNotGuardAnEarlierHandshakeStep", "expect": "red"},
+        {"name": "TestHermeticTestsDeclareTheProductBoundsTheyShorten", "expect": "green"}
+      ],
+      "note": "TestHermeticCodexThreadStartTimesOut \u2014 the test \ud83c\udfafT93 is ABOUT \u2014 is deliberately not declared here, and that omission is the whole finding. It stays GREEN under this mutation on an idle host, because initialize answers at once and only the hanging thread/start reaches the 200ms bound; it goes red only when the host is slow enough for the shared bound to expire on the earlier step. A test whose colour under the mutation is a function of load is not evidence, which is exactly the defect being guarded, and is why the oracle had to move off behaviour and onto the wiring. cl-t33 measured the same thing from the other side: the pre-fix code passed 5/5 at load 44. The declared green is 02cec52's declaration guard, which sees a declared var shortened by a declared test and passes \u2014 load-bearing, because it shows the red test pins the step-ordering property specifically and not merely 'something about bounds changed'."
+    }
   ]
 }
