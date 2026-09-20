@@ -346,9 +346,7 @@ func (b *brokerAgentBackend) release(a *Agent, disposition string) error {
 	}
 	_, err := b.opCall(&broker.Request{Type: broker.TypeRelease, Release: req})
 	b.client.Close()
-	a.mu.Lock()
-	a.alive = false
-	a.mu.Unlock()
+	a.markDead()
 	return err
 }
 
@@ -435,9 +433,7 @@ func (b *brokerAgentBackend) drain() {
 				case resp := <-b.queue:
 					b.deliver(a, resp)
 				default:
-					a.mu.Lock()
-					a.alive = false
-					a.mu.Unlock()
+					a.markDead()
 					return
 				}
 			}
@@ -464,9 +460,7 @@ func (b *brokerAgentBackend) deliver(a *Agent, resp *broker.Response) {
 		b.mu.Lock()
 		b.gone = true
 		b.mu.Unlock()
-		a.mu.Lock()
-		a.alive = false
-		a.mu.Unlock()
+		a.markDead()
 		slog.Info("broker seat gone", "grant", b.named().Name, "reason", resp.AgentGone.Reason)
 	}
 }

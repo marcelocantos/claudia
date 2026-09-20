@@ -488,9 +488,7 @@ func (a *Agent) swapBackend(provider Provider, cfg Config, start *agentStart, de
 				a.pushTermOutput(data)
 			}
 			if a.backendGen.Load() == gen {
-				a.mu.Lock()
-				a.alive = false
-				a.mu.Unlock()
+				a.markDead()
 			}
 		}()
 	}

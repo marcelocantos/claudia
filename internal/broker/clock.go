@@ -100,6 +100,19 @@ func (c *ManualClock) Advance(d time.Duration) {
 	c.timers = kept
 }
 
+// Pending reports how many timers are currently waiting on this clock.
+//
+// It exists for tests that must synchronise with the code under test rather
+// than guess at it: after Advance fires a waiter's timer, that waiter is
+// observed to have re-armed when Pending rises again. The alternative — sleep
+// a little and hope — is how a hermetic verdict ends up being decided by how
+// fast the host was.
+func (c *ManualClock) Pending() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.timers)
+}
+
 // Compile-time proof that both clocks satisfy the interface.
 var (
 	_ Clock = SystemClock{}

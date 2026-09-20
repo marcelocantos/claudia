@@ -480,9 +480,7 @@ func buildPoolAgent(cfg Config, workDir, windowID, sessionID string, waitForRead
 		for data := range ctrl.Bytes() {
 			a.pushTermOutput(data)
 		}
-		a.mu.Lock()
-		a.alive = false
-		a.mu.Unlock()
+		a.markDead()
 	}()
 
 	// Observe the seat the way Start observes one: the transcript is the

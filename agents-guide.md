@@ -476,6 +476,22 @@ agent.Send("prompt")  // short text is typed; large payloads are pasted. Extra E
 reply, err := agent.WaitForResponse(ctx)  // blocks until the turn's terminal stop_reason
 ```
 
+**`WaitForResponse` always ends** (🎯T96). Three things can end it
+besides the turn itself: the caller's context, the agent's death
+(`ErrAgentGone` — a dead agent cannot publish the terminal event, so the
+wait is unsatisfiable and says so at once), and silence
+(`ErrTurnAbandoned` — nothing at all arrived, no event of any type and no
+terminal byte, for `Config.TurnSilenceBound`). Both errors name the
+session, the turn, what last arrived and how long ago.
+
+The silence bound is on SILENCE, not on the turn: any activity rearms
+it, so a turn that runs for hours is untouched. Raise
+`Config.TurnSilenceBound` only for an agent whose healthy turns really do
+go quiet for longer — a tool call that neither prints nor reports
+progress for that long. Passing a context that never expires is now
+safe; before this, it meant a goroutine parked for the life of the
+process when a turn's terminal event went missing.
+
 `TurnID` is safe to use directly as the grouping key for assistant and
 progress events. Claudia never mints it from stop-reason observation: Claude
 uses the prompt transcript record UUID, Codex uses its app-server turn ID, and

@@ -197,6 +197,18 @@ type Config struct {
 	// ConnectPID is the OS PID of the durable serve process for
 	// reattach / Alive probes. 0 means unknown.
 	ConnectPID int
+
+	// TurnSilenceBound is how long [Agent.WaitForResponse] may sit with
+	// nothing at all arriving from this agent — no event of any type, no
+	// terminal byte — before it reports [ErrTurnAbandoned] instead of
+	// waiting on a terminal event that is never coming (🎯T96). Zero
+	// takes the package default (turnSilenceBound).
+	//
+	// It bounds silence, not the turn: any activity rearms it, so a turn
+	// that runs for hours is unaffected. Raise it only for an agent whose
+	// healthy turns really do go quiet for longer — a tool call that
+	// neither prints nor reports progress for that long.
+	TurnSilenceBound time.Duration
 }
 
 // Agent is a persistent Claude Code process running inside a tmux
@@ -232,12 +244,26 @@ type Agent struct {
 	// mcpCleanup removes process-private MCP materialisation created at Start.
 	mcpCleanup func()
 
-	mu        sync.Mutex
-	alive     bool
+	mu    sync.Mutex
+	alive bool
+	// dead is closed when alive goes false, so a WaitForResponse whose
+	// turn can no longer be answered ends at the death instead of
+	// waiting on an event nothing will publish (🎯T96). Created on
+	// demand by deadSignal; nil until somebody waits.
+	dead      chan struct{}
 	stopOnce  sync.Once
 	eventSubs map[int64]EventFunc
 	usage     Usage
 	model     string // resolved model from the latest event that carried one
+
+	// clk is the time source WaitForResponse's silence bound reads, so a
+	// hermetic test drives the bound with a ManualClock instead of
+	// sleeping — the bound's verdict must not depend on how fast the
+	// host is (🎯T33/🎯T92/🎯T93). Nil reads the wall clock.
+	clk Clock
+	// turnSilenceBound is Config.TurnSilenceBound; 0 takes the package
+	// default.
+	turnSilenceBound time.Duration
 
 	// poolWindow is true when the agent was acquired from the warm pool
 	// (via Acquire) rather than spawned fresh (via Start). Pool agents
@@ -280,11 +306,15 @@ type Agent struct {
 	// Terminal output streaming. termMu also guards termLog writes,
 	// termLog close, and termLogLive so Stop cannot close the file
 	// while pushTermOutput is mid-write.
-	termMu      sync.Mutex
-	termBuf     []byte
-	termSubs    []chan []byte
-	termLog     *os.File
-	termLogLive bool // false once the log file has been closed or failed to open
+	termMu  sync.Mutex
+	termBuf []byte
+	// termActivityAt is when the last terminal byte arrived: a working
+	// TUI repaints, so it is turn activity for the silence bound even
+	// while the transcript says nothing (🎯T96).
+	termActivityAt time.Time
+	termSubs       []chan []byte
+	termLog        *os.File
+	termLogLive    bool // false once the log file has been closed or failed to open
 
 	// TUI readiness. ready closes once detectReady concludes, either
 	// because the capture-pane regex matched (success, readyErr == nil)
@@ -691,6 +721,8 @@ func startWithBackendContext(ctx context.Context, cfg Config, backend agentBacke
 		goalCompleteCheck: cfg.GoalCompleteCheck,
 		startCfg:          cfg,
 		model:             cfg.Model,
+		clk:               SystemClock{},
+		turnSilenceBound:  cfg.TurnSilenceBound,
 	}
 
 	// Open terminal log.
@@ -784,9 +816,7 @@ func startWithBackendContext(ctx context.Context, cfg Config, backend agentBacke
 			if a.backendGen.Load() != gen {
 				return
 			}
-			a.mu.Lock()
-			a.alive = false
-			a.mu.Unlock()
+			a.markDead()
 		}()
 	}
 
@@ -1085,9 +1115,7 @@ func (b *acpBind) onClose() {
 		if a.backendGen.Load() != b.gen.Load() {
 			return
 		}
-		a.mu.Lock()
-		a.alive = false
-		a.mu.Unlock()
+		a.markDead()
 	}
 }
 
@@ -1438,7 +1466,7 @@ func (a *Agent) Alive() bool {
 	if !ok {
 		// Latch it: a window does not come back, and later callers
 		// should not pay for the probe again.
-		a.alive = false
+		a.markDeadLocked()
 	}
 	a.mu.Unlock()
 	return ok
@@ -1790,7 +1818,40 @@ func (a *Agent) WaitForResponse(ctx context.Context) (string, error) {
 		seenTerminal bool
 		settleTimer  *time.Timer
 		emitted      bool
+		witness      turnWitness
 	)
+
+	// The wake set (🎯T96). ctx and the turn's own terminal event are the
+	// two the caller can see. The rest are here because a turn that never
+	// ends must still end the wait: this select used to have no other
+	// arm, so a consumer passing a long-lived context — daemon code, or a
+	// test's t.Context() — waited for the life of the process.
+	started := a.now()
+	bound := a.silenceBound()
+
+	// A wait that BEGAN on a live agent is woken by that agent's death: a
+	// dead agent provably cannot publish the terminal event, so there is
+	// nothing left to wait for. A wait that began on an agent already
+	// dead (or on a bare hermetic fixture, which is never alive) keeps
+	// the old behaviour and leans on the silence bound.
+	var deadCh <-chan struct{}
+	var liveTick <-chan time.Time
+	if a.Alive() {
+		deadCh = a.deadSignal()
+		// A killed tmux window closes nothing and ends no stream, so the
+		// only thing that knows is the probe, and only when asked.
+		a.mu.Lock()
+		probing := a.windowAliveFn != nil && a.tmuxWindowID != ""
+		a.mu.Unlock()
+		if probing {
+			liveTick = a.after(turnLivenessPollInterval)
+		}
+	}
+	// Armed before the subscription, not after: a wake the wait installs
+	// only once it is already listening is a wake no test can prove is
+	// there, and this one exists precisely because its absence is
+	// invisible until a suite hangs.
+	silence := a.after(bound)
 
 	emitOnce := func(out outcome) {
 		mu.Lock()
@@ -1825,6 +1886,10 @@ func (a *Agent) WaitForResponse(ctx context.Context) (string, error) {
 	}
 
 	token := a.SubscribeEvents(func(ev Event) {
+		// Every event, of every type, is turn activity: the silence
+		// bound below asks whether the agent is saying ANYTHING, not
+		// whether it has answered yet.
+		witness.note(ev, a.now())
 		if ev.IsError {
 			msg := strings.TrimSpace(ev.Text)
 			if msg == "" {
@@ -1861,11 +1926,88 @@ func (a *Agent) WaitForResponse(ctx context.Context) (string, error) {
 		mu.Unlock()
 	}()
 
-	select {
-	case <-ctx.Done():
-		return "", ctx.Err()
-	case out := <-ch:
-		return out.text, out.err
+	// lastActivity is the most recent sign of life from the agent, from
+	// any source: a published event, or a terminal byte (a working TUI
+	// repaints while a tool runs, when the transcript says nothing).
+	lastActivity := func() time.Time {
+		last := started
+		if t := witness.lastEventAt(); t.After(last) {
+			last = t
+		}
+		if t := a.lastTermActivity(); t.After(last) {
+			last = t
+		}
+		return last
+	}
+	fail := func(cause error, now, last time.Time) (string, error) {
+		snap := witness.snapshot()
+		mu.Lock()
+		snap.chars = text.Len()
+		mu.Unlock()
+		return "", a.turnWaitError(cause, snap, now, started, last, bound)
+	}
+	// answered drains a result that landed in the same instant as one of
+	// the failure wakes. An agent that died right after saying its piece
+	// said its piece.
+	answered := func() (outcome, bool) {
+		select {
+		case out := <-ch:
+			return out, true
+		default:
+			return outcome{}, false
+		}
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+
+		case out := <-ch:
+			return out.text, out.err
+
+		case <-deadCh:
+			if out, ok := answered(); ok {
+				return out.text, out.err
+			}
+			if witness.sawTerminal() {
+				// The turn DID end; only the settle timer was still
+				// running, and nothing more can arrive to extend it.
+				// Settle now rather than discard a complete answer.
+				emitOK()
+				out := <-ch
+				return out.text, out.err
+			}
+			return fail(ErrAgentGone, a.now(), lastActivity())
+
+		case <-liveTick:
+			// Alive latches a lost window and closes deadCh, so the death
+			// is handled in one place: the arm above, on the next pass.
+			a.Alive()
+			liveTick = a.after(turnLivenessPollInterval)
+
+		case <-silence:
+			if out, ok := answered(); ok {
+				return out.text, out.err
+			}
+			select {
+			case <-deadCh:
+				// The agent died and the bound expired in the same
+				// breath. Death is the more specific answer, and the
+				// true one: this turn is not merely quiet.
+				return fail(ErrAgentGone, a.now(), lastActivity())
+			default:
+			}
+			now, last := a.now(), lastActivity()
+			if idle := now.Sub(last); idle < bound {
+				// Something arrived while the timer ran: this is a bound
+				// on SILENCE, so the clock restarts from that activity,
+				// not from the wait.
+				silence = a.after(bound - idle)
+				continue
+			}
+			return fail(ErrTurnAbandoned, now, last)
+		}
 	}
 }
 
@@ -1977,6 +2119,7 @@ func (a *Agent) pushTermOutput(data []byte) {
 	a.termMu.Lock()
 	defer a.termMu.Unlock()
 
+	a.termActivityAt = a.now()
 	a.termBuf = append(a.termBuf, data...)
 	if len(a.termBuf) > termBufSize {
 		a.termBuf = a.termBuf[len(a.termBuf)-termBufSize:]
