@@ -166,6 +166,64 @@
         {"name": "TestHermeticTaskRunSuccess", "expect": "green"}
       ],
       "note": "The deadline is spelled as a bare 10000000000 so the mutation needs no new import; the guard matches the context.WithTimeout call, not the literal. TestHermeticTaskRunSuccess is listed green on purpose: on an idle machine the restored deadline still passes, which is exactly why this flake stayed citable-green between failures and why the guard, not the test, holds the contract."
+    },
+    {
+      "target": "T96",
+      "mutation": "unarm-the-silence-wake",
+      "what": "WaitForResponse arms no silence wake at all, so a turn whose terminal event never arrives has nothing to end it — the unbounded park itself",
+      "quoted_by": "038f7ff",
+      "package": ".",
+      "edits": [
+        {
+          "file": "agent.go",
+          "find": "\tsilence := a.after(bound)\n",
+          "replace": "\tvar silence <-chan time.Time\n"
+        }
+      ],
+      "tests": [
+        {"name": "TestWaitForResponseArmsASilenceWake", "expect": "red"},
+        {"name": "TestWaitForResponseEndsWhenTheAgentDies", "expect": "green"}
+      ],
+      "note": "The red test is structural on purpose. A missing wake is invisible to a behavioural test — it shows up as a HANG, which is the original defect's own signature and costs a test timeout to see (the report that opened 🎯T96 was a 10m panic). Arming the wake before the subscription gives the guard a happens-before point, so the absence is a fast failure instead of a dead suite. The green test is load-bearing: the death wake is a separate mechanism and still answers with no silence timer on the clock at all."
+    },
+    {
+      "target": "T96",
+      "mutation": "mute-the-death-signal",
+      "what": "markDead records the death but closes nothing, so the alive flag flips where no waiter can see it and a wait on that agent keeps waiting for an event nothing will publish",
+      "quoted_by": "038f7ff",
+      "package": ".",
+      "edits": [
+        {
+          "file": "turn_wait.go",
+          "find": "\tif a.dead != nil {\n\t\tselect {\n\t\tcase <-a.dead:\n\t\tdefault:\n\t\t\tclose(a.dead)\n\t\t}\n\t}\n",
+          "replace": ""
+        }
+      ],
+      "tests": [
+        {"name": "TestMarkDeadClosesTheDeathSignal", "expect": "red"},
+        {"name": "TestWaitForResponseEndsWhenTheAgentDies", "expect": "red"},
+        {"name": "TestWaitForResponseAbandonedTurnFailsNamingWhatItSaw", "expect": "green"}
+      ],
+      "note": "TestWaitForResponseEndsWhenTheAgentDies fails FAST under this mutation rather than hanging, and that is by design: it drives the clock past its own bound, so an unobserved death is reported as ErrTurnAbandoned — the wrong verdict, available in milliseconds — instead of parking. The green test shows the silence bound cannot cover for the death wake: it never involves a live agent, so it is blind to this mutation."
+    },
+    {
+      "target": "T96",
+      "mutation": "ignore-terminal-bytes",
+      "what": "the wait counts only published events as turn activity, so a tmux turn that is plainly working — the TUI repainting its spinner — is convicted as silent because its tool call wrote nothing to the transcript",
+      "quoted_by": "038f7ff",
+      "package": ".",
+      "edits": [
+        {
+          "file": "agent.go",
+          "find": "\t\tif t := a.lastTermActivity(); t.After(last) {\n\t\t\tlast = t\n\t\t}\n",
+          "replace": ""
+        }
+      ],
+      "tests": [
+        {"name": "TestWaitForResponseTerminalBytesAreTurnActivity", "expect": "red"},
+        {"name": "TestWaitForResponseSilenceBoundRearmsOnEvents", "expect": "green"}
+      ],
+      "note": "The two activity sources are independent claims and this pins them apart: events still rearm the bound under this mutation, so the green test cannot see it. A bound that only watched the transcript would fire on exactly the longest healthy turns — a Claude tool call emits no JSONL between tool_use and tool_result, however long the tool runs."
     }
   ]
 }
