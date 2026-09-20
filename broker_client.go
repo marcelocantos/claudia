@@ -127,10 +127,15 @@ func (b *brokerClient) readLoop() {
 	}
 }
 
-// noteDropped records a frame the wire could not carry. It is kept rather than
-// only logged because a consumer whose event stream has a hole needs to be
-// able to find out: a silently missing tool_result is indistinguishable from
-// one the agent never produced.
+// noteDropped records a frame the wire could not carry, so that a hole in the
+// event stream is a fact this package holds rather than one only a log line
+// remembers: a silently missing tool_result is indistinguishable from one the
+// agent never produced.
+//
+// brokerClient is unexported, so this count does not reach a consumer of the
+// library today — the oracles read it, and nothing else can. Saying otherwise
+// would be the more comfortable comment and the false one. Handing it out is a
+// public API decision that 🎯T73 did not ask for and should not smuggle in.
 func (b *brokerClient) noteDropped(err error) {
 	b.mu.Lock()
 	b.dropped++
@@ -139,7 +144,8 @@ func (b *brokerClient) noteDropped(err error) {
 }
 
 // DroppedFrames reports how many frames this connection skipped because they
-// exceeded the wire's line limit, and the last such refusal.
+// exceeded the wire's line limit, and the last such refusal. It is in-package
+// only; see noteDropped.
 func (b *brokerClient) DroppedFrames() (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
