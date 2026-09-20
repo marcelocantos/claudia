@@ -15,6 +15,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/marcelocantos/claudia/internal/broker"
 	"github.com/marcelocantos/claudia/internal/tmuxagent"
 )
@@ -52,6 +54,50 @@ func poolKeepAliveDeadline(now time.Time, secs int64) int64 {
 	return now.Add(time.Duration(secs) * time.Second).Unix()
 }
 
+// poolDisposition is what an Acquire sweep does with one window of its
+// pool key. The decision is pure so the rules can be read, and tested,
+// without a tmux server (compare poolWindowExpired above).
+type poolDisposition int
+
+const (
+	// poolIdle: warm, unheld, observable — the window Acquire wants.
+	poolIdle poolDisposition = iota
+	// poolHeld: another consumer has it.
+	poolHeld
+	// poolExpired: a keep_alive_for deadline has passed; kill it.
+	poolExpired
+	// poolBlind: no recorded session id, so nothing can discover the
+	// transcript it writes. Kill it rather than hand a consumer a seat
+	// whose WaitForResponse can never return (🎯T78).
+	poolBlind
+)
+
+// poolWindowState is what a sweep reads off one tmux window.
+type poolWindowState struct {
+	held        bool
+	deadline    string
+	hasDeadline bool
+	sessionID   string
+}
+
+// classifyPoolWindow decides one window's fate. Order matters: an expired
+// window is killed whether or not it is held, because its holder asked for
+// exactly that; a held window is otherwise left alone, blind or not,
+// because its holder is mid-turn and killing it would take the turn with
+// it.
+func classifyPoolWindow(now time.Time, st poolWindowState) poolDisposition {
+	switch {
+	case poolWindowExpired(now, st.deadline, st.hasDeadline):
+		return poolExpired
+	case st.held:
+		return poolHeld
+	case strings.TrimSpace(st.sessionID) == "":
+		return poolBlind
+	default:
+		return poolIdle
+	}
+}
+
 // poolMu serialises pool operations within this process. tmux itself
 // serialises operations server-side, but we need the check-then-set
 // on @claudia-held to be atomic from our perspective: we mark a window
@@ -67,6 +113,13 @@ func poolKeyFor(workDir, model, disallowTools string) string {
 
 // poolWindowPrefix is the name prefix for pool-managed windows.
 const poolWindowPrefix = "claudia-pool-"
+
+// poolSessionOption is the tmux window option that records the Claude
+// session id a pool window was spawned with. It is the same option Start
+// stamps on a session window, and it is what lets a later Acquire — in
+// this process or another one — find the transcript Claude is writing and
+// tail it (🎯T78). A pool window without it cannot be observed at all.
+const poolSessionOption = "claudia-session-id"
 
 // Acquire returns an idle agent from the warm pool that matches the
 // given Config, or creates a new one if none is available.
@@ -148,31 +201,44 @@ func acquireLocked(ctx context.Context, cfg Config, workDir, disallowed, windowN
 
 	now := poolClock.Now()
 
-	// Collect all windows matching our pool key, categorised:
-	//   - idle: not held and not expired
-	//   - held: currently in use
-	//   - expired: deadline set and past
+	// Collect all windows matching our pool key, categorised by
+	// classifyPoolWindow: idle ones are adopted, held ones are left to
+	// their holders, and expired and blind ones are swept.
 	type candidate struct {
-		windowID string
+		windowID  string
+		sessionID string
 	}
-	var idle, held, expired []candidate
+	var idle, held, expired, blind []candidate
 
 	for _, w := range windows {
 		if w.Name != windowName {
 			continue
 		}
 		heldVal, _ := tmuxagent.GetWindowOption(w.ID, "claudia-held")
-		isHeld := strings.TrimSpace(heldVal) == "1"
-
 		deadlineVal, hasDeadline := tmuxagent.GetWindowOption(w.ID, "claudia-deadline")
+		sidVal, _ := tmuxagent.GetWindowOption(w.ID, poolSessionOption)
 
-		switch {
-		case poolWindowExpired(now, deadlineVal, hasDeadline):
-			expired = append(expired, candidate{w.ID})
-		case isHeld:
-			held = append(held, candidate{w.ID})
+		sessionID := strings.TrimSpace(sidVal)
+		c := candidate{windowID: w.ID, sessionID: sessionID}
+		switch classifyPoolWindow(now, poolWindowState{
+			held:        strings.TrimSpace(heldVal) == "1",
+			deadline:    deadlineVal,
+			hasDeadline: hasDeadline,
+			sessionID:   sessionID,
+		}) {
+		case poolExpired:
+			expired = append(expired, c)
+		case poolHeld:
+			held = append(held, c)
+		case poolBlind:
+			// Spawned before 🎯T78, so nothing on the host knows which
+			// transcript it writes. The only window this sweep can race is
+			// a sibling process between new-window and its first
+			// SetWindowOption; that process marks held before the session
+			// id, so the gap is a single tmux round-trip.
+			blind = append(blind, c)
 		default:
-			idle = append(idle, candidate{w.ID})
+			idle = append(idle, c)
 		}
 	}
 
@@ -181,6 +247,14 @@ func acquireLocked(ctx context.Context, cfg Config, workDir, disallowed, windowN
 		slog.Debug("pool: evicting expired window", "window", c.windowID)
 		if killErr := tmuxagent.KillWindow(c.windowID); killErr != nil {
 			slog.Warn("pool: kill expired window", "window", c.windowID, "err", killErr)
+		}
+	}
+
+	// Sweep windows with no recorded session: unobservable, never adopted.
+	for _, c := range blind {
+		slog.Info("pool: evicting window with no recorded session id", "window", c.windowID)
+		if killErr := tmuxagent.KillWindow(c.windowID); killErr != nil {
+			slog.Warn("pool: kill unobservable window", "window", c.windowID, "err", killErr)
 		}
 	}
 
@@ -206,7 +280,7 @@ func acquireLocked(ctx context.Context, cfg Config, workDir, disallowed, windowN
 			continue
 		}
 
-		agent, err := adoptWindow(ctx, cfg, workDir, c.windowID)
+		agent, err := adoptWindow(ctx, cfg, workDir, c.windowID, c.sessionID)
 		if err != nil {
 			// Adoption failed — unmark and try next.
 			slog.Warn("pool: adopt failed", "window", c.windowID, "err", err)
@@ -241,9 +315,15 @@ func spawnPoolWindow(_ context.Context, cfg Config, workDir, disallowed, windowN
 		cfg.PermissionMode = "bypassPermissions"
 	}
 
+	// A pool window is spawned with an id we choose, not one Claude mints
+	// for itself, so the transcript it writes is at a path every later
+	// Acquire can compute — in this process or the next one (🎯T78).
+	sessionID := uuid.New().String()
+
 	args := []string{
 		"--permission-mode", cfg.PermissionMode,
 		"--disallowedTools", disallowed,
+		"--session-id", sessionID,
 	}
 	if cfg.MCPConfig != "" {
 		args = append(args, "--mcp-config", cfg.MCPConfig)
@@ -267,6 +347,12 @@ func spawnPoolWindow(_ context.Context, cfg Config, workDir, disallowed, windowN
 		_ = tmuxagent.KillWindow(windowID)
 		return nil, fmt.Errorf("pool: set held on new window: %w", err)
 	}
+	// Record the session before the long WaitReady below: until this lands,
+	// a sibling process's sweep sees a window it cannot observe.
+	if err := tmuxagent.SetWindowOption(windowID, poolSessionOption, sessionID); err != nil {
+		_ = tmuxagent.KillWindow(windowID)
+		return nil, fmt.Errorf("pool: record session id on new window: %w", err)
+	}
 
 	// Wait for the claude TUI to reach its idle input state before
 	// returning. This is the dominant latency for a cold acquire (~600–700ms)
@@ -280,7 +366,7 @@ func spawnPoolWindow(_ context.Context, cfg Config, workDir, disallowed, windowN
 	slog.Info("pool: cold spawn", "window", windowID)
 
 	// Build and return the Agent (window is already ready).
-	agent, err := buildPoolAgent(cfg, workDir, windowID, false)
+	agent, err := buildPoolAgent(cfg, workDir, windowID, sessionID, false)
 	if err != nil {
 		_ = tmuxagent.KillWindow(windowID)
 		return nil, err
@@ -290,7 +376,10 @@ func spawnPoolWindow(_ context.Context, cfg Config, workDir, disallowed, windowN
 
 // adoptWindow dials control mode and verifies readiness for an
 // existing pool window, then wraps it in an Agent.
-func adoptWindow(ctx context.Context, cfg Config, workDir, windowID string) (*Agent, error) {
+func adoptWindow(ctx context.Context, cfg Config, workDir, windowID, sessionID string) (*Agent, error) {
+	if sessionID == "" {
+		return nil, fmt.Errorf("window %s has no recorded @%s", windowID, poolSessionOption)
+	}
 	// Verify the window is still alive.
 	if !tmuxagent.IsWindowAlive(windowID) {
 		return nil, fmt.Errorf("window %s is no longer alive", windowID)
@@ -312,27 +401,51 @@ func adoptWindow(ctx context.Context, cfg Config, workDir, windowID string) (*Ag
 	}
 	_ = ctx // reserved for future cancellation
 
-	return buildPoolAgent(cfg, workDir, windowID, false)
+	return buildPoolAgent(cfg, workDir, windowID, sessionID, false)
+}
+
+// poolTailOffset is where this holder's event stream begins: the end of
+// the pool window's transcript at the moment it was acquired. Everything
+// before it belongs to a previous holder of the same window, and a new
+// holder must not be handed that conversation as if it were its own
+// (🎯T78). A transcript that does not exist yet has nothing to skip.
+//
+// An unreadable transcript is 0, not an error: a pool window whose events
+// start one turn too early is a bug worth reporting, but a pool window
+// that refuses to be acquired because of a stat is worse.
+func poolTailOffset(jsonlPath string) int64 {
+	fi, err := os.Stat(jsonlPath)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			slog.Warn("pool: cannot measure transcript, tailing from the start",
+				"path", jsonlPath, "err", err)
+		}
+		return 0
+	}
+	return fi.Size()
 }
 
 // buildPoolAgent constructs an Agent wrapping an existing (or newly
-// spawned) tmux window. If waitForReady is true it waits for the TUI
-// ready pattern; if false the window is assumed already ready.
-func buildPoolAgent(cfg Config, workDir, windowID string, waitForReady bool) (*Agent, error) {
+// spawned) tmux window running the Claude session sessionID. If
+// waitForReady is true it waits for the TUI ready pattern; if false the
+// window is assumed already ready.
+//
+// The agent tails that session's transcript and publishes Events exactly
+// as a Start-ed agent does, so WaitForResponse and subscribers work on a
+// pooled seat (🎯T78). It tails from the transcript's current end, which
+// is what keeps a re-acquired window's event stream this holder's own.
+func buildPoolAgent(cfg Config, workDir, windowID, sessionID string, waitForReady bool) (*Agent, error) {
 	termLogPath := cfg.TermLogPath
 	if termLogPath == "-" {
 		termLogPath = ""
 	}
-	// Pool agents don't have a session ID yet at adoption time; a
-	// session ID will be set when the consumer actually sends a prompt
-	// and claude creates its JSONL. We use the window ID as a
-	// placeholder for logs.
-	placeholderID := "pool-" + windowID
+	jsonlPath := SessionJSONLPath(sessionID, workDir)
+	tailFrom := poolTailOffset(jsonlPath)
 
 	a := &Agent{
 		provider:     ProviderClaude,
-		sessionID:    placeholderID,
-		jsonlPath:    "", // populated on first send when Claude writes it
+		sessionID:    sessionID,
+		jsonlPath:    jsonlPath,
 		termLogPath:  termLogPath,
 		tmuxWindowID: windowID,
 		ops:          claudeAgentOps(),
@@ -340,6 +453,7 @@ func buildPoolAgent(cfg Config, workDir, windowID string, waitForReady bool) (*A
 		ready:        make(chan struct{}),
 		poolWindow:   true,
 		poolWorkDir:  workDir,
+		model:        cfg.Model,
 		eventSubs:    make(map[int64]EventFunc),
 	}
 
@@ -371,6 +485,27 @@ func buildPoolAgent(cfg Config, workDir, windowID string, waitForReady bool) (*A
 		a.mu.Unlock()
 	}()
 
+	// Observe the seat the way Start observes one: the transcript is the
+	// event stream WaitForResponse reads, and the pane poll supplies the
+	// provisional ⏺ preview (🎯T51).
+	go a.tailJSONLFrom(tailFrom)
+
+	preview := &tuiPreviewTracker{}
+	// A Start-ed window's pane is empty; a re-acquired pool window's pane
+	// still shows the previous holder's ⏺ blocks. resetTurn arms the
+	// tracker to take its baseline from the first frame it sees, so those
+	// blocks are the floor rather than a preview published to this holder.
+	preview.resetTurn("")
+	a.tuiPreview = preview
+	a.capturePane = func() (string, error) {
+		b, err := tmuxagent.CapturePane(a.tmuxWindowID)
+		if err != nil {
+			return "", err
+		}
+		return string(b), nil
+	}
+	go a.pollTUIPreview()
+
 	if waitForReady {
 		go a.detectReady()
 	} else {
@@ -399,6 +534,11 @@ func (a *Agent) Release(disposition string) error {
 
 	switch {
 	case disposition == "return":
+		// Stop observing before the window is offered to anyone else: the
+		// tailer and the pane poll outlive the control client, and a
+		// returned handle that keeps publishing is the next holder's turn
+		// arriving on the previous holder's subscribers (🎯T78).
+		a.stopPoolObservers()
 		// Close the control client but leave the window alive.
 		if a.tmuxCtrl != nil {
 			a.tmuxCtrl.Close()
@@ -423,6 +563,7 @@ func (a *Agent) Release(disposition string) error {
 		}
 		deadline := poolKeepAliveDeadline(poolClock.Now(), secs)
 
+		a.stopPoolObservers()
 		if a.tmuxCtrl != nil {
 			a.tmuxCtrl.Close()
 		}
@@ -439,4 +580,12 @@ func (a *Agent) Release(disposition string) error {
 	default:
 		return fmt.Errorf("pool: unknown disposition %q (want: return, drop, keep_alive_for:<secs>)", disposition)
 	}
+}
+
+// stopPoolObservers retires this handle's transcript tailer and pane
+// poll. Both loops compare the generation they started under against the
+// agent's current one on every pass, so bumping it is how a goroutine
+// that is mid-sleep learns it is no longer this window's observer.
+func (a *Agent) stopPoolObservers() {
+	a.backendGen.Add(1)
 }

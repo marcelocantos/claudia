@@ -213,8 +213,11 @@ the daemon present it no longer stops or reaps seats on its own exit.
   can detach from its children. The win is making that bounce rare:
   Claudia's wire changes slowly; consumer policy does not.
 - The warm pool is still a Claude tmux mechanism. 🎯T64 serves it
-  through the daemon as it is; 🎯T2.3 generalises the library pool, and
-  🎯T78 makes a pooled agent publish its turn events.
+  through the daemon as it is, and 🎯T78 made a pooled agent publish its
+  turn events — a pool window is spawned with a session id claudia
+  chooses and records on the window, so any later Acquire can find the
+  transcript and tail it from wherever the previous holder left off.
+  🎯T2.3 generalises the library pool.
 
 ## Handoff (2026-09-12, end of session)
 

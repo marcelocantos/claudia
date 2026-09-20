@@ -806,8 +806,11 @@ macOS). Then `status`, `grants`, `usage [--refresh]`,
 `Acquire` draws from a pool the daemon runs: every consumer on the
 host shares its warm windows, `Agent.Release` returns or drops the seat
 on the daemon, and a consumer that goes away returns what it held.
-`AcquireDirect` keeps the pool in-process. A pooled agent does not yet
-publish turn events on either path (🎯T78). A seat's
+`AcquireDirect` keeps the pool in-process. A pooled agent publishes
+turn events on either path, so `WaitForResponse` and `SubscribeEvents`
+work on it exactly as on a `Start`-ed one; a window returned and
+acquired again gives its new holder that holder's own turns and none
+of the previous holder's (🎯T78). A seat's
 Goal loop runs on the daemon; after a terminal turn with no
 `GOAL_STATUS` line it asks the owning handle's `GoalCompleteCheck`
 (set on `Config` or with `SetGoalCompleteCheck`), and with no owner

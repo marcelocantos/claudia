@@ -36,6 +36,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"os"
@@ -2041,7 +2042,28 @@ func (a *Agent) UnsubscribeTerminal(ch chan []byte) {
 	}
 }
 
-func (a *Agent) tailJSONL() {
+func (a *Agent) tailJSONL() { a.tailJSONLFrom(0) }
+
+// tailStartOffset is where a tailer that wants to resume at want should
+// actually begin, given the transcript is size bytes long. An offset past
+// the end means the file was rewritten under us and the bytes there now
+// are not the bytes we measured, so the end is the honest starting point:
+// replaying them would publish a conversation this holder never had.
+func tailStartOffset(size, want int64) int64 {
+	if want > size {
+		return size
+	}
+	return want
+}
+
+// tailJSONLFrom is tailJSONL starting at a byte offset into the
+// transcript. A Start-ed agent owns its transcript from byte zero, so it
+// tails from 0. A pooled window's transcript already holds the turns of
+// every holder before this one, and offset is the end of the file at the
+// moment this holder acquired it: replaying those turns into the new
+// holder's subscribers would be somebody else's conversation arriving as
+// if it were this one's (🎯T78).
+func (a *Agent) tailJSONLFrom(offset int64) {
 	gen := a.backendGen.Load()
 	// Wait for file to be created.
 	for {
@@ -2063,6 +2085,16 @@ func (a *Agent) tailJSONL() {
 		return
 	}
 	defer f.Close()
+
+	if offset > 0 {
+		if fi, statErr := f.Stat(); statErr == nil {
+			offset = tailStartOffset(fi.Size(), offset)
+		}
+		if _, seekErr := f.Seek(offset, io.SeekStart); seekErr != nil {
+			slog.Error("seek JSONL failed", "session", a.sessionID, "offset", offset, "err", seekErr)
+			return
+		}
+	}
 
 	reader := bufio.NewReader(f)
 	var correlator claudeEventCorrelator
