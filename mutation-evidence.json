@@ -249,6 +249,7 @@
       "target": "T73",
       "mutation": "report-oversize-without-consuming",
       "what": "the read loop names the oversized frame but abandons the stream mid-line, so the next read returns the tail of that frame instead of the next message — the 🎯T661 defect with a better error message",
+      "quoted_by": "ead4ceb",
       "package": "./internal/broker",
       "edits": [
         {
@@ -268,6 +269,7 @@
       "target": "T73",
       "mutation": "relay-the-payload-unbounded",
       "what": "EncodeEventWire marshals the event without bounding it, so a screenshot tool_result is handed to the wire as a frame over the line cap — the producer half of the same incident",
+      "quoted_by": "ead4ceb",
       "package": ".",
       "edits": [
         {
@@ -287,6 +289,7 @@
       "target": "T73",
       "mutation": "discard-a-payload-the-wire-could-carry",
       "what": "bounding treats its own conservative budget as the wire's cap: a payload over the budget with nothing long enough to elide is relayed with Raw set to nil, although the frame it would have produced is legal \u2014 data thrown away to protect a limit that was never in danger",
+      "quoted_by": "ead4ceb",
       "package": ".",
       "edits": [
         {
