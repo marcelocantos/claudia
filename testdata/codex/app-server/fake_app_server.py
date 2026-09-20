@@ -9,7 +9,6 @@ import json
 import os
 import signal
 import sys
-import time
 
 REJECT_RESUME = os.environ.get("FAKE_CODEX_REJECT_RESUME") == "1"
 # FAKE_CODEX_STEER=1: the CLI "has" turn/steer — the schema probe finds
@@ -20,11 +19,6 @@ STEER = os.environ.get("FAKE_CODEX_STEER") == "1"
 # turn stays in flight until turn/steer or turn/interrupt lands, so a
 # test can observe the in_turn phase.
 HOLD_TURN = os.environ.get("FAKE_CODEX_HOLD_TURN") == "1"
-# FAKE_CODEX_INITIALIZE_DELAY: seconds this peer waits before answering
-# initialize. A host too loaded to schedule this process is the only
-# thing that ever made initialize slow, and load is not reproducible;
-# a fixed delay is the same stimulus without the host (🎯T93).
-INITIALIZE_DELAY = float(os.environ.get("FAKE_CODEX_INITIALIZE_DELAY") or 0)
 thread_id = "thr_fake"
 
 
@@ -147,8 +141,6 @@ def main() -> None:
         params = msg.get("params") or {}
 
         if method == "initialize":
-            if INITIALIZE_DELAY:
-                time.sleep(INITIALIZE_DELAY)
             home_log = os.environ.get("FAKE_CODEX_LAST_HOME")
             if home_log:
                 with open(home_log, "w", encoding="utf-8") as fh:

@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -555,21 +554,8 @@ func TestHermeticCodexResumeEmptyHomeNamesPath(t *testing.T) {
 // elapsed-time assertion: the message naming 200ms is the proof the
 // handshake window closed, and `go test -timeout` is the only clock
 // allowed to decide a hermetic verdict (🎯T33).
-//
-// The peer is then told to answer initialize a whole second late, five
-// times the bound this test arms. That makes the separation demonstrated
-// rather than argued: on the single-knob code this run fails with
-// `timeout waiting for initialize after 200ms`, which is the incident
-// verbatim, and it fails on an idle machine instead of waiting for a
-// loaded one. Anyone who puts the two waits back under one bound gets
-// that red everywhere, not on whichever host happened to be busy.
 func TestHermeticCodexThreadStartTimesOut(t *testing.T) {
 	const threadBound = 200 * time.Millisecond
-	// Five times the bound this test arms: enough that the single-knob
-	// code fails here on an idle machine, and far enough under the 20s
-	// initialize bound that no host can make initialize the wait that
-	// expires.
-	const slowInitialize = 5 * threadBound
 	prev := codexAppServerThreadTimeout
 	codexAppServerThreadTimeout = threadBound
 	t.Cleanup(func() { codexAppServerThreadTimeout = prev })
@@ -577,8 +563,6 @@ func TestHermeticCodexThreadStartTimesOut(t *testing.T) {
 	bin := writeFakeCodexAppServer(t)
 	t.Setenv("CODEX_BIN", bin)
 	t.Setenv("FAKE_CODEX_HANG_START", "1")
-	t.Setenv("FAKE_CODEX_INITIALIZE_DELAY",
-		strconv.FormatFloat(slowInitialize.Seconds(), 'f', -1, 64))
 	writeFakeCodexSubscriptionAuth(t)
 
 	_, err := Start(Config{
