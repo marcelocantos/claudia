@@ -134,6 +134,10 @@ type GrantDefinition struct {
 var configNotOnGrantWire = map[string]string{
 	"PoolPolicy": "Acquire pool policy; carried as grant.pool on an acquire, not on the definition",
 	"PoolCap":    "Acquire pool cap; carried as grant.pool on an acquire, not on the definition",
+	// The wait it bounds runs in the consumer's process, on its own
+	// handle; the daemon's seat has its own (🎯T96). Sending it would
+	// claim a control over the seat that the field does not have.
+	"TurnSilenceBound": "bounds WaitForResponse on this handle, not the seat the daemon holds",
 }
 
 // configByCallback lists the Config fields a grant cannot carry as data but
