@@ -96,6 +96,18 @@ type Event struct {
 	// StuckClass is set on Type=system ProgressType=stuck Events
 	// (rate_limit or quota). Empty on every other event.
 	StuckClass string
+
+	// Truncated reports that this event's payload was bounded before it was
+	// relayed, because it was too large for one broker frame — a screenshot
+	// or other base64 tool_result is the usual cause. Raw is then no longer
+	// the verbatim provider line: each elided string is replaced by a marker
+	// naming the byte count that was dropped, and the JSON around it still
+	// parses. It is what lets a consumer tell a bounded event from a complete
+	// one, rather than inferring it from a field that looks odd.
+	//
+	// It is only ever set on the brokered path (🎯T73). An Event read
+	// directly from a provider carries the whole line and leaves this false.
+	Truncated bool
 }
 
 // IsTerminalStop reports whether the event represents a completed

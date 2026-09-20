@@ -50,6 +50,12 @@ type brokerClient struct {
 	closed  bool
 	err     error
 	done    chan struct{}
+
+	// dropped counts frames skipped for exceeding the wire's line limit, and
+	// lastDrop is the most recent refusal. A skipped frame is a hole in the
+	// event stream, not a closed connection (🎯T73).
+	dropped  int
+	lastDrop error
 }
 
 // usingBroker reports whether this process may talk to a lifecycle broker.
@@ -88,6 +94,15 @@ func (b *brokerClient) readLoop() {
 	for {
 		resp, err := b.conn.ReadResponse()
 		if err != nil {
+			if errors.Is(err, broker.ErrFrameTooLarge) {
+				// One frame was too large to relay and the broker skipped it.
+				// Everything else on this connection — every pending request,
+				// every other seat's events — is unaffected, so the loop keeps
+				// reading. Failing here is the 🎯T661 defect itself: a 1.2 KB
+				// send died because a screenshot shared its connection.
+				b.noteDropped(err)
+				continue
+			}
 			b.fail(err)
 			return
 		}
@@ -110,6 +125,25 @@ func (b *brokerClient) readLoop() {
 			ch <- resp
 		}
 	}
+}
+
+// noteDropped records a frame the wire could not carry. It is kept rather than
+// only logged because a consumer whose event stream has a hole needs to be
+// able to find out: a silently missing tool_result is indistinguishable from
+// one the agent never produced.
+func (b *brokerClient) noteDropped(err error) {
+	b.mu.Lock()
+	b.dropped++
+	b.lastDrop = err
+	b.mu.Unlock()
+}
+
+// DroppedFrames reports how many frames this connection skipped because they
+// exceeded the wire's line limit, and the last such refusal.
+func (b *brokerClient) DroppedFrames() (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.dropped, b.lastDrop
 }
 
 // fail closes the client and wakes every waiter with err.

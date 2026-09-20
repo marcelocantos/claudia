@@ -812,6 +812,14 @@ func (g *brokerGrant) retainUnowned(raw []byte) {
 func (d *Daemon) runPump(g *brokerGrant, c *broker.ClientConn, pump chan []byte) {
 	for raw := range pump {
 		if err := c.Reply(&broker.Response{Type: broker.TypeAgentEvent, AgentEvent: &broker.AgentEventMessage{Name: g.name, Event: raw}}); err != nil {
+			if errors.Is(err, broker.ErrFrameTooLarge) {
+				// One event was too large to frame even after bounding. The
+				// connection is fine and is carrying other seats' traffic, so
+				// the event is dropped and the stream continues; detaching
+				// here would turn one lost event into a lost session (🎯T73).
+				d.log.Warn("event too large for one frame; dropped", "grant", g.name, "bytes", len(raw))
+				continue
+			}
 			d.mu.Lock()
 			if g.owner == c {
 				d.detachLocked(g)
@@ -1096,9 +1104,13 @@ func (d *Daemon) handleTaskRun(c *broker.ClientConn, req *broker.Request) {
 	task := daemonNewTask(cfg)
 	runID := newRunID()
 	if req.TaskRun.RawLog {
-		// The line is only valid during the call; the push copies it.
+		// The line is only valid during the call; the push copies it. A raw
+		// log line comes straight off the provider, which allows lines the
+		// broker wire cannot carry, so it is bounded on the way through
+		// (🎯T73) rather than closing the connection on a screenshot.
 		task.SetRawLog(func(line []byte) {
-			_ = c.Reply(&broker.Response{Type: broker.TypeTaskRaw, TaskRaw: &broker.TaskRawMessage{RunID: runID, Line: string(line)}})
+			bounded, _ := claudia.BoundWirePayload(line)
+			_ = c.Reply(&broker.Response{Type: broker.TypeTaskRaw, TaskRaw: &broker.TaskRawMessage{RunID: runID, Line: string(bounded)}})
 		})
 	}
 	ctx, cancel := context.WithCancel(d.ctx)

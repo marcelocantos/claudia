@@ -44,11 +44,36 @@ type eventWire struct {
 	Reason        string   `json:"reason,omitempty"`
 	WarningCodes  []string `json:"warning_codes,omitempty"`
 	StuckClass    string   `json:"stuck_class,omitempty"`
+	Truncated     bool     `json:"truncated,omitempty"`
 }
 
 // EncodeEventWire is an Event in its daemon-protocol form (agent_event).
+//
+// A payload too large for one broker frame is bounded first (🎯T73): the
+// event is relayed with its oversized strings elided and Truncated set,
+// because the alternative is a line the wire refuses, and the wire is shared
+// with every other request that consumer has in flight.
+//
+// The budget bounding aims for sits below the size the wire actually refuses,
+// so the two are checked separately: a payload that is over budget but still
+// frames is relayed whole rather than thrown away for the slack's sake.
 func EncodeEventWire(ev Event) (json.RawMessage, error) {
-	return json.Marshal(eventWire(ev))
+	raw, err := json.Marshal(eventWire(ev))
+	if err != nil || len(raw) <= maxWirePayloadBytes {
+		return raw, err
+	}
+	bounded := boundEventForWire(ev)
+	out, err := json.Marshal(eventWire(bounded))
+	if err != nil || len(out) <= maxWireFrameBytes {
+		return out, err
+	}
+	// Nothing in the payload was long enough to elide and it still will not
+	// frame, so the size is in the shape. The choice left is between an event
+	// without its payload and a frame the wire refuses — and refusing the
+	// frame loses the event anyway, along with nothing else only because the
+	// reader now survives it.
+	bounded.Raw, bounded.Truncated = nil, true
+	return json.Marshal(eventWire(bounded))
 }
 
 // DecodeEventWire reverses [EncodeEventWire].
@@ -74,11 +99,23 @@ type taskEventWire struct {
 	IsError    bool          `json:"is_error,omitempty"`
 	ErrorMsg   string        `json:"error_msg,omitempty"`
 	Model      string        `json:"model,omitempty"`
+	Truncated  bool          `json:"truncated,omitempty"`
 }
 
 // EncodeTaskEventWire is a TaskEvent in its daemon-protocol form (task_event).
+// Oversized payloads are bounded exactly as in [EncodeEventWire].
 func EncodeTaskEventWire(ev TaskEvent) (json.RawMessage, error) {
-	return json.Marshal(taskEventWire(ev))
+	raw, err := json.Marshal(taskEventWire(ev))
+	if err != nil || len(raw) <= maxWirePayloadBytes {
+		return raw, err
+	}
+	bounded := boundTaskEventForWire(ev)
+	out, err := json.Marshal(taskEventWire(bounded))
+	if err != nil || len(out) <= maxWireFrameBytes {
+		return out, err
+	}
+	bounded.ToolInput, bounded.Truncated = "", true
+	return json.Marshal(taskEventWire(bounded))
 }
 
 // DecodeTaskEventWire reverses [EncodeTaskEventWire].

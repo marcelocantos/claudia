@@ -244,6 +244,63 @@
         {"name": "TestWaitForResponseIgnoresEventsFromBeforeTheSubmit", "expect": "green"}
       ],
       "note": "The mutation is the differential run that identified 🎯T98: the handover disabled, everything else — the latch, the arming in Send, the recording in publishEvent — left in place, so what goes red is the handover and nothing else. TestWaitForResponseIgnoresEventsFromBeforeTheSubmit is declared green on purpose: it holds the other half of the contract, that the latch never hands back a turn from before the submit, and a mutation that simply deleted the latch would satisfy it trivially. It staying green is what makes the red ones evidence about the handover rather than about the latch existing at all."
+    },
+    {
+      "target": "T73",
+      "mutation": "report-oversize-without-consuming",
+      "what": "the read loop names the oversized frame but abandons the stream mid-line, so the next read returns the tail of that frame instead of the next message — the 🎯T661 defect with a better error message",
+      "package": "./internal/broker",
+      "edits": [
+        {
+          "file": "internal/broker/transport.go",
+          "find": "\t\tcase len(line)+len(chunk) > MaxLineLen:\n\t\t\t// The line has outgrown the cap. Stop keeping it — a half message\n\t\t\t// that happens to parse is the worst outcome available — but keep\n\t\t\t// reading, because the bytes after it are somebody else's message.\n\t\t\tdropped = len(line) + len(chunk)\n\t\t\tline = nil\n",
+          "replace": "\t\tcase len(line)+len(chunk) > MaxLineLen:\n\t\t\treturn nil, frameTooLarge(len(line) + len(chunk))\n"
+        }
+      ],
+      "tests": [
+        {"name": "TestReadLineSkipsAnOversizedFrameAndKeepsReading", "expect": "red"},
+        {"name": "TestOversizedRequestIsAnsweredAndTheConnectionServesTheNext", "expect": "red"},
+        {"name": "TestReadLineAcceptsAFrameExactlyAtTheCap", "expect": "green"}
+      ],
+      "note": "The green test is load-bearing, not decoration: it never crosses the cap, so it stays green under this mutation and shows the red ones are pinning the skip specifically, not any breakage of the reader. The red tests overshoot the cap by 3x MaxLineLen on purpose. An earlier fixture overshot by 7 bytes and this mutation SURVIVED it, because a frame that exceeds the cap inside the final read buffer is consumed to its terminator by the read that notices — a false green the sizes now exclude."
+    },
+    {
+      "target": "T73",
+      "mutation": "relay-the-payload-unbounded",
+      "what": "EncodeEventWire marshals the event without bounding it, so a screenshot tool_result is handed to the wire as a frame over the line cap — the producer half of the same incident",
+      "package": ".",
+      "edits": [
+        {
+          "file": "broker_wire.go",
+          "find": "\traw, err := json.Marshal(eventWire(ev))\n\tif err != nil || len(raw) <= maxWirePayloadBytes {\n\t\treturn raw, err\n\t}\n\tbounded := boundEventForWire(ev)\n\tout, err := json.Marshal(eventWire(bounded))\n\tif err != nil || len(out) <= maxWireFrameBytes {\n\t\treturn out, err\n\t}\n\t// Nothing in the payload was long enough to elide and it still will not\n\t// frame, so the size is in the shape. The choice left is between an event\n\t// without its payload and a frame the wire refuses — and refusing the\n\t// frame loses the event anyway, along with nothing else only because the\n\t// reader now survives it.\n\tbounded.Raw, bounded.Truncated = nil, true\n\treturn json.Marshal(eventWire(bounded))\n",
+          "replace": "\treturn json.Marshal(eventWire(ev))\n"
+        }
+      ],
+      "tests": [
+        {"name": "TestOversizedToolResultIsRelayedBoundedAndFits", "expect": "red"},
+        {"name": "TestBoundedFramesAreAcceptedByTheWire", "expect": "red"},
+        {"name": "TestAnEventWithinBudgetIsRelayedByteForByte", "expect": "green"}
+      ],
+      "note": "The green test holds the other half of the contract: an unbounded codec still relays an ordinary event byte for byte, so it cannot distinguish the two codecs and the red tests are what pin the bound."
+    },
+    {
+      "target": "T73",
+      "mutation": "discard-a-payload-the-wire-could-carry",
+      "what": "bounding treats its own conservative budget as the wire's cap: a payload over the budget with nothing long enough to elide is relayed with Raw set to nil, although the frame it would have produced is legal \u2014 data thrown away to protect a limit that was never in danger",
+      "package": ".",
+      "edits": [
+        {
+          "file": "broker_bound.go",
+          "find": "\tev.Raw, ev.Text = raw, text\n\tev.Truncated = ev.Truncated || rawCut || textCut\n",
+          "replace": "\tif !rawCut && !textCut {\n\t\tev.Raw, ev.Text, ev.Truncated = nil, text, true\n\t\treturn ev\n\t}\n\tev.Raw, ev.Text, ev.Truncated = raw, text, true\n"
+        }
+      ],
+      "tests": [
+        {"name": "TestAPayloadOverBudgetButUnderTheCapIsRelayedWhole", "expect": "red"},
+        {"name": "TestOversizedToolResultIsRelayedBoundedAndFits", "expect": "green"},
+        {"name": "TestAnUnshrinkablePayloadIsStillRelayedWithoutItsRaw", "expect": "green"}
+      ],
+      "note": "This is the defect the adopted branch shipped with, and the two green tests are why it survived its own suite: every other fixture in broker_bound_test.go carries a base64 string far over maxWireStringBytes, so elision always reaches it and the discard branch is never taken. Only a payload whose size is in its shape \u2014 hundreds of small strings, none of them long \u2014 lands in the gap between the budget (MaxLineLen/2) and the frame ceiling, and there the bound deleted a payload the wire would have carried. The second green test holds the other side of the same boundary: past the ceiling with nothing elidable, dropping Raw is still the right answer, so the red test is pinning where the line sits and not whether there is one."
     }
   ]
 }

@@ -32,16 +32,36 @@ import (
 const unixNetwork = "unix"
 
 const (
-	// maxLineLen bounds one wire line. Framing on a delimiter means a peer that
+	// MaxLineLen bounds one wire line. Framing on a delimiter means a peer that
 	// never sends the delimiter would otherwise grow the buffer without limit,
 	// so the bound is what stops a stuck or hostile writer from exhausting the
 	// broker's memory. Exceeding it is a reported error, never a truncation:
 	// half a JSON message that happens to parse is the worst outcome available.
-	maxLineLen = 1 << 20
-	// initialLineBuf is the starting read buffer. Real messages are a few
-	// hundred bytes; the buffer grows on demand up to maxLineLen.
-	initialLineBuf = 4096
+	//
+	// It is exported because the producers that fill a frame — the event and
+	// task-event payload codecs in package claudia — have to size what they
+	// relay against the cap the wire actually enforces. A payload budget
+	// written as its own literal is a budget that drifts from the limit it
+	// exists to respect.
+	MaxLineLen = 1 << 20
+	// lineReadBuf is the per-connection read buffer. Real messages are a few
+	// hundred bytes; a longer line is read in as many buffer-fulls as it takes,
+	// so this trades memory per connection against read calls per long line and
+	// never bounds a message on its own.
+	lineReadBuf = 64 << 10
 )
+
+// ErrFrameTooLarge is the named cause behind every oversized-frame refusal, in
+// both directions: a peer that sent a line over MaxLineLen, and a message this
+// process declined to write because it would have been one.
+//
+// It is what callers match on. The broker multiplexes every response and push
+// for a connection onto that one connection, so the difference between
+// dropping a frame and dropping the connection is the difference between one
+// screenshot going missing and every unrelated request in flight dying with it
+// (jevons 🎯T661: a 1.2 KB send died behind a 1 MiB PNG). A read loop that
+// wants to survive an oversized frame matches this error and keeps reading.
+var ErrFrameTooLarge = errors.New("broker: frame exceeds the wire line limit")
 
 // Listen binds the broker's socket at path.
 //
@@ -111,42 +131,85 @@ func Dial(path string) (*Conn, error) {
 // serialised, because a connection has exactly one reader by construction.
 type Conn struct {
 	net net.Conn
-	sc  *bufio.Scanner
+	br  *bufio.Reader
 
 	mu sync.Mutex
 }
 
 // NewConn wraps an established connection in the broker's framing.
 func NewConn(c net.Conn) *Conn {
-	sc := bufio.NewScanner(c)
-	sc.Buffer(make([]byte, 0, initialLineBuf), maxLineLen)
-	return &Conn{net: c, sc: sc}
+	return &Conn{net: c, br: bufio.NewReaderSize(c, lineReadBuf)}
 }
 
-// ReadLine returns the next line, without its terminator. It reports io.EOF when
-// the peer closes cleanly, and a *ProtocolError with CodeMalformed when the peer
-// sends a line longer than maxLineLen.
+// ReadLine returns the next line, without its terminator. It reports io.EOF
+// when the peer closes cleanly, and a *ProtocolError with CodeFrameTooLarge —
+// matching ErrFrameTooLarge — when the peer sends a line longer than
+// MaxLineLen.
 //
-// The returned slice is a copy. The scanner's own buffer is reused by the next
-// read, and a caller that held on to it would watch its message change under it
-// — a bug that only appears under load, which is the worst kind to ship.
+// An oversized line is skipped, not fatal. The reader consumes it to its
+// terminator before returning, so the next call starts on the next whole
+// message and the caller may keep using the connection. This is why the
+// framing is a bufio.Reader and not a bufio.Scanner: a Scanner's ErrTooLong is
+// terminal, and every subsequent Scan returns it forever, which leaves a
+// caller the choice between closing the connection and spinning.
+//
+// The returned slice is a copy. The read buffer is reused by the next call,
+// and a caller that held on to it would watch its message change under it — a
+// bug that only appears under load, which is the worst kind to ship.
 func (c *Conn) ReadLine() ([]byte, error) {
-	if c.sc.Scan() {
-		line := c.sc.Bytes()
-		out := make([]byte, len(line))
-		copy(out, line)
-		return out, nil
+	var line []byte
+	// dropped counts the bytes of a line already past the cap. Once it is
+	// non-zero the line is being discarded rather than kept, and the count is
+	// what the error reports.
+	dropped := 0
+	for {
+		chunk, err := c.br.ReadSlice('\n')
+		if err == nil {
+			chunk = chunk[:len(chunk)-1] // the terminator is framing, not content
+		}
+		switch {
+		case dropped > 0:
+			dropped += len(chunk)
+		case len(line)+len(chunk) > MaxLineLen:
+			// The line has outgrown the cap. Stop keeping it — a half message
+			// that happens to parse is the worst outcome available — but keep
+			// reading, because the bytes after it are somebody else's message.
+			dropped = len(line) + len(chunk)
+			line = nil
+		default:
+			line = append(line, chunk...)
+		}
+		switch {
+		case err == nil:
+			if dropped > 0 {
+				return nil, frameTooLarge(dropped)
+			}
+			return line, nil
+		case errors.Is(err, bufio.ErrBufferFull):
+			continue
+		case errors.Is(err, io.EOF):
+			// A peer that died mid-line leaves a fragment. It is delivered as
+			// a line — it parses as malformed, which is what it is — and the
+			// next call reports the EOF.
+			if dropped > 0 {
+				return nil, frameTooLarge(dropped)
+			}
+			if len(line) == 0 {
+				return nil, io.EOF
+			}
+			return line, nil
+		default:
+			return nil, err
+		}
 	}
-	err := c.sc.Err()
-	switch {
-	case err == nil:
-		return nil, io.EOF
-	case errors.Is(err, bufio.ErrTooLong):
-		return nil, &ProtocolError{Code: CodeMalformed,
-			Msg: fmt.Sprintf("message exceeds the %d-byte line limit", maxLineLen)}
-	default:
-		return nil, err
-	}
+}
+
+// frameTooLarge is the refusal for a frame of n bytes. It is a *ProtocolError
+// so the server answers the peer with a typed code, and it unwraps to
+// ErrFrameTooLarge so a read loop can match it without depending on the code.
+func frameTooLarge(n int) *ProtocolError {
+	return &ProtocolError{Code: CodeFrameTooLarge,
+		Msg: fmt.Sprintf("frame of %d bytes exceeds the %d-byte line limit; it was dropped and the connection kept open", n, MaxLineLen)}
 }
 
 // ReadRequest reads and parses one client → broker message.
@@ -190,6 +253,16 @@ func (c *Conn) SetDeadline(t time.Time) error { return c.net.SetDeadline(t) }
 
 // writeLine frames and writes one message.
 func (c *Conn) writeLine(line []byte) error {
+	if len(line) > MaxLineLen {
+		// Refusing here is the other half of skipping an oversized frame on
+		// read, and the bound is the same one the reader applies — a message
+		// this process will not write must be exactly a message it would not
+		// accept, or the two ends disagree about what the wire carries. A
+		// peer handed an unframeable line could only drop it; a producer told
+		// its payload did not fit can bound it.
+		return frameTooLarge(len(line))
+	}
+
 	// The terminator is appended into one buffer rather than written
 	// separately, so a peer that dies mid-message cannot leave a line the
 	// receiver will glue to the next one.

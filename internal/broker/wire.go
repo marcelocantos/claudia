@@ -179,6 +179,14 @@ const (
 	// CodeReleaseFailed means the broker could not tear the agent down. The
 	// session stays in the registry, because the agent is still out there.
 	CodeReleaseFailed ErrorCode = "release_failed"
+	// CodeFrameTooLarge means one line exceeded the wire's line limit. The
+	// frame is dropped; the connection is not. It has its own code rather
+	// than folding into CodeMalformed because the two call for opposite
+	// answers: a malformed line means the peer is speaking a protocol this
+	// broker does not know, while an oversized one means the peer is speaking
+	// this protocol correctly about something too big to relay, and a producer
+	// told that can bound what it sends next.
+	CodeFrameTooLarge ErrorCode = "frame_too_large"
 	// CodeTailLagged means a tail subscriber fell far enough behind that the
 	// broker had to choose between blocking its own policy loop and dropping
 	// events. It does neither silently: the subscriber is told its stream is
@@ -438,6 +446,17 @@ func (e *ProtocolError) Error() string {
 		return fmt.Sprintf("broker protocol: %s (%s=%q): %s", e.Code, e.Field, e.Value, e.Msg)
 	}
 	return fmt.Sprintf("broker protocol: %s: %s", e.Code, e.Msg)
+}
+
+// Unwrap names the sentinel behind a code that has one, so errors.Is works on
+// a refusal this process raised and, identically, on one it decoded off the
+// wire: the code is the identity, so a client can match a remote broker's
+// oversized-frame refusal without reaching into the message text.
+func (e *ProtocolError) Unwrap() error {
+	if e.Code == CodeFrameTooLarge {
+		return ErrFrameTooLarge
+	}
+	return nil
 }
 
 // Wire converts the error into the body the broker puts on the socket.

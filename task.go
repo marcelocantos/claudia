@@ -96,6 +96,13 @@ type TaskEvent struct {
 	// e.g. "claude-opus-5" — the full id even when an alias was requested.
 	// Compare it against the requested model to detect a silent fallback.
 	Model string
+
+	// Truncated reports that this event's payload was bounded before it was
+	// relayed over the broker wire because it was too large for one frame;
+	// ToolInput is the field a base64 screenshot arrives in. The elided
+	// strings carry a marker naming the bytes dropped. Direct (non-brokered)
+	// runs never set it (🎯T73).
+	Truncated bool
 }
 
 // TaskStatus represents a task's lifecycle state.
