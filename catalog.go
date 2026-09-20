@@ -35,9 +35,9 @@ type CatalogModel struct {
 }
 
 // ModelCatalog is the built-in set of spawnable rows Resolve searches.
-// Slice order is not a ranking — Resolve picks by plan slack, then
-// PreferProvider among slack-tied rows. Empty Model means the provider
-// default.
+// Slice order is not a ranking — Resolve picks by published dest band
+// (locked, under, ok), then plan slack within a band. Empty Model means
+// the provider default.
 func ModelCatalog() []CatalogModel {
 	return []CatalogModel{
 		{Provider: ProviderClaude, Model: "claude-sonnet-5", Access: ModelAccessPlan, Quality: ModelQualityStandard, Task: true, Session: true},

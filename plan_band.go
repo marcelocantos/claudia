@@ -123,16 +123,16 @@ func ClassifyPlan(usage PlanUsage, now time.Time, th *PlanThresholds) PlanVerdic
 		thresholds = th.withDefaults()
 	}
 	v := PlanVerdict{Usage: usage}
-	if IsExhaustedReason(usage.Reason) {
-		v.ExhaustedReason = true
-		v.Weekly = PlanBandExhausted
-		v.Session = PlanSessionExhausted
-		return v
-	}
+	// Unavailable is unpublished, including a 429 from the usage meter
+	// (jevons 🎯T677). Only a number the provider published can empty a
+	// band; a failed reading is unknown, not spent.
 	if usage.Status != PlanUsageAvailable {
 		v.Weekly = PlanBandUnpublished
 		v.Session = PlanSessionUnpublished
 		return v
+	}
+	if IsExhaustedReason(usage.Reason) {
+		v.ExhaustedReason = true
 	}
 	if w, ok := primaryAllowanceWindow(usage); ok {
 		v.Weekly = ClassifyWindow(w, now, thresholds)
@@ -168,9 +168,6 @@ func ClassifyWindow(w PlanWindow, now time.Time, th PlanThresholds) PlanBand {
 // Resolve predicate (🎯T61.3).
 func HasAvailableTokens(usage PlanUsage, now time.Time, th *PlanThresholds) bool {
 	v := ClassifyPlan(usage, now, th)
-	if v.ExhaustedReason {
-		return false
-	}
 	switch v.Session {
 	case PlanSessionLow, PlanSessionExhausted:
 		return false
@@ -180,6 +177,22 @@ func HasAvailableTokens(usage PlanUsage, now time.Time, th *PlanThresholds) bool
 		return false
 	}
 	return true
+}
+
+// ShouldVacate reports that running seats on this provider must leave
+// (weekly hot/exhausted, or session 0%). Session remaining-low and an
+// unreadable (unpublished) meter do not bounce the fleet.
+func ShouldVacate(usage PlanUsage, now time.Time, th *PlanThresholds) bool {
+	v := ClassifyPlan(usage, now, th)
+	if v.Session == PlanSessionExhausted {
+		return true
+	}
+	switch v.Weekly {
+	case PlanBandHot, PlanBandExhausted:
+		return true
+	default:
+		return false
+	}
 }
 
 // IsExhaustedReason reports a 429 / rate-limit reason (allowance gone),
@@ -244,13 +257,27 @@ func classifySession(w PlanWindow, th PlanThresholds) PlanSessionStatus {
 }
 
 func primaryAllowanceWindow(u PlanUsage) (PlanWindow, bool) {
-	if w, ok := windowNamed(u, PlanWindowWeekly); ok {
+	if w, ok := planLevelWindow(u, PlanWindowWeekly); ok {
 		return w, true
 	}
 	for _, w := range u.Windows {
-		if w.Name != PlanWindowSession && w.Name != "" {
-			return w, true
+		if w.Name == PlanWindowSession || w.Name == PlanWindowModelWeekly || w.Name == "" {
+			continue
 		}
+		if strings.TrimSpace(w.Model) != "" {
+			continue
+		}
+		return w, true
+	}
+	return PlanWindow{}, false
+}
+
+func planLevelWindow(u PlanUsage, name PlanWindowName) (PlanWindow, bool) {
+	for _, w := range u.Windows {
+		if w.Name != name || strings.TrimSpace(w.Model) != "" {
+			continue
+		}
+		return w, true
 	}
 	return PlanWindow{}, false
 }

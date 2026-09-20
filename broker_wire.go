@@ -217,6 +217,7 @@ type predicatesWire struct {
 	PreferPlan       bool            `json:"prefer_plan,omitempty"`
 	PreferProvider   Provider        `json:"prefer_provider,omitempty"`
 	ExcludeProviders []Provider      `json:"exclude_providers,omitempty"`
+	RequireUsage     bool            `json:"require_usage,omitempty"`
 	Thresholds       *PlanThresholds `json:"thresholds,omitempty"`
 }
 
@@ -237,7 +238,7 @@ func EncodePredicatesWire(p ModelPredicates) (json.RawMessage, error) {
 		Mode: p.Mode, Purpose: p.Purpose, Skill: p.Skill, Quality: p.Quality,
 		Model: p.Model, Effort: p.Effort, PreferPlan: p.PreferPlan,
 		PreferProvider: p.PreferProvider, ExcludeProviders: p.ExcludeProviders,
-		Thresholds: p.Thresholds,
+		RequireUsage: p.RequireUsage, Thresholds: p.Thresholds,
 	})
 }
 
@@ -256,7 +257,7 @@ func DecodePredicatesWire(raw json.RawMessage) (ModelPredicates, error) {
 		Mode: w.Mode, Purpose: purpose, Skill: w.Skill, Quality: w.Quality,
 		Model: w.Model, Effort: w.Effort, PreferPlan: w.PreferPlan,
 		PreferProvider: w.PreferProvider, ExcludeProviders: w.ExcludeProviders,
-		Thresholds: w.Thresholds,
+		RequireUsage: w.RequireUsage, Thresholds: w.Thresholds,
 	}, nil
 }
 
@@ -271,6 +272,7 @@ type pickWire struct {
 	Band     PlanBand     `json:"band,omitempty"`
 	CostUSD  float64      `json:"cost_usd,omitempty"`
 	Reason   string       `json:"reason,omitempty"`
+	Author   string       `json:"author,omitempty"`
 }
 
 // EncodePickWire is a ModelPick in its daemon-protocol form (resolved).

@@ -39,13 +39,14 @@ func TestClassifyWindowJevonsOracles(t *testing.T) {
 
 func TestClassifyPlanExhaustedReasonAndUnpublished(t *testing.T) {
 	now := time.Now()
+	// A 429 from the usage meter is unpublished, not spent (jevons 🎯T677).
 	ex := ClassifyPlan(PlanUsage{
 		Provider: ProviderClaude,
 		Status:   PlanUsageUnavailable,
 		Reason:   `Claude usage HTTP 429: { "error": { "type": "rate_limit_error" } }`,
 	}, now, nil)
-	if ex.Weekly != PlanBandExhausted || !ex.ExhaustedReason || ex.Session != PlanSessionExhausted {
-		t.Fatalf("429: %+v", ex)
+	if ex.Weekly != PlanBandUnpublished || ex.ExhaustedReason || ex.Session != PlanSessionUnpublished {
+		t.Fatalf("429-unavailable: %+v", ex)
 	}
 
 	unpub := ClassifyPlan(PlanUsage{
@@ -98,8 +99,29 @@ func TestHasAvailableTokensAutomaticBar(t *testing.T) {
 	if !HasAvailableTokens(PlanUsage{Provider: ProviderGrok, Status: PlanUsageUnavailable, Reason: "unpublished"}, now, nil) {
 		t.Fatal("unpublished is not a veto")
 	}
-	if HasAvailableTokens(PlanUsage{Provider: ProviderClaude, Status: PlanUsageUnavailable, Reason: "rate limited"}, now, nil) {
-		t.Fatal("rate-limited reason must fail")
+	if !HasAvailableTokens(PlanUsage{Provider: ProviderClaude, Status: PlanUsageUnavailable, Reason: "rate limited"}, now, nil) {
+		t.Fatal("rate-limited meter is unpublished, not a veto")
+	}
+}
+
+func TestShouldVacateHotNotUnpublished(t *testing.T) {
+	now := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
+	week := now.Add(3*24*time.Hour + 12*time.Hour)
+	hot := PlanUsage{
+		Provider: ProviderClaude, Status: PlanUsageAvailable,
+		Windows: []PlanWindow{{
+			Name: PlanWindowWeekly, RemainingPercent: floatPtr(20), UsedPercent: floatPtr(80),
+			ResetsAt: &week, LimitWindow: defaultWeeklyWindow,
+		}},
+	}
+	if !ShouldVacate(hot, now, nil) {
+		t.Fatal("hot weekly must vacate")
+	}
+	if ShouldVacate(PlanUsage{
+		Provider: ProviderClaude, Status: PlanUsageUnavailable,
+		Reason: "Claude usage HTTP 429: rate_limit_error",
+	}, now, nil) {
+		t.Fatal("429-unavailable must not vacate")
 	}
 }
 

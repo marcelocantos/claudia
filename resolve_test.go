@@ -105,6 +105,60 @@ func TestResolveExcludeDropsSlackWinner(t *testing.T) {
 	}
 }
 
+func TestResolvePreferProviderBeatsSlack(t *testing.T) {
+	now := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
+	week := now.Add(3*24*time.Hour + 12*time.Hour)
+	healthy := func(p Provider, rem, used float64) PlanUsage {
+		return PlanUsage{
+			Provider: p, Status: PlanUsageAvailable,
+			Windows: []PlanWindow{{
+				Name: PlanWindowWeekly, RemainingPercent: floatPtr(rem), UsedPercent: floatPtr(used),
+				ResetsAt: &week, LimitWindow: defaultWeeklyWindow,
+			}},
+		}
+	}
+	got, err := Resolve(context.Background(), ModelPredicates{
+		Mode:           CapabilitySession,
+		PreferPlan:     true,
+		PreferProvider: ProviderClaude,
+		Now:            now,
+		Usage: []PlanUsage{
+			healthy(ProviderClaude, 50, 50),
+			healthy(ProviderGrok, 87, 13),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Provider != ProviderClaude {
+		t.Fatalf("prefer Claude with headroom must beat greener Grok: %+v", got)
+	}
+	if got.Author != DecisionAuthor {
+		t.Fatalf("pick author = %q, want %q", got.Author, DecisionAuthor)
+	}
+}
+
+func TestResolveRequireUsageRefusesWhenNoPublishedDest(t *testing.T) {
+	now := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
+	week := now.Add(3*24*time.Hour + 12*time.Hour)
+	_, err := Resolve(context.Background(), ModelPredicates{
+		Mode:         CapabilitySession,
+		PreferPlan:   true,
+		RequireUsage: true,
+		Now:          now,
+		Usage: []PlanUsage{{
+			Provider: ProviderGrok, Status: PlanUsageAvailable,
+			Windows: []PlanWindow{{
+				Name: PlanWindowWeekly, RemainingPercent: floatPtr(20), UsedPercent: floatPtr(80),
+				ResetsAt: &week, LimitWindow: defaultWeeklyWindow,
+			}},
+		}},
+	})
+	if err == nil {
+		t.Fatal("require-usage with only a hot dest must refuse, not invent a catalog row")
+	}
+}
+
 func TestResolveClaudeFirstWhenHeadroom(t *testing.T) {
 	now := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
 	week := now.Add(3*24*time.Hour + 12*time.Hour)
@@ -257,5 +311,90 @@ func TestResolveFailsClosed(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected fail closed")
+	}
+}
+
+// 🎯T693 (jevons): Claude weekly under (71% used, 17h left) vs Grok weekly
+// ok (5% used, 137h left) → Claude, even though Grok's raw pressure is
+// more negative. RequireUsage, no PreferProvider — dest ranking, not
+// Claude-first.
+func TestResolveUnderBeatsOkDespiteGrokSlack(t *testing.T) {
+	now := time.Date(2026, 9, 20, 20, 0, 0, 0, time.UTC)
+	claudeReset := now.Add(17 * time.Hour)
+	grokReset := now.Add(137 * time.Hour)
+	got, err := Resolve(context.Background(), ModelPredicates{
+		Mode:         CapabilitySession,
+		PreferPlan:   true,
+		RequireUsage: true,
+		Now:          now,
+		Usage: []PlanUsage{
+			{
+				Provider: ProviderClaude, Status: PlanUsageAvailable,
+				Windows: []PlanWindow{{
+					Name: PlanWindowWeekly, RemainingPercent: floatPtr(29), UsedPercent: floatPtr(71),
+					ResetsAt: &claudeReset, LimitWindow: defaultWeeklyWindow,
+				}},
+			},
+			{
+				Provider: ProviderGrok, Status: PlanUsageAvailable,
+				Windows: []PlanWindow{{
+					Name: PlanWindowWeekly, RemainingPercent: floatPtr(95), UsedPercent: floatPtr(5),
+					ResetsAt: &grokReset, LimitWindow: defaultWeeklyWindow,
+				}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Provider != ProviderClaude {
+		t.Fatalf("under must beat ok: got %+v", got)
+	}
+	if got.Band != PlanBandUnder {
+		t.Fatalf("Claude band=%s, want under", got.Band)
+	}
+}
+
+func TestResolveFableSpentDoesNotVetoClaude(t *testing.T) {
+	now := time.Date(2026, 9, 20, 20, 0, 0, 0, time.UTC)
+	claudeReset := now.Add(17 * time.Hour)
+	grokReset := now.Add(137 * time.Hour)
+	got, err := Resolve(context.Background(), ModelPredicates{
+		Mode:         CapabilitySession,
+		PreferPlan:   true,
+		RequireUsage: true,
+		Now:          now,
+		Usage: []PlanUsage{
+			{
+				Provider: ProviderClaude, Status: PlanUsageAvailable,
+				Windows: []PlanWindow{
+					{
+						Name: PlanWindowModelWeekly, Model: "Fable",
+						RemainingPercent: floatPtr(0), UsedPercent: floatPtr(100),
+						ResetsAt: &claudeReset, LimitWindow: defaultWeeklyWindow,
+					},
+					{
+						Name: PlanWindowWeekly, RemainingPercent: floatPtr(29), UsedPercent: floatPtr(71),
+						ResetsAt: &claudeReset, LimitWindow: defaultWeeklyWindow,
+					},
+				},
+			},
+			{
+				Provider: ProviderGrok, Status: PlanUsageAvailable,
+				Windows: []PlanWindow{{
+					Name: PlanWindowWeekly, RemainingPercent: floatPtr(95), UsedPercent: floatPtr(5),
+					ResetsAt: &grokReset, LimitWindow: defaultWeeklyWindow,
+				}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Provider != ProviderClaude {
+		t.Fatalf("Fable spent ≠ Claude unavailable: got %+v", got)
+	}
+	if got.Model == "claude-fable-5" {
+		t.Fatalf("landed on spent Fable: %+v", got)
 	}
 }

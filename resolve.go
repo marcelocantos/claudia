@@ -34,10 +34,17 @@ type ModelPredicates struct {
 	Effort ModelEffort
 	// PreferPlan prefers subscription-harness rows over direct APIs.
 	PreferPlan bool
-	// PreferProvider wins among token-eligible rows when set.
+	// PreferProvider wins among token-eligible rows when set. Eligible
+	// means HasAvailableTokens, not "tied on slack": a preferred Claude
+	// with headroom beats a greener Grok. Hot/exhausted preferred dests
+	// still yield.
 	PreferProvider Provider
 	// ExcludeProviders drops those backends (ladder walk).
 	ExcludeProviders []Provider
+	// RequireUsage drops catalog rows with no snapshot or an unpublished
+	// band so a host that must refuse rather than land on an unknown dest
+	// can fail closed. Off by default: unpublished is not a veto.
+	RequireUsage bool
 	// Usage overrides the cached snapshot (hermetic tests).
 	Usage []PlanUsage
 	// Cache is passed to LoadPlanUsage when Usage is nil.
@@ -50,6 +57,10 @@ type ModelPredicates struct {
 	Thresholds *PlanThresholds
 }
 
+// DecisionAuthor is the name Resolve stamps on a pick. A host that
+// re-adjudicates is a different decision and must not reuse this.
+const DecisionAuthor = "claudia"
+
 // ModelPick is one Resolve result. Resolve does not spawn.
 type ModelPick struct {
 	Provider Provider
@@ -61,6 +72,9 @@ type ModelPick struct {
 	Band     PlanBand
 	CostUSD  float64
 	Reason   string
+	// Author is always "claudia". Resolve authors its own pick; a host
+	// that re-adjudicates is a different decision and must not reuse this.
+	Author string
 }
 
 // Resolve chooses a catalog model matching predicates. It never Start,
@@ -112,6 +126,9 @@ func Resolve(ctx context.Context, pred ModelPredicates) (ModelPick, error) {
 			continue
 		}
 		u, has := byProv[row.Provider]
+		if skipForUsage(pred, u, has, now) {
+			continue
+		}
 		// 🎯T86: the plan can have headroom while this model has none.
 		if has && !ModelHasAvailableTokens(u, row.Model, now, pred.Thresholds) {
 			continue
@@ -139,6 +156,7 @@ func Resolve(ctx context.Context, pred ModelPredicates) (ModelPick, error) {
 		Access:   best.row.Access,
 		Band:     best.band,
 		Reason:   reason,
+		Author:   DecisionAuthor,
 	}, nil
 }
 
@@ -152,40 +170,50 @@ func pickCatalog(cands []catalogCand, prefer Provider) (catalogCand, error) {
 	if len(cands) == 0 {
 		return catalogCand{}, fmt.Errorf("resolve: no catalog model matches predicates")
 	}
-	// Unpublished pressure is 0 ("unknown"), not blue. Only rank
-	// published bands against each other; if none are published,
-	// PreferProvider is the remaining predicate.
-	var published []catalogCand
+	// Dest bands first (🎯T693 / jevons T693): locked, then under, then
+	// ok. hot and ahead are never destinations. If nothing dest-eligible
+	// is published, PreferProvider among unpublished catalog rows — not
+	// among hot/ahead.
+	var dests []catalogCand
 	for _, c := range cands {
-		if publishedPlanBand(c.band) {
-			published = append(published, c)
+		if _, ok := destBandRank(c.band); ok {
+			dests = append(dests, c)
 		}
 	}
-	pool := cands
-	if len(published) > 0 {
-		pool = published
-	}
-	bestP := pool[0].pressure
-	for _, c := range pool[1:] {
-		if c.pressure < bestP {
-			bestP = c.pressure
+	pool := dests
+	if len(pool) == 0 {
+		var unpublished []catalogCand
+		for _, c := range cands {
+			if !publishedPlanBand(c.band) {
+				unpublished = append(unpublished, c)
+			}
 		}
-	}
-	var slack []catalogCand
-	for _, c := range pool {
-		if _, decided := slackDecides(c.pressure, bestP); !decided {
-			slack = append(slack, c)
+		if len(unpublished) == 0 {
+			return catalogCand{}, fmt.Errorf("resolve: no catalog model matches predicates")
 		}
+		pool = unpublished
 	}
 	if prefer != "" {
 		var pref []catalogCand
-		for _, c := range slack {
+		for _, c := range pool {
 			if c.row.Provider == prefer {
 				pref = append(pref, c)
 			}
 		}
 		if len(pref) > 0 {
-			slack = pref
+			pool = pref
+		}
+	}
+	best := pool[0]
+	for _, c := range pool[1:] {
+		if better, ok := destBetter(c.band, c.pressure, best.band, best.pressure); ok && better {
+			best = c
+		}
+	}
+	var slack []catalogCand
+	for _, c := range pool {
+		if _, decided := destBetter(c.band, c.pressure, best.band, best.pressure); !decided {
+			slack = append(slack, c)
 		}
 	}
 	if len(slack) == 1 {
@@ -197,6 +225,44 @@ func pickCatalog(cands []catalogCand, prefer Provider) (catalogCand, error) {
 	}
 	sort.Strings(ids)
 	return catalogCand{}, fmt.Errorf("resolve: token-tied models %s; set PreferProvider", strings.Join(ids, " "))
+}
+
+// IsDestBand reports a published band that may receive new work.
+// locked / under / ok yes; ahead / hot / exhausted / unpublished no.
+func IsDestBand(b PlanBand) bool {
+	_, ok := destBandRank(b)
+	return ok
+}
+
+// destBandRank is destination order: locked (surplus locked in), then
+// under (paid allowance at risk of expiring), then ok. hot and ahead
+// are never destinations.
+func destBandRank(b PlanBand) (int, bool) {
+	switch b {
+	case PlanBandLocked:
+		return 0, true
+	case PlanBandUnder:
+		return 1, true
+	case PlanBandOK:
+		return 2, true
+	default:
+		return 0, false
+	}
+}
+
+func destBetter(cBand PlanBand, cPress float64, bestBand PlanBand, bestPress float64) (cBetter bool, decided bool) {
+	cr, cOK := destBandRank(cBand)
+	br, bOK := destBandRank(bestBand)
+	if cOK != bOK {
+		return cOK, true
+	}
+	if !cOK {
+		return false, false
+	}
+	if cr != br {
+		return cr < br, true
+	}
+	return slackDecides(cPress, bestPress)
 }
 
 func slackDecides(c, best float64) (cBetter bool, decided bool) {
@@ -219,7 +285,7 @@ func slackDecidesPublished(cPress float64, cBand PlanBand, bestPress float64, be
 	if !cPub {
 		return false, false
 	}
-	return slackDecides(cPress, bestPress)
+	return destBetter(cBand, cPress, bestBand, bestPress)
 }
 
 func publishedPlanBand(b PlanBand) bool {
@@ -357,6 +423,9 @@ func resolveFromIntel(pred ModelPredicates, byProv map[Provider]PlanUsage, now t
 			continue
 		}
 		u, has := byProv[c.row.Provider]
+		if skipForUsage(pred, u, has, now) {
+			continue
+		}
 		// 🎯T86: same rule on the intel path — a spent model is
 		// ineligible even when its provider's plan is fine.
 		if has && !ModelHasAvailableTokens(u, c.row.Model, now, pred.Thresholds) {
@@ -395,6 +464,17 @@ func resolveFromIntel(pred ModelPredicates, byProv map[Provider]PlanUsage, now t
 	if len(kept) == 0 {
 		return ModelPick{}, fmt.Errorf("resolve: no catalog model meets %s quality=%s", purpose, wantQ)
 	}
+	if pred.PreferProvider != "" {
+		var pref []intelCand
+		for _, c := range kept {
+			if c.row.Provider == pred.PreferProvider {
+				pref = append(pref, c)
+			}
+		}
+		if len(pref) > 0 {
+			kept = pref
+		}
+	}
 
 	best := kept[0]
 	for _, c := range kept[1:] {
@@ -425,7 +505,21 @@ func resolveFromIntel(pred ModelPredicates, byProv map[Provider]PlanUsage, now t
 		Band:     best.band,
 		CostUSD:  best.cost,
 		Reason:   reason,
+		Author:   DecisionAuthor,
 	}, nil
+}
+
+func skipForUsage(pred ModelPredicates, u PlanUsage, has bool, now time.Time) bool {
+	if !pred.RequireUsage {
+		return false
+	}
+	if !has {
+		return true
+	}
+	if u.Status != PlanUsageAvailable {
+		return true
+	}
+	return !publishedPlanBand(ClassifyPlan(u, now, pred.Thresholds).Weekly)
 }
 
 func purposeHasCatalogSeries(obs []ModelObservation, purpose ModelPurpose) bool {
@@ -460,8 +554,8 @@ func appendCatalogShelf(pool []intelCand, wantQ ModelQuality) []intelCand {
 }
 
 func intelBetter(c, best intelCand, prefer Provider) bool {
-	// Lower pressure (blue/purple slack) wins before research cost.
-	// A published band beats unpublished: pressure 0 is "unknown", not blue.
+	// Dest band first (locked/under/ok), then lower pressure, then cost.
+	// A published dest band beats unpublished: pressure 0 is "unknown", not blue.
 	if better, ok := slackDecidesPublished(c.pressure, c.band, best.pressure, best.band); ok {
 		return better
 	}
