@@ -1838,12 +1838,7 @@ func (a *Agent) WaitForResponse(ctx context.Context) (string, error) {
 		}
 
 		mu.Lock()
-		if ev.Text != "" {
-			if text.Len() > 0 {
-				text.WriteByte('\n')
-			}
-			text.WriteString(ev.Text)
-		}
+		appendTurnText(&text, ev)
 		if ev.IsTerminalStop() {
 			seenTerminal = true
 		}

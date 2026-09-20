@@ -98,12 +98,7 @@ func (a *Agent) noteGoalEvent(ev Event) {
 	if ev.Type != "assistant" {
 		return
 	}
-	if ev.Text != "" {
-		if a.goalTurn.Len() > 0 {
-			a.goalTurn.WriteByte('\n')
-		}
-		a.goalTurn.WriteString(ev.Text)
-	}
+	appendTurnText(&a.goalTurn, ev)
 	if ev.IsTerminalStop() {
 		a.goalSeenTerminal = true
 	}
