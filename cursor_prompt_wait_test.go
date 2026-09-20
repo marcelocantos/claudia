@@ -80,6 +80,31 @@ func TestAwaitPeerActivityReportsPeerSpoke(t *testing.T) {
 	}
 }
 
+// The third of the three faults the outcome exists to separate. 🎯T83's
+// TestCursorStuckPromptWaitEndsWhenTransportDies already proves the wait
+// ENDS when the transport dies, but it discards the outcome — so nothing
+// asserted that a dead peer reads as dead rather than as a silent one.
+// That distinction is the whole reason the wait reports a struct instead
+// of a bool: silence means re-deliver, a closed transport means the
+// caller's own error path.
+func TestAwaitPeerActivityReportsTransportClosed(t *testing.T) {
+	c := &cursorACPClient{peerWoke: make(chan struct{}, 1)}
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		c.mu.Lock()
+		c.closed = true
+		c.mu.Unlock()
+		c.wakePromptWaiters()
+	}()
+	out := c.awaitPeerActivity(0, time.Hour)
+	if out.spoke || !out.closed {
+		t.Fatalf("outcome = %+v, want spoke=false closed=true", out)
+	}
+	if got := out.String(); !strings.Contains(got, "transport closed") {
+		t.Errorf("outcome %q does not distinguish a dead peer from a silent one", got)
+	}
+}
+
 // 🎯T91's second half: when a real peer genuinely goes silent, the error
 // says what was waited for. The old text gave a session and a duration,
 // which left the reader unable to tell a swallowed delivery from a dead
