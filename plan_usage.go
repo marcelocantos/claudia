@@ -36,6 +36,11 @@ const (
 	// PlanWindowWeekly is the longer plan allowance (Claude seven_day,
 	// Codex primary/secondary when limit_window_seconds is ~7d).
 	PlanWindowWeekly PlanWindowName = "weekly"
+	// PlanWindowModelWeekly is a weekly allowance metered for one model
+	// rather than the whole plan; its Model field names which (🎯T86).
+	// It is a distinct name so a consumer totalling plan windows cannot
+	// mistake a per-model figure for the account's own.
+	PlanWindowModelWeekly PlanWindowName = "weekly_model"
 )
 
 // PlanWindow is one published remaining/rollover window.
@@ -51,6 +56,11 @@ type PlanWindow struct {
 	ResetsAt *time.Time `json:"resets_at,omitempty"`
 	// LimitWindow is the provider's published window length when known.
 	LimitWindow time.Duration `json:"limit_window,omitempty"`
+	// Model names the model this window is scoped to, when the provider
+	// meters one model separately from the account as a whole (🎯T86).
+	// Empty means the window covers the plan, not one model. The label is
+	// the vendor's own — "Fable", "Opus" — never one we invent.
+	Model string `json:"model,omitempty"`
 }
 
 // PlanUsage is a snapshot of subscription-style plan remaining for one

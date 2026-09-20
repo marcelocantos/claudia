@@ -112,7 +112,8 @@ func Resolve(ctx context.Context, pred ModelPredicates) (ModelPick, error) {
 			continue
 		}
 		u, has := byProv[row.Provider]
-		if has && !HasAvailableTokens(u, now, pred.Thresholds) {
+		// 🎯T86: the plan can have headroom while this model has none.
+		if has && !ModelHasAvailableTokens(u, row.Model, now, pred.Thresholds) {
 			continue
 		}
 		band := PlanBandUnpublished
@@ -356,7 +357,9 @@ func resolveFromIntel(pred ModelPredicates, byProv map[Provider]PlanUsage, now t
 			continue
 		}
 		u, has := byProv[c.row.Provider]
-		if has && !HasAvailableTokens(u, now, pred.Thresholds) {
+		// 🎯T86: same rule on the intel path — a spent model is
+		// ineligible even when its provider's plan is fine.
+		if has && !ModelHasAvailableTokens(u, c.row.Model, now, pred.Thresholds) {
 			continue
 		}
 		c.band = PlanBandUnpublished

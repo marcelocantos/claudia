@@ -27,7 +27,31 @@ const (
 type claudeOAuthUsage struct {
 	FiveHour *claudeOAuthWindow `json:"five_hour"`
 	SevenDay *claudeOAuthWindow `json:"seven_day"`
+	// Limits carries the server's own list, including the per-model
+	// weekly windows that have no top-level key (🎯T86).
+	Limits []claudeOAuthLimit `json:"limits"`
 }
+
+// claudeOAuthLimit is one entry of the response's limits[] array. The
+// per-model windows live only here: kind "weekly_scoped", with the model
+// named by the server rather than by a codename we would have to guess.
+type claudeOAuthLimit struct {
+	Kind     string   `json:"kind"`
+	Group    string   `json:"group"`
+	Percent  *float64 `json:"percent"`
+	ResetsAt *string  `json:"resets_at"`
+	Scope    *struct {
+		Model *struct {
+			ID          *string `json:"id"`
+			DisplayName string  `json:"display_name"`
+		} `json:"model"`
+	} `json:"scope"`
+}
+
+// claudeScopedWeeklyKind is the limits[] kind that carries a per-model
+// weekly allowance. Anything else in that array duplicates a window this
+// parser already has from a top-level key.
+const claudeScopedWeeklyKind = "weekly_scoped"
 
 type claudeOAuthWindow struct {
 	Utilization *float64 `json:"utilization"`
@@ -106,11 +130,57 @@ func parseClaudeOAuthUsage(body []byte, now time.Time) (PlanUsage, error) {
 	if w := mapClaudeWindow(PlanWindowWeekly, raw.SevenDay); w != nil {
 		pu.Windows = append(pu.Windows, *w)
 	}
+	pu.Windows = append(pu.Windows, claudeModelWindows(raw.Limits)...)
 	if len(pu.Windows) > 0 {
 		pu.Status = PlanUsageAvailable
 		pu.Reason = ""
 	}
 	return pu, nil
+}
+
+// claudeModelWindows lifts the per-model weekly allowances out of
+// limits[] (🎯T86).
+//
+// These have no top-level key and no fixed name: the account's premium
+// model is whatever it is, and the server labels the bucket for us. That
+// is why the label is taken from the payload rather than mapped from a
+// codename — an earlier reading of this surface guessed the wrong field
+// from a string table in the CLI, and a guess here would refuse work on
+// a model that is not actually spent.
+func claudeModelWindows(limits []claudeOAuthLimit) []PlanWindow {
+	var out []PlanWindow
+	for _, l := range limits {
+		if l.Kind != claudeScopedWeeklyKind || l.Percent == nil {
+			continue
+		}
+		if l.Scope == nil || l.Scope.Model == nil {
+			continue
+		}
+		name := strings.TrimSpace(l.Scope.Model.DisplayName)
+		if name == "" {
+			// A scoped window whose model has no name cannot be
+			// attributed, and an unattributed per-model figure is worse
+			// than none: it would read as the plan's own.
+			continue
+		}
+		used := *l.Percent
+		w := PlanWindow{
+			Name:             PlanWindowModelWeekly,
+			Model:            name,
+			UsedPercent:      floatPtr(used),
+			RemainingPercent: floatPtr(remainingFromUsed(used)),
+			LimitWindow:      7 * 24 * time.Hour,
+		}
+		if l.ResetsAt != nil && strings.TrimSpace(*l.ResetsAt) != "" {
+			if t, err := time.Parse(time.RFC3339Nano, *l.ResetsAt); err == nil {
+				w.ResetsAt = &t
+			} else if t, err := time.Parse(time.RFC3339, *l.ResetsAt); err == nil {
+				w.ResetsAt = &t
+			}
+		}
+		out = append(out, w)
+	}
+	return out
 }
 
 func mapClaudeWindow(name PlanWindowName, w *claudeOAuthWindow) *PlanWindow {
