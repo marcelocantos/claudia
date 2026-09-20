@@ -1983,7 +1983,13 @@ func (a *Agent) WaitForResponse(ctx context.Context) (string, error) {
 		case <-liveTick:
 			// Alive latches a lost window and closes deadCh, so the death
 			// is handled in one place: the arm above, on the next pass.
-			a.Alive()
+			// A turn that is producing needs no probe — it is answering
+			// the liveness question itself, for free — and skipping it
+			// there keeps a busy fleet from paying a tmux exec per seat
+			// per interval for an answer it already has.
+			if a.now().Sub(lastActivity()) >= turnLivenessPollInterval {
+				a.Alive()
+			}
 			liveTick = a.after(turnLivenessPollInterval)
 
 		case <-silence:
