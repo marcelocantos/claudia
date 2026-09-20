@@ -176,7 +176,7 @@
       "edits": [
         {
           "file": "agent.go",
-          "find": "\tsilence := a.after(bound)\n",
+          "find": "\tsilence := a.after(bound.effective)\n",
           "replace": "\tvar silence <-chan time.Time\n"
         }
       ],
@@ -184,7 +184,7 @@
         {"name": "TestWaitForResponseArmsASilenceWake", "expect": "red"},
         {"name": "TestWaitForResponseEndsWhenTheAgentDies", "expect": "green"}
       ],
-      "note": "The red test is structural on purpose. A missing wake is invisible to a behavioural test — it shows up as a HANG, which is the original defect's own signature and costs a test timeout to see (the report that opened 🎯T96 was a 10m panic). Arming the wake before the subscription gives the guard a happens-before point, so the absence is a fast failure instead of a dead suite. The green test is load-bearing: the death wake is a separate mechanism and still answers with no silence timer on the clock at all."
+      "note": "The red test is structural on purpose. A missing wake is invisible to a behavioural test — it shows up as a HANG, which is the original defect's own signature and costs a test timeout to see (the report that opened 🎯T96 was a 10m panic). Arming the wake before the subscription gives the guard a happens-before point, so the absence is a fast failure instead of a dead suite. The green test is load-bearing: the death wake is a separate mechanism and still answers with no silence timer on the clock at all. Anchor re-derived by hand at \ud83c\udfafT103: 43fec82 made the wait arm bound.effective rather than bound, so `silence := a.after(bound)` stopped matching and this evidence stopped biting. The mutation it models is unchanged \u2014 arm no silence wake at all \u2014 and was re-verified against the new text before the anchor was moved."
     },
     {
       "target": "T96",
