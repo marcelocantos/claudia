@@ -65,6 +65,13 @@ type PlanUsage struct {
 	// PlanType is an optional provider plan label when published
 	// (e.g. Codex "pro", Claude subscription tier).
 	PlanType string `json:"plan_type,omitempty"`
+	// HTTPStatus is the status of the vendor response this reading came
+	// from, or 0 when no request completed (🎯T84).
+	HTTPStatus int `json:"http_status,omitempty"`
+	// RawBody is the vendor response, bounded by PlanRawBodyLimit, kept so
+	// a question about what the server actually said never costs a fresh
+	// request (🎯T84). Fields this package does not map survive here.
+	RawBody string `json:"raw_body,omitempty"`
 }
 
 // PlanUsageArgs configures [QueryPlanUsage].
@@ -160,6 +167,17 @@ type AllPlanUsageArgs struct {
 	// Providers limits which providers to query. Empty means all supported
 	// providers (Claude, Codex, Grok, Bedrock, Cursor).
 	Providers []Provider
+	// ThrottleDir enables the cross-process request floor (🎯T85) and
+	// names the directory holding its state; empty disables it. The
+	// shared cache path sets it to its own directory, so every fetch
+	// that reaches a vendor is paced. Direct callers and unit tests that
+	// leave it empty are unthrottled, which is what makes a hermetic
+	// test with its own httptest server run at full speed.
+	ThrottleDir string
+	// ThrottleSkipped, when non-nil, receives one entry per provider
+	// withheld by the throttle, so the caller can carry a previous
+	// reading forward instead of publishing a hole.
+	ThrottleSkipped map[Provider]string
 }
 
 // QueryPlanUsage returns subscription plan remaining for one provider.
@@ -180,22 +198,37 @@ func QueryPlanUsage(ctx context.Context, args *PlanUsageArgs) (PlanUsage, error)
 	if client == nil {
 		client = http.DefaultClient
 	}
+	// 🎯T84: record at the transport so every provider is covered by one
+	// piece of code, and hand the fetchers a copy of args pointing at the
+	// recording client (grok and cursor read args.HTTPClient themselves).
+	rec := &planRecorder{}
+	client = recordingClient(client, rec)
+	withRec := *args
+	withRec.HTTPClient = client
+	args = &withRec
+	attach := func(pu PlanUsage, err error) (PlanUsage, error) {
+		if err != nil {
+			return pu, err
+		}
+		pu.HTTPStatus, pu.RawBody = rec.result()
+		return pu, nil
+	}
 
 	switch args.Provider {
 	case ProviderClaude:
-		return queryClaudePlanUsage(ctx, client, args, now)
+		return attach(queryClaudePlanUsage(ctx, client, args, now))
 	case ProviderCodex:
-		return queryCodexPlanUsage(ctx, client, args, now)
+		return attach(queryCodexPlanUsage(ctx, client, args, now))
 	case ProviderGrok:
 		// SuperGrok weekly pool is the undocumented cli-chat-proxy billing
 		// endpoint. Always fetched; a break is unavailable-with-reason.
-		return queryGrokPlanUsage(ctx, args, now), nil
+		return attach(queryGrokPlanUsage(ctx, args, now), nil)
 	case ProviderBedrock:
 		return unavailablePlan(ProviderBedrock, now,
 			"AWS Bedrock does not publish Claude-style session/weekly subscription remaining; "+
 				"account quotas and spend limits are managed in AWS, not via this surface"), nil
 	case ProviderCursor:
-		return queryCursorPlanUsage(ctx, args, now), nil
+		return attach(queryCursorPlanUsage(ctx, args, now), nil)
 	default:
 		return PlanUsage{}, fmt.Errorf("unknown provider %q", args.Provider)
 	}
@@ -213,8 +246,24 @@ func QueryAllPlanUsage(ctx context.Context, args *AllPlanUsageArgs) ([]PlanUsage
 	if len(providers) == 0 {
 		providers = []Provider{ProviderClaude, ProviderCodex, ProviderGrok, ProviderBedrock, ProviderCursor}
 	}
+	now := args.Now
+	if now.IsZero() {
+		now = time.Now()
+	}
 	out := make([]PlanUsage, 0, len(providers))
 	for _, p := range providers {
+		// 🎯T85: the vendor counts requests per account, not per process,
+		// so the floor is consulted before the request is built. A
+		// withheld provider is omitted, never published as a hole: the
+		// caller carries its previous reading forward.
+		if args.ThrottleDir != "" && providerFetches(p) {
+			if d := CheckPlanThrottle(args.ThrottleDir, p, now, false); !d.Allowed {
+				if args.ThrottleSkipped != nil {
+					args.ThrottleSkipped[p] = d.Reason
+				}
+				continue
+			}
+		}
 		pu, err := QueryPlanUsage(ctx, &PlanUsageArgs{
 			Provider:            p,
 			HTTPClient:          args.HTTPClient,
@@ -240,10 +289,18 @@ func QueryAllPlanUsage(ctx context.Context, args *AllPlanUsageArgs) ([]PlanUsage
 			// Programmer / unknown-provider errors propagate.
 			return nil, err
 		}
+		if args.ThrottleDir != "" && providerFetches(p) {
+			RecordPlanAttempt(args.ThrottleDir, p, now, pu.HTTPStatus)
+		}
 		out = append(out, pu)
 	}
 	return out, nil
 }
+
+// providerFetches reports whether querying p costs a vendor request.
+// Bedrock publishes nothing and is answered from a constant, so pacing it
+// would only add latency to a string.
+func providerFetches(p Provider) bool { return p != ProviderBedrock }
 
 func unavailablePlan(p Provider, now time.Time, reason string) PlanUsage {
 	return PlanUsage{
