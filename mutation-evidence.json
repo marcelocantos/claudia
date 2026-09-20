@@ -60,7 +60,10 @@
         }
       ],
       "tests": [
-        {"name": "TestSendPropagatesProviderSendFailure", "expect": "red"}
+        {
+          "name": "TestSendPropagatesProviderSendFailure",
+          "expect": "red"
+        }
       ],
       "note": "2017074 also quoted TestClaudeSendReportsUnsubmittedTurnThroughRealTmux against this mutation. It is not listed here because it skips without tmux and a skipped test is not evidence; the hermetic one holds the contract in every environment."
     },
@@ -78,9 +81,18 @@
         }
       ],
       "tests": [
-        {"name": "TestT28DailyDeliveredFramesAreNotPasteChips/frame_daily_spinner_empty_composer.txt", "expect": "red"},
-        {"name": "TestT28DeliveredFramesReportSuccessWithoutLandedEvidence/frame_daily_spinner_empty_composer.txt", "expect": "red"},
-        {"name": "TestT28DeliveredFramesReportSuccessWithoutLandedEvidence/frame_daily_queued_expand_hint.txt", "expect": "green"}
+        {
+          "name": "TestT28DailyDeliveredFramesAreNotPasteChips/frame_daily_spinner_empty_composer.txt",
+          "expect": "red"
+        },
+        {
+          "name": "TestT28DeliveredFramesReportSuccessWithoutLandedEvidence/frame_daily_spinner_empty_composer.txt",
+          "expect": "red"
+        },
+        {
+          "name": "TestT28DeliveredFramesReportSuccessWithoutLandedEvidence/frame_daily_queued_expand_hint.txt",
+          "expect": "green"
+        }
       ],
       "decay": {
         "what": "the Send-level call site passes landed=true, so sawContent starts true and 🎯T30's composerEmptyIdle branch returns nil before the 🎯T28 classification is consulted at all",
@@ -109,7 +121,10 @@
         }
       ],
       "tests": [
-        {"name": "TestT28QueuedPayloadReportsSuccess", "expect": "red"}
+        {
+          "name": "TestT28QueuedPayloadReportsSuccess",
+          "expect": "red"
+        }
       ]
     },
     {
@@ -126,7 +141,10 @@
         }
       ],
       "tests": [
-        {"name": "TestSendKeysAcceptsRealTurnEvidence", "expect": "red"}
+        {
+          "name": "TestSendKeysAcceptsRealTurnEvidence",
+          "expect": "red"
+        }
       ]
     },
     {
@@ -143,10 +161,69 @@
         }
       ],
       "tests": [
-        {"name": "TestGoalJourneyUnfinishedMultiCycle", "expect": "red"},
-        {"name": "TestGoalIssuesContinuationAfterTerminalTurn", "expect": "red"},
-        {"name": "TestEmptyGoalStaysSingleTurn", "expect": "green"}
+        {
+          "name": "TestGoalJourneyUnfinishedMultiCycle",
+          "expect": "red"
+        },
+        {
+          "name": "TestGoalIssuesContinuationAfterTerminalTurn",
+          "expect": "red"
+        },
+        {
+          "name": "TestEmptyGoalStaysSingleTurn",
+          "expect": "green"
+        }
       ]
+    },
+    {
+      "target": "T33",
+      "mutation": "restore-wall-clock-deadline",
+      "what": "TestHermeticTaskRunSuccess bounds its run with a 10s context deadline again — the wall-clock bound that let a loaded machine, not the product, decide the verdict",
+      "quoted_by": "0902d19",
+      "package": "./codex",
+      "edits": [
+        {
+          "file": "codex/task_test.go",
+          "find": "\tctx := t.Context()\n\tevents, err := task.Run(ctx, \"summarize\")\n",
+          "replace": "\tctx, cancel := context.WithTimeout(context.Background(), 10000000000)\n\tdefer cancel()\n\tevents, err := task.Run(ctx, \"summarize\")\n"
+        }
+      ],
+      "tests": [
+        {
+          "name": "TestHermeticTestsHaveNoWallClockDeadline",
+          "expect": "red"
+        },
+        {
+          "name": "TestHermeticTaskRunSuccess",
+          "expect": "green"
+        }
+      ],
+      "note": "The deadline is spelled as a bare 10000000000 so the mutation needs no new import; the guard matches the context.WithTimeout call, not the literal. TestHermeticTaskRunSuccess is listed green on purpose: on an idle machine the restored deadline still passes, which is exactly why this flake stayed citable-green between failures and why the guard, not the test, holds the contract."
+    },
+    {
+      "target": "T78",
+      "mutation": "tail-pooled-window-from-byte-zero",
+      "what": "a pooled seat's tailer ignores where its holder's stream begins and replays the whole transcript, so a re-acquired window hands the new holder the previous holder's turn",
+      "quoted_by": "8800805",
+      "package": ".",
+      "edits": [
+        {
+          "file": "agent.go",
+          "find": "\tif offset > 0 {\n\t\tif fi, statErr := f.Stat(); statErr == nil {\n\t\t\toffset = tailStartOffset(fi.Size(), offset)\n\t\t}\n\t\tif _, seekErr := f.Seek(offset, io.SeekStart); seekErr != nil {\n\t\t\tslog.Error(\"seek JSONL failed\", \"session\", a.sessionID, \"offset\", offset, \"err\", seekErr)\n\t\t\treturn\n\t\t}\n\t}\n",
+          "replace": "\tif _, seekErr := f.Seek(0, io.SeekStart); seekErr != nil {\n\t\treturn\n\t}\n"
+        }
+      ],
+      "tests": [
+        {
+          "name": "TestTailJSONLFromSkipsPriorHolder",
+          "expect": "red"
+        },
+        {
+          "name": "TestTailJSONLFromZeroReadsWholeTranscript",
+          "expect": "green"
+        }
+      ],
+      "note": "The live half is TestPoolAgentEventsLive: under this mutation the second holder's turn arrives with the first holder's PEAR in it, which is what this hermetic pair stands in for when CLAUDIA_LIVE is unset."
     }
   ]
 }
