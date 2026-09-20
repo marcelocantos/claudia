@@ -176,6 +176,12 @@ func ParseGoalStatus(text string) (string, bool) {
 	return "", false
 }
 
+// goalContinuationMarker opens every host-authored continuation prompt.
+// It is the one string an observer can match to say "this turn is the
+// host continuing the goal, not the user speaking" — the live journey's
+// oracle matches it, so it is named here rather than written twice.
+const goalContinuationMarker = "Continue the open objective"
+
 func goalContinuation(goal string) string {
 	// One line under the Claude Session paste threshold (400 bytes in
 	// internal/tmuxagent). Newlines or len>=400 take the paste-chip
@@ -183,7 +189,7 @@ func goalContinuation(goal string) string {
 	// (live 🎯T39 journey). Keep the boilerplate short so typical Goal
 	// strings stay on send-keys -l.
 	obj := strings.Join(strings.Fields(strings.TrimSpace(goal)), " ")
-	return "Continue the open objective (previous turn did not finish it). " +
+	return goalContinuationMarker + " (previous turn did not finish it). " +
 		"Objective: " + obj + ". " +
 		"Work until evidenced complete or blocked. " +
 		"When complete emit exactly: " + GoalStatusComplete + " " +

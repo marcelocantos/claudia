@@ -29,7 +29,12 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 	_ = os.Setenv("CLAUDIA_PLAN_CACHE", cache)
+	// Every tmux seat the suite starts goes on a server of its own, so the
+	// fleet's pane census cannot reap a test window out from under a
+	// running assertion (🎯T77). See planTestTmuxSocket.
+	stopTmux := usePrivateTmuxServer()
 	code := m.Run()
+	stopTmux()
 	_ = os.RemoveAll(cache)
 	os.Exit(code)
 }

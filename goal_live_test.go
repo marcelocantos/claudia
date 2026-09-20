@@ -7,6 +7,7 @@ import (
 	"context"
 	"os"
 	"os/exec"
+	"sync"
 	"testing"
 	"time"
 )
@@ -115,35 +116,28 @@ func runLiveGoalJourney(t *testing.T, cfg Config) {
 		t.Fatal("Goal must be active after Start")
 	}
 
-	type turnMark struct {
-		n      int
-		turnID string
-		kind   string
-	}
-	firstDone := make(chan turnMark, 1)
-	secondSeen := make(chan turnMark, 1)
+	// secondTurnWatcher decides what a second turn is; see its comment for
+	// why counting non-terminal events does not (🎯T77).
 	var (
-		terminals int
-		sawFirst  bool
+		mu         sync.Mutex
+		watcher    secondTurnWatcher
+		firstTurn  = make(chan string, 1)
+		secondTurn = make(chan turnMark, 1)
 	)
 	tok := agent.SubscribeEvents(func(ev Event) {
-		if ev.IsTerminalStop() {
-			terminals++
-			if terminals == 1 {
-				sawFirst = true
-				select {
-				case firstDone <- turnMark{n: 1, turnID: ev.TurnID, kind: "terminal"}:
-				default:
-				}
-			}
-			return
-		}
-		if !sawFirst {
-			return
-		}
-		if ev.Type == "assistant" || ev.ProgressType == "tool_use" {
+		mu.Lock()
+		defer mu.Unlock()
+		hadFirst := watcher.terminals > 0
+		second := watcher.Observe(ev)
+		if !hadFirst && watcher.terminals > 0 {
 			select {
-			case secondSeen <- turnMark{n: 2, turnID: ev.TurnID, kind: ev.Type}:
+			case firstTurn <- watcher.FirstTurnID():
+			default:
+			}
+		}
+		if second {
+			select {
+			case secondTurn <- watcher.Second:
 			default:
 			}
 		}
@@ -161,9 +155,9 @@ func runLiveGoalJourney(t *testing.T, cfg Config) {
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
 
-	var first turnMark
+	var first string
 	select {
-	case first = <-firstDone:
+	case first = <-firstTurn:
 	case <-ctx.Done():
 		t.Fatal("first turn never completed")
 	}
@@ -173,13 +167,16 @@ func runLiveGoalJourney(t *testing.T, cfg Config) {
 
 	var second turnMark
 	select {
-	case second = <-secondSeen:
+	case second = <-secondTurn:
 	case <-ctx.Done():
-		t.Fatal("no second-turn activity after the first terminal — host did not continue")
+		t.Fatal("no turn after the first — host did not continue the Goal")
 	}
+	mu.Lock()
+	rule := watcher.Rule
+	mu.Unlock()
 	agent.Stop()
 	if agent.GoalActive() {
 		t.Fatal("Stop must close the Goal")
 	}
-	t.Logf("live goal journey: first=%+v second=%+v", first, second)
+	t.Logf("live goal journey: first turn %q, second turn %+v decided by %s", first, second, rule)
 }
