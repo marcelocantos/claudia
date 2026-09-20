@@ -1,0 +1,24 @@
+ ▐▛███▛█   Claude Code v2.1.278
+▝▜██████▀  Haiku 4.5 · Claude Max
+  ▝▝ ▝▝    /…/T/TestT101ProbeTypedSubmit853733904/001
+
+
+❯ respond with: ok
+
+✢ Ruminating… (running UserPromptSubmit hook · 1s)
+
+────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt · ← 3 agen…
+  tmux focu
+
+
+
+
+
+
+
+
+
+

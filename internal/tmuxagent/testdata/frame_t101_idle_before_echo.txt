@@ -1,0 +1,24 @@
+ ▐▛███▛█   Claude Code v2.1.278
+▝▜██████▀  Haiku 4.5 · Claude Max
+  ▝▝ ▝▝    /…/T/TestT101ProbeTypedSubmit853733904/001
+
+
+────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← 3 agents
+  tmux focus-events off · add 'set -g focus-events on' to ~/.tmux.conf and re…
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -208,7 +208,18 @@ func TestSendKeysAcceptsRealTurnEvidence(t *testing.T) {
 func TestSendKeysPollsThroughGapUntilTurnEvidence(t *testing.T) {
 	t.Parallel()
 	working := loadFrame(t, "frame_turn_in_progress.txt")
-	frames := [][]byte{[]byte(postEnterGapFrame), []byte(postEnterGapFrame), []byte(postEnterGapFrame), working}
+	// The typed frame leads: a short message is echoed into the composer
+	// before Enter, and SendKeys now takes that sighting as its `landed`
+	// evidence (🎯T101). The gap frames that follow are what the pane
+	// shows AFTER Enter, which is the sequence this test is about.
+	// Two leading typed frames: the first is consumed by the
+	// not-connecting check that opens every send, the second is the
+	// sighting waitContentLanded takes.
+	frames := [][]byte{
+		[]byte(typedNotSubmittedFrame), []byte(typedNotSubmittedFrame),
+		[]byte(postEnterGapFrame), []byte(postEnterGapFrame), []byte(postEnterGapFrame),
+		working,
+	}
 	i := 0
 	d, enters := hermeticDriver(
 		func() ([]byte, error) {

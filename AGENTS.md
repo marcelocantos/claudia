@@ -89,6 +89,36 @@ CLAUDIA_LIVE=1 CLAUDIA_GROK_LIVE=1 CLAUDIA_CODEX_LIVE=1 CLAUDIA_CURSOR_LIVE=1 ma
 
 Unset gates skip. CI never sets them. **You are the gate.**
 
+**Host load is a first-class variable for the Claude row.** The Claude
+gate drives a real TUI through tmux, so it is the one row whose result
+depends on how busy this machine is. Measured on the live path at load
+average ~200 (🎯T101, 2026-09-20):
+
+| Step | Latency |
+|------|---------|
+| `Start` → `WaitReady` (composer drawn) | **16.6s** (bound: 30s) |
+| `send-keys -l` → the text echoed in the composer | up to **2.4s** |
+| `Enter` → the first spinner frame | **1.6s** |
+
+Read that table before blaming the submit path. The 30s readiness bound
+has about 13s of headroom left at this load and none of it is yours to
+spend: a run at load 300+ can exhaust it and report `no_composer`, which
+is the host talking, not a defect. Live Claude turns are what this fleet
+runs on, so load is largely self-inflicted — `uptime` before the run,
+and record the number next to the result.
+
+🎯T101 is why these numbers are here. The submit path used to allow the
+pane two samples, 800ms, to show either the payload or turn chrome, and
+refused the send as `composer empty after paste (brief never reached
+pane)` on the second empty frame — for turns the model went on to run.
+Sub-400-byte messages take the typed branch and were the only ones
+affected, which is why `TestAgentSendAndWaitForResponse` ("respond with:
+ok", 16 bytes) failed while briefs of real size pasted fine. Fixed by
+`submitEvidenceTimeout` and by the typed branch taking the same `landed`
+evidence the paste branch takes; pinned by `TestT101*` in
+`internal/tmuxagent`, against verbatim frames in
+`testdata/frame_t101_*.txt`.
+
 **Done is not hermetic green.** Do not achieve a backend-behavior
 target, and do not say the work is finished, until the live run is
 green — or you have named the skip as residue (no binary, no auth).

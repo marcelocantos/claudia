@@ -44,6 +44,26 @@ const (
 	// contentLandTimeout waits for paste/type to appear before the first
 	// Enter (avoids Enter-into-empty during paste render).
 	contentLandTimeout = 3 * time.Second
+	// submitEvidenceTimeout bounds how long ensureSubmitted keeps
+	// LOOKING when the pane offers no evidence either way: an idle,
+	// empty composer holding neither our payload nor turn chrome.
+	//
+	// That frame is not proof the brief was lost. The keystrokes are
+	// already in the pty in order; the TUI simply has not consumed them
+	// yet. Under fleet load a Claude Code pane sat 2.4s between
+	// `send-keys -l` and echoing the text, and drew its first spinner
+	// 1.6s after Enter — while the old bound was two samples, 800ms,
+	// after which the send was refused as "brief never reached pane"
+	// for a turn the model then ran (🎯T101; probe frames
+	// testdata/frame_t101_idle_before_echo.txt).
+	//
+	// It is a bound, not a tuned delay: the point past which we are
+	// willing to say we never saw the payload. It sits in the same
+	// family as readyOverallTimeout and connectingClearTimeout because
+	// it waits on the same object for the same reason — a TUI that can
+	// take tens of seconds to service its input under load. The wait is
+	// only ever paid by a send that is genuinely going nowhere.
+	submitEvidenceTimeout = 30 * time.Second
 	// connectingClearTimeout waits for /rc connecting to clear before
 	// paste when the ready channel closed on a still-connecting frame
 	// (older agents); MatchReady now rejects connecting too.
@@ -197,6 +217,19 @@ func sendKeysWith(d sendDriver, msg string) error {
 			if err := d.typeLiteral(msg); err != nil {
 				return err
 			}
+			// Take the same `landed` evidence the paste branch takes.
+			// Without it the typed branch was structurally unable to tell
+			// an empty box the payload never reached from an empty box
+			// the payload left when it submitted — the 🎯T30 ambiguity,
+			// surviving on the one branch that never resolved it, which
+			// is what 🎯T101 failed on.
+			//
+			// A timeout here is NOT a failure and must not be returned:
+			// the keystrokes are already queued in the pty and will be
+			// consumed in order whether or not the TUI has echoed them
+			// yet. All that is lost is the evidence, and ensureSubmitted
+			// falls back to watching for turn chrome.
+			landed = waitContentLanded(d, contentLandTimeout) == nil
 		}
 	}
 	// Empty msg: bare Enter (used by readiness menu dismiss).
@@ -390,61 +423,91 @@ func ensureSubmitted(d sendDriver, landed bool) error {
 	var last []byte
 	var lastState composerState
 	sawContent := landed
-	for press := 0; press < maxSubmitPresses; press++ {
+	deadline := d.clock().Add(submitEvidenceTimeout)
+	presses := 0
+	// press re-presses Enter while presses remain. The two bounds are
+	// separate on purpose: maxSubmitPresses limits how often we act on
+	// the pane, submitEvidenceTimeout limits how long we are willing to
+	// keep watching a pane there is nothing to act on.
+	press := func(what string) error {
+		if presses+1 >= maxSubmitPresses {
+			return nil
+		}
+		presses++
+		if err := d.sendEnter(); err != nil {
+			return fmt.Errorf("tmux send-keys Enter (%s): %w", what, err)
+		}
+		return nil
+	}
+	for {
 		d.sleep(submitSettle)
 		frame, err := d.capture()
 		if err != nil {
 			// Capture glitches are non-fatal mid-loop; re-press and retry.
-			_ = d.sendEnter()
-			continue
-		}
-		last = frame
-		lastState = classifyComposer(frame)
-		if lastState.submitted() {
-			return nil
-		}
-		switch lastState {
-		case composerPasteChip, composerTyped:
-			sawContent = true
-			if press+1 < maxSubmitPresses {
-				if err := d.sendEnter(); err != nil {
-					return fmt.Errorf("tmux send-keys Enter (paste submit retry): %w", err)
+			if perr := press("capture retry"); perr != nil {
+				return perr
+			}
+		} else {
+			last = frame
+			lastState = classifyComposer(frame)
+			if lastState.submitted() {
+				return nil
+			}
+			switch lastState {
+			case composerPasteChip, composerTyped:
+				sawContent = true
+				if perr := press("paste submit retry"); perr != nil {
+					return perr
+				}
+			case composerUnrecognised:
+				// Neither turn chrome nor the idle composer: the Enter may
+				// have gone into a menu, a dialog, or a half-drawn frame.
+				// Keep polling and re-pressing within the bound rather than
+				// declaring the turn started (🎯T21).
+				if perr := press("unrecognised frame retry"); perr != nil {
+					return perr
+				}
+			case composerEmptyIdle:
+				if sawContent {
+					// The payload was in this box and is not any more, and
+					// the only key we sent was Enter: it was submitted
+					// (🎯T30). This is evidence about OUR payload, not about
+					// chrome that might belong to another turn, so it is
+					// safe where the chrome-first rule 🎯T28 removed was
+					// not. Pressing Enter again here is what burned the
+					// whole bound and turned a delivered brief into "turn
+					// not submitted".
+					return nil
+				}
+				// Nothing has been seen either way. Do NOT press: an Enter
+				// into a box whose contents the TUI has not drawn yet can
+				// only land as a second, empty submit. Keep looking until
+				// submitEvidenceTimeout — the payload appearing, or the
+				// turn chrome that says it already went, are both still
+				// ahead of us on a loaded pane (🎯T101). Declaring the
+				// brief lost on the second sample refused sends the model
+				// answered.
+			default:
+				if perr := press("unknown frame retry"); perr != nil {
+					return perr
 				}
 			}
-		case composerUnrecognised:
-			// Neither turn chrome nor the idle composer: the Enter may
-			// have gone into a menu, a dialog, or a half-drawn frame.
-			// Keep polling and re-pressing within the bound rather than
-			// declaring the turn started (🎯T21).
-			if press+1 < maxSubmitPresses {
-				if err := d.sendEnter(); err != nil {
-					return fmt.Errorf("tmux send-keys Enter (unrecognised frame retry): %w", err)
-				}
-			}
-		case composerEmptyIdle:
-			if !sawContent && press == 0 {
-				// First sample empty — brief may still be rendering.
-				continue
-			}
-			if !sawContent {
-				return fmt.Errorf("turn not submitted: composer empty after paste (brief never reached pane)")
-			}
-			// The payload was in this box and is not any more, and the
-			// only key we sent was Enter: it was submitted (🎯T30). This
-			// is evidence about OUR payload, not about chrome that might
-			// belong to another turn, so it is safe where the chrome-first
-			// rule 🎯T28 removed was not. Pressing Enter again here is what
-			// burned the whole bound and turned a delivered brief into
-			// "turn not submitted".
-			return nil
-		default:
-			if press+1 < maxSubmitPresses {
-				_ = d.sendEnter()
-			}
+		}
+		// Out of presses with something still visibly held back: further
+		// watching cannot change the verdict.
+		if presses+1 >= maxSubmitPresses && lastState != composerEmptyIdle {
+			break
+		}
+		if !d.clock().Before(deadline) {
+			break
 		}
 	}
+	if lastState == composerEmptyIdle && !sawContent {
+		return fmt.Errorf("turn not submitted: composer idle and empty for %s after Enter, payload never seen in the pane (brief never reached pane); last frame tail:\n%s",
+			submitEvidenceTimeout, frameTail(last))
+	}
 	return fmt.Errorf("turn not submitted: composer state=%s after %d Enter presses; last frame tail:\n%s",
-		composerStateName(lastState), maxSubmitPresses, frameTail(last))
+		composerStateName(lastState), presses, frameTail(last))
 }
 
 // frameTail renders the last frameTailBytes of a captured frame for
