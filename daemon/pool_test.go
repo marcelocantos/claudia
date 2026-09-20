@@ -64,6 +64,20 @@ func startPoolHost(t *testing.T) func() []string {
 	}
 }
 
+// windowOption reads a tmux window option off the pool host's server. It
+// is how the pool itself decides a window's fate (pool.go's Acquire sweep
+// reads @claudia-held), so it is what a test must read to observe a
+// release rather than a proxy for one.
+func windowOption(t *testing.T, windowID, key string) string {
+	t.Helper()
+	out, err := exec.Command("tmux", "-S", os.Getenv("CLAUDIA_TMUX_SOCKET"),
+		"show-options", "-wv", "-t", windowID, "@"+key).Output()
+	if err != nil {
+		t.Fatalf("read @%s on %s: %v", key, windowID, err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
 // TestAcquireSharesOneWarmSeatAcrossConsumers is 🎯T64: with a daemon
 // listening, Acquire is the daemon's pool. One consumer acquires and
 // returns a seat; a second consumer's Acquire gets the same warm window
@@ -136,6 +150,16 @@ func TestAcquiredSeatReturnsWhenConsumerLeaves(t *testing.T) {
 		defer f.d.mu.Unlock()
 		return len(f.d.grants) == 0
 	})
+	// The pool reads tmux, not the daemon's grant map: a window is free
+	// when its @claudia-held is back to 0. The daemon drops the grant only
+	// once that has landed (🎯T94), so the two observations agree here and
+	// the Acquire below cannot fall between them. When they were the other
+	// way round, a loaded host spent the tmux round-trip in between reading
+	// this window as another consumer's, and cold-spawned beside it.
+	if got := windowOption(t, window, "claudia-held"); got != "0" {
+		t.Fatalf("the daemon forgot the grant while %s is still @claudia-held=%q: "+
+			"the next Acquire reads this warm seat as held and cold-spawns", window, got)
+	}
 	second, err := claudia.Acquire(ctx, claudia.Config{WorkDir: workDir, TermLogPath: "-"})
 	if err != nil {
 		t.Fatal(err)

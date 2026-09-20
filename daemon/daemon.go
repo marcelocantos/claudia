@@ -148,6 +148,13 @@ type brokerGrant struct {
 	// pool marks a seat acquired from the pool (🎯T64): not in the
 	// Registry, returned to the pool rather than kept when its owner goes.
 	pool bool
+	// returning marks a pooled seat whose return is under way: its owner
+	// has gone or released, and the window is being handed back, but the
+	// pool has not been told yet. The grant stays in d.grants until it
+	// has, so that a grant's disappearance is an observation of the
+	// return rather than a promise of one (🎯T94). While it is set the
+	// seat is nobody's to take: liveGrantLocked reads it as absent.
+	returning bool
 }
 
 type brokerDaemonTask struct {
@@ -395,7 +402,7 @@ func (d *Daemon) ConnClosed(c *broker.ClientConn) {
 		if g.pool {
 			// Nobody can reclaim an acquired seat by name: it goes back
 			// to the pool for the next Acquire.
-			d.unbindPooledLocked(g)
+			d.startReturningLocked(g)
 			returned = append(returned, g)
 			continue
 		}
@@ -415,10 +422,11 @@ func (d *Daemon) ConnClosed(c *broker.ClientConn) {
 		d.emit(broker.EventMessage{Kind: broker.EventDetach, Name: name})
 	}
 	for _, g := range returned {
-		d.log.Info("consumer connection closed; pooled seat returned", "grant", g.name)
+		d.log.Info("consumer connection closed; returning pooled seat", "grant", g.name)
 		if err := d.releasePooled(g, "return"); err != nil {
 			d.log.Warn("return pooled seat", "grant", g.name, "err", err)
 		}
+		d.forgetReturned(g)
 	}
 	for _, cancel := range cancels {
 		cancel()
@@ -473,7 +481,7 @@ func (d *Daemon) handleGrant(c *broker.ClientConn, req *broker.Request) {
 	def.AutoStart = true
 
 	d.mu.Lock()
-	g := d.grants[name]
+	g := d.liveGrantLocked(name)
 	if g != nil && g.owner != nil && g.owner != c {
 		d.mu.Unlock()
 		_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeGrantHeld, Field: "name", Value: name,
@@ -515,7 +523,7 @@ func (d *Daemon) handleGrant(c *broker.ClientConn, req *broker.Request) {
 	}
 
 	d.mu.Lock()
-	g = d.grants[name]
+	g = d.liveGrantLocked(name)
 	if g == nil {
 		g = &brokerGrant{name: name}
 		d.grants[name] = g
@@ -572,7 +580,7 @@ var daemonAcquire = claudia.AcquireDirect
 func (d *Daemon) handleAcquire(c *broker.ClientConn, req *broker.Request, def claudia.GrantDefinition) {
 	name := req.Grant.Name
 	d.mu.Lock()
-	if d.grants[name] != nil {
+	if d.liveGrantLocked(name) != nil {
 		d.mu.Unlock()
 		_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeGrantHeld, Field: "name", Value: name,
 			Msg: fmt.Sprintf("grant %s already names a seat", name)})
@@ -623,13 +631,43 @@ func (d *Daemon) releasePooled(g *brokerGrant, disposition string) error {
 	return err
 }
 
-// unbindPooledLocked forgets a pooled grant. d.mu held.
-func (d *Daemon) unbindPooledLocked(g *brokerGrant) {
+// liveGrantLocked is d.grants[name] restricted to grants the daemon can
+// still hand out. A pooled seat mid-return is not one of them: it is on
+// its way back to the pool and belongs to no connection. d.mu held.
+func (d *Daemon) liveGrantLocked(name string) *brokerGrant {
+	g := d.grants[name]
+	if g != nil && g.returning {
+		return nil
+	}
+	return g
+}
+
+// startReturningLocked detaches a pooled grant from its owner and marks
+// the return under way. The grant deliberately stays in d.grants: the
+// window is still marked held in tmux until releasePooled clears it, and
+// the pool reads tmux, not this map. Removing the grant first published a
+// return that had not happened — an Acquire in that gap read the window as
+// another consumer's and cold-spawned beside a seat that was about to be
+// free (🎯T94). forgetReturned closes the pair. d.mu held.
+func (d *Daemon) startReturningLocked(g *brokerGrant) {
 	d.detachLocked(g)
 	if g.proc != nil && g.sub != 0 {
 		g.proc.UnsubscribeEvents(g.sub)
+		g.sub = 0
 	}
-	delete(d.grants, g.name)
+	g.returning = true
+}
+
+// forgetReturned drops a pooled grant now that its window is back in the
+// pool (or gone). It removes only its own entry: a later grant of the same
+// name has taken the slot and is not this one's to delete. d.mu must not
+// be held.
+func (d *Daemon) forgetReturned(g *brokerGrant) {
+	d.mu.Lock()
+	if d.grants[g.name] == g {
+		delete(d.grants, g.name)
+	}
+	d.mu.Unlock()
 }
 
 func procProvider(a *claudia.Agent) claudia.Provider {
@@ -788,7 +826,7 @@ func (d *Daemon) runPump(g *brokerGrant, c *broker.ClientConn, pump chan []byte)
 func (d *Daemon) handleRelease(c *broker.ClientConn, req *broker.Request) {
 	name := req.Release.Name
 	d.mu.Lock()
-	g := d.grants[name]
+	g := d.liveGrantLocked(name)
 	if g == nil && d.reg.Def(name) == nil {
 		d.mu.Unlock()
 		_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeUnknownGrant, Field: "name", Value: name,
@@ -817,9 +855,11 @@ func (d *Daemon) handleRelease(c *broker.ClientConn, req *broker.Request) {
 				Value: string(req.Release.Disposition), Msg: "a pooled seat is released with reuse or stop"})
 			return
 		}
-		d.unbindPooledLocked(g)
+		d.startReturningLocked(g)
 		d.mu.Unlock()
-		if err := d.releasePooled(g, disposition); err != nil {
+		err := d.releasePooled(g, disposition)
+		d.forgetReturned(g)
+		if err != nil {
 			_ = c.Fail(req.ID, err)
 			return
 		}
@@ -904,7 +944,7 @@ func turnCapsWire(proc *claudia.Agent) *broker.TurnCaps {
 // seatFor resolves a request's grant and, when needOwner, checks c owns it.
 func (d *Daemon) seatFor(c *broker.ClientConn, id, name string, needOwner bool) (*brokerGrant, *claudia.Agent, bool) {
 	d.mu.Lock()
-	g := d.grants[name]
+	g := d.liveGrantLocked(name)
 	d.mu.Unlock()
 	if g == nil || g.proc == nil {
 		_ = c.Fail(id, &broker.ProtocolError{Code: broker.CodeUnknownGrant, Field: "name", Value: name,
