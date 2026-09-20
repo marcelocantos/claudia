@@ -8,6 +8,7 @@
 - **Exclusions:** `.claude/worktrees/`, `.vera/`, untracked `scratchpad/` and `.claudia-mcp-home/`, fixture JSONL under `testdata/` and `*/testdata/` (named when they are competing copies). Parent workspace `/Users/marcelo/work/github.com/marcelocantos/go.work` inflates `go list -m all` with sibling modules (jevons, …); `go.mod` itself lists a small direct set.
 - **Headline mechanism:** a single public `claudia` package is a multi-provider runtime (Task + Session) with a published capability matrix and fail-closed field-fate audit — while a second public Codex Task package, a freeze-framed `STABILITY.md` snapshot four minors behind `Version`, and a half-wired lifecycle broker compete as sources of truth. At this HEAD the shipped hermetic path is red.
 - **Highest-consequence findings:** ENT-001 (`MCPProxy` data race on concurrent 401), ENT-002 (T24 field-fate table missing `Config.GoalCompleteCheck`), ENT-003 (two public Codex Task implementations), ENT-004 (`STABILITY.md` snapshot stuck at v0.21.0 vs `Version` 0.25.0).
+  - *Later annotation (2026-09-21):* ENT-001 is **closed** — see its Closure bullet under Findings. The rest of this summary is the 2026-08-22 observation and is not restated.
 - **Unverified residue:** live provider gates (`CLAUDIA_*_LIVE`) not set; `make verify-mutation-evidence` and `make verify-specs` not re-run here; `staticcheck` cannot compile a go1.26 module (tool built with go1.25); no `govulncheck` / clone detector installed; Windows build not exercised.
 
 ## Scope and exclusions
@@ -104,18 +105,43 @@ No import cycle among these packages. Root does not import `codex` or `grok`.
 
 ## Findings
 
+Everything above this heading — executive summary, dimension vector, command
+table — is the 2026-08-22 snapshot and is left as observed. Findings, by
+contrast, are tracked: a finding that has since been closed says so on its
+**Status** line and carries a **Closure** bullet with the evidence that
+retired it. Closed so far: **ENT-001** (2026-09-21, 🎯T47.1).
+
 ### ENT-001: MCPProxy concurrent-401 path races on `entry.probe`
 
 - **Priority:** P0
 - **Dimensions:** Correctness / verification; Security / dependencies; Local code quality
-- **Status:** observed fact
-- **Evidence:** `go test -race -count=1 ./...` exit 1; `--- FAIL: TestMCPProxyConcurrent401AuthorizesOnce`. Race: read `mcp_proxy.go:305` (`probe := entry.probe`) vs write `mcp_proxy.go:325` (`entry.probe = probe`) from `ServeHTTP` → `ensureAuth`. `authMu` is taken only later in `ensureOAuth` (`mcp_proxy.go:347-349`). Commit `715e175` is the T531 “one Authorize per 401 burst” fix; the test that asserts one browser tab is itself the race detector hit.
+- **Status:** **closed 2026-09-21** (🎯T47.1). Was: observed fact at `715e175`. The evidence below no longer reproduces on the shipped path — see **Closure**.
+- **Evidence (2026-08-22, at `715e175`):** `go test -race -count=1 ./...` exit 1; `--- FAIL: TestMCPProxyConcurrent401AuthorizesOnce`. Race: read `mcp_proxy.go:305` (`probe := entry.probe`) vs write `mcp_proxy.go:325` (`entry.probe = probe`) from `ServeHTTP` → `ensureAuth`. `authMu` is taken only later in `ensureOAuth` (`mcp_proxy.go:347-349`). Commit `715e175` is the T531 “one Authorize per 401 burst” fix; the test that asserts one browser tab is itself the race detector hit.
 - **Mechanism:** N concurrent 401s share one `proxiedMCP`. Probe cache is mutated under `p.mu` but the nil-check read is unlocked. Two goroutines can both see `probe == nil`, both call `p.probe`, and race on the pointer. `authMu` does not cover this prefix, so the T531 serialization is incomplete.
 - **Blast radius:** host-mounted `MCPProxy` (jevons `/upstream/…`) under parallel tool calls; token refresh/Authorize burst; any `-race` CI job on this commit.
 - **Counterevidence checked:** `authMu` comment at `mcp_proxy.go:71-73` documents the intended lock; `ensureOAuth` does serialize Authorize. Single-threaded 401 tests can pass without `-race`. CI job `test` runs `-race` (`.github/workflows/test.yml:49`).
 - **Smallest coherent remediation:** read/write `entry.probe` under `p.mu` (or take `authMu` at the start of `ensureAuth`); re-run `TestMCPProxyConcurrent401AuthorizesOnce` with `-race`.
 - **Verification:** `go test -race -count=1 -run TestMCPProxyConcurrent401AuthorizesOnce .` must be green; a regression that unlocks the probe field must go red.
-- **Ratchet candidate:** already the CI `-race` job — it is currently failing, not missing.
+- **Ratchet candidate:** already the CI `-race` job — it was failing, not missing.
+- **Closure (2026-09-21, 🎯T47.1):** the audit's own remediation is in the shipped
+  path. `ensureAuth` now reads `entry.probe` under `p.mu` (`mcp_proxy.go:309-311`)
+  and publishes it under the same lock with a nil re-check that keeps the first
+  writer's pointer (`mcp_proxy.go:330-336`); `authMu` still covers Authorize only
+  (`mcp_proxy.go:358`). The lock pairing landed in `e830985` (2026-08-23), a day
+  after this audit, as an unremarked part of the Cursor Session commit — so the
+  P0 was fixed without the finding being closed, and this entry carried a stale
+  red for a month.
+- **Closure evidence:** `go test -race -count=200 -run TestMCPProxyConcurrent401AuthorizesOnce .`
+  green (gate `t47.1-head-race-200`, 200/200 iterations). The lock is load-bearing
+  in both directions, proven by mutation rather than by assertion:
+
+  | Mutant | Change | `-race` result |
+  |---|---|---|
+  | M1 | unlock the read only (`probe := entry.probe` outside `p.mu`; write still locked) | **20/20** `-count=1` runs FAIL; race is `Read mcp_proxy.go:309` vs `Previous write mcp_proxy.go:330`, the pair this finding named |
+  | M2 | unlock the write only (read still locked) | 3/20 `-count=1` runs FAIL; **5/5** `-count=50` runs FAIL |
+
+  M2 is the reminder that `-race` is probabilistic: one `-count=1` run of it passes
+  six times in seven and proves nothing. Cite a count, not a single green.
 
 ### ENT-002: T24 field-fate census red on `Config.GoalCompleteCheck`
 
@@ -342,6 +368,7 @@ Entropy findings suitable as later hygiene items: ENT-001/002 as `correctness.he
 ## Remediation sequence
 
 1. **Repair the shipped hermetic oracle (ENT-001, ENT-002).** Fix the `MCPProxy` probe race; add the T24 `GoalCompleteCheck` disposition. `go test -race -count=1 ./...` must be green. This unblocks every other claim about HEAD.
+   - *2026-09-21:* the ENT-001 half is **done** (🎯T47.1) — probe read and write are paired under `p.mu`, proven by mutation, and the finding is closed. ENT-002 is a separate entry and is not closed here.
 2. **Refresh `STABILITY.md` to the latest tag (ENT-004)** so 1.0 Gaps describe the API that actually shipped (MCP, Goal, Ollama, capability extras). Keep `verify-stability` as the enumerator.
 3. **Converge Codex Task (ENT-003)** onto one implementation; delete or unexport the other; share fixtures. Do this before any further Codex exec parser work.
 4. **Docs table/package comment (ENT-008)** once Session transports are described as they are.
