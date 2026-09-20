@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 
 
 def send(obj: dict) -> None:
@@ -20,6 +21,7 @@ def main() -> None:
     session_id = "sess-fake-cursor-1"
     authed = False
     held = None
+    swallowed_first_prompt = False
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -110,6 +112,16 @@ def main() -> None:
                 )
         elif method == "session/prompt":
             sid = params.get("sessionId") or session_id
+
+            # 🎯T83 shapes. SWALLOW_FIRST_PROMPT drops exactly one
+            # delivery and then behaves: the peer that loses a brief but
+            # answers the harness's re-issue. PROMPT_DELAY_MS is the
+            # slow-but-healthy peer, which a bound must never call stuck.
+            if os.environ.get("FAKE_ACP_SWALLOW_FIRST_PROMPT") and not swallowed_first_prompt:
+                swallowed_first_prompt = True
+                continue
+            if delay_ms := os.environ.get("FAKE_ACP_PROMPT_DELAY_MS"):
+                time.sleep(int(delay_ms) / 1000.0)
             text = ""
             for block in params.get("prompt") or []:
                 if isinstance(block, dict) and block.get("type") == "text":

@@ -25,6 +25,15 @@ import (
 // store (🎯T541.1).
 var ErrCursorResumeDenied = errors.New("existing conversation; refusing to mint a replacement session")
 
+// ErrCursorPromptStuck is returned when a session/prompt was written to a
+// live ACP peer that then said nothing at all about it — no chunk, no
+// thought, no tool call, no result — for cursorPromptSilenceBound, twice
+// over (🎯T83). It is deliberately NOT ErrTurnInFlight: a stuck mint that
+// reports itself as busy is the exact misreading that made a consumer
+// stop, park, start, kill and remint a seat four times in four minutes to
+// clear one held brief. The seat is left idle, so a retry can use it.
+var ErrCursorPromptStuck = errors.New("cursor acp: session/prompt accepted no work")
+
 // IsCursorResumeDenied reports whether err is (or wraps) ErrCursorResumeDenied.
 // A daemon grant failure arrives as a ProtocolError whose Msg copies the
 // sentinel; errors.Is cannot see through that, so the text is also matched.
@@ -52,6 +61,14 @@ type cursorACPClient struct {
 	writeMu   sync.Mutex
 	closeOnce sync.Once
 
+	// peerSeq counts inbound messages from the peer. A prompt watches it
+	// for movement: any movement at all is proof the peer is engaging
+	// with the session, which is the only signal that separates a turn
+	// that started slowly from one that never started (🎯T83).
+	peerSeq   uint64
+	peerWoke  chan struct{}
+	firstDone bool
+
 	sessionID string
 	onEvent   func(Event)
 	onClose   func()
@@ -74,6 +91,27 @@ func cursorACPArgs(model string) []string {
 // Saved sessions with a full MCP map can take minutes to load. This bound
 // allows that cold start; explicit cancellation remains immediate.
 const cursorACPStartupTimeout = 5 * time.Minute
+
+// cursorPromptSilenceBound is how long the first prompt of a session may
+// go without the peer saying ANYTHING about it before the delivery is
+// treated as stuck.
+//
+// It bounds silence before the first inbound message of the turn, not the
+// turn itself: the very first thing the peer sends disarms it, so a long
+// healthy turn is never touched. That distinction is what makes a bound
+// safe here at all.
+//
+// The number is measured, not chosen. Three real cursor-agent mints, each
+// timed from session/prompt to the first inbound message for the session:
+// 14.0s, 14.1s, 18.3s — and the first thing to arrive is an
+// agent_thought_chunk, not reply text. A bound in the seconds anyone would
+// reach for would call every healthy mint stuck. This is ~6.5x the worst
+// observed. Recovery is cheap and a false positive is not, so the
+// generous side is the correct side to err on.
+//
+// It is a var only so hermetics can shorten it; nothing in production
+// writes it.
+var cursorPromptSilenceBound = 120 * time.Second
 
 func startCursorACP(ctx context.Context, bin string, workDir, model, sessionID string, requireResume bool, mcpServers []any, extraEnv []string, onEvent func(Event), onClose func()) (*cursorACPClient, error) {
 	ctx, cancel := context.WithTimeout(ctx, cursorACPStartupTimeout)
@@ -116,6 +154,7 @@ func startCursorACP(ctx context.Context, bin string, workDir, model, sessionID s
 		stderr:      stderr,
 		ownsProcess: true,
 		pending:     make(map[int64]chan acpRPCMessage),
+		peerWoke:    make(chan struct{}, 1),
 		onEvent:     onEvent,
 		onClose:     onClose,
 		sessionID:   sessionID,
@@ -188,6 +227,7 @@ func (c *cursorACPClient) readLoop() {
 			delete(c.pending, id)
 		}
 		c.mu.Unlock()
+		c.wakePromptWaiters()
 		if c.onClose != nil {
 			c.onClose()
 		}
@@ -211,7 +251,42 @@ func (c *cursorACPClient) readLoop() {
 	}
 }
 
+// notePeerActivity records that the peer said something. Every inbound
+// line counts, including one this client cannot parse: the question a
+// stuck prompt asks is whether the peer is engaging at all, not whether
+// it is engaging in a shape we understand (🎯T83).
+func (c *cursorACPClient) notePeerActivity() {
+	c.mu.Lock()
+	c.peerSeq++
+	ch := c.peerWoke
+	c.mu.Unlock()
+	if ch == nil {
+		return
+	}
+	select {
+	case ch <- struct{}{}:
+	default:
+	}
+}
+
+// wakePromptWaiters releases an awaitPeerActivity that is parked on a
+// transport which has just died, so a stuck-prompt wait ends with the
+// connection rather than sitting out the full bound.
+func (c *cursorACPClient) wakePromptWaiters() {
+	c.mu.Lock()
+	ch := c.peerWoke
+	c.mu.Unlock()
+	if ch == nil {
+		return
+	}
+	select {
+	case ch <- struct{}{}:
+	default:
+	}
+}
+
 func (c *cursorACPClient) dispatchMessage(line []byte) {
+	c.notePeerActivity()
 	var msg acpRPCMessage
 	if err := json.Unmarshal(line, &msg); err != nil {
 		slog.Debug("cursor acp ignore non-json line", "err", err)
@@ -470,11 +545,135 @@ func (c *cursorACPClient) Prompt(text string) error {
 		c.mu.Unlock()
 		return fmt.Errorf("cursor acp: %w", ErrTurnInFlight)
 	}
+	// Only the session's first prompt is watched. That is where the seat
+	// wedges (🎯T83): session/new answers, the mint looks healthy, and the
+	// opening brief falls into a peer that never speaks. Once a seat has
+	// demonstrably taken work, a plain write is the right thing again, and
+	// Send stays non-blocking for the rest of the seat's life.
+	watch := !c.firstDone
 	id := atomic.AddInt64(&c.nextID, 1)
 	c.prompts.push(id)
 	c.mu.Unlock()
 	publishEvent(c.onEvent, acpPromptAcceptedEvent(sid, id))
-	return c.write(acpPromptRequest(id, sid, text))
+
+	if !watch {
+		return c.write(acpPromptRequest(id, sid, text))
+	}
+	return c.promptWatchingForSilence(sid, id, text)
+}
+
+// promptWatchingForSilence writes the session's opening prompt and waits
+// for the peer to say anything at all about it. A peer that answers — with
+// a thought, a chunk, a tool call, a result, anything — has taken the work,
+// and this returns as soon as that lands.
+//
+// A peer that says nothing gets the brief once more on a re-established
+// turn, because the observed failure is a delivery that vanished rather
+// than an agent that refused. If the re-issue is met with the same silence,
+// the seat is left IDLE and the caller is told so: a consumer that has a
+// typed error and a usable seat can retry in place, which is what
+// distinguishes this from the stop/park/start/kill/remint cycle the bug
+// forced.
+func (c *cursorACPClient) promptWatchingForSilence(sid string, id int64, text string) error {
+	// Read the counter BEFORE the write. A peer can answer between the
+	// write returning and the wait starting — in hermetics it usually
+	// does — and a snapshot taken afterwards would miss that reply and
+	// sit out the whole bound on a seat that is working fine.
+	seq := c.peerSeqNow()
+	if err := c.write(acpPromptRequest(id, sid, text)); err != nil {
+		c.mu.Lock()
+		c.prompts.clear()
+		c.mu.Unlock()
+		return err
+	}
+	if c.awaitPeerActivity(seq, cursorPromptSilenceBound) {
+		c.mu.Lock()
+		c.firstDone = true
+		c.mu.Unlock()
+		return nil
+	}
+
+	slog.Warn("cursor acp opening prompt drew no response; re-establishing the turn",
+		"session", sid, "prompt", id, "waited", cursorPromptSilenceBound)
+
+	// Drop the vanished turn on both sides before re-issuing, so the
+	// retry is a fresh prompt rather than a second one stacked on a turn
+	// the peer may still believe is open.
+	_ = c.notify("session/cancel", map[string]any{"sessionId": sid})
+	c.mu.Lock()
+	c.prompts.clear()
+	closed := c.closed
+	retryID := atomic.AddInt64(&c.nextID, 1)
+	c.prompts.push(retryID)
+	c.mu.Unlock()
+	if closed {
+		c.mu.Lock()
+		c.prompts.clear()
+		c.mu.Unlock()
+		return fmt.Errorf("cursor acp: client closed")
+	}
+	publishEvent(c.onEvent, acpPromptAcceptedEvent(sid, retryID))
+	seq = c.peerSeqNow()
+	if err := c.write(acpPromptRequest(retryID, sid, text)); err != nil {
+		c.mu.Lock()
+		c.prompts.clear()
+		c.mu.Unlock()
+		return err
+	}
+	if c.awaitPeerActivity(seq, cursorPromptSilenceBound) {
+		c.mu.Lock()
+		c.firstDone = true
+		c.mu.Unlock()
+		return nil
+	}
+
+	// Leave the seat idle. An in-flight stack here would report the dead
+	// turn as ErrTurnInFlight to every later Send — the pin this target
+	// exists to remove.
+	c.mu.Lock()
+	c.prompts.clear()
+	c.mu.Unlock()
+	return fmt.Errorf("%w: session %s went silent for %v across two deliveries",
+		ErrCursorPromptStuck, sid, cursorPromptSilenceBound)
+}
+
+// peerSeqNow samples the inbound-message counter.
+func (c *cursorACPClient) peerSeqNow() uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.peerSeq
+}
+
+// awaitPeerActivity reports whether the peer sent anything after the
+// counter read start, within d. A closed transport ends the wait
+// immediately: a dead peer is not a silent one, and the caller's own
+// error path is better than burning the bound.
+func (c *cursorACPClient) awaitPeerActivity(start uint64, d time.Duration) bool {
+	c.mu.Lock()
+	ch := c.peerWoke
+	c.mu.Unlock()
+
+	deadline := time.NewTimer(d)
+	defer deadline.Stop()
+	for {
+		c.mu.Lock()
+		moved, closed := c.peerSeq > start, c.closed
+		c.mu.Unlock()
+		if moved {
+			return true
+		}
+		if closed {
+			return false
+		}
+		select {
+		case <-ch:
+		case <-deadline.C:
+			c.mu.Lock()
+			moved := c.peerSeq > start
+			c.mu.Unlock()
+			return moved
+		}
+	}
 }
 
 // Steer folds text into the running turn by writing a second
@@ -624,6 +823,7 @@ func (c *cursorACPClient) Close() {
 			delete(c.pending, id)
 		}
 		c.mu.Unlock()
+		c.wakePromptWaiters()
 		// These handles are immutable after construction. Never acquire writeMu:
 		// the write we need to interrupt may hold it indefinitely.
 		if c.stdin != nil {
