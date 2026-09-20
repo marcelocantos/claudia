@@ -304,6 +304,68 @@
         {"name": "TestAnUnshrinkablePayloadIsStillRelayedWithoutItsRaw", "expect": "green"}
       ],
       "note": "This is the defect the adopted branch shipped with, and the two green tests are why it survived its own suite: every other fixture in broker_bound_test.go carries a base64 string far over maxWireStringBytes, so elision always reaches it and the discard branch is never taken. Only a payload whose size is in its shape \u2014 hundreds of small strings, none of them long \u2014 lands in the gap between the budget (MaxLineLen/2) and the frame ceiling, and there the bound deleted a payload the wire would have carried. The second green test holds the other side of the same boundary: past the ceiling with nothing elidable, dropping Raw is still the right answer, so the red test is pinning where the line sits and not whether there is one."
+    },
+    {
+      "target": "T103",
+      "mutation": "bound-ignores-the-deadline-it-runs-under",
+      "what": "the silence bound stays the configured one whatever deadline the wait is living under, so a thirty-minute bound inside a ten-minute test binary is a diagnosis the process-wide panic always reaches first \u2014 the defect \ud83c\udfafT103 was filed for, and the state \ud83c\udfafT96's fix left behind",
+      "quoted_by": "74eb4c1",
+      "package": ".",
+      "edits": [
+        {
+          "file": "turn_wait.go",
+          "find": "\tleft := deadline.Sub(now)\n\tif left <= 0 {\n\t\treturn 0\n\t}\n\tif budget := left / 2; budget < bound {\n\t\treturn budget\n\t}\n\treturn bound\n",
+          "replace": "\treturn bound\n"
+        }
+      ],
+      "tests": [
+        {"name": "TestBoundUnderDeadlineReservesHalfAndNeverLengthens/a_bound_far_longer_than_the_deadline_is_cut_to_half_of_it", "expect": "red"},
+        {"name": "TestWaitBoundFitsInsideTheTestBinaryTimeout", "expect": "red"},
+        {"name": "TestTheLiveGateBudgetCanFallBelowMeasuredHealthySilence", "expect": "red"},
+        {"name": "TestWaitForResponseAbandonedTurnFailsNamingWhatItSaw", "expect": "green"},
+        {"name": "TestAWaitOnAManualClockIgnoresTheProcessDeadline", "expect": "green"}
+      ],
+      "note": "The two green tests are the point of this entry, not padding. TestWaitForResponseAbandonedTurnFailsNamingWhatItSaw is \ud83c\udfafT96's own acceptance and it survives the mutation untouched \u2014 which is how the defect shipped green in the first place: \ud83c\udfafT96 drove every one of its waits from a ManualClock, so the wall-clock deadline of the binary around them was invisible to all eight. TestAWaitOnAManualClockIgnoresTheProcessDeadline stays green for the same structural reason and holds the other side of the line: a manual-clock wait must NOT take this deadline, so the repair cannot be 'shorten everywhere'."
+    },
+    {
+      "target": "T103",
+      "mutation": "a-cut-bound-that-convicts-without-saying-it-was-cut",
+      "what": "a bound shortened by a deadline reports its conviction exactly as one that ran the measured thirty minutes: `make live` uses -timeout 30m, so a live test starting late in that binary is handed a bound under the 2m34.2s of measured healthy Cursor silence and calls a working turn abandoned, with nothing in the error to say the wait ran out of process rather than out of patience",
+      "quoted_by": "43fec82",
+      "package": ".",
+      "edits": [
+        {
+          "file": "turn_wait.go",
+          "find": "func (b turnBound) cut() bool { return b.effective < b.configured }",
+          "replace": "func (b turnBound) cut() bool { return false }"
+        }
+      ],
+      "tests": [
+        {"name": "TestAConvictionUnderACutBoundSaysSo", "expect": "red"},
+        {"name": "TestWaitBoundFitsInsideTheTestBinaryTimeout", "expect": "red"},
+        {"name": "TestAConvictionUnderTheConfiguredBoundClaimsNoCut", "expect": "green"},
+        {"name": "TestWaitForResponseAbandonedTurnFailsNamingWhatItSaw", "expect": "green"}
+      ],
+      "note": "TestAConvictionUnderTheConfiguredBoundClaimsNoCut must stay green here, and that is what stops the repair degenerating into 'always say it was cut': an error that cried cut-short on every abandoned turn would carry no information and would bury the Config.TurnSilenceBound lever a consumer with legitimately slower turns needs. The mutation silences one side of that distinction; the green test holds the other."
+    },
+    {
+      "target": "T103",
+      "mutation": "a-manual-clock-wait-takes-the-wall-clock-deadline",
+      "what": "the process deadline is applied to an agent whose timers run a ManualClock, so a bound measured in manual-clock time is shortened by how long the test BINARY has been running \u2014 every silence verdict in the package becomes a function of how far into the suite it ran, which is the \ud83c\udfafT33 / \ud83c\udfafT92 / \ud83c\udfafT93 family rebuilt one layer up",
+      "quoted_by": "43fec82",
+      "package": ".",
+      "edits": [
+        {
+          "file": "turn_wait.go",
+          "find": "\tif a.clk == nil {\n\t\treturn true\n\t}\n\t_, ok := a.clk.(SystemClock)\n\treturn ok\n",
+          "replace": "\treturn true\n"
+        }
+      ],
+      "tests": [
+        {"name": "TestAWaitOnAManualClockIgnoresTheProcessDeadline", "expect": "red"},
+        {"name": "TestBoundUnderDeadlineReservesHalfAndNeverLengthens", "expect": "green"}
+      ],
+      "note": "Only the guard's own test is declared red, and the omission is deliberate. The other ManualClock waits in this package would still pass under this mutation in a FRESH binary \u2014 half of a full -timeout is far longer than their one-minute fixtures \u2014 and would begin failing only deep into a long run. That is precisely the hazard, and it is also why they cannot be cited as evidence here: a test whose colour under the mutation depends on how much of the binary's budget is left is not evidence of anything. The green declared instead is the pure arithmetic, which the mutation cannot reach."
     }
   ]
 }
