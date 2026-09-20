@@ -224,6 +224,26 @@
         {"name": "TestWaitForResponseSilenceBoundRearmsOnEvents", "expect": "green"}
       ],
       "note": "The two activity sources are independent claims and this pins them apart: events still rearm the bound under this mutation, so the green test cannot see it. A bound that only watched the transcript would fire on exactly the longest healthy turns — a Claude tool call emits no JSONL between tool_use and tool_result, however long the tool runs."
+    },
+    {
+      "target": "T98",
+      "mutation": "wait-hears-only-the-future",
+      "what": "WaitForResponse goes back to subscribing for future events only, so the turn a blocking submit has already consumed is dropped on the floor — the park that took the root package's 10m alarm",
+      "quoted_by": "HEAD",
+      "package": ".",
+      "edits": [
+        {
+          "file": "agent.go",
+          "find": "\ttoken := a.subscribeEventsTakingTurn(onEvent, func(prior turnSoFar) {\n\t\tif prior.err != nil {\n\t\t\temitOnce(outcome{err: prior.err})\n\t\t\treturn\n\t\t}\n\t\tmu.Lock()\n\t\ttext.WriteString(prior.text)\n\t\tseenTerminal = prior.terminal\n\t\tif seenTerminal {\n\t\t\tsettleTimer = time.AfterFunc(waitSettleDuration, emitOK)\n\t\t}\n\t\tmu.Unlock()\n\t})",
+          "replace": "\ttoken := a.subscribeEventsTakingTurn(onEvent, func(prior turnSoFar) { _ = prior })"
+        }
+      ],
+      "tests": [
+        {"name": "TestCursorWaitForResponseAfterTurnEndedStillReturnsTheReply", "expect": "red"},
+        {"name": "TestWaitForResponseSeesTurnPublishedBeforeItSubscribed", "expect": "red"},
+        {"name": "TestWaitForResponseIgnoresEventsFromBeforeTheSubmit", "expect": "green"}
+      ],
+      "note": "The mutation is the differential run that identified 🎯T98: the handover disabled, everything else — the latch, the arming in Send, the recording in publishEvent — left in place, so what goes red is the handover and nothing else. TestWaitForResponseIgnoresEventsFromBeforeTheSubmit is declared green on purpose: it holds the other half of the contract, that the latch never hands back a turn from before the submit, and a mutation that simply deleted the latch would satisfy it trivially. It staying green is what makes the red ones evidence about the handover rather than about the latch existing at all."
     }
   ]
 }

@@ -492,6 +492,16 @@ progress for that long. Passing a context that never expires is now
 safe; before this, it meant a goroutine parked for the life of the
 process when a turn's terminal event went missing.
 
+**A turn that finished first is still yours** (🎯T98). `Send` does not
+always return before its turn can answer: a Cursor opening prompt blocks
+until the peer has spoken, so the reply and its terminal event can both
+be published while `Send` is still unwinding. `WaitForResponse` therefore
+returns the turn the most recent `Send` submitted even when that turn
+ended before the call — once, to one waiter. Events published before any
+`Send` are not a turn anybody is waiting for (a resumed session replays
+the old conversation), and a second wait with no `Send` between them
+blocks for the next turn as it always did.
+
 `TurnID` is safe to use directly as the grouping key for assistant and
 progress events. Claudia never mints it from stop-reason observation: Claude
 uses the prompt transcript record UUID, Codex uses its app-server turn ID, and
@@ -946,7 +956,8 @@ Design record: [docs/metaharness.md](docs/metaharness.md).
 5. **Don't stack `WaitForResponse` concurrently on the same agent.**
    It subscribes its own event listener and unsubscribes on return;
    it does not replace other subscribers. Concurrent waits on one
-   Agent still race on "whose turn ended."
+   Agent still race on "whose turn ended," and a turn that completed
+   before either of them subscribed goes to whichever gets there first.
 
 6. **Both modes strip `CLAUDECODE`.** When a Go program running
    under Claude Code spawns a nested `claude`, claudia removes the

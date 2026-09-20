@@ -253,6 +253,7 @@ type Agent struct {
 	dead      chan struct{}
 	stopOnce  sync.Once
 	eventSubs map[int64]EventFunc
+	turn      turnLatch
 	usage     Usage
 	model     string // resolved model from the latest event that carried one
 
@@ -1591,6 +1592,10 @@ func (a *Agent) Send(msg string) error {
 	if a.ops.send == nil {
 		return unsupportedCapability(a.provider, "send", "provider did not supply a send operation")
 	}
+	// Before the write: a Cursor opening prompt does not return until the
+	// peer has spoken, so the reply and its end_turn can be published
+	// while ops.send is still unwinding (🎯T98).
+	a.beginTurn()
 	if err := a.ops.send(a, msg); err != nil {
 		return err
 	}
@@ -1721,6 +1726,7 @@ func (a *Agent) publishEvent(ev Event) {
 		a.recordInertLocked(t)
 	}
 	a.noteGoalEvent(ev)
+	a.recordTurnEventLocked(ev)
 	subs := make([]EventFunc, 0, len(a.eventSubs))
 	for _, fn := range a.eventSubs {
 		subs = append(subs, fn)
@@ -1750,6 +1756,7 @@ func (a *Agent) publishEvent(ev Event) {
 			IsError:      true,
 		}
 		a.mu.Lock()
+		a.recordTurnEventLocked(stuck)
 		stuckSubs := make([]EventFunc, 0, len(a.eventSubs))
 		for _, fn := range a.eventSubs {
 			stuckSubs = append(stuckSubs, fn)
@@ -1885,7 +1892,7 @@ func (a *Agent) WaitForResponse(ctx context.Context) (string, error) {
 		}
 	}
 
-	token := a.SubscribeEvents(func(ev Event) {
+	onEvent := func(ev Event) {
 		// Every event, of every type, is turn activity: the silence
 		// bound below asks whether the agent is saying ANYTHING, not
 		// whether it has answered yet.
@@ -1912,6 +1919,24 @@ func (a *Agent) WaitForResponse(ctx context.Context) (string, error) {
 			if settleTimer != nil {
 				settleTimer.Stop()
 			}
+			settleTimer = time.AfterFunc(waitSettleDuration, emitOK)
+		}
+		mu.Unlock()
+	}
+
+	// A turn that ended before this call subscribed is handed over here,
+	// in the same critical section that registers onEvent: a subscription
+	// only hears the future, and a blocking submit can consume the whole
+	// turn before its caller ever reaches this line (🎯T98).
+	token := a.subscribeEventsTakingTurn(onEvent, func(prior turnSoFar) {
+		if prior.err != nil {
+			emitOnce(outcome{err: prior.err})
+			return
+		}
+		mu.Lock()
+		text.WriteString(prior.text)
+		seenTerminal = prior.terminal
+		if seenTerminal {
 			settleTimer = time.AfterFunc(waitSettleDuration, emitOK)
 		}
 		mu.Unlock()
