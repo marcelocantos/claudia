@@ -27,6 +27,32 @@ import (
 // clientOverPipe is a brokerClient wired to a raw peer. The peer is a plain
 // net.Conn on purpose: writing bytes the framing itself would refuse is how a
 // test reproduces a peer that does not share our limits.
+// A peer goroutine here reports through this channel and never through t, for
+// the reason spelled out in internal/broker/transport_test.go: a test that
+// gives up on the connection leaves the peer blocked mid-write, and the
+// t.Errorf it reaches after cleanup closes the pipe panics the package and
+// buries the assertion that failed. These tests fail by abandoning a
+// connection more often than most, because that is the defect they pin.
+func peerErrs() chan error { return make(chan error, 1) }
+
+// notePeerErr records the peer's first write error without touching t.
+func notePeerErr(errc chan<- error, err error) {
+	select {
+	case errc <- err:
+	default:
+	}
+}
+
+// noPeerError reports a peer failure while the test is still running.
+func noPeerError(t *testing.T, errc <-chan error) {
+	t.Helper()
+	select {
+	case err := <-errc:
+		t.Errorf("peer: %v", err)
+	default:
+	}
+}
+
 func clientOverPipe(t *testing.T) (*brokerClient, net.Conn) {
 	t.Helper()
 	ours, theirs := net.Pipe()
@@ -46,27 +72,28 @@ func clientOverPipe(t *testing.T) (*brokerClient, net.Conn) {
 func TestOversizedPushDoesNotKillThePendingRequest(t *testing.T) {
 	b, peer := clientOverPipe(t)
 
+	errc := peerErrs()
 	go func() {
 		// Read the request the caller is waiting on.
 		req, err := broker.NewConn(peer).ReadRequest()
 		if err != nil {
-			t.Errorf("peer read: %v", err)
+			notePeerErr(errc, err)
 			return
 		}
 		// A screenshot push lands first, too large for one frame.
 		if _, err := peer.Write(append(bytes.Repeat([]byte("p"), 3*broker.MaxLineLen), '\n')); err != nil {
-			t.Errorf("peer push: %v", err)
+			notePeerErr(errc, err)
 			return
 		}
 		// Then the answer the caller is waiting on, on the same connection.
 		line, err := (&broker.Response{ID: req.ID, Type: broker.TypeStatusResult,
 			Status: &broker.StatusResponse{}}).Encode()
 		if err != nil {
-			t.Errorf("peer encode: %v", err)
+			notePeerErr(errc, err)
 			return
 		}
 		if _, err := peer.Write(append(line, '\n')); err != nil {
-			t.Errorf("peer reply: %v", err)
+			notePeerErr(errc, err)
 		}
 	}()
 
@@ -85,6 +112,7 @@ func TestOversizedPushDoesNotKillThePendingRequest(t *testing.T) {
 	if !errors.Is(last, broker.ErrFrameTooLarge) {
 		t.Errorf("the recorded drop is not an oversized frame: %v", last)
 	}
+	noPeerError(t, errc)
 }
 
 // TestOversizedPushStillDeliversLaterPushes pins that the push stream itself
@@ -104,13 +132,14 @@ func TestOversizedPushStillDeliversLaterPushes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	errc := peerErrs()
 	go func() {
 		if _, err := peer.Write(append(bytes.Repeat([]byte("p"), 3*broker.MaxLineLen), '\n')); err != nil {
-			t.Errorf("peer push: %v", err)
+			notePeerErr(errc, err)
 			return
 		}
 		if _, err := peer.Write(append(line, '\n')); err != nil {
-			t.Errorf("peer push 2: %v", err)
+			notePeerErr(errc, err)
 		}
 	}()
 
@@ -126,6 +155,7 @@ func TestOversizedPushStillDeliversLaterPushes(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the push stream stopped at the oversized frame")
 	}
+	noPeerError(t, errc)
 }
 
 // TestBrokerClientStillFailsOnARealClose keeps the skip narrow. An oversized
@@ -133,9 +163,10 @@ func TestOversizedPushStillDeliversLaterPushes(t *testing.T) {
 // swallowed both would hang every caller forever.
 func TestBrokerClientStillFailsOnARealClose(t *testing.T) {
 	b, peer := clientOverPipe(t)
+	errc := peerErrs()
 	go func() {
 		if _, err := broker.NewConn(peer).ReadRequest(); err != nil {
-			t.Errorf("peer read: %v", err)
+			notePeerErr(errc, err)
 			return
 		}
 		_ = peer.Close()
@@ -143,6 +174,7 @@ func TestBrokerClientStillFailsOnARealClose(t *testing.T) {
 	if _, err := b.callTimeout(&broker.Request{Type: broker.TypeStatus}, 5*time.Second); err == nil {
 		t.Fatal("a closed connection did not fail the pending request")
 	}
+	noPeerError(t, errc)
 }
 
 // TestRelayedScreenshotSurvivesAWholeRoundTrip is the two halves together:
@@ -161,10 +193,11 @@ func TestRelayedScreenshotSurvivesAWholeRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	server := broker.NewConn(peer)
+	errc := peerErrs()
 	go func() {
 		if err := server.WriteResponse(&broker.Response{Type: broker.TypeAgentEvent,
 			AgentEvent: &broker.AgentEventMessage{Name: "cl-worker-1", Event: raw}}); err != nil {
-			t.Errorf("the bounded screenshot was refused by the wire: %v", err)
+			notePeerErr(errc, err)
 		}
 	}()
 
@@ -190,4 +223,5 @@ func TestRelayedScreenshotSurvivesAWholeRoundTrip(t *testing.T) {
 	if dropped, _ := b.DroppedFrames(); dropped != 0 {
 		t.Errorf("a bounded screenshot was still dropped as oversized (%d)", dropped)
 	}
+	noPeerError(t, errc)
 }

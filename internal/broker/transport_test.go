@@ -33,13 +33,38 @@ func pipeConn(t *testing.T) (client, server *Conn) {
 }
 
 // writeRaw puts bytes on the wire without the framing's own size check, which
-// is how a peer that does not share our limits behaves. It reports rather
-// than fatals: these writes happen on a goroutine, where FailNow would panic
-// on the way out and bury the assertion that actually failed.
-func writeRaw(t *testing.T, c *Conn, b []byte) {
-	t.Helper()
+// is how a peer that does not share our limits behaves.
+//
+// Errors go to errc and never to t. These writes run on a goroutine that
+// outlives a failing test: an assertion that gives up on the connection leaves
+// the peer blocked mid-write, and it wakes only when cleanup closes the pipe —
+// by which time touching t panics the whole package with "Fail in goroutine
+// after ... has completed" and buries the assertion that actually failed. That
+// is not hypothetical. It is what happens under the mutation these tests exist
+// to catch, which is the one run where the panic costs the most: the evidence
+// that the mutation bites is precisely the failure the panic swallows.
+func writeRaw(errc chan<- error, c *Conn, b []byte) {
 	if _, err := c.net.Write(b); err != nil {
+		select {
+		case errc <- err:
+		default: // the first error is the one that explains the rest
+		}
+	}
+}
+
+// peerErrs is the channel writeRaw reports on. One slot: a peer that fails a
+// write fails every later one too, and the first is the informative one.
+func peerErrs() chan error { return make(chan error, 1) }
+
+// noPeerError fails the test if the peer goroutine could not write what the
+// test asked it to. It is called while the test is still running, which is the
+// whole reason the error travelled on a channel to get here.
+func noPeerError(t *testing.T, errc <-chan error) {
+	t.Helper()
+	select {
+	case err := <-errc:
 		t.Errorf("raw write: %v", err)
+	default:
 	}
 }
 
@@ -57,10 +82,11 @@ func TestReadLineSkipsAnOversizedFrameAndKeepsReading(t *testing.T) {
 			client, server := pipeConn(t)
 
 			oversized := append(bytes.Repeat([]byte("x"), MaxLineLen+over), '\n')
+			errc := peerErrs()
 			go func() {
-				writeRaw(t, client, []byte("before\n"))
-				writeRaw(t, client, oversized)
-				writeRaw(t, client, []byte("after\n"))
+				writeRaw(errc, client, []byte("before\n"))
+				writeRaw(errc, client, oversized)
+				writeRaw(errc, client, []byte("after\n"))
 			}()
 
 			line, err := server.ReadLine()
@@ -85,6 +111,7 @@ func TestReadLineSkipsAnOversizedFrameAndKeepsReading(t *testing.T) {
 			if err != nil || string(line) != "after" {
 				t.Fatalf("connection did not survive the oversized frame: %.40q, %v", line, err)
 			}
+			noPeerError(t, errc)
 		})
 	}
 }
@@ -121,7 +148,8 @@ func TestOversizedFrameIsTypedAndSurvivesTheWire(t *testing.T) {
 func TestReadLineAcceptsAFrameExactlyAtTheCap(t *testing.T) {
 	client, server := pipeConn(t)
 	exact := bytes.Repeat([]byte("y"), MaxLineLen)
-	go func() { writeRaw(t, client, append(exact, '\n')) }()
+	errc := peerErrs()
+	go func() { writeRaw(errc, client, append(exact, '\n')) }()
 
 	line, err := server.ReadLine()
 	if err != nil {
@@ -130,15 +158,17 @@ func TestReadLineAcceptsAFrameExactlyAtTheCap(t *testing.T) {
 	if len(line) != MaxLineLen || !bytes.Equal(line, exact) {
 		t.Fatalf("got %d bytes, want %d intact", len(line), MaxLineLen)
 	}
+	noPeerError(t, errc)
 }
 
 // TestReadLineCopiesEachFrame pins the copy the doc comment promises: a caller
 // that keeps a line must not watch it change when the next one is read.
 func TestReadLineCopiesEachFrame(t *testing.T) {
 	client, server := pipeConn(t)
+	errc := peerErrs()
 	go func() {
-		writeRaw(t, client, []byte("first\n"))
-		writeRaw(t, client, []byte("second\n"))
+		writeRaw(errc, client, []byte("first\n"))
+		writeRaw(errc, client, []byte("second\n"))
 	}()
 	first, err := server.ReadLine()
 	if err != nil {
@@ -150,6 +180,7 @@ func TestReadLineCopiesEachFrame(t *testing.T) {
 	if string(first) != "first" {
 		t.Fatalf("the first line changed under the caller: %q", first)
 	}
+	noPeerError(t, errc)
 }
 
 // TestWriteLineRefusesAFrameItCannotFrame is the producer half. A frame this
@@ -210,8 +241,9 @@ func TestWriteLineAcceptsExactlyWhatReadLineAccepts(t *testing.T) {
 func TestReadLineReportsEOFAfterTheLastFrame(t *testing.T) {
 	a, b := net.Pipe()
 	client, server := NewConn(a), NewConn(b)
+	errc := peerErrs()
 	go func() {
-		writeRaw(t, client, []byte("last\n"))
+		writeRaw(errc, client, []byte("last\n"))
 		_ = client.Close()
 	}()
 	if line, err := server.ReadLine(); err != nil || string(line) != "last" {
@@ -220,6 +252,7 @@ func TestReadLineReportsEOFAfterTheLastFrame(t *testing.T) {
 	if _, err := server.ReadLine(); !errors.Is(err, io.EOF) {
 		t.Fatalf("want io.EOF after a clean close, got %v", err)
 	}
+	noPeerError(t, errc)
 	_ = server.Close()
 }
 
@@ -232,7 +265,9 @@ func TestOversizedRequestIsAnsweredAndTheConnectionServesTheNext(t *testing.T) {
 	path, _ := startTestServer(t)
 	c := dialTest(t, path)
 
-	writeRaw(t, c, append(bytes.Repeat([]byte("q"), 3*MaxLineLen), '\n'))
+	errc := peerErrs()
+	writeRaw(errc, c, append(bytes.Repeat([]byte("q"), 3*MaxLineLen), '\n'))
+	noPeerError(t, errc)
 
 	resp, err := c.ReadResponse()
 	if err != nil {
