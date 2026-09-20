@@ -247,19 +247,25 @@ def main() -> None:
                 _ = sys.stdin.readline()
 
             reply = "pong" if "pong" in text.lower() or text else "ok"
-            send(
-                {
-                    "jsonrpc": "2.0",
-                    "method": "session/update",
-                    "params": {
-                        "sessionId": sid,
-                        "update": {
-                            "sessionUpdate": "agent_message_chunk",
-                            "content": {"type": "text", "text": reply},
+            # A real agent streams a reply as token deltas, so the word
+            # "pong" can arrive as "p" then "ong". FAKE_ACP_CHUNKS is a
+            # "|"-separated delta list that reproduces that split
+            # (🎯T79); unset, the reply goes out whole as before.
+            chunks = (os.environ.get("FAKE_ACP_CHUNKS") or reply).split("|")
+            for chunk in chunks:
+                send(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "session/update",
+                        "params": {
+                            "sessionId": sid,
+                            "update": {
+                                "sessionUpdate": "agent_message_chunk",
+                                "content": {"type": "text", "text": chunk},
+                            },
                         },
-                    },
-                }
-            )
+                    }
+                )
             send(
                 {
                     "jsonrpc": "2.0",

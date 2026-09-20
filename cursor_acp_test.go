@@ -637,3 +637,52 @@ func TestCursorSavedSessionResumeLive(t *testing.T) {
 	challenge := "now-" + uuid.NewString()
 	direct(next, "What fact did I ask you to remember? Reply with exactly two words: that fact, then "+challenge+". No other text.", secret+" "+challenge)
 }
+
+// TestHermeticCursorSessionMultiChunkReply is the hermetic twin of the
+// live TestCursorSessionLiveSmoke failure (🎯T79): the fake peer streams
+// "pong" as the two deltas a real agent emits, and WaitForResponse must
+// hand back the word, not "p\nong". The single-chunk fixture above
+// cannot see this — it never splits a reply.
+func TestHermeticCursorSessionMultiChunkReply(t *testing.T) {
+	bin := writeFakeCursorACP(t)
+	t.Setenv("CURSOR_BIN", bin)
+	t.Setenv("FAKE_ACP_CHUNKS", "p|ong")
+
+	agent, err := Start(Config{
+		Provider:    ProviderCursor,
+		WorkDir:     t.TempDir(),
+		TermLogPath: "-",
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer agent.Stop()
+
+	ctx := t.Context()
+	type outcome struct {
+		text string
+		err  error
+	}
+	ch := make(chan outcome, 1)
+	go func() {
+		text, err := agent.WaitForResponse(ctx)
+		ch <- outcome{text, err}
+	}()
+	runtime.Gosched()
+
+	if err := agent.Send("Reply with exactly: pong"); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	select {
+	case <-ctx.Done():
+		t.Fatal("timeout waiting for response")
+	case out := <-ch:
+		if out.err != nil {
+			t.Fatalf("WaitForResponse: %v", out.err)
+		}
+		if out.text != "pong" {
+			t.Fatalf("response %q, want pong (streamed deltas must concatenate, not join on newlines)", out.text)
+		}
+	}
+}
