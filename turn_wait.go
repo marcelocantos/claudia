@@ -38,17 +38,22 @@ var ErrAgentGone = errors.New("agent died before the turn ended")
 // prompt of a Cursor session.
 //
 // The number is measured, and what was measured is SILENCE INSIDE
-// HEALTHY TURNS, not turn length. Two live ACP sessions, each told to
-// run `sleep 90` and then answer:
+// HEALTHY TURNS, not turn length. Four live ACP sessions, each told to
+// run `sleep 90` and then answer — two mints per backend, so that no
+// single observation decides this the way one did in 🎯T33:
 //
 //	grok    turn 2m38.4s  141 events  longest gap with nothing in it 1m44.9s
+//	grok    turn 2m39.6s  203 events  longest gap with nothing in it 1m30.2s
 //	cursor  turn 4m22.8s   24 events  longest gap with nothing in it 2m34.2s
+//	cursor  turn 4m03.5s   27 events  longest gap with nothing in it 2m26.4s
 //
-// Both counted zero terminal chunks in the same runs — an ACP session
-// has no pane to repaint — so on those backends that gap is total
-// silence. Note it is not the tool's 90 seconds but 1.2x to 1.7x of
-// it: the peer falls quiet before the call is announced and stays
-// quiet after it returns.
+// All four counted zero terminal chunks in the same runs — an ACP
+// session has no pane to repaint — so on those backends that gap is
+// total silence. Note it is not the tool's 90 seconds but 1.0x to
+// 1.7x of it: the peer falls quiet before the call is announced and
+// stays quiet after it returns. The two mints of a backend agree
+// within 15%, which is what makes the ratio a property of the peer
+// rather than of the afternoon.
 //
 // So the bound must clear the longest tool call a healthy turn may
 // make, multiplied by that ratio. The longest routine one in this
