@@ -148,7 +148,7 @@ func TestT30LiveReproSendSucceeds(t *testing.T) {
 	now := hermeticNow()
 	d := sendDriver{
 		pasteBuffer: func(m string) error { pasted = m; return nil },
-		typeLiteral: func(string) error { t.Error("a 6400-byte payload must not be typed"); return nil },
+		typeLiteral: payloadNeverTyped(t),
 		capture: func() ([]byte, error) {
 			// Capture 1 answers the /rc-connecting guard, capture 2 is
 			// what waitContentLanded returned on, and everything after

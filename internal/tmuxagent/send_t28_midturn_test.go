@@ -172,14 +172,25 @@ func TestT28MidTurnPayloadThatSubmitsOnRetry(t *testing.T) {
 	t.Parallel()
 	stuck := loadFrame(t, "frame_t28_probe.txt")
 	queued := loadFrame(t, "frame_queued_hint_during_turn.txt")
-	frames := [][]byte{stuck, stuck, stuck, queued}
+	// DERIVED, not a capture: the probe frame with the attribution line
+	// (🎯T110) echoed at the end of the composer body, which is what the
+	// send now waits to see before its first Enter.
+	const bodyEnd = "  pane frames.\n"
+	if !strings.Contains(string(stuck), bodyEnd) {
+		t.Fatal("frame_t28_probe.txt no longer ends its composer body where this test splices")
+	}
+	attributed := []byte(strings.Replace(string(stuck), bodyEnd, "  pane frames."+pasteAttribution+"\n", 1))
+	if !attributionEchoed(attributed) || attributionEchoed(stuck) {
+		t.Fatal("derived frame must show the attribution echo, and the capture must not")
+	}
+	frames := [][]byte{stuck, stuck, attributed, attributed, queued}
 	i := 0
 	pasted := ""
 	enters := 0
 	now := hermeticNow()
 	d := sendDriver{
 		pasteBuffer: func(msg string) error { pasted = msg; return nil },
-		typeLiteral: func(string) error { t.Error("multi-line brief must use the paste path"); return nil },
+		typeLiteral: payloadNeverTyped(t),
 		capture: func() ([]byte, error) {
 			f := frames[min(i, len(frames)-1)]
 			i++

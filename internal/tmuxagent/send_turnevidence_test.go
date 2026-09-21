@@ -255,7 +255,7 @@ func TestWaitContentLandedRejectsUnrecognisedFrame(t *testing.T) {
 	enters := 0
 	d := sendDriver{
 		pasteBuffer: func(string) error { return nil },
-		typeLiteral: func(string) error { t.Error("multi-line brief must use the paste path"); return nil },
+		typeLiteral: payloadNeverTyped(t),
 		capture: func() ([]byte, error) {
 			f := frames[min(i, len(frames)-1)]
 			i++

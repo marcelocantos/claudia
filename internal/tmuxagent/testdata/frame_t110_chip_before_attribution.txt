@@ -1,0 +1,24 @@
+
+ ▐▛███▛█   Claude Code v2.1.278
+▝▜██████▀  Fable 5.1 with high effort · Claude Max
+  ▝▝ ▝▝    /…/2159f33e-ff92-4b9a-9c9e-93c145d50f31/scratchpad/t30wd
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  tmux detected · scroll with PgUp/PgDn · or add 'set -g mouse on' to ~/.tmux…
+────────────────────────────────────────────────────────────────────────────────
+❯ [Pasted text #1 +7 lines]
+────────────────────────────────────────────────────────────────────────────────
+  paste again to expand

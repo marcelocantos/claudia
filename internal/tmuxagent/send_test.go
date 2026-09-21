@@ -127,7 +127,10 @@ func TestClassifyComposer(t *testing.T) {
 func TestSendKeysPressesThroughPasteBlock(t *testing.T) {
 	t.Parallel()
 	var typed, pasted string
-	frames := []string{pasteChipFrame, pasteChipFrame, pasteChipFrame, workingFrame}
+	// Guard, landed, attribution echoed, then two looks at a chip that
+	// has not submitted before the turn shows.
+	attributed := strings.Replace(pasteChipFrame, "lines]\n", "lines]"+pasteAttribution+"\n", 1)
+	frames := []string{pasteChipFrame, pasteChipFrame, attributed, attributed, attributed, workingFrame}
 	i := 0
 	d, enters := hermeticDriver(
 		func() ([]byte, error) {
@@ -142,8 +145,10 @@ func TestSendKeysPressesThroughPasteBlock(t *testing.T) {
 	if err := sendKeysWith(d, msg); err != nil {
 		t.Fatalf("sendKeysWith: %v", err)
 	}
-	if typed != "" {
-		t.Fatalf("short path used typeLiteral unexpectedly: %q", typed)
+	// The payload itself is never typed; what follows the chip is the
+	// attribution line and only that (🎯T110).
+	if typed != pasteAttribution {
+		t.Fatalf("paste path typed %q, want only the attribution line", typed)
 	}
 	if pasted != msg {
 		t.Fatalf("pasteBuffer got %q want full msg", pasted)
@@ -203,7 +208,7 @@ func TestSendKeysWaitsForConnectingThenPastes(t *testing.T) {
 			return []byte(f), nil
 		},
 		func(msg string) error { pasted = msg; return nil },
-		func(string) error { t.Fatal("type"); return nil },
+		payloadNeverTyped(t),
 	)
 	if err := sendKeysWith(d, "line1\nline2"); err != nil {
 		t.Fatalf("sendKeysWith: %v", err)
