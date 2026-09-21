@@ -5,6 +5,7 @@ package claudia
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // CursorACPSessionDir is ~/.cursor/acp-sessions/<sessionID>.
@@ -129,40 +131,51 @@ func IsOrphanCursorACP(ppid int, command string) bool {
 	return strings.Contains(command, " acp") || strings.HasSuffix(command, " acp")
 }
 
+// lsofTimeout bounds one store-holder probe. lsof stats the open files of
+// every process on the host, and a single stat on a stalled mount can block
+// it indefinitely. Unbounded, this call held jevonsd's boot inside
+// StartAllPreferAdopt for as long as lsof hung (goroutine dump, 2026-09-21).
+var lsofTimeout = 3 * time.Second
+
+// lsofCommand is the probe binary; tests replace it.
+var lsofCommand = "lsof"
+
+// listStoreWritersLsof lists processes holding store.db or its -wal/-shm, in
+// one bounded lsof call. A probe that does not answer in time returns no
+// pids: nothing can be reaped that could not be identified, and callers
+// that must not open a held store check again and fail closed.
 func listStoreWritersLsof(path string) []int {
 	if path == "" {
 		return nil
 	}
-	if _, err := os.Stat(path); err != nil {
+	var args []string
+	for _, p := range []string{path, path + "-wal", path + "-shm"} {
+		if _, err := os.Stat(p); err == nil {
+			args = append(args, p)
+		}
+	}
+	if len(args) == 0 {
 		return nil
 	}
-	// WAL/SHM sit next to store.db; lsof on the db inode is enough on
-	// Darwin when the process has the handle. Probe wal too.
+	ctx, cancel := context.WithTimeout(context.Background(), lsofTimeout)
+	defer cancel()
+	out, _ := exec.CommandContext(ctx, lsofCommand, append([]string{"-t", "--"}, args...)...).Output()
+	if ctx.Err() != nil {
+		slog.Warn("cursor reap: lsof did not answer in time; nothing reaped", "path", path, "timeout", lsofTimeout)
+		return nil
+	}
 	var pids []int
 	seen := map[int]struct{}{}
-	for _, p := range []string{path, path + "-wal", path + "-shm"} {
-		if _, err := os.Stat(p); err != nil {
+	for _, line := range strings.Split(string(out), "\n") {
+		pid, err := strconv.Atoi(strings.TrimSpace(line))
+		if err != nil || pid <= 1 {
 			continue
 		}
-		out, err := exec.Command("lsof", "-t", "--", p).Output()
-		if err != nil {
+		if _, ok := seen[pid]; ok {
 			continue
 		}
-		for _, line := range strings.Split(string(out), "\n") {
-			line = strings.TrimSpace(line)
-			if line == "" {
-				continue
-			}
-			pid, err := strconv.Atoi(line)
-			if err != nil || pid <= 1 {
-				continue
-			}
-			if _, ok := seen[pid]; ok {
-				continue
-			}
-			seen[pid] = struct{}{}
-			pids = append(pids, pid)
-		}
+		seen[pid] = struct{}{}
+		pids = append(pids, pid)
 	}
 	return pids
 }
