@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
@@ -43,6 +44,13 @@ import (
 //
 // So a workspace-write seat is granted its repo's git directories, and
 // Start refuses when the app-server reports a sandbox without them.
+//
+// The grant rides the app-server's argv (`-c`), not CODEX_HOME/config.toml
+// where the caller's own roots go (🎯T598). config.toml needs a private
+// home, and giving one to a seat that never had it would strand the
+// threads it keeps in ~/.codex the next time it resumed. thread/start
+// echoes a `-c` root exactly as it echoes a config.toml one (measured,
+// same binary, a home with no config at all).
 
 // codexSandboxWorkspaceWrite is the thread/start sandbox mode that
 // carries the `.git` carve-out.
@@ -110,6 +118,24 @@ func codexGitWritableRoots(workDir string) ([]string, error) {
 	return roots, nil
 }
 
+// codexSandboxConfigKey is the config path of the workspace-write
+// writable roots, as `codex app-server -c <key>=<toml>` takes it.
+const codexSandboxConfigKey = "sandbox_workspace_write.writable_roots"
+
+// codexSandboxArgs are the app-server arguments that carry the git grant.
+// A `-c` value replaces the config.toml list rather than adding to it, so
+// the caller's roots are repeated here or the grant would cost them.
+func codexSandboxArgs(t codexSandboxTuning) []string {
+	if len(t.GitRoots) == 0 {
+		return nil
+	}
+	roots := codexWritableRootsTOML(slices.Concat(t.WritableRoots, t.GitRoots))
+	if roots == "" {
+		return nil
+	}
+	return []string{"-c", codexSandboxConfigKey + "=" + roots}
+}
+
 // canonicalPath is path with symlinks resolved where that is possible.
 func canonicalPath(path string) string {
 	if path == "" {
@@ -122,8 +148,8 @@ func canonicalPath(path string) string {
 }
 
 // checkGitRootsGranted is the refusal half of 🎯T109. The grant travels
-// through CODEX_HOME/config.toml, a channel the app-server is free to
-// ignore, so the sandbox it echoes is the only evidence the grant took.
+// as a config override, which the app-server is free to ignore, so the
+// sandbox it echoes is the only evidence the grant took.
 // A workspace-write sandbox reported without a git root means the seat
 // would come up able to edit and unable to commit; Start says so instead.
 func checkGitRootsGranted(gitRoots []string, effective codexEffectiveSandbox) error {

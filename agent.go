@@ -1190,9 +1190,7 @@ func startCodexAgent(req agentStartRequest) (*agentStart, error) {
 	var extraEnv []string
 	var mcpCleanup func()
 	var exclusiveHome string
-	// The grant rides CODEX_HOME/config.toml like the rest of the tuning,
-	// so it demands a private home for the same reason (🎯T598).
-	if needsSessionMCPMaterialization(req.Config) || len(sandboxTuning.GitRoots) > 0 {
+	if needsSessionMCPMaterialization(req.Config) {
 		home, cleanup, herr := exclusiveCodexHomeForStart(req.SessionID, req.Config.RequireResume, mergeMCPServers(req.Config), sandboxTuning)
 		if herr != nil {
 			return nil, herr

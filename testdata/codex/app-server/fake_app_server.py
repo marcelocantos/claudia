@@ -71,22 +71,30 @@ SANDBOX_TYPES = {
 def _effective_sandbox(mode: str) -> dict:
     """The sandbox object thread/start echoes. Like live Codex, writable
     roots come from CODEX_HOME/config.toml ([sandbox_workspace_write]
-    writable_roots) and from nowhere on the wire.
+    writable_roots) or from a `-c sandbox_workspace_write.writable_roots=`
+    override on argv, which replaces the config.toml list — and from
+    nowhere on the wire.
 
-    FAKE_CODEX_DROP_WRITABLE_ROOTS=1 is a CLI that ignores that stanza: the
-    grant is asked for and not given (claudia T109)."""
+    FAKE_CODEX_DROP_WRITABLE_ROOTS=1 is a CLI that ignores both: the grant
+    is asked for and not given (claudia T109)."""
     kind = SANDBOX_TYPES.get(mode or "read-only", "readOnly")
     if kind != "workspaceWrite":
         return {"type": kind}
     roots: list[str] = []
     home = os.environ.get("CODEX_HOME") or ""
     cfg = os.path.join(home, "config.toml") if home else ""
-    if cfg and os.path.isfile(cfg) and os.environ.get("FAKE_CODEX_DROP_WRITABLE_ROOTS") != "1":
+    if cfg and os.path.isfile(cfg):
         with open(cfg, encoding="utf-8") as fh:
             for line in fh:
                 key, _, value = line.partition("=")
                 if key.strip() == "writable_roots":
                     roots = json.loads(value.strip())
+    for i, arg in enumerate(sys.argv):
+        key, _, value = arg.partition("=")
+        if i > 0 and sys.argv[i - 1] == "-c" and key == "sandbox_workspace_write.writable_roots":
+            roots = json.loads(value)
+    if os.environ.get("FAKE_CODEX_DROP_WRITABLE_ROOTS") == "1":
+        roots = []
     return {"type": kind, "writableRoots": roots, "networkAccess": False}
 
 
@@ -174,6 +182,10 @@ def main() -> None:
             if home_log:
                 with open(home_log, "w", encoding="utf-8") as fh:
                     fh.write(os.environ.get("CODEX_HOME", ""))
+            argv_log = os.environ.get("FAKE_CODEX_LAST_ARGV")
+            if argv_log:
+                with open(argv_log, "w", encoding="utf-8") as fh:
+                    fh.write(json.dumps(sys.argv[1:]))
             emit({"id": mid, "result": {"userAgent": "fake-codex-app-server"}})
         elif method == "initialized":
             pass

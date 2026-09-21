@@ -4,9 +4,11 @@
 package claudia
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -14,8 +16,8 @@ import (
 
 // 🎯T109: a Codex workspace-write sandbox keeps `<workdir>/.git` read-only
 // unless the git directory is granted as a writable root of its own.
-// These tests pin the grant (the config.toml stanza, the only channel that
-// carries it) and the refusal (a sandbox echoed without the root).
+// These tests pin the grant (a `-c` override on the app-server's argv) and
+// the refusal (a sandbox echoed without the root).
 
 // t109Repo makes a throwaway repository with one commit and returns its
 // symlink-free path — t.TempDir() is under /var → /private/var on macOS.
@@ -90,18 +92,25 @@ func TestT109NoGitRootsOutsideARepository(t *testing.T) {
 	}
 }
 
-func TestT109GitRootsAreWrittenAsWritableRoots(t *testing.T) {
-	got := codexSandboxTOML(codexSandboxTuning{
+// The grant is one `-c` override on the app-server's argv. It replaces
+// the config.toml list, so the caller's own roots must ride along.
+func TestT109GitRootsRideTheAppServerArgv(t *testing.T) {
+	got := codexSandboxArgs(codexSandboxTuning{
 		WritableRoots: []string{"/Users/x/.jevons/gates", "/repo/.git"},
 		GitRoots:      []string{"/repo/.git", "/main/.git"},
 	})
-	want := `writable_roots = ["/Users/x/.jevons/gates", "/repo/.git", "/main/.git"]`
-	if !strings.Contains(got, want) {
-		t.Fatalf("stanza lacks %s:\n%s", want, got)
+	want := []string{"-c", `sandbox_workspace_write.writable_roots=["/Users/x/.jevons/gates", "/repo/.git", "/main/.git"]`}
+	if !slices.Equal(got, want) {
+		t.Fatalf("args = %q, want %q", got, want)
 	}
-	// Git roots alone still produce a stanza, and so still demand a home.
-	if alone := codexSandboxTOML(codexSandboxTuning{GitRoots: []string{"/repo/.git"}}); !strings.Contains(alone, `writable_roots = ["/repo/.git"]`) {
-		t.Fatalf("git roots alone wrote:\n%s", alone)
+	// No git roots, no override: the caller's roots stay in config.toml
+	// alone, as T598 left them.
+	if got := codexSandboxArgs(codexSandboxTuning{WritableRoots: []string{"/tmp/gates"}, NetworkAccess: true}); got != nil {
+		t.Fatalf("args without git roots = %q", got)
+	}
+	// And config.toml is not where the git roots go.
+	if toml := codexSandboxTOML(codexSandboxTuning{GitRoots: []string{"/repo/.git"}}); toml != "" {
+		t.Fatalf("git roots leaked into config.toml:\n%s", toml)
 	}
 }
 
@@ -143,17 +152,31 @@ func TestT109MissingGitRootIsRefusedByName(t *testing.T) {
 	}
 }
 
-// The whole path: Start in a repo with workspace-write writes the grant
-// into the seat's CODEX_HOME, and the (fake) app-server echoes it back.
+// t109LastArgv is the argv the fake app-server was started with.
+func t109LastArgv(t *testing.T, path string) []string {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("app-server argv: %v", err)
+	}
+	var argv []string
+	if err := json.Unmarshal(raw, &argv); err != nil {
+		t.Fatalf("app-server argv %q: %v", raw, err)
+	}
+	return argv
+}
+
+// The whole path: Start in a repo with workspace-write puts the grant on
+// the app-server's argv, and the (fake) app-server echoes it back.
 func TestT109HermeticStartGrantsTheRepoGitDir(t *testing.T) {
 	bin := writeFakeCodexAppServer(t)
 	t.Setenv("CODEX_BIN", bin)
 	writeFakeCodexSubscriptionAuth(t)
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	argvLog := filepath.Join(t.TempDir(), "argv.json")
+	t.Setenv("FAKE_CODEX_LAST_ARGV", argvLog)
 	repo := t109Repo(t)
 
-	// No MCP servers and no caller tuning: the grant alone must demand
-	// the private home it is written into.
 	agent, err := Start(Config{
 		Provider:    ProviderCodex,
 		WorkDir:     repo,
@@ -165,13 +188,14 @@ func TestT109HermeticStartGrantsTheRepoGitDir(t *testing.T) {
 	}
 	defer agent.Stop()
 
-	cfg, err := os.ReadFile(filepath.Join(exclusiveCodexHomeDir(agent.SessionID()), "config.toml"))
-	if err != nil {
-		t.Fatalf("seat config.toml: %v", err)
+	want := []string{"app-server", "-c", "sandbox_workspace_write.writable_roots=[" + strconv.Quote(filepath.Join(repo, ".git")) + "]"}
+	if got := t109LastArgv(t, argvLog); !slices.Equal(got, want) {
+		t.Fatalf("app-server argv = %q, want %q", got, want)
 	}
-	want := "writable_roots = [" + strconv.Quote(filepath.Join(repo, ".git")) + "]"
-	if !strings.Contains(string(cfg), want) {
-		t.Fatalf("seat config.toml lacks %s:\n%s", want, cfg)
+	// A bare seat keeps its threads in the user's CODEX_HOME. The grant
+	// must not move it into a private one, or its next resume finds none.
+	if dirExists(exclusiveCodexHomeDir(agent.SessionID())) {
+		t.Fatal("the git grant gave a bare seat a private CODEX_HOME")
 	}
 }
 
@@ -181,20 +205,49 @@ func TestT109ReadOnlySeatGetsNoGitGrant(t *testing.T) {
 	t.Setenv("CODEX_BIN", bin)
 	writeFakeCodexSubscriptionAuth(t)
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	lastHome := filepath.Join(t.TempDir(), "home")
-	t.Setenv("FAKE_CODEX_LAST_HOME", lastHome)
+	argvLog := filepath.Join(t.TempDir(), "argv.json")
+	t.Setenv("FAKE_CODEX_LAST_ARGV", argvLog)
 
 	agent, err := Start(Config{Provider: ProviderCodex, WorkDir: t109Repo(t), TermLogPath: "-"})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer agent.Stop()
-	if dirExists(exclusiveCodexHomeDir(agent.SessionID())) {
-		t.Fatal("a read-only seat was given a private CODEX_HOME for a grant it must not have")
+	if got := t109LastArgv(t, argvLog); !slices.Equal(got, []string{"app-server"}) {
+		t.Fatalf("read-only app-server argv = %q, want a bare app-server", got)
 	}
 }
 
-// A CLI that ignores the stanza leaves .git read-only. Start must say so
+// The caller's own roots live in config.toml, and `-c` replaces that list.
+// A seat with both must end up with both.
+func TestT109HermeticGrantKeepsTheCallersRoots(t *testing.T) {
+	bin := writeFakeCodexAppServer(t)
+	t.Setenv("CODEX_BIN", bin)
+	writeFakeCodexSubscriptionAuth(t)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	argvLog := filepath.Join(t.TempDir(), "argv.json")
+	t.Setenv("FAKE_CODEX_LAST_ARGV", argvLog)
+	repo := t109Repo(t)
+	gates := filepath.Join(t.TempDir(), "gates")
+
+	agent, err := Start(Config{
+		Provider:             ProviderCodex,
+		WorkDir:              repo,
+		SandboxMode:          "workspace-write",
+		SandboxWritableRoots: []string{gates},
+		TermLogPath:          "-",
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer agent.Stop()
+	want := "sandbox_workspace_write.writable_roots=[" + strconv.Quote(gates) + ", " + strconv.Quote(filepath.Join(repo, ".git")) + "]"
+	if got := t109LastArgv(t, argvLog); !slices.Contains(got, want) {
+		t.Fatalf("app-server argv = %q, want it to carry %s", got, want)
+	}
+}
+
+// A CLI that ignores the override leaves .git read-only. Start must say so
 // rather than hand back a seat that cannot commit.
 func TestT109HermeticStartRefusesWhenTheGrantIsIgnored(t *testing.T) {
 	bin := writeFakeCodexAppServer(t)

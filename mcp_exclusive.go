@@ -259,9 +259,10 @@ type codexSandboxTuning struct {
 	WritableRoots []string
 	NetworkAccess bool
 
-	// GitRoots are the seat's own git directories (🎯T109). They are
-	// written as writable roots like any other, and unlike the others
-	// their absence from the echoed sandbox refuses the start.
+	// GitRoots are the seat's own git directories (🎯T109). They ride the
+	// app-server's argv rather than config.toml (codexSandboxArgs), and
+	// unlike the other roots their absence from the echoed sandbox
+	// refuses the start.
 	GitRoots []string
 }
 
@@ -276,24 +277,35 @@ func codexSandboxTOML(t codexSandboxTuning) string {
 	// Decide what there is to say BEFORE writing a header: a stanza with
 	// no keys is not harmless, it overrides whatever the user's own
 	// config said.
-	quoted := make([]string, 0, len(t.WritableRoots)+len(t.GitRoots))
-	for _, r := range slices.Concat(t.WritableRoots, t.GitRoots) {
-		if r = strings.TrimSpace(r); r != "" && !slices.Contains(quoted, strconv.Quote(r)) {
-			quoted = append(quoted, strconv.Quote(r))
-		}
-	}
-	if len(quoted) == 0 && !t.NetworkAccess {
+	roots := codexWritableRootsTOML(t.WritableRoots)
+	if roots == "" && !t.NetworkAccess {
 		return ""
 	}
 	var b strings.Builder
 	b.WriteString("\n[sandbox_workspace_write]\n")
-	if len(quoted) > 0 {
-		b.WriteString("writable_roots = [" + strings.Join(quoted, ", ") + "]\n")
+	if roots != "" {
+		b.WriteString("writable_roots = " + roots + "\n")
 	}
 	if t.NetworkAccess {
 		b.WriteString("network_access = true\n")
 	}
 	return b.String()
+}
+
+// codexWritableRootsTOML renders roots as a TOML array, blanks and
+// repeats dropped; "" when nothing is left. config.toml and the `-c`
+// override both take this form.
+func codexWritableRootsTOML(roots []string) string {
+	var quoted []string
+	for _, r := range roots {
+		if r = strings.TrimSpace(r); r != "" && !slices.Contains(quoted, strconv.Quote(r)) {
+			quoted = append(quoted, strconv.Quote(r))
+		}
+	}
+	if len(quoted) == 0 {
+		return ""
+	}
+	return "[" + strings.Join(quoted, ", ") + "]"
 }
 
 func writeExclusiveCodexHome(dest string, servers []MCPServer, sandbox codexSandboxTuning) error {

@@ -93,7 +93,7 @@ func codexThreadStartParams(req agentStartRequest) codexAppServerThreadStartPara
 }
 
 func startCodexAppServer(bin, workDir, model, sessionID string, requireResume bool, sandbox string, tuning codexSandboxTuning, extraEnv []string, onEvent func(Event), onClose func()) (*codexAppServerClient, error) {
-	cmd := exec.Command(bin, "app-server")
+	cmd := exec.Command(bin, append([]string{"app-server"}, codexSandboxArgs(tuning)...)...)
 	cmd.Dir = workDir
 	if len(extraEnv) > 0 {
 		cmd.Env = appendEnv(nil, extraEnv)
