@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 // A seat launched on a loaded host kept losing MCP servers to Claude Code's
@@ -52,23 +51,26 @@ func TestSpawnedWindowSeesTheMCPTimeout(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = exec.Command("tmux", "-S", sock, "kill-server").Run() })
 
+	// The window writes its environment, then signals a tmux channel. The test
+	// blocks on that channel: the event is the wait, and `go test -timeout` is
+	// the only clock (🎯T97).
 	out := filepath.Join(t.TempDir(), "env.txt")
+	const channel = "mcp-timeout-probe-done"
 	id, err := SpawnWindow(t.TempDir(), "mcp-timeout-probe", "sh",
-		[]string{"-c", "printenv MCP_TIMEOUT > " + out + "; sleep 5"})
+		[]string{"-c", "printenv MCP_TIMEOUT > " + out + "; tmux -S " + sock + " wait-for -S " + channel})
 	if err != nil {
 		t.Fatalf("SpawnWindow: %v", err)
 	}
 	t.Cleanup(func() { _ = KillWindow(id) })
 
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		if b, err := os.ReadFile(out); err == nil && len(strings.TrimSpace(string(b))) > 0 {
-			if got := strings.TrimSpace(string(b)); got != DefaultSeatMCPTimeoutMS {
-				t.Fatalf("seat sees MCP_TIMEOUT=%q, want %q", got, DefaultSeatMCPTimeoutMS)
-			}
-			return
-		}
-		time.Sleep(100 * time.Millisecond)
+	if b, err := exec.Command("tmux", "-S", sock, "wait-for", channel).CombinedOutput(); err != nil {
+		t.Fatalf("waiting for the window's signal: %v: %s", err, b)
 	}
-	t.Fatal("the spawned window never reported its environment")
+	b, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("the window signalled but wrote no environment: %v", err)
+	}
+	if got := strings.TrimSpace(string(b)); got != DefaultSeatMCPTimeoutMS {
+		t.Fatalf("seat sees MCP_TIMEOUT=%q, want %q", got, DefaultSeatMCPTimeoutMS)
+	}
 }
