@@ -521,11 +521,24 @@ func ensureSubmitted(d sendDriver, landed bool) error {
 	// separate on purpose: maxSubmitPresses limits how often we act on
 	// the pane, submitEvidenceTimeout limits how long we are willing to
 	// keep watching a pane there is nothing to act on.
+	//
+	// The presses are spread across that span, not spent at the sample
+	// rate: each gap doubles, from submitSettle. 🎯T121 measured a resumed
+	// Claude seat dropping every Enter for up to 4.2s after its composer
+	// showed the typed payload, at load 130-210; spent one per 400ms
+	// sample, the cap ran out about 3s after typing and a send the TUI
+	// would have taken was refused. Doubling reaches past 25s within the
+	// cap, so a slow pane gets a press once it is listening and no send
+	// costs more Enters than before.
+	gap := submitSettle
+	nextPress := d.clock()
 	press := func(what string) error {
-		if presses+1 >= maxSubmitPresses {
+		if presses+1 >= maxSubmitPresses || d.clock().Before(nextPress) {
 			return nil
 		}
 		presses++
+		nextPress = d.clock().Add(gap)
+		gap *= 2
 		if err := d.sendEnter(); err != nil {
 			return fmt.Errorf("tmux send-keys Enter (%s): %w", what, err)
 		}
@@ -585,11 +598,8 @@ func ensureSubmitted(d sendDriver, landed bool) error {
 				}
 			}
 		}
-		// Out of presses with something still visibly held back: further
-		// watching cannot change the verdict.
-		if presses+1 >= maxSubmitPresses && lastState != composerEmptyIdle {
-			break
-		}
+		// Out of presses, the last Enter may still be landing on a slow
+		// pane (🎯T121), so keep watching until the evidence bound.
 		if !d.clock().Before(deadline) {
 			break
 		}
