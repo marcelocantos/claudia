@@ -386,6 +386,85 @@
         {"name": "TestHermeticTestsDeclareTheProductBoundsTheyShorten", "expect": "green"}
       ],
       "note": "TestHermeticCodexThreadStartTimesOut \u2014 the test \ud83c\udfafT93 is ABOUT \u2014 is deliberately not declared here, and that omission is the whole finding. It stays GREEN under this mutation on an idle host, because initialize answers at once and only the hanging thread/start reaches the 200ms bound; it goes red only when the host is slow enough for the shared bound to expire on the earlier step. A test whose colour under the mutation is a function of load is not evidence, which is exactly the defect being guarded, and is why the oracle had to move off behaviour and onto the wiring. cl-t33 measured the same thing from the other side: the pre-fix code passed 5/5 at load 44. The declared green is 02cec52's declaration guard, which sees a declared var shortened by a declared test and passes \u2014 load-bearing, because it shows the red test pins the step-ordering property specifically and not merely 'something about bounds changed'."
+    },
+    {
+      "target": "T91",
+      "mutation": "arm-the-watch-without-a-wake-path",
+      "what": "Prompt arms the opening-prompt silence watch on a client with no peer wake path, so the wait's verdict is fixed before it starts (🎯T91's defect as it stood before e18806d)",
+      "quoted_by": "e18806d",
+      "package": ".",
+      "edits": [
+        {
+          "file": "cursor_acp.go",
+          "find": "watch := !c.firstDone && c.peerWoke != nil",
+          "replace": "watch := !c.firstDone"
+        }
+      ],
+      "tests": [
+        {"name": "TestCursorPromptWithoutWakePathDoesNotPark", "expect": "red"},
+        {"name": "TestCursorStuckFirstPromptFailsTypedAndLeavesSeatUsable", "expect": "green"}
+      ],
+      "note": "The green is 🎯T83's oracle on a transport-owning client, where the watch arms under both the fix and the mutation. That shows the red pins the wake-path condition specifically, not the watch as a whole. When claudia-po hand-ran this at e18806d it also turned TestACPSteerPromptIDStack and TestT50_2PromptAcceptedBeforeWriteAndPermissionBeforeReply red, in 0.00s: awaitPeerActivity's own nil-wake guard turns the old hang into a fast failure. Those two are not declared, because they bite through that second line of defence and not through this condition."
+    },
+    {
+      "target": "T91",
+      "mutation": "wait-parks-without-a-wake-path",
+      "what": "awaitPeerActivity loses its `if ch == nil { return report() }` guard, so a client with no wake channel parks for the whole bound on a nil channel",
+      "quoted_by": "e18806d",
+      "package": ".",
+      "edits": [
+        {
+          "file": "cursor_acp.go",
+          "find": "\tif ch == nil {\n\t\treturn report()\n\t}\n",
+          "replace": ""
+        }
+      ],
+      "tests": [
+        {"name": "TestAwaitPeerActivityWithoutWakePathReturnsAndSaysWhy", "expect": "red"},
+        {"name": "TestCursorPromptWithoutWakePathDoesNotPark", "expect": "green"}
+      ],
+      "note": "The pair shows the two defences are independent. Prompt's arming condition still keeps an unwatchable client out of the wait, so the caller-level test stays green, and only the wait-level test attributes the regression to awaitPeerActivity. When claudia-po hand-ran this at e18806d, the red was the package's 10m timeout panic, because the test measured elapsed time only after the call returned. 41697da bounds the call at 2s so this entry costs seconds under `make gate`."
+    },
+    {
+      "target": "T91",
+      "mutation": "disarm-the-silence-watch",
+      "what": "the opening-prompt silence watch never arms (`watch := false`), which is 🎯T83's guarantee gone. This checks that 🎯T91's narrowing of the arming condition did not quietly do the same",
+      "quoted_by": "e18806d",
+      "package": ".",
+      "edits": [
+        {
+          "file": "cursor_acp.go",
+          "find": "watch := !c.firstDone && c.peerWoke != nil",
+          "replace": "watch := false"
+        }
+      ],
+      "tests": [
+        {"name": "TestCursorStuckFirstPromptFailsTypedAndLeavesSeatUsable", "expect": "red"},
+        {"name": "TestCursorSlowFirstPromptIsNotStuck", "expect": "red"},
+        {"name": "TestCursorStuckPromptErrorNamesBothDeliveries", "expect": "red"},
+        {"name": "TestCursorPromptWithoutWakePathDoesNotPark", "expect": "green"}
+      ],
+      "note": "This is the most load-bearing of 🎯T91's mutations: it is the one that proves the 🎯T83 oracles still see the watch after 🎯T91 narrowed when it arms. The green is 🎯T91's own no-wake-path test. That path never arms the watch, so the test is indifferent to this mutation, and the reds belong to 🎯T83's mechanism, not to 🎯T91's."
+    },
+    {
+      "target": "T91",
+      "mutation": "a-dead-peer-reads-as-silent",
+      "what": "awaitPeerActivity's outcome never reports the transport closed, so a dead peer is indistinguishable from a silent one and the caller would re-deliver to it",
+      "quoted_by": "e18806d",
+      "package": ".",
+      "edits": [
+        {
+          "file": "cursor_acp.go",
+          "find": "\t\t\tclosed:   closed,\n",
+          "replace": "\t\t\tclosed:   closed && false,\n"
+        }
+      ],
+      "tests": [
+        {"name": "TestAwaitPeerActivityReportsTransportClosed", "expect": "red"},
+        {"name": "TestCursorStuckPromptWaitEndsWhenTransportDies", "expect": "red"},
+        {"name": "TestAwaitPeerActivityReportsPeerSpoke", "expect": "green"}
+      ],
+      "note": "The recipe as recorded in 🎯T91's attestation declared TestCursorStuckPromptWaitEndsWhenTransportDies GREEN here, \"because it discards the outcome\". It does not stay green, and did not at e18806d either. awaitPeerActivity's loop exits on report()'s own closed field (`out.spoke || out.closed`), so an outcome that stops reporting the close also stops ending the wait. The 🎯T83 test's 3s poll then goes red, as it should. Re-derived at 41697da (cl-t95): both transport-closed tests are red. The assertion gap the recipe described is real, since the 🎯T83 test never reads the outcome, but this mutation cannot show it. The green control is instead the spoke side of the same outcome: the peer-spoke path never reads the closed field, so it stays green. That shows the reds pin the closed report specifically, not the outcome as a whole. Before cl-t95 bounded TestAwaitPeerActivityReportsTransportClosed, its red was the package's 10m timeout panic, which this check reads as no result."
     }
   ]
 }

@@ -104,7 +104,22 @@ func TestAwaitPeerActivityReportsTransportClosed(t *testing.T) {
 		c.mu.Unlock()
 		c.wakePromptWaiters()
 	}()
-	out := c.awaitPeerActivity(0, time.Hour)
+	// Bounded for the same reason as the no-wake-path test above: the loop
+	// exits on the outcome's own closed field, so an outcome that stops
+	// reporting it also stops ending the wait, and parks for the hour.
+	done := make(chan peerWaitOutcome, 1)
+	go func() { done <- c.awaitPeerActivity(0, time.Hour) }()
+	var out peerWaitOutcome
+	select {
+	case out = <-done:
+	// 🎯T97 exemption: a failsafe on the event the test already waits for.
+	// The fixed wait ends within one wake of the close 20ms in, and the
+	// broken one parks for the hour, so 5s turns that hang into a named
+	// failure instead of the package's 10m timeout panic.
+	case <-time.After(5 * time.Second):
+		t.Fatal("awaitPeerActivity did not end when the transport closed: " +
+			"a dead peer is being waited on as if it were a silent one")
+	}
 	if out.spoke || !out.closed {
 		t.Fatalf("outcome = %+v, want spoke=false closed=true", out)
 	}
