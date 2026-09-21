@@ -43,13 +43,23 @@ const resumeMenuWordingOnly = `  Do you want to resume this session?
   Press Enter to confirm · Esc to cancel`
 
 // numberedMenuCursorOnly: a numbered ❯ selection without resume wording
-// (e.g. trust-folder or other startup menus).
+// (other startup menus). Trust-folder chrome is a separate fixture —
+// current Claude copy has no ❯ N. cursor (🎯T87).
 const numberedMenuCursorOnly = `  Choose an option:
 
   ❯ 1. Yes, proceed
     2. No
 
   Press Enter to confirm`
+
+// trustFolderCursorUnnumbered: current chrome with a ❯ on the accept
+// line but no digit — startupMenuCursor requires ❯ N. and misses it.
+const trustFolderCursorUnnumbered = `  Quick safety check: Is this a project you created or one you trust?
+
+  ❯ Yes, I trust this folder
+    No, exit
+
+  Enter to confirm · Esc to cancel`
 
 const streamingFrame = `● Rebuilding the maze generator…
 
@@ -67,6 +77,7 @@ func TestMatchReadyDiscriminatesMenu(t *testing.T) {
 		{"resume menu", resumeMenuFrame, false, true},
 		{"resume wording only", resumeMenuWordingOnly, false, true},
 		{"numbered menu cursor only", numberedMenuCursorOnly, false, true},
+		{"trust folder, unnumbered cursor", trustFolderCursorUnnumbered, false, true},
 		{"streaming", streamingFrame, false, false},
 	}
 	for _, tc := range tests {
@@ -156,6 +167,183 @@ func TestWaitReadyMenuTimeoutIsDistinct(t *testing.T) {
 	}
 	if enters != maxMenuDismissals {
 		t.Fatalf("expected exactly %d auto-confirmations, got %d", maxMenuDismissals, enters)
+	}
+}
+
+// TestMatchTrustFolderFixture is the 🎯T87 oracle: a first-open
+// workspace-trust pane capture must be classified, and the classification
+// must come from the trust copy — not from the pre-T87 signals
+// (numbered ❯ N. cursor / resume wording). A fixture that already
+// matches those would be green on the broken tree.
+func TestMatchTrustFolderFixture(t *testing.T) {
+	frame := loadFrame(t, "frame_trust_folder.txt")
+	if MatchReady(frame) {
+		t.Fatal("trust-folder chrome is not a live composer")
+	}
+	if startupMenuCursor.Match(trimTrailingSpace(frame)) {
+		t.Fatal("fixture matches startupMenuCursor; this oracle would pass before 🎯T87")
+	}
+	if resumePrompt.Match(trimTrailingSpace(frame)) {
+		t.Fatal("fixture matches resumePrompt; this oracle would pass before 🎯T87")
+	}
+	if !MatchTrustFolder(frame) {
+		t.Fatal("MatchTrustFolder = false on current Claude trust-folder chrome")
+	}
+	if !MatchStartupMenu(frame) {
+		t.Fatal("MatchStartupMenu must treat trust-folder as a dismissible startup menu")
+	}
+	if got := NotReadyReason(frame); got != NotReadyNoComposer {
+		t.Fatalf("NotReadyReason = %q, want %s (no composer until the dialog is dismissed)", got, NotReadyNoComposer)
+	}
+
+	questionOnly := []byte("Quick safety check: ignore this, it is transcript prose.")
+	if MatchTrustFolder(questionOnly) || MatchStartupMenu(questionOnly) {
+		t.Fatal("question copy alone is not a trust dialog")
+	}
+	acceptOnly := []byte("the default is Yes, I trust this folder")
+	if MatchTrustFolder(acceptOnly) || MatchStartupMenu(acceptOnly) {
+		t.Fatal("accept-option copy alone is not a trust dialog")
+	}
+}
+
+// TestWaitReadyAutoAdvancesTrustFolder: a first-open owner workdir that
+// parks on the trust dialog must reach ready by the loop pressing Enter,
+// bounded by maxMenuDismissals.
+func TestWaitReadyAutoAdvancesTrustFolder(t *testing.T) {
+	trust := loadFrame(t, "frame_trust_folder.txt")
+	frames := [][]byte{
+		trust,                // 1st capture: trust dialog → auto-Enter
+		trust,                // still repainting → auto-Enter again
+		[]byte(idleBoxFrame), // dialog cleared → ready
+	}
+	call := 0
+	enters := 0
+	d := readyDriver{
+		capture: func() ([]byte, error) {
+			f := frames[min(call, len(frames)-1)]
+			call++
+			return f, nil
+		},
+		sendEnter: func() error { enters++; return nil },
+	}
+
+	elapsed, err := waitReadyLoop(d, time.Millisecond, 2*time.Second, time.Millisecond)
+	if err != nil {
+		t.Fatalf("waitReadyLoop wedged on trust-folder instead of auto-advancing: %v", err)
+	}
+	if enters == 0 {
+		t.Fatal("loop reached ready but never pressed Enter — trust dialog was not auto-confirmed")
+	}
+	if enters > maxMenuDismissals {
+		t.Fatalf("pressed Enter %d time(s), exceeds maxMenuDismissals=%d", enters, maxMenuDismissals)
+	}
+	t.Logf("auto-advanced through trust-folder in %s with %d Enter(s)", elapsed.Round(time.Millisecond), enters)
+}
+
+// TestWaitReadyTrustThenSplashThenReady: after trust dismiss, the TUI
+// may paint the startup splash before the live composer. Same contract
+// as the resume-menu path — no Enter into a dead box.
+func TestWaitReadyTrustThenSplashThenReady(t *testing.T) {
+	frames := [][]byte{
+		loadFrame(t, "frame_trust_folder.txt"),
+		[]byte(startupSplashFrame),
+		[]byte(startupSplashFrame),
+		[]byte(liveComposerFrame),
+	}
+	i, enters := 0, 0
+	d := readyDriver{
+		capture: func() ([]byte, error) {
+			f := frames[min(i, len(frames)-1)]
+			i++
+			return f, nil
+		},
+		sendEnter: func() error { enters++; return nil },
+	}
+	if _, err := waitReadyLoop(d, time.Millisecond, time.Second, time.Millisecond); err != nil {
+		t.Fatalf("waitReadyLoop: %v", err)
+	}
+	if enters != 1 {
+		t.Fatalf("Enter presses = %d, want 1 (trust dialog only; splash must not be auto-confirmed)", enters)
+	}
+	if i < 4 {
+		t.Errorf("returned after %d capture(s); must poll trust→splash→live", i)
+	}
+}
+
+// TestWaitReadyTrustTimeoutStaysBounded: Enter that never clears the
+// trust dialog must stop at maxMenuDismissals with the wedged-menu
+// error, not press forever and not fall through to generic no_composer.
+func TestWaitReadyTrustTimeoutStaysBounded(t *testing.T) {
+	trust := loadFrame(t, "frame_trust_folder.txt")
+	enters := 0
+	d := readyDriver{
+		capture:   func() ([]byte, error) { return trust, nil },
+		sendEnter: func() error { enters++; return nil },
+	}
+
+	_, err := waitReadyLoop(d, time.Millisecond, 100*time.Millisecond, time.Millisecond)
+	if err == nil {
+		t.Fatal("expected a timeout error when the trust dialog never clears")
+	}
+	if !strings.Contains(err.Error(), "startup menu") {
+		t.Fatalf("error should name the wedged menu, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "trust-folder") {
+		t.Fatalf("error should name the trust-folder prompt, got: %v", err)
+	}
+	if enters != maxMenuDismissals {
+		t.Fatalf("expected exactly %d auto-confirmations, got %d", maxMenuDismissals, enters)
+	}
+}
+
+// TestWaitReadyResumeThenTrustThenReady: a resume menu may be followed
+// by the trust-folder dialog (the case maxMenuDismissals was sized
+// for). Both are confirmed; the live composer is not.
+func TestWaitReadyResumeThenTrustThenReady(t *testing.T) {
+	frames := [][]byte{
+		[]byte(resumeMenuFrame),
+		loadFrame(t, "frame_trust_folder.txt"),
+		[]byte(liveComposerFrame),
+	}
+	i, enters := 0, 0
+	d := readyDriver{
+		capture: func() ([]byte, error) {
+			f := frames[min(i, len(frames)-1)]
+			i++
+			return f, nil
+		},
+		sendEnter: func() error { enters++; return nil },
+	}
+	if _, err := waitReadyLoop(d, time.Millisecond, time.Second, time.Millisecond); err != nil {
+		t.Fatalf("waitReadyLoop: %v", err)
+	}
+	if enters != 2 {
+		t.Fatalf("Enter presses = %d, want 2 (resume then trust; composer is not a menu)", enters)
+	}
+	if enters > maxMenuDismissals {
+		t.Fatalf("pressed Enter %d time(s), exceeds maxMenuDismissals=%d", enters, maxMenuDismissals)
+	}
+}
+
+// TestWaitReadyDoesNotEnterOnTrustMentionInTranscript: overseer prose
+// that names the dialog is not the dialog (jevons 🎯T565 class).
+func TestWaitReadyDoesNotEnterOnTrustMentionInTranscript(t *testing.T) {
+	frame := []byte("" +
+		"the seat hit Quick safety check and never drew a composer\n" +
+		liveComposerFrame)
+	enters := 0
+	d := readyDriver{
+		capture:   func() ([]byte, error) { return frame, nil },
+		sendEnter: func() error { enters++; return nil },
+	}
+	if _, err := waitReadyLoop(d, time.Millisecond, time.Second, time.Millisecond); err != nil {
+		t.Fatalf("waitReadyLoop: %v", err)
+	}
+	if enters != 0 {
+		t.Fatalf("pressed Enter %d time(s) into a live composer whose transcript mentions the trust dialog", enters)
+	}
+	if MatchTrustFolder(frame) {
+		t.Fatal("question copy in transcript without the accept option must not classify as trust-folder")
 	}
 }
 
@@ -316,6 +504,7 @@ func TestComposerBodyStopsAtUnindentedRow(t *testing.T) {
 		"/rc still connecting":                             connectingFrame,
 		"resume menu":                                      resumeMenuFrame,
 		"numbered menu cursor only":                        numberedMenuCursorOnly,
+		"trust folder, unnumbered cursor":                  trustFolderCursorUnnumbered,
 		"streaming output, no box":                         streamingFrame,
 	}
 	for name, frame := range notReady {

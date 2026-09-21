@@ -46,6 +46,7 @@ Public capability claim (`claudeProviderCapabilities`):
 | Session WaitForResponse settle / tool_use non-terminal | Synthetic events | `TestWaitForResponse*` in `agent_test.go` | Live multi-turn | Hermetic |
 | Session resume: JSONL exists → `--resume` flag path | HOME redirect + backend request | `TestHermeticClaudeSessionResumeDecision` | Live resume | Hermetic |
 | Stale-session resume/summary menu does not wedge WaitReady (🎯T6) | Deterministic readyDriver frames | `TestMatchReadyDiscriminatesMenu`, `TestWaitReadyAutoAdvancesResumeMenu`, `TestWaitReadyMenuTimeoutIsDistinct`, `TestWaitReadyMenuThenSplashThenReady` | `CLAUDIA_LIVE` aged-session residual | Hermetic |
+| First-open trust-folder dialog does not wedge WaitReady (🎯T87) | Deterministic readyDriver + pane fixture | `TestMatchTrustFolderFixture`, `TestWaitReadyAutoAdvancesTrustFolder`, `TestWaitReadyTrustTimeoutStaysBounded`, `TestWaitReadyTrustThenSplashThenReady` | First-open owner workdir residual | Hermetic |
 | Session fail-closed `RequireResume` when JSONL missing | Start path | `TestHermeticClaudeRequireResumeFailsClosed`, `TestHermeticMaterializedRequireResumeFailsClosed` | — | Hermetic (fix) |
 | Materialized only after conversation evidence (not bare Start) | Registry Launch / MarkMaterialized | `TestHermeticLaunchDoesNotMaterializeWithoutJSONL`, `TestHermeticMaterializeFromJSONLAndRequireResume` | — | Hermetic (fix) |
 | Transcript path / SessionExists durability | Path + HOME redirect | `TestSessionJSONLPath`, `TestSessionExists` | Live file ownership residual | Hermetic |

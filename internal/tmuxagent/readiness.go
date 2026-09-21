@@ -87,6 +87,20 @@ var startupMenuCursor = regexp.MustCompile(`❯\s*\d+[.)]`)
 // "Resume from summary / Resume full session / Don't ask again" menu.
 var resumePrompt = regexp.MustCompile(`(?i)resume (from summary|full session)|resume this session`)
 
+// trustFolderQuestion and trustFolderAccept are the two independent
+// facts of Claude Code's first-open workspace-trust dialog (🎯T87).
+// Current chrome is "Quick safety check: Is this a project you created
+// or one you trust?" with default "Yes, I trust this folder". The
+// highlighted option is often inverse-video or an unnumbered ❯, so
+// startupMenuCursor (`❯ N.`) misses it the same way a missing glyph
+// misses a resume menu — and capture-pane -p drops the highlight.
+// Both facts are required so transcript prose that merely mentions
+// the dialog (the T565 class of wedge) is not a menu.
+var (
+	trustFolderQuestion = regexp.MustCompile(`(?i)quick safety check|is this a project you created or one you trust`)
+	trustFolderAccept   = regexp.MustCompile(`(?i)yes,\s*i trust this folder`)
+)
+
 // settingsWarning matches the line Claude Code prints, before its TUI
 // mounts, for a permission rule that names no tool. It is not the ready
 // signal and it is not a failure; it is the normal preamble of a launch
@@ -191,14 +205,25 @@ func composerBody(frame []byte) []byte {
 	return m[1]
 }
 
+// MatchTrustFolder reports whether the frame is Claude Code's
+// first-open workspace-trust dialog. Distinct from MatchStartupMenu's
+// numbered-cursor / resume-wording signals: those do not see current
+// trust-folder chrome, which is how a first-open owner workdir
+// (squz/ge, ge-po) timed out as no_composer (🎯T87).
+func MatchTrustFolder(frame []byte) bool {
+	f := trimTrailingSpace(frame)
+	return trustFolderQuestion.Match(f) && trustFolderAccept.Match(f)
+}
+
 // MatchStartupMenu reports whether the captured frame shows a startup
-// selection menu awaiting a keypress — most importantly Claude Code's
-// resume/summary prompt for a stale session. When this is true and
-// MatchReady is false, the launch handshake auto-confirms the
-// highlighted default (Enter) rather than wedging until timeout.
+// selection menu awaiting a keypress — Claude Code's resume/summary
+// prompt for a stale session, or the first-open trust-folder dialog.
+// When this is true and MatchReady is false, the launch handshake
+// auto-confirms the highlighted default (Enter) rather than wedging
+// until timeout.
 func MatchStartupMenu(frame []byte) bool {
 	f := trimTrailingSpace(frame)
-	return startupMenuCursor.Match(f) || resumePrompt.Match(f)
+	return startupMenuCursor.Match(f) || resumePrompt.Match(f) || MatchTrustFolder(f)
 }
 
 // trimTrailingSpace strips trailing whitespace so \z anchoring
@@ -219,9 +244,9 @@ func trimTrailingSpace(b []byte) []byte {
 const (
 	// maxMenuDismissals bounds how many startup menus the launch
 	// handshake will auto-confirm before giving up. A resume prompt may
-	// be followed by another startup screen (e.g. a trust-folder
-	// prompt), so we allow a few; if Enter never clears them we surface
-	// a distinct error rather than pressing forever.
+	// be followed by a trust-folder prompt (or the reverse on a
+	// first-open workdir), so we allow a few; if Enter never clears
+	// them we surface a distinct error rather than pressing forever.
 	maxMenuDismissals = 3
 	// menuSettleDelay gives the TUI time to transition after an Enter
 	// before the next capture, so we don't re-detect the same menu and
@@ -248,13 +273,13 @@ type readyDriver struct {
 // returns true or `timeout` elapses. Returns the elapsed time on
 // success, or an error describing the last failure state on timeout.
 //
-// If a startup selection menu is detected (MatchStartupMenu) — chiefly
-// Claude Code's stale-session resume/summary prompt — WaitReady
-// auto-confirms the highlighted default by pressing Enter, up to
-// maxMenuDismissals times, so a long-lived registered agent doesn't
-// wedge at the menu (🎯T6). If the menu never clears, the timeout error
-// says so explicitly rather than emitting the generic
-// "ready pattern did not match" message.
+// If a startup selection menu is detected (MatchStartupMenu) — Claude
+// Code's stale-session resume/summary prompt (🎯T6) or the first-open
+// trust-folder dialog (🎯T87) — WaitReady auto-confirms the highlighted
+// default by pressing Enter, up to maxMenuDismissals times, so a
+// long-lived registered agent doesn't wedge at the menu. If the menu
+// never clears, the timeout error says so explicitly rather than
+// emitting the generic "ready pattern did not match" message.
 func WaitReady(windowID string, poll, timeout time.Duration) (time.Duration, error) {
 	return waitReadyLoop(readyDriver{
 		capture:   func() ([]byte, error) { return CapturePane(windowID) },
@@ -412,7 +437,7 @@ func NotReadyReason(frame []byte) string {
 // classify without scraping prose (jevons 🎯T565).
 func readyTimeoutErr(menuSeen bool, dismissals int, timeout time.Duration, lastFrame []byte, lastErr error, obs readyObservation) error {
 	if menuSeen {
-		return fmt.Errorf("startup menu (e.g. Claude Code's resume/summary prompt) still present after %d auto-confirmations within %s; last frame:\n%s", dismissals, timeout, lastFrame)
+		return fmt.Errorf("startup menu (e.g. Claude Code's resume/summary or trust-folder prompt) still present after %d auto-confirmations within %s; last frame:\n%s", dismissals, timeout, lastFrame)
 	}
 	if obs.captureLost {
 		return fmt.Errorf("claude not ready (%s): the window went away %s into startup (claude exited or the window was killed): %v; last frame:\n%s",
