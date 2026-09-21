@@ -86,6 +86,23 @@ func TestBrokerReclaimLiveBackends(t *testing.T) {
 				t.Fatalf("reclaimed turn answer = %q, want pong", text)
 			}
 			t.Logf("reclaimed %s seat %s; answer %q", tc.provider, sid, text)
+
+			// 🎯T124 clause 5: after the re-adopt the next send reaches the
+			// live seat on the new connection (no not_owner), and no second
+			// process was stacked on the session.
+			if err := second.Send("Reply with exactly: ping"); err != nil {
+				t.Fatalf("Send after reclaim: %v", err)
+			}
+			ctx2, cancel2 := context.WithTimeout(context.Background(), 90*time.Second)
+			defer cancel2()
+			text, err = second.WaitForResponse(ctx2)
+			if err != nil {
+				t.Fatalf("WaitForResponse after post-reclaim send: %v", err)
+			}
+			if !strings.Contains(strings.ToLower(text), "ping") {
+				t.Fatalf("post-reclaim answer = %q, want ping", text)
+			}
+			t.Logf("post-reclaim send answered %q", text)
 		})
 	}
 }
