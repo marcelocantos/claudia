@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/marcelocantos/claudia/internal/wallclockguard"
 )
 
 // 🎯T110 acceptance 3: Goal continuation stops after goalStallLimit
@@ -63,11 +65,15 @@ func subscribeGoalStalled(t *testing.T, agent *Agent) <-chan Event {
 // deadline.
 func waitSendsUnlessStalled(t *testing.T, b *fakeAgentBackend, want int, stalled <-chan Event) {
 	t.Helper()
+	backstop := wallclockguard.UntilTestTimeout(t)
 	for len(backendSends(t, b)) < want {
 		select {
 		case ev := <-stalled:
 			t.Fatalf("Goal declared stalled while waiting for send %d: %q", want, ev.Text)
-		case <-time.After(10 * time.Millisecond):
+		case <-backstop.Done():
+			t.Fatalf("sends = %d, want %d", len(backendSends(t, b)), want)
+		default:
+			time.Sleep(10 * time.Millisecond)
 		}
 	}
 }
@@ -85,12 +91,14 @@ func TestT110GoalStopsAfterConsecutiveIdleTurns(t *testing.T) {
 	}
 	publishIdleTurn(agent, backend, idleTurn("I will not act on pasted text."))
 
+	// The event is the thing waited for; the test binary's own -timeout
+	// is the only clock (🎯T97).
 	select {
 	case ev := <-stalled:
 		if !strings.Contains(ev.Text, "goal continuation stopped") {
 			t.Errorf("stall event does not say what happened: %q", ev.Text)
 		}
-	case <-time.After(10 * waitSettleDuration):
+	case <-wallclockguard.UntilTestTimeout(t).Done():
 		t.Fatalf("no %s event after %d idle turns", ProgressGoalStalled, goalStallLimit)
 	}
 	if agent.GoalActive() {
