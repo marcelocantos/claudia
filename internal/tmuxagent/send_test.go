@@ -213,7 +213,7 @@ func TestSendKeysWaitsForConnectingThenPastes(t *testing.T) {
 	}
 }
 
-// Delivery waits out /rc connecting for the full ready timeout (30s), not
+// Delivery waits out /rc connecting for connectingClearTimeout (30s), not
 // a shorter 15s window (jevons 🎯T565).
 func TestSendKeysConnectingWaitUsesFullReadyTimeout(t *testing.T) {
 	t.Parallel()

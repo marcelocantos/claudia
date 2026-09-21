@@ -336,7 +336,31 @@ var nextEventSubID atomic.Int64
 
 // Readiness detection tuning.
 const (
-	readyOverallTimeout = 30 * time.Second
+	// readyOverallTimeout is how long a cold Claude seat may take to draw
+	// a live composer before Start reports it not ready.
+	//
+	// The number is measured, not chosen (🎯T108, cmd/t108ready,
+	// 2026-09-21). Cold readiness is dominated by how busy this host is:
+	// the pane stays blank until Claude Code paints its banner and
+	// composer in a single frame, then the splash clears. From spawn to a
+	// live composer, bucketed by the 1-minute load average at spawn and at
+	// ready (a sample is in the high bucket if either reading was):
+	//
+	//	load 200-249  15.6s 19.8s 20.9s 23.0s 23.3s
+	//	load 250-480  34.3s 45.7s 52.8s 53.1s 54.1s 55.9s 57.0s 63.7s
+	//
+	// The old 30s was set against a quieter host; it refused every one
+	// of the eight high samples, and this fleet spends hours above 250.
+	// Two minutes is 1.9x the worst healthy sample. A false positive
+	// silently removes a working seat from the fleet, while a true wedge
+	// costs only the extra wait, so the generous side is the correct
+	// side to err on — and a timeout now says which it was (still_drawing,
+	// not_started, window_gone or no_composer; see tmuxagent.waitVerdict).
+	//
+	// One sample, at load 583, never went live: it sat on the splash for
+	// the remaining 126s of a 180s probe. No bound fits that host; the
+	// timeout names it splash.
+	readyOverallTimeout = 2 * time.Minute
 	readyPollInterval   = 50 * time.Millisecond
 )
 

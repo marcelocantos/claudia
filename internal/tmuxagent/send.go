@@ -68,10 +68,11 @@ const (
 	// paste when the ready channel closed on a still-connecting frame
 	// (older agents); MatchReady now rejects connecting too.
 	//
-	// This is the full ready timeout (agent.readyOverallTimeout), not a
-	// shorter window: /rc connecting is transient (MCP / network flap)
-	// and a 15s give-up failed a pane that would have been idle 10s later
-	// (jevons 🎯T565).
+	// It was the full ready timeout (agent.readyOverallTimeout) until
+	// 🎯T108 raised that for cold startup under load. /rc connecting on
+	// a composer that has already drawn is a flap, not a cold start, so
+	// it keeps the 30s it was given here: a 15s give-up failed a pane
+	// that would have been idle 10s later (jevons 🎯T565).
 	connectingClearTimeout = 30 * time.Second
 )
 

@@ -4,6 +4,7 @@
 package tmuxagent
 
 import (
+	"bytes"
 	"fmt"
 	"os/exec"
 	"regexp"
@@ -234,6 +235,9 @@ const (
 type readyDriver struct {
 	capture   func() ([]byte, error)
 	sendEnter func() error
+	// quiet overrides drawingQuietWindow; zero means the production value.
+	// It exists so a hermetic wait of milliseconds can outlast the window.
+	quiet time.Duration
 }
 
 // WaitReady polls capture-pane at `poll` intervals until MatchReady
@@ -262,17 +266,40 @@ func waitReadyLoop(d readyDriver, poll, timeout, menuSettle time.Duration) (time
 	var lastErr error
 	dismissals := 0
 	menuSeen := false
+	obs := readyObservation{firstInk: -1, composerAt: -1, quiet: d.quiet}
+	if obs.quiet == 0 {
+		obs.quiet = drawingQuietWindow
+	}
 
 	for {
 		if !time.Now().Before(deadline) {
-			return 0, readyTimeoutErr(menuSeen, dismissals, timeout, lastFrame, lastErr)
+			obs.waited = time.Since(start)
+			return 0, readyTimeoutErr(menuSeen, dismissals, timeout, lastFrame, lastErr, obs)
 		}
 
 		frame, err := d.capture()
 		if err != nil {
 			lastErr = err
+			if windowGone(err) {
+				// Nothing will draw in a window that no longer exists, so
+				// the wait ends now rather than polling it for the rest of
+				// a bound sized for a slow host (🎯T108).
+				obs.captureLost = true
+				obs.waited = time.Since(start)
+				return 0, readyTimeoutErr(menuSeen, dismissals, timeout, lastFrame, lastErr, obs)
+			}
 			time.Sleep(poll)
 			continue
+		}
+		at := time.Since(start)
+		if !bytes.Equal(frame, lastFrame) {
+			obs.lastChange = at
+		}
+		if obs.firstInk < 0 && len(bytes.TrimSpace(frame)) > 0 {
+			obs.firstInk = at
+		}
+		if obs.composerAt < 0 && composerBody(frame) != nil {
+			obs.composerAt = at
 		}
 		lastFrame = frame
 
@@ -294,6 +321,22 @@ func waitReadyLoop(d readyDriver, poll, timeout, menuSettle time.Duration) (time
 	}
 }
 
+// readyObservation is what the poll loop saw over the whole wait, not
+// just on its last frame (🎯T108). The last frame alone cannot tell a
+// TUI that never drew a composer from one that was still drawing when
+// the bound expired: at load 280 a healthy seat shows a blank pane for
+// 25s and its first composer at 25s, so a 30s bound cuts it off holding
+// a frame that looks exactly like a wedge. Durations are from the start
+// of the wait; -1 means never.
+type readyObservation struct {
+	waited      time.Duration // how long the wait ran before the bound expired
+	firstInk    time.Duration // first frame with anything on it
+	composerAt  time.Duration // first frame with a composer box, splash or live
+	lastChange  time.Duration // last frame that differed from the one before
+	captureLost bool          // tmux says the window (or its server) is gone
+	quiet       time.Duration // drawingQuietWindow, unless a hermetic shortened it
+}
+
 // Not-ready reason tokens named in WaitReady timeout errors (jevons 🎯T565).
 // A generic "ready pattern did not match" left operators chasing the
 // wrong thing: /rc connecting, a splash, a blank pane, and settings
@@ -303,7 +346,38 @@ const (
 	NotReadyNoComposer      = "no_composer"
 	NotReadySplash          = "splash"
 	NotReadySettingsWarning = "settings_warning"
+
+	// The three below are verdicts on the whole wait, not on one frame
+	// (🎯T108), so NotReadyReason never returns them; only a WaitReady
+	// timeout does. They split what used to be reported as no_composer.
+	//
+	// NotReadyStillDrawing: the TUI was making progress when the bound
+	// expired — its pane changed within drawingQuietWindow of the end, or
+	// it had already drawn a composer. That is the host being slow, not a
+	// defect; a seat that has drawn its composer is never no_composer.
+	NotReadyStillDrawing = "still_drawing"
+	// NotReadyNotStarted: the pane stayed blank for the whole wait. The
+	// process is alive (capture kept succeeding) but has painted nothing.
+	NotReadyNotStarted = "not_started"
+	// NotReadyWindowGone: tmux reports the window gone — claude exited or
+	// the window was killed. The wait ends as soon as that is seen.
+	NotReadyWindowGone = "window_gone"
 )
+
+// drawingQuietWindow is how long a starting TUI's pane may sit unchanged
+// and still count as drawing. It separates still_drawing from
+// no_composer, so it has to be longer than any pause a healthy startup
+// takes between repaints; a pane quiet for longer than this, with no
+// composer ever drawn, has stopped on some other screen.
+//
+// The number is measured (🎯T108, cmd/t108ready, 2026-09-21). Across
+// eleven cold starts that went live at load 200 to 480, the longest
+// stretch of identical frames between first paint and a live composer
+// was 12.5s. That gap is 30s here, 2.4x it. Every one of those seats
+// painted its banner and composer in the same frame, so a healthy
+// startup never shows ink without a composer for long: the window guards
+// screens that are not the composer at all.
+const drawingQuietWindow = 30 * time.Second
 
 // NotReadyReason classifies why MatchReady is false for a captured frame.
 // Empty means the frame was not recognised as one of the named stalls
@@ -328,9 +402,13 @@ func NotReadyReason(frame []byte) string {
 // startup menu (actionable) from a named not-ready reason or a capture
 // that never succeeded. The reason token is in parentheses so hosts can
 // classify without scraping prose (jevons 🎯T565).
-func readyTimeoutErr(menuSeen bool, dismissals int, timeout time.Duration, lastFrame []byte, lastErr error) error {
+func readyTimeoutErr(menuSeen bool, dismissals int, timeout time.Duration, lastFrame []byte, lastErr error, obs readyObservation) error {
 	if menuSeen {
 		return fmt.Errorf("startup menu (e.g. Claude Code's resume/summary prompt) still present after %d auto-confirmations within %s; last frame:\n%s", dismissals, timeout, lastFrame)
+	}
+	if obs.captureLost {
+		return fmt.Errorf("claude not ready (%s): the window went away %s into startup (claude exited or the window was killed): %v; last frame:\n%s",
+			NotReadyWindowGone, obs.waited.Round(time.Millisecond), lastErr, lastFrame)
 	}
 	if lastFrame == nil {
 		if lastErr != nil {
@@ -338,7 +416,7 @@ func readyTimeoutErr(menuSeen bool, dismissals int, timeout time.Duration, lastF
 		}
 		return fmt.Errorf("capture-pane never succeeded within %s", timeout)
 	}
-	switch NotReadyReason(lastFrame) {
+	switch waitVerdict(obs, NotReadyReason(lastFrame)) {
 	case NotReadySettingsWarning:
 		// The warnings are Claude Code's own settings diagnostics, not the
 		// reason the box never appeared: a process that printed them and then
@@ -354,10 +432,70 @@ func readyTimeoutErr(menuSeen bool, dismissals int, timeout time.Duration, lastF
 	case NotReadySplash:
 		return fmt.Errorf("claude not ready (%s): composer ghost placeholder still drawn after %s; last frame:\n%s",
 			NotReadySplash, timeout, lastFrame)
+	case NotReadyStillDrawing:
+		return fmt.Errorf("claude not ready (%s): the TUI was still drawing when the %s bound expired "+
+			"(%s; the host is slow, not the seat broken — see AGENTS.md's Claude-row latency table); last frame:\n%s",
+			NotReadyStillDrawing, timeout, obs.progress(), lastFrame)
+	case NotReadyNotStarted:
+		return fmt.Errorf("claude not ready (%s): the pane stayed blank for all of %s — the process is alive but painted nothing "+
+			"(under heavy load first paint alone can take most of the bound — see AGENTS.md's Claude-row latency table); last frame:\n%s",
+			NotReadyNotStarted, timeout, lastFrame)
 	case NotReadyNoComposer:
-		return fmt.Errorf("claude not ready (%s): no idle input box after %s; last frame:\n%s",
-			NotReadyNoComposer, timeout, lastFrame)
+		return fmt.Errorf("claude not ready (%s): no idle input box after %s, and the pane stopped changing %s before the bound "+
+			"(%s) — it is parked on some other screen; last frame:\n%s",
+			NotReadyNoComposer, timeout, (obs.waited - obs.lastChange).Round(time.Millisecond), obs.progress(), lastFrame)
 	default:
 		return fmt.Errorf("ready pattern did not match within %s; last frame:\n%s", timeout, lastFrame)
 	}
+}
+
+// waitVerdict names why a wait ended without a live composer, from the
+// whole wait and frameReason, NotReadyReason of its last frame.
+//
+// Order matters. A window that went away is gone however it looked
+// before. A last frame that names its own stall (splash, /rc connecting,
+// settings warnings) keeps that name. Otherwise the last frame has no
+// box, or one no named stall recognises, and the wait decides: a
+// composer that was ever drawn means the TUI got that far, so the seat
+// is never reported no_composer (🎯T108); a pane that never painted is
+// its own verdict. Only a pane that drew something, stopped changing for
+// longer than any healthy startup pauses, and never drew a composer is
+// no_composer.
+func waitVerdict(obs readyObservation, frameReason string) string {
+	switch {
+	case obs.captureLost:
+		return NotReadyWindowGone
+	case frameReason != NotReadyNoComposer && frameReason != "":
+		return frameReason
+	case obs.composerAt >= 0:
+		return NotReadyStillDrawing
+	case obs.firstInk < 0:
+		return NotReadyNotStarted
+	case obs.waited-obs.lastChange < obs.quiet:
+		return NotReadyStillDrawing
+	default:
+		return frameReason
+	}
+}
+
+// windowGone reports a capture error that means the window will never
+// draw again: tmux cannot find it, or the server holding it is not
+// running. Any other capture failure is retried until the bound.
+func windowGone(err error) bool {
+	s := err.Error()
+	return strings.Contains(s, "can't find window") ||
+		strings.Contains(s, "can't find pane") ||
+		strings.Contains(s, "error connecting to") ||
+		serverGone(err)
+}
+
+// progress renders the wait's milestones for a timeout message.
+func (o readyObservation) progress() string {
+	at := func(d time.Duration) string {
+		if d < 0 {
+			return "never"
+		}
+		return d.Round(time.Millisecond).String()
+	}
+	return fmt.Sprintf("first paint %s, first composer %s, last change %s", at(o.firstInk), at(o.composerAt), at(o.lastChange))
 }

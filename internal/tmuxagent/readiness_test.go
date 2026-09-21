@@ -4,6 +4,7 @@
 package tmuxagent
 
 import (
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -478,7 +479,9 @@ func TestWaitReadyTimeoutNamesReason(t *testing.T) {
 		{"rc_connecting", connectingFrame, NotReadyRCConnecting},
 		{"settings_warning", settingsWarningsFrame, NotReadySettingsWarning},
 		{"splash", splashNoRC, NotReadySplash},
-		{"no_composer", streamingFrame, NotReadyNoComposer},
+		// A frame with no box, unchanged for a wait far shorter than
+		// drawingQuietWindow, is a TUI the bound cut off, not a wedge.
+		{"still_drawing", streamingFrame, NotReadyStillDrawing},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -498,5 +501,165 @@ func TestWaitReadyTimeoutNamesReason(t *testing.T) {
 				t.Fatalf("generic pattern message must not be used when the reason is known: %v", err)
 			}
 		})
+	}
+}
+
+// TestWaitVerdictSplitsNoComposer is the 🎯T108 oracle for the verdict
+// itself. no_composer used to mean only "the last frame has no box", so
+// a healthy seat the bound cut off mid-startup read exactly like a TUI
+// parked on some other screen. Each case is a wait the loop could have
+// observed; only the last is a wedge.
+func TestWaitVerdictSplitsNoComposer(t *testing.T) {
+	t.Parallel()
+	const waited = 30 * time.Second
+	cases := []struct {
+		name string
+		obs  readyObservation
+		want string
+	}{
+		{"window went away after drawing",
+			readyObservation{waited: waited, quiet: drawingQuietWindow, firstInk: 5 * time.Second, composerAt: -1, lastChange: 6 * time.Second, captureLost: true},
+			NotReadyWindowGone},
+		{"composer drawn, then gone from the last frame",
+			readyObservation{waited: waited, quiet: drawingQuietWindow, firstInk: 25 * time.Second, composerAt: 25 * time.Second, lastChange: 26 * time.Second},
+			NotReadyStillDrawing},
+		{"composer drawn long ago, pane quiet since",
+			readyObservation{waited: waited, quiet: drawingQuietWindow, firstInk: time.Second, composerAt: time.Second, lastChange: time.Second},
+			NotReadyStillDrawing},
+		{"blank for the whole wait",
+			readyObservation{waited: waited, quiet: drawingQuietWindow, firstInk: -1, composerAt: -1, lastChange: 0},
+			NotReadyNotStarted},
+		{"first paint late, still changing at the bound",
+			readyObservation{waited: waited, quiet: drawingQuietWindow, firstInk: 28 * time.Second, composerAt: -1, lastChange: 29 * time.Second},
+			NotReadyStillDrawing},
+		{"drew, went quiet past the window, never a composer",
+			readyObservation{waited: waited, quiet: drawingQuietWindow, firstInk: time.Second, composerAt: -1, lastChange: waited - drawingQuietWindow - time.Second},
+			NotReadyNoComposer},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := waitVerdict(c.obs, NotReadyNoComposer); got != c.want {
+				t.Fatalf("waitVerdict=%q want %q", got, c.want)
+			}
+			if c.obs.captureLost {
+				// Gone is gone, whatever the last frame showed.
+				if got := waitVerdict(c.obs, NotReadySplash); got != NotReadyWindowGone {
+					t.Fatalf("waitVerdict over a splash frame=%q want %q", got, NotReadyWindowGone)
+				}
+			}
+			err := readyTimeoutErr(false, 0, waited, []byte(streamingFrame), errors.New("can't find window"), c.obs)
+			if !strings.Contains(err.Error(), "claude not ready ("+c.want+")") {
+				t.Fatalf("timeout must name %s, got: %v", c.want, err)
+			}
+		})
+	}
+}
+
+// A seat that has drawn its composer is never reported no_composer,
+// whatever its last frame shows (🎯T108). The splash is the composer the
+// measured seats draw first; here the pane then repaints to a frame with
+// no box and stays there until the bound.
+func TestWaitReadyComposerSeenIsNeverNoComposer(t *testing.T) {
+	t.Parallel()
+	splashNoRC := strings.ReplaceAll(startupSplashFrame, " /rc connecting…", "")
+	frames := []string{"", "", splashNoRC}
+	i := 0
+	d := readyDriver{
+		capture: func() ([]byte, error) {
+			if i < len(frames) {
+				i++
+				return []byte(frames[i-1]), nil
+			}
+			return []byte(streamingFrame), nil
+		},
+		sendEnter: func() error { t.Fatal("no menu to dismiss"); return nil },
+		// Quiet far shorter than the wait, so only the composer the loop
+		// saw keeps this out of no_composer.
+		quiet: time.Millisecond,
+	}
+	_, err := waitReadyLoop(d, time.Millisecond, 40*time.Millisecond, time.Millisecond)
+	if err == nil {
+		t.Fatal("expected a timeout")
+	}
+	if strings.Contains(err.Error(), "("+NotReadyNoComposer+")") {
+		t.Fatalf("a seat that drew its composer was reported no_composer: %v", err)
+	}
+	if !strings.Contains(err.Error(), "claude not ready ("+NotReadyStillDrawing+")") {
+		t.Fatalf("want still_drawing, got: %v", err)
+	}
+}
+
+// The one wait that is still no_composer: the pane drew something, sat
+// unchanged for longer than any healthy startup pauses, and never showed
+// a composer at all.
+func TestWaitReadyQuietPaneWithoutComposerIsNoComposer(t *testing.T) {
+	t.Parallel()
+	d := readyDriver{
+		capture:   func() ([]byte, error) { return []byte(streamingFrame), nil },
+		sendEnter: func() error { t.Fatal("no menu to dismiss"); return nil },
+		quiet:     time.Millisecond,
+	}
+	_, err := waitReadyLoop(d, time.Millisecond, 40*time.Millisecond, time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), "claude not ready ("+NotReadyNoComposer+")") {
+		t.Fatalf("want no_composer, got: %v", err)
+	}
+}
+
+// A pane that never paints is not_started; one whose window vanishes
+// after painting is window_gone. Neither is no_composer.
+func TestWaitReadyBlankAndVanishedPanes(t *testing.T) {
+	t.Parallel()
+	blank := readyDriver{
+		capture:   func() ([]byte, error) { return []byte("\n\n  \n"), nil },
+		sendEnter: func() error { t.Fatal("no menu to dismiss"); return nil },
+	}
+	if _, err := waitReadyLoop(blank, time.Millisecond, 30*time.Millisecond, time.Millisecond); err == nil ||
+		!strings.Contains(err.Error(), "claude not ready ("+NotReadyNotStarted+")") {
+		t.Fatalf("blank pane: want not_started, got: %v", err)
+	}
+
+	// The window vanishes after two frames. The wait must end on the
+	// first failed capture, not poll a gone window for the rest of the
+	// bound; that is decided by counting captures, not by timing them.
+	for _, gone := range []string{
+		"exit status 1: can't find window: @99",
+		"exit status 1: error connecting to /tmp/x/tmux.sock (No such file or directory)",
+	} {
+		n, failed := 0, 0
+		vanish := readyDriver{
+			capture: func() ([]byte, error) {
+				n++
+				if n <= 2 {
+					return []byte(streamingFrame), nil
+				}
+				failed++
+				return nil, errors.New(gone)
+			},
+			sendEnter: func() error { t.Fatal("no menu to dismiss"); return nil },
+		}
+		_, err := waitReadyLoop(vanish, time.Millisecond, 2*time.Second, time.Millisecond)
+		if err == nil || !strings.Contains(err.Error(), "claude not ready ("+NotReadyWindowGone+")") {
+			t.Fatalf("%s: want window_gone, got: %v", gone, err)
+		}
+		if failed != 1 {
+			t.Fatalf("%s: polled a gone window %d times, want the wait to end on the first", gone, failed)
+		}
+	}
+
+	// Any other capture failure is retried: it is not evidence the
+	// window is gone.
+	flaky := 0
+	d := readyDriver{
+		capture: func() ([]byte, error) {
+			flaky++
+			if flaky == 1 {
+				return nil, errors.New("exit status 1: server busy")
+			}
+			return []byte(liveComposerFrame), nil
+		},
+		sendEnter: func() error { t.Fatal("no menu to dismiss"); return nil },
+	}
+	if _, err := waitReadyLoop(d, time.Millisecond, 2*time.Second, time.Millisecond); err != nil {
+		t.Fatalf("a transient capture failure ended the wait: %v", err)
 	}
 }

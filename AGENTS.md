@@ -96,16 +96,40 @@ average ~200 (🎯T101, 2026-09-20):
 
 | Step | Latency |
 |------|---------|
-| `Start` → `WaitReady` (composer drawn) | **16.6s** (bound: 30s) |
+| `Start` → `WaitReady` (composer drawn) | **16.6s** |
 | `send-keys -l` → the text echoed in the composer | up to **2.4s** |
 | `Enter` → the first spinner frame | **1.6s** |
 
-Read that table before blaming the submit path. The 30s readiness bound
-has about 13s of headroom left at this load and none of it is yours to
-spend: a run at load 300+ can exhaust it and report `no_composer`, which
-is the host talking, not a defect. Live Claude turns are what this fleet
-runs on, so load is largely self-inflicted — `uptime` before the run,
-and record the number next to the result.
+Cold readiness at higher load, measured by `cmd/t108ready` (spawn to a
+live composer, no prompt submitted; 🎯T108, 2026-09-21). Load is the
+1-minute average at spawn and at ready:
+
+| Load | Spawn → live composer | Longest unchanged pane before live |
+|------|------------------------|------------------------------------|
+| 200–249 (5 seats) | 15.6s – 23.3s | 5.7s |
+| 250–480 (8 seats) | 34.3s – **63.7s** | 12.5s |
+| 583 (1 seat) | never: splash held for 126s of a 180s probe | — |
+
+At every load the pane is blank until Claude Code paints its banner and
+composer in one frame; most of the latency is before first paint.
+`readyOverallTimeout` is **2m**, 1.9x the worst healthy sample. It was
+30s, which refused all eight seats above 250.
+
+Read those tables before blaming the submit or readiness path. A
+readiness timeout names what the whole wait saw, not only its last
+frame:
+
+| Token | Meaning | Whose problem |
+|-------|---------|---------------|
+| `still_drawing` | pane changed within 30s of the bound, or a composer was drawn | the host |
+| `not_started` | pane blank for the whole wait, process alive | the host, if load is high |
+| `splash` / `rc_connecting` | composer drawn, not yet live | the host |
+| `window_gone` | tmux lost the window mid-startup; the wait ends at once | claude exited or was killed |
+| `no_composer` | pane drew something, then sat unchanged 30s+ with no composer ever | a defect: another screen |
+
+Live Claude turns are what this fleet runs on, so load is largely
+self-inflicted — `uptime` before the run, and record the number next to
+the result.
 
 🎯T101 is why these numbers are here. The submit path used to allow the
 pane two samples, 800ms, to show either the payload or turn chrome, and

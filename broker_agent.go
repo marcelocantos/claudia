@@ -50,14 +50,18 @@ func grantHintFrom(ctx context.Context) grantHint {
 	return h
 }
 
-// grantStartTimeout bounds a grant round trip. Claude readiness detection
-// alone is allowed 30s (readyOverallTimeout); adopt-then-launch can pay it
-// twice.
-const grantStartTimeout = 90 * time.Second
+// grantStartTimeout bounds a grant round trip. It is derived from
+// readyOverallTimeout rather than quoting it, so the two cannot drift
+// apart again: when 🎯T108 raised the readiness bound from its old 30s,
+// a grant bound written as a literal would have fired while the daemon
+// was still inside a readiness wait it was entitled to.
+const grantStartTimeout = readyOverallTimeout + time.Minute
 
 // brokerOpTimeout bounds one ordinary op (send, interrupt, set_model, …).
-// Send on the daemon blocks on readiness, so this is not short.
-const brokerOpTimeout = 60 * time.Second
+// Send on the daemon blocks on readiness, so it must outlast a whole
+// readiness wait; a client that gives up first reports a failure for a
+// send the daemon then goes on to deliver.
+const brokerOpTimeout = readyOverallTimeout + 30*time.Second
 
 // brokerAgentBackend is one grant on one connection.
 type brokerAgentBackend struct {
