@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -34,6 +35,8 @@ func TestMCPCodexSeatCallsToolLive(t *testing.T) {
 
 	nonce := "T119-" + strings.ToUpper(uuid.NewString()[:8])
 	var calls atomic.Int32
+	var callLog []string
+	var logMu sync.Mutex
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			// No server-initiated stream; the client tolerates 405 on GET.
@@ -69,6 +72,9 @@ func TestMCPCodexSeatCallsToolLive(t *testing.T) {
 			}}}
 		case "tools/call":
 			calls.Add(1)
+			logMu.Lock()
+			callLog = append(callLog, "tools/call "+string(req.Params))
+			logMu.Unlock()
 			result = map[string]any{"content": []any{map[string]any{"type": "text", "text": nonce}}}
 		default:
 			result = map[string]any{}
@@ -101,6 +107,14 @@ func TestMCPCodexSeatCallsToolLive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WaitForResponse: %v", err)
 	}
+	// Through a broker (CLAUDIA_BROKER_SOCKET, CLAUDIA_NO_BROKER=0) the seat
+	// must be the daemon's, or this proves nothing about the broker path.
+	if os.Getenv("CLAUDIA_BROKER_SOCKET") != "" && !agent.DaemonHeld() {
+		t.Fatal("CLAUDIA_BROKER_SOCKET is set but the seat is not daemon-held")
+	}
+	logMu.Lock()
+	t.Logf("mcp server log: %q daemonHeld=%v", callLog, agent.DaemonHeld())
+	logMu.Unlock()
 	if calls.Load() == 0 {
 		t.Fatalf("server never received tools/call (approval gate rejected it?); reply: %q", reply)
 	}
