@@ -61,25 +61,34 @@ func resolveBin(args *ResolveArgs) (string, error) {
 
 	if p := strings.TrimSpace(ge(binEnv)); p != "" {
 		if filepath.IsAbs(p) {
-			if _, err := stat(p); err == nil {
+			if _, err := stat(p); err == nil && !isCmuxCLIShim(p) {
 				return p, nil
 			}
-		} else if abs, err := lookPath(p); err == nil {
+		} else if abs, err := lookPath(p); err == nil && !isCmuxCLIShim(abs) {
 			return abs, nil
 		}
 	}
-	if p, err := lookPath(binName); err == nil {
-		return p, nil
-	}
+	// Known install dirs come before PATH, as on the seat path
+	// (resolveCodexBin): cmux injects a shim named "codex" that only prints
+	// "codex not found in PATH" and exits 127, and a plain PATH lookup finds
+	// it first (🎯T126).
 	for _, c := range binCandidates() {
-		if c == "" {
+		if c == "" || isCmuxCLIShim(c) {
 			continue
 		}
 		if _, err := stat(c); err == nil {
 			return c, nil
 		}
 	}
+	if p, err := lookPath(binName); err == nil && !isCmuxCLIShim(p) {
+		return p, nil
+	}
 	return "", fmt.Errorf("codex executable not found in PATH or known install dirs (set %s to override)", binEnv)
+}
+
+// isCmuxCLIShim reports a path inside cmux's injected shim directory.
+func isCmuxCLIShim(p string) bool {
+	return strings.Contains(filepath.ToSlash(p), "/cmux-cli-shims/")
 }
 
 func binCandidates() []string {
