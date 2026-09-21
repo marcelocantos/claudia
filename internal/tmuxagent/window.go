@@ -5,6 +5,7 @@ package tmuxagent
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -57,6 +58,7 @@ func SpawnWindow(workdir, windowName, command string, args []string) (windowID s
 		"-t", anchorSessionName + ":",
 		"-n", windowName,
 		"-e", "CLAUDECODE=",
+		"-e", mcpTimeoutEnv(os.Getenv),
 		shellCmd,
 	}
 
@@ -164,4 +166,27 @@ func shellQuote(s string) string {
 		return s
 	}
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// MCPTimeoutEnvVar is Claude Code's bound, in milliseconds, on an MCP server
+// attaching at session start. It does not retry: a server that misses the
+// bound stays disconnected for the life of the session.
+const MCPTimeoutEnvVar = "MCP_TIMEOUT"
+
+// DefaultSeatMCPTimeoutMS is what a seat is launched with when the host has
+// not chosen a value. Claude Code's own default is 30 s, measured from a
+// spawn that on a loaded host is itself starved: on 2026-09-22 a jevons
+// overseer and its PO each came up three times with bullseye in
+// CONNECT_TIMEOUT while the same bridge answered initialize and tools/list in
+// 10 ms from a shell, and could not file or achieve a target until relaunched
+// with this bound, on which bullseye attached first try.
+const DefaultSeatMCPTimeoutMS = "180000"
+
+// mcpTimeoutEnv is the MCP_TIMEOUT assignment a new window gets. A value the
+// host already exports wins; getenv is a parameter so the choice is testable.
+func mcpTimeoutEnv(getenv func(string) string) string {
+	if v := strings.TrimSpace(getenv(MCPTimeoutEnvVar)); v != "" {
+		return MCPTimeoutEnvVar + "=" + v
+	}
+	return MCPTimeoutEnvVar + "=" + DefaultSeatMCPTimeoutMS
 }
