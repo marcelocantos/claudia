@@ -298,6 +298,11 @@ type Agent struct {
 	goalTurn          strings.Builder
 	goalCompleteCheck func(goal, turnText string) bool
 
+	// goalTurnWorked: the turn now accumulating has called a tool.
+	// goalIdleTurns: consecutive terminal turns that did not (🎯T110).
+	goalTurnWorked bool
+	goalIdleTurns  int
+
 	// startCfg is the Config Start resolved (workdir, MCP, Goal, …) so
 	// Migrate can spawn the destination without the caller restating it.
 	startCfg Config

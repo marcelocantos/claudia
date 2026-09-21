@@ -4,6 +4,7 @@
 package claudia
 
 import (
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
@@ -16,6 +17,35 @@ const (
 	GoalStatusComplete = "GOAL_STATUS: complete"
 	GoalStatusBlocked  = "GOAL_STATUS: blocked"
 )
+
+// goalStallLimit is how many consecutive terminal turns may end without
+// a single tool call before the host stops continuing the Goal and says
+// so (🎯T110).
+//
+// A turn that calls no tool and emits neither GOAL_STATUS line has
+// answered; it has not worked. One is ordinary — a seat may open by
+// stating a plan. A run of them is a seat that is never going to start:
+// on 2026-09-21 cl-t109-codex-git-write refused its brief and then nine
+// continuations, one every 40s or so, and would have gone on refusing
+// for as long as it was asked. Three is the brief and two continuations:
+// enough that one odd turn does not end a Goal, few enough that a stuck
+// seat costs two turns rather than a night of them.
+const goalStallLimit = 3
+
+// ProgressGoalStalled is the ProgressType on the Type=system Event
+// published when the host stops continuing a Goal at goalStallLimit.
+// Claudia closes the Goal and does nothing else; the host decides.
+const ProgressGoalStalled = "goal_stalled"
+
+// goalEventShowsWork reports whether ev is evidence of a tool call, in
+// any backend's shape: Claude's tool_use stop reason, or the ACP and
+// Codex progress events.
+func goalEventShowsWork(ev Event) bool {
+	if ev.Type == "assistant" && ev.StopReason == "tool_use" {
+		return true
+	}
+	return ev.ProgressType == ProgressToolUse || ev.ToolCallID != "" || ev.ToolTitle != ""
+}
 
 // Goal reports the durable objective this Session was started with.
 // Empty means one-shot Send (no host continuation).
@@ -75,6 +105,8 @@ func (a *Agent) closeGoalLocked() {
 	}
 	a.goalSeenTerminal = false
 	a.goalTurn.Reset()
+	a.goalTurnWorked = false
+	a.goalIdleTurns = 0
 }
 
 func (a *Agent) noteGoalEvent(ev Event) {
@@ -93,7 +125,11 @@ func (a *Agent) noteGoalEvent(ev Event) {
 		}
 		a.goalSeenTerminal = false
 		a.goalTurn.Reset()
+		a.goalTurnWorked = false
 		return
+	}
+	if goalEventShowsWork(ev) {
+		a.goalTurnWorked = true
 	}
 	if ev.Type != "assistant" {
 		return
@@ -141,8 +177,28 @@ func (a *Agent) maybeContinueGoal() {
 		a.mu.Unlock()
 		return
 	}
+	if a.goalTurnWorked {
+		a.goalIdleTurns = 0
+	} else {
+		a.goalIdleTurns++
+	}
+	if a.goalIdleTurns >= goalStallLimit {
+		idle := a.goalIdleTurns
+		a.closeGoalLocked()
+		a.mu.Unlock()
+		detail := fmt.Sprintf("goal continuation stopped: %d consecutive turns ended without a tool call or a GOAL_STATUS line", idle)
+		slog.Warn("claudia goal stalled", "session", a.sessionID, "idle_turns", idle)
+		a.publishEvent(Event{
+			Type:         "system",
+			ProgressType: ProgressGoalStalled,
+			SessionID:    a.SessionID(),
+			Text:         detail,
+		})
+		return
+	}
 	a.goalSeenTerminal = false
 	a.goalTurn.Reset()
+	a.goalTurnWorked = false
 	a.goalTimer = nil
 	a.mu.Unlock()
 

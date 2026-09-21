@@ -130,7 +130,11 @@ objective. Empty keeps one-shot `Send`. When set, the Agent issues a
 continuation `Send` after each terminal assistant turn until `Stop`,
 `Interrupt`, `Agent.CloseGoal()`, `Config.GoalCompleteCheck` returning
 true, or an assistant line `GOAL_STATUS: complete` /
-`GOAL_STATUS: blocked`. The string is not forwarded to any provider
+`GOAL_STATUS: blocked`. It also stops on its own after three
+consecutive turns that end without a tool call: the Goal is closed and
+a `Type=system`, `ProgressType=goal_stalled` Event says so on the same
+stream. Claudia does nothing else; the host decides what a seat that
+answers without working needs. The string is not forwarded to any provider
 `/goal` command, so the same Goal can ride a later `Start` on a
 different Provider. `SetGoalCompleteCheck` installs the hook after
 `Start` / `Launch` when the registry path cannot carry a function on
@@ -472,7 +476,7 @@ token := agent.SubscribeEvents(func(ev claudia.Event) {
 })
 defer agent.UnsubscribeEvents(token)
 
-agent.Send("prompt")  // short text is typed; large payloads are pasted. Extra Enters until the composer leaves idle. Failure is `turn not submitted: composer state=…` — never a silent "keys sent".
+agent.Send("prompt")  // short text is typed; large payloads are pasted, followed by one typed line saying the operator sent the paste (Claude Code tells the model a bare paste may not be the user's words, and a seat refuses it). Extra Enters until the composer leaves idle. Failure is `turn not submitted: composer state=…` — never a silent "keys sent".
 reply, err := agent.WaitForResponse(ctx)  // blocks until the turn's terminal stop_reason
 ```
 
