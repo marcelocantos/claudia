@@ -46,10 +46,18 @@ func TestCursorPromptWithoutWakePathDoesNotPark(t *testing.T) {
 // wait rather than to whichever caller happened to park on it.
 func TestAwaitPeerActivityWithoutWakePathReturnsAndSaysWhy(t *testing.T) {
 	c := &cursorACPClient{}
-	start := time.Now()
-	out := c.awaitPeerActivity(0, time.Hour)
-	if elapsed := time.Since(start); elapsed > 2*time.Second {
-		t.Fatalf("awaitPeerActivity sat for %v on a client with no wake channel", elapsed)
+	// Bounded here rather than by measuring afterwards: a regression parks
+	// for the full hour, and a test that only notices once the call returns
+	// fails as the package's 10m timeout panic instead of by name. That
+	// matters to mutation-evidence.json, which runs this red under `make gate`.
+	done := make(chan peerWaitOutcome, 1)
+	go func() { done <- c.awaitPeerActivity(0, time.Hour) }()
+	var out peerWaitOutcome
+	select {
+	case out = <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("awaitPeerActivity parked on a client with no wake channel: " +
+			"a wait nothing can wake is a sleep with a predetermined verdict")
 	}
 	if out.spoke {
 		t.Fatalf("outcome = %+v, want spoke=false: nothing ever sent anything", out)
