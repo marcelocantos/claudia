@@ -74,6 +74,15 @@ type cursorACPClient struct {
 	onClose   func()
 	// prompts is the open turn's session/prompt id stack (🎯T72.1).
 	prompts acpPromptStack
+
+	// afterReissueCancel runs in promptWatchingForSilence between the
+	// session/cancel write and the re-delivery write. Nil in production.
+	// It exists so a test can land the peer's answer in exactly that
+	// window, which is where 🎯T92's second-wait snapshot used to be taken
+	// after it — the ordering that made a redeemed answer count as
+	// silence. Without the seam the window is a race the host decides
+	// (🎯T107); with it the differential is deterministic.
+	afterReissueCancel func()
 }
 
 // cursorACPArgs builds the argv after the agent binary. Root flags must
@@ -678,6 +687,9 @@ func (c *cursorACPClient) promptWatchingForSilence(sid string, id int64, text st
 	// fresh prompt rather than a second one stacked on a turn the peer
 	// may still believe is open.
 	_ = c.notify("session/cancel", map[string]any{"sessionId": sid})
+	if c.afterReissueCancel != nil {
+		c.afterReissueCancel()
+	}
 	publishEvent(c.onEvent, acpPromptAcceptedEvent(sid, retryID))
 	if err := c.write(acpPromptRequest(retryID, sid, text)); err != nil {
 		c.mu.Lock()

@@ -340,3 +340,60 @@ func TestCursorReissueStillFailsTypedWhenBothDeliveriesAreSilent(t *testing.T) {
 		t.Fatal("a stuck mint left a turn in flight; every later Send would read ErrTurnInFlight")
 	}
 }
+
+// 🎯T107: the same failure TestCursorReissueKeepsAReplyRacingTheRedelivery
+// found, with the race taken out of it.
+//
+// That test answers on the session/cancel and lets the host decide whether
+// the answer lands before or after the second wait's snapshot. Under the
+// old ordering — snapshot taken after the cancel — it failed 17 of 20 at
+// load ~200 (gate 3acac48b) and could pass on a quiet one: a statistical
+// differential, which is the thing this family keeps being bitten by.
+//
+// Here the client is held, through afterReissueCancel, until the peer's
+// answer to the abandoned delivery has been read, redeemed and published.
+// The answer is therefore in the cancel-to-redelivery window every time,
+// and the verdict follows from the ordering alone:
+//
+//   - snapshot at the stack swap (the fix): the answer postdates it, the
+//     second wait sees it at once, Prompt returns nil;
+//   - snapshot after the cancel (the bug): the answer predates it, the
+//     second wait sees silence, and Prompt reports ErrCursorPromptStuck for
+//     a turn that has already been answered — every run, on any host.
+//
+// The bound only has to expire for the first delivery, which the peer is
+// silent on by construction, so its value cannot decide anything.
+func TestCursorReissueCountsAnAnswerLandedBeforeTheRedelivery(t *testing.T) {
+	shortenCursorSilenceBound(t, 100*time.Millisecond)
+	sink := newTurnSink()
+	c, peer := pipedCursorClient(t, sink.onEvent)
+
+	answered := make(chan struct{})
+	c.afterReissueCancel = func() {
+		select {
+		case <-answered:
+		case <-wallclockguard.UntilTestTimeout(t).Done():
+		}
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- c.Prompt("Reply with exactly: pong") }()
+
+	first := peer.nextPrompt()
+	peer.nextMethod("session/cancel")
+	peer.chunk("pong")
+	peer.result(first, "end_turn")
+	text, ok := sink.awaitTerminal(t)
+	close(answered)
+	if !ok {
+		t.Fatalf("the abandoned delivery's answer never ended the turn (text so far %q)", text)
+	}
+	if !strings.Contains(text, "pong") {
+		t.Fatalf("reply %q, want pong", text)
+	}
+
+	if err := <-done; err != nil {
+		t.Fatalf("Prompt: %v — the answer that redeemed the turn was counted as silence, "+
+			"so the caller is told the seat is stuck and never waits for the reply it already has", err)
+	}
+}
