@@ -21,6 +21,15 @@ import (
 // silent, so the bound never fires on one; see turnSilenceBound.
 var ErrTurnAbandoned = errors.New("turn went silent and never ended")
 
+// ErrFramesDropped accompanies [ErrTurnAbandoned] when, during the wait,
+// the broker connection carrying this seat skipped frames too large to
+// relay (🎯T105). The silence bound still ends the wait — an unrelayable
+// frame is one lost event, not a dead connection (🎯T73) — but the verdict
+// ErrTurnAbandoned states, that nothing at all arrived, is then not known
+// to be true: the turn's terminal event may be the frame that was lost.
+// Callers tell a silent agent from a lost frame with errors.Is.
+var ErrFramesDropped = errors.New("broker frames were dropped during the turn")
+
 // ErrAgentGone ends a [Agent.WaitForResponse] whose agent died before
 // the turn's terminal event arrived. Nothing can publish that event
 // afterwards, so the wait is unsatisfiable and says so at once rather
@@ -178,10 +187,26 @@ func (w *turnWitness) snapshot() turnSeen {
 	return w.seen
 }
 
+// frameDrops is a count of broker frames skipped as unrelayable and the
+// last refusal.
+type frameDrops struct {
+	n    int
+	last error
+}
+
+// since is the drops that happened after start was taken.
+func (d frameDrops) since(start frameDrops) frameDrops {
+	if d.n <= start.n {
+		return frameDrops{}
+	}
+	return frameDrops{n: d.n - start.n, last: d.last}
+}
+
 // turnWaitError explains a wait that ended without the turn's terminal
 // event. cause is [ErrTurnAbandoned] or [ErrAgentGone]; the returned
-// error wraps it, so callers can tell the two apart with errors.Is.
-func (a *Agent) turnWaitError(cause error, w turnSeen, now, started, lastActivity time.Time, bound turnBound) error {
+// error wraps it, so callers can tell the two apart with errors.Is. drops
+// are the broker frames lost during this wait.
+func (a *Agent) turnWaitError(cause error, w turnSeen, now, started, lastActivity time.Time, bound turnBound, drops frameDrops) error {
 	turn := w.turnID
 	if turn == "" {
 		turn = "(no turn id seen)"
@@ -217,13 +242,24 @@ func (a *Agent) turnWaitError(cause error, w turnSeen, now, started, lastActivit
 		// answering it is why this error exists at all (🎯T103).
 		fmt.Fprintf(&b, "; nothing arrived for %s", roundDur(now.Sub(lastActivity)))
 	}
-	if errors.Is(cause, ErrTurnAbandoned) && bound.cut() {
-		// Both causes are wrapped: the acceptance's ErrTurnAbandoned still
-		// matches, and a caller that must know the bound was not the
-		// measured one can ask.
-		return fmt.Errorf("%s: %w: %w", b.String(), cause, ErrSilenceBoundCutShort)
+	abandonedWithDrops := errors.Is(cause, ErrTurnAbandoned) && drops.n > 0
+	if abandonedWithDrops {
+		fmt.Fprintf(&b, "; but %d broker frame(s) on this seat's connection were dropped as too large to relay during the wait (last: %v) — the turn's end may have been one of them, so this silence is not evidence the agent stopped",
+			drops.n, drops.last)
 	}
-	return fmt.Errorf("%s: %w", b.String(), cause)
+	// Every cause that applies is wrapped: the acceptance's ErrTurnAbandoned
+	// still matches, and a caller that must know the bound was not the
+	// measured one, or that frames were lost, can ask.
+	format, args := "%s: %w", []any{b.String(), cause}
+	if errors.Is(cause, ErrTurnAbandoned) && bound.cut() {
+		format += ": %w"
+		args = append(args, ErrSilenceBoundCutShort)
+	}
+	if abandonedWithDrops {
+		format += ": %w"
+		args = append(args, ErrFramesDropped)
+	}
+	return fmt.Errorf(format, args...)
 }
 
 // roundDur trims a duration to something a human reads in a log line.

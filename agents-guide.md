@@ -525,7 +525,11 @@ besides the turn itself: the caller's context, the agent's death
 wait is unsatisfiable and says so at once), and silence
 (`ErrTurnAbandoned` — nothing at all arrived, no event of any type and no
 terminal byte, for `Config.TurnSilenceBound`). Both errors name the
-session, the turn, what last arrived and how long ago.
+session, the turn, what last arrived and how long ago. On a seat a
+daemon holds, a silence during which the broker connection skipped
+frames too large to relay also matches `ErrFramesDropped`: the turn's end
+may have been the frame that was lost, so that silence is not evidence
+the agent stopped (🎯T105).
 
 The silence bound is on SILENCE, not on the turn: any activity rearms
 it, so a turn that runs for hours is untouched. Raise

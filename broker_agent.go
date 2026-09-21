@@ -192,6 +192,7 @@ func (b *brokerAgentBackend) opCall(req *broker.Request) (*broker.Response, erro
 
 func (b *brokerAgentBackend) ops() agentOps {
 	return agentOps{
+		droppedFrames: func(*Agent) (int, error) { return b.client.DroppedFrames() },
 		attachCommand: func(*Agent) string {
 			b.mu.Lock()
 			defer b.mu.Unlock()

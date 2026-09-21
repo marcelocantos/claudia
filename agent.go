@@ -419,6 +419,11 @@ type agentOps struct {
 	// rewind is set only by the broker backend: the daemon rolls the seat
 	// back and relaunches it, and this handle re-points (🎯T75.8).
 	rewind func(*Agent, int) (*RewindResult, error)
+	// droppedFrames is set only by the broker backend: how many frames its
+	// connection has skipped as too large to relay, and the last refusal
+	// (🎯T73). WaitForResponse compares the count across a wait, so a
+	// silence that may be a lost terminal event says so (🎯T105).
+	droppedFrames func(*Agent) (int, error)
 	// release is set only by the broker backend for an acquired seat: the
 	// daemon returns it to, or drops it from, the pool it runs (🎯T64).
 	release func(*Agent, string) error
@@ -1835,6 +1840,16 @@ func (a *Agent) publishEvent(ev Event) {
 	}
 }
 
+// frameDrops reports the broker frames this seat's connection has skipped as
+// too large to relay; zero for a seat not reached over a broker.
+func (a *Agent) frameDrops() frameDrops {
+	if a.ops.droppedFrames == nil {
+		return frameDrops{}
+	}
+	n, last := a.ops.droppedFrames(a)
+	return frameDrops{n: n, last: last}
+}
+
 // rewindOnBroker asks the daemon holding this seat to rewind it.
 func (a *Agent) rewindOnBroker(n int) (*RewindResult, error) {
 	if a.ops.rewind == nil {
@@ -1901,6 +1916,7 @@ func (a *Agent) WaitForResponse(ctx context.Context) (string, error) {
 	// arm, so a consumer passing a long-lived context — daemon code, or a
 	// test's t.Context() — waited for the life of the process.
 	started := a.now()
+	dropsAtStart := a.frameDrops()
 	// The bound answers to the deadline this wait is actually running
 	// under (🎯T103): under `go test` that is the test binary's own
 	// timeout, and a thirty-minute bound inside a ten-minute binary is a
@@ -2041,7 +2057,7 @@ func (a *Agent) WaitForResponse(ctx context.Context) (string, error) {
 		mu.Lock()
 		snap.chars = text.Len()
 		mu.Unlock()
-		return "", a.turnWaitError(cause, snap, now, started, last, bound)
+		return "", a.turnWaitError(cause, snap, now, started, last, bound, a.frameDrops().since(dropsAtStart))
 	}
 	// answered drains a result that landed in the same instant as one of
 	// the failure wakes. An agent that died right after saying its piece

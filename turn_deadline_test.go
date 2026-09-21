@@ -335,7 +335,7 @@ func TestAConvictionUnderACutBoundSaysSo(t *testing.T) {
 	}
 
 	err := a.turnWaitError(ErrTurnAbandoned, turnSeen{events: 2, lastAt: now.Add(-90 * time.Second), lastType: "assistant", turnID: "turn-live"},
-		now, now.Add(-2*time.Minute), now.Add(-90*time.Second), bound)
+		now, now.Add(-2*time.Minute), now.Add(-90*time.Second), bound, frameDrops{})
 
 	if !errors.Is(err, ErrTurnAbandoned) {
 		t.Fatalf("err = %v, want errors.Is ErrTurnAbandoned — 🎯T103's acceptance names that error", err)
@@ -363,7 +363,7 @@ func TestAConvictionUnderTheConfiguredBoundClaimsNoCut(t *testing.T) {
 	}
 
 	err := a.turnWaitError(ErrTurnAbandoned, turnSeen{events: 1, lastAt: now.Add(-turnSilenceBound), lastType: "assistant", turnID: "turn-7"},
-		now, now.Add(-turnSilenceBound), now.Add(-turnSilenceBound), bound)
+		now, now.Add(-turnSilenceBound), now.Add(-turnSilenceBound), bound, frameDrops{})
 
 	if errors.Is(err, ErrSilenceBoundCutShort) {
 		t.Fatalf("err = %v claims its bound was cut short when it ran the configured %v", err, turnSilenceBound)
