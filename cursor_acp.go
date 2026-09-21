@@ -650,6 +650,18 @@ func (c *cursorACPClient) promptWatchingForSilence(sid string, id int64, text st
 	closed := c.closed
 	retryID := atomic.AddInt64(&c.nextID, 1)
 	c.prompts.reissue(retryID)
+	// The second wait's snapshot is taken HERE, in the same critical
+	// section as the swap, not after the cancel goes out. Anything the
+	// peer says from this instant on is an answer to the re-established
+	// turn — including the late answer to the abandoned delivery, which
+	// the swap has just made redeemable. Snapshotting after the cancel
+	// left a window in which that answer redeemed the turn and published
+	// its terminal event, yet counted as silence: the second wait then
+	// expired and the caller was told ErrCursorPromptStuck for a turn
+	// that had already been answered, so it never waited for the reply
+	// (🎯T92, caught by TestCursorReissueKeepsAReplyRacingTheRedelivery
+	// in gate ba76b76a).
+	seq = c.peerSeq
 	c.mu.Unlock()
 	if closed {
 		c.mu.Lock()
@@ -667,7 +679,6 @@ func (c *cursorACPClient) promptWatchingForSilence(sid string, id int64, text st
 	// may still believe is open.
 	_ = c.notify("session/cancel", map[string]any{"sessionId": sid})
 	publishEvent(c.onEvent, acpPromptAcceptedEvent(sid, retryID))
-	seq = c.peerSeqNow()
 	if err := c.write(acpPromptRequest(retryID, sid, text)); err != nil {
 		c.mu.Lock()
 		c.prompts.clear()
