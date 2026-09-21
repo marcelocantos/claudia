@@ -37,6 +37,9 @@ const (
 // it used to t.Fatal so the stall contrast can show the RED without failing
 // the suite. Algorithm is unchanged: poll ClaudeID until a wall-clock
 // deadline.
+//
+// 🎯T97 exemption: this is the defect kept as a specimen, not a wait the
+// suite relies on. Its expiry is the RED the stall contrast exists to show.
 func waitHermeticTaskReadyLegacy(task *Task, deadline time.Duration) error {
 	until := time.Now().Add(deadline)
 	for time.Now().Before(until) {

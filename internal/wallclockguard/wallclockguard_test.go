@@ -44,10 +44,11 @@ func TestScanFindsExactlyTheUnansweredClocks(t *testing.T) {
 		t.Errorf("marker problems = %q, want the reasonless one then the stale one", markers)
 	}
 
-	// Seven exempted: two by func doc, line above, same line, the
-	// multi-line statement, the const used twice, and nothing else.
-	if len(rep.Exempted) != 7 {
-		t.Errorf("exempted %d clocks, want 7: %+v", len(rep.Exempted), rep.Exempted)
+	// Eight exempted: two by func doc, line above, same line, the
+	// multi-line statement, the const used twice, and the marked lower
+	// bound (🎯T106).
+	if len(rep.Exempted) != 8 {
+		t.Errorf("exempted %d clocks, want 8: %+v", len(rep.Exempted), rep.Exempted)
 	}
 	for _, c := range rep.Exempted {
 		if c.Reason == "" {

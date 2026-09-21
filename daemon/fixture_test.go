@@ -17,6 +17,7 @@ import (
 
 	"github.com/marcelocantos/claudia"
 	"github.com/marcelocantos/claudia/internal/broker"
+	"github.com/marcelocantos/claudia/internal/wallclockguard"
 )
 
 // Hermetic fixtures for the daemon suite (🎯T2.9 / 🎯T2.10 / 🎯T2.11 / 🎯T3).
@@ -263,8 +264,8 @@ func (f *fixture) owned(name string) bool {
 
 func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
+	backstop := wallclockguard.UntilTestTimeout(t)
+	for backstop.Err() == nil {
 		if cond() {
 			return
 		}

@@ -95,3 +95,67 @@ func ExampleRuns() {
 	_ = ctx
 	// Output:
 }
+
+// 🎯T106: deadlines and elapsed bounds assembled by hand from time.Now().
+
+func TestPollLoop(t *testing.T) {
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) { // VIOLATION: a poll loop on a hand-built deadline
+	}
+}
+
+func TestDeadlineCheck(t *testing.T) {
+	start := time.Now()
+	deadline := start.Add(time.Second)
+	if time.Now().After(deadline) { // VIOLATION: taint flows through start.Add
+		t.Fatal("late")
+	}
+	if deadline.Before(time.Now()) { // VIOLATION: now as the argument
+		t.Fatal("late")
+	}
+}
+
+func TestElapsedBound(t *testing.T) {
+	start := time.Now()
+	if elapsed := time.Since(start); elapsed > time.Second { // VIOLATION: elapsed upper bound
+		t.Fatal("slow")
+	}
+	if float64(time.Since(start).Milliseconds()) > 1000 { // VIOLATION: through a method and a conversion
+		t.Fatal("slow")
+	}
+}
+
+func measured() time.Duration {
+	start := time.Now()
+	return time.Since(start)
+}
+
+func measuredTwice() time.Duration { return measured() }
+
+func TestHelperReturnsElapsed(t *testing.T) {
+	if measuredTwice() > time.Second { // VIOLATION: a helper of a helper returns the clock
+		t.Fatal("slow")
+	}
+}
+
+func TestNowUsesThatDecideNothing(t *testing.T) {
+	start := time.Now()
+	t.Logf("took %v", time.Since(start))
+	var samples []time.Duration
+	samples = append(samples, time.Since(start))
+	stamp := struct{ at time.Time }{}
+	stamp.at = time.Now().Add(-time.Minute)
+	n, limit := 3, 5
+	if n > limit {
+		t.Fatal("not a clock")
+	}
+	_ = samples
+}
+
+func TestMarkedLowerBound(t *testing.T) {
+	start := time.Now()
+	// 🎯T97 exemption: a lower bound; a slow host can only pass it.
+	if time.Since(start) < time.Millisecond {
+		t.Fatal("too fast")
+	}
+}

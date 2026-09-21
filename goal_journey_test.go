@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/marcelocantos/claudia/internal/wallclockguard"
 )
 
 // 🎯T39 journeys: a sequence of real Agent.Send + backend terminal events
@@ -80,13 +82,13 @@ func startJourneyAgent(t *testing.T, cfg Config, backend agentBackend) *Agent {
 
 func waitBackendSends(t *testing.T, b *fakeAgentBackend, want int) []string {
 	t.Helper()
-	deadline := time.Now().Add(time.Duration(want)*waitSettleDuration + 200*time.Millisecond)
+	backstop := wallclockguard.UntilTestTimeout(t)
 	for {
 		sends := backendSends(t, b)
 		if len(sends) >= want {
 			return sends
 		}
-		if time.Now().After(deadline) {
+		if backstop.Err() != nil {
 			t.Fatalf("sends = %d, want %d: %#v", len(sends), want, sends)
 		}
 		time.Sleep(10 * time.Millisecond)

@@ -44,6 +44,28 @@
 // plus the old *_live_test.go filename rule, which covers files whose every
 // test is live.
 //
+// # Clocks assembled by hand (🎯T106)
+//
+// The same disease has a second spelling that calls none of the banned
+// constructors: a deadline built from time.Now() and compared —
+// `for time.Now().Before(deadline)`, `if time.Since(start) > d`. The guard
+// follows the clock through a function's locals (`start := time.Now()`,
+// `deadline := start.Add(d)`), through methods and arithmetic on it
+// (`time.Since(start).Milliseconds()`), and through package helpers that
+// return it (`func timedGap(d) time.Duration`), and reports any <, >, <=,
+// >= or .Before/.After/.Compare with a clock-derived operand. A clock that
+// is only logged or stored decides nothing and is not reported. The same
+// marker answers for a defensible comparison: a lower bound load can only
+// pass, a bracket taken before and after the call, a stretched attempt that
+// is retried rather than scored.
+//
+// What that tracking cannot see, and is residue rather than a pass: a clock
+// reaching a comparison through a struct field, a channel, a closure
+// variable captured from another function, a method value, or a helper in
+// another package; and a comparison against a clock the PRODUCT reads
+// internally. Taint is by name and flow-insensitive, which errs toward
+// reporting — a shadowed name inherits its outer taint.
+//
 // # The half this cannot see
 //
 // A source scan of tests sees clocks a test WRITES. It cannot see a clock
@@ -85,7 +107,14 @@ var Banned = map[string]string{
 	"time.Tick":            "fires against whatever the select is racing",
 	"time.NewTimer":        "fires against whatever the select is racing",
 	"time.NewTicker":       "fires against whatever the select is racing",
+	NowComparison:          "compares a time.Now()-derived value, so host speed picks the branch",
 }
+
+// NowComparison names the second shape the guard reports (🎯T106): a
+// deadline or an elapsed time assembled by hand from time.Now() and then
+// compared — `for time.Now().Before(deadline)`, `if time.Since(start) > d`.
+// No banned constructor is called, and the host's speed still decides.
+const NowComparison = "time.Now comparison"
 
 // A Clock is one banned call in a hermetic test.
 type Clock struct {
@@ -271,6 +300,8 @@ func scan(census livegate.Census, moduleRoot, dir, prefix string) (Report, error
 		}
 	}
 
+	nowFuncs := nowReturningFuncs(files)
+
 	for _, f := range files {
 		name := names[f]
 		// A comment ending on line L answers for a statement starting on
@@ -294,6 +325,8 @@ func scan(census livegate.Census, moduleRoot, dir, prefix string) (Report, error
 				continue
 			}
 			fnMarker := valid(fn.Doc)
+			derived := nowDerivedLocals(fn.Body, nowFuncs)
+			isNow := func(e ast.Expr) bool { return nowDerived(e, derived, nowFuncs) }
 
 			// The statement each node sits in, innermost first, so a comment
 			// above a multi-line statement answers for a clock inside it.
@@ -309,15 +342,31 @@ func scan(census livegate.Census, moduleRoot, dir, prefix string) (Report, error
 				} else {
 					stmts = append(stmts, nil)
 				}
-				call, ok := n.(*ast.CallExpr)
-				if !ok {
+				var clock Clock
+				var args []ast.Expr
+				switch x := n.(type) {
+				case *ast.CallExpr:
+					if qualified, ok := qualifiedName(x.Fun); ok && Banned[qualified] != "" && qualified != NowComparison {
+						clock, args = Clock{Call: qualified}, x.Args
+					} else if isNowComparison(x, isNow) {
+						clock, args = Clock{Call: NowComparison}, x.Args
+					} else {
+						return true
+					}
+				case *ast.BinaryExpr:
+					switch x.Op {
+					case token.LSS, token.GTR, token.LEQ, token.GEQ:
+					default:
+						return true
+					}
+					if !isNow(x.X) && !isNow(x.Y) {
+						return true
+					}
+					clock, args = Clock{Call: NowComparison}, []ast.Expr{x.X, x.Y}
+				default:
 					return true
 				}
-				qualified, ok := qualifiedName(call.Fun)
-				if !ok || Banned[qualified] == "" {
-					return true
-				}
-				clock := Clock{File: name, Line: fset.Position(call.Pos()).Line, Call: qualified}
+				clock.File, clock.Line = name, fset.Position(n.Pos()).Line
 
 				var by *marker
 				if m := endingOn[clock.Line]; m != nil {
@@ -329,7 +378,7 @@ func scan(census livegate.Census, moduleRoot, dir, prefix string) (Report, error
 					}
 				}
 				if by == nil {
-					for _, arg := range call.Args {
+					for _, arg := range args {
 						ast.Inspect(arg, func(a ast.Node) bool {
 							if id, ok := a.(*ast.Ident); ok && by == nil {
 								by = declared[id.Name]
@@ -371,6 +420,152 @@ func scan(census livegate.Census, moduleRoot, dir, prefix string) (Report, error
 		return a.Line < b.Line
 	})
 	return rep, nil
+}
+
+// isNowComparison reports a .Before/.After/.Compare call with a
+// time.Now()-derived receiver or argument.
+func isNowComparison(call *ast.CallExpr, isNow func(ast.Expr) bool) bool {
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	switch sel.Sel.Name {
+	case "Before", "After", "Compare":
+	default:
+		return false
+	}
+	if isNow(sel.X) {
+		return true
+	}
+	for _, a := range call.Args {
+		if isNow(a) {
+			return true
+		}
+	}
+	return false
+}
+
+// nowDerived reports whether e carries the wall clock: a call to time.Now,
+// time.Since or time.Until, or to a package func that returns one; a
+// derived local; a method on a derived value (deadline.Add, elapsed.Seconds);
+// arithmetic on one; or a numeric conversion of one. Arguments to any other
+// call do not taint its result — that call is somebody else's function, and
+// guessing at what it returns is how a guard starts crying wolf.
+func nowDerived(e ast.Expr, locals map[string]bool, funcs map[string]bool) bool {
+	switch x := e.(type) {
+	case *ast.ParenExpr:
+		return nowDerived(x.X, locals, funcs)
+	case *ast.Ident:
+		return locals[x.Name]
+	case *ast.UnaryExpr:
+		return nowDerived(x.X, locals, funcs)
+	case *ast.BinaryExpr:
+		switch x.Op {
+		case token.ADD, token.SUB, token.MUL, token.QUO, token.REM:
+			return nowDerived(x.X, locals, funcs) || nowDerived(x.Y, locals, funcs)
+		}
+		return false
+	case *ast.CallExpr:
+		switch fun := x.Fun.(type) {
+		case *ast.SelectorExpr:
+			if q, ok := qualifiedName(fun); ok {
+				switch q {
+				case "time.Now", "time.Since", "time.Until":
+					return true
+				case "time.Duration":
+					return len(x.Args) == 1 && nowDerived(x.Args[0], locals, funcs)
+				}
+			}
+			return nowDerived(fun.X, locals, funcs)
+		case *ast.Ident:
+			if funcs[fun.Name] {
+				return true
+			}
+			if numericConversion[fun.Name] && len(x.Args) == 1 {
+				return nowDerived(x.Args[0], locals, funcs)
+			}
+		}
+	}
+	return false
+}
+
+var numericConversion = map[string]bool{
+	"int": true, "int64": true, "uint64": true, "float32": true, "float64": true,
+}
+
+// nowDerivedLocals is the set of names in body assigned a derived value,
+// flow-insensitively and to a fixpoint, so `start := time.Now()` then
+// `deadline := start.Add(d)` taints both. Names, not objects: a shadowed
+// name inherits its outer taint, which errs toward reporting.
+func nowDerivedLocals(body *ast.BlockStmt, funcs map[string]bool) map[string]bool {
+	locals := map[string]bool{}
+	for changed := true; changed; {
+		changed = false
+		mark := func(lhs ast.Expr) {
+			if id, ok := lhs.(*ast.Ident); ok && id.Name != "_" && !locals[id.Name] {
+				locals[id.Name] = true
+				changed = true
+			}
+		}
+		ast.Inspect(body, func(n ast.Node) bool {
+			switch x := n.(type) {
+			case *ast.AssignStmt:
+				if len(x.Lhs) == len(x.Rhs) {
+					for i, r := range x.Rhs {
+						if nowDerived(r, locals, funcs) {
+							mark(x.Lhs[i])
+						}
+					}
+				}
+			case *ast.ValueSpec:
+				if len(x.Names) == len(x.Values) {
+					for i, v := range x.Values {
+						if nowDerived(v, locals, funcs) {
+							mark(x.Names[i])
+						}
+					}
+				}
+			}
+			return true
+		})
+	}
+	return locals
+}
+
+// nowReturningFuncs is the set of package funcs (by name) that return a
+// derived value — `func elapsedSince(start time.Time) time.Duration { return
+// time.Since(start) }` — found to a fixpoint so a helper of a helper counts.
+func nowReturningFuncs(files []*ast.File) map[string]bool {
+	funcs := map[string]bool{}
+	for changed := true; changed; {
+		changed = false
+		for _, f := range files {
+			for _, decl := range f.Decls {
+				fn, ok := decl.(*ast.FuncDecl)
+				if !ok || fn.Body == nil || funcs[fn.Name.Name] {
+					continue
+				}
+				locals := nowDerivedLocals(fn.Body, funcs)
+				ast.Inspect(fn.Body, func(n ast.Node) bool {
+					if _, lit := n.(*ast.FuncLit); lit {
+						return false
+					}
+					ret, ok := n.(*ast.ReturnStmt)
+					if !ok || funcs[fn.Name.Name] {
+						return !funcs[fn.Name.Name]
+					}
+					for _, r := range ret.Results {
+						if nowDerived(r, locals, funcs) {
+							funcs[fn.Name.Name] = true
+							changed = true
+						}
+					}
+					return true
+				})
+			}
+		}
+	}
+	return funcs
 }
 
 // outputComment is how go test recognises an example it will run.

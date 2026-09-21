@@ -29,6 +29,10 @@ func TestListStoreWritersLsofIsBounded(t *testing.T) {
 	if pids := listStoreWritersLsof(store); len(pids) != 0 {
 		t.Fatalf("a probe that timed out reported pids: %v", pids)
 	}
+	// 🎯T97 exemption: an upper bound on a ratio. The probe is bounded at
+	// 200ms and the fake hangs for 60s, so 5s is 25x the healthy path and
+	// a twelfth of the defect; only a host that stalls a timer-driven kill
+	// for seconds could cross it.
 	if elapsed := time.Since(start); elapsed > 5*time.Second {
 		t.Fatalf("store probe blocked for %s; it must be bounded", elapsed)
 	}

@@ -4,6 +4,7 @@
 package tmuxagent
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,6 +13,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/marcelocantos/claudia/internal/wallclockguard"
 )
 
 // TestT469SharedBufferNameRacesUnderBarrier is the RED oracle for the
@@ -130,7 +133,7 @@ func TestT469ConcurrentUniqueNamesUnderBarrier(t *testing.T) {
 	for i, want := range payloads {
 		marker := strings.TrimSuffix(want, "\n")
 		path := filepath.Join(outdir, fmt.Sprintf("sink-%02d.txt", i))
-		got, err := waitFileContains(path, marker, 5*time.Second)
+		got, err := waitFileContains(wallclockguard.UntilTestTimeout(t), path, marker)
 		if err != nil {
 			t.Errorf("sink %d: %v (got=%q)", i, err, got)
 			continue
@@ -273,8 +276,7 @@ func shellSingleQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-func waitFileContains(path, substr string, budget time.Duration) (string, error) {
-	deadline := time.Now().Add(budget)
+func waitFileContains(ctx context.Context, path, substr string) (string, error) {
 	var last string
 	for {
 		b, err := os.ReadFile(path)
@@ -284,7 +286,7 @@ func waitFileContains(path, substr string, budget time.Duration) (string, error)
 				return last, nil
 			}
 		}
-		if time.Now().After(deadline) {
+		if ctx.Err() != nil {
 			if last == "" {
 				return "", fmt.Errorf("timeout waiting for %q in %s (file missing or empty)", substr, path)
 			}

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/marcelocantos/claudia/internal/testctlenv"
+	"github.com/marcelocantos/claudia/internal/wallclockguard"
 )
 
 // testServerSocket points tmuxagent at a private tmux server for the
@@ -92,13 +93,13 @@ func TestEnsureServerStripsTestControlEnv(t *testing.T) {
 	t.Cleanup(func() { _ = KillWindow(windowID) })
 
 	var data []byte
-	deadline := time.Now().Add(20 * time.Second)
+	backstop := wallclockguard.UntilTestTimeout(t)
 	for {
 		data, err = os.ReadFile(dump)
 		if err == nil {
 			break
 		}
-		if time.Now().After(deadline) {
+		if backstop.Err() != nil {
 			t.Fatalf("window never wrote its environment to %s", dump)
 		}
 		time.Sleep(50 * time.Millisecond)

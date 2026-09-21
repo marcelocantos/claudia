@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/marcelocantos/claudia/internal/wallclockguard"
 )
 
 // assistantLine is one transcript record that WaitForResponse would treat
@@ -131,7 +133,7 @@ func tailFixture(t *testing.T, jsonlPath string) *Agent {
 // and reports what did arrive when it never does.
 func waitForEvent(t *testing.T, take func() []Event, want string) []Event {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	backstop := wallclockguard.UntilTestTimeout(t)
 	for {
 		evs := take()
 		for _, ev := range evs {
@@ -139,7 +141,7 @@ func waitForEvent(t *testing.T, take func() []Event, want string) []Event {
 				return evs
 			}
 		}
-		if time.Now().After(deadline) {
+		if backstop.Err() != nil {
 			var got []string
 			for _, ev := range evs {
 				got = append(got, ev.Text)

@@ -34,7 +34,7 @@ func TestHermeticTestsHaveNoWallClockDeadline(t *testing.T) {
 		t.Fatal("no hermetic test files scanned — guard is not looking at anything")
 	}
 	for _, c := range rep.Violations {
-		t.Errorf("%s: hermetic test uses %s — %s (🎯T97). Wait on the event the test "+
+		t.Errorf("%s: hermetic test uses %s — %s (🎯T97, 🎯T106). Wait on the event the test "+
 			"needs and let `go test -timeout` be the clock, or, if a slow host cannot "+
 			"turn this clock into a wrong verdict, say why in a %q comment.",
 			c.Pos(), c.Call, wallclockguard.Banned[c.Call], wallclockguard.Marker)

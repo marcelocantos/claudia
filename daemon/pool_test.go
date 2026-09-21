@@ -211,6 +211,9 @@ func TestAcquiredHandleOpsKeepAliveAndDirect(t *testing.T) {
 		return strings.TrimSpace(string(out))
 	}
 	deadline, err := strconv.ParseInt(opt("claudia-deadline"), 10, 64)
+	// 🎯T97 exemption: the product's deadline is bracketed by clock readings
+	// taken before Release and after it returned, so a slow host widens
+	// the bracket and cannot push the value outside it.
 	if err != nil || deadline < before+590 || deadline > time.Now().Unix()+610 || opt("claudia-held") != "0" {
 		t.Fatalf("after keep_alive_for:600 the window has deadline %q held %q, want ~now+600 and not held", opt("claudia-deadline"), opt("claudia-held"))
 	}

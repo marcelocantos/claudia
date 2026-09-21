@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/marcelocantos/claudia/internal/wallclockguard"
 )
 
 // cursorHermeticPeerBound is the silence bound to give a fake peer that
@@ -107,6 +109,8 @@ func TestCursorSlowFirstPromptIsNotStuck(t *testing.T) {
 	if err := agent.Send("Reply with exactly: pong"); err != nil {
 		t.Fatalf("a peer that answered in 600ms was called stuck: %v", err)
 	}
+	// 🎯T97 exemption: a lower bound. A slow host only makes Send take
+	// longer, which can only pass this check, never fail it.
 	if elapsed := time.Since(start); elapsed < 500*time.Millisecond {
 		t.Fatalf("Send returned in %v, before the peer could have answered — the wait is not observing anything", elapsed)
 	}
@@ -215,6 +219,11 @@ func TestCursorSecondPromptIsNotWatched(t *testing.T) {
 	}
 	// A watched send would block until the peer spoke; an unwatched one
 	// returns as soon as the line is written.
+	// 🎯T97 exemption: an upper bound, kept on a ratio like parkedAfter's.
+	// The unwatched path is one short line written into an in-process pipe
+	// buffer — no child to schedule, no reply to wait for — and the watched
+	// path this rules out waits on a 30s silence bound. 2s sits far above
+	// the first and far below the second.
 	if elapsed := time.Since(start); elapsed > 2*time.Second {
 		t.Fatalf("Send#2 took %v — the post-mint path is still paying the stuck-prompt wait", elapsed)
 	}
@@ -235,8 +244,8 @@ func TestCursorStuckPromptWaitEndsWhenTransportDies(t *testing.T) {
 	c.mu.Unlock()
 	c.wakePromptWaiters()
 
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
+	backstop := wallclockguard.UntilTestTimeout(t)
+	for backstop.Err() == nil {
 		if done.Load() {
 			return
 		}

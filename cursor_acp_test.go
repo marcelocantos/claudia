@@ -33,8 +33,8 @@ func TestCursorACPCloseKillsAfterReadLoopClosed(t *testing.T) {
 	c := &cursorACPClient{cmd: cmd, ownsProcess: true, closed: true}
 	c.Close()
 
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
+	backstop := wallclockguard.UntilTestTimeout(t)
+	for backstop.Err() == nil {
 		out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "pid=").Output()
 		if err != nil || strings.TrimSpace(string(out)) == "" {
 			return

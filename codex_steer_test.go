@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/marcelocantos/claudia/internal/wallclockguard"
 )
 
 func TestCodexAppServerTurnSteerRequest(t *testing.T) {
@@ -76,8 +78,8 @@ func TestCodexTurnCapsFollowInstalledCLI(t *testing.T) {
 
 func waitForTurnPhase(t *testing.T, agent *Agent, want TurnPhase) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
+	backstop := wallclockguard.UntilTestTimeout(t)
+	for backstop.Err() == nil {
 		if agent.TurnPhase() == want {
 			return
 		}

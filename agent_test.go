@@ -665,6 +665,8 @@ func TestWaitForResponseThinkingThenText(t *testing.T) {
 		dispatch(Event{Type: "assistant", Text: "ok", StopReason: "end_turn"})
 
 		r := <-done
+		// 🎯T97 exemption: a stretched gap voids the attempt and retries it;
+		// it is never scored, so load can only cost attempts, never a RED.
 		if gap >= waitSettleDuration {
 			t.Logf("attempt %d: scheduler stretched the %v gap to %v, past the %v settle window — the two blocks were never in the same turn, so this attempt tested nothing; retrying",
 				attempt, 50*time.Millisecond, gap, waitSettleDuration)
@@ -710,6 +712,8 @@ func TestWaitForResponseResetsSettleTimer(t *testing.T) {
 		dispatch(Event{Type: "assistant", Text: "three", StopReason: "end_turn"})
 
 		r := <-done
+		// 🎯T97 exemption: as above — a stretched gap voids and retries the
+		// attempt, never scores it.
 		if first >= waitSettleDuration || second >= waitSettleDuration {
 			t.Logf("attempt %d: scheduler stretched a %v gap past the %v window (%v, %v) — the window expired on its own, so no reset was exercised; retrying",
 				attempt, gapTarget, waitSettleDuration, first, second)

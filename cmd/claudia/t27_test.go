@@ -162,8 +162,8 @@ func TestBrokerStatusPrintsGrantsAndBands(t *testing.T) {
 	}
 
 	var out string
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
+	backstop := wallclockguard.UntilTestTimeout(t)
+	for backstop.Err() == nil {
 		out = captureStdout(t, status)
 		if strings.Contains(out, "claude=") {
 			break

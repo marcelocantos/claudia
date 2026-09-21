@@ -27,6 +27,9 @@ var shortenableBounds = map[string]string{
 	"codexAppServerThreadTimeout": "bounds thread/start, thread/resume and thread/name/set only; " +
 		"initialize is bounded separately by codexAppServerInitializeTimeout, which a test " +
 		"leaves at 20s, so the earlier step cannot expire first and answer for this one (🎯T93)",
+	"lsofTimeout": "bounds one exec of the store-holder lsof probe (cursor_reap.go) and nothing " +
+		"else on its path; the test's fake lsof hangs for 60s, so the bound is the only " +
+		"wait that can end the call and no earlier step shares it",
 	"cursorPromptSilenceBound": "bounds silence before the first inbound message of a prompt and " +
 		"nothing else — the first thing the peer says disarms it, so no other wait on that path " +
 		"shares it; cursor_acp.go documents it as a var solely so hermetics can shorten it",

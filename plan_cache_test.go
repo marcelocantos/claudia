@@ -75,9 +75,8 @@ func TestLoadPlanUsageSingleFetchUnderContention(t *testing.T) {
 		defer wg.Done()
 		b, errB = LoadPlanUsage(ctx, args())
 	}()
-	deadline := time.Now().Add(2 * time.Second)
 	for fetches.Load() == 0 {
-		if time.Now().After(deadline) {
+		if ctx.Err() != nil {
 			t.Fatal("holder never started a fetch")
 		}
 		time.Sleep(5 * time.Millisecond)

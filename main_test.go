@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/marcelocantos/claudia/internal/broker"
+	"github.com/marcelocantos/claudia/internal/wallclockguard"
 )
 
 // TestMain keeps the hermetic suite off any claudia daemon installed on the
@@ -39,11 +40,11 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// waitFor polls cond until it holds or five seconds pass.
+// waitFor polls cond until it holds or the test's own -timeout is near.
 func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
+	backstop := wallclockguard.UntilTestTimeout(t)
+	for backstop.Err() == nil {
 		if cond() {
 			return
 		}
