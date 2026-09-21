@@ -527,6 +527,25 @@
         {"name": "TestHermeticTestsDeclareTheProductBoundsTheyShorten", "expect": "green"}
       ],
       "note": "Pins that an exemption is a marker the guard reads, not prose it forgives: the reasoning is unchanged and the guard still goes red, because an unmarked clock is an unanswered one. The green control is 🎯T93's product-bound guard, the other half of the pair, which does not read test clocks at all."
+    },
+    {
+      "target": "T106",
+      "mutation": "restore-a-hand-built-poll-deadline",
+      "what": "TestCursorACPCloseKillsAfterReadLoopClosed polls under a 2s deadline built from time.Now() again, the 🎯T106 spelling of a wall clock deciding a hermetic verdict: no banned constructor is called, and a loaded host still expires it before the killed process is gone",
+      "quoted_by": "2350f16",
+      "package": ".",
+      "edits": [
+        {
+          "file": "cursor_acp_test.go",
+          "find": "\tbackstop := wallclockguard.UntilTestTimeout(t)\n\tfor backstop.Err() == nil {\n\t\tout, err := exec.Command(\"ps\",",
+          "replace": "\tdeadline := time.Now().Add(2000000000)\n\tfor time.Now().Before(deadline) {\n\t\tout, err := exec.Command(\"ps\","
+        }
+      ],
+      "tests": [
+        {"name": "TestHermeticTestsHaveNoWallClockDeadline", "expect": "red"},
+        {"name": "TestHermeticTestsDeclareTheProductBoundsTheyShorten", "expect": "green"}
+      ],
+      "note": "The restored loop calls none of 🎯T97's six constructors, so this entry is red only because 🎯T106's data-flow check follows time.Now() into deadline and reports the .Before. The 2s is spelled 2000000000. wallclockguard stays imported through the file's other uses, so the red is the guard, not a build failure. The green control is 🎯T93's product-bound guard, which does not read test clocks."
     }
   ]
 }
