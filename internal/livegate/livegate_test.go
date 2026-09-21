@@ -5,7 +5,9 @@ package livegate
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -59,6 +61,39 @@ func TestLiveGateCoverage(t *testing.T) {
 		t.Errorf("%s", v)
 	}
 	t.Logf("%d live tests across %d gates, all reachable", len(c.Live), len(c.Gates))
+}
+
+// TestLiveTargetIsWhatMakeRuns holds the reading to the thing it is a reading
+// of. Every other test here reasons about lt.Run; this one asks make what it
+// would actually hand the shell and requires the two to be the same string.
+// T111 was exactly that gap: the source named four tests that the expanded
+// recipe did not.
+func TestLiveTargetIsWhatMakeRuns(t *testing.T) {
+	_, lt, _, _, root := load(t)
+	makeBin, err := exec.LookPath("make")
+	if err != nil {
+		t.Skip("make not on PATH")
+	}
+	cmd := exec.Command(makeBin, "--no-print-directory", "-n", "live")
+	cmd.Dir = root
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("make -n live: %v", err)
+	}
+	run := runFlag.FindSubmatch(out)
+	if run == nil {
+		t.Fatalf("make -n live printed no -run '…' expression:\n%s", out)
+	}
+	if got := string(run[1]); got != lt.Run {
+		t.Fatalf("make hands the shell a different -run expression than this check reads.\nmake:     %s\nlivegate: %s", got, lt.Run)
+	}
+	// And each name the recipe spells survives as an alternative of its own.
+	alts := lt.Alternatives()
+	for _, want := range []string{"TestCrashSurvival$", "TestRewindSessionLive", "TestPoolCrashSurvival$", "TestGrokTaskRunSmoke"} {
+		if !slices.Contains(alts, want) {
+			t.Errorf("%s is not an alternative of its own in %q", want, alts)
+		}
+	}
 }
 
 // TestLiveGateCheckHasTeeth is the other half, and the reason this is an
@@ -176,6 +211,44 @@ func TestBrandNewProviderLiveSmoke(t *testing.T) {
 		short := []string{"CLAUDIA_LIVE"}
 		if !mentions(Check(c, lt, agents, x, short), "CLAUDIA_GROK_LIVE", "testctlenv.LiveGates()") {
 			t.Error("a live gate missing from the strip registry must be reported (T20)")
+		}
+	})
+
+	// T111: `$|` is make's order-only-prerequisites variable. It expands to
+	// nothing, so the anchor and the separator both vanish and two names
+	// reach go test fused into one that matches no test — while the Makefile
+	// source still shows every name, which is all this check used to read.
+	t.Run("a $| that make swallows", func(t *testing.T) {
+		_, _, _, _, root := load(t)
+		mk, err := os.ReadFile(filepath.Join(root, "Makefile"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		const escaped, swallowed = "TestCrashSurvival$$|", "TestCrashSurvival$|"
+		if !strings.Contains(string(mk), escaped) {
+			t.Fatalf("the Makefile no longer spells %s; this case needs a new specimen", escaped)
+		}
+		broken := strings.Replace(string(mk), escaped, swallowed, 1)
+		if _, err := ParseLiveTarget([]byte(broken)); err == nil || !strings.Contains(err.Error(), `"$|"`) {
+			t.Errorf("a recipe make would fuse must be refused naming $|; got %v", err)
+		}
+	})
+
+	t.Run("two names fused into one", func(t *testing.T) {
+		// The expression as make delivered it before T111, should one ever
+		// reach Check by another road.
+		fused := LiveTarget{Run: strings.Replace(lt.Run, "TestCrashSurvival$|", "TestCrashSurvival", 1), Pkgs: lt.Pkgs}
+		if fused.Run == lt.Run {
+			t.Fatal("nothing was fused; this case needs a new specimen")
+		}
+		vs := Check(c, fused, agents, x, reg)
+		for _, name := range []string{"TestCrashSurvival", "TestRewindSessionLive"} {
+			if !mentions(vs, name, "make live") {
+				t.Errorf("%s is unreachable once fused and must be reported; got:\n%s", name, join(vs))
+			}
+		}
+		if !mentions(vs, "Makefile", "matches no test") {
+			t.Errorf("the fused name matches no test and must be reported; got:\n%s", join(vs))
 		}
 	})
 

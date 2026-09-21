@@ -535,7 +535,44 @@ func ParseLiveTarget(makefile []byte) (LiveTarget, error) {
 	if len(pkgs) == 0 {
 		return LiveTarget{}, fmt.Errorf("the `live:` recipe names no packages")
 	}
-	return LiveTarget{Run: run[1], Pkgs: pkgs}, nil
+	expanded, err := expandMakeLiteral(run[1])
+	if err != nil {
+		return LiveTarget{}, fmt.Errorf("the `live:` -run expression: %w", err)
+	}
+	return LiveTarget{Run: expanded, Pkgs: pkgs}, nil
+}
+
+// expandMakeLiteral is s as the shell receives it from a make recipe, for
+// the one form this check is willing to reason about: literal text, with `$$`
+// standing for `$`.
+//
+// The Makefile's text is not what go test is handed. make expands the recipe
+// first, and in a recipe `$|` is an automatic variable — the order-only
+// prerequisites, which `live:` has none of. So `TestCrashSurvival$|TestRewind`
+// reads in the source as an anchored name and an alternation, and reaches the
+// shell as the single name `TestCrashSurvivalTestRewind`, which matches
+// nothing. Four live tests went unrun that way from 5742b78 while this check,
+// reading the source, saw all four names and stayed green (T111).
+//
+// Any other `$` reference is refused rather than modelled: what `$(X)` or `$@`
+// expands to is make's business, and an expression this check cannot read
+// exactly is one it cannot vouch for.
+func expandMakeLiteral(s string) (string, error) {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] != '$' {
+			b.WriteByte(s[i])
+			continue
+		}
+		if i+1 < len(s) && s[i+1] == '$' {
+			b.WriteByte('$')
+			i++
+			continue
+		}
+		ref := s[i:min(i+2, len(s))]
+		return "", fmt.Errorf("%s is a make variable reference, which make expands before the shell sees the expression (`$|` becomes nothing, fusing the names on either side of it); write `$$` for a literal `$`", strconv.Quote(ref))
+	}
+	return b.String(), nil
 }
 
 // Alternatives splits the -run expression into its top-level alternatives.
