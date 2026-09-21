@@ -464,7 +464,13 @@ func (r *Registry) startHeld(ctx context.Context, op *registryLifecycle, name st
 			err = fmt.Errorf("%w: %s", ErrNoSessionWindow, def.SessionID)
 		}
 	}
-	if proc == nil && (!adopt || (fallback && err != nil && ctx.Err() == nil)) {
+	// A seat the daemon holds live for another connection is never launched
+	// over. Launching would not replace that process, it would add a second
+	// client to the same session: a jevons overseer ran as two Claude
+	// processes on one JSONL this way on 2026-09-22, and the owner's messages
+	// went to the one nobody was reading. The refusal goes back to the caller,
+	// who may ask again.
+	if proc == nil && (!adopt || (fallback && err != nil && ctx.Err() == nil && !grantHeldElsewhere(err))) {
 		started = true
 		if err != nil && !errors.Is(err, ErrNoSessionWindow) {
 			slog.Warn("adopt failed; falling back to launch", "agent", name, "err", err)
@@ -871,4 +877,11 @@ func (r *Registry) Descendants(root string) []string {
 	}
 	walk(root)
 	return out
+}
+
+// grantHeldElsewhere reports the daemon's refusal to hand a live seat to a
+// second connection.
+func grantHeldElsewhere(err error) bool {
+	var pe *broker.ProtocolError
+	return errors.As(err, &pe) && pe.Code == broker.CodeGrantHeld
 }
