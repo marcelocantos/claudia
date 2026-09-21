@@ -489,6 +489,44 @@
         {"name": "TestMCPProxyOAuthRetriesWithToken", "expect": "green"}
       ],
       "note": "The first entry that needs go_flags. No assertion can see this mutation: authMu still serializes Authorize, so the burst still authorizes once and every request still gets 200. Only the race detector reports the unsynchronized read, which is why ENT-001 was found by the CI -race job rather than by a failing assertion. Nor does the lock make the probe run once. Two 401s can both read nil and both probe; the lock stops them racing on the pointer, and the nil re-check keeps the first writer's pointer. So probe-count is no oracle either, and -race is the only one. Measured by hand at 86e49f9, before this entry existed: 20/20 -count=1 runs red. That is why -count=1 is enough here. The write-side mutant (publish outside p.mu) is deliberately not declared: it failed 3/20 at -count=1, too flaky for a standing gate. The green control is the same upstream and probe stub with a single request. It walks the mutated read serially and stays green, which shows the red is about concurrency and not a broken path."
+    },
+    {
+      "target": "T97",
+      "mutation": "restore-a-root-wall-clock-deadline",
+      "what": "TestHermeticCursorTaskRun bounds its run with a 15s context deadline again, the root-package twin of the 🎯T33 defect: a clock handed to the product through Task.Run that a loaded host can expire before the fake CLI answers",
+      "quoted_by": "faa114a",
+      "package": ".",
+      "edits": [
+        {
+          "file": "cursor_task_test.go",
+          "find": "\tch, err := task.Run(t.Context(), \"Reply with exactly: pong\")\n",
+          "replace": "\tctx, cancel := context.WithTimeout(context.Background(), 15000000000)\n\tdefer cancel()\n\tch, err := task.Run(ctx, \"Reply with exactly: pong\")\n"
+        }
+      ],
+      "tests": [
+        {"name": "TestHermeticTestsHaveNoWallClockDeadline", "expect": "red"},
+        {"name": "TestHermeticCursorTaskRun", "expect": "green"}
+      ],
+      "note": "The same shape as 🎯T33's codex entry, one package up, because the root package is where 🎯T33's guard never looked. TestHermeticCursorTaskRun is green on purpose: on an idle host the restored deadline still passes, which is why only the guard can hold this. The deadline is a bare 15000000000 so the mutation needs no new import."
+    },
+    {
+      "target": "T97",
+      "mutation": "unmark-a-defensible-clock",
+      "what": "The must-not-return window in agent_test.go loses its 🎯T97 exemption marker, so a clock that is still defensible is no longer answered for in source",
+      "quoted_by": "faa114a",
+      "package": ".",
+      "edits": [
+        {
+          "file": "agent_test.go",
+          "find": "\t// 🎯T97 exemption: expiry is the PASS, the one shape 🎯T31 allows.",
+          "replace": "\t// Expiry is the PASS, the one shape 🎯T31 allows."
+        }
+      ],
+      "tests": [
+        {"name": "TestHermeticTestsHaveNoWallClockDeadline", "expect": "red"},
+        {"name": "TestHermeticTestsDeclareTheProductBoundsTheyShorten", "expect": "green"}
+      ],
+      "note": "Pins that an exemption is a marker the guard reads, not prose it forgives: the reasoning is unchanged and the guard still goes red, because an unmarked clock is an unanswered one. The green control is 🎯T93's product-bound guard, the other half of the pair, which does not read test clocks at all."
     }
   ]
 }
