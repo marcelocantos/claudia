@@ -1,5 +1,9 @@
 # Hermetic owner gate (🎯T48). Same suite as .github/workflows/test.yml.
-# Pre-push runs this. Does not require a clean tree — /ship does.
+# On success it attests the tree it measured (scripts/gate-attest.sh);
+# pre-push checks that attestation rather than re-running the gate, which
+# takes ~25 minutes — longer than GitHub keeps an idle SSH connection open.
+# Does not require a clean tree, but the attestation records dirt and the
+# hook refuses a dirty one.
 # Never pipe go test: `go test ... | tail` reports tail's status, so a
 # failing suite can print green and exit 0.
 .PHONY: gate gate-full bullseye hooks
@@ -12,6 +16,7 @@ gate:
 	@$(MAKE) --no-print-directory verify-stability >/dev/null && echo "✓ stability surface"
 	@$(MAKE) --no-print-directory verify-mutation-evidence >/dev/null && \
 	 echo "✓ mutation evidence"
+	@scripts/gate-attest.sh
 
 # TLA+ broker lifecycle (Java + tla2tools). Not on the pre-push hook;
 # run before a release.

@@ -5,7 +5,7 @@ Consumer API: [`agents-guide.md`](agents-guide.md). This file is for
 agents working *in* this repo.
 
 ```bash
-make gate                      # hermetic owner gate (pre-push); same as CI
+make gate                      # hermetic owner gate; attests the tree for pre-push
 make live                      # real backends; each live env is opt-in
 make supervisor-install        # host daemon under supervisord (evicts brew/launchd)
 ```
@@ -193,7 +193,11 @@ override:
   - pr-workflow: skip
   - ci-green: skip
 
-The owner gate is local `make gate`, run by `scripts/hooks/pre-push`.
+The owner gate is local `make gate`. It attests the tree it passed on
+(`.git/gate-attestation`, per clone, untracked); `scripts/hooks/pre-push`
+builds, vets, and refuses a push unless that attestation names the tree of
+every commit going out — it does not re-run the gate, which takes ~25
+minutes, longer than GitHub keeps an idle SSH connection.
 Do not wait on `.github/workflows/test.yml`. `make live` remains a
 release-time owner gate for backend-behaviour changes. `/release` on
 this repo: commit prep on master, `make gate` (and `make live` if the
