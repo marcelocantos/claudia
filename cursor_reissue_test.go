@@ -22,11 +22,15 @@ import (
 // peer answers when this test writes its answer and not before, and every
 // assertion is about an event that did or did not arrive.
 //
-// The one clock left is the product's own silence bound, which is what
-// provokes the re-issue. That direction is safe: a bound too long only
-// makes the test slower, and the peer is unconditionally silent on the
-// delivery the bound is watching, so the verdict cannot depend on how
-// fast the host was.
+// The one clock left is the product's own silence bound, and it runs
+// twice. The first wait watches a delivery the peer is unconditionally
+// silent on, so no value can make that verdict depend on the host. The
+// second wait is different: the peer answers inside it, and if the host
+// schedules that answer late the client abandons the turn, clears the
+// redeemable ids, and a correct build fails exactly as a broken one does.
+// So every test here whose peer must SPEAK takes cursorHermeticPeerBound,
+// the product's own 6.5x ratio, as shortenCursorSilenceBound's contract
+// asks. Only the test whose peer never speaks may pass a small bound.
 type acpTestPeer struct {
 	t     *testing.T
 	lines chan acpRPCMessage
@@ -213,7 +217,7 @@ func (s *turnSink) awaitTerminal(t *testing.T) (string, bool) {
 // silence — `reply "", want pong` when something else ends the wait, and
 // an indefinite park in WaitForResponse when nothing does.
 func TestCursorReissueRedeemsLateReplyToAbandonedDelivery(t *testing.T) {
-	shortenCursorSilenceBound(t, 200*time.Millisecond)
+	shortenCursorSilenceBound(t, cursorHermeticPeerBound)
 	sink := newTurnSink()
 	c, peer := pipedCursorClient(t, sink.onEvent)
 
@@ -250,7 +254,7 @@ func TestCursorReissueRedeemsLateReplyToAbandonedDelivery(t *testing.T) {
 // second road. The surviving delivery still owes a terminal event, and
 // gets to deliver it.
 func TestCursorReissueDoesNotEndTurnOnCancellationAck(t *testing.T) {
-	shortenCursorSilenceBound(t, 200*time.Millisecond)
+	shortenCursorSilenceBound(t, cursorHermeticPeerBound)
 	sink := newTurnSink()
 	c, peer := pipedCursorClient(t, sink.onEvent)
 
@@ -290,7 +294,7 @@ func TestCursorReissueDoesNotEndTurnOnCancellationAck(t *testing.T) {
 // redeemable. Cancelling first — the old order — made the outcome a race
 // between the reply and the stack swap.
 func TestCursorReissueKeepsAReplyRacingTheRedelivery(t *testing.T) {
-	shortenCursorSilenceBound(t, 200*time.Millisecond)
+	shortenCursorSilenceBound(t, cursorHermeticPeerBound)
 	sink := newTurnSink()
 	c, peer := pipedCursorClient(t, sink.onEvent)
 
