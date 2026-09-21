@@ -755,6 +755,20 @@ func startWithBackendContext(ctx context.Context, cfg Config, backend agentBacke
 	if (provider == ProviderClaude) && cfg.RequireResume && !resuming {
 		return nil, fmt.Errorf("session %s: existing conversation required but JSONL not found at %s — refusing to mint a replacement session", sessionID, jsonlPath)
 	}
+	// A resumed transcript already holds the conversation being resumed.
+	// Tailing it from byte zero republished every earlier turn as if the
+	// relaunched seat had just said it: a daemon that rewinds a seat binds
+	// the owner's stream to the relaunch after it starts, so the surviving
+	// turn's "ok" reached the owner as the answer to its next question
+	// (🎯T114). The end is measured before the relaunch appends anything,
+	// so every line the resumed seat writes is still published. A pooled
+	// window does the same for a previous holder's turns (🎯T78).
+	var tailFrom int64
+	if resuming {
+		if fi, err := os.Stat(jsonlPath); err == nil {
+			tailFrom = fi.Size()
+		}
+	}
 
 	disallowed := disallowedToolList(cfg.DisallowTools)
 
@@ -870,7 +884,7 @@ func startWithBackendContext(ctx context.Context, cfg Config, backend agentBacke
 	}
 
 	if start.TailJSONL {
-		go a.tailJSONL()
+		go a.tailJSONLFrom(tailFrom)
 	}
 	// Claude Session: poll capture-pane for provisional ⏺ preview (🎯T51).
 	if start.TailJSONL && windowID != "" {
@@ -2294,8 +2308,9 @@ func tailStartOffset(size, want int64) int64 {
 }
 
 // tailJSONLFrom is tailJSONL starting at a byte offset into the
-// transcript. A Start-ed agent owns its transcript from byte zero, so it
-// tails from 0. A pooled window's transcript already holds the turns of
+// transcript. A fresh Start owns its transcript from byte zero, so it
+// tails from 0; a Start that resumes one tails from where the resumed
+// conversation ends (🎯T114). A pooled window's transcript already holds the turns of
 // every holder before this one, and offset is the end of the file at the
 // moment this holder acquired it: replaying those turns into the new
 // holder's subscribers would be somebody else's conversation arriving as
