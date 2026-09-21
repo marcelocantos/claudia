@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -257,10 +258,15 @@ func prepareExclusiveCodexHome(servers []MCPServer, sandbox codexSandboxTuning) 
 type codexSandboxTuning struct {
 	WritableRoots []string
 	NetworkAccess bool
+
+	// GitRoots are the seat's own git directories (🎯T109). They are
+	// written as writable roots like any other, and unlike the others
+	// their absence from the echoed sandbox refuses the start.
+	GitRoots []string
 }
 
 func (t codexSandboxTuning) empty() bool {
-	return len(t.WritableRoots) == 0 && !t.NetworkAccess
+	return len(t.WritableRoots) == 0 && len(t.GitRoots) == 0 && !t.NetworkAccess
 }
 
 // codexSandboxTOML renders the [sandbox_workspace_write] stanza. Codex
@@ -270,9 +276,9 @@ func codexSandboxTOML(t codexSandboxTuning) string {
 	// Decide what there is to say BEFORE writing a header: a stanza with
 	// no keys is not harmless, it overrides whatever the user's own
 	// config said.
-	quoted := make([]string, 0, len(t.WritableRoots))
-	for _, r := range t.WritableRoots {
-		if r = strings.TrimSpace(r); r != "" {
+	quoted := make([]string, 0, len(t.WritableRoots)+len(t.GitRoots))
+	for _, r := range slices.Concat(t.WritableRoots, t.GitRoots) {
+		if r = strings.TrimSpace(r); r != "" && !slices.Contains(quoted, strconv.Quote(r)) {
 			quoted = append(quoted, strconv.Quote(r))
 		}
 	}

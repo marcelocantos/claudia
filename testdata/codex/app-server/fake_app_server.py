@@ -61,6 +61,35 @@ def _has_rollout(tid: str) -> bool:
     return False
 
 
+SANDBOX_TYPES = {
+    "read-only": "readOnly",
+    "workspace-write": "workspaceWrite",
+    "danger-full-access": "dangerFullAccess",
+}
+
+
+def _effective_sandbox(mode: str) -> dict:
+    """The sandbox object thread/start echoes. Like live Codex, writable
+    roots come from CODEX_HOME/config.toml ([sandbox_workspace_write]
+    writable_roots) and from nowhere on the wire.
+
+    FAKE_CODEX_DROP_WRITABLE_ROOTS=1 is a CLI that ignores that stanza: the
+    grant is asked for and not given (claudia T109)."""
+    kind = SANDBOX_TYPES.get(mode or "read-only", "readOnly")
+    if kind != "workspaceWrite":
+        return {"type": kind}
+    roots: list[str] = []
+    home = os.environ.get("CODEX_HOME") or ""
+    cfg = os.path.join(home, "config.toml") if home else ""
+    if cfg and os.path.isfile(cfg) and os.environ.get("FAKE_CODEX_DROP_WRITABLE_ROOTS") != "1":
+        with open(cfg, encoding="utf-8") as fh:
+            for line in fh:
+                key, _, value = line.partition("=")
+                if key.strip() == "writable_roots":
+                    roots = json.loads(value.strip())
+    return {"type": kind, "writableRoots": roots, "networkAccess": False}
+
+
 def _on_term(_signum: int, _frame: object) -> None:
     _flush_home("sigterm")
     sys.exit(0)
@@ -165,7 +194,7 @@ def main() -> None:
                         "model": model,
                         "approvalPolicy": params.get("approvalPolicy") or "never",
                         "cwd": params.get("cwd") or "",
-                        "sandbox": {"type": "readOnly"},
+                        "sandbox": _effective_sandbox(params.get("sandbox") or ""),
                     },
                 }
             )
@@ -202,6 +231,7 @@ def main() -> None:
                     "result": {
                         "thread": {"id": thread_id},
                         "model": params.get("model") or "gpt-5-codex",
+                        "sandbox": _effective_sandbox(params.get("sandbox") or ""),
                     },
                 }
             )

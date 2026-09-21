@@ -94,6 +94,13 @@ type Config struct {
 	// ProviderCodex Session (e.g. "read-only", "workspace-write").
 	// Empty keeps the safe default of read-only (🎯T37). Other
 	// providers refuse a non-empty value rather than drop it.
+	//
+	// "workspace-write" also grants the working directory's git
+	// directories (the shared one, for a linked worktree). Codex would
+	// otherwise keep `.git` read-only inside a writable workdir, and a
+	// seat could edit its repo without being able to commit to it. Start
+	// fails, naming the directory, if the app-server reports a sandbox
+	// without that grant (🎯T109).
 	SandboxMode string
 
 	// SandboxWritableRoots and SandboxNetworkAccess widen a Codex
@@ -1164,17 +1171,29 @@ func startCodexAgent(req agentStartRequest) (*agentStart, error) {
 	// lists turn/steer gets the mechanism wired (🎯T72.2).
 	steerSupported := codexAppServerSupportsSteer(bin)
 
+	// workspace-write keeps the repo's .git read-only unless the git
+	// directories are granted as writable roots of their own (🎯T109).
+	sandboxTuning := codexSandboxTuning{
+		WritableRoots: req.Config.SandboxWritableRoots,
+		NetworkAccess: req.Config.SandboxNetworkAccess,
+	}
+	if resolveCodexSandbox(req.Config.SandboxMode) == codexSandboxWorkspaceWrite {
+		gitRoots, gerr := codexGitWritableRoots(req.WorkDir)
+		if gerr != nil {
+			return nil, fmt.Errorf("codex workspace-write sandbox keeps .git read-only and the git directory to grant could not be resolved — refusing to start a seat that cannot commit: %w", gerr)
+		}
+		sandboxTuning.GitRoots = gitRoots
+	}
+
 	var bind acpBind
 
 	var extraEnv []string
 	var mcpCleanup func()
 	var exclusiveHome string
-	if needsSessionMCPMaterialization(req.Config) {
-		home, cleanup, herr := exclusiveCodexHomeForStart(req.SessionID, req.Config.RequireResume, mergeMCPServers(req.Config),
-			codexSandboxTuning{
-				WritableRoots: req.Config.SandboxWritableRoots,
-				NetworkAccess: req.Config.SandboxNetworkAccess,
-			})
+	// The grant rides CODEX_HOME/config.toml like the rest of the tuning,
+	// so it demands a private home for the same reason (🎯T598).
+	if needsSessionMCPMaterialization(req.Config) || len(sandboxTuning.GitRoots) > 0 {
+		home, cleanup, herr := exclusiveCodexHomeForStart(req.SessionID, req.Config.RequireResume, mergeMCPServers(req.Config), sandboxTuning)
 		if herr != nil {
 			return nil, herr
 		}
@@ -1183,8 +1202,7 @@ func startCodexAgent(req agentStartRequest) (*agentStart, error) {
 		extraEnv = exclusiveEnv("CODEX_HOME", home)
 	}
 	client, err := startCodexAppServer(bin, req.WorkDir, req.Config.Model, req.SessionID, req.Config.RequireResume, req.Config.SandboxMode,
-		codexSandboxTuning{WritableRoots: req.Config.SandboxWritableRoots, NetworkAccess: req.Config.SandboxNetworkAccess},
-		extraEnv, bind.onEvent, bind.onClose)
+		sandboxTuning, extraEnv, bind.onEvent, bind.onClose)
 	if err != nil {
 		if mcpCleanup != nil {
 			mcpCleanup()

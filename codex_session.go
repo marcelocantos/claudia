@@ -411,8 +411,7 @@ func (c *codexAppServerClient) openThread(workDir, model, sessionID string, requ
 			Sandbox:        c.sandboxMode(),
 		}), codexAppServerThreadTimeout)
 		if err == nil {
-			c.applyThreadResult(line, sessionID)
-			return nil
+			return c.applyThreadResult(line, sessionID)
 		}
 		if requireResume {
 			return fmt.Errorf("session %s: existing Codex thread required but thread/resume failed: %w — refusing to mint a replacement session", sessionID, err)
@@ -430,7 +429,9 @@ func (c *codexAppServerClient) openThread(workDir, model, sessionID string, requ
 	if err != nil {
 		return err
 	}
-	c.applyThreadResult(line, "")
+	if err := c.applyThreadResult(line, ""); err != nil {
+		return err
+	}
 	if c.ThreadID() == "" {
 		return fmt.Errorf("codex app-server: thread/start returned no thread id")
 	}
@@ -525,19 +526,29 @@ type codexEffectiveSandbox struct {
 	WritableRoots []string `json:"writableRoots"`
 }
 
+// parseEffectiveSandbox reads the echo from where the app-server puts it:
+// `result.sandbox`, a sibling of `result.thread` (codex-cli 0.155, and the
+// 0.146 live fixture). It used to read `result.thread.sandbox` only, which
+// no live response carries, so every 🎯T598 check returned early on an
+// empty type and verified nothing (🎯T109). The nested shape is still
+// accepted in case a CLI ever sends it.
 func parseEffectiveSandbox(line []byte) codexEffectiveSandbox {
 	var envelope struct {
 		Result struct {
-			Thread struct {
+			Sandbox codexEffectiveSandbox `json:"sandbox"`
+			Thread  struct {
 				Sandbox codexEffectiveSandbox `json:"sandbox"`
 			} `json:"thread"`
 		} `json:"result"`
 	}
 	_ = json.Unmarshal(line, &envelope)
+	if envelope.Result.Sandbox.Type != "" {
+		return envelope.Result.Sandbox
+	}
 	return envelope.Result.Thread.Sandbox
 }
 
-func (c *codexAppServerClient) applyThreadResult(line []byte, fallbackID string) {
+func (c *codexAppServerClient) applyThreadResult(line []byte, fallbackID string) error {
 	// Snapshot under the lock before reading anything the reader goroutine
 	// owns. dispatch() writes threadID (and model, turnID) from the stdout
 	// pump while this runs on the caller's goroutine, so reading them bare
@@ -549,7 +560,13 @@ func (c *codexAppServerClient) applyThreadResult(line []byte, fallbackID string)
 	c.mu.Lock()
 	mode, tuning, threadID := resolveCodexSandbox(c.sandbox), c.sandboxTuning, c.threadID
 	c.mu.Unlock()
-	checkEffectiveSandbox(mode, tuning, parseEffectiveSandbox(line), threadID)
+	effective := parseEffectiveSandbox(line)
+	checkEffectiveSandbox(mode, tuning, effective, threadID)
+	// Every other mismatch is logged; a git dir left read-only refuses
+	// the start (🎯T109).
+	if err := checkGitRootsGranted(tuning.GitRoots, effective); err != nil {
+		return err
+	}
 
 	ev, ok, err := parseCodexAppServerLine(line)
 	c.mu.Lock()
@@ -563,11 +580,12 @@ func (c *codexAppServerClient) applyThreadResult(line []byte, fallbackID string)
 		if ev.Model != "" {
 			c.model = ev.Model
 		}
-		return
+		return nil
 	}
 	if fallbackID != "" {
 		c.threadID = fallbackID
 	}
+	return nil
 }
 
 func (c *codexAppServerClient) Prompt(text string) error {
