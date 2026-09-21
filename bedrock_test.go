@@ -204,6 +204,8 @@ func (f *fakeBedrockStreamer) Stream(ctx context.Context, args bedrockStreamArgs
 			<-ctx.Done()
 			return
 		}
+		// 🎯T97 exemption: the fake's simulated latency. It delays the stream
+		// and decides nothing; the caller's ctx still ends it.
 		if f.delay > 0 {
 			select {
 			case <-time.After(f.delay):

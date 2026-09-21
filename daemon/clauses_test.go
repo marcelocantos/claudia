@@ -19,6 +19,7 @@ import (
 
 	"github.com/marcelocantos/claudia"
 	"github.com/marcelocantos/claudia/internal/broker"
+	"github.com/marcelocantos/claudia/internal/wallclockguard"
 )
 
 // Clause oracles the first daemon suite did not name (2026-09-12 vcheck
@@ -269,9 +270,7 @@ func TestKillMidTurnReclaimPerProvider(t *testing.T) {
 				s.inFlight.Store(false)
 				proc.PublishEvent(claudia.Event{Type: "assistant", Text: "the answer", StopReason: "end_turn"})
 			}()
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			text, err := second.WaitForResponse(ctx)
+			text, err := second.WaitForResponse(wallclockguard.UntilTestTimeout(t))
 			if err != nil || text != "the answer" {
 				t.Fatalf("WaitForResponse after reclaim = %q, %v", text, err)
 			}
@@ -500,9 +499,7 @@ func TestT70UnownedStreamSurvivesBounceRing(t *testing.T) {
 		t.Fatalf("reclaim: %v", err)
 	}
 	t.Cleanup(second.Stop)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	text, err := second.WaitForResponse(ctx)
+	text, err := second.WaitForResponse(wallclockguard.UntilTestTimeout(t))
 	if err != nil || text != "the answer" {
 		t.Fatalf("WaitForResponse after reclaim = %q, %v", text, err)
 	}

@@ -747,8 +747,7 @@ func TestWaitForResponseIgnoresNonAssistantEvents(t *testing.T) {
 	// Verify WaitForResponse has NOT returned yet (no assistant event
 	// with terminal stop has been seen).
 	//
-	// This clock is kept, and is the one shape 🎯T31 allows: expiry is the
-	// PASS. It gives a wrongly-armed settle timer a full window plus slack to
+	// 🎯T97 exemption: expiry is the PASS, the one shape 🎯T31 allows. It gives a wrongly-armed settle timer a full window plus slack to
 	// fire, so load can only make the check more patient, never RED.
 	select {
 	case r := <-done:

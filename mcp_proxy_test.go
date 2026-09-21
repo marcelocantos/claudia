@@ -13,7 +13,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
+
+	"github.com/marcelocantos/claudia/internal/wallclockguard"
 )
 
 func TestMCPProxyOpenPassThrough(t *testing.T) {
@@ -422,7 +423,7 @@ func TestMCPProxyConcurrent401AuthorizesOnce(t *testing.T) {
 	}
 	select {
 	case <-started:
-	case <-time.After(2 * time.Second):
+	case <-wallclockguard.UntilTestTimeout(t).Done():
 		t.Fatal("Authorize never started")
 	}
 	close(release)

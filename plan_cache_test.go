@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/marcelocantos/claudia/internal/wallclockguard"
 )
 
 func TestLoadPlanUsageFreshHitSkipsFetch(t *testing.T) {
@@ -50,8 +52,7 @@ func TestLoadPlanUsageSingleFetchUnderContention(t *testing.T) {
 		}
 		return []PlanUsage{{Provider: ProviderClaude, Status: PlanUsageUnavailable, Reason: "once"}}, nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	ctx := wallclockguard.UntilTestTimeout(t)
 	args := func() *PlanUsageCacheArgs {
 		return &PlanUsageCacheArgs{
 			Dir:       dir,

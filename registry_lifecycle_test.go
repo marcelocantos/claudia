@@ -15,6 +15,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/marcelocantos/claudia/internal/wallclockguard"
 )
 
 func lifecycleFixture(t *testing.T, start func(context.Context, Config) (*Agent, error)) *Registry {
@@ -54,7 +56,7 @@ func lifecycleAwait[T any](t *testing.T, ch <-chan T) T {
 	select {
 	case value := <-ch:
 		return value
-	case <-time.After(2 * time.Second):
+	case <-wallclockguard.UntilTestTimeout(t).Done():
 		t.Fatal("lifecycle operation did not complete")
 	}
 	var zero T
@@ -164,14 +166,15 @@ func TestRegistryLifecycleStopJoinsCleanupAndFencesQueuedStart(t *testing.T) {
 			lifecycleAwait(t, entered)
 			queued := make(chan error, 1)
 			go func() { _, err := r.Launch("slow"); queued <- err }()
-			deadline := time.NewTimer(2 * time.Second)
-			defer deadline.Stop()
+			deadline := wallclockguard.UntilTestTimeout(t)
+			// 🎯T97 exemption: a poll interval. A tick only re-reads state; the
+			// wait's one failure is the UntilTestTimeout case, not this clock.
 			tick := time.NewTicker(time.Millisecond)
 			defer tick.Stop()
 		waitQueued:
 			for {
 				select {
-				case <-deadline.C:
+				case <-deadline.Done():
 					t.Fatal("second start did not reserve its wait")
 				case <-tick.C:
 					r.mu.Lock()
@@ -267,15 +270,16 @@ func TestRegistryCursorStopCancelsActualACPStartup(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() { _, err := r.Launch("cursor"); done <- err }()
-	deadline := time.NewTimer(5 * time.Second)
-	defer deadline.Stop()
+	deadline := wallclockguard.UntilTestTimeout(t)
+	// 🎯T97 exemption: a poll interval. A tick only re-reads state; the
+	// wait's one failure is the UntilTestTimeout case, not this clock.
 	tick := time.NewTicker(10 * time.Millisecond)
 	defer tick.Stop()
 	pid := 0
 waitLoad:
 	for {
 		select {
-		case <-deadline.C:
+		case <-deadline.Done():
 			t.Fatal("Cursor did not reach saved-session load")
 		case <-tick.C:
 			b, _ := os.ReadFile(logPath)

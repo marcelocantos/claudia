@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/marcelocantos/claudia/internal/wallclockguard"
 )
 
 func TestProbeMCPClassifiesOpenStaticOAuth(t *testing.T) {
@@ -133,9 +135,7 @@ func TestAuthorizeMCPCompletesPKCEAgainstFixture(t *testing.T) {
 		})
 	})
 
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
-	tok, err := AuthorizeMCP(ctx, &AuthorizeMCPArgs{
+	tok, err := AuthorizeMCP(wallclockguard.UntilTestTimeout(t), &AuthorizeMCPArgs{
 		URL: mcpURL,
 		OpenURL: func(auth string) error {
 			u, err := url.Parse(auth)

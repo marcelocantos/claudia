@@ -11,6 +11,20 @@ import (
 	"time"
 )
 
+// parkedAfter is how long the two tests below give a call that must not
+// park before calling it parked.
+//
+// 🎯T97 exemption: the clock is the verdict here, and it cannot be moved to
+// `go test -timeout` without making the regression cost the package's whole
+// 10m budget, which mutation-evidence.json runs under `make gate`. What keeps
+// it from outvoting a correct build is the ratio. The fixed path is a write
+// to an in-process discard pipe (or a return with no wait at all): no child
+// process, no I/O, microseconds of work. The broken path parks for the hour
+// the test set. 2s sits five orders of magnitude above the first and three
+// below the second; no host load this machine has reached (~300) stalls a
+// runnable goroutine for two seconds.
+const parkedAfter = 2 * time.Second
+
 // 🎯T91. The 🎯T83 silence watch reads peerSeq, and peerSeq only moves from
 // readLoop — which exists only on a client that owns a transport, the same
 // constructor that installs peerWoke. Armed on a client without one, the
@@ -36,7 +50,7 @@ func TestCursorPromptWithoutWakePathDoesNotPark(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Prompt on an unwatchable client = %v, want a plain write", err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(parkedAfter):
 		t.Fatal("Prompt parked on a client nothing can wake: the silence watch armed " +
 			"without a wake path, so its verdict was fixed before the wait began")
 	}
@@ -55,7 +69,7 @@ func TestAwaitPeerActivityWithoutWakePathReturnsAndSaysWhy(t *testing.T) {
 	var out peerWaitOutcome
 	select {
 	case out = <-done:
-	case <-time.After(2 * time.Second):
+	case <-time.After(parkedAfter):
 		t.Fatal("awaitPeerActivity parked on a client with no wake channel: " +
 			"a wait nothing can wake is a sleep with a predetermined verdict")
 	}

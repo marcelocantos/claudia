@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/marcelocantos/claudia/internal/wallclockguard"
 )
 
 // acpSteerClient is the seat-side surface both ACP clients share for the
@@ -454,6 +456,8 @@ func driveACPSteer(t *testing.T, ctx context.Context, c acpSteerClient, collecte
 	t.Helper()
 	waitFor := func(what string, pred func([]Event) bool) []Event {
 		t.Helper()
+		// 🎯T97 exemption: a poll interval. A tick only re-reads state; the
+		// wait's one failure is the UntilTestTimeout case, not this clock.
 		tick := time.NewTicker(50 * time.Millisecond)
 		defer tick.Stop()
 		for {
@@ -530,8 +534,7 @@ func TestHermeticACPSteerMidTurn(t *testing.T) {
 		t.Setenv("FAKE_ACP_STEER", "1")
 		var mu sync.Mutex
 		var got []Event
-		ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
-		defer cancel()
+		ctx := wallclockguard.UntilTestTimeout(t)
 		c, err := startCursorACP(ctx, bin, t.TempDir(), "", "", false, nil, nil, func(ev Event) {
 			mu.Lock()
 			got = append(got, ev)
@@ -557,8 +560,7 @@ func TestHermeticACPSteerMidTurn(t *testing.T) {
 		t.Setenv("FAKE_ACP_STEER", "1")
 		var mu sync.Mutex
 		var got []Event
-		ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
-		defer cancel()
+		ctx := wallclockguard.UntilTestTimeout(t)
 		c, err := startGrokACP(bin, t.TempDir(), "", "", false, nil, nil, func(ev Event) {
 			mu.Lock()
 			got = append(got, ev)

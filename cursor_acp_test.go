@@ -18,8 +18,10 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/google/uuid"
 	"time"
+
+	"github.com/google/uuid"
+	"github.com/marcelocantos/claudia/internal/wallclockguard"
 )
 
 func TestCursorACPCloseKillsAfterReadLoopClosed(t *testing.T) {
@@ -405,14 +407,15 @@ func TestCursorStartupCancellationAtEveryStage(t *testing.T) {
 				done <- err
 			}()
 			var pid int
-			deadline := time.NewTimer(10 * time.Second)
-			defer deadline.Stop()
+			deadline := wallclockguard.UntilTestTimeout(t)
+			// 🎯T97 exemption: a poll interval. A tick only re-reads state; the
+			// wait's one failure is the UntilTestTimeout case, not this clock.
 			tick := time.NewTicker(10 * time.Millisecond)
 			defer tick.Stop()
 		wait:
 			for {
 				select {
-				case <-deadline.C:
+				case <-deadline.Done():
 					t.Fatal("provider did not reach ", method)
 				case err := <-done:
 					t.Fatalf("startup returned before cancellation: %v", err)
@@ -439,7 +442,7 @@ func TestCursorStartupCancellationAtEveryStage(t *testing.T) {
 				if IsCursorResumeDenied(err) {
 					t.Fatalf("cancellation poisoned resume refusal: %v", err)
 				}
-			case <-time.After(2 * time.Second):
+			case <-wallclockguard.UntilTestTimeout(t).Done():
 				t.Fatal("startup cancellation did not finish")
 			}
 			if processAlive(pid) {
@@ -478,7 +481,7 @@ func TestCursorRequestCancellationInterruptsBlockedWrite(t *testing.T) {
 	go func() { _, err := c.requestContext(ctx, "initialize", nil); done <- err }()
 	select {
 	case <-writer.entered:
-	case <-time.After(2 * time.Second):
+	case <-wallclockguard.UntilTestTimeout(t).Done():
 		t.Fatal("request never reached blocked write")
 	}
 	cancel()
@@ -487,7 +490,7 @@ func TestCursorRequestCancellationInterruptsBlockedWrite(t *testing.T) {
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("want cancellation, got %v", err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-wallclockguard.UntilTestTimeout(t).Done():
 		t.Fatal("cancellation waited behind pipe write lock")
 	}
 	c.mu.Lock()
@@ -514,12 +517,11 @@ func TestCursorSuccessfulStartupDisarmsCancellation(t *testing.T) {
 	if err := c.Prompt("pong"); err != nil {
 		t.Fatalf("parent cancellation killed handed-off session: %v", err)
 	}
-	deadline := time.NewTimer(2 * time.Second)
-	defer deadline.Stop()
+	deadline := wallclockguard.UntilTestTimeout(t)
 	var reply strings.Builder
 	for {
 		select {
-		case <-deadline.C:
+		case <-deadline.Done():
 			t.Fatal("handed-off session did not complete a fresh reply after cancellation")
 		case ev := <-events:
 			if ev.SessionID != "saved-conversation" || ev.TurnID == "" {
@@ -538,13 +540,53 @@ func TestCursorSuccessfulStartupDisarmsCancellation(t *testing.T) {
 	}
 }
 
+// eventDeadline is a context whose deadline is an event rather than a
+// duration: it reports context.DeadlineExceeded once fired is closed, and
+// nothing before. A test that needs a deadline to expire in a particular
+// state fires it from that state instead of guessing how long reaching the
+// state will take.
+type eventDeadline struct {
+	context.Context
+	fired chan struct{}
+}
+
+func (d *eventDeadline) Done() <-chan struct{} { return d.fired }
+
+func (d *eventDeadline) Err() error {
+	select {
+	case <-d.fired:
+		return context.DeadlineExceeded
+	default:
+		return nil
+	}
+}
+
 func TestCursorStartupDeadlineDoesNotPoisonResume(t *testing.T) {
 	bin := writeFakeCursorACP(t)
 	t.Setenv("FAKE_ACP_WITHHOLD", "session/load")
 	logPath := filepath.Join(t.TempDir(), "requests.jsonl")
 	t.Setenv("FAKE_ACP_REQUEST_LOG", logPath)
-	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
-	defer cancel()
+	// The deadline has to expire while the peer is withholding
+	// session/load, because that is the state under test. A 1s
+	// context.WithTimeout used to stand in for it, and on a loaded host it
+	// could expire before the fake had even logged the request — failing
+	// the last assertion below for a reason that was the host's (🎯T97).
+	// So the deadline is an event: it fires once the log shows the
+	// withheld request, and not before.
+	ctx := &eventDeadline{Context: t.Context(), fired: make(chan struct{})}
+	go func() {
+		for {
+			b, _ := os.ReadFile(logPath)
+			if strings.Contains(string(b), `"session/load"`) {
+				close(ctx.fired)
+				return
+			}
+			if t.Context().Err() != nil {
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}()
 	c, err := startCursorACP(ctx, bin, t.TempDir(), "", "saved-conversation", true, nil, nil, nil, nil)
 	if c != nil {
 		c.Close()

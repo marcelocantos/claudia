@@ -83,9 +83,7 @@ func TestHermeticCursorTaskRun(t *testing.T) {
 		ID:       "cursor-hermetic",
 		WorkDir:  t.TempDir(),
 	})
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	ch, err := task.Run(ctx, "Reply with exactly: pong")
+	ch, err := task.Run(t.Context(), "Reply with exactly: pong")
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}

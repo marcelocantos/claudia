@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/marcelocantos/claudia/internal/broker"
+	"github.com/marcelocantos/claudia/internal/wallclockguard"
 )
 
 // The consumer-side survival oracle for 🎯T73.
@@ -152,7 +153,7 @@ func TestOversizedPushStillDeliversLaterPushes(t *testing.T) {
 		if err != nil || ev.Text != "after the hole" {
 			t.Fatalf("event after the hole: %+v, %v", ev, err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-wallclockguard.UntilTestTimeout(t).Done():
 		t.Fatal("the push stream stopped at the oversized frame")
 	}
 	noPeerError(t, errc)
@@ -216,7 +217,7 @@ func TestRelayedScreenshotSurvivesAWholeRoundTrip(t *testing.T) {
 		if !strings.Contains(string(ev.Raw), "[claudia: elided ") {
 			t.Error("the relayed payload does not name what it lost")
 		}
-	case <-time.After(5 * time.Second):
+	case <-wallclockguard.UntilTestTimeout(t).Done():
 		t.Fatal("the bounded screenshot never arrived")
 	}
 

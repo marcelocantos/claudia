@@ -5,7 +5,6 @@ package claudia
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"net/http"
 	"os"
@@ -13,9 +12,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/marcelocantos/claudia/internal/broker"
+	"github.com/marcelocantos/claudia/internal/wallclockguard"
 )
 
 func buildMCPStdioFixture(t *testing.T) string {
@@ -75,9 +74,7 @@ func TestMCPHostStdioInitializeOverHTTP(t *testing.T) {
 	h := testMCPHost(t)
 	got := h.Attach([]MCPServer{{Name: "fixture", Command: bin}})
 	body := []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}`)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, got[0].URL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(wallclockguard.UntilTestTimeout(t), http.MethodPost, got[0].URL, bytes.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
 	}

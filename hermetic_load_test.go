@@ -61,6 +61,8 @@ func (b delayedInitTaskBackend) RunTask(ctx context.Context, _ taskRunRequest) (
 	ch := make(chan TaskEvent, 2)
 	go func() {
 		defer close(ch)
+		// 🎯T97 exemption: the fake's simulated init latency — the load this
+		// test models. It delays an event and decides nothing; ctx ends it.
 		timer := time.NewTimer(b.delay)
 		defer timer.Stop()
 		select {

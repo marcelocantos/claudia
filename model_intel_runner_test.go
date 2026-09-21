@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/marcelocantos/claudia/internal/wallclockguard"
 )
 
 // TestRunModelIntelRefresherCadence (🎯T75.7): once at start, once per
@@ -54,7 +56,7 @@ func TestRunModelIntelRefresherCadence(t *testing.T) {
 	cancel()
 	select {
 	case <-done:
-	case <-time.After(5 * time.Second):
+	case <-wallclockguard.UntilTestTimeout(t).Done():
 		t.Fatal("refresher did not return on cancel")
 	}
 	mu.Lock()

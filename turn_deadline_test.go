@@ -139,8 +139,8 @@ func TestAWaitOnAManualClockIgnoresTheProcessDeadline(t *testing.T) {
 // what last arrived. The cause is still wrapped, so a caller testing for it
 // keeps working.
 //
-// The context here is already expired, and the cancelled case below needs no
-// clock either: neither verdict can be decided by how fast the host is.
+// 🎯T97 exemption: the context here is already expired, and the cancelled
+// case below needs no clock either: neither verdict can be decided by how fast the host is.
 func TestWaitForResponseNamesTheTurnWhenTheCallersDeadlineEnds(t *testing.T) {
 	a := waitFixture(NewManualClock(time.Now()), time.Hour, false)
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))

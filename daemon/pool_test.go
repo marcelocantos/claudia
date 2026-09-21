@@ -4,7 +4,6 @@
 package daemon
 
 import (
-	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/marcelocantos/claudia"
 	"github.com/marcelocantos/claudia/internal/broker/brokertest"
+	"github.com/marcelocantos/claudia/internal/wallclockguard"
 )
 
 // startPoolHost prepares real tmux on a private server and a fake claude
@@ -87,8 +87,7 @@ func TestAcquireSharesOneWarmSeatAcrossConsumers(t *testing.T) {
 	f := newFixture(t)
 	f.boot(t, nil)
 	workDir := t.TempDir()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
+	ctx := wallclockguard.UntilTestTimeout(t)
 
 	first, err := claudia.Acquire(ctx, claudia.Config{WorkDir: workDir, TermLogPath: "-"})
 	if err != nil {
@@ -134,8 +133,7 @@ func TestAcquiredSeatReturnsWhenConsumerLeaves(t *testing.T) {
 	f := newFixture(t)
 	f.boot(t, nil)
 	workDir := t.TempDir()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
+	ctx := wallclockguard.UntilTestTimeout(t)
 
 	first, err := claudia.Acquire(ctx, claudia.Config{WorkDir: workDir, TermLogPath: "-"})
 	if err != nil {
@@ -179,8 +177,7 @@ func TestAcquiredHandleOpsKeepAliveAndDirect(t *testing.T) {
 	poolWindows := startPoolHost(t)
 	f := newFixture(t)
 	f.boot(t, nil)
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
+	ctx := wallclockguard.UntilTestTimeout(t)
 	grants := func() int {
 		f.d.mu.Lock()
 		defer f.d.mu.Unlock()

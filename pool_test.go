@@ -501,6 +501,9 @@ func TestPoolCrashSurvivalHelper(t *testing.T) {
 		t.Fatal("CLAUDIA_POOL_CRASH_WORKDIR not set")
 	}
 
+	// 🎯T97 exemption: this runs only as the child process of the live
+	// TestPoolCrashSurvival, and Acquire bounds a real Claude TUI coming up —
+	// a genuinely unbounded wait on a real backend, not a fixture read.
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 

@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/marcelocantos/claudia/internal/wallclockguard"
 )
 
 // The 🎯T92 differential is deterministic, not statistical. cl-t33 showed
@@ -90,7 +92,7 @@ const pipedCursorSession = "sess-piped-cursor"
 // bound expires, which this test has already caused.
 func (p *acpTestPeer) nextPrompt() int64 {
 	p.t.Helper()
-	deadline := time.After(30 * time.Second)
+	deadline := wallclockguard.UntilTestTimeout(p.t).Done()
 	for {
 		select {
 		case msg, ok := <-p.lines:
@@ -110,7 +112,7 @@ func (p *acpTestPeer) nextPrompt() int64 {
 // backstop, same reason.
 func (p *acpTestPeer) nextMethod(method string) acpRPCMessage {
 	p.t.Helper()
-	deadline := time.After(30 * time.Second)
+	deadline := wallclockguard.UntilTestTimeout(p.t).Done()
 	for {
 		select {
 		case msg, ok := <-p.lines:
@@ -182,9 +184,9 @@ func (s *turnSink) onEvent(ev Event) {
 // generous backstop on a broken build, never the verdict on a healthy
 // one: a correct client publishes the terminal event as soon as the peer
 // answers, which this test has already caused.
-func (s *turnSink) awaitTerminal(t *testing.T, d time.Duration) (string, bool) {
+func (s *turnSink) awaitTerminal(t *testing.T) (string, bool) {
 	t.Helper()
-	deadline := time.After(d)
+	deadline := wallclockguard.UntilTestTimeout(t).Done()
 	for {
 		select {
 		case ev := <-s.events:
@@ -231,7 +233,7 @@ func TestCursorReissueRedeemsLateReplyToAbandonedDelivery(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatalf("Prompt: %v", err)
 	}
-	text, ok := sink.awaitTerminal(t, 10*time.Second)
+	text, ok := sink.awaitTerminal(t)
 	if !ok {
 		t.Fatalf("no terminal event for the surviving turn: the caller has nothing to stop waiting for "+
 			"(text so far %q). This is the indefinite park in WaitForResponse.", text)
@@ -267,7 +269,7 @@ func TestCursorReissueDoesNotEndTurnOnCancellationAck(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatalf("Prompt: %v", err)
 	}
-	text, ok := sink.awaitTerminal(t, 10*time.Second)
+	text, ok := sink.awaitTerminal(t)
 	if !ok {
 		t.Fatalf("no terminal event for the surviving turn (text so far %q)", text)
 	}
@@ -303,7 +305,7 @@ func TestCursorReissueKeepsAReplyRacingTheRedelivery(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatalf("Prompt: %v", err)
 	}
-	text, ok := sink.awaitTerminal(t, 10*time.Second)
+	text, ok := sink.awaitTerminal(t)
 	if !ok {
 		t.Fatalf("no terminal event (text so far %q)", text)
 	}

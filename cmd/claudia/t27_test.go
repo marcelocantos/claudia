@@ -18,6 +18,7 @@ import (
 	"github.com/marcelocantos/claudia"
 	"github.com/marcelocantos/claudia/daemon"
 	"github.com/marcelocantos/claudia/internal/broker"
+	"github.com/marcelocantos/claudia/internal/wallclockguard"
 )
 
 func TestSupervisorInstallRendersProgram(t *testing.T) {
@@ -221,7 +222,7 @@ func TestBrokerTailStreamsNDJSON(t *testing.T) {
 		}
 	case err := <-done:
 		t.Fatalf("tail exited before an event: %v", err)
-	case <-time.After(5 * time.Second):
+	case <-wallclockguard.UntilTestTimeout(t).Done():
 		t.Fatal("timed out waiting for tail NDJSON")
 	}
 	if ev.Kind == "" {
@@ -231,6 +232,8 @@ func TestBrokerTailStreamsNDJSON(t *testing.T) {
 	_ = d.Close()
 	_ = w.Close()
 	os.Stdout = old
+	// 🎯T97 exemption: a teardown drain. The assertions are over; expiry
+	// only stops cleanup waiting on the tail goroutine, and fails nothing.
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):

@@ -170,6 +170,10 @@ func TestCrashSurvivalHelper(t *testing.T) {
 	// Wait for readiness so the TUI is fully rendered before we
 	// announce ourselves. Otherwise the parent kills us during
 	// startup and capture-pane sees a blank viewport.
+	//
+	// 🎯T97 exemption: this runs only as the child process of the live
+	// TestCrashSurvival, and WaitReady bounds a real Claude TUI coming up —
+	// a genuinely unbounded wait on a real backend, not a fixture read.
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	if err := agent.WaitReady(ctx); err != nil {

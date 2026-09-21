@@ -118,8 +118,9 @@ func TestConnectServerRejectsSession(t *testing.T) {
 	}
 	// The rejection is reported through the return value only — no
 	// event loop started, so OnError must stay silent.
-	// Elapsing is the PASS (🎯T31): the window gives a wrongly-armed
-	// callback time to fire. Load can only make this more patient, never RED.
+	// 🎯T97 exemption: elapsing is the PASS (🎯T31). The window gives a
+	// wrongly-armed callback time to fire. Load can only make this more
+	// patient, never RED.
 	select {
 	case err := <-onError:
 		t.Errorf("OnError fired with %v, want no callback for a failed Connect", err)
@@ -296,8 +297,8 @@ func TestCloseNormalClosure(t *testing.T) {
 	if got := websocket.CloseStatus(s.closeErr(t)); got != websocket.StatusNormalClosure {
 		t.Errorf("close status = %v, want %v", got, websocket.StatusNormalClosure)
 	}
-	// Elapsing is the PASS (🎯T31): Close must not invoke OnError. Load
-	// can only make this more patient, never RED.
+	// 🎯T97 exemption: elapsing is the PASS (🎯T31). Close must not invoke
+	// OnError. Load can only make this more patient, never RED.
 	select {
 	case err := <-onError:
 		t.Errorf("OnError fired with %v after a deliberate Close", err)

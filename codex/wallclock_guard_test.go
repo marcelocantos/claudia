@@ -4,13 +4,9 @@
 package codex
 
 import (
-	goast "go/ast"
-	goparser "go/parser"
-	gotoken "go/token"
-	"os"
-	"path/filepath"
-	"strings"
 	"testing"
+
+	"github.com/marcelocantos/claudia/internal/wallclockguard"
 )
 
 // TestHermeticTestsHaveNoWallClockDeadline keeps 🎯T33 fixed.
@@ -32,11 +28,12 @@ import (
 // guard stops a deadline being reintroduced into a hermetic test, where a
 // slow machine could again outvote the assertion.
 //
-// Live tests (*_live_test.go) are exempt: they drive a real backend over the
-// network, where a deadline bounds a genuinely unbounded wait rather than a
-// local fixture read.
-//
-// time.Sleep is not flagged — it delays a test but cannot by itself fail one.
+// Live tests are exempt: they drive a real backend over the network, where a
+// deadline bounds a genuinely unbounded wait rather than a local fixture
+// read. 🎯T97 moved the scan into internal/wallclockguard so this package and
+// the root one share it, which also made "live" mean what livegate's census
+// says rather than a filename, and let a defensible clock carry an in-source
+// exemption instead of being banned outright.
 //
 // This guard sees clocks a test writes for itself. It cannot see one a test
 // merely arms: 🎯T93 was a product timeout in package claudia that
@@ -44,59 +41,20 @@ import (
 // test source at all. That half is guarded by
 // TestHermeticTestsDeclareTheProductBoundsTheyShorten in the root package.
 func TestHermeticTestsHaveNoWallClockDeadline(t *testing.T) {
-	// Constructs whose expiry can turn a slow machine into a failed assertion.
-	banned := map[string]string{
-		"context.WithTimeout":  "deadline can expire before the fixture is read",
-		"context.WithDeadline": "deadline can expire before the fixture is read",
-		"time.After":           "fires against whatever the select is racing",
-		"time.Tick":            "fires against whatever the select is racing",
-		"time.NewTimer":        "fires against whatever the select is racing",
-		"time.NewTicker":       "fires against whatever the select is racing",
-	}
-
-	entries, err := os.ReadDir(".")
+	rep, err := wallclockguard.Scan("..", ".")
 	if err != nil {
-		t.Fatalf("read package dir: %v", err)
+		t.Fatal(err)
 	}
-
-	fset := gotoken.NewFileSet()
-	var scanned int
-	for _, e := range entries {
-		name := e.Name()
-		if !strings.HasSuffix(name, "_test.go") || strings.HasSuffix(name, "_live_test.go") {
-			continue
-		}
-		scanned++
-		file, err := goparser.ParseFile(fset, filepath.Join(".", name), nil, 0)
-		if err != nil {
-			t.Fatalf("parse %s: %v", name, err)
-		}
-		goast.Inspect(file, func(n goast.Node) bool {
-			call, ok := n.(*goast.CallExpr)
-			if !ok {
-				return true
-			}
-			sel, ok := call.Fun.(*goast.SelectorExpr)
-			if !ok {
-				return true
-			}
-			pkg, ok := sel.X.(*goast.Ident)
-			if !ok {
-				return true
-			}
-			qualified := pkg.Name + "." + sel.Sel.Name
-			if why, bad := banned[qualified]; bad {
-				pos := fset.Position(call.Pos())
-				t.Errorf("%s:%d: hermetic test uses %s — %s (🎯T33). "+
-					"Wait on the event the test needs; let `go test -timeout` be the clock.",
-					name, pos.Line, qualified, why)
-			}
-			return true
-		})
-	}
-
 	// A guard that scanned nothing would pass forever.
-	if scanned == 0 {
+	if rep.Scanned == 0 {
 		t.Fatal("no hermetic test files scanned — guard is not looking at anything")
+	}
+	for _, c := range rep.Violations {
+		t.Errorf("%s: hermetic test uses %s — %s (🎯T33). "+
+			"Wait on the event the test needs; let `go test -timeout` be the clock.",
+			c.Pos(), c.Call, wallclockguard.Banned[c.Call])
+	}
+	for _, m := range rep.Markers {
+		t.Errorf("%s: %s (🎯T97)", m.Pos(), m.Why)
 	}
 }
