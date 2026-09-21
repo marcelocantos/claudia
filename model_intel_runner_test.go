@@ -46,6 +46,11 @@ func TestRunModelIntelRefresherCadence(t *testing.T) {
 		return runs
 	}
 	waitFor(t, "refresh at start", func() bool { return count() == 1 })
+	// The runner registers its timer only after Refresh returns. Advancing
+	// before that leaves the timer to be created past the advance, where it
+	// never fires: on a loaded host this test hung for 504 s into the package
+	// timeout (owner gate 708bfe8c, 2026-09-22). Wait for the timer itself.
+	waitFor(t, "the interval timer is registered", func() bool { return clock.Pending() == 1 })
 	clock.Advance(59 * time.Minute)
 	time.Sleep(20 * time.Millisecond)
 	if got := count(); got != 1 {
