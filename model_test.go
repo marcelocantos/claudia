@@ -6,6 +6,7 @@ package claudia
 import (
 	"context"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -223,8 +224,37 @@ func TestHermeticBedrockTaskReportsResolvedModel(t *testing.T) {
 	}
 }
 
-// TestModelObservableLive: alias "fable" must resolve to the full id via
-// Task.Model() — catches silent fallback. Gated on CLAUDIA_LIVE.
+// fableFamily is what the alias "fable" asks for: a full Fable id, of
+// whatever version the installed Claude Code maps the alias to. The CLI
+// owns that mapping, not claudia — `--model fable` is passed through
+// untouched — and it moved from claude-fable-5 to claude-fable-5-1 without
+// any change here, which turned a test pinned to one version RED for
+// every Claude-wire change (🎯T113). A pin to the new version would rot
+// the same way at the next bump.
+//
+// It is no looser than "the observed model is the one requested": the
+// request names the Fable family, and a silent fallback to Opus, Sonnet,
+// Haiku or "<synthetic>" still fails. TestFableFamilyRejectsFallbacks
+// pins that.
+var fableFamily = regexp.MustCompile(`^claude-fable-\d+(?:-\d+)?$`)
+
+func TestFableFamilyRejectsFallbacks(t *testing.T) {
+	t.Parallel()
+	for _, id := range []string{"claude-fable-5", "claude-fable-5-1", "claude-fable-6"} {
+		if !fableFamily.MatchString(id) {
+			t.Errorf("%q is a Fable id and must satisfy the fable alias", id)
+		}
+	}
+	for _, id := range []string{"", "<synthetic>", "fable", "claude-opus-5", "claude-sonnet-5",
+		"claude-haiku-4-5", "claude-fable", "claude-fable-5-1-x", "not-claude-fable-5"} {
+		if fableFamily.MatchString(id) {
+			t.Errorf("%q is not a Fable id; accepting it would hide a silent fallback", id)
+		}
+	}
+}
+
+// TestModelObservableLive: alias "fable" must resolve to a full Fable id
+// via Task.Model() — catches silent fallback. Gated on CLAUDIA_LIVE.
 func TestModelObservableLive(t *testing.T) {
 	if os.Getenv("CLAUDIA_LIVE") == "" {
 		t.Skip("CLAUDIA_LIVE not set (this test spends API credit)")
@@ -241,8 +271,8 @@ func TestModelObservableLive(t *testing.T) {
 	}
 	for range ch {
 	}
-	if got := task.Model(); got != "claude-fable-5" {
-		t.Fatalf("Task.Model() = %q, want claude-fable-5 — alias 'fable' must resolve, not silently fall back", got)
+	if got := task.Model(); !fableFamily.MatchString(got) {
+		t.Fatalf("Task.Model() = %q, want a claude-fable-<version> id — alias 'fable' must resolve, not silently fall back", got)
 	}
 }
 
