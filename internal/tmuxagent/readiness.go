@@ -238,6 +238,10 @@ type readyDriver struct {
 	// quiet overrides drawingQuietWindow; zero means the production value.
 	// It exists so a hermetic wait of milliseconds can outlast the window.
 	quiet time.Duration
+	// now overrides time.Now for the wait's deadline and milestones, so a
+	// hermetic frame sequence is judged by the frames it shows, not by
+	// how fast the host runs the loop. Nil means time.Now.
+	now func() time.Time
 }
 
 // WaitReady polls capture-pane at `poll` intervals until MatchReady
@@ -259,7 +263,11 @@ func WaitReady(windowID string, poll, timeout time.Duration) (time.Duration, err
 }
 
 func waitReadyLoop(d readyDriver, poll, timeout, menuSettle time.Duration) (time.Duration, error) {
-	start := time.Now()
+	now := d.now
+	if now == nil {
+		now = time.Now
+	}
+	start := now()
 	deadline := start.Add(timeout)
 
 	var lastFrame []byte
@@ -272,8 +280,8 @@ func waitReadyLoop(d readyDriver, poll, timeout, menuSettle time.Duration) (time
 	}
 
 	for {
-		if !time.Now().Before(deadline) {
-			obs.waited = time.Since(start)
+		if !now().Before(deadline) {
+			obs.waited = now().Sub(start)
 			return 0, readyTimeoutErr(menuSeen, dismissals, timeout, lastFrame, lastErr, obs)
 		}
 
@@ -285,13 +293,13 @@ func waitReadyLoop(d readyDriver, poll, timeout, menuSettle time.Duration) (time
 				// the wait ends now rather than polling it for the rest of
 				// a bound sized for a slow host (🎯T108).
 				obs.captureLost = true
-				obs.waited = time.Since(start)
+				obs.waited = now().Sub(start)
 				return 0, readyTimeoutErr(menuSeen, dismissals, timeout, lastFrame, lastErr, obs)
 			}
 			time.Sleep(poll)
 			continue
 		}
-		at := time.Since(start)
+		at := now().Sub(start)
 		if !bytes.Equal(frame, lastFrame) {
 			obs.lastChange = at
 		}
@@ -304,7 +312,7 @@ func waitReadyLoop(d readyDriver, poll, timeout, menuSettle time.Duration) (time
 		lastFrame = frame
 
 		if MatchReady(frame) {
-			return time.Since(start), nil
+			return now().Sub(start), nil
 		}
 
 		if MatchStartupMenu(frame) && dismissals < maxMenuDismissals {

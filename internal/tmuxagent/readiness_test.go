@@ -564,8 +564,17 @@ func TestWaitReadyComposerSeenIsNeverNoComposer(t *testing.T) {
 	splashNoRC := strings.ReplaceAll(startupSplashFrame, " /rc connecting…", "")
 	frames := []string{"", "", splashNoRC}
 	i := 0
+	// Each capture is 10ms of wait on a clock the test owns, so the loop
+	// sees every frame below before its 100ms bound whatever the host load.
+	// On the wall clock this test ran out on the splash at load 150. The
+	// box-less frame then sits unchanged for 60ms, far past the 1ms quiet
+	// window, so only the composer the loop saw can keep this out of
+	// no_composer.
+	clock := time.Unix(0, 0)
 	d := readyDriver{
+		now: func() time.Time { return clock },
 		capture: func() ([]byte, error) {
+			clock = clock.Add(10 * time.Millisecond)
 			if i < len(frames) {
 				i++
 				return []byte(frames[i-1]), nil
@@ -577,7 +586,7 @@ func TestWaitReadyComposerSeenIsNeverNoComposer(t *testing.T) {
 		// saw keeps this out of no_composer.
 		quiet: time.Millisecond,
 	}
-	_, err := waitReadyLoop(d, time.Millisecond, 40*time.Millisecond, time.Millisecond)
+	_, err := waitReadyLoop(d, time.Millisecond, 100*time.Millisecond, time.Millisecond)
 	if err == nil {
 		t.Fatal("expected a timeout")
 	}
@@ -594,8 +603,13 @@ func TestWaitReadyComposerSeenIsNeverNoComposer(t *testing.T) {
 // a composer at all.
 func TestWaitReadyQuietPaneWithoutComposerIsNoComposer(t *testing.T) {
 	t.Parallel()
+	clock := time.Unix(0, 0)
 	d := readyDriver{
-		capture:   func() ([]byte, error) { return []byte(streamingFrame), nil },
+		now: func() time.Time { return clock },
+		capture: func() ([]byte, error) {
+			clock = clock.Add(10 * time.Millisecond)
+			return []byte(streamingFrame), nil
+		},
 		sendEnter: func() error { t.Fatal("no menu to dismiss"); return nil },
 		quiet:     time.Millisecond,
 	}
