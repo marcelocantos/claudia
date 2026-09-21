@@ -37,6 +37,7 @@ func (b *brokerTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*t
 	cfg.WorkDir = req.WorkDir
 	cfg.Model = req.Model
 	cfg.SandboxMode = req.SandboxMode
+	cfg.SandboxGitWrite = req.SandboxGitWrite
 	cfg.ApprovalPolicy = req.ApprovalPolicy
 	cfg.DisallowTools = req.DisallowTools
 	cfg.ClaudeID = req.SessionID

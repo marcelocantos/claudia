@@ -103,6 +103,34 @@ The grant covers `.git` only. A worktree added *outside* `WorkDir`
 (`git worktree add ../tree`) also needs its destination in
 `SandboxWritableRoots`.
 
+Task mode is the same sandbox with a quieter failure: under
+`SandboxMode: "workspace-write"`, `codex exec` refuses the commit and
+still exits 0. `TaskConfig.SandboxGitWrite` is the same opt-in, with the
+same trade-off, and `Run` logs the same warning when it is unset.
+
+```go
+task := claudia.NewTask(claudia.TaskConfig{
+    Provider:        claudia.ProviderCodex,
+    WorkDir:         "/abs/path/to/repo",
+    SandboxMode:     "workspace-write", // must be spelled out for the grant
+    SandboxGitWrite: true,
+    ApprovalPolicy:  "never",
+})
+```
+
+`Run` refuses `SandboxGitWrite` unless `SandboxMode` is
+`workspace-write` (or `danger-full-access`, where there is nothing to
+grant): an empty `SandboxMode` leaves the mode to the user's
+`config.toml`, which claudia does not read, so the grant could land on a
+read-only run and be dropped in silence.
+
+In both modes the grant travels as a
+`-c sandbox_workspace_write.writable_roots=[…]` override. A `-c` value
+replaces the list in `CODEX_HOME/config.toml` rather than adding to it.
+A Session repeats its own `SandboxWritableRoots` in the override; roots
+the *user* wrote into `~/.codex/config.toml` by hand are not read, and do
+not apply to a run that sets `SandboxGitWrite`.
+
 ### Grok Build CLI provider (Task mode)
 
 ```go

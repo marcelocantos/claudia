@@ -40,7 +40,7 @@ func cursorTaskPrecheck(req taskRunRequest) error {
 	if len(req.DisallowTools) > 0 {
 		return capabilityRefusal(ProviderCursor, CapabilityToolRestrictions, cursorToolRestrictionsReason)
 	}
-	if req.SandboxMode != "" {
+	if req.SandboxMode != "" || req.SandboxGitWrite {
 		return capabilityRefusal(ProviderCursor, CapabilitySandboxPolicy, sandboxPolicyIsCodexOnlyReason)
 	}
 	if req.ApprovalPolicy != "" {

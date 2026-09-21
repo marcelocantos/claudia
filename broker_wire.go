@@ -129,16 +129,17 @@ func DecodeTaskEventWire(raw json.RawMessage) (TaskEvent, error) {
 
 // taskConfigWire is TaskConfig with wire tags.
 type taskConfigWire struct {
-	ID             string   `json:"id,omitempty"`
-	Name           string   `json:"name,omitempty"`
-	Provider       Provider `json:"provider,omitempty"`
-	WorkDir        string   `json:"workdir,omitempty"`
-	Model          string   `json:"model,omitempty"`
-	SandboxMode    string   `json:"sandbox_mode,omitempty"`
-	ApprovalPolicy string   `json:"approval_policy,omitempty"`
-	DisallowTools  []string `json:"disallow_tools,omitempty"`
-	ClaudeID       string   `json:"claude_id,omitempty"`
-	LastResult     string   `json:"last_result,omitempty"`
+	ID              string   `json:"id,omitempty"`
+	Name            string   `json:"name,omitempty"`
+	Provider        Provider `json:"provider,omitempty"`
+	WorkDir         string   `json:"workdir,omitempty"`
+	Model           string   `json:"model,omitempty"`
+	SandboxMode     string   `json:"sandbox_mode,omitempty"`
+	SandboxGitWrite bool     `json:"sandbox_git_write,omitempty"`
+	ApprovalPolicy  string   `json:"approval_policy,omitempty"`
+	DisallowTools   []string `json:"disallow_tools,omitempty"`
+	ClaudeID        string   `json:"claude_id,omitempty"`
+	LastResult      string   `json:"last_result,omitempty"`
 }
 
 // EncodeTaskConfigWire is a TaskConfig in its daemon-protocol form (task_run).

@@ -175,7 +175,24 @@ type TaskConfig struct {
 
 	// SandboxMode selects Codex's sandbox mode for ProviderCodex. Empty
 	// leaves Codex's default in place.
+	//
+	// "workspace-write" makes WorkDir writable and keeps its `.git`
+	// read-only: the run can edit the repo and cannot commit to it, and
+	// `codex exec` still exits 0. Run logs a warning when that applies.
 	SandboxMode string
+
+	// SandboxGitWrite lets a workspace-write Codex Task write its repo's
+	// git directories, so it can `git commit` (🎯T116). It is the Task
+	// form of Config.SandboxGitWrite and carries the same warning: it is
+	// off by default because a writable `.git/hooks` or `.git/config`
+	// runs outside the sandbox on the operator's next git command
+	// (🎯T112). It needs SandboxMode "workspace-write" spelled out, and
+	// other providers refuse it.
+	//
+	// The grant is a `-c sandbox_workspace_write.writable_roots` override,
+	// which replaces, for that run, any writable_roots in the user's own
+	// ~/.codex/config.toml.
+	SandboxGitWrite bool
 
 	// ApprovalPolicy selects Codex's approval policy for ProviderCodex.
 	// Empty leaves Codex's default in place.
@@ -223,6 +240,7 @@ type Task struct {
 	workDir  string
 	model    string
 	sandbox  string
+	gitWrite bool
 	approval string
 	disallow []string
 
@@ -240,9 +258,13 @@ type Task struct {
 }
 
 type taskRunRequest struct {
-	WorkDir        string
-	Model          string
-	SandboxMode    string
+	WorkDir         string
+	Model           string
+	SandboxMode     string
+	SandboxGitWrite bool
+	// gitRoots are the git directories SandboxGitWrite resolved to; the
+	// Codex backend fills them in before it builds argv (🎯T116).
+	gitRoots       []string
 	ApprovalPolicy string
 	DisallowTools  []string
 	SessionID      string
@@ -329,6 +351,7 @@ func newTaskWithBackend(cfg TaskConfig, backend taskBackend) *Task {
 		model:      cfg.Model,
 		provider:   cfg.Provider,
 		sandbox:    cfg.SandboxMode,
+		gitWrite:   cfg.SandboxGitWrite,
 		approval:   cfg.ApprovalPolicy,
 		disallow:   cfg.DisallowTools,
 		status:     TaskStatusIdle,
@@ -423,14 +446,15 @@ func (t *Task) Run(ctx context.Context, prompt string) (<-chan TaskEvent, error)
 	t.mu.Unlock()
 
 	req := taskRunRequest{
-		WorkDir:        t.workDir,
-		Model:          t.model,
-		SandboxMode:    t.sandbox,
-		ApprovalPolicy: t.approval,
-		DisallowTools:  t.disallow,
-		SessionID:      cid,
-		Prompt:         prompt,
-		RawLog:         rawFn,
+		WorkDir:         t.workDir,
+		Model:           t.model,
+		SandboxMode:     t.sandbox,
+		SandboxGitWrite: t.gitWrite,
+		ApprovalPolicy:  t.approval,
+		DisallowTools:   t.disallow,
+		SessionID:       cid,
+		Prompt:          prompt,
+		RawLog:          rawFn,
 	}
 	var run *taskRun
 	var err error
@@ -587,7 +611,7 @@ func forwardTaskStream(
 // one; together they are what the request-field audit
 // (TestProviderPathsHonourOrRefuseEveryRequestField) probes.
 func claudeTaskPrecheck(req taskRunRequest) error {
-	if req.SandboxMode != "" || req.ApprovalPolicy != "" {
+	if req.SandboxMode != "" || req.SandboxGitWrite || req.ApprovalPolicy != "" {
 		return capabilityRefusal(ProviderClaude, CapabilitySandboxPolicy,
 			"the Claude tool_restrictions claim covers --disallowedTools only; claudeTaskArgs emits no sandbox or approval flag")
 	}
@@ -713,6 +737,13 @@ func codexTaskPrecheck(req taskRunRequest) error {
 		return capabilityRefusal(ProviderCodex, CapabilityToolRestrictions,
 			"the Codex tool_restrictions claim was flipped to supported, but codexTaskArgs still emits no per-tool disallow flag")
 	}
+	// The git grant is a workspace-write setting. An empty SandboxMode
+	// leaves the mode to the user's config.toml, which claudia does not
+	// read, so the grant could land on a read-only run and be dropped
+	// without a word (🎯T116).
+	if req.SandboxGitWrite && req.SandboxMode != codexSandboxWorkspaceWrite && req.SandboxMode != codexSandboxFullAccess {
+		return fmt.Errorf("codex: SandboxGitWrite asks for a writable .git but SandboxMode is %q — set SandboxMode %q", req.SandboxMode, codexSandboxWorkspaceWrite)
+	}
 	return nil
 }
 
@@ -741,6 +772,10 @@ func (codexTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*taskR
 		return nil, err
 	}
 
+	req, err = codexTaskGitGrant(req)
+	if err != nil {
+		return nil, err
+	}
 	args := codexTaskArgs(req)
 	slog.Debug("spawning codex task", "args", args)
 	cmd := exec.CommandContext(ctx, codexBin, args...)
@@ -800,6 +835,8 @@ func codexTaskArgs(req taskRunRequest) []string {
 	if req.SandboxMode != "" {
 		args = append(args, "--sandbox", req.SandboxMode)
 	}
+	// A global option like the rest: it goes before `exec` (🎯T116).
+	args = append(args, codexSandboxArgs(codexSandboxTuning{GitRoots: req.gitRoots})...)
 	if req.Model != "" {
 		args = append(args, "--model", req.Model)
 	}
@@ -838,7 +875,7 @@ func grokTaskPrecheck(req taskRunRequest) error {
 		return grokToolRestrictionRefusal(
 			CheckCapability(ProviderGrok, CapabilityToolRestrictions))
 	}
-	if req.SandboxMode != "" || req.ApprovalPolicy != "" {
+	if req.SandboxMode != "" || req.SandboxGitWrite || req.ApprovalPolicy != "" {
 		return capabilityRefusal(ProviderGrok, CapabilitySandboxPolicy,
 			"the Grok sandbox_policy claim was flipped to supported, but grokTaskArgs still emits no sandbox or approval flag")
 	}

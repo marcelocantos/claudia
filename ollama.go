@@ -84,7 +84,7 @@ func ollamaTaskPrecheck(req taskRunRequest) error {
 		return capabilityRefusal(ProviderOllama, CapabilityToolRestrictions,
 			"the Ollama tool_restrictions claim was flipped to supported, but /api/generate is still called with no tool configuration")
 	}
-	if req.SandboxMode != "" || req.ApprovalPolicy != "" {
+	if req.SandboxMode != "" || req.SandboxGitWrite || req.ApprovalPolicy != "" {
 		return capabilityRefusal(ProviderOllama, CapabilitySandboxPolicy,
 			"the Ollama sandbox_policy claim was flipped to supported, but /api/generate is still called with no sandbox or approval setting")
 	}

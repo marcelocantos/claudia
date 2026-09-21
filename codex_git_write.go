@@ -165,6 +165,40 @@ func codexSandboxTuningFor(req agentStartRequest) (codexSandboxTuning, error) {
 	return tuning, nil
 }
 
+// codexSandboxFullAccess is the mode with no sandbox, and so no .git
+// carve-out to lift.
+const codexSandboxFullAccess = "danger-full-access"
+
+// codexTaskGitGrant is codexSandboxTuningFor for Task mode (🎯T116).
+// `codex exec --sandbox workspace-write` carves .git out exactly as the
+// app-server does, and hides it better: the run exits 0 with the commit
+// refused. Measured on codex-cli 0.155.0-alpha.9.2, repos outside /tmp,
+// outcome read from the repository:
+//
+//	workdir          -c writable_roots   HEAD after the run
+//	main checkout    (none)              init   (Operation not permitted)
+//	linked worktree  (none)              init   (Operation not permitted)
+//	main checkout    <repo>/.git         the commit
+//	linked worktree  <main>/.git         the commit
+//
+// It returns req with the git roots to grant, when the caller asked for
+// them; otherwise it says that .git stays read-only and returns req as is.
+func codexTaskGitGrant(req taskRunRequest) (taskRunRequest, error) {
+	if req.SandboxMode != codexSandboxWorkspaceWrite {
+		return req, nil
+	}
+	gitRoots, err := codexGitWritableRoots(req.WorkDir)
+	switch {
+	case req.SandboxGitWrite && err != nil:
+		return req, fmt.Errorf("codex: SandboxGitWrite asked for a writable .git and the git directory to grant could not be resolved — refusing to run a task that cannot commit: %w", err)
+	case req.SandboxGitWrite:
+		req.gitRoots = gitRoots
+	default:
+		noteCodexGitReadOnly(req.WorkDir, gitRoots, err)
+	}
+	return req, nil
+}
+
 // noteCodexGitReadOnly is the default arm of 🎯T112: a workspace-write
 // seat that did not ask for SandboxGitWrite keeps Codex's protection of
 // .git, and says so. The seat still starts — most seats never commit —
@@ -176,7 +210,7 @@ func noteCodexGitReadOnly(workDir string, gitRoots []string, resolveErr error) {
 		slog.Warn("codex workspace-write: .git stays read-only (SandboxGitWrite unset); could not tell whether the workdir is a repository",
 			"workdir", workDir, "err", resolveErr)
 	case len(gitRoots) > 0:
-		slog.Warn("codex workspace-write: .git stays read-only, so this seat cannot git commit or git worktree add; set Config.SandboxGitWrite to grant it",
+		slog.Warn("codex workspace-write: .git stays read-only, so this agent cannot git commit or git worktree add; set SandboxGitWrite to grant it",
 			"workdir", workDir, "read_only", gitRoots)
 	}
 }

@@ -80,7 +80,7 @@ func bedrockTaskPrecheck(req taskRunRequest) error {
 		return capabilityRefusal(ProviderBedrock, CapabilityToolRestrictions,
 			"the Bedrock tool_restrictions claim was flipped to supported, but buildBedrockConverseInput still sends no toolConfig")
 	}
-	if req.SandboxMode != "" || req.ApprovalPolicy != "" {
+	if req.SandboxMode != "" || req.SandboxGitWrite || req.ApprovalPolicy != "" {
 		return capabilityRefusal(ProviderBedrock, CapabilitySandboxPolicy,
 			"the Bedrock sandbox_policy claim was flipped to supported, but ConverseStream is still called with no sandbox or approval setting")
 	}

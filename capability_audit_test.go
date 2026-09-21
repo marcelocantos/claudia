@@ -50,76 +50,82 @@ var sessionProviders = []Provider{ProviderClaude, ProviderCodex, ProviderGrok, P
 // A missing entry is a silent drop waiting to happen.
 var taskFieldFates = map[Provider]map[string]fieldDecl{
 	ProviderClaude: {
-		"ID":             {fateLocal, "caller-assigned id; never sent to the process"},
-		"Name":           {fateLocal, "human label; never sent to the process"},
-		"Provider":       {fateLocal, "selects this path"},
-		"WorkDir":        {fateConsumed, ""},
-		"Model":          {fateConsumed, ""},
-		"SandboxMode":    {fateRefused, "claudeTaskArgs emits no sandbox flag"},
-		"ApprovalPolicy": {fateRefused, "claudeTaskArgs emits no approval flag"},
-		"DisallowTools":  {fateConsumed, ""},
-		"ClaudeID":       {fateConsumed, ""},
-		"LastResult":     {fateLocal, "rehydration seed for Task.LastResult; never sent to the process"},
+		"ID":              {fateLocal, "caller-assigned id; never sent to the process"},
+		"Name":            {fateLocal, "human label; never sent to the process"},
+		"Provider":        {fateLocal, "selects this path"},
+		"WorkDir":         {fateConsumed, ""},
+		"Model":           {fateConsumed, ""},
+		"SandboxMode":     {fateRefused, "claudeTaskArgs emits no sandbox flag"},
+		"SandboxGitWrite": {fateRefused, "a Codex sandbox grant; refused with SandboxMode"},
+		"ApprovalPolicy":  {fateRefused, "claudeTaskArgs emits no approval flag"},
+		"DisallowTools":   {fateConsumed, ""},
+		"ClaudeID":        {fateConsumed, ""},
+		"LastResult":      {fateLocal, "rehydration seed for Task.LastResult; never sent to the process"},
 	},
 	ProviderCodex: {
-		"ID":             {fateLocal, "caller-assigned id; never sent to the process"},
-		"Name":           {fateLocal, "human label; never sent to the process"},
-		"Provider":       {fateLocal, "selects this path"},
-		"WorkDir":        {fateConsumed, ""},
-		"Model":          {fateConsumed, ""},
-		"SandboxMode":    {fateConsumed, ""},
-		"ApprovalPolicy": {fateConsumed, ""},
-		"DisallowTools":  {fateRefused, "codex exec has no per-tool disallow flag"},
-		"ClaudeID":       {fateConsumed, ""},
-		"LastResult":     {fateLocal, "rehydration seed for Task.LastResult; never sent to the process"},
+		"ID":              {fateLocal, "caller-assigned id; never sent to the process"},
+		"Name":            {fateLocal, "human label; never sent to the process"},
+		"Provider":        {fateLocal, "selects this path"},
+		"WorkDir":         {fateConsumed, ""},
+		"Model":           {fateConsumed, ""},
+		"SandboxMode":     {fateConsumed, ""},
+		"SandboxGitWrite": {fateConsumed, "a -c writable_roots override before exec"},
+		"ApprovalPolicy":  {fateConsumed, ""},
+		"DisallowTools":   {fateRefused, "codex exec has no per-tool disallow flag"},
+		"ClaudeID":        {fateConsumed, ""},
+		"LastResult":      {fateLocal, "rehydration seed for Task.LastResult; never sent to the process"},
 	},
 	ProviderGrok: {
-		"ID":             {fateLocal, "caller-assigned id; never sent to the process"},
-		"Name":           {fateLocal, "human label; never sent to the process"},
-		"Provider":       {fateLocal, "selects this path"},
-		"WorkDir":        {fateConsumed, ""},
-		"Model":          {fateConsumed, ""},
-		"SandboxMode":    {fateRefused, "grokTaskArgs emits no sandbox flag"},
-		"ApprovalPolicy": {fateRefused, "grokTaskArgs emits no approval flag"},
-		"DisallowTools":  {fateRefused, "DisallowTools is not translated onto --deny / --disallowed-tools"},
-		"ClaudeID":       {fateConsumed, ""},
-		"LastResult":     {fateLocal, "rehydration seed for Task.LastResult; never sent to the process"},
+		"ID":              {fateLocal, "caller-assigned id; never sent to the process"},
+		"Name":            {fateLocal, "human label; never sent to the process"},
+		"Provider":        {fateLocal, "selects this path"},
+		"WorkDir":         {fateConsumed, ""},
+		"Model":           {fateConsumed, ""},
+		"SandboxMode":     {fateRefused, "grokTaskArgs emits no sandbox flag"},
+		"SandboxGitWrite": {fateRefused, "a Codex sandbox grant; refused with SandboxMode"},
+		"ApprovalPolicy":  {fateRefused, "grokTaskArgs emits no approval flag"},
+		"DisallowTools":   {fateRefused, "DisallowTools is not translated onto --deny / --disallowed-tools"},
+		"ClaudeID":        {fateConsumed, ""},
+		"LastResult":      {fateLocal, "rehydration seed for Task.LastResult; never sent to the process"},
 	},
 	ProviderBedrock: {
-		"ID":             {fateLocal, "caller-assigned id; never sent to the API"},
-		"Name":           {fateLocal, "human label; never sent to the API"},
-		"Provider":       {fateLocal, "selects this path"},
-		"WorkDir":        {fateIgnored, "ConverseStream is an HTTP call; there is no process directory"},
-		"Model":          {fateConsumed, ""},
-		"SandboxMode":    {fateRefused, "ConverseStream has no sandbox setting"},
-		"ApprovalPolicy": {fateRefused, "ConverseStream has no approval setting"},
-		"DisallowTools":  {fateRefused, "claudia sends no Bedrock toolConfig"},
-		"ClaudeID":       {fateRefused, "ConverseStream is stateless; a session id would start cold"},
-		"LastResult":     {fateLocal, "rehydration seed for Task.LastResult; never sent to the API"},
+		"ID":              {fateLocal, "caller-assigned id; never sent to the API"},
+		"Name":            {fateLocal, "human label; never sent to the API"},
+		"Provider":        {fateLocal, "selects this path"},
+		"WorkDir":         {fateIgnored, "ConverseStream is an HTTP call; there is no process directory"},
+		"Model":           {fateConsumed, ""},
+		"SandboxMode":     {fateRefused, "ConverseStream has no sandbox setting"},
+		"SandboxGitWrite": {fateRefused, "a Codex sandbox grant; refused with SandboxMode"},
+		"ApprovalPolicy":  {fateRefused, "ConverseStream has no approval setting"},
+		"DisallowTools":   {fateRefused, "claudia sends no Bedrock toolConfig"},
+		"ClaudeID":        {fateRefused, "ConverseStream is stateless; a session id would start cold"},
+		"LastResult":      {fateLocal, "rehydration seed for Task.LastResult; never sent to the API"},
 	},
 	ProviderOllama: {
-		"ID":             {fateLocal, "caller-assigned id; never sent to the API"},
-		"Name":           {fateLocal, "human label; never sent to the API"},
-		"Provider":       {fateLocal, "selects this path"},
-		"WorkDir":        {fateIgnored, "/api/generate is an HTTP call; there is no process directory"},
-		"Model":          {fateConsumed, ""},
-		"SandboxMode":    {fateRefused, "/api/generate has no sandbox setting"},
-		"ApprovalPolicy": {fateRefused, "/api/generate has no approval setting"},
-		"DisallowTools":  {fateRefused, "/api/generate runs no tools"},
-		"ClaudeID":       {fateRefused, "/api/generate carries no conversation state"},
-		"LastResult":     {fateLocal, "rehydration seed for Task.LastResult; never sent to the API"},
+		"ID":              {fateLocal, "caller-assigned id; never sent to the API"},
+		"Name":            {fateLocal, "human label; never sent to the API"},
+		"Provider":        {fateLocal, "selects this path"},
+		"WorkDir":         {fateIgnored, "/api/generate is an HTTP call; there is no process directory"},
+		"Model":           {fateConsumed, ""},
+		"SandboxMode":     {fateRefused, "/api/generate has no sandbox setting"},
+		"SandboxGitWrite": {fateRefused, "a Codex sandbox grant; refused with SandboxMode"},
+		"ApprovalPolicy":  {fateRefused, "/api/generate has no approval setting"},
+		"DisallowTools":   {fateRefused, "/api/generate runs no tools"},
+		"ClaudeID":        {fateRefused, "/api/generate carries no conversation state"},
+		"LastResult":      {fateLocal, "rehydration seed for Task.LastResult; never sent to the API"},
 	},
 	ProviderCursor: {
-		"ID":             {fateLocal, "caller-assigned id; never sent to the process"},
-		"Name":           {fateLocal, "human label; never sent to the process"},
-		"Provider":       {fateLocal, "selects this path"},
-		"WorkDir":        {fateConsumed, ""},
-		"Model":          {fateConsumed, ""},
-		"SandboxMode":    {fateRefused, "SandboxMode is a Codex app-server field"},
-		"ApprovalPolicy": {fateRefused, "Cursor Task has no ApprovalPolicy flag"},
-		"DisallowTools":  {fateRefused, "Cursor Task has no per-tool disallow flag"},
-		"ClaudeID":       {fateConsumed, ""},
-		"LastResult":     {fateLocal, "rehydration seed for Task.LastResult; never sent to the process"},
+		"ID":              {fateLocal, "caller-assigned id; never sent to the process"},
+		"Name":            {fateLocal, "human label; never sent to the process"},
+		"Provider":        {fateLocal, "selects this path"},
+		"WorkDir":         {fateConsumed, ""},
+		"Model":           {fateConsumed, ""},
+		"SandboxMode":     {fateRefused, "SandboxMode is a Codex app-server field"},
+		"SandboxGitWrite": {fateRefused, "a Codex sandbox grant; refused with SandboxMode"},
+		"ApprovalPolicy":  {fateRefused, "Cursor Task has no ApprovalPolicy flag"},
+		"DisallowTools":   {fateRefused, "Cursor Task has no per-tool disallow flag"},
+		"ClaudeID":        {fateConsumed, ""},
+		"LastResult":      {fateLocal, "rehydration seed for Task.LastResult; never sent to the process"},
 	},
 }
 
@@ -253,6 +259,12 @@ func taskPrecheck(provider Provider, req taskRunRequest) error {
 	case ProviderClaude:
 		return claudeTaskPrecheck(req)
 	case ProviderCodex:
+		// As for Session: the grant needs its mode, and Codex refuses it
+		// without (TestT116GitWriteNeedsWorkspaceWrite). Every other
+		// provider still sees the bare field and must refuse it.
+		if req.SandboxGitWrite && req.SandboxMode == "" {
+			req.SandboxMode = codexSandboxWorkspaceWrite
+		}
 		return codexTaskPrecheck(req)
 	case ProviderGrok:
 		return grokTaskPrecheck(req)
@@ -275,6 +287,8 @@ func setTaskField(req *taskRunRequest, field string) {
 		req.Model = "t24-model"
 	case "SandboxMode":
 		req.SandboxMode = "read-only"
+	case "SandboxGitWrite":
+		req.SandboxGitWrite = true
 	case "ApprovalPolicy":
 		req.ApprovalPolicy = "never"
 	case "DisallowTools":
@@ -291,6 +305,17 @@ func taskMaterialises(provider Provider, field string) bool {
 	case ProviderClaude:
 		return argvHolds(claudeTaskArgs(req), taskNeedle(field, req))
 	case ProviderCodex:
+		if field == "SandboxGitWrite" {
+			// 🎯T116: resolved against this repository (the audit's own
+			// workdir does not exist) and carried as a -c override; and
+			// absent when the field is.
+			req.SandboxMode, req.WorkDir = codexSandboxWorkspaceWrite, "."
+			granted, err := codexTaskGitGrant(req)
+			req.SandboxGitWrite = false
+			withheld, _ := codexTaskGitGrant(req)
+			return err == nil && argvHolds(codexTaskArgs(granted), codexSandboxConfigKey) &&
+				!argvHolds(codexTaskArgs(withheld), codexSandboxConfigKey)
+		}
 		return argvHolds(codexTaskArgs(req), taskNeedle(field, req))
 	case ProviderGrok:
 		return argvHolds(grokTaskArgs(req), taskNeedle(field, req))
