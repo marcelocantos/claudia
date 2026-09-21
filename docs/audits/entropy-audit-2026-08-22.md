@@ -131,17 +131,26 @@ retired it. Closed so far: **ENT-001** (2026-09-21, 🎯T47.1).
   after this audit, as an unremarked part of the Cursor Session commit — so the
   P0 was fixed without the finding being closed, and this entry carried a stale
   red for a month.
-- **Closure evidence:** `go test -race -count=200 -run TestMCPProxyConcurrent401AuthorizesOnce .`
-  green (gate `t47.1-head-race-200`, 200/200 iterations). The lock is load-bearing
-  in both directions, proven by mutation rather than by assertion:
+- **Closure evidence:** the standing oracle is entry `T47.1 / probe-read-outside-p-mu`
+  in `mutation-evidence.json`, which `make verify-mutation-evidence` re-derives on
+  every gate in a throwaway worktree. It is the first entry to need `go_flags`:
+  `["-race"]`. No assertion can see this mutation. `authMu` still serializes
+  Authorize, so the burst still authorizes once and every request still gets 200.
+  Only the race detector reports it. The declared control,
+  `TestMCPProxyOAuthRetriesWithToken`, walks the same read with one request and
+  stays green, so the red is about concurrency, not a broken path. The hand
+  measurements that sized the entry, taken at `86e49f9` before it existed:
 
   | Mutant | Change | `-race` result |
   |---|---|---|
   | M1 | unlock the read only (`probe := entry.probe` outside `p.mu`; write still locked) | **20/20** `-count=1` runs FAIL; race is `Read mcp_proxy.go:309` vs `Previous write mcp_proxy.go:330`, the pair this finding named |
   | M2 | unlock the write only (read still locked) | 3/20 `-count=1` runs FAIL; **5/5** `-count=50` runs FAIL |
 
-  M2 is the reminder that `-race` is probabilistic: one `-count=1` run of it passes
-  six times in seven and proves nothing. Cite a count, not a single green.
+  M1 is the declared entry: 20/20 at `-count=1` is why `-count=1` is enough, which
+  matters because the checker reads only the first result line of a run. M2 is not
+  declared, since 3/20 is too flaky for a standing gate. It is also the reminder
+  that `-race` is probabilistic: one `-count=1` run of it passes six times in seven
+  and proves nothing. Cite a count, not a single green.
 
 ### ENT-002: T24 field-fate census red on `Config.GoalCompleteCheck`
 

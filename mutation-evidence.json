@@ -43,6 +43,10 @@
     "            exactly that: green everywhere on its own, and a `red` test",
     "            surviving the mutation once both are applied. Worth declaring",
     "            for any entry whose evidence has decayed once already.",
+    "  go_flags  optional extra `go test` flags, e.g. [\"-race\"] for a mutation",
+    "            only the race detector can see. They add to the run, never",
+    "            redefine it: -run, -v and -count belong to the harness and an",
+    "            entry naming one is RED (see baseline() in the script).",
     "  note      optional prose: provenance, or what decayed here before."
   ],
   "entries": [
@@ -465,6 +469,26 @@
         {"name": "TestAwaitPeerActivityReportsPeerSpoke", "expect": "green"}
       ],
       "note": "The recipe as recorded in 🎯T91's attestation declared TestCursorStuckPromptWaitEndsWhenTransportDies GREEN here, \"because it discards the outcome\". It does not stay green, and did not at e18806d either. awaitPeerActivity's loop exits on report()'s own closed field (`out.spoke || out.closed`), so an outcome that stops reporting the close also stops ending the wait. The 🎯T83 test's 3s poll then goes red, as it should. Re-derived at 41697da (cl-t95): both transport-closed tests are red. The assertion gap the recipe described is real, since the 🎯T83 test never reads the outcome, but this mutation cannot show it. The green control is instead the spoke side of the same outcome: the peer-spoke path never reads the closed field, so it stays green. That shows the reds pin the closed report specifically, not the outcome as a whole. Before cl-t95 bounded TestAwaitPeerActivityReportsTransportClosed, its red was the package's 10m timeout panic, which this check reads as no result."
+    },
+    {
+      "target": "T47.1",
+      "mutation": "probe-read-outside-p-mu",
+      "what": "ensureAuth reads the shared probe cache without p.mu, so concurrent 401s race the first writer's publish (ENT-001)",
+      "quoted_by": "faf419f",
+      "package": ".",
+      "go_flags": ["-race"],
+      "edits": [
+        {
+          "file": "mcp_proxy.go",
+          "find": "\tp.mu.Lock()\n\tprobe := entry.probe\n\tp.mu.Unlock()\n",
+          "replace": "\tprobe := entry.probe\n"
+        }
+      ],
+      "tests": [
+        {"name": "TestMCPProxyConcurrent401AuthorizesOnce", "expect": "red"},
+        {"name": "TestMCPProxyOAuthRetriesWithToken", "expect": "green"}
+      ],
+      "note": "The first entry that needs go_flags. No assertion can see this mutation: authMu still serializes Authorize, so the burst still authorizes once and every request still gets 200. Only the race detector reports the unsynchronized read, which is why ENT-001 was found by the CI -race job rather than by a failing assertion. Nor does the lock make the probe run once. Two 401s can both read nil and both probe; the lock stops them racing on the pointer, and the nil re-check keeps the first writer's pointer. So probe-count is no oracle either, and -race is the only one. Measured by hand at 86e49f9, before this entry existed: 20/20 -count=1 runs red. That is why -count=1 is enough here. The write-side mutant (publish outside p.mu) is deliberately not declared: it failed 3/20 at -count=1, too flaky for a standing gate. The green control is the same upstream and probe stub with a single request. It walks the mutated read serially and stays green, which shows the red is about concurrency and not a broken path."
     }
   ]
 }

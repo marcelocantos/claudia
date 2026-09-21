@@ -107,14 +107,14 @@ def go_run(test):
     return "/".join("^" + re.escape(part) + "$" for part in test.split("/"))
 
 
-def run_one(work, package, test, log, label):
+def run_one(work, package, test, log, label, flags=()):
     """Run one named test in the worktree. -> 'green' | 'red' | reason string."""
     # Bytes, not text: the fixtures are raw `tmux capture-pane` frames, and a
     # failing assertion echoes one. A frame cut mid-rune is not valid UTF-8, and
     # decoding strictly turns a mutant this check is meant to REPORT into a
     # traceback out of subprocess.
     r = subprocess.run(
-        ["go", "test", package, "-count=1", "-v", "-run", go_run(test)],
+        ["go", "test", package, "-count=1", "-v", *flags, "-run", go_run(test)],
         cwd=work, capture_output=True,
     )
     out = (r.stdout + r.stderr).decode("utf-8", "replace")
@@ -172,16 +172,29 @@ def check_entry(work, entry, log, files, edits, label):
     restore(work, files)
     apply_edits(work, edits, files)
     return [(t["name"], t["expect"],
-             run_one(work, entry["package"], t["name"], log, label))
+             run_one(work, entry["package"], t["name"], log, label,
+                     entry.get("go_flags", ())))
             for t in entry["tests"]]
 
 
 def baseline(work, entry, log, files):
     """Every named test must be GREEN unmutated, whatever side it is declared
     on. A red, skipped or absent test is not evidence of anything."""
+    # go_flags may add to the run (-race), never redefine it. The harness owns
+    # these three: -run selects the one test, -v prints the result line this
+    # script reads, and -count stays 1 because only the FIRST result line is
+    # read — under -count=N a mutant that bites on the second iteration would
+    # be reported as surviving. Go's flag parsing keeps the last duplicate, so
+    # an entry naming one of them would silently override the harness.
+    owned = [f for f in entry.get("go_flags", ())
+             if f.split("=")[0].lstrip("-") in ("run", "v", "count")]
+    if owned:
+        raise Red(f"go_flags may not set {', '.join(owned)} — the harness owns "
+                  "-run, -v and -count; see baseline()")
     bad = []
     for t in entry["tests"]:
-        got = run_one(work, entry["package"], t["name"], log, "baseline")
+        got = run_one(work, entry["package"], t["name"], log, "baseline",
+                      entry.get("go_flags", ()))
         if got != "green":
             bad.append((t["name"], got))
     if bad:
