@@ -484,6 +484,16 @@ func upsertTOMLHTTPServer(path string, srv MCPServer) (bool, error) {
 	return true, nil
 }
 
+// codexMCPToolsApprovalMode is written on every MCP server a Codex seat is
+// given. Seats run with approvalPolicy "never": nobody is there to answer a
+// prompt. Codex 0.155 (ChatGPT.app's bundled CLI, auto-updated 2026-09-21)
+// began gating MCP tool calls behind an approval of their own, and under
+// "never" it rejects instead of asking — "MCP tool call requires approval,
+// but approval policy is never" — so every Codex seat lost every MCP tool at
+// once, fleet control included. "approve" is that gate's always-allow; the
+// other values (auto, prompt, writes) all ask for something.
+const codexMCPToolsApprovalMode = "approve"
+
 func mergeTOMLHTTPServer(src string, srv MCPServer) (string, bool) {
 	prefix := "mcp_servers." + srv.Name
 	lines := strings.Split(strings.ReplaceAll(src, "\r\n", "\n"), "\n")
@@ -521,6 +531,7 @@ func mergeTOMLHTTPServer(src string, srv MCPServer) (string, bool) {
 		keep = append(keep, line)
 	}
 	if had && cur["url"] == srv.URL &&
+		cur["default_tools_approval_mode"] == codexMCPToolsApprovalMode &&
 		cur["bearer_token_env_var"] == srv.BearerTokenEnv &&
 		cur["auth"] == srv.Auth &&
 		sameStringMap(curHeaders, srv.Headers) {
@@ -531,6 +542,7 @@ func mergeTOMLHTTPServer(src string, srv MCPServer) (string, bool) {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "\n[mcp_servers.%s]\nurl = %q\nenabled = true\n", srv.Name, srv.URL)
+	fmt.Fprintf(&b, "default_tools_approval_mode = %q\n", codexMCPToolsApprovalMode)
 	if srv.BearerTokenEnv != "" {
 		fmt.Fprintf(&b, "bearer_token_env_var = %q\n", srv.BearerTokenEnv)
 	}
