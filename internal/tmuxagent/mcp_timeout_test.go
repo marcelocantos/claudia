@@ -37,7 +37,14 @@ func TestSpawnedWindowSeesTheMCPTimeout(t *testing.T) {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not installed")
 	}
-	sock := filepath.Join(t.TempDir(), "t.sock")
+	// A unix socket path is limited to about 104 bytes, and t.TempDir() under
+	// /var/folders with this test's name in it is longer than that.
+	sockDir, err := os.MkdirTemp("/tmp", "cl-mcp-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(sockDir) })
+	sock := filepath.Join(sockDir, "t.sock")
 	t.Setenv(tmuxSocketEnvVar, sock)
 	t.Setenv(MCPTimeoutEnvVar, "") // the host exports nothing: the default applies
 	if err := EnsureServer(); err != nil {
