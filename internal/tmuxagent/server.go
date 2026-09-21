@@ -99,7 +99,7 @@ func EnsureServer() error {
 		// it; new-session on an existing name errors harmlessly.
 		if err := exec.Command("tmux", "-S", sock, "has-session", "-t", anchorSessionName).Run(); err != nil {
 			cmd := exec.Command("tmux", "-S", sock, "new-session", "-d", "-s", anchorSessionName)
-			cmd.Env = testctlenv.Strip(os.Environ())
+			cmd.Env = StripClaudeSessionMarkers(testctlenv.Strip(os.Environ()))
 			if out, err := cmd.CombinedOutput(); err != nil &&
 				!strings.Contains(string(out), "duplicate session") {
 				return fmt.Errorf("recreate tmux anchor session: %w: %s", err, out)
@@ -109,18 +109,18 @@ func EnsureServer() error {
 	}
 
 	cmd := exec.Command("tmux", "-S", sock, "new-session", "-d", "-s", anchorSessionName)
-	cmd.Env = testctlenv.Strip(os.Environ())
+	cmd.Env = StripClaudeSessionMarkers(testctlenv.Strip(os.Environ()))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("start tmux server: %w: %s", err, out)
 	}
 	return scrubServerEnv(sock)
 }
 
-// scrubServerEnv removes any test-control variable from the running
-// server's global environment. Windows inherit the server's global
-// environment, not the environment of the client that ran new-window,
-// so this is the one place the leak can be closed for an existing
-// server.
+// scrubServerEnv removes any test-control variable, and any Claude Code
+// session marker (🎯T121), from the running server's global environment.
+// Windows inherit the server's global environment, not the environment
+// of the client that ran new-window, so this is the one place the leak
+// can be closed for an existing server.
 //
 // The common case costs a single tmux call: show-environment is read
 // first and unset is issued only for variables actually present.
@@ -137,7 +137,7 @@ func scrubServerEnv(sock string) error {
 		present[name] = true
 	}
 
-	for _, name := range testctlenv.All() {
+	for _, name := range append(testctlenv.All(), ClaudeSessionMarkers...) {
 		if !present[name] {
 			continue
 		}

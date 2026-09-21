@@ -15,6 +15,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/marcelocantos/claudia/internal/tmuxagent"
 )
 
 // TaskEventType identifies the kind of task event.
@@ -660,8 +662,9 @@ func (claudeTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*task
 	cmd.Dir = req.WorkDir
 	setTaskProcessGroup(cmd)
 
-	// Unset CLAUDECODE to avoid nested session detection.
-	cmd.Env = filterEnv(os.Environ(), "CLAUDECODE")
+	// A Task is a session of its own: none of the host's Claude Code
+	// session markers may reach it (🎯T121), CLAUDECODE included.
+	cmd.Env = tmuxagent.StripClaudeSessionMarkers(os.Environ())
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
