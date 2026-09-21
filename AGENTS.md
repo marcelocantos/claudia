@@ -196,7 +196,8 @@ override:
 The owner gate is local `make gate`. It attests the tree it passed on
 (`.git/gate-attestation`, per clone, untracked); `scripts/hooks/pre-push`
 builds, vets, and refuses a push unless that attestation names the tree of
-every commit going out — it does not re-run the gate, which takes ~25
+the tip commit going out (earlier commits are not checked; the attestation
+is never committed) — it does not re-run the gate, which takes ~25
 minutes, longer than GitHub keeps an idle SSH connection.
 Do not wait on `.github/workflows/test.yml`. `make live` remains a
 release-time owner gate for backend-behaviour changes. `/release` on
