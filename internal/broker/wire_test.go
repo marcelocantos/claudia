@@ -262,8 +262,9 @@ var responseVectors = map[string]*Response{
 		Type:       TypeAgentEvent,
 		AgentEvent: &AgentEventMessage{Name: "jv-worker-1", Event: json.RawMessage(`{"type":"assistant","text":"hi"}`)},
 	},
-	"agent_term": {Type: TypeAgentTerm, AgentTerm: &AgentTermMessage{Name: "jv-worker-1", Data: []byte("\x1b[2J")}},
-	"agent_gone": {Type: TypeAgentGone, AgentGone: &AgentGoneMessage{Name: "jv-worker-1", Reason: "process exited"}},
+	"agent_term":     {Type: TypeAgentTerm, AgentTerm: &AgentTermMessage{Name: "jv-worker-1", Data: []byte("\x1b[2J")}},
+	"agent_gone":     {Type: TypeAgentGone, AgentGone: &AgentGoneMessage{Name: "jv-worker-1", Reason: "process exited"}},
+	"agent_detached": {Type: TypeAgentDetached, AgentDetached: &AgentDetachedMessage{Name: "jv-worker-1", Reason: "consumer not reading"}},
 	// A pre-🎯T72 daemon answers with the name alone; the vector is unchanged.
 	"sent":           {ID: "g6", Type: TypeSent, Sent: &SentResponse{Name: "jv-worker-1"}},
 	"sent_submit":    {ID: "g6", Type: TypeSent, Sent: &SentResponse{Name: "jv-worker-1", Mode: SendModeSubmit, Mechanism: "submit", PhaseBefore: "idle"}},

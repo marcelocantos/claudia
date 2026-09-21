@@ -78,7 +78,7 @@ type brokerAgentBackend struct {
 	// queue keeps pushed messages in arrival order until the Agent handle
 	// exists (ready closes in DetectReady), then delivers them in that
 	// order. A replayed reclaim history must not overtake live events.
-	queue chan *broker.Response
+	queue pushQueue
 	ready chan struct{}
 	// subscribed closes on the consumer's first SubscribeEvents.
 	subscribed chan struct{}
@@ -123,7 +123,7 @@ func (b *brokerAgentBackend) StartAgent(req agentStartRequest) (*agentStart, err
 
 	// Push handling is installed before the grant so a reclaim's replayed
 	// events cannot race the response.
-	b.queue = make(chan *broker.Response, brokerClientQueue)
+	b.queue.init()
 	b.ready = make(chan struct{})
 	b.subscribed = make(chan struct{})
 	b.client.setPush(b.onPush)
@@ -395,18 +395,43 @@ func (b *brokerAgentBackend) repoint(a *Agent, w seatWhere) {
 	a.termMu.Unlock()
 }
 
-// brokerClientQueue bounds pushed messages waiting for the handle. It is
-// larger than the daemon's replay ring so a reclaim can never block the
-// read loop before the grant response has been read.
-const brokerClientQueue = 4096
+// pushQueue holds pushed messages until the handle's drain delivers them.
+// Push never blocks: it runs on the connection's read loop, which also
+// carries the answers to this seat's requests, so a full queue used to stop
+// a Send's reply from being read (🎯T125). The daemon already bounds what it
+// sends (its pump and reclaim ring), so this one does not drop.
+type pushQueue struct {
+	mu    sync.Mutex
+	items []*broker.Response
+	wake  chan struct{}
+}
 
-// onPush queues id-less messages in arrival order.
-func (b *brokerAgentBackend) onPush(resp *broker.Response) {
+func (q *pushQueue) init() { q.wake = make(chan struct{}, 1) }
+
+func (q *pushQueue) push(r *broker.Response) {
+	q.mu.Lock()
+	q.items = append(q.items, r)
+	q.mu.Unlock()
 	select {
-	case b.queue <- resp:
-	case <-b.client.done:
+	case q.wake <- struct{}{}:
+	default:
 	}
 }
+
+func (q *pushQueue) pop() (*broker.Response, bool) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if len(q.items) == 0 {
+		return nil, false
+	}
+	r := q.items[0]
+	q.items[0] = nil
+	q.items = q.items[1:]
+	return r, true
+}
+
+// onPush queues id-less messages in arrival order.
+func (b *brokerAgentBackend) onPush(resp *broker.Response) { b.queue.push(resp) }
 
 // drain delivers queued messages once the handle exists, and marks the
 // handle unreachable when the connection is lost: a consumer that sees
@@ -429,18 +454,20 @@ func (b *brokerAgentBackend) drain() {
 	case <-b.client.done:
 	}
 	for {
-		select {
-		case resp := <-b.queue:
+		if resp, ok := b.queue.pop(); ok {
 			b.deliver(a, resp)
+			continue
+		}
+		select {
+		case <-b.queue.wake:
 		case <-b.client.done:
 			for {
-				select {
-				case resp := <-b.queue:
-					b.deliver(a, resp)
-				default:
+				resp, ok := b.queue.pop()
+				if !ok {
 					a.markDead()
 					return
 				}
+				b.deliver(a, resp)
 			}
 		}
 	}

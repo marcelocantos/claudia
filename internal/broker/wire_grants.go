@@ -64,17 +64,20 @@ const (
 
 // Response types (broker → client) added by the grant protocol.
 const (
-	TypeUsageResult     MessageType = "usage_result"
-	TypeResolved        MessageType = "resolved"
-	TypeTaskStarted     MessageType = "task_started"
-	TypeTaskEvent       MessageType = "task_event"
-	TypeTaskDone        MessageType = "task_done"
-	TypeTaskRaw         MessageType = "task_raw"
-	TypeTaskCancelled   MessageType = "task_cancelled"
-	TypeGranted         MessageType = "granted"
-	TypeAgentEvent      MessageType = "agent_event"
-	TypeAgentTerm       MessageType = "agent_term"
-	TypeAgentGone       MessageType = "agent_gone"
+	TypeUsageResult   MessageType = "usage_result"
+	TypeResolved      MessageType = "resolved"
+	TypeTaskStarted   MessageType = "task_started"
+	TypeTaskEvent     MessageType = "task_event"
+	TypeTaskDone      MessageType = "task_done"
+	TypeTaskRaw       MessageType = "task_raw"
+	TypeTaskCancelled MessageType = "task_cancelled"
+	TypeGranted       MessageType = "granted"
+	TypeAgentEvent    MessageType = "agent_event"
+	TypeAgentTerm     MessageType = "agent_term"
+	TypeAgentGone     MessageType = "agent_gone"
+	// TypeAgentDetached tells a consumer the daemon dropped its ownership of
+	// a seat that is still running (🎯T125). The connection stays open.
+	TypeAgentDetached   MessageType = "agent_detached"
 	TypeSent            MessageType = "sent"
 	TypeInterrupted     MessageType = "interrupted"
 	TypeModelSet        MessageType = "model_set"
@@ -316,6 +319,15 @@ type AgentTermMessage struct {
 // AgentGoneMessage reports that the seat's provider process is no longer
 // reachable. The grant stays in the daemon's table until released.
 type AgentGoneMessage struct {
+	Name   string `json:"name"`
+	Reason string `json:"reason,omitempty"`
+}
+
+// AgentDetachedMessage reports that the daemon detached this connection from
+// a seat it still runs, because the connection stopped reading and its
+// outbound queue filled. Later sends on the connection are refused as
+// not_owner until the consumer re-grants the name (🎯T125 / 🎯T124).
+type AgentDetachedMessage struct {
 	Name   string `json:"name"`
 	Reason string `json:"reason,omitempty"`
 }

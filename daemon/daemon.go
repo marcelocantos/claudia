@@ -67,6 +67,11 @@ type Options struct {
 	// resumeGate, when set, holds the boot resume until closed (tests
 	// subscribe to the tail first).
 	resumeGate chan struct{}
+	// pumpSize overrides brokerPumpSize (tests).
+	pumpSize int
+	// pumpGate, when set, is called before each event the pump writes, so a
+	// test can hold the write side and fill the queue (tests).
+	pumpGate func()
 	// launchers, when set, start and adopt the daemon's seats instead of
 	// the providers (tests).
 	launchers *claudia.RegistryLaunchers
@@ -99,8 +104,11 @@ const (
 	// the reclaim is marked lagged, never silently truncated.
 	brokerUnownedRingCap = 100_000
 	// brokerPumpSize bounds the per-owner outbound queue. A consumer that
-	// stops reading is detached, not allowed to stall the seat.
-	brokerPumpSize = 1024
+	// stops reading is detached, not allowed to stall the seat. It is the
+	// same bound as the reclaim ring: adopting a large session replays its
+	// whole transcript through this queue while the write side is slowed by
+	// host load, and 1024 was overflowed by a 4100-line transcript (🎯T125).
+	brokerPumpSize = brokerUnownedRingCap
 	// grantsFile is the daemon's registry under StateDir.
 	grantsFile = "grants.json"
 	// connOwnedKey is the per-connection list of grant names it owns.
@@ -538,7 +546,7 @@ func (d *Daemon) handleGrant(c *broker.ClientConn, req *broker.Request) {
 	ring, lagged := g.ring, g.lag
 	g.ring, g.lag = nil, false
 	g.owner = c
-	pump := make(chan []byte, brokerPumpSize)
+	pump := make(chan []byte, d.pumpCap())
 	g.pump = pump
 	d.mu.Unlock()
 	ownedBy(c, name)
@@ -602,7 +610,7 @@ func (d *Daemon) handleAcquire(c *broker.ClientConn, req *broker.Request, def cl
 	d.grants[name] = g
 	d.bindSeatLocked(g, proc)
 	g.owner = c
-	pump := make(chan []byte, brokerPumpSize)
+	pump := make(chan []byte, d.pumpCap())
 	g.pump = pump
 	d.mu.Unlock()
 	ownedBy(c, name)
@@ -786,11 +794,37 @@ func (d *Daemon) forwarder(name string) claudia.EventFunc {
 				return
 			default:
 				d.log.Warn("consumer not reading; detaching seat", "grant", name)
+				owner := g.owner
 				d.detachLocked(g)
+				// Silent detach left the consumer sending on a grant it no
+				// longer owned, one not_owner per send (🎯T125). Tell it.
+				d.notifyDetached(owner, name, "consumer not reading; event queue full")
 			}
 		}
 		g.retainUnowned(raw)
 	}
+}
+
+// pumpCap is the outbound queue length for a new owner.
+func (d *Daemon) pumpCap() int {
+	if d.opts.pumpSize > 0 {
+		return d.opts.pumpSize
+	}
+	return brokerPumpSize
+}
+
+// notifyDetached tells owner its ownership of name ended. The write happens
+// off the caller's goroutine: the consumer was detached for not reading, so
+// the write may block until it does or the connection closes.
+func (d *Daemon) notifyDetached(owner *broker.ClientConn, name, reason string) {
+	if owner == nil {
+		return
+	}
+	d.wg.Add(1)
+	go func() {
+		defer d.wg.Done()
+		_ = owner.Reply(&broker.Response{Type: broker.TypeAgentDetached, AgentDetached: &broker.AgentDetachedMessage{Name: name, Reason: reason}})
+	}()
 }
 
 // retainUnowned appends one event to the reclaim ring. d.mu / caller
@@ -811,6 +845,9 @@ func (g *brokerGrant) retainUnowned(raw []byte) {
 // fails.
 func (d *Daemon) runPump(g *brokerGrant, c *broker.ClientConn, pump chan []byte) {
 	for raw := range pump {
+		if d.opts.pumpGate != nil {
+			d.opts.pumpGate()
+		}
 		if err := c.Reply(&broker.Response{Type: broker.TypeAgentEvent, AgentEvent: &broker.AgentEventMessage{Name: g.name, Event: raw}}); err != nil {
 			if errors.Is(err, broker.ErrFrameTooLarge) {
 				// One event was too large to frame even after bounding. The
