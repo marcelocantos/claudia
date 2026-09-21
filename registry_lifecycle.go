@@ -123,7 +123,7 @@ func registryConfig(def *AgentDef, requireResume bool) Config {
 		MCPServers: def.MCPServers, MCPExclusive: def.MCPExclusive,
 		GrokConnect: def.GrokConnect || def.ConnectURL != "", ConnectURL: def.ConnectURL,
 		ConnectPID: def.ConnectPID, SandboxMode: def.SandboxMode,
-		SandboxWritableRoots: def.SandboxWritableRoots, SandboxNetworkAccess: def.SandboxNetworkAccess,
+		SandboxWritableRoots: def.SandboxWritableRoots, SandboxNetworkAccess: def.SandboxNetworkAccess, SandboxGitWrite: def.SandboxGitWrite,
 		Goal:           def.Goal,
 		PermissionMode: def.PermissionMode, MCPConfig: def.MCPConfig,
 		ExtraArgs: def.ExtraArgs, TermLogPath: def.TermLogPath,

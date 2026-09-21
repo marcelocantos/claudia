@@ -95,13 +95,25 @@ type Config struct {
 	// Empty keeps the safe default of read-only (🎯T37). Other
 	// providers refuse a non-empty value rather than drop it.
 	//
-	// "workspace-write" also grants the working directory's git
-	// directories (the shared one, for a linked worktree). Codex would
-	// otherwise keep `.git` read-only inside a writable workdir, and a
-	// seat could edit its repo without being able to commit to it. Start
-	// fails, naming the directory, if the app-server reports a sandbox
-	// without that grant (🎯T109).
+	//
+	// "workspace-write" makes the working directory writable and keeps
+	// its `.git` read-only: the seat can edit its repo and cannot commit
+	// to it. Start logs that when it applies. SandboxGitWrite lifts it.
 	SandboxMode string
+
+	// SandboxGitWrite lets a workspace-write Codex seat write its repo's
+	// git directories (the shared one, for a linked worktree), so it can
+	// `git commit` and `git worktree add` (🎯T109). Start fails, naming
+	// the directory, if the app-server reports a sandbox without the
+	// grant, and refuses the field outright on a read-only seat.
+	//
+	// It is off by default, and it is a real concession (🎯T112). Codex
+	// protects `.git` because `.git/hooks` and `.git/config` are code
+	// that runs outside the sandbox: a hook the seat plants executes
+	// unsandboxed, as the operator, the next time anyone runs git in that
+	// repository. Set it for a seat whose mission is to commit, in a
+	// repository whose operator accepts that; leave it unset otherwise.
+	SandboxGitWrite bool
 
 	// SandboxWritableRoots and SandboxNetworkAccess widen a Codex
 	// workspace-write sandbox beyond the working directory (🎯T598).
@@ -920,7 +932,7 @@ func claudeAgentArgsWithMCP(req agentStartRequest, mcpConfig string) []string {
 // less access than its mission needs and fails only at its first gate
 // (🎯T598).
 func sandboxPolicyRequested(c Config) bool {
-	return c.SandboxMode != "" || len(c.SandboxWritableRoots) > 0 || c.SandboxNetworkAccess
+	return c.SandboxMode != "" || len(c.SandboxWritableRoots) > 0 || c.SandboxNetworkAccess || c.SandboxGitWrite
 }
 
 func claudeSessionPrecheck(req agentStartRequest) error {
@@ -1130,6 +1142,11 @@ func codexSessionPrecheck(req agentStartRequest) error {
 		return capabilityRefusal(ProviderCodex, CapabilityExtraArgs,
 			"Codex Session speaks typed app-server fields; Config.ExtraArgs have nowhere to go")
 	}
+	// A git grant on a read-only seat would be dropped: the writable root
+	// is a workspace-write setting and nothing else reads it (🎯T112).
+	if mode := resolveCodexSandbox(req.Config.SandboxMode); req.Config.SandboxGitWrite && mode == defaultCodexSandbox {
+		return fmt.Errorf("codex: SandboxGitWrite asks for a writable .git but SandboxMode is %q, which writes nothing — set SandboxMode %q", mode, codexSandboxWorkspaceWrite)
+	}
 	return nil
 }
 
@@ -1176,18 +1193,9 @@ func startCodexAgent(req agentStartRequest) (*agentStart, error) {
 	// lists turn/steer gets the mechanism wired (🎯T72.2).
 	steerSupported := codexAppServerSupportsSteer(bin)
 
-	// workspace-write keeps the repo's .git read-only unless the git
-	// directories are granted as writable roots of their own (🎯T109).
-	sandboxTuning := codexSandboxTuning{
-		WritableRoots: req.Config.SandboxWritableRoots,
-		NetworkAccess: req.Config.SandboxNetworkAccess,
-	}
-	if resolveCodexSandbox(req.Config.SandboxMode) == codexSandboxWorkspaceWrite {
-		gitRoots, gerr := codexGitWritableRoots(req.WorkDir)
-		if gerr != nil {
-			return nil, fmt.Errorf("codex workspace-write sandbox keeps .git read-only and the git directory to grant could not be resolved — refusing to start a seat that cannot commit: %w", gerr)
-		}
-		sandboxTuning.GitRoots = gitRoots
+	sandboxTuning, err := codexSandboxTuningFor(req)
+	if err != nil {
+		return nil, err
 	}
 
 	var bind acpBind

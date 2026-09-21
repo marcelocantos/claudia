@@ -114,6 +114,12 @@ type AgentDef struct {
 	SandboxWritableRoots []string `json:"sandbox_writable_roots,omitempty"`
 	SandboxNetworkAccess bool     `json:"sandbox_network_access,omitempty"`
 
+	// SandboxGitWrite grants a workspace-write Codex seat its repo's git
+	// directories so it can commit (🎯T109). Opt-in: a writable .git/hooks
+	// runs outside the sandbox on the operator's next git command
+	// (🎯T112). Persisted for the same reason as the roots above.
+	SandboxGitWrite bool `json:"sandbox_git_write,omitempty"`
+
 	// Goal is the durable host-owned Session objective (🎯T39). Copied
 	// onto Config.Goal at Launch/Adopt so a provider switch keeps the
 	// same objective. Empty means one-shot Send.

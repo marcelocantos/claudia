@@ -138,6 +138,7 @@ var sessionFieldFates = map[Provider]map[string]fieldDecl{
 		"SandboxMode":          {fateRefused, "SandboxMode is a Codex app-server field"},
 		"SandboxWritableRoots": {fateRefused, "Codex sandbox tuning; refused by sandboxPolicyRequested"},
 		"SandboxNetworkAccess": {fateRefused, "Codex sandbox tuning; refused by sandboxPolicyRequested"},
+		"SandboxGitWrite":      {fateRefused, "Codex sandbox tuning; refused by sandboxPolicyRequested"},
 		"MCPConfig":            {fateConsumed, ""},
 		"MCPServers":           {fateConsumed, ""},
 		"MCPExclusive":         {fateConsumed, ""},
@@ -164,6 +165,7 @@ var sessionFieldFates = map[Provider]map[string]fieldDecl{
 		"SandboxMode":          {fateRefused, "SandboxMode is a Codex app-server field"},
 		"SandboxWritableRoots": {fateRefused, "Codex sandbox tuning; refused by sandboxPolicyRequested"},
 		"SandboxNetworkAccess": {fateRefused, "Codex sandbox tuning; refused by sandboxPolicyRequested"},
+		"SandboxGitWrite":      {fateRefused, "Codex sandbox tuning; refused by sandboxPolicyRequested"},
 		"MCPConfig":            {fateConsumed, ""},
 		"MCPServers":           {fateConsumed, ""},
 		"MCPExclusive":         {fateConsumed, ""},
@@ -190,6 +192,7 @@ var sessionFieldFates = map[Provider]map[string]fieldDecl{
 		"SandboxMode":          {fateConsumed, ""},
 		"SandboxWritableRoots": {fateConsumed, ""},
 		"SandboxNetworkAccess": {fateConsumed, ""},
+		"SandboxGitWrite":      {fateConsumed, "a -c writable_roots override on the app-server argv"},
 		"MCPConfig":            {fateIgnored, "app-server thread/start has no MCPConfig field"},
 		"MCPServers":           {fateConsumed, "process-private CODEX_HOME at spawn"},
 		"MCPExclusive":         {fateConsumed, "CODEX_HOME isolate at spawn"},
@@ -216,6 +219,7 @@ var sessionFieldFates = map[Provider]map[string]fieldDecl{
 		"SandboxMode":          {fateRefused, "SandboxMode is a Codex app-server field"},
 		"SandboxWritableRoots": {fateRefused, "Codex sandbox tuning; refused by sandboxPolicyRequested"},
 		"SandboxNetworkAccess": {fateRefused, "Codex sandbox tuning; refused by sandboxPolicyRequested"},
+		"SandboxGitWrite":      {fateRefused, "Codex sandbox tuning; refused by sandboxPolicyRequested"},
 		"MCPConfig":            {fateConsumed, ""},
 		"MCPServers":           {fateConsumed, ""},
 		"MCPExclusive":         {fateConsumed, "ACP mcpServers only (no project mcp.json rewrite)"},
@@ -430,6 +434,8 @@ func sessionStartRequest(field string) agentStartRequest {
 		req.Config.SandboxWritableRoots = []string{"/tmp/claudia-t24-gates"}
 	case "SandboxNetworkAccess":
 		req.Config.SandboxNetworkAccess = true
+	case "SandboxGitWrite":
+		req.Config.SandboxGitWrite = true
 	case "MCPConfig":
 		req.Config.MCPConfig = "/tmp/claudia-t24-mcp.json"
 	case "MCPServers":
@@ -467,6 +473,16 @@ func sessionMaterialises(provider Provider, field string) bool {
 			return req.Config.RequireResume
 		case "MCPServers", "MCPExclusive":
 			return needsSessionMCPMaterialization(req.Config)
+		case "SandboxGitWrite":
+			// 🎯T112: the grant is a workspace-write setting, read off the
+			// workdir's repository — this one, since the audit's own
+			// workdir does not exist — and carried on the app-server argv.
+			req.Config.SandboxMode = codexSandboxWorkspaceWrite
+			req.WorkDir = "."
+			granted, err := codexSandboxTuningFor(req)
+			req.Config.SandboxGitWrite = false
+			withheld, _ := codexSandboxTuningFor(req)
+			return err == nil && len(codexSandboxArgs(granted)) > 0 && len(codexSandboxArgs(withheld)) == 0
 		case "SandboxWritableRoots", "SandboxNetworkAccess":
 			// 🎯T598: these cannot ride thread/start — its sandbox field
 			// is a unit variant. They materialise in the session's own
@@ -572,6 +588,13 @@ func sessionPrecheck(provider Provider, req agentStartRequest) error {
 	case ProviderGrok:
 		return grokSessionPrecheck(req)
 	case ProviderCodex:
+		// SandboxGitWrite is a workspace-write setting: Codex refuses it on
+		// a read-only seat (TestT112GitWriteOnAReadOnlySeatIsRefused), so
+		// the audit asks for it the only way it can be honoured. Every
+		// other provider still sees the bare field and must refuse it.
+		if req.Config.SandboxGitWrite && req.Config.SandboxMode == "" {
+			req.Config.SandboxMode = codexSandboxWorkspaceWrite
+		}
 		return codexSessionPrecheck(req)
 	case ProviderCursor:
 		return cursorSessionPrecheck(req)

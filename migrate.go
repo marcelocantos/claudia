@@ -423,6 +423,7 @@ func migrateDestConfig(src Config, args *MigrateArgs) Config {
 		cfg.SandboxMode = ""
 		cfg.SandboxWritableRoots = nil
 		cfg.SandboxNetworkAccess = false
+		cfg.SandboxGitWrite = false
 	}
 	if CheckCapability(cfg.Provider, CapabilityToolRestrictions) != nil {
 		cfg.DisallowTools = nil

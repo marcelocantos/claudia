@@ -4,7 +4,9 @@
 package claudia
 
 import (
+	"bytes"
 	"encoding/json"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,6 +20,10 @@ import (
 // unless the git directory is granted as a writable root of its own.
 // These tests pin the grant (a `-c` override on the app-server's argv) and
 // the refusal (a sandbox echoed without the root).
+//
+// 🎯T112: the grant is the spawner's to ask for, with Config.SandboxGitWrite.
+// A writable .git/hooks runs outside the sandbox on the operator's next git
+// command, so the default arm keeps .git protected — and says so.
 
 // t109Repo makes a throwaway repository with one commit and returns its
 // symlink-free path — t.TempDir() is under /var → /private/var on macOS.
@@ -178,10 +184,11 @@ func TestT109HermeticStartGrantsTheRepoGitDir(t *testing.T) {
 	repo := t109Repo(t)
 
 	agent, err := Start(Config{
-		Provider:    ProviderCodex,
-		WorkDir:     repo,
-		SandboxMode: "workspace-write",
-		TermLogPath: "-",
+		Provider:        ProviderCodex,
+		WorkDir:         repo,
+		SandboxMode:     "workspace-write",
+		SandboxGitWrite: true,
+		TermLogPath:     "-",
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -234,6 +241,7 @@ func TestT109HermeticGrantKeepsTheCallersRoots(t *testing.T) {
 		Provider:             ProviderCodex,
 		WorkDir:              repo,
 		SandboxMode:          "workspace-write",
+		SandboxGitWrite:      true,
 		SandboxWritableRoots: []string{gates},
 		TermLogPath:          "-",
 	})
@@ -258,10 +266,11 @@ func TestT109HermeticStartRefusesWhenTheGrantIsIgnored(t *testing.T) {
 	repo := t109Repo(t)
 
 	agent, err := Start(Config{
-		Provider:    ProviderCodex,
-		WorkDir:     repo,
-		SandboxMode: "workspace-write",
-		TermLogPath: "-",
+		Provider:        ProviderCodex,
+		WorkDir:         repo,
+		SandboxMode:     "workspace-write",
+		SandboxGitWrite: true,
+		TermLogPath:     "-",
 	})
 	if err == nil {
 		agent.Stop()
@@ -271,6 +280,161 @@ func TestT109HermeticStartRefusesWhenTheGrantIsIgnored(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("refusal does not name %q: %v", want, err)
 		}
+	}
+}
+
+// t112CaptureLogs routes slog into a buffer for the rest of the test.
+func t112CaptureLogs(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var logs bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(old) })
+	return &logs
+}
+
+// The default arm: no SandboxGitWrite, no grant — and no silence either.
+// The seat starts, .git keeps Codex's protection, and the log names the
+// directory and the field that would lift it.
+func TestT112DefaultKeepsGitProtectedAndSaysSo(t *testing.T) {
+	bin := writeFakeCodexAppServer(t)
+	t.Setenv("CODEX_BIN", bin)
+	writeFakeCodexSubscriptionAuth(t)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	argvLog := filepath.Join(t.TempDir(), "argv.json")
+	t.Setenv("FAKE_CODEX_LAST_ARGV", argvLog)
+	logs := t112CaptureLogs(t)
+	repo := t109Repo(t)
+
+	agent, err := Start(Config{
+		Provider:    ProviderCodex,
+		WorkDir:     repo,
+		SandboxMode: "workspace-write",
+		TermLogPath: "-",
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer agent.Stop()
+
+	if got := t109LastArgv(t, argvLog); !slices.Equal(got, []string{"app-server"}) {
+		t.Fatalf("app-server argv = %q: .git was granted to a seat that did not ask for it", got)
+	}
+	for _, want := range []string{".git stays read-only", filepath.Join(repo, ".git"), "SandboxGitWrite"} {
+		if !strings.Contains(logs.String(), want) {
+			t.Fatalf("log does not mention %q — a read-only .git must not be silent:\n%s", want, logs)
+		}
+	}
+}
+
+// Outside a repository there is no .git to protect and nothing to say.
+func TestT112DefaultIsQuietOutsideARepository(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git required")
+	}
+	dir := t.TempDir()
+	t.Setenv("GIT_CEILING_DIRECTORIES", filepath.Dir(canonicalPath(dir)))
+	logs := t112CaptureLogs(t)
+	tuning, err := codexSandboxTuningFor(agentStartRequest{
+		WorkDir: dir,
+		Config:  Config{SandboxMode: "workspace-write"},
+	})
+	if err != nil || len(tuning.GitRoots) != 0 {
+		t.Fatalf("tuning = %+v, err = %v", tuning, err)
+	}
+	if logs.Len() != 0 {
+		t.Fatalf("logged about a .git that does not exist:\n%s", logs)
+	}
+}
+
+// The decision itself, both arms, without a process.
+func TestT112GrantFollowsTheField(t *testing.T) {
+	repo := t109Repo(t)
+	t112CaptureLogs(t)
+	for _, tc := range []struct {
+		name  string
+		cfg   Config
+		roots []string
+	}{
+		{"unset", Config{SandboxMode: "workspace-write"}, nil},
+		{"set", Config{SandboxMode: "workspace-write", SandboxGitWrite: true}, []string{filepath.Join(repo, ".git")}},
+		// danger-full-access carves nothing out; there is nothing to grant.
+		{"full-access", Config{SandboxMode: "danger-full-access", SandboxGitWrite: true}, nil},
+	} {
+		tuning, err := codexSandboxTuningFor(agentStartRequest{WorkDir: repo, Config: tc.cfg})
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if !slices.Equal(tuning.GitRoots, tc.roots) {
+			t.Fatalf("%s: git roots = %q, want %q", tc.name, tuning.GitRoots, tc.roots)
+		}
+	}
+}
+
+// Asking for a writable .git on a seat that writes nothing is a
+// contradiction, and dropping the field would be the silence again.
+func TestT112GitWriteOnAReadOnlySeatIsRefused(t *testing.T) {
+	for _, mode := range []string{"", "read-only"} {
+		err := codexSessionPrecheck(agentStartRequest{
+			Config: Config{SandboxMode: mode, SandboxGitWrite: true},
+		})
+		if err == nil {
+			t.Fatalf("SandboxMode %q with SandboxGitWrite was accepted", mode)
+		}
+		for _, want := range []string{"SandboxGitWrite", "workspace-write"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("refusal does not name %q: %v", want, err)
+			}
+		}
+	}
+	if err := codexSessionPrecheck(agentStartRequest{
+		Config: Config{SandboxMode: "workspace-write", SandboxGitWrite: true},
+	}); err != nil {
+		t.Fatalf("workspace-write with SandboxGitWrite refused: %v", err)
+	}
+}
+
+// A seat that asked for the grant in a workdir git cannot read is refused
+// by name rather than started without it.
+func TestT112UnresolvableGitDirRefusesOnlyWhenAsked(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git required")
+	}
+	t112CaptureLogs(t)
+	missing := filepath.Join(t.TempDir(), "no-such-dir")
+	_, err := codexSandboxTuningFor(agentStartRequest{
+		WorkDir: missing,
+		Config:  Config{SandboxMode: "workspace-write", SandboxGitWrite: true},
+	})
+	if err == nil || !strings.Contains(err.Error(), "SandboxGitWrite") {
+		t.Fatalf("err = %v, want a refusal naming SandboxGitWrite", err)
+	}
+	if _, err := codexSandboxTuningFor(agentStartRequest{
+		WorkDir: missing,
+		Config:  Config{SandboxMode: "workspace-write"},
+	}); err != nil {
+		t.Fatalf("a seat that did not ask was refused: %v", err)
+	}
+}
+
+// The field survives the registry and the broker wire; a relaunch that
+// dropped it would bring the seat back unable to commit.
+func TestT112FieldSurvivesTheAgentDef(t *testing.T) {
+	def := AgentDef{Name: "t112", Provider: ProviderCodex, SandboxMode: "workspace-write", SandboxGitWrite: true}
+	raw, err := json.Marshal(def)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"sandbox_git_write":true`) {
+		t.Fatalf("AgentDef JSON lacks sandbox_git_write: %s", raw)
+	}
+	var back AgentDef
+	if err := json.Unmarshal(raw, &back); err != nil || !back.SandboxGitWrite {
+		t.Fatalf("round trip lost the field: %+v, %v", back, err)
+	}
+	// The hop a relaunch takes: registry definition to Start config.
+	if cfg := registryConfig(&back, false); !cfg.SandboxGitWrite {
+		t.Fatalf("registryConfig dropped SandboxGitWrite: %+v", cfg)
 	}
 }
 
@@ -292,10 +456,11 @@ func TestCodexGitWriteLiveSmoke(t *testing.T) {
 	}
 
 	agent, err := Start(Config{
-		Provider:    ProviderCodex,
-		WorkDir:     repo,
-		SandboxMode: "workspace-write",
-		TermLogPath: "-",
+		Provider:        ProviderCodex,
+		WorkDir:         repo,
+		SandboxMode:     "workspace-write",
+		SandboxGitWrite: true,
+		TermLogPath:     "-",
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)

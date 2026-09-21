@@ -64,6 +64,45 @@ fails. Rewind, tmux attach, and terminal logs stay unsupported; do
 not implement them by editing private Codex storage or driving the
 Codex TUI.
 
+#### Codex Session sandbox and `.git`
+
+`Config.SandboxMode` is the app-server sandbox; empty means
+`read-only`. `workspace-write` makes `WorkDir` writable and keeps its
+`.git` read-only, so by default a seat can edit its repository and
+cannot commit to it: `git commit` and `git worktree add` fail with
+`Operation not permitted`. `Start` logs a warning naming the directory
+when that applies.
+
+```go
+agent, err := claudia.Start(claudia.Config{
+    Provider:        claudia.ProviderCodex,
+    WorkDir:         "/abs/path/to/repo",
+    SandboxMode:     "workspace-write",
+    SandboxGitWrite: true, // this seat's mission is to commit
+})
+```
+
+`SandboxGitWrite` grants the seat its repository's git directory (the
+shared one under the main checkout, for a linked worktree). `Start`
+fails, naming the directory, if Codex reports a sandbox without the
+grant, and refuses the field on a read-only seat. It is persisted on
+`AgentDef` (`sandbox_git_write`), so a relaunch keeps it.
+
+**It is off by default because it is a sandbox escape, not a
+convenience.** Codex protects `.git` for a reason: `.git/hooks/*` and
+`.git/config` (`core.hooksPath`, `core.fsmonitor`, aliases, filters) are
+code that git runs *outside* the sandbox. A seat with a writable `.git`
+can plant a hook, and it executes unsandboxed, as the operator, the next
+time anyone — the operator, another agent, an editor's git integration —
+runs git in that repository. Set `SandboxGitWrite` only for a seat that
+must commit, in a repository whose operator accepts that the seat's
+reach is then the operator's own. A seat that only needs to edit files
+should leave it unset and let its spawner commit.
+
+The grant covers `.git` only. A worktree added *outside* `WorkDir`
+(`git worktree add ../tree`) also needs its destination in
+`SandboxWritableRoots`.
+
 ### Grok Build CLI provider (Task mode)
 
 ```go

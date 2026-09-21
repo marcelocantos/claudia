@@ -42,8 +42,13 @@ import (
 //	linked worktree  (none)              Operation not permitted
 //	linked worktree  <main>/.git         ok
 //
-// So a workspace-write seat is granted its repo's git directories, and
-// Start refuses when the app-server reports a sandbox without them.
+// So a workspace-write seat that sets Config.SandboxGitWrite is granted
+// its repo's git directories, and Start refuses when the app-server
+// reports a sandbox without them. The grant is opt-in (🎯T112): .git/hooks
+// and .git/config run outside the sandbox on the operator's next git
+// command, which is why Codex protects the directory in the first place.
+// A seat that does not opt in starts with .git read-only and a log line
+// saying so.
 //
 // The grant rides the app-server's argv (`-c`), not CODEX_HOME/config.toml
 // where the caller's own roots go (🎯T598). config.toml needs a private
@@ -134,6 +139,46 @@ func codexSandboxArgs(t codexSandboxTuning) []string {
 		return nil
 	}
 	return []string{"-c", codexSandboxConfigKey + "=" + roots}
+}
+
+// codexSandboxTuningFor is the sandbox a Start request asks for beyond
+// its mode. workspace-write keeps the repo's .git read-only unless the
+// git directories are granted as writable roots of their own (🎯T109),
+// and that grant is the spawner's to ask for (🎯T112).
+func codexSandboxTuningFor(req agentStartRequest) (codexSandboxTuning, error) {
+	tuning := codexSandboxTuning{
+		WritableRoots: req.Config.SandboxWritableRoots,
+		NetworkAccess: req.Config.SandboxNetworkAccess,
+	}
+	if resolveCodexSandbox(req.Config.SandboxMode) != codexSandboxWorkspaceWrite {
+		return tuning, nil
+	}
+	gitRoots, err := codexGitWritableRoots(req.WorkDir)
+	switch {
+	case req.Config.SandboxGitWrite && err != nil:
+		return tuning, fmt.Errorf("codex: SandboxGitWrite asked for a writable .git and the git directory to grant could not be resolved — refusing to start a seat that cannot commit: %w", err)
+	case req.Config.SandboxGitWrite:
+		tuning.GitRoots = gitRoots
+	default:
+		noteCodexGitReadOnly(req.WorkDir, gitRoots, err)
+	}
+	return tuning, nil
+}
+
+// noteCodexGitReadOnly is the default arm of 🎯T112: a workspace-write
+// seat that did not ask for SandboxGitWrite keeps Codex's protection of
+// .git, and says so. The seat still starts — most seats never commit —
+// but the first "Operation not permitted" from git has an explanation in
+// the log above it, which is what 🎯T109 was filed for the lack of.
+func noteCodexGitReadOnly(workDir string, gitRoots []string, resolveErr error) {
+	switch {
+	case resolveErr != nil:
+		slog.Warn("codex workspace-write: .git stays read-only (SandboxGitWrite unset); could not tell whether the workdir is a repository",
+			"workdir", workDir, "err", resolveErr)
+	case len(gitRoots) > 0:
+		slog.Warn("codex workspace-write: .git stays read-only, so this seat cannot git commit or git worktree add; set Config.SandboxGitWrite to grant it",
+			"workdir", workDir, "read_only", gitRoots)
+	}
 }
 
 // canonicalPath is path with symlinks resolved where that is possible.

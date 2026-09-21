@@ -211,6 +211,7 @@ func configToGrantDef(name string, cfg Config, base *AgentDef) GrantDefinition {
 			SandboxMode:          cfg.SandboxMode,
 			SandboxWritableRoots: cfg.SandboxWritableRoots,
 			SandboxNetworkAccess: cfg.SandboxNetworkAccess,
+			SandboxGitWrite:      cfg.SandboxGitWrite,
 			Goal:                 cfg.Goal,
 			MCPServers:           cfg.MCPServers,
 			MCPExclusive:         cfg.MCPExclusive,
