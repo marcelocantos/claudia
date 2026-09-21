@@ -11,8 +11,10 @@ import (
 	"time"
 )
 
-// parkedAfter is how long the two tests below give a call that must not
-// park before calling it parked.
+// parkedAfter is how long the two no-wake-path tests below give a call that
+// must not park before calling it parked. TestAwaitPeerActivityReportsTransportClosed
+// bounds the same shape at 5s and carries its own exemption, which rests on
+// this reasoning.
 //
 // 🎯T97 exemption: the clock is the verdict here, and it cannot be moved to
 // `go test -timeout` without making the regression cost the package's whole
