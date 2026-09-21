@@ -546,6 +546,30 @@
         {"name": "TestHermeticTestsDeclareTheProductBoundsTheyShorten", "expect": "green"}
       ],
       "note": "The restored loop calls none of 🎯T97's six constructors, so this entry is red only because 🎯T106's data-flow check follows time.Now() into deadline and reports the .Before. The 2s is spelled 2000000000. wallclockguard stays imported through the file's other uses, so the red is the guard, not a build failure. The green control is 🎯T93's product-bound guard, which does not read test clocks."
+    },
+    {
+      "target": "T107",
+      "mutation": "snapshot-the-second-wait-after-the-cancel",
+      "what": "promptWatchingForSilence takes the second wait's activity snapshot after the session/cancel write instead of at the stack swap, so an answer to the abandoned delivery that lands in between redeems the turn yet counts as silence, and Prompt reports ErrCursorPromptStuck for a turn already answered",
+      "quoted_by": "5160e4a",
+      "package": ".",
+      "edits": [
+        {
+          "file": "cursor_acp.go",
+          "find": "\tseq = c.peerSeq\n\tc.mu.Unlock()\n\tif closed {",
+          "replace": "\tc.mu.Unlock()\n\tif closed {"
+        },
+        {
+          "file": "cursor_acp.go",
+          "find": "\t\tc.afterReissueCancel()\n\t}\n",
+          "replace": "\t\tc.afterReissueCancel()\n\t}\n\tseq = c.peerSeqNow()\n"
+        }
+      ],
+      "tests": [
+        {"name": "TestCursorReissueCountsAnAnswerLandedBeforeTheRedelivery", "expect": "red"},
+        {"name": "TestCursorReissueDoesNotEndTurnOnCancellationAck", "expect": "green"}
+      ],
+      "note": "The racing sibling TestCursorReissueKeepsAReplyRacingTheRedelivery also goes red under this mutation, but only when the host delays the reply past the old snapshot (17/20 at load ~200, gate 3acac48b), so it is not listed: a verdict the host decides is not evidence. The cancellation-ack test stays green because its peer answers only after the re-delivery, after either snapshot, so the two cover distinct mechanisms."
     }
   ]
 }
