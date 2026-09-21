@@ -56,6 +56,9 @@ type ClientConn struct {
 	*Conn
 	// ID is unique per accepted connection for the life of the server.
 	ID int
+	// PeerPID is the process id on the other end of the socket, 0 when the
+	// platform cannot say.
+	PeerPID int
 
 	mu   sync.Mutex
 	data map[string]any
@@ -234,7 +237,7 @@ func (s *Server) acceptLoop() {
 func (s *Server) handleConn(nc net.Conn) {
 	s.mu.Lock()
 	s.connSeq++
-	cc := &ClientConn{Conn: NewConn(nc), ID: s.connSeq}
+	cc := &ClientConn{Conn: NewConn(nc), ID: s.connSeq, PeerPID: peerPID(nc)}
 	s.mu.Unlock()
 	c := cc.Conn
 	owner := &connState{held: map[string]struct{}{}}

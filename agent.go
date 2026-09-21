@@ -407,6 +407,9 @@ type agentOps struct {
 	send          func(*Agent, string) error
 	resize        func(*Agent, uint16, uint16) error
 	stop          func(*Agent)
+	// reclaim is set only by the broker backend: it makes sure this
+	// handle's connection owns the seat's grant on the daemon (🎯T124).
+	reclaim func() error
 	// promptInFlight is optional (Grok ACP). Nil → always false.
 	promptInFlight func(*Agent) bool
 	// setModel switches the in-session model within the same provider
@@ -680,6 +683,16 @@ func (a *Agent) Detach() error {
 		a.mcpCleanup()
 	}
 	return nil
+}
+
+// ensureOwned makes sure a daemon-held seat's grant belongs to this
+// handle's connection, re-claiming it after a detach. Nil for a seat that is
+// not daemon-held.
+func (a *Agent) ensureOwned() error {
+	if a.ops.reclaim == nil {
+		return nil
+	}
+	return a.ops.reclaim()
 }
 
 func startDirectContext(ctx context.Context, cfg Config) (*Agent, error) {

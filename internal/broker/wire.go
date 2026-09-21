@@ -279,6 +279,10 @@ type ReleaseRequest struct {
 	// seat warm for this long before the pool may evict it
 	// (claudia.Agent.Release "keep_alive_for:<secs>").
 	KeepAliveSeconds int64 `json:"keep_alive_seconds,omitempty"`
+	// Force, with DispositionDetach, lets an operator on a third connection
+	// clear a grant another connection owns (🎯T124). The old owner is sent
+	// agent_detached; the seat process keeps running and can be re-granted.
+	Force bool `json:"force,omitempty"`
 }
 
 // Validate checks the request is well formed on the wire. Whether this broker
@@ -288,6 +292,10 @@ func (r *ReleaseRequest) Validate() error {
 	if strings.TrimSpace(r.SessionID) == "" && strings.TrimSpace(r.Name) == "" {
 		return &ProtocolError{Code: CodeMissingField, Field: "session_id",
 			Msg: "session_id (spawned agent) or name (granted seat) is required"}
+	}
+	if r.Force && r.Disposition != DispositionDetach {
+		return &ProtocolError{Code: CodeUnsupportedValue, Field: "force", Value: "true",
+			Msg: "force applies only to detach"}
 	}
 	switch r.Disposition {
 	case "":

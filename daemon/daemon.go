@@ -543,15 +543,23 @@ func (d *Daemon) handleGrant(c *broker.ClientConn, req *broker.Request) {
 	if g.owner != nil && g.owner != c {
 		d.detachLocked(g)
 	}
+	// A consumer re-claiming a grant it still owns (its re-adopt found the
+	// seat alive) keeps its pump: a second one would strand the first
+	// (🎯T124). Only an unowned or displaced grant gets a new pump.
+	alreadyOwned := g.owner == c && g.pump != nil
 	ring, lagged := g.ring, g.lag
 	g.ring, g.lag = nil, false
-	g.owner = c
-	pump := make(chan []byte, d.pumpCap())
-	g.pump = pump
+	if !alreadyOwned {
+		g.owner = c
+		pump := make(chan []byte, d.pumpCap())
+		g.pump = pump
+		d.wg.Add(1)
+		go func() { defer d.wg.Done(); d.runPump(g, c, pump) }()
+	}
 	d.mu.Unlock()
-	ownedBy(c, name)
-	d.wg.Add(1)
-	go func() { defer d.wg.Done(); d.runPump(g, c, pump) }()
+	if !alreadyOwned {
+		ownedBy(c, name)
+	}
 
 	// Replay what the seat said while unowned, then confirm the grant so
 	// the consumer sees history before live traffic.
@@ -878,10 +886,16 @@ func (d *Daemon) handleRelease(c *broker.ClientConn, req *broker.Request) {
 			Msg: fmt.Sprintf("grant %s is not one the daemon holds", name)})
 		return
 	}
-	if g != nil && g.owner != nil && g.owner != c {
+	if g != nil && g.owner != nil && g.owner != c && !req.Release.Force {
 		d.mu.Unlock()
 		_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeNotOwner, Field: "name", Value: name,
 			Msg: fmt.Sprintf("grant %s belongs to another connection", name)})
+		return
+	}
+	if g != nil && g.pool && req.Release.Force {
+		d.mu.Unlock()
+		_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeUnsupportedValue, Field: "force", Value: "true",
+			Msg: "a pooled seat has no detached state to force"})
 		return
 	}
 	if g != nil && g.pool {
@@ -914,10 +928,17 @@ func (d *Daemon) handleRelease(c *broker.ClientConn, req *broker.Request) {
 	}
 	switch req.Release.Disposition {
 	case broker.DispositionDetach:
+		var displaced *broker.ClientConn
 		if g != nil {
+			if g.owner != c {
+				displaced = g.owner
+			}
 			d.detachLocked(g)
 		}
 		d.mu.Unlock()
+		// An operator's forced detach must not leave the old owner sending
+		// on a grant it no longer holds without knowing why (🎯T124).
+		d.notifyDetached(displaced, name, "released by an operator on another connection")
 		d.emit(broker.EventMessage{Kind: broker.EventDetach, Name: name})
 	case broker.DispositionStop:
 		if g != nil {
@@ -1267,6 +1288,9 @@ func (d *Daemon) grantList() []broker.GrantStatus {
 		d.mu.Lock()
 		if g := d.grants[def.Name]; g != nil {
 			st.Owned = g.owner != nil
+			if g.owner != nil {
+				st.OwnerConn, st.OwnerPID = g.owner.ID, g.owner.PeerPID
+			}
 			st.Pending = len(g.ring)
 			if g.proc != nil {
 				st.Alive = g.proc.Alive()

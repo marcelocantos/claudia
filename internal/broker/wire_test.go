@@ -124,6 +124,7 @@ var requestVectors = map[string]requestVector{
 			Grant: &GrantRequest{Name: "sid:3f1c", Def: json.RawMessage(`{"name":"sid:3f1c","workdir":"/w"}`), Pool: &PoolGrant{Policy: "spawn", Cap: 2}},
 		},
 	},
+	"release_detach_force":     {msg: &Request{ID: "g6f", Type: TypeRelease, Release: &ReleaseRequest{Name: "jv-worker-1", Disposition: DispositionDetach, Force: true}}},
 	"release_reuse_keep_alive": {msg: &Request{ID: "g6k", Type: TypeRelease, Release: &ReleaseRequest{Name: "sid:3f1c", Disposition: DispositionReuse, KeepAliveSeconds: 600}}},
 	"grant": {
 		msg: &Request{

@@ -8,7 +8,7 @@
 //	claudia broker grants           every seat, owner and liveness
 //	claudia broker tail             lifecycle events as NDJSON
 //	claudia broker usage [--refresh] the plan-usage snapshot
-//	claudia broker release NAME [--detach]
+//	claudia broker release NAME [--detach | --force]
 //	claudia broker install|uninstall  launchd user agent (macOS)
 //	claudia broker socket           print the socket path
 //	claudia models intel …          purpose-quality series (🎯T71)
@@ -245,10 +245,14 @@ func printGrants(gs []broker.GrantStatus) error {
 		return nil
 	}
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "NAME\tPROVIDER\tMODEL\tOWNED\tALIVE\tPENDING\tPURPOSE\tPARENT\tWORKDIR")
+	fmt.Fprintln(w, "NAME\tPROVIDER\tMODEL\tOWNED\tOWNER\tALIVE\tPENDING\tPURPOSE\tPARENT\tWORKDIR")
 	for _, g := range gs {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%v\t%v\t%d\t%s\t%s\t%s\n",
-			g.Name, g.Provider, g.Model, g.Owned, g.Alive, g.Pending, g.Purpose, g.Parent, g.WorkDir)
+		owner := "-"
+		if g.OwnerConn != 0 {
+			owner = fmt.Sprintf("conn %d pid %d", g.OwnerConn, g.OwnerPID)
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%v\t%s\t%v\t%d\t%s\t%s\t%s\n",
+			g.Name, g.Provider, g.Model, g.Owned, owner, g.Alive, g.Pending, g.Purpose, g.Parent, g.WorkDir)
 	}
 	return w.Flush()
 }
@@ -347,6 +351,7 @@ func clip(s string, n int) string {
 func release(args []string) error {
 	fs := flag.NewFlagSet("release", flag.ContinueOnError)
 	detach := fs.Bool("detach", false, "drop ownership but keep the seat running")
+	force := fs.Bool("force", false, "operator exit: detach a grant another connection owns (implies --detach); the seat keeps running and the old owner is told")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -354,10 +359,10 @@ func release(args []string) error {
 		return errors.New("release: exactly one grant name")
 	}
 	disp := broker.DispositionStop
-	if *detach {
+	if *detach || *force {
 		disp = broker.DispositionDetach
 	}
-	_, err := roundTrip(&broker.Request{Type: broker.TypeRelease, Release: &broker.ReleaseRequest{Name: fs.Arg(0), Disposition: disp}})
+	_, err := roundTrip(&broker.Request{Type: broker.TypeRelease, Release: &broker.ReleaseRequest{Name: fs.Arg(0), Disposition: disp, Force: *force}})
 	if err != nil {
 		return err
 	}

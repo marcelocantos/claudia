@@ -607,6 +607,11 @@ type GrantStatus struct {
 	Parent    string   `json:"parent,omitempty"`
 	// Owned reports that a live connection holds the seat.
 	Owned bool `json:"owned"`
+	// OwnerConn and OwnerPID identify the holding connection (its id on
+	// this daemon and its peer process id, 0 when the platform cannot say),
+	// so an operator can see who holds a grant or that it is detached.
+	OwnerConn int `json:"owner_conn,omitempty"`
+	OwnerPID  int `json:"owner_pid,omitempty"`
 	// Alive reports that the provider process is reachable.
 	Alive bool `json:"alive"`
 	// Pending is how many events sit in the replay ring for an unowned seat.

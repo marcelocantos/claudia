@@ -74,6 +74,12 @@ type brokerAgentBackend struct {
 	name   string
 	attach string
 	gone   bool
+	// grantDef is the encoded definition this handle granted with, kept so
+	// a detach can be answered by re-claiming the grant by name (🎯T124).
+	grantDef json.RawMessage
+	// reclaimMu serialises re-claims: the detach message and a not_owner
+	// refusal can both ask for one.
+	reclaimMu sync.Mutex
 
 	// queue keeps pushed messages in arrival order until the Agent handle
 	// exists (ready closes in DetectReady), then delivers them in that
@@ -119,6 +125,7 @@ func (b *brokerAgentBackend) StartAgent(req agentStartRequest) (*agentStart, err
 	}
 	b.mu.Lock()
 	b.name = name
+	b.grantDef = def
 	b.mu.Unlock()
 
 	// Push handling is installed before the grant so a reclaim's replayed
@@ -187,12 +194,46 @@ func (b *brokerAgentBackend) named() *broker.NamedRequest {
 }
 
 func (b *brokerAgentBackend) opCall(req *broker.Request) (*broker.Response, error) {
+	resp, err := b.client.callTimeout(req, brokerOpTimeout)
+	var pe *broker.ProtocolError
+	if err == nil || req.Type == broker.TypeGrant || !errors.As(err, &pe) || pe.Code != broker.CodeNotOwner {
+		return resp, err
+	}
+	// The daemon detached this connection (its queue filled, or an operator
+	// cleared the grant) and the detach message has not been acted on yet.
+	// Re-claim by name on this connection and retry once (🎯T124).
+	if rerr := b.reclaim(); rerr != nil {
+		return nil, fmt.Errorf("%w (re-claim failed: %v)", err, rerr)
+	}
 	return b.client.callTimeout(req, brokerOpTimeout)
+}
+
+// reclaim re-grants this handle's seat by name on its own connection. The
+// daemon accepts it when the grant is unowned (or already this
+// connection's), replays what the seat said meanwhile, and leaves the
+// running process alone; it refuses with grant_held when another
+// connection took the grant, which is the caller's to see. A pooled seat
+// has no detached state and is not re-claimed.
+func (b *brokerAgentBackend) reclaim() error {
+	if b.hint.pool != nil {
+		return errors.New("pooled seat cannot be re-claimed")
+	}
+	b.reclaimMu.Lock()
+	defer b.reclaimMu.Unlock()
+	b.mu.Lock()
+	name, def := b.name, b.grantDef
+	b.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), brokerOpTimeout)
+	defer cancel()
+	_, err := b.client.call(ctx, &broker.Request{Type: broker.TypeGrant,
+		Grant: &broker.GrantRequest{Name: name, Def: def, Adopt: true, Fallback: true}})
+	return err
 }
 
 func (b *brokerAgentBackend) ops() agentOps {
 	return agentOps{
 		droppedFrames: func(*Agent) (int, error) { return b.client.DroppedFrames() },
+		reclaim:       b.reclaim,
 		attachCommand: func(*Agent) string {
 			b.mu.Lock()
 			defer b.mu.Unlock()
@@ -488,6 +529,15 @@ func (b *brokerAgentBackend) deliver(a *Agent, resp *broker.Response) {
 		// The consumer's check is user code and may block; the queue
 		// must keep delivering the seat's events meanwhile.
 		go b.answerGoalCheck(a, resp.GoalCheck)
+	case broker.TypeAgentDetached:
+		slog.Warn("broker detached this seat; re-claiming", "grant", resp.AgentDetached.Name, "reason", resp.AgentDetached.Reason)
+		// Off the drain goroutine: the re-claim's replay arrives through
+		// this very queue.
+		go func() {
+			if err := b.reclaim(); err != nil {
+				slog.Warn("broker re-claim failed", "grant", resp.AgentDetached.Name, "err", err)
+			}
+		}()
 	case broker.TypeAgentGone:
 		b.mu.Lock()
 		b.gone = true

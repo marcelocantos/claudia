@@ -416,6 +416,12 @@ func (r *Registry) startHeld(ctx context.Context, op *registryLifecycle, name st
 		return nil, err
 	}
 	if prior != nil && prior.Alive() {
+		// The daemon may have detached this handle's connection from the
+		// seat (🎯T125). Returning it as is would leave every later send
+		// refused as not_owner, so make sure the connection owns the grant.
+		if err := prior.ensureOwned(); err != nil {
+			return nil, err
+		}
 		return prior, nil
 	}
 	if denied != nil {
