@@ -11,12 +11,13 @@ hooks:
 	@git config core.hooksPath scripts/hooks && echo "✓ core.hooksPath=scripts/hooks"
 
 gate:
+	@scripts/gate-attest.sh begin
 	@go vet ./... && echo "✓ vet"
 	@go test -race -count=1 ./... && echo "✓ tests"
 	@$(MAKE) --no-print-directory verify-stability >/dev/null && echo "✓ stability surface"
 	@$(MAKE) --no-print-directory verify-mutation-evidence >/dev/null && \
 	 echo "✓ mutation evidence"
-	@scripts/gate-attest.sh
+	@scripts/gate-attest.sh end
 
 # TLA+ broker lifecycle (Java + tla2tools). Not on the pre-push hook;
 # run before a release.
