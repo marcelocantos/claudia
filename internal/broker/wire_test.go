@@ -105,6 +105,12 @@ var requestVectors = map[string]requestVector{
 			Resolve: &ResolveRequest{Predicates: json.RawMessage(`{"mode":"task","prefer_plan":true}`)},
 		},
 	},
+	"judge": {
+		msg: &Request{
+			ID: "j1", Type: TypeJudge,
+			Judge: &JudgeRequest{Request: json.RawMessage(`{"state":"payouts failing","model":"jev-latest","questions":{"urgent":{"type":"noul","instructions":"Urgent?"}}}`)},
+		},
+	},
 	"task_run": {
 		msg: &Request{
 			ID: "g3", Type: TypeTaskRun,
@@ -235,7 +241,13 @@ var responseVectors = map[string]*Response{
 		ID: "g2", Type: TypeResolved,
 		Resolved: &ResolveResponse{Pick: json.RawMessage(`{"provider":"grok","model":"grok-4"}`)},
 	},
-	"task_started": {ID: "g3", Type: TypeTaskStarted, TaskStarted: &TaskStartedResponse{RunID: "run-1"}},
+	"judged": {
+		ID: "j1", Type: TypeJudged,
+		Judged: &JudgedResponse{Result: json.RawMessage(`{"model":"jev-1.13.0","requested_model":"jev-latest","answers":{"urgent":{"type":"noul","noul":0.95}},"usage":{"input_tokens":296,"output_tokens":20,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"duration_ms":728,"attempts":1}`)},
+	},
+	"judged_refused": {ID: "j1", Type: TypeJudged, Judged: &JudgedResponse{Status: 422, Error: "questions.urgent.instructions: field required"}},
+	"judged_no_key":  {ID: "j1", Type: TypeJudged, Judged: &JudgedResponse{NoKey: true, Error: "no TypeSafe API key"}},
+	"task_started":   {ID: "g3", Type: TypeTaskStarted, TaskStarted: &TaskStartedResponse{RunID: "run-1"}},
 	"task_event": {
 		Type:      TypeTaskEvent,
 		TaskEvent: &TaskEventMessage{RunID: "run-1", Event: json.RawMessage(`{"type":"text","content":"hi"}`)},

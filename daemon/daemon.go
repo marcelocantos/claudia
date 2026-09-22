@@ -384,6 +384,12 @@ func (d *Daemon) HandleRequest(c *broker.ClientConn, req *broker.Request) bool {
 			Usage: &broker.UsageResponse{FetchedAt: snap.FetchedAt, Backends: raw, Error: snap.Err}})
 	case broker.TypeResolve:
 		d.handleResolve(c, req)
+	case broker.TypeJudge:
+		// Library code end to end (🎯T127): the daemon adds its own key
+		// and nothing else. The connection is this evaluation's alone, so
+		// answering inline blocks no other request.
+		res, err := daemonRunJudge(d.ctx, req.Judge.Request)
+		_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeJudged, Judged: claudia.EncodeJudged(res, err)})
 	case broker.TypeStatus:
 		d.handleStatus(c, req)
 	case broker.TypeGrants:
@@ -1204,6 +1210,10 @@ func (d *Daemon) handleTaskRun(c *broker.ClientConn, req *broker.Request) {
 		d.emit(broker.EventMessage{Kind: broker.EventTaskDone, Name: runID})
 	}()
 }
+
+// daemonRunJudge evaluates one judge request. Hermetic tests wrap it to see
+// that an evaluation ran here and not in the consumer.
+var daemonRunJudge = claudia.RunJudgeWire
 
 // daemonNewTask builds a direct-mode Task for one run. Hermetic tests point
 // it at a fake backend.

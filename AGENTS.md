@@ -1,6 +1,7 @@
 # claudia
 
-Go library for embedding Claude, Grok, Codex, Bedrock, Ollama, and Cursor agents.
+Go library for embedding Claude, Grok, Codex, Bedrock, Ollama, and Cursor agents,
+and for asking TypeSafe's Jev typed questions (Judge mode).
 Consumer API: [`agents-guide.md`](agents-guide.md). This file is for
 agents working *in* this repo.
 
@@ -52,6 +53,7 @@ un-skips. If you touched the surface, the row is what you must run.
 | `CLAUDIA_CODEX_LIVE=1` | Codex Task + Session | `TestCodexTaskRunSmoke`, `TestCodexTaskGitWriteLiveSmoke`, `TestCodexSessionLiveSmoke`, `TestCodexGitWriteLiveSmoke`, `codex.TestLiveCodexTaskRun`, `TestGoalJourneyLiveBackends/codex`, `TestMCPLiveLoadAndSessionSeesMnemo/codex`, `TestMCPHostLiveSeatsSeeMnemo/codex`, `TestMCPCodexSeatCallsToolLive` |
 | `CLAUDIA_BEDROCK_LIVE=1` | Bedrock Task | `TestBedrockTaskLiveSmoke` |
 | `CLAUDIA_OLLAMA_LIVE=1` | Ollama Task | `TestOllamaTaskLiveSmoke` |
+| `CLAUDIA_JEV_LIVE=1` | Judge (TypeSafe Jev) | `TestJudgeLiveSmoke` |
 | `CLAUDIA_CURSOR_LIVE=1` | Cursor Task + Session | `TestCursorTaskLiveSmoke`, `TestCursorSessionLiveSmoke`, `TestCursorSessionLiveSmokeSteer`, `TestCursorSavedSessionResumeLive`, `TestGoalJourneyLiveBackends/cursor`, `TestMCPLiveLoadAndSessionSeesMnemo/cursor`, `TestMCPHostLiveSeatsSeeMnemo/cursor`, `TestMCPExclusiveCursorSessionRoundTrip` |
 
 **Shared surfaces.** Some wires are not a backend — they are one

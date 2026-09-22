@@ -1,7 +1,8 @@
 # claudia — agents guide
 
 `github.com/marcelocantos/claudia` is a Go library for embedding
-Claude, Grok, Codex, Bedrock, Ollama, and Cursor agents in your program.
+Claude, Grok, Codex, Bedrock, Ollama, and Cursor agents in your program,
+and for asking TypeSafe's Jev typed questions (Judge mode).
 
 ```
 go get github.com/marcelocantos/claudia
@@ -32,6 +33,11 @@ on the shape of the work.
 and exposes cost and token accounting. Only use Session mode if the
 user explicitly needs persistent state or wants to observe the
 transcript live.
+
+A third mode, **Judge** (`claudia.Judge`), is for work that is not
+generation at all: a typed judgment (yes/no, one of a set, a position
+on a scale) with a probability, from a System One model (TypeSafe's
+Jev) in under a second. See [Judge mode](#judge-mode-typed-questions-jev).
 
 ### Codex provider (Task mode)
 
@@ -508,6 +514,63 @@ processing.
 process; `Task.Stop()` cancels and marks the task as stopped so
 it cannot be re-run.
 
+## Judge mode: typed questions (Jev)
+
+`claudia.Judge` asks TypeSafe's System One model typed questions about a
+state and returns every answer with its probability distribution
+(🎯T127). One request answers many questions over the same state, in
+parallel, in about 0.7–0.9 s. API contract:
+<https://docs.typesafe.ai/api.md>.
+
+```go
+j := claudia.NewJudge(claudia.JudgeConfig{}) // jev-latest, key from env or ~/.typesafe/env
+res, err := j.Ask(ctx, claudia.JudgeRequest{
+    State: synopsis, // a string, or any JSON-marshalable value
+    Questions: map[string]claudia.JudgeQuestion{
+        "verdict": {Type: claudia.JudgeChoice, Instructions: "Would a reader be materially misled?",
+            Options: map[string]any{"material": "…", "minor": "…", "sound": "…"}},
+        "funnel": {Type: claudia.JudgeNoul, Instructions: "Does the argument lead into the speaker's own product?"},
+        "rigour": {Type: claudia.JudgeScore, Instructions: "How well sourced is it?",
+            Levels: []any{"Unsourced", "Some sources", "Thoroughly sourced"}},
+    },
+})
+// res.Answers["verdict"].Probabilities["material"] — threshold on this
+// res.Answers["funnel"].Noul                       — P(yes)
+// res.Model  — the release that answered ("jev-1.13.0"); store it with the answer
+// res.Usage  — input/output tokens (the API reports no cache fields)
+```
+
+- **Threshold on `Probabilities`, not `Choice`.** On a 30-synopsis eval
+  Jev's top pick was "material" 25 times, while `P(material)` ranked
+  material against the rest at AUC 0.94. The pick hides the signal.
+  Thresholds are yours; set them on your own labelled data.
+- **Record `res.Model`.** Asking for `jev-latest` resolves to a release,
+  and a threshold tuned on one release is not known to hold on the next.
+- **Ask together.** Questions over one state go in one request: the
+  API runs them in parallel, none sees another's answer, and the state's
+  tokens are paid once. Question ids are not sent to the model, so each
+  question must carry its whole meaning.
+- **Refusals are typed.** A malformed request (no state, an unknown type,
+  a Choice without `Options`, over 255 options, a Score outside 2–10
+  levels, a criterion on the wrong type) is refused locally before any
+  round trip. The API's refusals come back as `*claudia.JudgeError` with
+  the HTTP status: 401 bad key, 422 bad request (the message names the
+  field). 429 and 529 are retried with exponential backoff, honouring
+  `Retry-After`, up to 3 retries. A response that leaves a question
+  unanswered, answers the wrong type, or drops an option from a
+  distribution is refused, not passed on with holes.
+- **Key.** `TYPESAFE_API_KEY` in the environment, else the
+  `TYPESAFE_API_KEY=` line of `~/.typesafe/env` (only that line is read;
+  the file is not sourced). No key is `claudia.ErrJudgeNoKey`. The key
+  never appears in an error.
+- **Daemon.** With a daemon running, `Ask` goes through it and the
+  daemon calls the API with its own key. Setting `APIKey`, `Endpoint` or
+  `HTTPClient` on `JudgeConfig`, calling `SetDirect(true)`, or a daemon
+  too old to know Judge, calls the API from your process instead. Both
+  paths run the same code and return the same result.
+- **Pricing and rate limits are not documented** by TypeSafe. No 429 was
+  seen at 6 parallel requests. Measure your own budget.
+
 ## Session mode: essential patterns
 
 ```go
@@ -857,6 +920,9 @@ process.
   own connection; `Cancel` reaches it; a dropped connection cancels
   the run. `Task.SetRawLog` receives the provider's raw lines from the
   daemon, in order; without it they stay on the daemon.
+- **Judge runs on the daemon.** `Judge.Ask` sends the request over its
+  own connection and the daemon calls TypeSafe with its key; a caller
+  that set its own key, endpoint or HTTP client stays direct.
 - **Plan usage is the daemon's.** `LoadPlanUsage` and `Resolve` read
   the daemon's snapshot; the daemon refreshes on a TTL and immediately
   when any seat reports a rate limit or quota stop. The filesystem

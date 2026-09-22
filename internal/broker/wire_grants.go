@@ -60,6 +60,8 @@ const (
 	// TypeGoalVerdict answers a goal_check push with the owner's
 	// completeness verdict.
 	TypeGoalVerdict MessageType = "goal_verdict"
+	// TypeJudge asks the daemon to evaluate one Judge request (🎯T127).
+	TypeJudge MessageType = "judge"
 )
 
 // Response types (broker → client) added by the grant protocol.
@@ -92,6 +94,8 @@ const (
 	// after a terminal turn that carried no GOAL_STATUS line.
 	TypeGoalCheck        MessageType = "goal_check"
 	TypeGoalVerdictNoted MessageType = "goal_verdict_noted"
+	// TypeJudged answers a judge request: the result, or the refusal.
+	TypeJudged MessageType = "judged"
 )
 
 // Error codes added by the grant protocol.
@@ -172,6 +176,34 @@ func (r *ResolveRequest) Validate() error {
 // ResolveResponse carries a claudia.ModelPick.
 type ResolveResponse struct {
 	Pick json.RawMessage `json:"pick"`
+}
+
+// JudgeRequest carries one Judge evaluation in the TypeSafe API's own body
+// form, so the daemon sends exactly the bytes a direct caller would.
+type JudgeRequest struct {
+	Request json.RawMessage `json:"request"`
+}
+
+// Validate checks the request is present.
+func (r *JudgeRequest) Validate() error {
+	if len(r.Request) == 0 {
+		return &ProtocolError{Code: CodeMissingField, Field: "request", Msg: "request is required"}
+	}
+	return nil
+}
+
+// JudgedResponse carries a claudia.JudgeResult, or why there is none. A
+// refusal is a result of the evaluation rather than a protocol error, so it
+// travels here with its HTTP status instead of as an error envelope.
+type JudgedResponse struct {
+	// Result is a claudia.JudgeResult in wire form; absent on a refusal.
+	Result json.RawMessage `json:"result,omitempty"`
+	// Status is the API's HTTP status on a refusal (0 for a local one).
+	Status int `json:"status,omitempty"`
+	// Error is the refusal's message; empty on success.
+	Error string `json:"error,omitempty"`
+	// NoKey means the daemon found no API key.
+	NoKey bool `json:"no_key,omitempty"`
 }
 
 // TaskRunRequest runs one Task turn on the daemon.

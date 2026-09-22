@@ -35,6 +35,7 @@ func TestRegistryMembershipPinned(t *testing.T) {
 		// nothing stripped them from a spawned agent.
 		"CLAUDIA_LIVE_SEND",
 		"CLAUDIA_MCP_OAUTH_LIVE",
+		"CLAUDIA_JEV_LIVE",
 	}
 	// Configuration an agent legitimately needs. Stripping any of
 	// these breaks the agent instead of protecting it.

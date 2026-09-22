@@ -73,6 +73,7 @@ func LiveGates() []string {
 		"CLAUDIA_CURSOR_LIVE",
 		"CLAUDIA_LIVE_SEND",
 		"CLAUDIA_MCP_OAUTH_LIVE",
+		"CLAUDIA_JEV_LIVE",
 	}
 }
 
