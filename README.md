@@ -4,8 +4,8 @@ Go library for embedding [Claude Code](https://claude.com/claude-code),
 [Grok](https://x.ai/cli), Codex, Bedrock, Ollama, and
 [Cursor](https://cursor.com/docs/cli/acp) agents in any program.
 
-claudia wraps each provider's CLI or API in two complementary modes
-(Task and Session). Session transports differ by provider: Claude uses
+claudia wraps each provider's CLI or API in two complementary generation modes
+(Task and Session), and offers Judge mode for typed Jev questions. Session transports differ by provider: Claude uses
 a tmux PTY plus JSONL tail; Grok uses ACP over stdio or connect-mode
 WebSocket; Codex uses `codex app-server` JSON-RPC. Cursor uses ACP over `agent acp`. Bedrock and Ollama
 are Task-only HTTP paths.
@@ -395,6 +395,16 @@ go get github.com/marcelocantos/claudia@latest
 
 See [Requirements](#requirements) above for runtime dependencies.
 
+For an agent-assisted integration, you can paste this prompt into your coding tool:
+
+```text
+Add github.com/marcelocantos/claudia to this Go project. Read its agents-guide.md first, choose Task, Session, or Judge for my use case, and verify the integration with a test that exercises the chosen path.
+```
+
+Judge mode asks TypeSafe's Jev a set of typed yes/no, choice, or scale
+questions and returns full answer distributions. See
+[Judge mode in the agent guide](agents-guide.md#judge-mode-typed-questions-jev).
+
 ## For agents
 
 If you use an agentic coding tool, include
@@ -409,4 +419,5 @@ are possible until 1.0 locks in a backwards-compatibility contract.
 
 ## Licence
 
-Apache 2.0 — see [LICENSE](LICENSE).
+Apache 2.0 — see [LICENSE](LICENSE). Notices and licence terms for
+linked dependencies are in [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES).

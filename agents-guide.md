@@ -17,8 +17,8 @@ the design is small but has non-obvious constraints.
 
 ## Pick the right mode
 
-claudia offers two modes. They are not interchangeable; choose based
-on the shape of the work.
+claudia offers two generation modes. They are not interchangeable; choose
+based on the shape of the work. Judge is a separate typed-question mode.
 
 |                     | Task mode                            | Session mode                            |
 |---------------------|--------------------------------------|-----------------------------------------|

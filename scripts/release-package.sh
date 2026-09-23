@@ -19,7 +19,7 @@ build_one() {
 
 	CGO_ENABLED="$cgo" GOOS="$goos" GOARCH="$goarch" \
 		go build -trimpath -ldflags="-s -w" -o "$out" ./cmd/claudia
-	tar -czf "$DIST/$asset" -C "$BUILD" claudia -C "$ROOT" LICENSE README.md
+	tar -czf "$DIST/$asset" -C "$BUILD" claudia -C "$ROOT" LICENSE README.md THIRD_PARTY_NOTICES
 	rm -f "$out"
 	echo "wrote dist/$asset"
 }
