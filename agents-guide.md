@@ -426,10 +426,13 @@ ok := claudia.HasAvailableTokens(pu, time.Now(), nil)
 **Picking a model.** Pass predicates, not a model id. The catalog is a
 set of spawnable rows, not a ranking. Available-tokens is automatic
 (known-exhausted / weekly-hot / session-low are skipped; unpublished is
-not a veto). Among the survivors, lower plan pressure (blue/purple slack)
-wins. `PreferProvider` only breaks a slack tie. A remaining tie fails
-closed — Resolve will not pick the first catalog row. Resolve does not
-spawn.
+not a veto). On the catalog path, destination bands and plan pressure
+rank survivors. On the purpose-quality path, `PreferProvider` wins among
+token-eligible rows. Set `Background` for work that must not use a
+provider spending ahead of pace (orange/red), even if preferred; if no
+eligible provider remains, Resolve fails without spawning. Unpublished
+usage remains eligible unless `RequireUsage` is also set. Resolve does
+not spawn.
 
 ```go
 pick, err := claudia.Resolve(ctx, claudia.ModelPredicates{
@@ -437,6 +440,7 @@ pick, err := claudia.Resolve(ctx, claudia.ModelPredicates{
     Quality:        claudia.ModelQualityStandard, // hard filter; empty means standard
     PreferPlan:     true,
     PreferProvider: claudia.ProviderGrok, // optional host preference
+    Background:     true, // low-priority work avoids orange/red plans
 })
 task := claudia.NewTask(claudia.TaskConfig{Provider: pick.Provider, Model: pick.Model, WorkDir: dir})
 ```

@@ -241,8 +241,11 @@ or `CURSOR_API_KEY`).
 
 **Picking a model.** `Resolve` chooses a catalog `(Provider, Model)` from
 predicates. The catalog is a set, not a ranking: available-tokens is a
-veto, then lower plan slack wins. `PreferProvider` only breaks a slack
-tie. With `Purpose` set
+veto, then destination bands and plan pressure rank survivors. On the
+purpose-quality path, `PreferProvider` wins among token-eligible rows.
+Set `Background` for low-priority work: it excludes orange/red plans,
+including a preferred provider, and returns no pick if none remain.
+Unpublished usage remains eligible unless `RequireUsage` is set. With `Purpose` set
 (`coding`, `analysis`, `agent`, `browse`, `general`) it also returns
 `Effort`: quality is a floor on that job, and generation/effort are
 outputs. The daemon refreshes published scores daily into
