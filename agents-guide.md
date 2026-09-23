@@ -544,10 +544,16 @@ res, err := j.Ask(ctx, claudia.JudgeRequest{
 // res.Usage  — input/output tokens (the API reports no cache fields)
 ```
 
-- **Threshold on `Probabilities`, not `Choice`.** On a 30-synopsis eval
-  Jev's top pick was "material" 25 times, while `P(material)` ranked
-  material against the rest at AUC 0.94. The pick hides the signal.
-  Thresholds are yours; set them on your own labelled data.
+- **Threshold on `Probabilities`, not `Choice`.** On a held-out run of 191
+  synopses (jev-1.13.0) Jev's top pick was "material" 150 times, while
+  `P(material)` ranked material against the rest at AUC 0.75. The pick
+  carries nothing; the probability carries a weak signal.
+- **Validate the threshold on held-out data.** That same cutoff scored AUC
+  0.94 on the 30 cases it was tuned on, and caught 13 of 19 on the 191 it
+  had not seen — 54 flagged for a 10% base rate. Tuning-sample numbers do
+  not survive. How well Jev does is a property of your task, not of the
+  API: this one (judging whether a synopsis misleads, with no world
+  knowledge) is hard.
 - **Record `res.Model`.** Asking for `jev-latest` resolves to a release,
   and a threshold tuned on one release is not known to hold on the next.
 - **Ask together.** Questions over one state go in one request: the

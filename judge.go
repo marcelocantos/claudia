@@ -29,11 +29,15 @@ import (
 // substitution that does make sense runs the other way — an LLM emulating
 // Jev behind this API — which is why the mode, not the vendor, is the type.
 //
-// Every answer carries its full distribution, not only the pick. On the
-// 2026-09-22 eval (30 ytt synopses) Jev's top choice said "material" for 25
-// of them while P(material) ranked material against the rest at AUC 0.94:
-// the pick was useless and the probability was the signal. Thresholds are
-// therefore the caller's; this mode reports and never decides.
+// Every answer carries its full distribution, not only the pick. On a
+// held-out run of 191 ytt synopses (2026-09-23, jev-1.13.0) Jev's top choice
+// said "material" for 150 of them, while P(material) ranked material against
+// the rest at AUC 0.75: the pick carried nothing and the probability carried
+// a weak signal. Thresholds are therefore the caller's, validated on the
+// caller's own held-out data; this mode reports and never decides. The same
+// cutoff scored AUC 0.94 on the 30-case sample it was tuned on and lost a
+// third of its recall on fresh data, which is the whole argument for handing
+// back the distribution and the release that produced it.
 //
 // API contract: https://docs.typesafe.ai/api.md
 
