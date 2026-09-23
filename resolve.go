@@ -34,6 +34,10 @@ type ModelPredicates struct {
 	Effort ModelEffort
 	// PreferPlan prefers subscription-harness rows over direct APIs.
 	PreferPlan bool
+	// Background avoids providers spending ahead of pace (orange or red).
+	// Unpublished usage remains eligible unless RequireUsage is also set.
+	// The zero value preserves interactive selection behavior.
+	Background bool
 	// PreferProvider wins among token-eligible rows when set. Eligible
 	// means HasAvailableTokens, not "tied on slack": a preferred Claude
 	// with headroom beats a greener Grok. Hot/exhausted preferred dests
@@ -510,6 +514,12 @@ func resolveFromIntel(pred ModelPredicates, byProv map[Provider]PlanUsage, now t
 }
 
 func skipForUsage(pred ModelPredicates, u PlanUsage, has bool, now time.Time) bool {
+	if pred.Background && has {
+		switch ClassifyPlan(u, now, pred.Thresholds).Weekly {
+		case PlanBandAhead, PlanBandHot, PlanBandExhausted:
+			return true
+		}
+	}
 	if !pred.RequireUsage {
 		return false
 	}

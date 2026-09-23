@@ -109,3 +109,17 @@ func TestDecodePredicatesWireSkillAlias(t *testing.T) {
 		t.Fatalf("encode must materialize purpose from skill: %s", raw)
 	}
 }
+
+func TestPredicatesWireBackgroundRoundTrip(t *testing.T) {
+	raw, err := EncodePredicatesWire(ModelPredicates{Background: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"background":true`) {
+		t.Fatalf("background missing from wire: %s", raw)
+	}
+	got, err := DecodePredicatesWire(raw)
+	if err != nil || !got.Background {
+		t.Fatalf("background lost on wire: %+v (%v)", got, err)
+	}
+}
