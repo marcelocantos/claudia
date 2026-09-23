@@ -95,6 +95,7 @@ func cursorAPIWindow(used *float64, base PlanWindow) (PlanWindow, bool) {
 		return PlanWindow{}, false
 	}
 	w := base
+	w.Name = PlanWindowAPI
 	w.Model = "API"
 	w.UsedPercent = floatPtr(*used)
 	w.RemainingPercent = floatPtr(remainingFromUsed(*used))

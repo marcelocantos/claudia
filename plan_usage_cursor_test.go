@@ -42,6 +42,9 @@ func TestParseCursorPeriodUsageAvailable(t *testing.T) {
 	}
 	w := pu.Windows[0]
 	api := pu.Windows[1]
+	if api.Name != PlanWindowAPI {
+		t.Errorf("api name=%q", api.Name)
+	}
 	if api.Model != "API" {
 		t.Errorf("api model=%q", api.Model)
 	}

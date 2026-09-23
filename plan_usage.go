@@ -42,6 +42,10 @@ const (
 	// It is a distinct name so a consumer totalling plan windows cannot
 	// mistake a per-model figure for the account's own.
 	PlanWindowModelWeekly PlanWindowName = "weekly_model"
+	// PlanWindowAPI is Cursor's named-model bucket. It shares the billing
+	// cycle with the blended total and must not share that window's name,
+	// or a consumer files both figures as one history.
+	PlanWindowAPI PlanWindowName = "api"
 )
 
 // PlanWindow is one published remaining/rollover window.
