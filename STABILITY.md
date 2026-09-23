@@ -258,7 +258,7 @@ going via `claudia.Task` and `ProviderCodex`. The whole package is **Fluid**
 | `RateLimitError` | struct with `Message string`; method `Error() string`. Throttle / 429 / usage cap | Fluid |
 | `ResolveArgs` | struct with `BinPath, AuthPath string`, `Getenv func(string) string`, `LookPath func(string) (string, error)`, `Stat func(string) (os.FileInfo, error)`, `SkipAuthPreflight bool`. Test seam for binary resolution and auth preflight | Fluid |
 | `RunError` | struct with `Message string`; method `Error() string`. Unclassified run failure | Fluid |
-| `Status` | string type: `StatusIdle`, `StatusRunning`, `StatusError`, `StatusCancelled`, `StatusStopped` | Fluid |
+| `Status` | string type: `StatusIdle`, `StatusRunning`, `StatusError`, `StatusStopped` | Fluid |
 | `Task` | opaque struct; methods listed below | Fluid |
 | `Usage` | struct with `InputTokens, OutputTokens, CacheReadInputTokens int`. Note: no `CacheCreationInputTokens`, unlike `claudia.Usage` | Fluid |
 
@@ -267,7 +267,7 @@ going via `claudia.Task` and `ProviderCodex`. The whole package is **Fluid**
 | Item | Status |
 |---|---|
 | `EventInit, EventText, EventToolUse, EventResult, EventError` (EventType) | Fluid |
-| `StatusIdle, StatusRunning, StatusError, StatusCancelled, StatusStopped` (Status) | Fluid |
+| `StatusIdle, StatusRunning, StatusError, StatusStopped` (Status) | Fluid |
 
 #### Functions
 
