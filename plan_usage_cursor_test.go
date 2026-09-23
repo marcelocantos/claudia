@@ -37,10 +37,23 @@ func TestParseCursorPeriodUsageAvailable(t *testing.T) {
 	if pu.PlanType != "ultra" {
 		t.Errorf("PlanType=%q", pu.PlanType)
 	}
-	if len(pu.Windows) != 1 {
+	if len(pu.Windows) != 2 {
 		t.Fatalf("Windows=%+v", pu.Windows)
 	}
 	w := pu.Windows[0]
+	api := pu.Windows[1]
+	if api.Model != "API" {
+		t.Errorf("api model=%q", api.Model)
+	}
+	if api.UsedPercent == nil || *api.UsedPercent != 20 {
+		t.Errorf("api used=%v", api.UsedPercent)
+	}
+	if api.RemainingPercent == nil || *api.RemainingPercent != 80 {
+		t.Errorf("api remaining=%v", api.RemainingPercent)
+	}
+	if api.ResetsAt == nil || w.ResetsAt == nil || !api.ResetsAt.Equal(*w.ResetsAt) {
+		t.Errorf("api resets=%v total resets=%v", api.ResetsAt, w.ResetsAt)
+	}
 	if w.Name != PlanWindowWeekly {
 		t.Errorf("name=%q", w.Name)
 	}

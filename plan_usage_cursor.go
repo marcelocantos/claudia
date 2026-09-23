@@ -67,6 +67,14 @@ func parseCursorPeriodUsage(raw []byte, now time.Time) PlanUsage {
 	if start != nil && end != nil && end.After(*start) {
 		w.LimitWindow = end.Sub(*start)
 	}
+	windows := []PlanWindow{w}
+	// totalPercentUsed blends the auto bucket with named-model API usage.
+	// A seat on claude-opus or gpt is refused ("Upgrade your plan") when
+	// apiPercentUsed hits 100 while the blend is still near half. The API
+	// bucket is its own window so the cockpit can show that split.
+	if api, ok := cursorAPIWindow(r.PlanUsage.APIPercentUsed, w); ok {
+		windows = append(windows, api)
+	}
 	plan := r.MembershipType
 	if plan == "" {
 		plan = r.PlanType
@@ -74,10 +82,23 @@ func parseCursorPeriodUsage(raw []byte, now time.Time) PlanUsage {
 	return PlanUsage{
 		Provider:  ProviderCursor,
 		Status:    PlanUsageAvailable,
-		Windows:   []PlanWindow{w},
+		Windows:   windows,
 		PlanType:  plan,
 		FetchedAt: now,
 	}
+}
+
+// cursorAPIWindow is the named-model bucket. An absent or out-of-range
+// figure is omitted; it must not take down the total reading.
+func cursorAPIWindow(used *float64, base PlanWindow) (PlanWindow, bool) {
+	if used == nil || *used < 0 || *used > 100 {
+		return PlanWindow{}, false
+	}
+	w := base
+	w.Model = "API"
+	w.UsedPercent = floatPtr(*used)
+	w.RemainingPercent = floatPtr(remainingFromUsed(*used))
+	return w, true
 }
 
 // parseCursorTime accepts RFC3339, RFC3339Nano, or a unix-ms JSON number /
