@@ -164,6 +164,9 @@ func TestHermeticTaskRunNonZeroExit(t *testing.T) {
 			if ee.ExitCode != 3 {
 				t.Errorf("ExitCode = %d, want 3", ee.ExitCode)
 			}
+			if task.Status() != StatusError {
+				t.Errorf("status = %q, want %q", task.Status(), StatusError)
+			}
 			return
 		}
 	}
@@ -189,6 +192,38 @@ func TestHermeticTaskAuthPreflightFails(t *testing.T) {
 	var ae *AuthError
 	if !errors.As(err, &ae) {
 		t.Fatalf("Run err = %v (%T), want *AuthError", err, err)
+	}
+}
+
+func TestHermeticTaskCancelDeliversTerminalError(t *testing.T) {
+	// 🎯T90: cancelling while the child is still up must deliver a
+	// terminal EventError. The old select raced a ready send against
+	// an already-closed Done and dropped the error about half the time.
+	// 32 iterations is enough that a 50/50 race fails the test.
+	bin := writeBlockingCLI(t)
+	const n = 32
+	for i := 0; i < n; i++ {
+		task := NewTask(Config{Resolve: hermeticResolve(t, bin)})
+		ctx, cancel := context.WithCancel(t.Context())
+		events, err := task.Run(ctx, "hi")
+		if err != nil {
+			cancel()
+			t.Fatalf("iter %d Run: %v", i, err)
+		}
+		cancel()
+		got := drain(t, events)
+		var terminal bool
+		for _, ev := range got {
+			if ev.Type == EventError && errors.Is(ev.Error, context.Canceled) {
+				terminal = true
+			}
+		}
+		if !terminal {
+			t.Fatalf("iter %d: cancelled run closed with no terminal error, got %#v", i, got)
+		}
+		if task.Status() != StatusCancelled {
+			t.Fatalf("iter %d: status = %q, want %q", i, task.Status(), StatusCancelled)
+		}
 	}
 }
 
@@ -236,6 +271,19 @@ func hermeticResolve(t *testing.T, bin string) *ResolveArgs {
 			return os.Getenv(k)
 		},
 	}
+}
+
+func writeBlockingCLI(t *testing.T) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("hermetic fake CLI uses POSIX shell")
+	}
+	bin := filepath.Join(t.TempDir(), "fake-codex")
+	script := "#!/bin/sh\n# Produce nothing; stay up until the run context kills us.\nsleep 300\nexit 0\n"
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return bin
 }
 
 func writeFakeCLI(t *testing.T, fixturePath string, exitCode int) string {

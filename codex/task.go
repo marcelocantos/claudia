@@ -23,6 +23,11 @@ const (
 	StatusRunning Status = "running"
 	// StatusError means the last run ended with an error; Run may retry.
 	StatusError Status = "error"
+	// StatusCancelled means the run's context ended the task. Distinct
+	// from StatusError, which is an ordinary non-zero exit or a
+	// structured provider error, and from StatusStopped, which is Stop.
+	// Run may retry.
+	StatusCancelled Status = "cancelled"
 	// StatusStopped means Stop was called; Run will fail.
 	StatusStopped Status = "stopped"
 )
@@ -209,6 +214,28 @@ func (t *Task) Run(ctx context.Context, prompt string) (<-chan Event, error) {
 	ch := make(chan Event, 16)
 	go func() {
 		defer close(ch)
+		// sendTerminal delivers the last word about why the run ended.
+		// A select on send and Done races when both are ready — the
+		// buffer has room and the context is already cancelled — and Go
+		// picks either, so the error is dropped about half the time and
+		// the channel closes empty (🎯T90). A non-blocking send commits
+		// whenever the buffer can take the event. Only a full buffer
+		// waits, and only then can cancellation abandon the send.
+		sendTerminal := func(ev Event) {
+			select {
+			case ch <- ev:
+				return
+			default:
+			}
+			select {
+			case ch <- ev:
+			case <-runCtx.Done():
+				select {
+				case ch <- ev:
+				default:
+				}
+			}
+		}
 		var (
 			p          parser
 			sawError   bool
@@ -246,14 +273,22 @@ func (t *Task) Run(ctx context.Context, prompt string) (<-chan Event, error) {
 				select {
 				case ch <- ev:
 				case <-runCtx.Done():
-					t.finish(StatusError)
+					// A live stream may be abandoned mid-flight. The
+					// terminal error may not: it is why the run ended.
+					sendTerminal(Event{Type: EventError, Error: context.Cause(runCtx)})
+					_ = cmd.Wait()
+					t.finish(StatusCancelled)
 					return
 				}
 			}
 		}
 
 		waitErr := cmd.Wait()
-		if waitErr != nil && !sawError {
+		cancelled := runCtx.Err() != nil
+		if cancelled && !sawError {
+			sendTerminal(Event{Type: EventError, Error: context.Cause(runCtx)})
+			sawError = true
+		} else if waitErr != nil && !sawError {
 			exitCode := 1
 			if ee, ok := waitErr.(*exec.ExitError); ok {
 				exitCode = ee.ExitCode()
@@ -270,10 +305,7 @@ func (t *Task) Run(ctx context.Context, prompt string) (<-chan Event, error) {
 				typed = &ExitError{ExitCode: exitCode, Message: msg}
 			}
 			sawError = true
-			select {
-			case ch <- Event{Type: EventError, Error: typed}:
-			case <-runCtx.Done():
-			}
+			sendTerminal(Event{Type: EventError, Error: typed})
 		}
 
 		if initID != "" {
@@ -286,7 +318,9 @@ func (t *Task) Run(ctx context.Context, prompt string) (<-chan Event, error) {
 			t.lastResult = lastResult
 			t.mu.Unlock()
 		}
-		if sawError {
+		if cancelled {
+			t.finish(StatusCancelled)
+		} else if sawError {
 			t.finish(StatusError)
 		} else {
 			t.finish(StatusIdle)
