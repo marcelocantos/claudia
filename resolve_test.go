@@ -31,6 +31,54 @@ func TestResolveYTTShapedPrefersGrokWhenHealthy(t *testing.T) {
 	}
 }
 
+func TestResolveBackgroundAvoidsOverspentProviders(t *testing.T) {
+	now := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
+	week := now.Add(3*24*time.Hour + 12*time.Hour)
+	weekly := func(provider Provider, used float64) PlanUsage {
+		return PlanUsage{Provider: provider, Status: PlanUsageAvailable,
+			Windows: []PlanWindow{{Name: PlanWindowWeekly,
+				UsedPercent: floatPtr(used), RemainingPercent: floatPtr(100 - used),
+				ResetsAt: &week, LimitWindow: defaultWeeklyWindow}}}
+	}
+	if band := ClassifyPlan(weekly(ProviderGrok, 70), now, nil).Weekly; band != PlanBandAhead {
+		t.Fatalf("test fixture must be orange, got %s", band)
+	}
+	intel := &ModelIntelArgs{Latest: []ModelObservation{
+		{Generation: "grok-4.6", Effort: ModelEffortHigh, Purpose: ModelPurposeGeneral, Value: 80},
+		{Generation: "claude-sonnet-5", Effort: ModelEffortHigh, Purpose: ModelPurposeGeneral, Value: 80},
+	}}
+	for _, path := range []struct {
+		name  string
+		intel *ModelIntelArgs
+	}{
+		{name: "catalog"},
+		{name: "intel", intel: intel},
+	} {
+		t.Run(path.name, func(t *testing.T) {
+			pred := ModelPredicates{
+				Mode: CapabilityTask, Quality: ModelQualityStandard, PreferPlan: true,
+				PreferProvider: ProviderGrok, Background: true, Now: now,
+				ExcludeProviders: []Provider{ProviderCursor, ProviderCodex},
+				Usage:            []PlanUsage{weekly(ProviderGrok, 70), weekly(ProviderClaude, 50)},
+				Intel:            path.intel,
+			}
+			got, err := Resolve(context.Background(), pred)
+			if err != nil || got.Provider != ProviderClaude {
+				t.Fatalf("background must avoid preferred orange provider: %+v (%v)", got, err)
+			}
+			pred.Usage = []PlanUsage{weekly(ProviderGrok, 70), weekly(ProviderClaude, 80)}
+			if _, err := Resolve(context.Background(), pred); err == nil {
+				t.Fatal("background must refuse when only orange/red providers remain")
+			}
+			pred.Background = false
+			got, err = Resolve(context.Background(), pred)
+			if path.intel != nil && (err != nil || got.Provider != ProviderGrok) {
+				t.Fatalf("interactive intel selection must preserve preferred orange provider: %+v (%v)", got, err)
+			}
+		})
+	}
+}
+
 func TestResolveSkipsHotClaude(t *testing.T) {
 	now := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
 	week := now.Add(3*24*time.Hour + 12*time.Hour)

@@ -258,6 +258,7 @@ type predicatesWire struct {
 	Model            string          `json:"model,omitempty"`
 	Effort           ModelEffort     `json:"effort,omitempty"`
 	PreferPlan       bool            `json:"prefer_plan,omitempty"`
+	Background       bool            `json:"background,omitempty"`
 	PreferProvider   Provider        `json:"prefer_provider,omitempty"`
 	ExcludeProviders []Provider      `json:"exclude_providers,omitempty"`
 	RequireUsage     bool            `json:"require_usage,omitempty"`
@@ -279,7 +280,7 @@ func EncodePredicatesWire(p ModelPredicates) (json.RawMessage, error) {
 	p = normalizePredicates(p)
 	return json.Marshal(predicatesWire{
 		Mode: p.Mode, Purpose: p.Purpose, Skill: p.Skill, Quality: p.Quality,
-		Model: p.Model, Effort: p.Effort, PreferPlan: p.PreferPlan,
+		Model: p.Model, Effort: p.Effort, PreferPlan: p.PreferPlan, Background: p.Background,
 		PreferProvider: p.PreferProvider, ExcludeProviders: p.ExcludeProviders,
 		RequireUsage: p.RequireUsage, Thresholds: p.Thresholds,
 	})
@@ -298,7 +299,7 @@ func DecodePredicatesWire(raw json.RawMessage) (ModelPredicates, error) {
 	}
 	return ModelPredicates{
 		Mode: w.Mode, Purpose: purpose, Skill: w.Skill, Quality: w.Quality,
-		Model: w.Model, Effort: w.Effort, PreferPlan: w.PreferPlan,
+		Model: w.Model, Effort: w.Effort, PreferPlan: w.PreferPlan, Background: w.Background,
 		PreferProvider: w.PreferProvider, ExcludeProviders: w.ExcludeProviders,
 		RequireUsage: w.RequireUsage, Thresholds: w.Thresholds,
 	}, nil
