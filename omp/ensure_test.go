@@ -5,6 +5,7 @@ package omp
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -157,6 +158,26 @@ func TestSpoolDoesNotCompress(t *testing.T) {
 	}
 }
 
+func TestSpoolAppendDoesNotCompressFile(t *testing.T) {
+	dir := t.TempDir()
+	now := "2026-09-25T15:04:05.000Z"
+	rec := `{"ts":"2026-09-25T15:04:05.000Z","seat":"jevons-po","type":"text","text":"hi"}`
+	if _, err := runSpool(t, dir, rec, now); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "events-2026-09-25.log")
+	if hfsCompressed(t, path) {
+		t.Fatal("shim append set UF_COMPRESSED")
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), `"seat":"jevons-po"`) {
+		t.Fatalf("read after append lost the record: %s", body)
+	}
+}
+
 func runSpool(t *testing.T, dir, rec, now string) (string, error) {
 	t.Helper()
 	script := filepath.Join(filepath.Dir(ServerScript()), "spool.ts")
@@ -165,4 +186,18 @@ func runSpool(t *testing.T, dir, rec, now string) (string, error) {
 	cmd := exec.CommandContext(ctx, "bun", script, "append", dir, rec, now)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
+}
+
+func hfsCompressed(t *testing.T, path string) bool {
+	t.Helper()
+	out, err := exec.Command("stat", "-f", "%f", path).Output()
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	var flags uint64
+	if _, err := fmt.Sscanf(strings.TrimSpace(string(out)), "%d", &flags); err != nil {
+		t.Fatalf("stat flags %q: %v", out, err)
+	}
+	const ufCompressed = 0x20
+	return flags&ufCompressed != 0
 }
