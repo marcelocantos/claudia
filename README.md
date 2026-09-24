@@ -92,6 +92,9 @@ Codex Task mode is available by selecting `ProviderCodex`. It runs
 `codex exec --json`, captures the Codex thread id as the task session
 id, and can resume with the same `TaskConfig.ClaudeID` field:
 
+For constraint-based selection, `Resolve` maps Codex frontier, standard,
+and economy quality to GPT-6 Astra, Sol, and Luna respectively.
+
 ```go
 task := claudia.NewTask(claudia.TaskConfig{
     Provider:       claudia.ProviderCodex,
