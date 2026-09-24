@@ -96,6 +96,13 @@ func TestOMPStartLoadsTokenFromKeychain(t *testing.T) {
 	if err := agent.WaitReady(context.Background()); err != nil {
 		t.Fatalf("WaitReady: %v", err)
 	}
+	events := make(chan Event, 8)
+	agent.SubscribeEvents(func(ev Event) {
+		select {
+		case events <- ev:
+		default:
+		}
+	})
 	msg := <-got
 	if msg.Op != omp.OpLoad || msg.Token != "plan-token" || msg.Provider != omp.Anthropic {
 		t.Fatalf("load = %+v", msg)
@@ -106,6 +113,21 @@ func TestOMPStartLoadsTokenFromKeychain(t *testing.T) {
 	prompt := <-got
 	if prompt.Op != omp.OpPrompt || prompt.Text != "hello" {
 		t.Fatalf("prompt = %+v", prompt)
+	}
+	deadline := time.After(2 * time.Second)
+	var sawText, sawEnd bool
+	for !sawText || !sawEnd {
+		select {
+		case ev := <-events:
+			if ev.Type == "assistant" && ev.Text == "hi" {
+				sawText = true
+			}
+			if ev.StopReason == "end_turn" {
+				sawEnd = true
+			}
+		case <-deadline:
+			t.Fatalf("event stream text=%v turn_end=%v", sawText, sawEnd)
+		}
 	}
 }
 
@@ -182,6 +204,9 @@ func TestOMPStartRefreshFailureDoesNotStart(t *testing.T) {
 	}
 	t.Cleanup(func() { ompKeychain = nil; ompLogin = omp.Login{} })
 	t.Setenv("CLAUDIA_OMP_SOCKET", filepath.Join(t.TempDir(), "unused.sock"))
+	t.Setenv("ANTHROPIC_API_KEY", "sk-should-not-be-used")
+	t.Setenv("OPENAI_API_KEY", "sk-should-not-be-used")
+	t.Setenv("XAI_API_KEY", "sk-should-not-be-used")
 
 	_, err := StartDirect(Config{
 		Provider:    Provider(omp.Anthropic),
@@ -290,6 +315,9 @@ func TestOMPSidecarPromptCallsPiAgentCore(t *testing.T) {
 	if !strings.Contains(src, "agent.prompt(") {
 		t.Fatal("a prompt must call Agent.prompt on pi-agent-core")
 	}
+	if !strings.Contains(src, "type: \"turn_end\"") || !strings.Contains(src, "snapshot: agent.state") {
+		t.Fatal("turn_end must snapshot that Agent's context")
+	}
 	if strings.Contains(src, `@oh-my-pi/pi-natives`) || strings.Contains(src, `@oh-my-pi/pi-coding-agent`) {
 		t.Fatal("sidecar must not load pi-natives or omp's tools")
 	}
@@ -327,12 +355,19 @@ func TestOMPGrantCarriesOMP(t *testing.T) {
 }
 
 func TestOMPExecScrubsEnv(t *testing.T) {
-	src, err := os.ReadFile("omp_agent.go")
+	t.Setenv("ANTHROPIC_API_KEY", "sk-live")
+	t.Setenv("OPENAI_API_KEY", "sk-live")
+	t.Setenv("XAI_API_KEY", "sk-live")
+	t.Setenv("CURSOR_ACCESS_TOKEN", "tok-live")
+	out, err := execKeychain(context.Background(), "/usr/bin/env")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(src), "cmd.Env = omp.ScrubEnv(os.Environ())") {
-		t.Fatal("the bun/keychain runner must scrub plan keys from the process environment")
+	blob := string(out)
+	for _, name := range []string{"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "XAI_API_KEY", "CURSOR_ACCESS_TOKEN"} {
+		if strings.Contains(blob, name+"=") {
+			t.Fatalf("execKeychain env still has %s", name)
+		}
 	}
 	server, err := os.ReadFile("sidecar/server.ts")
 	if err != nil {
@@ -353,13 +388,10 @@ func TestOMPNoGoOAuthClient(t *testing.T) {
 		"accounts.cursor.com",
 		"pkceS256",
 	}
-	err := filepath.Walk("omp", func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() || !strings.HasSuffix(path, ".go") {
-			return err
-		}
+	check := func(path string) {
 		b, err := os.ReadFile(path)
 		if err != nil {
-			return err
+			t.Fatal(err)
 		}
 		src := string(b)
 		for _, tok := range banned {
@@ -367,9 +399,16 @@ func TestOMPNoGoOAuthClient(t *testing.T) {
 				t.Errorf("%s contains %q; Claudia must not implement the OAuth dance", path, tok)
 			}
 		}
+	}
+	err := filepath.Walk("omp", func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return err
+		}
+		check(path)
 		return nil
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	check("omp_agent.go")
 }

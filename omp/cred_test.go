@@ -34,11 +34,31 @@ func TestSaveTrustsOnlyTheBroker(t *testing.T) {
 	if strings.Contains(blob, "-A") || strings.Contains(blob, "jevonsd") || strings.Contains(blob, "bun") {
 		t.Fatalf("ACL trusts more than the broker: %s", blob)
 	}
+	if strings.Contains(blob, " -p ") || strings.Contains(blob, " -P ") || strings.Contains(blob, "-p ") {
+		t.Fatalf("item has a passphrase flag: %s", blob)
+	}
 	if strings.Contains(blob, "openai-api-key") || strings.Contains(blob, "xai-api-key") {
 		t.Fatalf("wrote a pay-as-you-go item: %s", blob)
 	}
 	if !strings.Contains(blob, "-s "+KeychainService) {
 		t.Fatalf("service = %s", blob)
+	}
+}
+
+func TestSaveRefusesPayAsYouGoService(t *testing.T) {
+	err := trustedPathOnly([]string{
+		"add-generic-password", "-a", "claudia", "-s", "openai-api-key",
+		"-T", "/usr/local/bin/claudia", "-w", "{}",
+	}, "/usr/local/bin/claudia")
+	if err == nil || !strings.Contains(err.Error(), "openai-api-key") {
+		t.Fatalf("err = %v", err)
+	}
+	err = trustedPathOnly([]string{
+		"add-generic-password", "-a", "claudia", "-s", "xai-api-key",
+		"-T", "/usr/local/bin/claudia", "-w", "{}",
+	}, "/usr/local/bin/claudia")
+	if err == nil || !strings.Contains(err.Error(), "xai-api-key") {
+		t.Fatalf("err = %v", err)
 	}
 }
 
@@ -154,8 +174,52 @@ func TestEnsureRefreshesExpiredRecord(t *testing.T) {
 			if err := json.Unmarshal([]byte(saved), &item); err != nil {
 				t.Fatal(err)
 			}
-			if item.Records[id].AccessToken != "fresh" || item.Records[id].RefreshToken != "nr" {
+			if item.Records[id].AccessToken != "fresh" || item.Records[id].RefreshToken != "nr" || item.Records[id].Expiry.IsZero() {
 				t.Fatalf("keychain write-back = %+v", item.Records[id])
+			}
+		})
+	}
+}
+
+func TestEnsureMissingRecordUsesLogin(t *testing.T) {
+	fresh := time.Now().Add(time.Hour)
+	for _, id := range []string{Anthropic, OpenAICodex, Cursor, XAIOAuth} {
+		t.Run(id, func(t *testing.T) {
+			var saved string
+			s := Store{
+				BrokerPath: "/usr/local/bin/claudia",
+				Run: func(_ context.Context, name string, args ...string) ([]byte, error) {
+					if name == "security" && len(args) > 0 && args[0] == "find-generic-password" {
+						if saved != "" {
+							return []byte(saved), nil
+						}
+						return []byte(`{"records":{}}`), nil
+					}
+					if name == "security" && len(args) > 0 && args[0] == "add-generic-password" {
+						for i, a := range args {
+							if a == "-w" && i+1 < len(args) {
+								saved = args[i+1]
+							}
+						}
+					}
+					return nil, nil
+				},
+			}
+			login := Login{
+				Script: "auth.ts",
+				Run: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+					if len(args) < 3 || args[1] != "login" || args[2] != id {
+						t.Fatalf("expected login %s, got %v", id, args)
+					}
+					return []byte(`{"refresh_token":"nr","access_token":"fresh","expiry":"` + fresh.UTC().Format(time.RFC3339) + `"}`), nil
+				},
+			}
+			tok, err := s.Ensure(context.Background(), id, login)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tok != "fresh" {
+				t.Fatalf("token = %q", tok)
 			}
 		})
 	}
