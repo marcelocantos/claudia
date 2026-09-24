@@ -992,10 +992,12 @@ func grokTaskArgs(req taskRunRequest) []string {
 
 // grokTaskParser maps Grok Build headless streaming-json lines to TaskEvent.
 //
-// Documented event types (Grok Build user guide § Headless mode):
-// text, thought, end, error. Session id arrives only on end.
+// A usage event ends each model response, including responses that precede a
+// tool call. Only the last response is the turn's result; earlier text is
+// progress, not part of the final answer. Session id arrives only on end.
 type grokTaskParser struct {
-	text strings.Builder
+	text         strings.Builder
+	lastResponse string
 }
 
 func (p *grokTaskParser) Parse(line []byte) []TaskEvent {
@@ -1019,6 +1021,10 @@ func (p *grokTaskParser) Parse(line []byte) []TaskEvent {
 	case "thought":
 		// Internal reasoning — not part of the provider-neutral result text.
 		return nil
+	case "usage":
+		p.lastResponse = p.text.String()
+		p.text.Reset()
+		return nil
 	case "end":
 		var msg struct {
 			SessionID  string `json:"sessionId"`
@@ -1031,9 +1037,13 @@ func (p *grokTaskParser) Parse(line []byte) []TaskEvent {
 		if msg.SessionID != "" {
 			out = append(out, TaskEvent{Type: TaskEventInit, SessionID: msg.SessionID})
 		}
+		result := p.text.String()
+		if result == "" {
+			result = p.lastResponse
+		}
 		out = append(out, TaskEvent{
 			Type:    TaskEventResult,
-			Content: p.text.String(),
+			Content: result,
 		})
 		return out
 	case "error":
