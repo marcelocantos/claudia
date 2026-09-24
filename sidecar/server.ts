@@ -3,10 +3,10 @@
 // the environment, and the pay-as-you-go key variables are ignored.
 //
 // The turn loop is @oh-my-pi/pi-agent-core (pinned in package.json).
-// This file does not start a vendor CLI and does not import pi-natives.
 
 import { createServer } from "node:net";
 import { unlinkSync } from "node:fs";
+import { createSeatAgent, type SeatAgent } from "./seat.ts";
 
 const banned = [
   "ANTHROPIC_API_KEY",
@@ -30,12 +30,34 @@ type Line = {
   model?: string;
   token?: string;
   text?: string;
+  call_id?: string;
+  result?: string;
 };
 
-const seats = new Map<string, { provider: string; model: string; token: string }>();
+type Seat = {
+  provider: string;
+  model: string;
+  token: string;
+  agent: SeatAgent;
+};
+
+const seats = new Map<string, Seat>();
 
 const server = createServer((socket) => {
   let buf = "";
+  const pending = new Map<string, (result: string) => void>();
+
+  const write = (ev: Record<string, unknown>) => {
+    socket.write(JSON.stringify(ev) + "\n");
+  };
+
+  const callTool = (callId: string, name: string, args: string) => {
+    write({ type: "tool_call", call_id: callId, name, text: args });
+    return new Promise<string>((resolve) => {
+      pending.set(callId, resolve);
+    });
+  };
+
   socket.on("data", (chunk) => {
     buf += chunk.toString("utf8");
     let nl: number;
@@ -45,36 +67,77 @@ const server = createServer((socket) => {
       let msg: Line;
       try { msg = JSON.parse(raw); } catch { continue; }
       const seat = msg.seat ?? "";
-      if (msg.op === "load") {
-        if (!msg.token) {
-          socket.write(JSON.stringify({ seat, type: "error", text: "load without an access token" }) + "\n");
-          continue;
-        }
-        seats.set(seat, {
-          provider: msg.provider ?? "",
-          model: msg.model ?? "",
-          token: msg.token,
-        });
-        socket.write(JSON.stringify({ seat, type: "ready" }) + "\n");
-        continue;
-      }
-      if (!seats.has(seat)) {
-        socket.write(JSON.stringify({ seat, type: "error", text: "seat is not loaded" }) + "\n");
-        continue;
-      }
-      if (msg.op === "abort") {
-        socket.write(JSON.stringify({ seat, type: "turn_end", text: "aborted" }) + "\n");
-        continue;
-      }
-      if (msg.op === "prompt" || msg.op === "steer") {
-        socket.write(JSON.stringify({
-          seat,
-          type: "error",
-          text: "pi-agent-core is not loaded; the sidecar will not call a vendor CLI or an API key",
-        }) + "\n");
-      }
+      void handle(msg, seat, write, callTool, pending).catch((err: unknown) => {
+        write({ seat, type: "error", text: err instanceof Error ? err.message : String(err) });
+      });
     }
   });
 });
+
+async function handle(
+  msg: Line,
+  seat: string,
+  write: (ev: Record<string, unknown>) => void,
+  callTool: (callId: string, name: string, args: string) => Promise<string>,
+  pending: Map<string, (result: string) => void>,
+): Promise<void> {
+  if (msg.op === "tool_result") {
+    const done = pending.get(msg.call_id ?? "");
+    if (done) {
+      pending.delete(msg.call_id ?? "");
+      done(msg.result ?? "");
+    }
+    return;
+  }
+  if (msg.op === "load") {
+    if (!msg.token) {
+      write({ seat, type: "error", text: "load without an access token" });
+      return;
+    }
+    const existing = seats.get(seat);
+    if (existing) {
+      existing.token = msg.token;
+      existing.agent.setToken(msg.token);
+      if (msg.model && msg.model !== existing.model) {
+        existing.agent.setModel(msg.provider ?? existing.provider, msg.model);
+        existing.model = msg.model;
+      }
+      write({ seat, type: "ready" });
+      return;
+    }
+    const agent = createSeatAgent({
+      provider: msg.provider ?? "",
+      model: msg.model ?? "",
+      token: msg.token,
+      emit: (ev) => write({ seat, ...ev }),
+      callTool,
+    });
+    seats.set(seat, {
+      provider: msg.provider ?? "",
+      model: msg.model ?? "",
+      token: msg.token,
+      agent,
+    });
+    write({ seat, type: "ready" });
+    return;
+  }
+  const loaded = seats.get(seat);
+  if (!loaded) {
+    write({ seat, type: "error", text: "seat is not loaded" });
+    return;
+  }
+  if (msg.op === "abort") {
+    loaded.agent.abort();
+    write({ seat, type: "turn_end", text: "aborted", snapshot: loaded.agent.snapshot() });
+    return;
+  }
+  if (msg.op === "steer") {
+    loaded.agent.steer(msg.text ?? "");
+    return;
+  }
+  if (msg.op === "prompt") {
+    await loaded.agent.prompt(msg.text ?? "");
+  }
+}
 
 server.listen(sock);

@@ -159,6 +159,7 @@ var sessionFieldFates = map[Provider]map[string]fieldDecl{
 		"ConnectPID":           {fateIgnored, "Grok serve PID; Claude Session has no serve process"},
 		"Goal":                 {fateLocal, "host-owned continuation; never sent to the provider"},
 		"GoalCompleteCheck":    {fateLocal, "host completeness hook; never sent to the provider"},
+		"OMP":                  {fateLocal, "selects the Oh My Pi sidecar; never sent to a vendor CLI"},
 	},
 	ProviderGrok: {
 		"Provider":             {fateLocal, "selects this path"},
@@ -186,6 +187,7 @@ var sessionFieldFates = map[Provider]map[string]fieldDecl{
 		"ConnectPID":           {fateLocal, "recorded for Adopt/Alive; Start itself keys off ConnectURL / GrokConnect"},
 		"Goal":                 {fateLocal, "host-owned continuation; never sent to the provider"},
 		"GoalCompleteCheck":    {fateLocal, "host completeness hook; never sent to the provider"},
+		"OMP":                  {fateLocal, "selects the Oh My Pi sidecar; never sent to a vendor CLI"},
 	},
 	ProviderCodex: {
 		"Provider":             {fateLocal, "selects this path"},
@@ -213,6 +215,7 @@ var sessionFieldFates = map[Provider]map[string]fieldDecl{
 		"ConnectPID":           {fateIgnored, "Grok serve PID"},
 		"Goal":                 {fateLocal, "host-owned continuation; never sent to the provider"},
 		"GoalCompleteCheck":    {fateLocal, "host completeness hook; never sent to the provider"},
+		"OMP":                  {fateLocal, "selects the Oh My Pi sidecar; never sent to a vendor CLI"},
 	},
 	ProviderCursor: {
 		"Provider":             {fateLocal, "selects this path"},
@@ -240,6 +243,7 @@ var sessionFieldFates = map[Provider]map[string]fieldDecl{
 		"ConnectPID":           {fateIgnored, "Grok serve PID"},
 		"Goal":                 {fateLocal, "host-owned continuation; never sent to the provider"},
 		"GoalCompleteCheck":    {fateLocal, "host completeness hook; never sent to the provider"},
+		"OMP":                  {fateLocal, "selects the Oh My Pi sidecar; never sent to a vendor CLI"},
 	},
 }
 

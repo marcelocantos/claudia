@@ -5,6 +5,7 @@ package omp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -62,6 +63,98 @@ func TestRefreshFailureDoesNotFallThrough(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "refresh failed") {
 		t.Fatalf("err = %v", err)
 	}
+}
+
+func TestItemHoldsFourPlanRecords(t *testing.T) {
+	now := time.Now().Add(time.Hour)
+	saved := `{"records":{}}`
+	s := Store{
+		BrokerPath: "/usr/local/bin/claudia",
+		Run: func(_ context.Context, name string, args ...string) ([]byte, error) {
+			if name == "security" && len(args) > 0 && args[0] == "find-generic-password" {
+				return []byte(saved), nil
+			}
+			if name == "security" && len(args) > 0 && args[0] == "add-generic-password" {
+				for i, a := range args {
+					if a == "-w" && i+1 < len(args) {
+						saved = args[i+1]
+					}
+				}
+			}
+			return nil, nil
+		},
+	}
+	for _, id := range []string{Anthropic, OpenAICodex, Cursor, XAIOAuth} {
+		if err := s.Put(context.Background(), id, Record{
+			RefreshToken: "r-" + id,
+			AccessToken:  "a-" + id,
+			Expiry:       now,
+		}); err != nil {
+			t.Fatalf("Put %s: %v", id, err)
+		}
+	}
+	var item Item
+	if err := json.Unmarshal([]byte(saved), &item); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{Anthropic, OpenAICodex, Cursor, XAIOAuth} {
+		if item.Records[id].AccessToken != "a-"+id {
+			t.Fatalf("%s record = %+v", id, item.Records[id])
+		}
+	}
+}
+
+func TestEnsureRefreshesExpiredRecord(t *testing.T) {
+	expired := time.Now().Add(-time.Hour)
+	fresh := time.Now().Add(time.Hour)
+	blob := mustJSON(Item{Records: map[string]Record{
+		Anthropic: {RefreshToken: "r", AccessToken: "old", Expiry: expired},
+	}})
+	var saved string
+	s := Store{
+		BrokerPath: "/usr/local/bin/claudia",
+		Now:        func() time.Time { return time.Now() },
+		Run: func(_ context.Context, name string, args ...string) ([]byte, error) {
+			if name == "security" && len(args) > 0 && args[0] == "find-generic-password" {
+				if saved != "" {
+					return []byte(saved), nil
+				}
+				return []byte(blob), nil
+			}
+			if name == "security" && len(args) > 0 && args[0] == "add-generic-password" {
+				for i, a := range args {
+					if a == "-w" && i+1 < len(args) {
+						saved = args[i+1]
+					}
+				}
+			}
+			return nil, nil
+		},
+	}
+	login := Login{
+		Script: "auth.ts",
+		Run: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			if len(args) < 3 || args[1] != "refresh" {
+				t.Fatalf("expected refresh, got %v", args)
+			}
+			return []byte(`{"refresh_token":"nr","access_token":"fresh","expiry":"` + fresh.UTC().Format(time.RFC3339) + `"}`), nil
+		},
+	}
+	tok, err := s.Ensure(context.Background(), Anthropic, login)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tok != "fresh" {
+		t.Fatalf("token = %q", tok)
+	}
+}
+
+func mustJSON(v any) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
 }
 
 func TestScrubEnvDropsPlanKeys(t *testing.T) {

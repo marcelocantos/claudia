@@ -38,7 +38,19 @@ func (l Login) Refresh(ctx context.Context, store Store, provider string) (Recor
 	if l.Script == "" {
 		return Record{}, fmt.Errorf("omp: login script is required")
 	}
-	out, err := l.Run(ctx, cmd, l.Script, "refresh", provider)
+	existing, err := store.Load(ctx)
+	if err != nil {
+		return Record{}, err
+	}
+	blob, err := json.Marshal(existing.Records[provider])
+	if err != nil {
+		return Record{}, err
+	}
+	verb := "refresh"
+	if rec, ok := existing.Records[provider]; !ok || rec.RefreshToken == "" {
+		verb = "login"
+	}
+	out, err := l.Run(ctx, cmd, l.Script, verb, provider, string(blob))
 	if err != nil {
 		return Record{}, fmt.Errorf("omp: %s refresh failed: %w", provider, err)
 	}

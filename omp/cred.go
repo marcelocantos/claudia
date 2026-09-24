@@ -162,6 +162,21 @@ func (s Store) AccessToken(ctx context.Context, provider string) (string, error)
 	return rec.AccessToken, nil
 }
 
+// Ensure returns a live access token. A missing or expired record is
+// renewed through login (pi-ai). Failure does not fall through to an
+// API key, models.yml, agent.db, or the process environment.
+func (s Store) Ensure(ctx context.Context, provider string, login Login) (string, error) {
+	tok, err := s.AccessToken(ctx, provider)
+	if err == nil {
+		return tok, nil
+	}
+	rec, err := login.Refresh(ctx, s, provider)
+	if err != nil {
+		return "", err
+	}
+	return rec.AccessToken, nil
+}
+
 func known(provider string) bool {
 	switch provider {
 	case Anthropic, OpenAICodex, Cursor, XAIOAuth:

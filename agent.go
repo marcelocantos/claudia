@@ -1759,8 +1759,10 @@ func (a *Agent) SetModel(model string) error {
 	if model == "" {
 		return fmt.Errorf("SetModel: model must be non-empty")
 	}
-	if err := CheckCapability(a.provider, CapabilityModelSwitch); err != nil {
-		return err
+	if !useOMP(Config{Provider: a.provider, OMP: a.startCfg.OMP}) {
+		if err := CheckCapability(a.provider, CapabilityModelSwitch); err != nil {
+			return err
+		}
 	}
 	<-a.ready
 	if a.readyErr != nil {

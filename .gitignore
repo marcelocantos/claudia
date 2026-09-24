@@ -9,3 +9,4 @@ dist/
 _scratchpad/
 bin/
 model-intel/
+sidecar/node_modules/
