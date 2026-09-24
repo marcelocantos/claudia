@@ -61,8 +61,8 @@ type Config struct {
 	// ProviderCursor uses ACP over `agent acp`.
 	Provider Provider
 
-	// OMP sends a ProviderCursor seat to the Oh My Pi sidecar (🎯T864).
-	// anthropic, openai-codex, and xai-oauth use the sidecar without this.
+	// OMP is retained on persisted grants. Launch no longer needs it:
+	// grok, cursor, and the four subscription ids use the sidecar (🎯T866.5).
 	OMP bool
 
 	// Name is the grant key when a claudia daemon holds the seat (🎯T2.10):
@@ -774,7 +774,7 @@ func startWithBackendContext(ctx context.Context, cfg Config, backend agentBacke
 	// Materialized sets RequireResume only after real conversation
 	// evidence, not bare Start success).
 	// Grok enforces the same policy inside startGrokACP / session/load.
-	if (provider == ProviderClaude) && cfg.RequireResume && !resuming {
+	if (provider == ProviderClaude) && !useOMP(cfg) && cfg.RequireResume && !resuming {
 		return nil, fmt.Errorf("session %s: existing conversation required but JSONL not found at %s — refusing to mint a replacement session", sessionID, jsonlPath)
 	}
 	// A resumed transcript already holds the conversation being resumed.

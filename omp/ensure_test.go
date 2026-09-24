@@ -53,6 +53,15 @@ func TestEnsureStartsDetachedSidecar(t *testing.T) {
 	if ev.Type != "ready" && ev.Type != "error" {
 		t.Fatalf("load = %+v", ev)
 	}
+	if err := conn.Send(Message{Op: OpSteer, Seat: "smoke", Text: "nudge"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Send(Message{Op: OpAbort, Seat: "smoke"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Send(Message{Op: OpTool, CallID: "x", Result: "jevons_ok"}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestEnsureSurvivesParentExit(t *testing.T) {

@@ -122,7 +122,7 @@ func Ensure(ctx context.Context) (string, error) {
 		_ = logf.Close()
 		_ = os.Remove(pidPath(path))
 	}()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		if ctx.Err() != nil {
 			return "", ctx.Err()

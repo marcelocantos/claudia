@@ -244,21 +244,30 @@ func TestOMPStartRefreshFailureDoesNotStart(t *testing.T) {
 	}
 }
 
-func TestOMPMigrateRefusesVendorCLI(t *testing.T) {
-	t.Setenv("CLAUDIA_OMP_SOCKET", "")
+func TestOMPMigrateUsesSidecarNotVendorCLI(t *testing.T) {
+	t.Setenv("CLAUDIA_OMP_SOCKET", filepath.Join(t.TempDir(), "missing.sock"))
+	ompKeychain = func(context.Context, string, ...string) ([]byte, error) {
+		return nil, fmt.Errorf("The specified item could not be found in the keychain.")
+	}
+	ompLogin = omp.Login{
+		Script: "auth.ts",
+		Run: func(context.Context, string, ...string) ([]byte, error) {
+			return nil, fmt.Errorf("login not available in test")
+		},
+	}
+	t.Cleanup(func() { ompKeychain = nil; ompLogin = omp.Login{} })
 	src, _ := startMigrateFixture(t, ProviderGrok, "fake-grok")
 	src.PublishEvent(Event{Type: "user", Text: "hello"})
 	src.PublishEvent(Event{Type: "assistant", Text: "hi"})
-	for _, dest := range []Provider{Provider(omp.Anthropic), Provider(omp.OpenAICodex), Provider(omp.XAIOAuth)} {
+	dests := []Provider{Provider(omp.Anthropic), Provider(omp.OpenAICodex), Provider(omp.XAIOAuth), ProviderCursor}
+	for _, dest := range dests {
 		err := src.Migrate(&MigrateArgs{Provider: dest, Force: true})
-		if err == nil || !strings.Contains(err.Error(), "vendor CLI") {
-			t.Fatalf("%s migrate err = %v", dest, err)
+		if err == nil {
+			t.Fatalf("%s migrate started a seat without credentials", dest)
 		}
-	}
-	src.startCfg.OMP = true
-	err := src.Migrate(&MigrateArgs{Provider: ProviderCursor, Force: true})
-	if err == nil || !strings.Contains(err.Error(), "vendor CLI") {
-		t.Fatalf("cursor migrate err = %v", err)
+		if strings.Contains(err.Error(), "tmux") || strings.Contains(err.Error(), "grok agent") || strings.Contains(err.Error(), "app-server") {
+			t.Fatalf("%s migrate fell through to a vendor CLI: %v", dest, err)
+		}
 	}
 }
 

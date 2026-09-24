@@ -4,6 +4,7 @@
 package claudia
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -270,10 +271,9 @@ func (a *Agent) Migrate(args *MigrateArgs) error {
 	if args == nil || args.Provider == "" {
 		return fmt.Errorf("Migrate: provider must be non-empty")
 	}
-	a.mu.Lock()
-	srcOMP := a.startCfg.OMP
-	a.mu.Unlock()
-	return a.migrateWithBackend(args, agentBackendFor(Config{Provider: args.Provider, OMP: srcOMP}))
+	// T866.5: grok, cursor, and the four subscription ids all go through
+	// the sidecar. Config.OMP is not required.
+	return a.migrateWithBackend(args, agentBackendFor(Config{Provider: args.Provider}))
 }
 
 func (a *Agent) migrateWithBackend(args *MigrateArgs, destBackend agentBackend) error {
@@ -351,6 +351,7 @@ func (a *Agent) migrateWithBackend(args *MigrateArgs, destBackend agentBackend) 
 		destID = uuid.New().String()
 	}
 	start, err := destBackend.StartAgent(agentStartRequest{
+		Context:         context.Background(),
 		Config:          destCfg,
 		WorkDir:         workDir,
 		SessionID:       destID,
