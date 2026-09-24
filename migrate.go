@@ -270,15 +270,17 @@ func (a *Agent) Migrate(args *MigrateArgs) error {
 	if args == nil || args.Provider == "" {
 		return fmt.Errorf("Migrate: provider must be non-empty")
 	}
-	return a.migrateWithBackend(args, agentBackendForProvider(args.Provider))
+	return a.migrateWithBackend(args, agentBackendFor(Config{Provider: args.Provider}))
 }
 
 func (a *Agent) migrateWithBackend(args *MigrateArgs, destBackend agentBackend) error {
 	if err := CheckCapability(a.provider, CapabilityMigrate); err != nil {
 		return err
 	}
-	if err := CheckCapability(args.Provider, CapabilityMigrate); err != nil {
-		return err
+	if !useOMP(Config{Provider: args.Provider}) {
+		if err := CheckCapability(args.Provider, CapabilityMigrate); err != nil {
+			return err
+		}
 	}
 	if args.Provider == a.provider || (a.provider == "" && args.Provider == ProviderClaude) ||
 		(a.provider == ProviderClaude && args.Provider == "") {

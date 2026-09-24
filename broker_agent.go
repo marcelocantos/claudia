@@ -98,7 +98,7 @@ const replayGrace = 500 * time.Millisecond
 // Capabilities reports the provider's own matrix: a brokered seat can do
 // what its provider can do.
 func (b *brokerAgentBackend) Capabilities() providerCapabilities {
-	return agentBackendForProvider(b.cfg.Provider).Capabilities()
+	return agentBackendFor(b.cfg).Capabilities()
 }
 
 // grantNameFor is the daemon key for a seat.

@@ -61,6 +61,10 @@ type Config struct {
 	// ProviderCursor uses ACP over `agent acp`.
 	Provider Provider
 
+	// OMP sends a ProviderCursor seat to the Oh My Pi sidecar (🎯T864).
+	// anthropic, openai-codex, and xai-oauth use the sidecar without this.
+	OMP bool
+
 	// Name is the grant key when a claudia daemon holds the seat (🎯T2.10):
 	// a consumer that restarts reclaims the running agent by this name
 	// instead of starting another. Registry sets it to the AgentDef name.
@@ -642,7 +646,7 @@ func StartContext(ctx context.Context, cfg Config) (*Agent, error) {
 			return nil, err
 		}
 	}
-	return startConsideringBrokerContext(ctx, cfg, agentBackendForProvider(cfg.Provider))
+	return startConsideringBrokerContext(ctx, cfg, agentBackendFor(cfg))
 }
 
 // startDirectContext is StartContext without the broker consult: the path
@@ -704,7 +708,7 @@ func startDirectContext(ctx context.Context, cfg Config) (*Agent, error) {
 			return nil, err
 		}
 	}
-	return startWithBackendContext(ctx, cfg, agentBackendForProvider(cfg.Provider))
+	return startWithBackendContext(ctx, cfg, agentBackendFor(cfg))
 }
 
 func startWithBackend(cfg Config, backend agentBackend) (*Agent, error) {
