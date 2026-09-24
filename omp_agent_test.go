@@ -315,6 +315,36 @@ func TestOMPSidecarPromptCallsPiAgentCore(t *testing.T) {
 	}
 }
 
+func TestOMPGrantCarriesOMP(t *testing.T) {
+	def := configToGrantDef("seat", Config{Provider: ProviderCursor, OMP: true, WorkDir: "/w"}, nil)
+	if !def.OMP {
+		t.Fatal("grant must persist Config.OMP so a bounce does not start the vendor CLI")
+	}
+	cfg := def.Config()
+	if !cfg.OMP || cfg.Provider != ProviderCursor {
+		t.Fatalf("rehydrated cfg = %+v", cfg)
+	}
+}
+
+func TestOMPExecScrubsEnv(t *testing.T) {
+	src, err := os.ReadFile("omp_agent.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(src), "cmd.Env = omp.ScrubEnv(os.Environ())") {
+		t.Fatal("the bun/keychain runner must scrub plan keys from the process environment")
+	}
+	server, err := os.ReadFile("sidecar/server.ts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "XAI_API_KEY", "CURSOR_ACCESS_TOKEN"} {
+		if !strings.Contains(string(server), name) {
+			t.Fatalf("server.ts must drop %s", name)
+		}
+	}
+}
+
 func TestOMPNoGoOAuthClient(t *testing.T) {
 	banned := []string{
 		"claude.ai/oauth",

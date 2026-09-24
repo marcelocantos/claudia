@@ -141,6 +141,10 @@ type AgentDef struct {
 	MCPConfig      string   `json:"mcp_config,omitempty"`
 	ExtraArgs      []string `json:"extra_args,omitempty"`
 	TermLogPath    string   `json:"term_log_path,omitempty"`
+
+	// OMP persists a ProviderCursor seat onto the Oh My Pi sidecar (🎯T864).
+	// A jevonsd bounce must not drop the flag and start the vendor CLI.
+	OMP bool `json:"omp,omitempty"`
 }
 
 // Canonical Purpose values for [AgentDef.Purpose].

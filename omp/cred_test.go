@@ -98,8 +98,9 @@ func TestItemHoldsFourPlanRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, id := range []string{Anthropic, OpenAICodex, Cursor, XAIOAuth} {
-		if item.Records[id].AccessToken != "a-"+id {
-			t.Fatalf("%s record = %+v", id, item.Records[id])
+		rec := item.Records[id]
+		if rec.AccessToken != "a-"+id || rec.RefreshToken != "r-"+id || rec.Expiry.IsZero() {
+			t.Fatalf("%s record = %+v, want refresh/access/expiry", id, rec)
 		}
 	}
 }
@@ -107,45 +108,56 @@ func TestItemHoldsFourPlanRecords(t *testing.T) {
 func TestEnsureRefreshesExpiredRecord(t *testing.T) {
 	expired := time.Now().Add(-time.Hour)
 	fresh := time.Now().Add(time.Hour)
-	blob := mustJSON(Item{Records: map[string]Record{
-		Anthropic: {RefreshToken: "r", AccessToken: "old", Expiry: expired},
-	}})
-	var saved string
-	s := Store{
-		BrokerPath: "/usr/local/bin/claudia",
-		Now:        func() time.Time { return time.Now() },
-		Run: func(_ context.Context, name string, args ...string) ([]byte, error) {
-			if name == "security" && len(args) > 0 && args[0] == "find-generic-password" {
-				if saved != "" {
-					return []byte(saved), nil
-				}
-				return []byte(blob), nil
-			}
-			if name == "security" && len(args) > 0 && args[0] == "add-generic-password" {
-				for i, a := range args {
-					if a == "-w" && i+1 < len(args) {
-						saved = args[i+1]
+	for _, id := range []string{Anthropic, OpenAICodex, Cursor, XAIOAuth} {
+		t.Run(id, func(t *testing.T) {
+			blob := mustJSON(Item{Records: map[string]Record{
+				id: {RefreshToken: "r", AccessToken: "old", Expiry: expired},
+			}})
+			var saved string
+			s := Store{
+				BrokerPath: "/usr/local/bin/claudia",
+				Now:        func() time.Time { return time.Now() },
+				Run: func(_ context.Context, name string, args ...string) ([]byte, error) {
+					if name == "security" && len(args) > 0 && args[0] == "find-generic-password" {
+						if saved != "" {
+							return []byte(saved), nil
+						}
+						return []byte(blob), nil
 					}
-				}
+					if name == "security" && len(args) > 0 && args[0] == "add-generic-password" {
+						for i, a := range args {
+							if a == "-w" && i+1 < len(args) {
+								saved = args[i+1]
+							}
+						}
+					}
+					return nil, nil
+				},
 			}
-			return nil, nil
-		},
-	}
-	login := Login{
-		Script: "auth.ts",
-		Run: func(_ context.Context, _ string, args ...string) ([]byte, error) {
-			if len(args) < 3 || args[1] != "refresh" {
-				t.Fatalf("expected refresh, got %v", args)
+			login := Login{
+				Script: "auth.ts",
+				Run: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+					if len(args) < 3 || args[1] != "refresh" || args[2] != id {
+						t.Fatalf("expected refresh %s, got %v", id, args)
+					}
+					return []byte(`{"refresh_token":"nr","access_token":"fresh","expiry":"` + fresh.UTC().Format(time.RFC3339) + `"}`), nil
+				},
 			}
-			return []byte(`{"refresh_token":"nr","access_token":"fresh","expiry":"` + fresh.UTC().Format(time.RFC3339) + `"}`), nil
-		},
-	}
-	tok, err := s.Ensure(context.Background(), Anthropic, login)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if tok != "fresh" {
-		t.Fatalf("token = %q", tok)
+			tok, err := s.Ensure(context.Background(), id, login)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tok != "fresh" {
+				t.Fatalf("token = %q", tok)
+			}
+			var item Item
+			if err := json.Unmarshal([]byte(saved), &item); err != nil {
+				t.Fatal(err)
+			}
+			if item.Records[id].AccessToken != "fresh" || item.Records[id].RefreshToken != "nr" {
+				t.Fatalf("keychain write-back = %+v", item.Records[id])
+			}
+		})
 	}
 }
 

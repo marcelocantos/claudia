@@ -220,6 +220,7 @@ func configToGrantDef(name string, cfg Config, base *AgentDef) GrantDefinition {
 			MCPConfig:            cfg.MCPConfig,
 			ExtraArgs:            cfg.ExtraArgs,
 			TermLogPath:          cfg.TermLogPath,
+			OMP:                  cfg.OMP,
 		},
 		RequireResume: cfg.RequireResume,
 	}

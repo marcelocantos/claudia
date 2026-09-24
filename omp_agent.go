@@ -224,6 +224,7 @@ var ompToolExec func(name, callID, args string) string
 
 func execKeychain(ctx context.Context, name string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Env = omp.ScrubEnv(os.Environ())
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
