@@ -97,7 +97,7 @@ task := claudia.NewTask(claudia.TaskConfig{
     Provider:       claudia.ProviderCodex,
     ID:             "codex-summary",
     WorkDir:        "/path/to/repo",
-    Model:          "gpt-5-codex",
+    Model:          "gpt-6-sol",
     SandboxMode:    "workspace-write",
     ApprovalPolicy: "on-request",
 })

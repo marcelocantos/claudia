@@ -350,6 +350,43 @@ func TestResolveStandardQualityExcludesOpusAndHaiku(t *testing.T) {
 	}
 }
 
+func TestResolveCodexGPT6QualityTiers(t *testing.T) {
+	for _, tc := range []struct {
+		quality ModelQuality
+		model   string
+	}{
+		{ModelQualityFrontier, "gpt-6-astra"},
+		{ModelQualityStandard, "gpt-6-sol"},
+		{ModelQualityEconomy, "gpt-6-luna"},
+	} {
+		t.Run(string(tc.quality), func(t *testing.T) {
+			for _, purpose := range []ModelPurpose{"", ModelPurposeAnalysis} {
+				var intel *ModelIntelArgs
+				if purpose != "" {
+					intel = &ModelIntelArgs{Latest: []ModelObservation{}}
+				}
+				got, err := Resolve(context.Background(), ModelPredicates{
+					Mode:             CapabilityTask,
+					Purpose:          purpose,
+					Quality:          tc.quality,
+					PreferPlan:       true,
+					Background:       true,
+					PreferProvider:   ProviderCodex,
+					ExcludeProviders: []Provider{ProviderClaude, ProviderGrok, ProviderCursor},
+					Usage:            []PlanUsage{},
+					Intel:            intel,
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got.Provider != ProviderCodex || got.Model != tc.model {
+					t.Fatalf("purpose=%q: got %+v, want %s", purpose, got, tc.model)
+				}
+			}
+		})
+	}
+}
+
 func TestResolveFailsClosed(t *testing.T) {
 	_, err := Resolve(context.Background(), ModelPredicates{
 		Mode:             CapabilityTask,

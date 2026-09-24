@@ -102,9 +102,9 @@ var catalogAliases = map[string]string{
 	"grok46":         "grok-4.6",
 	"grok45":         "grok-4.5",
 	"grok4":          "grok-4",
-	"gpt5codex":      "gpt-5-codex",
-	"gpt54codex":     "gpt-5-codex",
-	"gpt53codex":     "gpt-5-codex",
+	"gpt6astra":      "gpt-6-astra",
+	"gpt6sol":        "gpt-6-sol",
+	"gpt6luna":       "gpt-6-luna",
 	"composer25":     "composer-2.5",
 	"composer2":      "composer-2.5",
 }

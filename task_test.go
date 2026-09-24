@@ -1079,11 +1079,26 @@ func TestCodexTaskRunSmoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Getwd: %v", err)
 	}
+	pick, err := Resolve(context.Background(), ModelPredicates{
+		Mode:             CapabilityTask,
+		Quality:          ModelQualityStandard,
+		PreferPlan:       true,
+		PreferProvider:   ProviderCodex,
+		ExcludeProviders: []Provider{ProviderClaude, ProviderGrok, ProviderCursor},
+		Usage:            []PlanUsage{},
+	})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if pick.Model != "gpt-6-sol" {
+		t.Fatalf("standard Codex model: %s", pick.Model)
+	}
 
 	task := NewTask(TaskConfig{
 		ID:             "codex-smoke-test",
 		Name:           "codex-smoke",
 		Provider:       ProviderCodex,
+		Model:          pick.Model,
 		WorkDir:        workDir,
 		SandboxMode:    "read-only",
 		ApprovalPolicy: "never",

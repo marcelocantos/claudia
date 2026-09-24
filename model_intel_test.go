@@ -33,6 +33,18 @@ func TestParseModelSlugKeepsGenerationAndEffortApart(t *testing.T) {
 	}
 }
 
+func TestMatchCatalogGenerationUsesGPT6CodexFamily(t *testing.T) {
+	for _, name := range []string{"GPT-6 Astra", "GPT-6 Sol", "GPT-6 Luna"} {
+		row, ok := MatchCatalogGeneration(name)
+		if !ok || row.Provider != ProviderCodex {
+			t.Fatalf("%q: got %+v, matched=%t", name, row, ok)
+		}
+	}
+	if row, ok := MatchCatalogGeneration("gpt-5-codex"); ok {
+		t.Fatalf("deprecated model still spawnable: %+v", row)
+	}
+}
+
 func TestRefreshModelIntelAppendsNotOverwrites(t *testing.T) {
 	dir := t.TempDir()
 	raw, err := os.ReadFile(filepath.Join("testdata", "modelintel", "aa_free.json"))

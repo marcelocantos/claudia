@@ -45,7 +45,7 @@ Jev) in under a second. See [Judge mode](#judge-mode-typed-questions-jev).
 task := claudia.NewTask(claudia.TaskConfig{
     Provider:       claudia.ProviderCodex,
     WorkDir:        "/abs/path",
-    Model:          "gpt-5-codex",
+    Model:          "gpt-6-sol",
     SandboxMode:    "workspace-write",
     ApprovalPolicy: "on-request",
 })
