@@ -7,6 +7,7 @@
 import { createServer } from "node:net";
 import { unlinkSync } from "node:fs";
 import { createSeatAgent, type SeatAgent } from "./seat.ts";
+import { defaultWriter } from "./spool.ts";
 
 const banned = [
   "ANTHROPIC_API_KEY",
@@ -48,6 +49,25 @@ const server = createServer((socket) => {
   const pending = new Map<string, (result: string) => void>();
 
   const write = (ev: Record<string, unknown>) => {
+    const seat = typeof ev.seat === "string" ? ev.seat : "";
+    if (seat) {
+      try {
+        const loaded = seats.get(seat);
+        defaultWriter().append({
+          ts: new Date().toISOString(),
+          seat,
+          type: String(ev.type ?? ""),
+          text: typeof ev.text === "string" ? ev.text : undefined,
+          call_id: typeof ev.call_id === "string" ? ev.call_id : undefined,
+          name: typeof ev.name === "string" ? ev.name : undefined,
+          provider: loaded?.provider,
+          model: loaded?.model,
+          snapshot: ev.snapshot,
+        });
+      } catch (err) {
+        console.error("spool append failed", err);
+      }
+    }
     socket.write(JSON.stringify(ev) + "\n");
   };
 

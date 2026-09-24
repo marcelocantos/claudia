@@ -18,18 +18,26 @@ import (
 	"github.com/marcelocantos/claudia/omp"
 )
 
-// OMP on Config selects the sidecar for ProviderCursor. The subscription
-// ids anthropic, openai-codex, and xai-oauth always use the sidecar.
-// Existing grok, claude, and codex seats keep their CLIs.
+// useOMP selects the sidecar. The four subscription plans and the
+// fleet ids grok / claude / codex / cursor all go through it (🎯T866.5).
+// Config.OMP is no longer required for cursor.
 
 func useOMP(cfg Config) bool {
-	switch cfg.Provider {
-	case Provider(omp.Anthropic), Provider(omp.OpenAICodex), Provider(omp.XAIOAuth):
-		return true
+	return ompProviderID(cfg.Provider) != ""
+}
+
+func ompProviderID(p Provider) string {
+	switch p {
+	case Provider(omp.Anthropic):
+		return omp.Anthropic
+	case Provider(omp.OpenAICodex):
+		return omp.OpenAICodex
 	case ProviderCursor:
-		return cfg.OMP
+		return omp.Cursor
+	case Provider(omp.XAIOAuth), ProviderGrok:
+		return omp.XAIOAuth
 	default:
-		return false
+		return ""
 	}
 }
 
@@ -55,13 +63,23 @@ func (ompAgentBackend) Capabilities() providerCapabilities {
 }
 
 func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
-	provider := string(req.Config.Provider)
-	if provider == string(ProviderCursor) && !req.Config.OMP {
-		return nil, fmt.Errorf("omp: cursor seat is not marked for the sidecar")
+	provider := ompProviderID(req.Config.Provider)
+	if provider == "" {
+		return nil, fmt.Errorf("omp: %s is not a sidecar provider", req.Config.Provider)
 	}
-	socket := os.Getenv("CLAUDIA_OMP_SOCKET")
+	if req.Config.RequireResume {
+		if !omp.SeatHasHistory(omp.SpoolDir(), req.Config.Name) {
+			return nil, fmt.Errorf("session %s: existing conversation required but no spool records for seat %q under %s — refusing to mint a replacement session",
+				req.Config.SessionID, req.Config.Name, omp.SpoolDir())
+		}
+	}
+	socket := os.Getenv(omp.SocketEnv)
 	if socket == "" {
-		return nil, fmt.Errorf("omp: CLAUDIA_OMP_SOCKET is unset; refusing to start a vendor CLI")
+		var err error
+		socket, err = omp.Ensure(req.Context)
+		if err != nil {
+			return nil, err
+		}
 	}
 	run := ompKeychain
 	if run == nil {

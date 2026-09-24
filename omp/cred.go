@@ -32,11 +32,10 @@ const (
 )
 
 // Subscription is a provider id whose model calls go through the sidecar.
-// Cursor is not in this set: the Claudia provider id "cursor" is still the
-// IDE agent CLI. A seat opts that id onto the sidecar with Config.OMP.
+// Cursor is in this set: Launch does not need Config.OMP (🎯T866.5).
 func Subscription(id string) bool {
 	switch id {
-	case Anthropic, OpenAICodex, XAIOAuth:
+	case Anthropic, OpenAICodex, Cursor, XAIOAuth:
 		return true
 	default:
 		return false

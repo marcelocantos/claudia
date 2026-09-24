@@ -33,6 +33,7 @@ import (
 	"github.com/marcelocantos/claudia"
 	"github.com/marcelocantos/claudia/daemon"
 	"github.com/marcelocantos/claudia/internal/broker"
+	"github.com/marcelocantos/claudia/omp"
 )
 
 func main() {
@@ -138,6 +139,12 @@ func serve(args []string) error {
 	// direct path, and its provider children inherit nothing that would
 	// send their claudia consumers around it.
 	broker.MarkSelfHosted()
+
+	if sock, err := omp.Ensure(context.Background()); err != nil {
+		log.Warn("omp sidecar not ready; subscription seats will retry on Launch", "err", err)
+	} else {
+		log.Info("omp sidecar listening", "socket", sock)
+	}
 
 	d, err := daemon.New(daemon.Options{
 		SocketPath:    *socket,

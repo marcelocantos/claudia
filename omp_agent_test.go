@@ -26,16 +26,42 @@ var ompSidecarIDs = []Provider{
 }
 
 func TestOMPStartRefusesVendorCLI(t *testing.T) {
-	t.Setenv("CLAUDIA_OMP_SOCKET", "")
-	for _, p := range ompSidecarIDs {
+	t.Setenv("CLAUDIA_OMP_SOCKET", filepath.Join(t.TempDir(), "missing.sock"))
+	ompKeychain = func(context.Context, string, ...string) ([]byte, error) {
+		return nil, fmt.Errorf("The specified item could not be found in the keychain.")
+	}
+	ompLogin = omp.Login{
+		Script: "auth.ts",
+		Run: func(context.Context, string, ...string) ([]byte, error) {
+			return nil, fmt.Errorf("login not available in test")
+		},
+	}
+	t.Cleanup(func() { ompKeychain = nil; ompLogin = omp.Login{} })
+	ids := append(append([]Provider{}, ompSidecarIDs...), ProviderGrok)
+	for _, p := range ids {
 		cfg := Config{Provider: p, WorkDir: t.TempDir(), TermLogPath: "-"}
-		if p == ProviderCursor {
-			cfg.OMP = true
-		}
 		_, err := StartDirect(cfg)
-		if err == nil || !strings.Contains(err.Error(), "vendor CLI") {
-			t.Fatalf("%s err = %v", p, err)
+		if err == nil {
+			t.Fatalf("%s started a vendor CLI", p)
 		}
+		if strings.Contains(err.Error(), "tmux") || strings.Contains(err.Error(), "grok agent") || strings.Contains(err.Error(), "app-server") {
+			t.Fatalf("%s fell through to a vendor CLI: %v", p, err)
+		}
+	}
+}
+
+func TestUseOMPIncludesGrokAndCursorWithoutFlag(t *testing.T) {
+	if !useOMP(Config{Provider: ProviderGrok}) {
+		t.Fatal("grok must use the sidecar as xai-oauth")
+	}
+	if ompProviderID(ProviderGrok) != omp.XAIOAuth {
+		t.Fatalf("grok maps to %s, want %s", ompProviderID(ProviderGrok), omp.XAIOAuth)
+	}
+	if !useOMP(Config{Provider: ProviderCursor}) {
+		t.Fatal("cursor must use the sidecar without Config.OMP")
+	}
+	if useOMP(Config{Provider: ProviderBedrock}) {
+		t.Fatal("bedrock is not a subscription sidecar seat")
 	}
 }
 
@@ -320,6 +346,13 @@ func TestOMPSidecarPromptCallsPiAgentCore(t *testing.T) {
 	}
 	if strings.Contains(src, `@oh-my-pi/pi-natives`) || strings.Contains(src, `@oh-my-pi/pi-coding-agent`) {
 		t.Fatal("sidecar must not load pi-natives or omp's tools")
+	}
+	server, err := os.ReadFile("sidecar/server.ts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(server), `from "./spool.ts"`) {
+		t.Fatal("server.ts must write the dated spool")
 	}
 	pkg, err := os.ReadFile("sidecar/package.json")
 	if err != nil {

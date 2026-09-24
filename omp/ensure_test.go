@@ -1,0 +1,159 @@
+// Copyright 2026 Marcelo Cantos
+// SPDX-License-Identifier: Apache-2.0
+
+package omp
+
+import (
+	"context"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestEnsureStartsDetachedSidecar(t *testing.T) {
+	if _, err := os.Stat(ServerScript()); err != nil {
+		t.Skip("sidecar/server.ts missing")
+	}
+	dir := t.TempDir()
+	socket := filepath.Join(dir, "omp.sock")
+	t.Setenv(SocketEnv, socket)
+	t.Setenv("JEVONS_SPOOL_DIR", filepath.Join(dir, "spool"))
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	path, err := Ensure(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = StopSidecar(socket) })
+	if path != socket {
+		t.Fatalf("socket = %s, want %s", path, socket)
+	}
+	if !Listening(ctx, socket) {
+		t.Fatal("sidecar is not listening")
+	}
+	again, err := Ensure(ctx)
+	if err != nil || again != socket {
+		t.Fatalf("second Ensure = %s %v", again, err)
+	}
+	conn, err := Dial(ctx, socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := conn.Send(Message{Op: OpLoad, Seat: "smoke", Provider: Anthropic, Model: "claude-opus", Token: "tok"}); err != nil {
+		t.Fatal(err)
+	}
+	ev, err := conn.Recv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ev.Type != "ready" && ev.Type != "error" {
+		t.Fatalf("load = %+v", ev)
+	}
+}
+
+func TestEnsureSurvivesParentExit(t *testing.T) {
+	if _, err := os.Stat(ServerScript()); err != nil {
+		t.Skip("sidecar/server.ts missing")
+	}
+	dir := t.TempDir()
+	socket := filepath.Join(dir, "child.sock")
+	t.Setenv(SocketEnv, socket)
+	t.Setenv("JEVONS_SPOOL_DIR", filepath.Join(dir, "spool"))
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if _, err := Ensure(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = StopSidecar(socket) })
+	time.Sleep(100 * time.Millisecond)
+	if !Listening(ctx, socket) {
+		t.Fatal("sidecar died when the ensurer returned")
+	}
+}
+
+func TestSpoolAppendsDatedLog(t *testing.T) {
+	dir := t.TempDir()
+	now := "2026-09-25T15:04:05.000Z"
+	rec := `{"ts":"2026-09-25T15:04:05.000Z","seat":"jevons-po","type":"text","text":"hi"}`
+	out, err := runSpool(t, dir, rec, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(dir, "events-2026-09-25.log")
+	if strings.TrimSpace(out) != want {
+		t.Fatalf("path = %q, want %q", strings.TrimSpace(out), want)
+	}
+	body, err := os.ReadFile(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), `"seat":"jevons-po"`) {
+		t.Fatalf("record missing seat: %s", body)
+	}
+	if !strings.Contains(string(body), `"ts":"2026-09-25T15:04:05.000Z"`) {
+		t.Fatalf("record missing ts: %s", body)
+	}
+}
+
+func TestSpoolLateEventKeepsTimestampOnLiveDay(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := runSpool(t, dir,
+		`{"ts":"2026-09-25T01:00:00.000Z","seat":"a","type":"ready"}`,
+		"2026-09-25T01:00:00.000Z"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runSpool(t, dir,
+		`{"ts":"2026-09-26T00:00:01.000Z","seat":"a","type":"text","text":"next"}`,
+		"2026-09-26T00:00:01.000Z"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runSpool(t, dir,
+		`{"ts":"2026-09-25T23:59:59.000Z","seat":"a","type":"text","text":"late"}`,
+		"2026-09-26T00:01:00.000Z"); err != nil {
+		t.Fatal(err)
+	}
+	closed, err := os.ReadFile(filepath.Join(dir, "events-2026-09-25.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(closed), "late") {
+		t.Fatal("closed day was reopened")
+	}
+	live, err := os.ReadFile(filepath.Join(dir, "events-2026-09-26.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(live), `"ts":"2026-09-25T23:59:59.000Z"`) {
+		t.Fatalf("late event lost its timestamp: %s", live)
+	}
+	if !strings.Contains(string(live), "late") {
+		t.Fatalf("late event missing from live day: %s", live)
+	}
+}
+
+func TestSpoolDoesNotCompress(t *testing.T) {
+	src, err := os.ReadFile(filepath.Join(filepath.Dir(ServerScript()), "spool.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(src)
+	for _, ban := range []string{"hfsCompression", "ditto", "applesauce"} {
+		if strings.Contains(body, ban) {
+			t.Fatalf("shim must not compress (%s)", ban)
+		}
+	}
+}
+
+func runSpool(t *testing.T, dir, rec, now string) (string, error) {
+	t.Helper()
+	script := filepath.Join(filepath.Dir(ServerScript()), "spool.ts")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "bun", script, "append", dir, rec, now)
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
