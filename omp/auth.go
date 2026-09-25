@@ -24,9 +24,28 @@ type Login struct {
 	ForceLogin bool
 }
 
-// Refresh renews provider and writes the record back to the Keychain
-// item. The seat must not start when this returns an error.
+// Refresh renews one provider and writes that record back. A resync of
+// several providers uses fetch and a single Save instead.
 func (l Login) Refresh(ctx context.Context, store Store, provider string) (Record, error) {
+	if !known(provider) {
+		return Record{}, fmt.Errorf("omp: %q is not a subscription provider", provider)
+	}
+	existing, err := store.Load(ctx)
+	if err != nil {
+		return Record{}, err
+	}
+	rec, err := l.fetch(ctx, provider, existing.Records[provider])
+	if err != nil {
+		return Record{}, err
+	}
+	if err := store.Put(ctx, provider, rec); err != nil {
+		return Record{}, err
+	}
+	return rec, nil
+}
+
+// fetch asks pi-ai for one new record. It does not touch the Keychain.
+func (l Login) fetch(ctx context.Context, provider string, existing Record) (Record, error) {
 	if !known(provider) {
 		return Record{}, fmt.Errorf("omp: %q is not a subscription provider", provider)
 	}
@@ -40,16 +59,12 @@ func (l Login) Refresh(ctx context.Context, store Store, provider string) (Recor
 	if l.Script == "" {
 		return Record{}, fmt.Errorf("omp: login script is required")
 	}
-	existing, err := store.Load(ctx)
-	if err != nil {
-		return Record{}, err
-	}
-	blob, err := json.Marshal(existing.Records[provider])
+	blob, err := json.Marshal(existing)
 	if err != nil {
 		return Record{}, err
 	}
 	verb := "refresh"
-	if rec, ok := existing.Records[provider]; l.ForceLogin || !ok || !usableRefresh(rec) {
+	if l.ForceLogin || !usableRefresh(existing) {
 		verb = "login"
 	}
 	out, err := l.Run(ctx, cmd, l.Script, verb, provider, string(blob))
@@ -65,9 +80,6 @@ func (l Login) Refresh(ctx context.Context, store Store, provider string) (Recor
 	}
 	if rec.Expiry.Before(time.Now().Add(-time.Minute)) {
 		return Record{}, fmt.Errorf("omp: %s refresh returned an already-expired token", provider)
-	}
-	if err := store.Put(ctx, provider, rec); err != nil {
-		return Record{}, err
 	}
 	return rec, nil
 }

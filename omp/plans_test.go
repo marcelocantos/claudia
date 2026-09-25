@@ -20,6 +20,7 @@ func TestRefreshPlansWritesAllFour(t *testing.T) {
 		XAIOAuth:    {RefreshToken: "r-x", AccessToken: "old-x", Expiry: time.Now().Add(-time.Hour)},
 	}})
 	var saw []string
+	var writes int
 	s := Store{
 		BrokerPath: "/usr/local/bin/jevons-broker",
 		Run: func(_ context.Context, name string, args ...string) ([]byte, error) {
@@ -27,6 +28,7 @@ func TestRefreshPlansWritesAllFour(t *testing.T) {
 				return []byte(saved), nil
 			}
 			if name == "security" && len(args) > 0 && args[0] == "add-generic-password" {
+				writes++
 				if err := trustedPathOnly(args, "/usr/local/bin/jevons-broker"); err != nil {
 					t.Fatal(err)
 				}
@@ -61,6 +63,9 @@ func TestRefreshPlansWritesAllFour(t *testing.T) {
 	}
 	if strings.Join(saw, ",") != strings.Join(PlanIDs, ",") {
 		t.Fatalf("pi-ai ids = %v", saw)
+	}
+	if writes != 1 {
+		t.Fatalf("keychain writes = %d, want 1", writes)
 	}
 	var item Item
 	if err := json.Unmarshal([]byte(saved), &item); err != nil {
