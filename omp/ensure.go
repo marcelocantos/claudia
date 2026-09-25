@@ -62,9 +62,14 @@ func ServerScript() string {
 }
 
 // Listening reports whether the sidecar already accepts connections.
+// The dial is bounded on its own so a leftover socket file cannot
+// consume the caller's whole deadline (unix dial hangs until accept
+// when the file exists but nobody is listening).
 func Listening(ctx context.Context, path string) bool {
+	dialCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+	defer cancel()
 	var d net.Dialer
-	c, err := d.DialContext(ctx, "unix", path)
+	c, err := d.DialContext(dialCtx, "unix", path)
 	if err != nil {
 		return false
 	}
@@ -122,7 +127,7 @@ func Ensure(ctx context.Context) (string, error) {
 		_ = logf.Close()
 		_ = os.Remove(pidPath(path))
 	}()
-	deadline := time.Now().Add(15 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		if ctx.Err() != nil {
 			return "", ctx.Err()

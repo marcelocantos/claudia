@@ -133,6 +133,19 @@ func execBun(ctx context.Context, name string, args ...string) ([]byte, error) {
 	return cmd.Output()
 }
 
+func TestT865LiveKeychainItemExists(t *testing.T) {
+	if _, err := exec.LookPath("security"); err != nil {
+		t.Skip("security(1) not on PATH")
+	}
+	out, err := exec.Command("security", "find-generic-password", "-a", "claudia", "-s", KeychainService).CombinedOutput()
+	if err != nil {
+		t.Fatalf("live %s item missing: %s: %v", KeychainService, out, err)
+	}
+	if !strings.Contains(string(out), KeychainService) {
+		t.Fatalf("live item missing service name: %s", out)
+	}
+}
+
 func TestT865ItemRoundTripJSON(t *testing.T) {
 	raw := []byte(`{"records":{"anthropic":{"refresh_token":"r","access_token":"a","expiry":"2026-09-25T12:00:00Z"}}}`)
 	var item Item

@@ -14,15 +14,27 @@ import (
 	"time"
 )
 
+func TestT865LiveSidecarAcceptsLaunchSteerAbort(t *testing.T) {
+	testEnsureSidecarVerbs(t)
+}
+
 func TestEnsureStartsDetachedSidecar(t *testing.T) {
+	testEnsureSidecarVerbs(t)
+}
+
+func testEnsureSidecarVerbs(t *testing.T) {
 	if _, err := os.Stat(ServerScript()); err != nil {
 		t.Skip("sidecar/server.ts missing")
 	}
-	dir := t.TempDir()
+	dir, err := os.MkdirTemp("/tmp", "omp-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	socket := filepath.Join(dir, "omp.sock")
 	t.Setenv(SocketEnv, socket)
 	t.Setenv("JEVONS_SPOOL_DIR", filepath.Join(dir, "spool"))
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
 	defer cancel()
 	path, err := Ensure(ctx)
 	if err != nil {
@@ -54,6 +66,9 @@ func TestEnsureStartsDetachedSidecar(t *testing.T) {
 	if ev.Type != "ready" && ev.Type != "error" {
 		t.Fatalf("load = %+v", ev)
 	}
+	if err := conn.Send(Message{Op: OpPrompt, Seat: "smoke", Text: "ping"}); err != nil {
+		t.Fatal(err)
+	}
 	if err := conn.Send(Message{Op: OpSteer, Seat: "smoke", Text: "nudge"}); err != nil {
 		t.Fatal(err)
 	}
@@ -69,11 +84,15 @@ func TestEnsureSurvivesParentExit(t *testing.T) {
 	if _, err := os.Stat(ServerScript()); err != nil {
 		t.Skip("sidecar/server.ts missing")
 	}
-	dir := t.TempDir()
+	dir, err := os.MkdirTemp("/tmp", "omp-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	socket := filepath.Join(dir, "child.sock")
 	t.Setenv(SocketEnv, socket)
 	t.Setenv("JEVONS_SPOOL_DIR", filepath.Join(dir, "spool"))
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
 	defer cancel()
 	if _, err := Ensure(ctx); err != nil {
 		t.Fatal(err)

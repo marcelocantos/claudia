@@ -241,6 +241,12 @@ func sidecarAuthScript() string {
 // ompToolExec is the Go callback for jevons_* tool calls. Tests replace it.
 var ompToolExec func(name, callID, args string) string
 
+// EnsureOMPSidecar starts the detached Bun sidecar if it is not already
+// listening. A jevonsd or broker bounce must not call StopSidecar.
+func EnsureOMPSidecar(ctx context.Context) (string, error) {
+	return omp.Ensure(ctx)
+}
+
 // SetOMPToolExec installs the jevons_* callback the sidecar invokes
 // (🎯T865). Production brokers set this to an HTTP tools/call against
 // the live jevonsmcp URL.
