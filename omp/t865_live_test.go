@@ -102,6 +102,7 @@ func TestT865LivePiAIRefreshWritesKeychain(t *testing.T) {
 		t.Fatalf("load login keychain: %v", err)
 	}
 	login := Login{Command: "bun", Script: script, Run: execBun}
+	refreshed := 0
 	for _, id := range []string{Anthropic, OpenAICodex, Cursor, XAIOAuth} {
 		if item.Records[id].RefreshToken == "" {
 			t.Logf("%s has no stored refresh token; login requires a browser", id)
@@ -118,6 +119,10 @@ func TestT865LivePiAIRefreshWritesKeychain(t *testing.T) {
 		if err != nil || got != rec.AccessToken {
 			t.Fatalf("%s keychain write-back: %v %q", id, err, got)
 		}
+		refreshed++
+	}
+	if refreshed != 4 {
+		t.Fatalf("refreshed %d/4 providers; each needs `bun sidecar/auth.ts login <id>` through pi-ai", refreshed)
 	}
 }
 
