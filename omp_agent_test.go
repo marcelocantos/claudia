@@ -465,6 +465,9 @@ func TestOMPLoginRunsBunFromSidecar(t *testing.T) {
 	if !strings.Contains(body, "filepath.Dir(sidecarAuthScript())") || !strings.Contains(body, "cmd.Dir") {
 		t.Fatal("bun login must run from the sidecar directory")
 	}
+	if !strings.Contains(body, "io.MultiWriter(os.Stderr, &stderr)") {
+		t.Fatal("bun login must forward the auth URL on stderr")
+	}
 	script := sidecarAuthScript()
 	if _, err := os.Stat(filepath.Join(filepath.Dir(script), "package.json")); err != nil {
 		t.Fatalf("sidecar package.json next to %s: %v", script, err)

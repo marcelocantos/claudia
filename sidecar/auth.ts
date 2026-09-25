@@ -65,6 +65,9 @@ if (!def?.login) {
 const creds = await def.login({
   onAuth: ({ url }: { url: string }) => {
     console.error(url);
+    if (url) {
+      Bun.spawn(["open", url], { stdout: "ignore", stderr: "ignore" }).unref();
+    }
   },
 });
 if (!creds) {

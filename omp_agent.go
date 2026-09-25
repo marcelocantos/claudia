@@ -400,7 +400,8 @@ func execKeychain(ctx context.Context, name string, args ...string) ([]byte, err
 }
 
 // execBunLogin runs sidecar/auth.ts through bun from that directory so
-// @oh-my-pi/pi-ai resolves. It is not the Keychain runner.
+// @oh-my-pi/pi-ai resolves. It is not the Keychain runner. Stderr is
+// forwarded so an interactive login URL reaches the owner (🎯T865).
 func execBunLogin(ctx context.Context, name string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Env = omp.ScrubEnv(os.Environ())
@@ -408,7 +409,7 @@ func execBunLogin(ctx context.Context, name string, args ...string) ([]byte, err
 		cmd.Dir = dir
 	}
 	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
+	cmd.Stderr = io.MultiWriter(os.Stderr, &stderr)
 	out, err := cmd.Output()
 	if err != nil {
 		return stderr.Bytes(), fmt.Errorf("%s: %w: %s", name, err, stderr.String())
