@@ -33,3 +33,24 @@ func RefreshPlans(ctx context.Context, store Store, login Login) (refreshed, ski
 	}
 	return refreshed, skipped, nil
 }
+
+// LoginPlans runs pi-ai login for every subscription id that has no
+// refresh token and writes the record back. It opens a browser (or
+// prints a device-code URL on stderr). Serve must not call this.
+func LoginPlans(ctx context.Context, store Store, login Login) (int, error) {
+	item, err := store.Load(ctx)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, id := range PlanIDs {
+		if item.Records[id].RefreshToken != "" {
+			continue
+		}
+		if _, err := login.Refresh(ctx, store, id); err != nil {
+			return n, fmt.Errorf("omp: %s: %w", id, err)
+		}
+		n++
+	}
+	return n, nil
+}

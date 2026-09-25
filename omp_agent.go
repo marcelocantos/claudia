@@ -273,6 +273,27 @@ func RefreshOMPPlans(ctx context.Context) (refreshed, skipped []string, err erro
 	return omp.RefreshPlans(ctx, store, login)
 }
 
+// LoginOMPPlans runs pi-ai login for every plan id that has no refresh
+// token (🎯T865). Interactive — not used on serve.
+func LoginOMPPlans(ctx context.Context) (int, error) {
+	run := ompKeychain
+	if run == nil {
+		run = execKeychain
+	}
+	store := omp.Store{BrokerPath: os.Args[0], Run: run}
+	login := ompLogin
+	if login.Run == nil {
+		login.Run = execBunLogin
+	}
+	if login.Command == "" {
+		login.Command = "bun"
+	}
+	if login.Script == "" {
+		login.Script = sidecarAuthScript()
+	}
+	return omp.LoginPlans(ctx, store, login)
+}
+
 // SetOMPToolExec installs the jevons_* callback the sidecar invokes
 // (🎯T865). Production brokers set this to an HTTP tools/call against
 // the live jevonsmcp URL.

@@ -74,6 +74,45 @@ func TestRefreshPlansWritesAllFour(t *testing.T) {
 	}
 }
 
+func TestLoginPlansRunsPiAILogin(t *testing.T) {
+	fresh := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	saved := `{"records":{}}`
+	var saw []string
+	s := Store{
+		BrokerPath: "/usr/local/bin/jevons-broker",
+		Run: func(_ context.Context, name string, args ...string) ([]byte, error) {
+			if name == "security" && len(args) > 0 && args[0] == "find-generic-password" {
+				return []byte(saved), nil
+			}
+			if name == "security" && len(args) > 0 && args[0] == "add-generic-password" {
+				for i, a := range args {
+					if a == "-w" && i+1 < len(args) {
+						saved = args[i+1]
+					}
+				}
+			}
+			return nil, nil
+		},
+	}
+	login := Login{
+		Script: "auth.ts",
+		Run: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			if len(args) < 3 || args[1] != "login" {
+				t.Fatalf("want login, got %v", args)
+			}
+			saw = append(saw, args[2])
+			return []byte(`{"refresh_token":"n-` + args[2] + `","access_token":"fresh-` + args[2] + `","expiry":"` + fresh + `"}`), nil
+		},
+	}
+	n, err := LoginPlans(context.Background(), s, login)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 4 || strings.Join(saw, ",") != strings.Join(PlanIDs, ",") {
+		t.Fatalf("n=%d saw=%v", n, saw)
+	}
+}
+
 func TestRefreshPlansSkipsMissingRefreshToken(t *testing.T) {
 	s := Store{
 		BrokerPath: "/usr/local/bin/jevons-broker",
