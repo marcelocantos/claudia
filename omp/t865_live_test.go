@@ -4,6 +4,8 @@
 package omp
 
 import (
+	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -47,6 +49,7 @@ func TestT865LiveKeychainACLTrustsOnlyBroker(t *testing.T) {
 	if !strings.Contains(string(find), KeychainService) {
 		t.Fatalf("item missing: %s", find)
 	}
+
 	other := filepath.Join(t.TempDir(), "rebuilt-broker")
 	self, err := os.ReadFile(os.Args[0])
 	if err != nil {
@@ -55,10 +58,13 @@ func TestT865LiveKeychainACLTrustsOnlyBroker(t *testing.T) {
 	if err := os.WriteFile(other, self, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// A rebuilt binary at a different path is not in the ACL. The
-	// argv we passed named exactly one -T, the original broker.
 	if other == broker {
 		t.Fatal("rebuilt path collided with the trusted broker")
+	}
+	if err := trustedPathOnly([]string{
+		"add-generic-password", "-a", "claudia", "-s", KeychainService, "-T", other,
+	}, broker); err == nil {
+		t.Fatal("rebuilt broker path was accepted as the ACL without re-approval")
 	}
 }
 
@@ -79,5 +85,61 @@ func TestT865AuthScriptIsPiAI(t *testing.T) {
 		if id == "" {
 			t.Fatal("empty provider")
 		}
+	}
+}
+
+func TestT865LivePiAIRefreshWritesKeychain(t *testing.T) {
+	if os.Getenv("CLAUDIA_OMP_LIVE") == "" {
+		t.Skip("CLAUDIA_OMP_LIVE not set")
+	}
+	script := filepath.Join(filepath.Dir(ServerScript()), "auth.ts")
+	if _, err := os.Stat(script); err != nil {
+		t.Fatal(err)
+	}
+	store := Store{BrokerPath: os.Args[0], Run: execSecurity}
+	item, err := store.Load(context.Background())
+	if err != nil {
+		t.Fatalf("load login keychain: %v", err)
+	}
+	login := Login{Command: "bun", Script: script, Run: execBun}
+	for _, id := range []string{Anthropic, OpenAICodex, Cursor, XAIOAuth} {
+		if item.Records[id].RefreshToken == "" {
+			t.Logf("%s has no stored refresh token; login requires a browser", id)
+			continue
+		}
+		rec, err := login.Refresh(context.Background(), store, id)
+		if err != nil {
+			t.Fatalf("%s refresh: %v", id, err)
+		}
+		if rec.AccessToken == "" || rec.RefreshToken == "" || rec.Expiry.IsZero() {
+			t.Fatalf("%s refresh omitted fields: %+v", id, rec)
+		}
+		got, err := store.AccessToken(context.Background(), id)
+		if err != nil || got != rec.AccessToken {
+			t.Fatalf("%s keychain write-back: %v %q", id, err, got)
+		}
+	}
+}
+
+func execSecurity(ctx context.Context, name string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	return cmd.Output()
+}
+
+func execBun(ctx context.Context, name string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Env = ScrubEnv(os.Environ())
+	cmd.Dir = filepath.Dir(ServerScript())
+	return cmd.Output()
+}
+
+func TestT865ItemRoundTripJSON(t *testing.T) {
+	raw := []byte(`{"records":{"anthropic":{"refresh_token":"r","access_token":"a","expiry":"2026-09-25T12:00:00Z"}}}`)
+	var item Item
+	if err := json.Unmarshal(raw, &item); err != nil {
+		t.Fatal(err)
+	}
+	if item.Records[Anthropic].AccessToken != "a" {
+		t.Fatalf("%+v", item)
 	}
 }

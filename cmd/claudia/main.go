@@ -145,6 +145,7 @@ func serve(args []string) error {
 	} else {
 		log.Info("omp sidecar listening", "socket", sock)
 	}
+	claudia.SetOMPToolExec(claudia.DefaultOMPToolExec)
 
 	d, err := daemon.New(daemon.Options{
 		SocketPath:    *socket,

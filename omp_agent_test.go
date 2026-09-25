@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -62,6 +64,9 @@ func TestUseOMPIncludesGrokAndCursorWithoutFlag(t *testing.T) {
 	}
 	if useOMP(Config{Provider: ProviderBedrock}) {
 		t.Fatal("bedrock is not a subscription sidecar seat")
+	}
+	if useOMP(Config{Provider: ProviderClaude}) || useOMP(Config{Provider: ProviderCodex}) {
+		t.Fatal("claude/codex CLI ids stay vendor until reminted onto anthropic/openai-codex")
 	}
 }
 
@@ -419,6 +424,32 @@ func TestOMPExecScrubsEnv(t *testing.T) {
 		if !strings.Contains(string(server), name) {
 			t.Fatalf("server.ts must drop %s", name)
 		}
+	}
+}
+
+func TestCallJevonsMCPPostsToolsCall(t *testing.T) {
+	var gotName string
+	ln := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Method string `json:"method"`
+			Params struct {
+				Name string `json:"name"`
+			} `json:"params"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		gotName = req.Params.Name
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"ok-from-mcp"}]}}`))
+	}))
+	defer ln.Close()
+	got := CallJevonsMCP(ln.URL, "jevons_agent_list", `{"query":"running"}`)
+	if got != "ok-from-mcp" {
+		t.Fatalf("result = %q", got)
+	}
+	if gotName != "jevons_agent_list" {
+		t.Fatalf("called %q", gotName)
+	}
+	if got := CallJevonsMCP(ln.URL, "bash", "{}"); !strings.Contains(got, "refusing") {
+		t.Fatalf("non-jevons tool: %q", got)
 	}
 }
 

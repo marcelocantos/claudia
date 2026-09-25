@@ -8,12 +8,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/marcelocantos/claudia/omp"
 )
@@ -202,10 +206,7 @@ func (c *ompControl) pump(a *Agent) {
 				ToolTitle:    ev.Name,
 				Text:         ev.Text,
 			})
-			result := "jevons tool runner is not attached"
-			if ompToolExec != nil {
-				result = ompToolExec(ev.Name, ev.CallID, ev.Text)
-			}
+			result := runOMPTool(ev.Name, ev.CallID, ev.Text)
 			_ = c.send(omp.Message{Op: omp.OpTool, CallID: ev.CallID, Result: result})
 		case "turn_end":
 			c.inflight.Store(false)
@@ -239,6 +240,99 @@ func sidecarAuthScript() string {
 
 // ompToolExec is the Go callback for jevons_* tool calls. Tests replace it.
 var ompToolExec func(name, callID, args string) string
+
+// SetOMPToolExec installs the jevons_* callback the sidecar invokes
+// (🎯T865). Production brokers set this to an HTTP tools/call against
+// the live jevonsmcp URL.
+func SetOMPToolExec(fn func(name, callID, args string) string) {
+	ompToolExec = fn
+}
+
+func runOMPTool(name, callID, args string) string {
+	if ompToolExec != nil {
+		return ompToolExec(name, callID, args)
+	}
+	return DefaultOMPToolExec(name, callID, args)
+}
+
+// DefaultOMPToolExec POSTs a JSON-RPC tools/call to the jevons MCP
+// endpoint. JEVONS_MCP_URL wins; otherwise the development :13705 path.
+func DefaultOMPToolExec(name, callID, args string) string {
+	url := strings.TrimSpace(os.Getenv("JEVONS_MCP_URL"))
+	if url == "" {
+		url = "http://127.0.0.1:13705/mcp"
+	}
+	return CallJevonsMCP(url, name, args)
+}
+
+// CallJevonsMCP is the production jevons_* runner: one HTTP JSON-RPC
+// tools/call against the daemon's MCP surface.
+func CallJevonsMCP(mcpURL, name, args string) string {
+	if !strings.HasPrefix(name, "jevons_") {
+		return fmt.Sprintf("omp: refusing non-jevons tool %q", name)
+	}
+	var arguments any
+	if strings.TrimSpace(args) == "" {
+		arguments = map[string]any{}
+	} else if json.Unmarshal([]byte(args), &arguments) != nil {
+		arguments = map[string]any{"text": args}
+	}
+	body, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name":      name,
+			"arguments": arguments,
+		},
+	})
+	if err != nil {
+		return fmt.Sprintf("omp: encode %s: %v", name, err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, mcpURL, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Sprintf("omp: %s request: %v", name, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Sprintf("omp: %s call failed: %v", name, err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return fmt.Sprintf("omp: %s read: %v", name, err)
+	}
+	var envelope struct {
+		Result struct {
+			IsError bool `json:"isError"`
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(raw, &envelope) != nil {
+		return strings.TrimSpace(string(raw))
+	}
+	if envelope.Error.Message != "" {
+		return envelope.Error.Message
+	}
+	var b strings.Builder
+	for _, c := range envelope.Result.Content {
+		b.WriteString(c.Text)
+	}
+	out := strings.TrimSpace(b.String())
+	if out == "" {
+		return strings.TrimSpace(string(raw))
+	}
+	return out
+}
 
 func execKeychain(ctx context.Context, name string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
