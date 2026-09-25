@@ -116,12 +116,12 @@ func (s Store) Save(ctx context.Context, item Item) error {
 	if err != nil {
 		return err
 	}
-	// Delete first so -T is the whole ACL, not an add-on to whatever
-	// created the item. delete-generic-password does not decrypt.
-	_, _ = s.Run(ctx, "security", "delete-generic-password",
-		"-a", keychainAccount, "-s", KeychainService)
+	// Update the secret in place. Deleting the item and creating it
+	// again throws away Always Allow, so every login prompts again.
+	// -T on an update adds the broker; it does not replace the ACL.
 	args := []string{
 		"add-generic-password",
+		"-U",
 		"-a", keychainAccount,
 		"-s", KeychainService,
 		"-T", s.BrokerPath,

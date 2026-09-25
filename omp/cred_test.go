@@ -28,14 +28,14 @@ func TestSaveTrustsOnlyTheBroker(t *testing.T) {
 		t.Fatal(err)
 	}
 	blob := strings.Join(cmds, "\n")
-	if !strings.Contains(blob, "delete-generic-password -a claudia -s "+KeychainService) {
-		t.Fatalf("Save must recreate the item so -T is the whole ACL: %s", blob)
+	if strings.Contains(blob, "delete-generic-password") {
+		t.Fatalf("Save must not delete the item; that drops Always Allow: %s", blob)
+	}
+	if !strings.Contains(blob, "-U") {
+		t.Fatalf("Save must update in place: %s", blob)
 	}
 	if !strings.Contains(blob, "-T /usr/local/bin/claudia") {
 		t.Fatalf("ACL = %s", blob)
-	}
-	if strings.Contains(blob, "-U") {
-		t.Fatalf("Save must not -U an old ACL: %s", blob)
 	}
 	if strings.Contains(blob, "-A") || strings.Contains(blob, "jevonsd") || strings.Contains(blob, "bun") {
 		t.Fatalf("ACL trusts more than the broker: %s", blob)
@@ -56,7 +56,7 @@ func TestSaveTrustsOnlyTheBroker(t *testing.T) {
 		}
 	}
 	if add != 1 {
-		t.Fatalf("Save must add once after delete, got %s", blob)
+		t.Fatalf("Save must add once, got %s", blob)
 	}
 }
 
