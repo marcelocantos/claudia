@@ -38,7 +38,7 @@ func TestOMPStartRefusesVendorCLI(t *testing.T) {
 			return nil, fmt.Errorf("login not available in test")
 		},
 	}
-	t.Cleanup(func() { ompKeychain = nil; ompLogin = omp.Login{} })
+	t.Cleanup(func() { ompKeychain = nil; ompLogin = omp.Login{}; omp.ResetKeychainShot() })
 	ids := append(append([]Provider{}, ompSidecarIDs...), ProviderGrok)
 	for _, p := range ids {
 		cfg := Config{Provider: p, WorkDir: t.TempDir(), TermLogPath: "-"}
@@ -110,7 +110,7 @@ func TestOMPStartLoadsTokenFromKeychain(t *testing.T) {
 	ompKeychain = func(context.Context, string, ...string) ([]byte, error) {
 		return []byte(blob), nil
 	}
-	t.Cleanup(func() { ompKeychain = nil })
+	t.Cleanup(func() { ompKeychain = nil; omp.ResetKeychainShot() })
 	t.Setenv("CLAUDIA_OMP_SOCKET", socket)
 
 	agent, err := StartDirect(Config{
@@ -204,7 +204,7 @@ func TestOMPStartRefreshesExpiredToken(t *testing.T) {
 			return []byte(`{"refresh_token":"new-r","access_token":"fresh-token","expiry":"` + fresh + `"}`), nil
 		},
 	}
-	t.Cleanup(func() { ompKeychain = nil; ompLogin = omp.Login{} })
+	t.Cleanup(func() { ompKeychain = nil; ompLogin = omp.Login{}; omp.ResetKeychainShot() })
 	t.Setenv("CLAUDIA_OMP_SOCKET", socket)
 
 	agent, err := StartDirect(Config{
@@ -233,7 +233,7 @@ func TestOMPStartRefreshFailureDoesNotStart(t *testing.T) {
 			return nil, fmt.Errorf("oauth refresh rejected")
 		},
 	}
-	t.Cleanup(func() { ompKeychain = nil; ompLogin = omp.Login{} })
+	t.Cleanup(func() { ompKeychain = nil; ompLogin = omp.Login{}; omp.ResetKeychainShot() })
 	t.Setenv("CLAUDIA_OMP_SOCKET", filepath.Join(t.TempDir(), "unused.sock"))
 	t.Setenv("ANTHROPIC_API_KEY", "sk-should-not-be-used")
 	t.Setenv("OPENAI_API_KEY", "sk-should-not-be-used")
@@ -260,7 +260,7 @@ func TestOMPMigrateUsesSidecarNotVendorCLI(t *testing.T) {
 			return nil, fmt.Errorf("login not available in test")
 		},
 	}
-	t.Cleanup(func() { ompKeychain = nil; ompLogin = omp.Login{} })
+	t.Cleanup(func() { ompKeychain = nil; ompLogin = omp.Login{}; omp.ResetKeychainShot() })
 	src, _ := startMigrateFixture(t, ProviderGrok, "fake-grok")
 	src.PublishEvent(Event{Type: "user", Text: "hello"})
 	src.PublishEvent(Event{Type: "assistant", Text: "hi"})
@@ -311,7 +311,7 @@ func TestOMPSetModelIsSecondLoad(t *testing.T) {
 	ompKeychain = func(context.Context, string, ...string) ([]byte, error) {
 		return []byte(blob), nil
 	}
-	t.Cleanup(func() { ompKeychain = nil })
+	t.Cleanup(func() { ompKeychain = nil; omp.ResetKeychainShot() })
 	t.Setenv("CLAUDIA_OMP_SOCKET", socket)
 
 	agent, err := StartDirect(Config{
@@ -398,6 +398,22 @@ func TestOMPGrantCarriesOMP(t *testing.T) {
 	cfg := def.Config()
 	if !cfg.OMP || cfg.Provider != ProviderCursor {
 		t.Fatalf("rehydrated cfg = %+v", cfg)
+	}
+}
+
+func TestExecKeychainACLTimeoutDoesNotHang(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := execKeychain(ctx, "sleep", "5")
+	if err == nil {
+		t.Fatal("timed-out keychain read must fail")
+	}
+	if !strings.Contains(err.Error(), "keychain ACL did not approve this binary") {
+		t.Fatalf("err = %v", err)
+	}
+	if time.Since(start) > time.Second {
+		t.Fatalf("ACL refusal hung for %s", time.Since(start))
 	}
 }
 

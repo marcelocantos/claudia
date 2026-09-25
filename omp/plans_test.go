@@ -12,6 +12,7 @@ import (
 )
 
 func TestRefreshPlansWritesAllFour(t *testing.T) {
+	resetKeychainShot()
 	fresh := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
 	saved := mustJSON(Item{Records: map[string]Record{
 		Anthropic:   {RefreshToken: "r-a", AccessToken: "old-a", Expiry: time.Now().Add(-time.Hour)},
@@ -80,6 +81,7 @@ func TestRefreshPlansWritesAllFour(t *testing.T) {
 }
 
 func TestLoginPlansRunsPiAILogin(t *testing.T) {
+	resetKeychainShot()
 	fresh := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
 	saved := `{"records":{}}`
 	var saw []string
@@ -119,6 +121,7 @@ func TestLoginPlansRunsPiAILogin(t *testing.T) {
 }
 
 func TestLoginPlansCanLimitToOneProvider(t *testing.T) {
+	resetKeychainShot()
 	fresh := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
 	s := Store{
 		BrokerPath: "/usr/local/bin/jevons-broker",
@@ -144,6 +147,7 @@ func TestLoginPlansCanLimitToOneProvider(t *testing.T) {
 }
 
 func TestLoginPlansReloginsNamedProvider(t *testing.T) {
+	resetKeychainShot()
 	fresh := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
 	saved := mustJSON(Item{Records: map[string]Record{
 		Cursor: {RefreshToken: "undefined", AccessToken: "undefined"},
@@ -179,6 +183,7 @@ func TestLoginPlansReloginsNamedProvider(t *testing.T) {
 }
 
 func TestRefreshPlansSkipsUndefinedRefreshToken(t *testing.T) {
+	resetKeychainShot()
 	s := Store{
 		BrokerPath: "/usr/local/bin/jevons-broker",
 		Run: func(_ context.Context, name string, args ...string) ([]byte, error) {
@@ -209,6 +214,7 @@ func TestRefreshPlansSkipsUndefinedRefreshToken(t *testing.T) {
 }
 
 func TestRefreshPlansSkipsMissingRefreshToken(t *testing.T) {
+	resetKeychainShot()
 	s := Store{
 		BrokerPath: "/usr/local/bin/jevons-broker",
 		Run: func(_ context.Context, name string, args ...string) ([]byte, error) {

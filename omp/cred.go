@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -59,10 +60,43 @@ type Item struct {
 type Runner func(ctx context.Context, name string, args ...string) ([]byte, error)
 
 // Store is the one Keychain item. BrokerPath is the only ACL entry.
+//
+// A process may read that item once and write it once. Later Loads
+// return the memory copy. Later Saves update the memory copy and do
+// not call the Keychain again, so a run cannot raise a second prompt.
 type Store struct {
 	BrokerPath string
 	Run        Runner
 	Now        func() time.Time
+}
+
+// keychainShot is the process-wide read and write. Store values are
+// copied at each call site, so the limit cannot live on Store.
+type keychainShot struct {
+	mu       sync.Mutex
+	read     bool
+	item     Item
+	readErr  error
+	written  bool
+	writeErr error
+}
+
+var shot keychainShot
+
+func resetKeychainShot() {
+	shot = keychainShot{}
+}
+
+// ResetKeychainShot drops the process read and write. Tests call it so
+// one case does not spend the run's shot. Production does not.
+func ResetKeychainShot() { resetKeychainShot() }
+
+func cloneItem(item Item) Item {
+	out := Item{Records: map[string]Record{}}
+	for k, v := range item.Records {
+		out.Records[k] = v
+	}
+	return out
 }
 
 func (s Store) now() time.Time {
@@ -73,31 +107,46 @@ func (s Store) now() time.Time {
 }
 
 // Load reads the item. A missing item is an empty Item, not an error
-// that falls through to an API key.
+// that falls through to an API key. The process reads the Keychain
+// once; every later Load returns that copy.
 func (s Store) Load(ctx context.Context) (Item, error) {
+	shot.mu.Lock()
+	defer shot.mu.Unlock()
+	if shot.read {
+		if shot.readErr != nil {
+			return Item{}, shot.readErr
+		}
+		return cloneItem(shot.item), nil
+	}
 	if s.Run == nil {
 		return Item{}, fmt.Errorf("omp: no keychain runner")
 	}
 	out, err := s.Run(ctx, "security", "find-generic-password",
 		"-a", keychainAccount, "-s", KeychainService, "-w")
+	shot.read = true
 	if err != nil {
 		if isMissing(err, out) {
-			return Item{Records: map[string]Record{}}, nil
+			shot.item = Item{Records: map[string]Record{}}
+			return cloneItem(shot.item), nil
 		}
+		shot.readErr = err
 		return Item{}, err
 	}
 	raw := strings.TrimSpace(string(out))
 	if raw == "" {
-		return Item{Records: map[string]Record{}}, nil
+		shot.item = Item{Records: map[string]Record{}}
+		return cloneItem(shot.item), nil
 	}
 	var item Item
 	if err := json.Unmarshal([]byte(raw), &item); err != nil {
-		return Item{}, fmt.Errorf("omp: keychain item is not the plan blob: %w", err)
+		shot.readErr = fmt.Errorf("omp: keychain item is not the plan blob: %w", err)
+		return Item{}, shot.readErr
 	}
 	if item.Records == nil {
 		item.Records = map[string]Record{}
 	}
-	return item, nil
+	shot.item = item
+	return cloneItem(shot.item), nil
 }
 
 // Save writes the blob back. The argv trusts only BrokerPath (-T) and
@@ -130,7 +179,17 @@ func (s Store) Save(ctx context.Context, item Item) error {
 	if err := trustedPathOnly(args, s.BrokerPath); err != nil {
 		return err
 	}
+	shot.mu.Lock()
+	defer shot.mu.Unlock()
+	shot.item = cloneItem(item)
+	shot.read = true
+	shot.readErr = nil
+	if shot.written {
+		return shot.writeErr
+	}
+	shot.written = true
 	_, err = s.Run(ctx, "security", args...)
+	shot.writeErr = err
 	return err
 }
 

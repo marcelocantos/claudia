@@ -13,6 +13,7 @@ import (
 )
 
 func TestSaveTrustsOnlyTheBroker(t *testing.T) {
+	resetKeychainShot()
 	var cmds []string
 	s := Store{
 		BrokerPath: "/usr/local/bin/claudia",
@@ -78,6 +79,7 @@ func TestSaveRefusesPayAsYouGoService(t *testing.T) {
 }
 
 func TestRefreshFailureDoesNotFallThrough(t *testing.T) {
+	resetKeychainShot()
 	s := Store{
 		BrokerPath: "/usr/local/bin/claudia",
 		Run: func(_ context.Context, name string, args ...string) ([]byte, error) {
@@ -101,15 +103,19 @@ func TestRefreshFailureDoesNotFallThrough(t *testing.T) {
 }
 
 func TestItemHoldsFourPlanRecords(t *testing.T) {
+	resetKeychainShot()
 	now := time.Now().Add(time.Hour)
 	saved := `{"records":{}}`
+	var reads, writes int
 	s := Store{
 		BrokerPath: "/usr/local/bin/claudia",
 		Run: func(_ context.Context, name string, args ...string) ([]byte, error) {
 			if name == "security" && len(args) > 0 && args[0] == "find-generic-password" {
+				reads++
 				return []byte(saved), nil
 			}
 			if name == "security" && len(args) > 0 && args[0] == "add-generic-password" {
+				writes++
 				for i, a := range args {
 					if a == "-w" && i+1 < len(args) {
 						saved = args[i+1]
@@ -128,8 +134,11 @@ func TestItemHoldsFourPlanRecords(t *testing.T) {
 			t.Fatalf("Put %s: %v", id, err)
 		}
 	}
-	var item Item
-	if err := json.Unmarshal([]byte(saved), &item); err != nil {
+	if reads != 1 || writes != 1 {
+		t.Fatalf("keychain reads=%d writes=%d, want 1 and 1", reads, writes)
+	}
+	item, err := s.Load(context.Background())
+	if err != nil {
 		t.Fatal(err)
 	}
 	for _, id := range []string{Anthropic, OpenAICodex, Cursor, XAIOAuth} {
@@ -145,6 +154,7 @@ func TestEnsureRefreshesExpiredRecord(t *testing.T) {
 	fresh := time.Now().Add(time.Hour)
 	for _, id := range []string{Anthropic, OpenAICodex, Cursor, XAIOAuth} {
 		t.Run(id, func(t *testing.T) {
+			resetKeychainShot()
 			blob := mustJSON(Item{Records: map[string]Record{
 				id: {RefreshToken: "r", AccessToken: "old", Expiry: expired},
 			}})
@@ -200,6 +210,7 @@ func TestEnsureMissingRecordUsesLogin(t *testing.T) {
 	fresh := time.Now().Add(time.Hour)
 	for _, id := range []string{Anthropic, OpenAICodex, Cursor, XAIOAuth} {
 		t.Run(id, func(t *testing.T) {
+			resetKeychainShot()
 			var saved string
 			s := Store{
 				BrokerPath: "/usr/local/bin/claudia",
