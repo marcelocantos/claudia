@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -302,5 +303,25 @@ func TestScrubEnvDropsPlanKeys(t *testing.T) {
 	}
 	if !strings.Contains(blob, "PATH=/usr/bin") {
 		t.Fatalf("dropped unrelated env: %s", blob)
+	}
+}
+
+func TestSealPathRefusesOtherBinary(t *testing.T) {
+	resetKeychainShot()
+	s := Store{
+		BrokerPath: "/usr/local/bin/jevons-broker",
+		SealPath:   true,
+		Run: func(context.Context, string, ...string) ([]byte, error) {
+			t.Fatal("untrusted binary must not call security")
+			return nil, nil
+		},
+	}
+	err := Open(context.Background(), s)
+	if err == nil || !strings.Contains(err.Error(), "did not approve this binary") {
+		t.Fatalf("err = %v", err)
+	}
+	self, _ := os.Executable()
+	if resolvePath(self) == resolvePath("/usr/local/bin/jevons-broker") {
+		t.Fatal("test binary collided with the sealed broker path")
 	}
 }

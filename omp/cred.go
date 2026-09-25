@@ -10,6 +10,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -68,6 +70,10 @@ type Store struct {
 	BrokerPath string
 	Run        Runner
 	Now        func() time.Time
+	// SealPath refuses Open/Flush unless this process is BrokerPath.
+	// A rebuilt copy at another path cannot read or write the item
+	// (🎯T865). Tests that mock Run leave this false.
+	SealPath bool
 }
 
 // keychainShot is the process-wide copy. Store values are copied at
@@ -117,6 +123,10 @@ func Open(ctx context.Context, store Store) error {
 		return shot.openErr
 	}
 	shot.opened = true
+	if err := rejectUntrustedBroker(store); err != nil {
+		shot.openErr = err
+		return err
+	}
 	if store.Run == nil {
 		shot.openErr = fmt.Errorf("omp: no keychain runner")
 		return shot.openErr
@@ -196,6 +206,11 @@ func Flush(ctx context.Context, store Store) error {
 	if sameItem(shot.initial, shot.item) {
 		shot.flushed = true
 		return nil
+	}
+	if err := rejectUntrustedBroker(store); err != nil {
+		shot.flushed = true
+		shot.flushErr = err
+		return err
 	}
 	if store.BrokerPath == "" {
 		shot.flushed = true
@@ -307,6 +322,57 @@ func known(provider string) bool {
 	default:
 		return false
 	}
+}
+
+func rejectUntrustedBroker(store Store) error {
+	if !store.SealPath {
+		return nil
+	}
+	if store.BrokerPath == "" {
+		return fmt.Errorf("omp: broker path is required for the keychain ACL")
+	}
+	self, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("omp: keychain ACL did not approve this binary: %w", err)
+	}
+	self, want := resolvePath(self), resolvePath(store.BrokerPath)
+	if self == "" || self != want {
+		return fmt.Errorf("omp: keychain ACL did not approve this binary (path %s, want %s)", self, want)
+	}
+	return nil
+}
+
+func resolvePath(p string) string {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return ""
+	}
+	if abs, err := filepath.Abs(p); err == nil {
+		p = abs
+	}
+	if resolved, err := filepath.EvalSymlinks(p); err == nil {
+		return resolved
+	}
+	return p
+}
+
+// ProductBrokerPath is the one binary the Keychain ACL trusts (🎯T865).
+// JEVONS_BROKER_BIN wins; otherwise this process, when it is jevons-broker.
+func ProductBrokerPath() string {
+	if p := strings.TrimSpace(os.Getenv("JEVONS_BROKER_BIN")); p != "" {
+		return resolvePath(p)
+	}
+	if repo := strings.TrimSpace(os.Getenv("JEVONS_DEV_REPO")); repo != "" {
+		return resolvePath(filepath.Join(repo, "bin", "jevons-broker"))
+	}
+	self, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	if filepath.Base(self) != "jevons-broker" {
+		return ""
+	}
+	return resolvePath(self)
 }
 
 func trustedPathOnly(args []string, broker string) error {

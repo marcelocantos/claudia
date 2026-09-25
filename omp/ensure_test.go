@@ -56,15 +56,15 @@ func testEnsureSidecarVerbs(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer conn.Close()
-	if err := conn.Send(Message{Op: OpLoad, Seat: "smoke", Provider: Anthropic, Model: "claude-opus", Token: "tok"}); err != nil {
+	if err := conn.Send(Message{Op: OpLoad, Seat: "smoke", Provider: XAIOAuth, Model: "grok-4.6", Token: "tok"}); err != nil {
 		t.Fatal(err)
 	}
 	ev, err := conn.Recv()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ev.Type != "ready" && ev.Type != "error" {
-		t.Fatalf("load = %+v", ev)
+	if ev.Type != "ready" {
+		t.Fatalf("load = %+v, want ready", ev)
 	}
 	if err := conn.Send(Message{Op: OpPrompt, Seat: "smoke", Text: "ping"}); err != nil {
 		t.Fatal(err)

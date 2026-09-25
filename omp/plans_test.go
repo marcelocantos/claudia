@@ -89,6 +89,123 @@ func TestRefreshPlansWritesAllFour(t *testing.T) {
 	}
 }
 
+func TestForceRefreshRenewsLiveAccess(t *testing.T) {
+	resetKeychainShot()
+	fresh := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	saved := mustJSON(Item{Records: map[string]Record{
+		Anthropic: {RefreshToken: "r-a", AccessToken: "live-a", Expiry: time.Now().Add(time.Hour)},
+	}})
+	var saw []string
+	s := Store{
+		BrokerPath: "/usr/local/bin/jevons-broker",
+		Run: func(_ context.Context, name string, args ...string) ([]byte, error) {
+			if name == "security" && len(args) > 0 && args[0] == "find-generic-password" {
+				return []byte(saved), nil
+			}
+			return nil, nil
+		},
+	}
+	if err := Open(context.Background(), s); err != nil {
+		t.Fatal(err)
+	}
+	login := Login{
+		Script:       "auth.ts",
+		ForceRefresh: true,
+		Run: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			if args[1] != "refresh" {
+				t.Fatalf("force must still refresh, got %v", args)
+			}
+			saw = append(saw, args[2])
+			return []byte(`{"refresh_token":"n","access_token":"forced","expiry":"` + fresh + `"}`), nil
+		},
+	}
+	refreshed, skipped, err := RefreshPlans(context.Background(), s, login)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(refreshed, ",") != Anthropic {
+		t.Fatalf("refreshed = %v skipped = %v", refreshed, skipped)
+	}
+	if strings.Join(saw, ",") != Anthropic {
+		t.Fatalf("live anthropic was not sent to pi-ai: %v", saw)
+	}
+}
+
+func TestRefreshPlansNamesLiveAccessAsSkipped(t *testing.T) {
+	resetKeychainShot()
+	live := time.Now().Add(time.Hour)
+	saved := mustJSON(Item{Records: map[string]Record{
+		Anthropic:   {RefreshToken: "r-a", AccessToken: "live-a", Expiry: live},
+		OpenAICodex: {RefreshToken: "r-o", AccessToken: "live-o", Expiry: live},
+		Cursor:      {RefreshToken: "r-c", AccessToken: "live-c", Expiry: live},
+		XAIOAuth:    {RefreshToken: "r-x", AccessToken: "live-x", Expiry: live},
+	}})
+	s := Store{
+		BrokerPath: "/usr/local/bin/jevons-broker",
+		Run: func(_ context.Context, name string, args ...string) ([]byte, error) {
+			if name == "security" && len(args) > 0 && args[0] == "find-generic-password" {
+				return []byte(saved), nil
+			}
+			t.Fatalf("unexpected %s %v", name, args)
+			return nil, nil
+		},
+	}
+	if err := Open(context.Background(), s); err != nil {
+		t.Fatal(err)
+	}
+	login := Login{
+		Script: "auth.ts",
+		Run: func(context.Context, string, ...string) ([]byte, error) {
+			t.Fatal("live access must not call pi-ai")
+			return nil, nil
+		},
+	}
+	refreshed, skipped, err := RefreshPlans(context.Background(), s, login)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(refreshed) != 0 {
+		t.Fatalf("refreshed = %v", refreshed)
+	}
+	if strings.Join(skipped, ",") != strings.Join(PlanIDs, ",") {
+		t.Fatalf("skipped = %v, want all four live logins named", skipped)
+	}
+}
+
+func TestForceRefreshSkipsLiveStringGrant(t *testing.T) {
+	resetKeychainShot()
+	saved := mustJSON(Item{Records: map[string]Record{
+		Cursor: {RefreshToken: "user-key", AccessToken: "user-key", Expiry: time.Now().Add(time.Hour)},
+	}})
+	s := Store{
+		BrokerPath: "/usr/local/bin/jevons-broker",
+		Run: func(_ context.Context, name string, args ...string) ([]byte, error) {
+			if name == "security" && len(args) > 0 && args[0] == "find-generic-password" {
+				return []byte(saved), nil
+			}
+			return nil, nil
+		},
+	}
+	if err := Open(context.Background(), s); err != nil {
+		t.Fatal(err)
+	}
+	login := Login{
+		Script:       "auth.ts",
+		ForceRefresh: true,
+		Run: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			t.Fatalf("string grant must not call pi-ai: %v", args)
+			return nil, nil
+		},
+	}
+	refreshed, _, err := RefreshPlans(context.Background(), s, login)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(refreshed) != 0 {
+		t.Fatalf("refreshed = %v", refreshed)
+	}
+}
+
 func TestLoginPlansRunsPiAILogin(t *testing.T) {
 	resetKeychainShot()
 	fresh := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)

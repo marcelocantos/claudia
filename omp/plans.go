@@ -7,16 +7,17 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 )
 
 // PlanIDs are the four subscription logins in the Keychain item.
 var PlanIDs = []string{Anthropic, OpenAICodex, Cursor, XAIOAuth}
 
-// RefreshPlans renews every expired subscription login through pi-ai,
-// then writes the Keychain item once. A login that is still valid is
-// left as it is. A provider with no refresh token is skipped — serve
-// must not open a browser. Failure does not fall through to an API key,
-// and it does not write a partial item.
+// RefreshPlans renews every expired subscription login through pi-ai.
+// Each success is saved immediately so a later failure cannot discard a
+// rotated refresh token. A login that is still valid is left as it is.
+// A provider with no refresh token is skipped — serve must not open a
+// browser. Failure does not fall through to an API key.
 func RefreshPlans(ctx context.Context, store Store, login Login) (refreshed, skipped []string, err error) {
 	item, err := store.Load(ctx)
 	if err != nil {
@@ -25,13 +26,24 @@ func RefreshPlans(ctx context.Context, store Store, login Login) (refreshed, ski
 	if item.Records == nil {
 		item.Records = map[string]Record{}
 	}
-	for _, id := range PlanIDs {
+	want := PlanIDs
+	if only := strings.TrimSpace(os.Getenv("OMP_REFRESH_ONLY")); only != "" {
+		want = strings.Split(only, ",")
+		for _, id := range want {
+			if !known(strings.TrimSpace(id)) {
+				return nil, nil, fmt.Errorf("omp: %q is not a subscription provider", id)
+			}
+		}
+	}
+	for _, raw := range want {
+		id := strings.TrimSpace(raw)
 		rec := item.Records[id]
 		if !usableRefresh(rec) {
 			skipped = append(skipped, id)
 			continue
 		}
-		if accessLive(store, rec) {
+		if accessLive(store, rec) && (!login.ForceRefresh || stringGrant(rec)) {
+			skipped = append(skipped, id)
 			continue
 		}
 		next, err := login.fetch(ctx, id, rec)
@@ -39,19 +51,22 @@ func RefreshPlans(ctx context.Context, store Store, login Login) (refreshed, ski
 			return refreshed, skipped, fmt.Errorf("omp: %s: %w", id, err)
 		}
 		item.Records[id] = next
+		if err := store.Save(ctx, item); err != nil {
+			return refreshed, skipped, err
+		}
 		refreshed = append(refreshed, id)
-	}
-	if len(refreshed) == 0 {
-		return refreshed, skipped, nil
-	}
-	if err := store.Save(ctx, item); err != nil {
-		return refreshed, skipped, err
 	}
 	return refreshed, skipped, nil
 }
 
 func accessLive(store Store, rec Record) bool {
 	return rec.AccessToken != "" && !rec.Expiry.IsZero() && store.now().Before(rec.Expiry)
+}
+
+// stringGrant is a pi-ai login that returned a user key (Cursor), not
+// a refreshable OAuth pair. Forcing refresh on that shape is a 401.
+func stringGrant(rec Record) bool {
+	return rec.RefreshToken != "" && rec.RefreshToken == rec.AccessToken
 }
 
 // LoginPlans runs pi-ai login for every subscription id that has no

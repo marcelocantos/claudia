@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestT865LiveKeychainACLTrustsOnlyBroker(t *testing.T) {
@@ -111,7 +112,7 @@ func TestT865LiveNonBrokerCannotRead(t *testing.T) {
 	if os.Getenv("CLAUDIA_OMP_LIVE") == "" {
 		t.Skip("CLAUDIA_OMP_LIVE not set")
 	}
-	store := Store{BrokerPath: os.Args[0], Run: execSecurity}
+	store := Store{BrokerPath: liveBrokerBin(t), Run: execSecurity, SealPath: true}
 	err := Open(context.Background(), store)
 	if err == nil {
 		t.Fatal("test binary must be refused by the live ACL")
@@ -135,6 +136,35 @@ func TestT865LiveBrokerRefreshPlans(t *testing.T) {
 		if !strings.Contains(body, id) {
 			t.Fatalf("refresh-plans omitted %s: %s", id, body)
 		}
+	}
+}
+
+func TestT865LiveRebuiltBrokerRefused(t *testing.T) {
+	if os.Getenv("CLAUDIA_OMP_LIVE") == "" {
+		t.Skip("CLAUDIA_OMP_LIVE not set")
+	}
+	broker := liveBrokerBin(t)
+	other := filepath.Join(t.TempDir(), "rebuilt-jevons-broker")
+	self, err := os.ReadFile(broker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(other, self, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if other == broker {
+		t.Fatal("rebuilt path collided with the trusted broker")
+	}
+	cmd := exec.Command(other, "refresh-plans")
+	cmd.Env = append(os.Environ(), "JEVONS_BROKER_BIN="+broker)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("rebuilt broker was accepted by the Keychain ACL: %s", out)
+	}
+	body := strings.ToLower(string(out) + err.Error())
+	if !strings.Contains(body, "44") && !strings.Contains(body, "errsecauthfailed") &&
+		!strings.Contains(body, "acl") && !strings.Contains(body, "keychain") {
+		t.Fatalf("want ACL refusal, got %s: %v", out, err)
 	}
 }
 
@@ -176,6 +206,67 @@ func execBun(ctx context.Context, name string, args ...string) ([]byte, error) {
 	cmd.Env = ScrubEnv(os.Environ())
 	cmd.Dir = filepath.Dir(ServerScript())
 	return cmd.Output()
+}
+
+func TestT865LiveBrokerSmokeLaunchVerbs(t *testing.T) {
+	if os.Getenv("CLAUDIA_OMP_LIVE") == "" {
+		t.Skip("CLAUDIA_OMP_LIVE not set")
+	}
+	broker := liveBrokerBin(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, broker, "smoke")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("jevons-broker smoke: %s: %v", out, err)
+	}
+	body := string(out)
+	if !strings.Contains(body, "launch send steer abort") {
+		t.Fatalf("smoke did not land Launch/Send/steer/abort: %s", body)
+	}
+	if !strings.Contains(body, "jevons_*") {
+		t.Fatalf("smoke did not arm jevons_*: %s", body)
+	}
+}
+
+func TestT865LiveSidecarSurvivesJevonsdBounce(t *testing.T) {
+	if os.Getenv("CLAUDIA_OMP_LIVE") == "" {
+		t.Skip("CLAUDIA_OMP_LIVE not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	socket, err := SocketPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !Listening(ctx, socket) {
+		if _, err := Ensure(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	raw, err := os.ReadFile(pidPath(socket))
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := strings.TrimSpace(string(raw))
+	if before == "" {
+		t.Fatal("sidecar pid file empty")
+	}
+	bounce := exec.Command("supervisorctl", "restart", "jevonsd")
+	if out, err := bounce.CombinedOutput(); err != nil {
+		t.Fatalf("jevonsd bounce: %s: %v", out, err)
+	}
+	time.Sleep(2 * time.Second)
+	if !Listening(context.Background(), socket) {
+		t.Fatal("sidecar stopped listening after a jevonsd bounce")
+	}
+	after, err := os.ReadFile(pidPath(socket))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(after)); got != before {
+		t.Fatalf("sidecar pid %s → %s; a jevonsd bounce must leave it running", before, got)
+	}
 }
 
 func TestT865LiveKeychainItemExists(t *testing.T) {

@@ -22,6 +22,8 @@ type Login struct {
 	Run    Runner
 	// ForceLogin runs pi-ai login even when a refresh token exists.
 	ForceLogin bool
+	// ForceRefresh runs pi-ai refresh even when the access token is still live.
+	ForceRefresh bool
 }
 
 // Refresh renews one provider and writes that record back. A resync of

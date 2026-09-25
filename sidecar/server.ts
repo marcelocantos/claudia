@@ -44,9 +44,15 @@ type Seat = {
 
 const seats = new Map<string, Seat>();
 
+process.on("uncaughtException", (err: NodeJS.ErrnoException) => {
+  if (err.code === "EPIPE" || err.code === "ECONNRESET") return;
+  console.error("uncaught", err);
+});
+
 const server = createServer((socket) => {
   let buf = "";
   const pending = new Map<string, (result: string) => void>();
+  socket.on("error", () => {});
 
   const write = (ev: Record<string, unknown>) => {
     const seat = typeof ev.seat === "string" ? ev.seat : "";
@@ -68,7 +74,11 @@ const server = createServer((socket) => {
         console.error("spool append failed", err);
       }
     }
-    socket.write(JSON.stringify(ev) + "\n");
+    try {
+      socket.write(JSON.stringify(ev) + "\n");
+    } catch {
+      /* client gone; do not take down the sidecar */
+    }
   };
 
   const callTool = (callId: string, name: string, args: string) => {

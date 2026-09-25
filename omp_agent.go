@@ -262,7 +262,12 @@ func planStore() omp.Store {
 	if run == nil {
 		run = execKeychain
 	}
-	return omp.Store{BrokerPath: os.Args[0], Run: run}
+	path := omp.ProductBrokerPath()
+	seal := path != ""
+	if path == "" {
+		path = os.Args[0]
+	}
+	return omp.Store{BrokerPath: path, Run: run, SealPath: seal}
 }
 
 // RefreshOMPPlans renews every stored subscription login through
@@ -280,6 +285,9 @@ func RefreshOMPPlans(ctx context.Context) (refreshed, skipped []string, err erro
 	}
 	if login.Script == "" {
 		login.Script = sidecarAuthScript()
+	}
+	if os.Getenv("OMP_FORCE_REFRESH") != "" {
+		login.ForceRefresh = true
 	}
 	return omp.RefreshPlans(ctx, store, login)
 }
