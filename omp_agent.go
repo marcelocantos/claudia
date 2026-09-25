@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
@@ -124,7 +125,11 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 		conn.Close()
 		return nil, fmt.Errorf("omp: sidecar said %q, want ready", ev.Type)
 	}
-	ctrl := &ompControl{conn: conn, bytes: make(chan []byte, 8), token: token, provider: provider}
+	ctrl := &ompControl{
+		conn: conn, bytes: make(chan []byte, 8),
+		token: token, provider: provider,
+		seat: req.Config.Name, model: req.Config.Model, cwd: req.Config.WorkDir,
+	}
 	return &agentStart{
 		Control: ctrl,
 		Ops: agentOps{
@@ -165,12 +170,16 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 }
 
 type ompControl struct {
-	conn     *omp.Conn
-	bytes    chan []byte
-	token    string
-	provider string
-	mu       sync.Mutex
-	inflight atomic.Bool
+	conn      *omp.Conn
+	bytes     chan []byte
+	token     string
+	provider  string
+	seat      string
+	model     string
+	cwd       string
+	mu        sync.Mutex
+	inflight  atomic.Bool
+	refreshed atomic.Bool
 }
 
 func (c *ompControl) send(msg omp.Message) error {
@@ -211,9 +220,14 @@ func (c *ompControl) pump(a *Agent) {
 			_ = c.send(omp.Message{Op: omp.OpTool, CallID: ev.CallID, Result: result})
 		case "turn_end":
 			c.inflight.Store(false)
+			rejected := oauthRejected(ev.Snapshot)
+			if rejected && c.refreshed.CompareAndSwap(false, true) {
+				c.refreshRejectedToken()
+			}
 			a.publishEvent(Event{
 				Type:       "assistant",
 				Text:       ev.Text,
+				IsError:    rejected,
 				StopReason: "end_turn",
 			})
 		case "error":
@@ -225,6 +239,46 @@ func (c *ompControl) pump(a *Agent) {
 				StopReason: "end_turn",
 			})
 		}
+	}
+}
+
+func oauthRejected(snapshot json.RawMessage) bool {
+	if len(snapshot) == 0 {
+		return false
+	}
+	s := string(snapshot)
+	return strings.Contains(s, "could not be validated") ||
+		strings.Contains(s, "unauthenticated:bad-credentials")
+}
+
+func (c *ompControl) refreshRejectedToken() {
+	login := ompLogin
+	if login.Run == nil {
+		login.Run = execBunLogin
+	}
+	if login.Command == "" {
+		login.Command = "bun"
+	}
+	if login.Script == "" {
+		login.Script = sidecarAuthScript()
+	}
+	login.ForceRefresh = true
+	rec, err := login.Refresh(context.Background(), planStore(), c.provider)
+	if err != nil {
+		slog.Warn("omp token rejected; refresh failed", "provider", c.provider, "seat", c.seat, "err", err)
+		return
+	}
+	if err := FlushOMPPlans(context.Background()); err != nil {
+		slog.Warn("omp token refreshed; keychain flush failed", "provider", c.provider, "err", err)
+	}
+	c.mu.Lock()
+	c.token = rec.AccessToken
+	c.mu.Unlock()
+	if err := c.send(omp.Message{
+		Op: omp.OpLoad, Seat: c.seat, Provider: c.provider,
+		Model: c.model, Token: rec.AccessToken, Cwd: c.cwd,
+	}); err != nil {
+		slog.Warn("omp token refreshed; sidecar reload failed", "seat", c.seat, "err", err)
 	}
 }
 

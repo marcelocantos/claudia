@@ -502,6 +502,12 @@ func TestOMPLoginRunsBunFromSidecar(t *testing.T) {
 	if !strings.Contains(body, "io.MultiWriter(os.Stderr, &stderr)") {
 		t.Fatal("bun login must forward the auth URL on stderr")
 	}
+	if !oauthRejected(json.RawMessage(`{"errorMessage":"403 The OAuth2 access token could not be validated."}`)) {
+		t.Fatal("a rejected OAuth token must be noticed")
+	}
+	if oauthRejected(nil) || oauthRejected(json.RawMessage(`{"stopReason":"stop"}`)) {
+		t.Fatal("a normal turn must not look like a rejected token")
+	}
 	script := sidecarAuthScript()
 	if _, err := os.Stat(filepath.Join(filepath.Dir(script), "package.json")); err != nil {
 		t.Fatalf("sidecar package.json next to %s: %v", script, err)
