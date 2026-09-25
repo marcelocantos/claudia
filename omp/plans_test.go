@@ -42,6 +42,9 @@ func TestRefreshPlansWritesAllFour(t *testing.T) {
 			return nil, nil
 		},
 	}
+	if err := Open(context.Background(), s); err != nil {
+		t.Fatal(err)
+	}
 	login := Login{
 		Script: "auth.ts",
 		Run: func(_ context.Context, _ string, args ...string) ([]byte, error) {
@@ -64,6 +67,12 @@ func TestRefreshPlansWritesAllFour(t *testing.T) {
 	}
 	if strings.Join(saw, ",") != strings.Join(PlanIDs, ",") {
 		t.Fatalf("pi-ai ids = %v", saw)
+	}
+	if writes != 0 {
+		t.Fatalf("keychain writes before flush = %d, want 0", writes)
+	}
+	if err := Flush(context.Background(), s); err != nil {
+		t.Fatal(err)
 	}
 	if writes != 1 {
 		t.Fatalf("keychain writes = %d, want 1", writes)
@@ -101,6 +110,9 @@ func TestLoginPlansRunsPiAILogin(t *testing.T) {
 			return nil, nil
 		},
 	}
+	if err := Open(context.Background(), s); err != nil {
+		t.Fatal(err)
+	}
 	login := Login{
 		Script: "auth.ts",
 		Run: func(_ context.Context, _ string, args ...string) ([]byte, error) {
@@ -131,6 +143,9 @@ func TestLoginPlansCanLimitToOneProvider(t *testing.T) {
 			}
 			return nil, nil
 		},
+	}
+	if err := Open(context.Background(), s); err != nil {
+		t.Fatal(err)
 	}
 	var saw []string
 	login := Login{
@@ -169,6 +184,9 @@ func TestLoginPlansReloginsNamedProvider(t *testing.T) {
 			return nil, nil
 		},
 	}
+	if err := Open(context.Background(), s); err != nil {
+		t.Fatal(err)
+	}
 	login := Login{
 		Script: "auth.ts",
 		Run: func(_ context.Context, _ string, args ...string) ([]byte, error) {
@@ -193,6 +211,9 @@ func TestRefreshPlansSkipsUndefinedRefreshToken(t *testing.T) {
 			t.Fatalf("unexpected %s %v", name, args)
 			return nil, nil
 		},
+	}
+	if err := Open(context.Background(), s); err != nil {
+		t.Fatal(err)
 	}
 	login := Login{
 		Script: "auth.ts",
@@ -224,6 +245,9 @@ func TestRefreshPlansSkipsMissingRefreshToken(t *testing.T) {
 			t.Fatalf("unexpected %s %v", name, args)
 			return nil, nil
 		},
+	}
+	if err := Open(context.Background(), s); err != nil {
+		t.Fatal(err)
 	}
 	login := Login{
 		Script: "auth.ts",

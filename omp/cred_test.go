@@ -22,10 +22,15 @@ func TestSaveTrustsOnlyTheBroker(t *testing.T) {
 			return nil, nil
 		},
 	}
-	err := s.Save(context.Background(), Item{Records: map[string]Record{
+	if err := Open(context.Background(), s); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Save(context.Background(), Item{Records: map[string]Record{
 		Anthropic: {AccessToken: "a", RefreshToken: "r", Expiry: time.Now().Add(time.Hour)},
-	}})
-	if err != nil {
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := Flush(context.Background(), s); err != nil {
 		t.Fatal(err)
 	}
 	blob := strings.Join(cmds, "\n")
@@ -90,6 +95,9 @@ func TestRefreshFailureDoesNotFallThrough(t *testing.T) {
 			return nil, nil
 		},
 	}
+	if err := Open(context.Background(), s); err != nil {
+		t.Fatal(err)
+	}
 	login := Login{
 		Script: "auth.ts",
 		Run: func(context.Context, string, ...string) ([]byte, error) {
@@ -125,6 +133,9 @@ func TestItemHoldsFourPlanRecords(t *testing.T) {
 			return nil, nil
 		},
 	}
+	if err := Open(context.Background(), s); err != nil {
+		t.Fatal(err)
+	}
 	for _, id := range []string{Anthropic, OpenAICodex, Cursor, XAIOAuth} {
 		if err := s.Put(context.Background(), id, Record{
 			RefreshToken: "r-" + id,
@@ -133,6 +144,12 @@ func TestItemHoldsFourPlanRecords(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("Put %s: %v", id, err)
 		}
+	}
+	if reads != 1 || writes != 0 {
+		t.Fatalf("before flush reads=%d writes=%d, want 1 and 0", reads, writes)
+	}
+	if err := Flush(context.Background(), s); err != nil {
+		t.Fatal(err)
 	}
 	if reads != 1 || writes != 1 {
 		t.Fatalf("keychain reads=%d writes=%d, want 1 and 1", reads, writes)
@@ -179,6 +196,9 @@ func TestEnsureRefreshesExpiredRecord(t *testing.T) {
 					return nil, nil
 				},
 			}
+			if err := Open(context.Background(), s); err != nil {
+				t.Fatal(err)
+			}
 			login := Login{
 				Script: "auth.ts",
 				Run: func(_ context.Context, _ string, args ...string) ([]byte, error) {
@@ -194,6 +214,9 @@ func TestEnsureRefreshesExpiredRecord(t *testing.T) {
 			}
 			if tok != "fresh" {
 				t.Fatalf("token = %q", tok)
+			}
+			if err := Flush(context.Background(), s); err != nil {
+				t.Fatal(err)
 			}
 			var item Item
 			if err := json.Unmarshal([]byte(saved), &item); err != nil {
@@ -230,6 +253,9 @@ func TestEnsureMissingRecordUsesLogin(t *testing.T) {
 					}
 					return nil, nil
 				},
+			}
+			if err := Open(context.Background(), s); err != nil {
+				t.Fatal(err)
 			}
 			login := Login{
 				Script: "auth.ts",

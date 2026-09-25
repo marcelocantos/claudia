@@ -61,24 +61,25 @@ type Runner func(ctx context.Context, name string, args ...string) ([]byte, erro
 
 // Store is the one Keychain item. BrokerPath is the only ACL entry.
 //
-// A process may read that item once and write it once. Later Loads
-// return the memory copy. Later Saves update the memory copy and do
-// not call the Keychain again, so a run cannot raise a second prompt.
+// Open reads it once at startup. Load, Save, and Put then use that
+// memory copy. Flush writes it back once, on the way out, when the
+// copy differs from what Open read.
 type Store struct {
 	BrokerPath string
 	Run        Runner
 	Now        func() time.Time
 }
 
-// keychainShot is the process-wide read and write. Store values are
-// copied at each call site, so the limit cannot live on Store.
+// keychainShot is the process-wide copy. Store values are copied at
+// each call site, so the startup read cannot live on Store.
 type keychainShot struct {
 	mu       sync.Mutex
-	read     bool
+	opened   bool
+	openErr  error
+	initial  Item
 	item     Item
-	readErr  error
-	written  bool
-	writeErr error
+	flushed  bool
+	flushErr error
 }
 
 var shot keychainShot
@@ -106,63 +107,110 @@ func (s Store) now() time.Time {
 	return time.Now()
 }
 
-// Load reads the item. A missing item is an empty Item, not an error
-// that falls through to an API key. The process reads the Keychain
-// once; every later Load returns that copy.
-func (s Store) Load(ctx context.Context) (Item, error) {
+// Open reads the Keychain once. A later Open returns that result and
+// does not read again. A missing item is an empty Item, not an error
+// that falls through to an API key.
+func Open(ctx context.Context, store Store) error {
 	shot.mu.Lock()
 	defer shot.mu.Unlock()
-	if shot.read {
-		if shot.readErr != nil {
-			return Item{}, shot.readErr
-		}
-		return cloneItem(shot.item), nil
+	if shot.opened {
+		return shot.openErr
 	}
-	if s.Run == nil {
-		return Item{}, fmt.Errorf("omp: no keychain runner")
+	shot.opened = true
+	if store.Run == nil {
+		shot.openErr = fmt.Errorf("omp: no keychain runner")
+		return shot.openErr
 	}
-	out, err := s.Run(ctx, "security", "find-generic-password",
+	out, err := store.Run(ctx, "security", "find-generic-password",
 		"-a", keychainAccount, "-s", KeychainService, "-w")
-	shot.read = true
-	if err != nil {
-		if isMissing(err, out) {
-			shot.item = Item{Records: map[string]Record{}}
-			return cloneItem(shot.item), nil
-		}
-		shot.readErr = err
-		return Item{}, err
+	if err != nil && !isMissing(err, out) {
+		shot.openErr = err
+		return err
 	}
+	item, err := decodeItem(out)
+	if err != nil {
+		shot.openErr = err
+		return err
+	}
+	shot.initial = cloneItem(item)
+	shot.item = cloneItem(item)
+	return nil
+}
+
+func decodeItem(out []byte) (Item, error) {
 	raw := strings.TrimSpace(string(out))
 	if raw == "" {
-		shot.item = Item{Records: map[string]Record{}}
-		return cloneItem(shot.item), nil
+		return Item{Records: map[string]Record{}}, nil
 	}
 	var item Item
 	if err := json.Unmarshal([]byte(raw), &item); err != nil {
-		shot.readErr = fmt.Errorf("omp: keychain item is not the plan blob: %w", err)
-		return Item{}, shot.readErr
+		return Item{}, fmt.Errorf("omp: keychain item is not the plan blob: %w", err)
 	}
 	if item.Records == nil {
 		item.Records = map[string]Record{}
 	}
-	shot.item = item
+	return item, nil
+}
+
+// Load returns the startup copy. It does not read the Keychain.
+func (s Store) Load(ctx context.Context) (Item, error) {
+	shot.mu.Lock()
+	defer shot.mu.Unlock()
+	if !shot.opened {
+		return Item{}, fmt.Errorf("omp: keychain was not read at startup")
+	}
+	if shot.openErr != nil {
+		return Item{}, shot.openErr
+	}
 	return cloneItem(shot.item), nil
 }
 
-// Save writes the blob back. The argv trusts only BrokerPath (-T) and
-// never the jevons API-key services.
+// Save replaces the memory copy. It does not write the Keychain.
 func (s Store) Save(ctx context.Context, item Item) error {
-	if s.BrokerPath == "" {
-		return fmt.Errorf("omp: broker path is required for the keychain ACL")
-	}
-	if s.Run == nil {
-		return fmt.Errorf("omp: no keychain runner")
-	}
 	if item.Records == nil {
 		item.Records = map[string]Record{}
 	}
-	blob, err := json.Marshal(item)
+	shot.mu.Lock()
+	defer shot.mu.Unlock()
+	if !shot.opened {
+		return fmt.Errorf("omp: keychain was not read at startup")
+	}
+	if shot.openErr != nil {
+		return shot.openErr
+	}
+	shot.item = cloneItem(item)
+	return nil
+}
+
+// Flush writes the memory copy back once, when it differs from the
+// startup read. A later Flush does not write again.
+func Flush(ctx context.Context, store Store) error {
+	shot.mu.Lock()
+	defer shot.mu.Unlock()
+	if !shot.opened || shot.openErr != nil {
+		return shot.openErr
+	}
+	if shot.flushed {
+		return shot.flushErr
+	}
+	if sameItem(shot.initial, shot.item) {
+		shot.flushed = true
+		return nil
+	}
+	if store.BrokerPath == "" {
+		shot.flushed = true
+		shot.flushErr = fmt.Errorf("omp: broker path is required for the keychain ACL")
+		return shot.flushErr
+	}
+	if store.Run == nil {
+		shot.flushed = true
+		shot.flushErr = fmt.Errorf("omp: no keychain runner")
+		return shot.flushErr
+	}
+	blob, err := json.Marshal(shot.item)
 	if err != nil {
+		shot.flushed = true
+		shot.flushErr = err
 		return err
 	}
 	// Update the secret in place. Deleting the item and creating it
@@ -173,24 +221,34 @@ func (s Store) Save(ctx context.Context, item Item) error {
 		"-U",
 		"-a", keychainAccount,
 		"-s", KeychainService,
-		"-T", s.BrokerPath,
+		"-T", store.BrokerPath,
 		"-w", string(blob),
 	}
-	if err := trustedPathOnly(args, s.BrokerPath); err != nil {
+	if err := trustedPathOnly(args, store.BrokerPath); err != nil {
+		shot.flushed = true
+		shot.flushErr = err
 		return err
 	}
-	shot.mu.Lock()
-	defer shot.mu.Unlock()
-	shot.item = cloneItem(item)
-	shot.read = true
-	shot.readErr = nil
-	if shot.written {
-		return shot.writeErr
-	}
-	shot.written = true
-	_, err = s.Run(ctx, "security", args...)
-	shot.writeErr = err
+	shot.flushed = true
+	_, err = store.Run(ctx, "security", args...)
+	shot.flushErr = err
 	return err
+}
+
+func sameItem(a, b Item) bool {
+	ab, err1 := json.Marshal(normalize(a))
+	bb, err2 := json.Marshal(normalize(b))
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	return string(ab) == string(bb)
+}
+
+func normalize(item Item) Item {
+	if item.Records == nil {
+		item.Records = map[string]Record{}
+	}
+	return item
 }
 
 // Put replaces one record and writes the item.

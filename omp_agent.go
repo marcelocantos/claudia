@@ -85,11 +85,7 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 			return nil, err
 		}
 	}
-	run := ompKeychain
-	if run == nil {
-		run = execKeychain
-	}
-	store := omp.Store{BrokerPath: os.Args[0], Run: run}
+	store := planStore()
 	login := ompLogin
 	if login.Run == nil {
 		login.Run = execBunLogin
@@ -250,16 +246,31 @@ func EnsureOMPSidecar(ctx context.Context) (string, error) {
 	return omp.Ensure(ctx)
 }
 
+// OpenOMPPlans reads the plan Keychain item once for this process.
+func OpenOMPPlans(ctx context.Context) error {
+	return omp.Open(ctx, planStore())
+}
+
+// FlushOMPPlans writes the plan item once, on the way out, when the
+// memory copy differs from the startup read.
+func FlushOMPPlans(ctx context.Context) error {
+	return omp.Flush(ctx, planStore())
+}
+
+func planStore() omp.Store {
+	run := ompKeychain
+	if run == nil {
+		run = execKeychain
+	}
+	return omp.Store{BrokerPath: os.Args[0], Run: run}
+}
+
 // RefreshOMPPlans renews every stored subscription login through
 // sidecar/auth.ts / pi-ai and writes the records back (🎯T865).
 // Providers with no refresh token are skipped so serve does not open
 // a browser. The Keychain ACL is -T this process (os.Args[0]).
 func RefreshOMPPlans(ctx context.Context) (refreshed, skipped []string, err error) {
-	run := ompKeychain
-	if run == nil {
-		run = execKeychain
-	}
-	store := omp.Store{BrokerPath: os.Args[0], Run: run}
+	store := planStore()
 	login := ompLogin
 	if login.Run == nil {
 		login.Run = execBunLogin
@@ -276,11 +287,7 @@ func RefreshOMPPlans(ctx context.Context) (refreshed, skipped []string, err erro
 // LoginOMPPlans runs pi-ai login for every plan id that has no refresh
 // token (🎯T865). Interactive — not used on serve.
 func LoginOMPPlans(ctx context.Context, ids ...string) (int, error) {
-	run := ompKeychain
-	if run == nil {
-		run = execKeychain
-	}
-	store := omp.Store{BrokerPath: os.Args[0], Run: run}
+	store := planStore()
 	login := ompLogin
 	if login.Run == nil {
 		login.Run = execBunLogin
@@ -388,12 +395,18 @@ func CallJevonsMCP(mcpURL, name, args string) string {
 }
 
 func execKeychain(ctx context.Context, name string, args ...string) ([]byte, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Env = omp.ScrubEnv(os.Environ())
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
+		if ctx.Err() != nil {
+			return stderr.Bytes(), fmt.Errorf("%s: keychain ACL did not approve this binary: %w", name, ctx.Err())
+		}
 		return stderr.Bytes(), fmt.Errorf("%s: %w: %s", name, err, stderr.String())
 	}
 	return out, nil

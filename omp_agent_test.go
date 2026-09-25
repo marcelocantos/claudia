@@ -39,6 +39,9 @@ func TestOMPStartRefusesVendorCLI(t *testing.T) {
 		},
 	}
 	t.Cleanup(func() { ompKeychain = nil; ompLogin = omp.Login{}; omp.ResetKeychainShot() })
+	if err := OpenOMPPlans(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	ids := append(append([]Provider{}, ompSidecarIDs...), ProviderGrok)
 	for _, p := range ids {
 		cfg := Config{Provider: p, WorkDir: t.TempDir(), TermLogPath: "-"}
@@ -111,6 +114,9 @@ func TestOMPStartLoadsTokenFromKeychain(t *testing.T) {
 		return []byte(blob), nil
 	}
 	t.Cleanup(func() { ompKeychain = nil; omp.ResetKeychainShot() })
+	if err := OpenOMPPlans(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("CLAUDIA_OMP_SOCKET", socket)
 
 	agent, err := StartDirect(Config{
@@ -205,6 +211,9 @@ func TestOMPStartRefreshesExpiredToken(t *testing.T) {
 		},
 	}
 	t.Cleanup(func() { ompKeychain = nil; ompLogin = omp.Login{}; omp.ResetKeychainShot() })
+	if err := OpenOMPPlans(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("CLAUDIA_OMP_SOCKET", socket)
 
 	agent, err := StartDirect(Config{
@@ -234,6 +243,9 @@ func TestOMPStartRefreshFailureDoesNotStart(t *testing.T) {
 		},
 	}
 	t.Cleanup(func() { ompKeychain = nil; ompLogin = omp.Login{}; omp.ResetKeychainShot() })
+	if err := OpenOMPPlans(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("CLAUDIA_OMP_SOCKET", filepath.Join(t.TempDir(), "unused.sock"))
 	t.Setenv("ANTHROPIC_API_KEY", "sk-should-not-be-used")
 	t.Setenv("OPENAI_API_KEY", "sk-should-not-be-used")
@@ -261,6 +273,9 @@ func TestOMPMigrateUsesSidecarNotVendorCLI(t *testing.T) {
 		},
 	}
 	t.Cleanup(func() { ompKeychain = nil; ompLogin = omp.Login{}; omp.ResetKeychainShot() })
+	if err := OpenOMPPlans(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	src, _ := startMigrateFixture(t, ProviderGrok, "fake-grok")
 	src.PublishEvent(Event{Type: "user", Text: "hello"})
 	src.PublishEvent(Event{Type: "assistant", Text: "hi"})
@@ -312,6 +327,9 @@ func TestOMPSetModelIsSecondLoad(t *testing.T) {
 		return []byte(blob), nil
 	}
 	t.Cleanup(func() { ompKeychain = nil; omp.ResetKeychainShot() })
+	if err := OpenOMPPlans(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("CLAUDIA_OMP_SOCKET", socket)
 
 	agent, err := StartDirect(Config{

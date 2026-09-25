@@ -107,11 +107,12 @@ func TestT865AuthScriptOpensLoginURL(t *testing.T) {
 }
 
 func TestT865LiveNonBrokerCannotRead(t *testing.T) {
+	resetKeychainShot()
 	if os.Getenv("CLAUDIA_OMP_LIVE") == "" {
 		t.Skip("CLAUDIA_OMP_LIVE not set")
 	}
 	store := Store{BrokerPath: os.Args[0], Run: execSecurity}
-	_, err := store.Load(context.Background())
+	err := Open(context.Background(), store)
 	if err == nil {
 		t.Fatal("test binary must be refused by the live ACL")
 	}
