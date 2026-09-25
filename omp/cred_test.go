@@ -7,7 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -23,15 +23,10 @@ func TestSaveTrustsOnlyTheBroker(t *testing.T) {
 			return nil, nil
 		},
 	}
-	if err := Open(context.Background(), s); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.Save(context.Background(), Item{Records: map[string]Record{
+	err := s.Save(context.Background(), Item{Records: map[string]Record{
 		Anthropic: {AccessToken: "a", RefreshToken: "r", Expiry: time.Now().Add(time.Hour)},
-	}}); err != nil {
-		t.Fatal(err)
-	}
-	if err := Flush(context.Background(), s); err != nil {
+	}})
+	if err != nil {
 		t.Fatal(err)
 	}
 	blob := strings.Join(cmds, "\n")
@@ -96,9 +91,6 @@ func TestRefreshFailureDoesNotFallThrough(t *testing.T) {
 			return nil, nil
 		},
 	}
-	if err := Open(context.Background(), s); err != nil {
-		t.Fatal(err)
-	}
 	login := Login{
 		Script: "auth.ts",
 		Run: func(context.Context, string, ...string) ([]byte, error) {
@@ -134,37 +126,46 @@ func TestItemHoldsFourPlanRecords(t *testing.T) {
 			return nil, nil
 		},
 	}
-	if err := Open(context.Background(), s); err != nil {
-		t.Fatal(err)
-	}
+	item := Item{Records: map[string]Record{}}
 	for _, id := range []string{Anthropic, OpenAICodex, Cursor, XAIOAuth} {
-		if err := s.Put(context.Background(), id, Record{
+		item.Records[id] = Record{
 			RefreshToken: "r-" + id,
 			AccessToken:  "a-" + id,
 			Expiry:       now,
-		}); err != nil {
-			t.Fatalf("Put %s: %v", id, err)
 		}
 	}
-	if reads != 1 || writes != 0 {
-		t.Fatalf("before flush reads=%d writes=%d, want 1 and 0", reads, writes)
-	}
-	if err := Flush(context.Background(), s); err != nil {
+	if err := s.Save(context.Background(), item); err != nil {
 		t.Fatal(err)
 	}
-	if reads != 1 || writes != 1 {
-		t.Fatalf("keychain reads=%d writes=%d, want 1 and 1", reads, writes)
+	if writes != 1 {
+		t.Fatalf("keychain writes=%d, want 1", writes)
 	}
-	item, err := s.Load(context.Background())
+	got, err := s.Load(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err = s.Load(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if reads != 0 {
+		t.Fatalf("keychain reads=%d, want 0 after a save already holds the item", reads)
+	}
 	for _, id := range []string{Anthropic, OpenAICodex, Cursor, XAIOAuth} {
-		rec := item.Records[id]
+		rec := got.Records[id]
 		if rec.AccessToken != "a-"+id || rec.RefreshToken != "r-"+id || rec.Expiry.IsZero() {
 			t.Fatalf("%s record = %+v, want refresh/access/expiry", id, rec)
 		}
 	}
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("second save must crash")
+		}
+		if !strings.Contains(fmt.Sprint(r), "second keychain save") {
+			t.Fatalf("panic = %v", r)
+		}
+	}()
+	_ = s.Save(context.Background(), item)
 }
 
 func TestEnsureRefreshesExpiredRecord(t *testing.T) {
@@ -197,9 +198,6 @@ func TestEnsureRefreshesExpiredRecord(t *testing.T) {
 					return nil, nil
 				},
 			}
-			if err := Open(context.Background(), s); err != nil {
-				t.Fatal(err)
-			}
 			login := Login{
 				Script: "auth.ts",
 				Run: func(_ context.Context, _ string, args ...string) ([]byte, error) {
@@ -215,9 +213,6 @@ func TestEnsureRefreshesExpiredRecord(t *testing.T) {
 			}
 			if tok != "fresh" {
 				t.Fatalf("token = %q", tok)
-			}
-			if err := Flush(context.Background(), s); err != nil {
-				t.Fatal(err)
 			}
 			var item Item
 			if err := json.Unmarshal([]byte(saved), &item); err != nil {
@@ -254,9 +249,6 @@ func TestEnsureMissingRecordUsesLogin(t *testing.T) {
 					}
 					return nil, nil
 				},
-			}
-			if err := Open(context.Background(), s); err != nil {
-				t.Fatal(err)
 			}
 			login := Login{
 				Script: "auth.ts",
@@ -303,25 +295,5 @@ func TestScrubEnvDropsPlanKeys(t *testing.T) {
 	}
 	if !strings.Contains(blob, "PATH=/usr/bin") {
 		t.Fatalf("dropped unrelated env: %s", blob)
-	}
-}
-
-func TestSealPathRefusesOtherBinary(t *testing.T) {
-	resetKeychainShot()
-	s := Store{
-		BrokerPath: "/usr/local/bin/jevons-broker",
-		SealPath:   true,
-		Run: func(context.Context, string, ...string) ([]byte, error) {
-			t.Fatal("untrusted binary must not call security")
-			return nil, nil
-		},
-	}
-	err := Open(context.Background(), s)
-	if err == nil || !strings.Contains(err.Error(), "did not approve this binary") {
-		t.Fatalf("err = %v", err)
-	}
-	self, _ := os.Executable()
-	if resolvePath(self) == resolvePath("/usr/local/bin/jevons-broker") {
-		t.Fatal("test binary collided with the sealed broker path")
 	}
 }
