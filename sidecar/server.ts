@@ -30,6 +30,7 @@ type Line = {
   provider?: string;
   model?: string;
   token?: string;
+  cwd?: string;
   text?: string;
   call_id?: string;
   result?: string;
@@ -128,6 +129,7 @@ async function handle(
     if (existing) {
       existing.token = msg.token;
       existing.agent.setToken(msg.token);
+      if (msg.cwd) existing.agent.setCwd(msg.cwd);
       if (msg.model && msg.model !== existing.model) {
         existing.agent.setModel(msg.provider ?? existing.provider, msg.model);
         existing.model = msg.model;
@@ -139,6 +141,7 @@ async function handle(
       provider: msg.provider ?? "",
       model: msg.model ?? "",
       token: msg.token,
+      cwd: msg.cwd ?? "",
       emit: (ev) => write({ seat, ...ev }),
       callTool,
     });

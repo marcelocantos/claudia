@@ -28,6 +28,7 @@ type Message struct {
 	Provider string `json:"provider,omitempty"`
 	Model    string `json:"model,omitempty"`
 	Token    string `json:"token,omitempty"`
+	Cwd      string `json:"cwd,omitempty"`
 	Text     string `json:"text,omitempty"`
 	CallID   string `json:"call_id,omitempty"`
 	Result   string `json:"result,omitempty"`

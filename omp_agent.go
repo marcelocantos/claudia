@@ -110,6 +110,7 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 		Provider: provider,
 		Model:    req.Config.Model,
 		Token:    token,
+		Cwd:      req.Config.WorkDir,
 	}); err != nil {
 		conn.Close()
 		return nil, err
@@ -145,6 +146,7 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 					Provider: provider,
 					Model:    model,
 					Token:    ctrl.token,
+					Cwd:      req.Config.WorkDir,
 				})
 			},
 			promptInFlight: func(*Agent) bool { return ctrl.inflight.Load() },

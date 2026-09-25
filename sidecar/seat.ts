@@ -18,6 +18,7 @@ export type SeatAgent = {
   abort: () => void;
   setModel: (provider: string, model: string) => void;
   setToken: (token: string) => void;
+  setCwd: (cwd: string) => void;
   snapshot: () => unknown;
 };
 
@@ -25,16 +26,20 @@ export function createSeatAgent(opts: {
   provider: string;
   model: string;
   token: string;
+  cwd: string;
   emit: (ev: SeatEvent) => void;
   callTool: (callId: string, name: string, args: string) => Promise<string>;
 }): SeatAgent {
   let token = opts.token;
+  let cwd = opts.cwd;
   const model = resolveModel(opts.provider, opts.model);
   const agent = new Agent({
     initialState: {
       systemPrompt: ["You are a coding agent hosted by Claudia."],
       model,
     },
+    cwd,
+    cwdResolver: () => cwd || undefined,
     getApiKey: async () => token,
     resolveFallbackTool: (name: string) => {
       if (!name.startsWith("jevons_")) return undefined;
@@ -68,6 +73,9 @@ export function createSeatAgent(opts: {
     },
     setToken: (next: string) => {
       token = next;
+    },
+    setCwd: (next: string) => {
+      if (next) cwd = next;
     },
     snapshot: () => agent.state,
   };

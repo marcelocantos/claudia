@@ -141,7 +141,7 @@ func TestOMPStartLoadsTokenFromKeychain(t *testing.T) {
 		}
 	})
 	msg := <-got
-	if msg.Op != omp.OpLoad || msg.Token != "plan-token" || msg.Provider != omp.Anthropic {
+	if msg.Op != omp.OpLoad || msg.Token != "plan-token" || msg.Provider != omp.Anthropic || msg.Cwd != dir {
 		t.Fatalf("load = %+v", msg)
 	}
 	if err := agent.Send("hello"); err != nil {
