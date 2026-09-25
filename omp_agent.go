@@ -250,6 +250,29 @@ func EnsureOMPSidecar(ctx context.Context) (string, error) {
 	return omp.Ensure(ctx)
 }
 
+// RefreshOMPPlans renews every stored subscription login through
+// sidecar/auth.ts / pi-ai and writes the records back (🎯T865).
+// Providers with no refresh token are skipped so serve does not open
+// a browser. The Keychain ACL is -T this process (os.Args[0]).
+func RefreshOMPPlans(ctx context.Context) (refreshed, skipped []string, err error) {
+	run := ompKeychain
+	if run == nil {
+		run = execKeychain
+	}
+	store := omp.Store{BrokerPath: os.Args[0], Run: run}
+	login := ompLogin
+	if login.Run == nil {
+		login.Run = execBunLogin
+	}
+	if login.Command == "" {
+		login.Command = "bun"
+	}
+	if login.Script == "" {
+		login.Script = sidecarAuthScript()
+	}
+	return omp.RefreshPlans(ctx, store, login)
+}
+
 // SetOMPToolExec installs the jevons_* callback the sidecar invokes
 // (🎯T865). Production brokers set this to an HTTP tools/call against
 // the live jevonsmcp URL.

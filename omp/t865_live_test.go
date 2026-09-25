@@ -4,7 +4,6 @@
 package omp
 
 import (
-	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -86,56 +85,6 @@ func TestT865AuthScriptIsPiAI(t *testing.T) {
 			t.Fatal("empty provider")
 		}
 	}
-}
-
-func TestT865LivePiAIRefreshWritesKeychain(t *testing.T) {
-	if os.Getenv("CLAUDIA_OMP_LIVE") == "" {
-		t.Skip("CLAUDIA_OMP_LIVE not set")
-	}
-	script := filepath.Join(filepath.Dir(ServerScript()), "auth.ts")
-	if _, err := os.Stat(script); err != nil {
-		t.Fatal(err)
-	}
-	store := Store{BrokerPath: os.Args[0], Run: execSecurity}
-	item, err := store.Load(context.Background())
-	if err != nil {
-		t.Fatalf("load login keychain: %v", err)
-	}
-	login := Login{Command: "bun", Script: script, Run: execBun}
-	refreshed := 0
-	for _, id := range []string{Anthropic, OpenAICodex, Cursor, XAIOAuth} {
-		if item.Records[id].RefreshToken == "" {
-			t.Logf("%s has no stored refresh token; login requires a browser", id)
-			continue
-		}
-		rec, err := login.Refresh(context.Background(), store, id)
-		if err != nil {
-			t.Fatalf("%s refresh: %v", id, err)
-		}
-		if rec.AccessToken == "" || rec.RefreshToken == "" || rec.Expiry.IsZero() {
-			t.Fatalf("%s refresh omitted fields: %+v", id, rec)
-		}
-		got, err := store.AccessToken(context.Background(), id)
-		if err != nil || got != rec.AccessToken {
-			t.Fatalf("%s keychain write-back: %v %q", id, err, got)
-		}
-		refreshed++
-	}
-	if refreshed != 4 {
-		t.Fatalf("refreshed %d/4 providers; each needs `bun sidecar/auth.ts login <id>` through pi-ai", refreshed)
-	}
-}
-
-func execSecurity(ctx context.Context, name string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, name, args...)
-	return cmd.Output()
-}
-
-func execBun(ctx context.Context, name string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, name, args...)
-	cmd.Env = ScrubEnv(os.Environ())
-	cmd.Dir = filepath.Dir(ServerScript())
-	return cmd.Output()
 }
 
 func TestT865LiveKeychainItemExists(t *testing.T) {

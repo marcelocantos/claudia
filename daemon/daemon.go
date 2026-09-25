@@ -173,6 +173,10 @@ type brokerDaemonTask struct {
 
 // New binds the socket and starts serving. Close stops it.
 func New(opts Options) (*Daemon, error) {
+	// This process is the seat broker. Library Start/Task calls must
+	// take the direct path; a daemon that dialled its own socket would
+	// deadlock (🎯T866.7 jevons-broker and claudia broker serve).
+	broker.MarkSelfHosted()
 	log := opts.Logger
 	if log == nil {
 		log = slog.Default()
