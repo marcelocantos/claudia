@@ -92,7 +92,10 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 	store := omp.Store{BrokerPath: os.Args[0], Run: run}
 	login := ompLogin
 	if login.Run == nil {
-		login.Run = run
+		login.Run = execBunLogin
+	}
+	if login.Command == "" {
+		login.Command = "bun"
 	}
 	if login.Script == "" {
 		login.Script = sidecarAuthScript()
@@ -343,6 +346,23 @@ func CallJevonsMCP(mcpURL, name, args string) string {
 func execKeychain(ctx context.Context, name string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Env = omp.ScrubEnv(os.Environ())
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return stderr.Bytes(), fmt.Errorf("%s: %w: %s", name, err, stderr.String())
+	}
+	return out, nil
+}
+
+// execBunLogin runs sidecar/auth.ts through bun from that directory so
+// @oh-my-pi/pi-ai resolves. It is not the Keychain runner.
+func execBunLogin(ctx context.Context, name string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Env = omp.ScrubEnv(os.Environ())
+	if dir := filepath.Dir(sidecarAuthScript()); dir != "." && dir != "" {
+		cmd.Dir = dir
+	}
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()

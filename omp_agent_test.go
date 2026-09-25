@@ -453,6 +453,24 @@ func TestCallJevonsMCPPostsToolsCall(t *testing.T) {
 	}
 }
 
+func TestOMPLoginRunsBunFromSidecar(t *testing.T) {
+	src, err := os.ReadFile("omp_agent.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(src)
+	if !strings.Contains(body, "login.Run = execBunLogin") {
+		t.Fatal("StartAgent must run auth.ts through bun, not the Keychain runner")
+	}
+	if !strings.Contains(body, "filepath.Dir(sidecarAuthScript())") || !strings.Contains(body, "cmd.Dir") {
+		t.Fatal("bun login must run from the sidecar directory")
+	}
+	script := sidecarAuthScript()
+	if _, err := os.Stat(filepath.Join(filepath.Dir(script), "package.json")); err != nil {
+		t.Fatalf("sidecar package.json next to %s: %v", script, err)
+	}
+}
+
 func TestOMPNoGoOAuthClient(t *testing.T) {
 	banned := []string{
 		"claude.ai/oauth",
