@@ -116,9 +116,12 @@ func (s Store) Save(ctx context.Context, item Item) error {
 	if err != nil {
 		return err
 	}
+	// Delete first so -T is the whole ACL, not an add-on to whatever
+	// created the item. delete-generic-password does not decrypt.
+	_, _ = s.Run(ctx, "security", "delete-generic-password",
+		"-a", keychainAccount, "-s", KeychainService)
 	args := []string{
 		"add-generic-password",
-		"-U",
 		"-a", keychainAccount,
 		"-s", KeychainService,
 		"-T", s.BrokerPath,
@@ -174,6 +177,10 @@ func (s Store) Ensure(ctx context.Context, provider string, login Login) (string
 		return "", err
 	}
 	return rec.AccessToken, nil
+}
+
+func usableRefresh(rec Record) bool {
+	return rec.RefreshToken != "" && rec.RefreshToken != "undefined"
 }
 
 func known(provider string) bool {

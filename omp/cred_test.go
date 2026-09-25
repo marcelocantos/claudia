@@ -13,11 +13,11 @@ import (
 )
 
 func TestSaveTrustsOnlyTheBroker(t *testing.T) {
-	var got []string
+	var cmds []string
 	s := Store{
 		BrokerPath: "/usr/local/bin/claudia",
 		Run: func(_ context.Context, name string, args ...string) ([]byte, error) {
-			got = append([]string{name}, args...)
+			cmds = append(cmds, name+" "+strings.Join(args, " "))
 			return nil, nil
 		},
 	}
@@ -27,9 +27,15 @@ func TestSaveTrustsOnlyTheBroker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	blob := strings.Join(got, " ")
+	blob := strings.Join(cmds, "\n")
+	if !strings.Contains(blob, "delete-generic-password -a claudia -s "+KeychainService) {
+		t.Fatalf("Save must recreate the item so -T is the whole ACL: %s", blob)
+	}
 	if !strings.Contains(blob, "-T /usr/local/bin/claudia") {
 		t.Fatalf("ACL = %s", blob)
+	}
+	if strings.Contains(blob, "-U") {
+		t.Fatalf("Save must not -U an old ACL: %s", blob)
 	}
 	if strings.Contains(blob, "-A") || strings.Contains(blob, "jevonsd") || strings.Contains(blob, "bun") {
 		t.Fatalf("ACL trusts more than the broker: %s", blob)
@@ -42,6 +48,15 @@ func TestSaveTrustsOnlyTheBroker(t *testing.T) {
 	}
 	if !strings.Contains(blob, "-s "+KeychainService) {
 		t.Fatalf("service = %s", blob)
+	}
+	add := 0
+	for _, c := range cmds {
+		if strings.Contains(c, "add-generic-password") {
+			add++
+		}
+	}
+	if add != 1 {
+		t.Fatalf("Save must add once after delete, got %s", blob)
 	}
 }
 

@@ -4,6 +4,7 @@
 package omp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -81,6 +82,12 @@ func TestT865AuthScriptIsPiAI(t *testing.T) {
 	if !strings.Contains(body, "refreshOAuthToken") || !strings.Contains(body, "login") {
 		t.Fatal("auth.ts must expose login and refresh")
 	}
+	if !strings.Contains(body, "Bun.stdin") {
+		t.Fatal("auth.ts must read the record from stdin, not only argv")
+	}
+	if !strings.Contains(body, "OMP_FORCE_LOGIN") {
+		t.Fatal("auth.ts must allow a named re-login without rebuilding the broker")
+	}
 	for _, id := range []string{Anthropic, OpenAICodex, Cursor, XAIOAuth} {
 		if id == "" {
 			t.Fatal("empty provider")
@@ -99,42 +106,57 @@ func TestT865AuthScriptOpensLoginURL(t *testing.T) {
 	}
 }
 
-func TestT865LivePiAIRefreshWritesKeychain(t *testing.T) {
+func TestT865LiveNonBrokerCannotRead(t *testing.T) {
 	if os.Getenv("CLAUDIA_OMP_LIVE") == "" {
 		t.Skip("CLAUDIA_OMP_LIVE not set")
 	}
-	script := filepath.Join(filepath.Dir(ServerScript()), "auth.ts")
-	if _, err := os.Stat(script); err != nil {
-		t.Fatal(err)
-	}
 	store := Store{BrokerPath: os.Args[0], Run: execSecurity}
-	item, err := store.Load(context.Background())
+	_, err := store.Load(context.Background())
+	if err == nil {
+		t.Fatal("test binary must be refused by the live ACL")
+	}
+	if !strings.Contains(err.Error(), "44") && !strings.Contains(err.Error(), "errSecAuthFailed") {
+		t.Fatalf("want ACL refusal, got %v", err)
+	}
+}
+
+func TestT865LiveBrokerRefreshPlans(t *testing.T) {
+	if os.Getenv("CLAUDIA_OMP_LIVE") == "" {
+		t.Skip("CLAUDIA_OMP_LIVE not set")
+	}
+	broker := liveBrokerBin(t)
+	out, err := exec.Command(broker, "refresh-plans").CombinedOutput()
 	if err != nil {
-		t.Fatalf("load login keychain: %v", err)
+		t.Fatalf("jevons-broker refresh-plans: %s: %v", out, err)
 	}
-	login := Login{Command: "bun", Script: script, Run: execBun}
-	refreshed := 0
+	body := string(out)
 	for _, id := range []string{Anthropic, OpenAICodex, Cursor, XAIOAuth} {
-		if item.Records[id].RefreshToken == "" {
-			t.Logf("%s has no stored refresh token; login requires a browser", id)
-			continue
+		if !strings.Contains(body, id) {
+			t.Fatalf("refresh-plans omitted %s: %s", id, body)
 		}
-		rec, err := login.Refresh(context.Background(), store, id)
-		if err != nil {
-			t.Fatalf("%s refresh: %v", id, err)
-		}
-		if rec.AccessToken == "" || rec.RefreshToken == "" || rec.Expiry.IsZero() {
-			t.Fatalf("%s refresh omitted fields: %+v", id, rec)
-		}
-		got, err := store.AccessToken(context.Background(), id)
-		if err != nil || got != rec.AccessToken {
-			t.Fatalf("%s keychain write-back: %v %q", id, err, got)
-		}
-		refreshed++
 	}
-	if refreshed != 4 {
-		t.Fatalf("refreshed %d/4 providers; each needs `jevons-broker login-plans` through pi-ai", refreshed)
+}
+
+func liveBrokerBin(t *testing.T) string {
+	t.Helper()
+	if p := os.Getenv("JEVONS_BROKER_BIN"); p != "" {
+		return p
 	}
+	candidates := []string{
+		filepath.Join("..", "..", "jevons", "bin", "jevons-broker"),
+		filepath.Join("..", "jevons", "bin", "jevons-broker"),
+	}
+	for _, p := range candidates {
+		if st, err := os.Stat(p); err == nil && !st.IsDir() {
+			abs, err := filepath.Abs(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return abs
+		}
+	}
+	t.Fatal("jevons-broker not found; set JEVONS_BROKER_BIN")
+	return ""
 }
 
 func execSecurity(ctx context.Context, name string, args ...string) ([]byte, error) {
@@ -143,7 +165,13 @@ func execSecurity(ctx context.Context, name string, args ...string) ([]byte, err
 }
 
 func execBun(ctx context.Context, name string, args ...string) ([]byte, error) {
+	var stdin []byte
+	if len(args) >= 4 {
+		stdin = []byte(args[len(args)-1])
+		args = args[:len(args)-1]
+	}
 	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Stdin = bytes.NewReader(stdin)
 	cmd.Env = ScrubEnv(os.Environ())
 	cmd.Dir = filepath.Dir(ServerScript())
 	return cmd.Output()

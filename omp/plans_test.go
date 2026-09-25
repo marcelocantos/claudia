@@ -113,6 +113,96 @@ func TestLoginPlansRunsPiAILogin(t *testing.T) {
 	}
 }
 
+func TestLoginPlansCanLimitToOneProvider(t *testing.T) {
+	fresh := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	s := Store{
+		BrokerPath: "/usr/local/bin/jevons-broker",
+		Run: func(_ context.Context, name string, args ...string) ([]byte, error) {
+			if name == "security" && len(args) > 0 && args[0] == "find-generic-password" {
+				return []byte(`{"records":{}}`), nil
+			}
+			return nil, nil
+		},
+	}
+	var saw []string
+	login := Login{
+		Script: "auth.ts",
+		Run: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			saw = append(saw, args[2])
+			return []byte(`{"refresh_token":"n","access_token":"a","expiry":"` + fresh + `"}`), nil
+		},
+	}
+	n, err := LoginPlans(context.Background(), s, login, Anthropic)
+	if err != nil || n != 1 || strings.Join(saw, ",") != Anthropic {
+		t.Fatalf("n=%d saw=%v err=%v", n, saw, err)
+	}
+}
+
+func TestLoginPlansReloginsNamedProvider(t *testing.T) {
+	fresh := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	saved := mustJSON(Item{Records: map[string]Record{
+		Cursor: {RefreshToken: "undefined", AccessToken: "undefined"},
+	}})
+	var verb string
+	s := Store{
+		BrokerPath: "/usr/local/bin/jevons-broker",
+		Run: func(_ context.Context, name string, args ...string) ([]byte, error) {
+			if name == "security" && len(args) > 0 && args[0] == "find-generic-password" {
+				return []byte(saved), nil
+			}
+			if name == "security" && len(args) > 0 && args[0] == "add-generic-password" {
+				for i, a := range args {
+					if a == "-w" && i+1 < len(args) {
+						saved = args[i+1]
+					}
+				}
+			}
+			return nil, nil
+		},
+	}
+	login := Login{
+		Script: "auth.ts",
+		Run: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			verb = args[1]
+			return []byte(`{"refresh_token":"n","access_token":"a","expiry":"` + fresh + `"}`), nil
+		},
+	}
+	n, err := LoginPlans(context.Background(), s, login, Cursor)
+	if err != nil || n != 1 || verb != "login" {
+		t.Fatalf("n=%d verb=%q err=%v", n, verb, err)
+	}
+}
+
+func TestRefreshPlansSkipsUndefinedRefreshToken(t *testing.T) {
+	s := Store{
+		BrokerPath: "/usr/local/bin/jevons-broker",
+		Run: func(_ context.Context, name string, args ...string) ([]byte, error) {
+			if name == "security" && len(args) > 0 && args[0] == "find-generic-password" {
+				return []byte(`{"records":{"cursor":{"refresh_token":"undefined","access_token":"undefined"}}}`), nil
+			}
+			t.Fatalf("unexpected %s %v", name, args)
+			return nil, nil
+		},
+	}
+	login := Login{
+		Script: "auth.ts",
+		Run: func(context.Context, string, ...string) ([]byte, error) {
+			t.Fatal("undefined refresh must not call pi-ai on serve")
+			return nil, nil
+		},
+	}
+	refreshed, skipped, err := RefreshPlans(context.Background(), s, login)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(refreshed) != 0 {
+		t.Fatalf("refreshed = %v", refreshed)
+	}
+	if !strings.Contains(strings.Join(skipped, ","), Cursor) {
+		t.Fatalf("skipped = %v", skipped)
+	}
+}
+
 func TestRefreshPlansSkipsMissingRefreshToken(t *testing.T) {
 	s := Store{
 		BrokerPath: "/usr/local/bin/jevons-broker",

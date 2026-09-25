@@ -20,6 +20,8 @@ type Login struct {
 	// Script is the helper path, typically the sidecar auth script.
 	Script string
 	Run    Runner
+	// ForceLogin runs pi-ai login even when a refresh token exists.
+	ForceLogin bool
 }
 
 // Refresh renews provider and writes the record back to the Keychain
@@ -47,7 +49,7 @@ func (l Login) Refresh(ctx context.Context, store Store, provider string) (Recor
 		return Record{}, err
 	}
 	verb := "refresh"
-	if rec, ok := existing.Records[provider]; !ok || rec.RefreshToken == "" {
+	if rec, ok := existing.Records[provider]; l.ForceLogin || !ok || !usableRefresh(rec) {
 		verb = "login"
 	}
 	out, err := l.Run(ctx, cmd, l.Script, verb, provider, string(blob))
