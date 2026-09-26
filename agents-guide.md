@@ -1017,7 +1017,14 @@ Design record: [docs/metaharness.md](docs/metaharness.md).
    or auth falls through to API-key mode, the spawn fails closed with a
    loud warning so the no-per-token path is verified, not assumed.
    Grok Build CLI resolver checks `GROK_BIN`, then `grok` on `$PATH`,
-   then known locations including `~/.grok/bin/grok`. Ollama needs a
+   then known locations including `~/.grok/bin/grok`. Broker `Start`
+   runs that CLI inside the daemon. A brew service `PATH` lists system
+   directories first and `~/.grok/bin` last. Claudia moves existing
+   user tool directories to the front of the grok child's `PATH`. A
+   helper that answers its ready handshake with a status other than
+   `ready` (`omp: sidecar said "error", want ready`) fails the grant
+   with the helper name, that status, and `brew services restart claudia`.
+   Ollama needs a
    reachable daemon (`CLAUDIA_OLLAMA_ENDPOINT`, default
    `http://127.0.0.1:11434`) and a model (`TaskConfig.Model` or
    `CLAUDIA_OLLAMA_MODEL`). Bedrock uses the AWS SDK default chain.

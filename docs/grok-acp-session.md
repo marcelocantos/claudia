@@ -90,6 +90,43 @@ include `x.ai/billing`, `x.ai/auto-topup-rule`, and `x.ai/session/usage` —
 see [grok-usage-billing.md](grok-usage-billing.md). claudia must not call
 those without a documented, versioned contract.
 
+### Daemon spawn
+
+`Start` with a running broker asks the daemon to spawn the seat.
+`StartDirect` spawns it in the caller. Both call the same ACP start.
+What differs is the process environment.
+
+A `brew services` daemon (the Colossus 0.44.0 plist) keeps system
+directories first on `PATH` and `~/.grok/bin` last, and it does not
+include directories an interactive shell adds (`~/.cargo/bin`,
+`~/.py/bin`, `~/.den/bin`, `~/.bun/bin`). Helpers the `grok` CLI execs
+by name therefore resolve differently from a shell that prepends
+`~/.grok/bin`. When such a helper answers its ready handshake with a
+status other than `ready`, the grant used to surface only:
+
+```text
+agent_failed: omp: sidecar said "error", want ready
+```
+
+Claudia now moves existing user tool directories to the front of the
+**grok child's** `PATH` (the daemon's own `PATH` stays system-first).
+If the helper still answers `error`, the grant error names the helper,
+the status word, `brew services restart claudia`, and any stderr the
+child wrote. The handshake itself is not produced by claudia; it is
+whatever the helper printed.
+
+Verify on a Mac after installing this build:
+
+```bash
+brew services restart claudia
+# sock is ~/.local/state/claudia/broker.sock when the brew unit is up
+```
+
+Then acquire a Grok Session through broker `Start` (leave
+`CLAUDIA_NO_BROKER` unset). A healthy seat returns a handle with
+`DaemonHeld() == true`. A helper that still fails names itself in the
+error; read that helper's log for the status word `error`.
+
 ### Oracles
 
 - Hermetic: `testdata/grok/acp/fake_acp.py` + `TestHermeticGrokSession*`  
