@@ -24,6 +24,8 @@ import (
 // message changes the bytes and turns TestGoldenWireVectors red, which is what
 // makes "the wire format is stable" a checked claim rather than an intention.
 
+func goldenFloat(v float64) *float64 { return &v }
+
 // updateGolden rewrites the vectors instead of comparing against them. It is a
 // separate flag rather than an env var so it cannot be set by accident in CI.
 var updateGolden = flag.Bool("update-golden", false, "rewrite the golden wire vectors")
@@ -123,6 +125,12 @@ var requestVectors = map[string]requestVector{
 			TaskRun: &TaskRunRequest{Task: json.RawMessage(`{"provider":"claude","workdir":"/w"}`), Prompt: "summarise", RawLog: true},
 		},
 	},
+	"task_run_pick": {
+		msg: &Request{
+			ID: "g3p", Type: TypeTaskRun,
+			TaskRun: &TaskRunRequest{Task: json.RawMessage(`{"workdir":"/w","pick_by_remaining":true}`), Prompt: "pong", Pick: "remaining"},
+		},
+	},
 	"task_cancel": {msg: &Request{ID: "g4", Type: TypeTaskCancel, TaskCancel: &TaskCancelRequest{RunID: "run-1"}}},
 	"grant_pool": {
 		msg: &Request{
@@ -132,6 +140,12 @@ var requestVectors = map[string]requestVector{
 	},
 	"release_detach_force":     {msg: &Request{ID: "g6f", Type: TypeRelease, Release: &ReleaseRequest{Name: "jv-worker-1", Disposition: DispositionDetach, Force: true}}},
 	"release_reuse_keep_alive": {msg: &Request{ID: "g6k", Type: TypeRelease, Release: &ReleaseRequest{Name: "sid:3f1c", Disposition: DispositionReuse, KeepAliveSeconds: 600}}},
+	"grant_pick": {
+		msg: &Request{
+			ID: "g5r", Type: TypeGrant,
+			Grant: &GrantRequest{Name: "pimp-smoke-1", Def: json.RawMessage(`{"name":"pimp-smoke-1","workdir":"/w"}`), Pick: "remaining"},
+		},
+	},
 	"grant": {
 		msg: &Request{
 			ID: "g5", Type: TypeGrant,
@@ -245,9 +259,10 @@ var responseVectors = map[string]*Response{
 		ID: "j1", Type: TypeJudged,
 		Judged: &JudgedResponse{Result: json.RawMessage(`{"model":"jev-1.13.0","requested_model":"jev-latest","answers":{"urgent":{"type":"noul","noul":0.95}},"usage":{"input_tokens":296,"output_tokens":20,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"duration_ms":728,"attempts":1}`)},
 	},
-	"judged_refused": {ID: "j1", Type: TypeJudged, Judged: &JudgedResponse{Status: 422, Error: "questions.urgent.instructions: field required"}},
-	"judged_no_key":  {ID: "j1", Type: TypeJudged, Judged: &JudgedResponse{NoKey: true, Error: "no TypeSafe API key"}},
-	"task_started":   {ID: "g3", Type: TypeTaskStarted, TaskStarted: &TaskStartedResponse{RunID: "run-1"}},
+	"judged_refused":    {ID: "j1", Type: TypeJudged, Judged: &JudgedResponse{Status: 422, Error: "questions.urgent.instructions: field required"}},
+	"judged_no_key":     {ID: "j1", Type: TypeJudged, Judged: &JudgedResponse{NoKey: true, Error: "no TypeSafe API key"}},
+	"task_started":      {ID: "g3", Type: TypeTaskStarted, TaskStarted: &TaskStartedResponse{RunID: "run-1"}},
+	"task_started_pick": {ID: "g3", Type: TypeTaskStarted, TaskStarted: &TaskStartedResponse{RunID: "run-1", Provider: "grok", RemainingPercent: goldenFloat(81)}},
 	"task_event": {
 		Type:      TypeTaskEvent,
 		TaskEvent: &TaskEventMessage{RunID: "run-1", Event: json.RawMessage(`{"type":"text","content":"hi"}`)},

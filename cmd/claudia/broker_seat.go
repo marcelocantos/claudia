@@ -53,11 +53,12 @@ func grantCmd(args []string) error {
 	fs := flag.NewFlagSet("grant", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), "usage: claudia broker grant --name NAME --provider PROVIDER [--workdir DIR] [--purpose work|aside|overseer] [--parent NAME] [--model M] [--session ID] [--adopt] [--fallback] [--send TEXT] [--mode submit|steer|interrupt|queue] [--wait] [--release stop|detach] [--timeout D] [--json]\n")
+		fmt.Fprintf(fs.Output(), "usage: claudia broker grant --name NAME (--provider PROVIDER | --pick remaining) [--workdir DIR] [--purpose work|aside|overseer] [--parent NAME] [--model M] [--session ID] [--adopt] [--fallback] [--send TEXT] [--mode submit|steer|interrupt|queue] [--wait] [--release stop|detach] [--timeout D] [--json]\n")
 		fs.PrintDefaults()
 	}
 	name := fs.String("name", "", "grant name (required; a single positional name is also accepted)")
 	provider := fs.String("provider", "", "provider: claude, codex, grok, cursor, bedrock, ollama")
+	pick := fs.String("pick", "", "remaining: fullest admitted of cursor, grok, claude, codex")
 	workdir := fs.String("workdir", ".", "working directory the seat runs in")
 	purpose := fs.String("purpose", "", "work, aside, or overseer (default work)")
 	parent := fs.String("parent", "", "parent seat name (fleet lineage)")
@@ -86,7 +87,14 @@ func grantCmd(args []string) error {
 	case fs.NArg() > 1:
 		return errors.New("grant: unexpected arguments")
 	}
-	def, err := seatDefinition(grantName, *provider, *workdir, *purpose, *parent, *model, *session)
+	if *pick == "" && strings.TrimSpace(*provider) == "" {
+		return errors.New("grant: --provider is required (or --pick remaining)")
+	}
+	pickRemaining, prov, err := resolvePick(*pick, *provider)
+	if err != nil {
+		return fmt.Errorf("grant: %w", err)
+	}
+	def, err := seatDefinition(grantName, string(prov), *workdir, *purpose, *parent, *model, *session)
 	if err != nil {
 		return fmt.Errorf("grant: %w", err)
 	}
@@ -114,13 +122,49 @@ func grantCmd(args []string) error {
 		// Waiting without a send folds the stream from the grant, including
 		// anything replayed from while the seat was unowned.
 	}
-	return driveSeat(seatDrive{
-		grant: &broker.GrantRequest{
-			Name: grantName, Def: raw, Adopt: *adopt, Fallback: *fallback,
-		},
+	grant := &broker.GrantRequest{
+		Name: grantName, Def: raw, Adopt: *adopt, Fallback: *fallback,
+	}
+	if pickRemaining {
+		grant.Pick = claudia.PickRemaining
+	}
+	return grantWireError(driveSeat(seatDrive{
+		grant:         grant,
 		announceGrant: true,
 		send:          send, wait: *wait, release: disp, asJSON: *asJSON, timeout: *timeout,
-	})
+	}))
+}
+
+// resolvePick accepts a named provider or --pick remaining, not both.
+// An empty provider with no pick is Claude, which is the task default.
+// grantCmd rejects that omission before calling.
+func resolvePick(pick, provider string) (bool, claudia.Provider, error) {
+	switch pick {
+	case "":
+		if provider == "" {
+			provider = string(claudia.ProviderClaude)
+		}
+		if err := checkProvider(provider); err != nil {
+			return false, "", err
+		}
+		return false, claudia.Provider(provider), nil
+	case claudia.PickRemaining:
+		if provider != "" {
+			return false, "", errors.New("--pick remaining chooses the provider; do not also pass --provider")
+		}
+		return true, "", nil
+	default:
+		return false, "", fmt.Errorf("--pick %q is not %q", pick, claudia.PickRemaining)
+	}
+}
+
+// grantWireError turns a plan_exhausted refusal into [claudia.ErrPlanExhausted].
+func grantWireError(err error) error {
+	var pe *broker.ProtocolError
+	if errors.As(err, &pe) && pe.Code == broker.CodePlanExhausted {
+		return fmt.Errorf("%w: %s", claudia.ErrPlanExhausted, pe.Error())
+	}
+	return err
 }
 
 func sendCmd(args []string) error {
@@ -244,8 +288,10 @@ func seatDefinition(name, provider, workdir, purpose, parent, model, session str
 	if strings.TrimSpace(name) == "" {
 		return claudia.GrantDefinition{}, errors.New("name is required")
 	}
-	if err := checkProvider(provider); err != nil {
-		return claudia.GrantDefinition{}, err
+	if provider != "" {
+		if err := checkProvider(provider); err != nil {
+			return claudia.GrantDefinition{}, err
+		}
 	}
 	if err := checkPurpose(purpose); err != nil {
 		return claudia.GrantDefinition{}, err
@@ -531,8 +577,8 @@ func reportSeat(o seatOutcome) error {
 		return nil
 	}
 	if o.announceGrant && o.granted != nil {
-		fmt.Printf("granted %s provider=%s session=%s reclaimed=%v\n",
-			o.granted.Name, o.granted.Provider, o.granted.SessionID, o.granted.Reclaimed)
+		fmt.Printf("granted %s provider=%s%s session=%s reclaimed=%v\n",
+			o.granted.Name, o.granted.Provider, remainingSuffix(o.granted.RemainingPercent), o.granted.SessionID, o.granted.Reclaimed)
 	}
 	if o.sent != nil {
 		fmt.Println(sentLine(o))
@@ -548,8 +594,8 @@ func reportSeat(o seatOutcome) error {
 
 func noteLifecycle(o seatOutcome) {
 	if o.granted != nil {
-		fmt.Fprintf(os.Stderr, "granted %s provider=%s session=%s reclaimed=%v\n",
-			o.granted.Name, o.granted.Provider, o.granted.SessionID, o.granted.Reclaimed)
+		fmt.Fprintf(os.Stderr, "granted %s provider=%s%s session=%s reclaimed=%v\n",
+			o.granted.Name, o.granted.Provider, remainingSuffix(o.granted.RemainingPercent), o.granted.SessionID, o.granted.Reclaimed)
 	}
 	if o.sent != nil {
 		fmt.Fprintln(os.Stderr, sentLine(o))
@@ -560,6 +606,13 @@ func noteLifecycle(o seatOutcome) {
 	if o.release != "" {
 		fmt.Fprintf(os.Stderr, "%s: %s\n", o.name, o.release)
 	}
+}
+
+func remainingSuffix(pct *float64) string {
+	if pct == nil {
+		return ""
+	}
+	return fmt.Sprintf(" remaining=%.0f%%", *pct)
 }
 
 func sentLine(o seatOutcome) string {

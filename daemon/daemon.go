@@ -599,6 +599,11 @@ func (d *Daemon) handleGrant(c *broker.ClientConn, req *broker.Request) {
 		return
 	}
 	if req.Grant.Pool != nil {
+		if req.Grant.Pick != "" {
+			_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeUnsupportedValue, Field: "pick", Value: req.Grant.Pick,
+				Msg: "pick remaining chooses a provider for a named seat, not a pool acquire"})
+			return
+		}
 		d.handleAcquire(c, req, wire)
 		return
 	}
@@ -612,6 +617,16 @@ func (d *Daemon) handleGrant(c *broker.ClientConn, req *broker.Request) {
 	}
 	if def.WorkDir == "" {
 		def.WorkDir = "."
+	}
+	var pickedRemaining *float64
+	if req.Grant.Pick != "" {
+		chosen, err := d.resolveGrantPick(name, def.Provider, req.Grant.Pick)
+		if err != nil {
+			_ = c.Fail(req.ID, err)
+			return
+		}
+		def.Provider = chosen.provider
+		pickedRemaining = chosen.remaining
 	}
 	// A seat is marked live (AutoStart) while the daemon holds it, so a
 	// daemon that comes back after a reboot knows which seats to bring back.
@@ -718,20 +733,21 @@ func (d *Daemon) handleGrant(c *broker.ClientConn, req *broker.Request) {
 		_ = c.Reply(&broker.Response{Type: broker.TypeAgentEvent, AgentEvent: &broker.AgentEventMessage{Name: name, Event: raw}})
 	}
 	resp := &broker.GrantResponse{
-		Name:          name,
-		SessionID:     proc.SessionID(),
-		Provider:      broker.Provider(procProvider(proc)),
-		Model:         proc.Model(),
-		WindowID:      proc.WindowID(),
-		JSONLPath:     proc.JSONLPath(),
-		TermLogPath:   proc.TermLogPath(),
-		AttachCommand: proc.AttachCommand(),
-		ConnectURL:    proc.ConnectURL(),
-		ConnectPID:    proc.PID(),
-		Reclaimed:     reclaimed,
-		Replayed:      len(ring),
-		Lagged:        lagged,
-		TurnCaps:      turnCapsWire(proc),
+		Name:             name,
+		SessionID:        proc.SessionID(),
+		Provider:         broker.Provider(procProvider(proc)),
+		Model:            proc.Model(),
+		WindowID:         proc.WindowID(),
+		JSONLPath:        proc.JSONLPath(),
+		TermLogPath:      proc.TermLogPath(),
+		AttachCommand:    proc.AttachCommand(),
+		ConnectURL:       proc.ConnectURL(),
+		ConnectPID:       proc.PID(),
+		Reclaimed:        reclaimed,
+		Replayed:         len(ring),
+		Lagged:           lagged,
+		TurnCaps:         turnCapsWire(proc),
+		RemainingPercent: pickedRemaining,
 	}
 	_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeGranted, Granted: resp})
 	d.emit(broker.EventMessage{Kind: broker.EventGrant, Name: name, SessionID: resp.SessionID,
@@ -1313,6 +1329,28 @@ func (d *Daemon) handleTaskRun(c *broker.ClientConn, req *broker.Request) {
 		_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeMalformed, Field: "task", Msg: err.Error()})
 		return
 	}
+	var pickedRemaining *float64
+	if req.TaskRun.Pick != "" && req.TaskRun.Pick != claudia.PickRemaining {
+		_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeUnsupportedValue, Field: "pick", Value: req.TaskRun.Pick,
+			Msg: `pick must be "remaining"`})
+		return
+	}
+	if cfg.PickByRemaining || req.TaskRun.Pick == claudia.PickRemaining {
+		if cfg.Provider != "" {
+			_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeUnsupportedValue, Field: "provider", Value: string(cfg.Provider),
+				Msg: "pick remaining chooses the provider; do not also set one"})
+			return
+		}
+		choice, err := d.pickByRemaining()
+		if err != nil {
+			_ = c.Fail(req.ID, err)
+			return
+		}
+		cfg.Provider = choice.Provider
+		cfg.PickByRemaining = false
+		rem := choice.RemainingPercent
+		pickedRemaining = &rem
+	}
 	// Admission reads the same snapshot `claudia broker usage` prints, and
 	// refreshes it when the TTL has elapsed, before any provider process.
 	if err := d.admitTask(cfg.Provider); err != nil {
@@ -1341,7 +1379,9 @@ func (d *Daemon) handleTaskRun(c *broker.ClientConn, req *broker.Request) {
 	d.mu.Lock()
 	d.tasks[runID] = &brokerDaemonTask{task: task, cancel: cancel, owner: c}
 	d.mu.Unlock()
-	_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeTaskStarted, TaskStarted: &broker.TaskStartedResponse{RunID: runID}})
+	_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeTaskStarted, TaskStarted: &broker.TaskStartedResponse{
+		RunID: runID, Provider: broker.Provider(cfg.Provider), RemainingPercent: pickedRemaining,
+	}})
 	d.emit(broker.EventMessage{Kind: broker.EventTaskStart, Name: runID, Detail: string(cfg.Provider)})
 	d.wg.Add(1)
 	go func() {
@@ -1368,6 +1408,52 @@ func (d *Daemon) handleTaskRun(c *broker.ClientConn, req *broker.Request) {
 // daemonRunJudge evaluates one judge request. Hermetic tests wrap it to see
 // that an evaluation ran here and not in the consumer.
 var daemonRunJudge = claudia.RunJudgeWire
+
+// grantPick is a provider chosen for one grant, plus the remaining
+// percent when this call made the choice (a reclaim leaves it nil).
+type grantPick struct {
+	provider  claudia.Provider
+	remaining *float64
+}
+
+// resolveGrantPick applies pick=remaining. A name the daemon already
+// holds keeps that seat's provider. A new name takes the fullest
+// admitted fleet provider. A published exhaustion of every fleet
+// provider is plan_exhausted, and nothing is spawned.
+func (d *Daemon) resolveGrantPick(name string, provider claudia.Provider, pick string) (grantPick, error) {
+	if pick != claudia.PickRemaining {
+		return grantPick{}, &broker.ProtocolError{Code: broker.CodeUnsupportedValue, Field: "pick", Value: pick,
+			Msg: `pick must be "remaining"`}
+	}
+	if provider != "" {
+		return grantPick{}, &broker.ProtocolError{Code: broker.CodeUnsupportedValue, Field: "provider", Value: string(provider),
+			Msg: "pick remaining chooses the provider; do not also set one"}
+	}
+	if existing := d.reg.Def(name); existing != nil {
+		return grantPick{provider: existing.Provider}, nil
+	}
+	choice, err := d.pickByRemaining()
+	if err != nil {
+		return grantPick{}, err
+	}
+	rem := choice.RemainingPercent
+	return grantPick{provider: choice.Provider, remaining: &rem}, nil
+}
+
+// pickByRemaining reads the daemon's plan-usage snapshot and selects
+// the fullest admitted fleet provider. The error is plan_exhausted.
+func (d *Daemon) pickByRemaining() (claudia.FleetPick, error) {
+	snap := d.usage.Read(d.ctx, false)
+	choice, err := claudia.PickByRemaining(snap.Backends, d.clock.Now(), nil)
+	if err != nil {
+		return claudia.FleetPick{}, &broker.ProtocolError{
+			Code:  broker.CodePlanExhausted,
+			Field: "provider",
+			Msg:   err.Error(),
+		}
+	}
+	return choice, nil
+}
 
 // admitTask refuses task_run when the daemon's plan-usage snapshot shows
 // provider has no usable capacity. A provider with no row is admitted:

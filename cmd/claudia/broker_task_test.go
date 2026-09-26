@@ -4,6 +4,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -52,6 +53,79 @@ func TestBrokerUsageAdmitNoWhenExhausted(t *testing.T) {
 	})
 	if !usageRowAdmits(out, "claude", "no") {
 		t.Fatalf("exhausted claude should be ADMIT no:\n%s", out)
+	}
+}
+
+func TestBrokerUsageJSONListsFleetRoster(t *testing.T) {
+	cursor, grok, claude, codex := 12.0, 81.0, 40.0, 0.0
+	row := func(p claudia.Provider, rem float64) claudia.PlanUsage {
+		pct := rem
+		return claudia.PlanUsage{
+			Provider: p,
+			Status:   claudia.PlanUsageAvailable,
+			Windows:  []claudia.PlanWindow{{Name: claudia.PlanWindowWeekly, RemainingPercent: &pct}},
+		}
+	}
+	sock, _ := startCLIDaemon(t, []claudia.PlanUsage{
+		row(claudia.ProviderCodex, codex),
+		row(claudia.ProviderClaude, claude),
+		row(claudia.ProviderGrok, grok),
+		row(claudia.ProviderCursor, cursor),
+	})
+	t.Setenv(broker.SocketPathEnv, sock)
+	t.Setenv(broker.NoBrokerEnv, "")
+
+	var snap claudia.FleetUsageSnapshot
+	backstop := wallclockguard.UntilTestTimeout(t)
+	var out string
+	for backstop.Err() == nil {
+		out = captureStdout(t, func() error { return usageCmd([]string{"-json"}) })
+		if json.Unmarshal([]byte(out), &snap) == nil && len(snap.Providers) == 4 &&
+			snap.Providers[1].RemainingPercent != nil && *snap.Providers[1].RemainingPercent == 81 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(snap.Providers) != 4 {
+		t.Fatalf("usage json:\n%s", out)
+	}
+	want := []struct {
+		p     claudia.Provider
+		rem   float64
+		admit bool
+	}{
+		{claudia.ProviderCursor, 12, true},
+		{claudia.ProviderGrok, 81, true},
+		{claudia.ProviderClaude, 40, true},
+		{claudia.ProviderCodex, 0, false},
+	}
+	for i, w := range want {
+		row := snap.Providers[i]
+		if row.Provider != w.p || row.RemainingPercent == nil || *row.RemainingPercent != w.rem || row.Admit != w.admit {
+			t.Fatalf("providers[%d] = %+v, want %s remaining %v admit %v", i, row, w.p, w.rem, w.admit)
+		}
+	}
+	if snap.FetchedAt.IsZero() {
+		t.Fatal("fetched_at is zero")
+	}
+}
+
+func TestPickRemainingRejectsANamedProvider(t *testing.T) {
+	err := taskCmd([]string{"--pick", "remaining", "--provider", "grok", "ping"})
+	if err == nil || !strings.Contains(err.Error(), "--pick remaining") {
+		t.Fatalf("task err = %v", err)
+	}
+	err = grantCmd([]string{"--name", "seat", "--pick", "remaining", "--provider", "claude"})
+	if err == nil || !strings.Contains(err.Error(), "--pick remaining") {
+		t.Fatalf("grant err = %v", err)
+	}
+	err = grantCmd([]string{"--name", "seat"})
+	if err == nil || !strings.Contains(err.Error(), "--provider") {
+		t.Fatalf("grant without provider: %v", err)
+	}
+	err = taskCmd([]string{"--pick", "cheapest", "ping"})
+	if err == nil || !strings.Contains(err.Error(), "cheapest") {
+		t.Fatalf("bad pick: %v", err)
 	}
 }
 

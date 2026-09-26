@@ -7,7 +7,7 @@
 //	claudia broker status           what it holds
 //	claudia broker grants           every seat, owner and liveness
 //	claudia broker tail             lifecycle events as NDJSON
-//	claudia broker usage [--refresh] the plan-usage snapshot (ADMIT is the task_run gate)
+//	claudia broker usage [--refresh] [-json]  fleet plan-usage roster (ADMIT is the task_run gate)
 //	claudia broker task             one task_run over the socket
 //	claudia broker grant            start or reclaim a named seat
 //	claudia broker send             deliver a turn (submit, steer, or interrupt-then-submit)
@@ -323,7 +323,7 @@ func tail() error {
 func usageCmd(args []string) error {
 	fs := flag.NewFlagSet("usage", flag.ContinueOnError)
 	refresh := fs.Bool("refresh", false, "fetch before answering")
-	asJSON := fs.Bool("json", false, "print the snapshot as JSON")
+	asJSON := fs.Bool("json", false, "print cursor, grok, claude, and codex with remaining percent as JSON")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -332,14 +332,20 @@ func usageCmd(args []string) error {
 		return err
 	}
 	u := resp.Usage
-	if *asJSON {
-		os.Stdout.Write(u.Backends)
-		fmt.Println()
-		return nil
-	}
 	var backends []claudia.PlanUsage
-	if err := json.Unmarshal(u.Backends, &backends); err != nil {
-		return err
+	if len(u.Backends) > 0 {
+		if err := json.Unmarshal(u.Backends, &backends); err != nil {
+			return err
+		}
+	}
+	if *asJSON {
+		snap := claudia.ProjectFleetUsage(backends, u.FetchedAt, time.Now(), nil)
+		raw, err := json.MarshalIndent(snap, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Printf("%s\n", raw)
+		return nil
 	}
 	if u.FetchedAt.IsZero() {
 		fmt.Printf("not fetched yet")
@@ -352,7 +358,7 @@ func usageCmd(args []string) error {
 	fmt.Printf("fetched %s ago\n", time.Since(u.FetchedAt).Round(time.Second))
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "PROVIDER\tSTATUS\tBAND\tADMIT\tWINDOWS")
-	for _, b := range backends {
+	for _, b := range usageDisplayRows(backends) {
 		band := claudia.ClassifyPlan(b, time.Now(), nil)
 		var wins []string
 		for _, win := range b.Windows {
@@ -373,6 +379,36 @@ func usageCmd(args []string) error {
 	}
 	fmt.Println("ADMIT is the task_run gate for that row. A provider absent from this table is admitted.")
 	return nil
+}
+
+// usageDisplayRows lists the fleet roster first, in stable order, then
+// any other provider the snapshot carried (Bedrock). A fleet provider
+// with no reading is still a row: absent is not the same as hidden.
+func usageDisplayRows(backends []claudia.PlanUsage) []claudia.PlanUsage {
+	by := map[claudia.Provider]claudia.PlanUsage{}
+	for _, b := range backends {
+		by[b.Provider] = b
+	}
+	var rows []claudia.PlanUsage
+	seen := map[claudia.Provider]bool{}
+	for _, row := range claudia.ProjectFleetUsage(backends, time.Time{}, time.Now(), nil).Providers {
+		seen[row.Provider] = true
+		if b, ok := by[row.Provider]; ok {
+			rows = append(rows, b)
+			continue
+		}
+		rows = append(rows, claudia.PlanUsage{
+			Provider: row.Provider,
+			Status:   claudia.PlanUsageUnavailable,
+			Reason:   row.Reason,
+		})
+	}
+	for _, b := range backends {
+		if !seen[b.Provider] {
+			rows = append(rows, b)
+		}
+	}
+	return rows
 }
 
 // admitLabel is HasAvailableTokens, the predicate the daemon applies before
