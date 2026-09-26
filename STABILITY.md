@@ -28,7 +28,7 @@ listed alphabetically within each table so the list can be diffed against
   before locking in.
 - **Fluid** — actively evolving or known to need rework.
 
-`make verify-stability` (CI job `stability-surface`) re-derives the surface from
+`make verify-stability` (part of `make gate` on Colossus; not a GitHub Actions job) re-derives the surface from
 a clean worktree of the snapshot tag and fails if this document names an item
 the tag does not have, omits one it does — type, function, method, constant,
 variable, struct field, or environment variable — leaves a row unassessed, or
@@ -693,24 +693,26 @@ Resolved in v0.11.0 — all exported types, functions, methods, and constants
 have doc comments, and `example_test.go` adds `ExampleRun`, `ExampleNewTask`,
 `ExampleStart`, `ExampleAcquire`, and `ExampleNewRegistry`.
 
-### Testing and CI
+### Testing
 
-- ~~**No CI workflow.**~~ Resolved: `.github/workflows/test.yml`
-  landed in PR #5 and runs on push.
+- **The owner gate runs on Colossus.** `make gate` is the hermetic
+  suite (vet, `go test -race`, stability surface, mutation evidence)
+  and the pre-push oracle. Policy 2026-09-26: Colossus (macOS +
+  keychain) is the only runtime. GitHub stores the code as backup.
+  There is no GitHub Actions workflow, no `ubuntu-latest` /
+  `macos-latest` matrix, and no Linux CI job. A workflow that landed
+  in PR #5 was removed under that policy.
 - **Test coverage is growing.** Agent readiness, crash-survival,
   WaitForResponse settle semantics, event parsing, and terminal-log
   path derivation are covered. ~~Task mode still has no end-to-end
   smoke test against a real `claude` binary.~~ Resolved: `TestTaskRunSmoke`
   in `task_test.go` covers Task-mode end-to-end against the real binary
   (gated on `CLAUDIA_LIVE=1`).
-- ~~**CI does not exercise tmux-backed Agent** on Linux runners.
-  GitHub macOS runners have tmux pre-installed; Linux runners need
-  `apt-get install tmux`. See 🎯T1.1 M6.~~ Resolved by deliberate scope
-  decision: CI installs tmux on Linux and runs all hermetic tests on
-  both macOS and Linux. Live tests (those that spawn the real `claude`
-  binary and make API calls) are gated on `CLAUDIA_LIVE=1` and run
-  locally before each release. See `agents-guide.md` § Testing for the
-  canonical pre-release validation command.
+- **Live tests stay on Colossus.** They spawn real provider CLIs and
+  are gated on `CLAUDIA_*_LIVE`. GitHub never runs them. tmux is the
+  macOS install on Colossus; there is no Linux runner to apt-install
+  tmux for. See `agents-guide.md` § Testing for the canonical
+  pre-release validation command.
 
 ### Packaging
 

@@ -8,6 +8,11 @@
 # such that every item in it with tier <= T is satisfied. `floors` is the
 # per-dimension ratchet (below floor => DRIFT); `aspires` is the gap horizon;
 # `enforce` is intent-only and does not affect tiers.
+#
+# Runtime policy (2026-09-26): Colossus (macOS + keychain) is the only
+# development and test runtime. GitHub stores the code as backup. This
+# repo does not use GitHub Actions. Evidence points at make targets and
+# files on that gate, never at a workflow.
 
 schema_version: 1
 
@@ -36,34 +41,34 @@ items:
   # ============================== CORRECTNESS =============================
   - id: correctness.tests
     dim: correctness
-    desc: Hermetic go test -race -count=1 ./... runs on every push/PR
+    desc: Hermetic go test -race -count=1 ./... runs on Colossus via make gate (pre-push)
     state: enforced
     cadence: continuous
     enforce: blocking
     tier: 1
-    evidence: {ci_step: {workflow: test.yml, name: Test}}
+    evidence: {make_target: gate}
 
   - id: correctness.os-matrix
     dim: correctness
-    desc: Test job runs on ubuntu-latest and macos-latest
+    desc: Colossus (macOS) is the only test runtime; no GitHub Actions OS matrix
     state: enforced
-    cadence: continuous
+    cadence: once-must-hold
     enforce: blocking
     tier: 2
-    evidence: {ci_job: test.yml#test}
+    evidence: {file: {path: docs/gate.md, matches: 'no GitHub Actions'}}
 
   - id: correctness.mutation-evidence
     dim: correctness
-    desc: Quoted mutation evidence is re-derived in CI (make verify-mutation-evidence)
+    desc: Quoted mutation evidence is re-derived on Colossus (make verify-mutation-evidence, part of make gate)
     state: enforced
     cadence: continuous
     enforce: blocking
     tier: 2
-    evidence: {ci_job: test.yml#mutation-evidence}
+    evidence: {make_target: verify-mutation-evidence}
 
   - id: correctness.live-gate
     dim: correctness
-    desc: Opt-in live backend gate exists (make live); CI never sets CLAUDIA_*_LIVE
+    desc: Opt-in live backend gate exists (make live on Colossus); GitHub Actions is not used and never sets CLAUDIA_*_LIVE
     state: present
     cadence: continuous
     enforce: warning
@@ -72,24 +77,25 @@ items:
 
   - id: correctness.formal-tla
     dim: correctness
-    desc: TLA+ broker lifecycle spec is model-checked in CI, with mutant configs required to fail
-    state: enforced
-    cadence: continuous
-    enforce: blocking
+    desc: TLA+ broker lifecycle spec is model-checked on Colossus (make verify-specs / make gate-full), with mutant configs required to fail
+    state: present
+    cadence: per-release
+    enforce: warning
     tier: 3
-    evidence: {ci_job: specs.yml#tlc}
+    evidence: {make_target: verify-specs}
 
   - id: correctness.windows
     dim: correctness
-    desc: Windows CI / supported Windows Agent
+    desc: Windows support for the tmux-backed Agent
     state: skipped
-    cadence: continuous
+    cadence: once-must-hold
     enforce: informational
     tier: 3
     reason: >-
       README states Windows is not supported (WSL works). flock_windows.go is a
-      build-tagged helper, not a claimed port. No Windows runner in the matrix.
-    evidence: {absent: {ci_job: test.yml#windows}}
+      build-tagged helper, not a claimed port. The runtime is Colossus (macOS);
+      there is no GitHub Actions matrix and no Windows runner.
+    evidence: {absent: {file: {path: .github/workflows/test.yml}}}
 
   - id: correctness.fuzzing
     dim: correctness
@@ -103,7 +109,7 @@ items:
 
   - id: correctness.examples-run
     dim: correctness
-    desc: Package examples execute in CI (not only compile)
+    desc: Package examples execute under the Colossus gate (not only compile)
     state: planned
     cadence: continuous
     enforce: informational
@@ -111,7 +117,8 @@ items:
     reason: >-
       example_test.go has Example functions without Output comments, so go test
       compiles them but does not execute them. They also need live provider CLIs.
-    evidence: {absent: {ci_step: {workflow: test.yml, name: Examples}}}
+      There is no GitHub Actions job for this.
+    evidence: {absent: {make_target: examples}}
 
   # =========================== SECURITY / SUPPLY ==========================
   - id: security.dep-pinning
@@ -146,22 +153,26 @@ items:
   - id: security.sast-codeql
     dim: security
     desc: CodeQL static analysis for Go
-    state: planned
-    cadence: continuous
-    enforce: warning
+    state: skipped
+    cadence: once-must-hold
+    enforce: informational
     tier: 3
-    reason: CodeQL is not enabled; go vet is the only static check in CI.
-    evidence: {absent: {ci_job: test.yml#codeql}}
+    reason: >-
+      CodeQL runs as GitHub Actions. Claudia does not use Actions. The static
+      check on Colossus is go vet, via make gate.
+    evidence: {absent: {file: {path: .github/workflows/test.yml}}}
 
   - id: security.actions-perms
     dim: security
     desc: GitHub Actions default token permissions scoped to least privilege
-    state: planned
+    state: skipped
     cadence: once-must-hold
-    enforce: warning
+    enforce: informational
     tier: 3
-    reason: "No top-level permissions block in the workflows; inherits repo default."
-    evidence: {absent: {file: {path: .github/workflows/test.yml, matches: '(?m)^permissions:'}}}
+    reason: >-
+      No GitHub Actions workflows exist, so there is no Actions token to scope.
+      GitHub stores the code as backup.
+    evidence: {absent: {file: {path: .github/workflows/test.yml}}}
 
   - id: security.signed-releases
     dim: security
@@ -173,36 +184,36 @@ items:
     reason: >-
       claudia is a Go library published via git tags (no release.yml, no
       uploaded binaries to sign).
-    evidence: {absent: {ci_job: release.yml#build}}
+    evidence: {absent: {file: {path: .github/workflows/release.yml}}}
 
   # ============================== CODE QUALITY ============================
   - id: quality.vet
     dim: quality
-    desc: go vet runs on every push/PR
+    desc: go vet runs on Colossus via make gate (pre-push)
     state: enforced
     cadence: continuous
     enforce: blocking
     tier: 2
-    evidence: {ci_step: {workflow: test.yml, name: Vet}}
+    evidence: {make_target: gate}
 
   - id: quality.format
     dim: quality
-    desc: Sources are gofmt-clean, enforced in CI
+    desc: Sources are gofmt-clean, enforced on the Colossus gate
     state: planned
     cadence: continuous
     enforce: warning
     tier: 3
-    reason: No gofmt --check (or gofmt -l gate) in CI; formatting is by-hand convention.
-    evidence: {absent: {ci_step: {workflow: test.yml, name: Format}}}
+    reason: No gofmt --check (or gofmt -l gate) in make gate; formatting is by-hand convention. GitHub Actions is not used.
+    evidence: {absent: {make_target: fmt}}
 
   - id: quality.staticcheck
     dim: quality
-    desc: staticcheck / golangci-lint in CI
+    desc: staticcheck / golangci-lint on the Colossus gate
     state: planned
     cadence: continuous
     enforce: warning
     tier: 3
-    reason: staticcheck is not wired in CI (and the locally installed build cannot compile go1.26).
+    reason: staticcheck is not wired into make gate (and the locally installed build cannot compile go1.26). Not a GitHub Actions job.
     evidence: {absent: {scanner: {tool: staticcheck}}}
 
   # =========================== DEPENDENCY HEALTH ==========================
@@ -298,12 +309,12 @@ items:
   # ================================= BUILD ===============================
   - id: build.ci
     dim: build
-    desc: go build ./... runs in CI
+    desc: The module is built and vetted on Colossus (pre-push go build/go vet, and make gate); no GitHub Actions build
     state: enforced
     cadence: continuous
     enforce: blocking
     tier: 1
-    evidence: {ci_step: {workflow: test.yml, name: Build}}
+    evidence: {file: {path: scripts/hooks/pre-push, matches: 'go build \./\.\.\.'}}
 
   - id: build.go-version
     dim: build
@@ -340,7 +351,7 @@ items:
     cadence: continuous
     enforce: blocking
     tier: 2
-    evidence: {ci_job: test.yml#stability-surface}
+    evidence: {make_target: verify-stability}
 
   - id: docs.md-links
     dim: docs

@@ -4,7 +4,7 @@
 A target's acceptance says "reintroducing X makes test T RED". That sentence is
 quoted once, in a commit message, and then never run again. Any later commit
 that changes T's INPUTS can retire the evidence without turning anything red —
-no assertion weakened, no suite failing, nothing for CI to notice. 🎯T30's
+no assertion weakened, no suite failing, nothing for the hermetic suite to notice. 🎯T30's
 8c5e04a did exactly that to 🎯T28: it added a `landed` argument to
 ensureSubmitted and passed landed=true at 🎯T28's call sites, which was correct
 for the branch it modelled, and which made 🎯T28's over-broadness mutation stop
@@ -30,7 +30,7 @@ be shown to go RED when the decay it exists to catch is applied. An entry may
 declare a `decay` — an edit to the TEST's inputs modelled on a real commit —
 and --prove-teeth asserts both halves of what makes that decay invisible:
 
-    decay alone            every named test stays GREEN   (CI sees nothing)
+    decay alone            every named test stays GREEN   (the suite sees nothing)
     decay + mutation       a `red` test SURVIVES          (so THIS CHECK goes
                                                            red, which is the
                                                            only alarm there is)
@@ -234,10 +234,10 @@ def prove_teeth(work, entry, log, files):
     if any(g != "green" for _, _, g in quiet):
         lines = "\n".join(f"        {n}: {g}" for n, _, g in quiet if g != "green")
         raise Red("the decay does not go unnoticed — some test is not GREEN under "
-                  "it alone, so CI would already catch this shape:\n" + lines +
+                  "it alone, so the hermetic suite would already catch this shape:\n" + lines +
                   "\n        Re-derive the decay: it must model a change that "
                   "leaves every suite green.")
-    print("    decay alone: every named test still GREEN — invisible to CI, as it was")
+    print("    decay alone: every named test still GREEN — invisible to the suite, as it was")
 
     got = check_entry(work, entry, log, files, decay["edits"] + entry["edits"],
                       "decay+mutation")

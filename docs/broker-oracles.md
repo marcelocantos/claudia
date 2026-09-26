@@ -86,7 +86,7 @@ to an agent the broker is now free to tear down. The agent then reaps
 invariant over an explicit `Send` action rather than over handle-set hygiene
 means it fails on the act itself, not on a proxy for it.
 
-CI enforces all four runs in `.github/workflows/specs.yml`.
+`make verify-specs` (via `make gate-full` on Colossus, before a release) enforces all four runs. GitHub Actions does not.
 
 ## Shakeout-clock oracle (🎯T1.6, separate epic)
 

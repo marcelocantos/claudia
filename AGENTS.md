@@ -90,7 +90,8 @@ CLAUDIA_CODEX_LIVE=1 make live
 CLAUDIA_LIVE=1 CLAUDIA_GROK_LIVE=1 CLAUDIA_CODEX_LIVE=1 CLAUDIA_CURSOR_LIVE=1 make live
 ```
 
-Unset gates skip. CI never sets them. **You are the gate.**
+Unset gates skip. There is no GitHub Actions runner to set them.
+Colossus is the runtime; you run the live tests there. **You are the gate.**
 
 **Host load is a first-class variable for the Claude row.** The Claude
 gate drives a real TUI through tmux, so it is the one row whose result
@@ -193,7 +194,7 @@ plainly-named directory still goes RED.
 profile: library
 override:
   - pr-workflow: skip
-  - ci-green: skip
+  - ci-green: skip  # no GitHub Actions; Colossus make gate is the owner gate
 
 The owner gate is local `make gate`. It attests the tree it passed on
 (`.git/gate-attestation`, per clone, untracked); `scripts/hooks/pre-push`
@@ -201,8 +202,9 @@ builds, vets, and refuses a push unless that attestation names the tree of
 the tip commit going out (earlier commits are not checked; the attestation
 is never committed) — it does not re-run the gate, which takes ~25
 minutes, longer than GitHub keeps an idle SSH connection.
-Do not wait on `.github/workflows/test.yml`. `make live` remains a
-release-time owner gate for backend-behaviour changes. `/release` on
-this repo: commit prep on master, `make gate` (and `make live` if the
-diff touched a provider wire), `git push origin master`,
-`gh release create`. No prep PR.
+There is no GitHub Actions workflow; do not wait on a GitHub check.
+`make live` remains a release-time owner gate for backend-behaviour
+changes, run on Colossus. `/release` on this repo: commit prep on
+master, `make gate` (and `make live` if the diff touched a provider
+wire), `git push origin master`, `gh release create`. No prep PR.
+GitHub stores the code as backup.
