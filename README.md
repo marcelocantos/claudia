@@ -340,8 +340,13 @@ owns every consumer's agent processes: Sessions become named grants that survive
 restart, Tasks run on the daemon, plan usage is fetched once per host,
 and after a reboot the daemon resumes the seats it held and tells them
 so. The library API is unchanged; with no socket (or
-`CLAUDIA_NO_BROKER=1`) everything runs in-process as before. See the
-[agents guide](agents-guide.md#daemon-claudia-broker-optional-host-wide).
+`CLAUDIA_NO_BROKER=1`) everything runs in-process as before.
+
+A one-shot that must use the broker, with no in-process fallback, is
+`claudia broker task` or `claudia.RunBrokerTask`. The daemon admits the
+run against the plan-usage snapshot first; `claudia broker usage` prints
+that snapshot and an `ADMIT` column for the same decision. See
+[Task one-shot over the broker](agents-guide.md#task-one-shot-over-the-broker).
 
 ## Registry
 

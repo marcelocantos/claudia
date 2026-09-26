@@ -7,7 +7,8 @@
 //	claudia broker status           what it holds
 //	claudia broker grants           every seat, owner and liveness
 //	claudia broker tail             lifecycle events as NDJSON
-//	claudia broker usage [--refresh] the plan-usage snapshot
+//	claudia broker usage [--refresh] the plan-usage snapshot (ADMIT is the task_run gate)
+//	claudia broker task             one task_run over the socket
 //	claudia broker grant            start or reclaim a named seat
 //	claudia broker send             deliver a turn (submit, steer, or interrupt-then-submit)
 //	claudia broker interrupt        cancel the seat's current turn
@@ -73,7 +74,7 @@ func run(args []string) int {
 }
 
 func usageText() string {
-	return `usage: claudia broker <serve|status|grants|tail|usage|release|grant|send|interrupt|events|install|uninstall|socket> [flags]
+	return `usage: claudia broker <serve|status|grants|tail|usage|task|release|grant|send|interrupt|events|install|uninstall|socket> [flags]
        claudia models intel <refresh|latest|history|drift> [flags]
        claudia version | --version | -v
        claudia --help | -h
@@ -101,6 +102,8 @@ func brokerCmd(args []string) error {
 		return tail()
 	case "usage":
 		return usageCmd(args[1:])
+	case "task":
+		return taskCmd(args[1:])
 	case "release":
 		return release(args[1:])
 	case "grant":
@@ -348,7 +351,7 @@ func usageCmd(args []string) error {
 	}
 	fmt.Printf("fetched %s ago\n", time.Since(u.FetchedAt).Round(time.Second))
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "PROVIDER\tSTATUS\tBAND\tWINDOWS")
+	fmt.Fprintln(w, "PROVIDER\tSTATUS\tBAND\tADMIT\tWINDOWS")
 	for _, b := range backends {
 		band := claudia.ClassifyPlan(b, time.Now(), nil)
 		var wins []string
@@ -363,9 +366,22 @@ func usageCmd(args []string) error {
 		if b.Reason != "" && b.Status != claudia.PlanUsageAvailable {
 			st += " (" + clip(b.Reason, reasonWidth) + ")"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", b.Provider, st, band.Weekly, strings.Join(wins, " "))
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", b.Provider, st, band.Weekly, admitLabel(b), strings.Join(wins, " "))
 	}
-	return w.Flush()
+	if err := w.Flush(); err != nil {
+		return err
+	}
+	fmt.Println("ADMIT is the task_run gate for that row. A provider absent from this table is admitted.")
+	return nil
+}
+
+// admitLabel is HasAvailableTokens, the predicate the daemon applies before
+// task_run spawns. yes admits; no is plan_exhausted.
+func admitLabel(b claudia.PlanUsage) string {
+	if claudia.HasAvailableTokens(b, time.Now(), nil) {
+		return "yes"
+	}
+	return "no"
 }
 
 // reasonWidth bounds an unavailable reason in the usage table; the full

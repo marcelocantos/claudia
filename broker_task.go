@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -104,6 +105,66 @@ func (b *brokerTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*t
 			return err
 		},
 	}, nil
+}
+
+// ErrPlanExhausted means the broker refused task_run before spawning:
+// its plan-usage snapshot shows that provider has no usable capacity.
+// `claudia broker usage` prints the snapshot the refusal was decided from.
+var ErrPlanExhausted = errors.New("claudia: plan exhausted")
+
+// RunBrokerTask runs one Task turn on the host broker. It dials the broker
+// socket, sends task_run, and returns the task_event stream, which ends
+// after task_done. It does not start a provider in this process: no daemon
+// is [ErrNoBroker], and a bare protocol server is not a fallback either.
+//
+// The daemon admits the run against its plan-usage snapshot before spawning.
+// That snapshot is what `claudia broker usage` prints. A provider the snapshot
+// shows as exhausted comes back as [ErrPlanExhausted] and nothing is spawned.
+// A provider with no row is admitted.
+//
+// Cancel ctx to drop the connection; the daemon then cancels the run. Read
+// the channel to completion or cancel — the same rule as [Task.Run].
+func RunBrokerTask(ctx context.Context, prompt string, cfg TaskConfig) (<-chan TaskEvent, error) {
+	client, err := dialBroker()
+	if err != nil {
+		return nil, err
+	}
+	bb := &brokerTaskBackend{cfg: cfg, client: client}
+	run, err := bb.RunTask(ctx, taskRunRequest{
+		WorkDir:         cfg.WorkDir,
+		Model:           cfg.Model,
+		SandboxMode:     cfg.SandboxMode,
+		SandboxGitWrite: cfg.SandboxGitWrite,
+		ApprovalPolicy:  cfg.ApprovalPolicy,
+		DisallowTools:   cfg.DisallowTools,
+		SessionID:       cfg.ClaudeID,
+		Prompt:          prompt,
+	})
+	if err != nil {
+		client.Close()
+		return nil, brokerTaskError(err)
+	}
+	ch := make(chan TaskEvent, 16)
+	go func() {
+		defer close(ch)
+		for ev := range run.events {
+			select {
+			case ch <- ev:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return ch, nil
+}
+
+// brokerTaskError maps a task_run refusal onto the public sentinels.
+func brokerTaskError(err error) error {
+	var pe *broker.ProtocolError
+	if errors.As(err, &pe) && pe.Code == broker.CodePlanExhausted {
+		return fmt.Errorf("%w: %s", ErrPlanExhausted, pe.Error())
+	}
+	return err
 }
 
 // newRunID is a short random id for anonymous grants and daemon run ids.

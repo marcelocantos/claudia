@@ -361,6 +361,15 @@ var responseVectors = map[string]*Response{
 		ID: "g1", Type: TypeError,
 		Error: &ErrorMessage{Code: CodeNotAvailable, Message: "this broker has no daemon runtime behind it", Field: "type", Value: "usage"},
 	},
+	"error_plan_exhausted": {
+		ID: "g3", Type: TypeError,
+		Error: &ErrorMessage{
+			Code:    CodePlanExhausted,
+			Message: "plan usage does not admit a task_run for this provider; `claudia broker usage` shows the snapshot",
+			Field:   "provider",
+			Value:   "claude",
+		},
+	},
 }
 
 // show renders a decoded message as the line it would encode to, because the

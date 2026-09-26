@@ -113,6 +113,10 @@ const (
 	CodeAgentFailed ErrorCode = "agent_failed"
 	// CodeUnknownRun means the task run id is not one the daemon is running.
 	CodeUnknownRun ErrorCode = "unknown_run"
+	// CodePlanExhausted means task_run was refused before spawn: the daemon's
+	// plan-usage snapshot shows this provider has no usable capacity.
+	// `claudia broker usage` prints that snapshot.
+	CodePlanExhausted ErrorCode = "plan_exhausted"
 )
 
 // Grant dispositions on release. DispositionStop tears the seat down;

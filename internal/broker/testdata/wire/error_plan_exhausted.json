@@ -1,0 +1,1 @@
+{"v":1,"type":"error","id":"g3","body":{"code":"plan_exhausted","message":"plan usage does not admit a task_run for this provider; `claudia broker usage` shows the snapshot","field":"provider","value":"claude"}}

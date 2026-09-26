@@ -1165,6 +1165,12 @@ func (d *Daemon) handleTaskRun(c *broker.ClientConn, req *broker.Request) {
 		_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeMalformed, Field: "task", Msg: err.Error()})
 		return
 	}
+	// Admission reads the same snapshot `claudia broker usage` prints, and
+	// refreshes it when the TTL has elapsed, before any provider process.
+	if err := d.admitTask(cfg.Provider); err != nil {
+		_ = c.Fail(req.ID, err)
+		return
+	}
 	task := daemonNewTask(cfg)
 	runID := newRunID()
 	if req.TaskRun.RawLog {
@@ -1214,6 +1220,33 @@ func (d *Daemon) handleTaskRun(c *broker.ClientConn, req *broker.Request) {
 // daemonRunJudge evaluates one judge request. Hermetic tests wrap it to see
 // that an evaluation ran here and not in the consumer.
 var daemonRunJudge = claudia.RunJudgeWire
+
+// admitTask refuses task_run when the daemon's plan-usage snapshot shows
+// provider has no usable capacity. A provider with no row is admitted:
+// an unpublished reading is not a veto. An empty provider is Claude, the
+// same default Task uses.
+func (d *Daemon) admitTask(provider claudia.Provider) error {
+	if provider == "" {
+		provider = claudia.ProviderClaude
+	}
+	snap := d.usage.Read(d.ctx, false)
+	now := d.clock.Now()
+	for _, u := range snap.Backends {
+		if u.Provider != provider {
+			continue
+		}
+		if !claudia.HasAvailableTokens(u, now, nil) {
+			return &broker.ProtocolError{
+				Code:  broker.CodePlanExhausted,
+				Field: "provider",
+				Value: string(provider),
+				Msg:   "plan usage does not admit a task_run for this provider; `claudia broker usage` shows the snapshot",
+			}
+		}
+		return nil
+	}
+	return nil
+}
 
 // daemonNewTask builds a direct-mode Task for one run. Hermetic tests point
 // it at a fake backend.
