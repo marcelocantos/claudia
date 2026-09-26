@@ -164,6 +164,14 @@ func TestProviderChildEnvSuppliesSetsidWhenTheHostHasNone(t *testing.T) {
 		t.Skip("python3 required to observe the session id")
 	}
 	home := t.TempDir()
+	grokBin := filepath.Join(home, ".grok", "bin")
+	localBin := filepath.Join(home, ".local", "bin")
+	if err := os.MkdirAll(grokBin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(localBin, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("HOME", home)
 	t.Setenv("PATH", filepath.Join(home, "no-such-dir"))
 	t.Setenv("XDG_STATE_HOME", filepath.Join(home, "state"))
@@ -174,8 +182,10 @@ func TestProviderChildEnvSuppliesSetsidWhenTheHostHasNone(t *testing.T) {
 	if _, err := os.Stat(shim); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(envValue(env, "PATH"), shimDir+string(os.PathListSeparator)) {
-		t.Fatalf("PATH %q, want shim dir first", envValue(env, "PATH"))
+	sep := string(os.PathListSeparator)
+	wantPrefix := grokBin + sep + localBin + sep + shimDir + sep
+	if !strings.HasPrefix(envValue(env, "PATH"), wantPrefix) {
+		t.Fatalf("PATH %q, want prefix %q", envValue(env, "PATH"), wantPrefix)
 	}
 	cmd := exec.Command(shim, "/usr/bin/python3", "-c", "import os; print(os.getpid(), os.getsid(0))")
 	cmd.Env = env

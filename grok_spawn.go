@@ -142,8 +142,9 @@ func repairGrokChildPATH(env []string) []string {
 	return env
 }
 
-// ensureSetsid prepends a setsid shim when the child PATH cannot already
-// execute setsid. A host setsid stays in front; the shim must not shadow it.
+// ensureSetsid adds a setsid shim when the child PATH cannot already
+// execute setsid. User tool directories stay ahead of the shim so
+// ~/.grok/bin still wins. A host setsid is left where it is.
 func ensureSetsid(env []string) []string {
 	if lookupExecutable(envValue(env, "PATH"), "setsid") != "" {
 		return env
@@ -152,7 +153,49 @@ func ensureSetsid(env []string) []string {
 	if err != nil || dir == "" {
 		return env
 	}
-	return prependPathEntry(env, dir)
+	return insertPathAfterUserBins(env, dir)
+}
+
+// insertPathAfterUserBins places dir after the leading user tool
+// directories and before the rest of PATH.
+func insertPathAfterUserBins(env []string, dir string) []string {
+	user := map[string]struct{}{}
+	for _, d := range grokUserToolDirs(homeFromEnv(env)) {
+		user[d] = struct{}{}
+	}
+	var parts []string
+	pathIdx := -1
+	for i, entry := range env {
+		key, val, ok := strings.Cut(entry, "=")
+		if !ok || key != "PATH" {
+			continue
+		}
+		pathIdx = i
+		for _, p := range filepath.SplitList(val) {
+			if p == "" || p == dir {
+				continue
+			}
+			parts = append(parts, p)
+		}
+		break
+	}
+	at := 0
+	for at < len(parts) {
+		if _, ok := user[parts[at]]; !ok {
+			break
+		}
+		at++
+	}
+	merged := make([]string, 0, len(parts)+1)
+	merged = append(merged, parts[:at]...)
+	merged = append(merged, dir)
+	merged = append(merged, parts[at:]...)
+	path := strings.Join(merged, string(os.PathListSeparator))
+	if pathIdx < 0 {
+		return append(env, "PATH="+path)
+	}
+	env[pathIdx] = "PATH=" + path
+	return env
 }
 
 func installSetsidShim() (string, error) {
@@ -174,34 +217,6 @@ func installSetsidShim() (string, error) {
 		}
 	}
 	return dir, nil
-}
-
-func prependPathEntry(env []string, dir string) []string {
-	pathIdx := -1
-	var rest []string
-	for i, entry := range env {
-		key, val, ok := strings.Cut(entry, "=")
-		if !ok || key != "PATH" {
-			continue
-		}
-		pathIdx = i
-		for _, p := range filepath.SplitList(val) {
-			if p == "" || p == dir {
-				continue
-			}
-			rest = append(rest, p)
-		}
-		break
-	}
-	merged := dir
-	if len(rest) > 0 {
-		merged = dir + string(os.PathListSeparator) + strings.Join(rest, string(os.PathListSeparator))
-	}
-	if pathIdx < 0 {
-		return append(env, "PATH="+merged)
-	}
-	env[pathIdx] = "PATH=" + merged
-	return env
 }
 
 func lookupExecutable(pathEnv, name string) string {

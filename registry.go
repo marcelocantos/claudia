@@ -439,17 +439,19 @@ func (r *Registry) startHeld(ctx context.Context, op *registryLifecycle, name st
 	r.mu.Unlock()
 	if usingBroker() && !direct {
 		proc, err = startViaBrokerContext(withGrantHint(ctx, grantHint{adopt: adopt, fallback: fallback, def: &def}), cfg)
-		if err == nil || !brokerFellThrough(err) {
-			// A provider failure is the daemon's answer. Continuing would
-			// call Start again, grant a second time, and log "adopt failed"
-			// for a Launch that never adopted. Colossus pimp-smoke did that:
-			// two identical OMP handshake refusals in 7ms.
-			if err != nil {
-				return nil, err
-			}
+		var verdict *broker.ProtocolError
+		switch {
+		case err == nil:
 			adopt, started = false, true
-		} else {
+		case brokerFellThrough(err):
 			proc, err = nil, nil
+		case errors.As(err, &verdict):
+			// The daemon answered. A second Start would grant again and
+			// log "adopt failed" for a Launch that never adopted.
+			// Colossus pimp-smoke did that: two identical OMP handshake
+			// refusals in 7ms. A socket that accepts and then drops is
+			// not a verdict; that error still reaches the launcher.
+			return nil, err
 		}
 	}
 	if proc == nil && err == nil {

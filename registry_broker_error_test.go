@@ -5,6 +5,7 @@ package claudia
 
 import (
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -19,7 +20,13 @@ import (
 // "adopt failed; falling back to launch" and a second identical OMP
 // refusal because the first agent_failed was treated as a miss.
 func TestLaunchReturnsBrokerAgentFailedOnce(t *testing.T) {
-	dir := t.TempDir()
+	// t.TempDir() under the macOS runner TMPDIR plus this test's name
+	// exceeds the 104-byte sun_path limit (bind: invalid argument).
+	dir, err := os.MkdirTemp("/tmp", "cba")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	sock := filepath.Join(dir, "b.sock")
 	ln, err := net.Listen("unix", sock)
 	if err != nil {

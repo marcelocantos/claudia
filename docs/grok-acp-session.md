@@ -130,9 +130,10 @@ Cursor keep-open Launch failed the same way in about 6ms.
 
 Claudia moves existing user tool directories to the front of the
 **Grok and Cursor child's** `PATH` (the daemon's own `PATH` stays
-system-first). When that PATH has no `setsid`, Claudia also prepends
-`~/.local/state/claudia/bin/setsid`, a perl shim that calls
-`setsid(2)`. Claude and Codex children do not get that shim. The
+system-first). When that PATH has no `setsid`, Claudia inserts
+`~/.local/state/claudia/bin/setsid` after those user directories, a
+perl shim that calls `setsid(2)`. `~/.grok/bin` stays ahead of the
+shim. Claude and Codex children do not get that shim. The
 handshake error names the helper, the status word, the log path, and
 `brew install util-linux` (a native `setsid` if perl cannot run the
 shim) followed by `brew services restart claudia`. When the log is

@@ -1021,8 +1021,9 @@ Design record: [docs/metaharness.md](docs/metaharness.md).
    runs that CLI inside the daemon. A brew service `PATH` lists system
    directories first and `~/.grok/bin` last. Claudia moves existing
    user tool directories to the front of the Grok and Cursor child's
-   `PATH` and, when the host has no `setsid` binary, prepends a perl
-   shim at `~/.local/state/claudia/bin/setsid`. Claude and Codex do not
+   `PATH` and, when the host has no `setsid` binary, inserts a perl
+   shim (`~/.local/state/claudia/bin/setsid`) after those directories.
+   Claude and Codex do not
    use that helper. A handshake status other than `ready`
    (`omp: sidecar said "error", want ready`) fails the Grok or Cursor
    grant immediately, with the helper name, that status, and
