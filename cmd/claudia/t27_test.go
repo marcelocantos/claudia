@@ -277,20 +277,40 @@ func captureStderr(t *testing.T, fn func() error) string {
 
 func captureFD(t *testing.T, fd **os.File, fn func() error) string {
 	t.Helper()
+	body, fnErr := captureFDErr(t, fd, fn)
+	if fnErr != nil {
+		t.Fatal(fnErr)
+	}
+	return body
+}
+
+// captureFDErr swaps fd for a pipe and drains it while fn runs. The drain
+// has to be concurrent: --help-agent writes the whole guide, which is
+// larger than a pipe buffer, and a read that waits until fn returns never
+// starts.
+func captureFDErr(t *testing.T, fd **os.File, fn func() error) (string, error) {
+	t.Helper()
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
 	}
 	old := *fd
 	*fd = w
+	readDone := make(chan struct{})
+	var body []byte
+	var readErr error
+	go func() {
+		body, readErr = io.ReadAll(r)
+		close(readDone)
+	}()
 	fnErr := fn()
 	_ = w.Close()
 	*fd = old
-	body, _ := io.ReadAll(r)
-	if fnErr != nil {
-		t.Fatal(fnErr)
+	<-readDone
+	if readErr != nil {
+		t.Fatal(readErr)
 	}
-	return string(body)
+	return string(body), fnErr
 }
 
 func ptr[T any](v T) *T { return &v }

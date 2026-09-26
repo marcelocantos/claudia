@@ -978,8 +978,40 @@ same shape as bullseye/mnemo/jevonsd. Elsewhere, operate it with
 `brew services start claudia` (Homebrew launchd plist, 🎯T2.7) or
 `claudia broker install` (owner-installed launchd user agent on
 macOS). Then `status`, `grants`, `usage [--refresh]`,
-`tail` (NDJSON lifecycle events), `release NAME [--detach]`, `socket`.
+`tail` (NDJSON lifecycle events), `grant`, `send`, `interrupt`,
+`events`, `release NAME [--detach]`, `socket`.
 `claudia --help-agent` prints this guide after the CLI usage text.
+
+When a daemon is running, the blessed path for a Go consumer is the
+library on the socket: `Start`, `Send`, `Steer`, `Interrupt`,
+`WaitForResponse`, and `Stop` on the returned handle (`Detach` leaves
+the seat running). Leave `SetDirect`, `StartDirect`, and
+`CLAUDIA_NO_BROKER` unset on that path.
+`WaitForResponse` is a client-side fold over the per-grant `agent_event`
+stream (assistant text through a terminal stop, then a short settle).
+The wire has no `wait` message.
+
+Shell and other non-Go consumers use those same messages through the
+CLI. Each command holds one connection for the calls it makes, because
+the daemon delivers a seat's events only to the connection that owns
+the grant:
+
+- `claudia broker grant --name NAME --provider P --workdir DIR [--purpose work|aside|overseer] [--parent NAME] [--model M] [--send TEXT] [--mode submit|steer|interrupt|queue] [--wait] [--release stop|detach]`
+- `claudia broker send [--mode submit|steer|interrupt|queue] [--wait] [--release stop|detach] NAME TEXT`
+- `claudia broker interrupt NAME`
+- `claudia broker events NAME [--wait]`
+- `claudia broker release NAME` stops the seat; `--detach` drops ownership and leaves it running
+
+A command that exits without `--release stop` detaches: the seat keeps
+running, and a later `send`, `interrupt`, or `events` re-grants it from
+the fields `grants` lists (provider, model, session, workdir, purpose,
+parent), keeping the daemon's session id. A seat whose definition also
+carries MCP servers or a sandbox policy is driven with the library,
+which re-grants the definition it first sent. `send` and `events --wait`
+fold the stream the same way `WaitForResponse` does. An ephemeral Pimp
+seat takes a name like `pimp-smoke-*` and Parent `pimp`. Purpose stays
+`work`, `aside`, or `overseer`.
+
 `Acquire` draws from a pool the daemon runs: every consumer on the
 host shares its warm windows, `Agent.Release` returns or drops the seat
 on the daemon, and a consumer that goes away returns what it held.
