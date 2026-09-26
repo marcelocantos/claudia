@@ -43,3 +43,23 @@ func TestRunBrokerTaskDoesNotSpawnInProcess(t *testing.T) {
 		t.Fatal("RunBrokerTask spawned a provider when the socket was absent")
 	}
 }
+
+func TestPickByRemainingDoesNotSpawnWithoutBroker(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "spawned")
+	bin := filepath.Join(t.TempDir(), "claude")
+	script := "#!/bin/sh\ntouch " + marker + "\nexit 0\n"
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CLAUDE_BIN", bin)
+	t.Setenv(broker.NoBrokerEnv, "1")
+
+	task := NewTask(TaskConfig{PickByRemaining: true, WorkDir: t.TempDir()})
+	_, err := task.Run(context.Background(), "ping")
+	if !errors.Is(err, ErrNoBroker) {
+		t.Fatalf("err = %v, want ErrNoBroker", err)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("pick by remaining spawned a provider with no broker")
+	}
+}

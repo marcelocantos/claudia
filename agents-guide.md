@@ -1008,9 +1008,28 @@ refusal the next `task_run` returns.
 
 ```bash
 claudia broker usage
+claudia broker usage -json
 claudia broker task --provider grok --model grok-4 --workdir "$PWD" \
   'Reply with the single word pong.'
+claudia broker task --pick remaining --workdir "$PWD" \
+  'Reply with the single word pong.'
 ```
+
+`-json` on `usage` prints a stable roster of four providers — cursor,
+grok (SuperGrok), claude, codex — in that order. Each row has
+`remaining_percent` (null when the provider published none) and
+`admit`. `admit` is `HasAvailableTokens`, the same predicate as the
+`ADMIT` column. `--pick remaining` on `task` or `grant` asks the
+daemon to spawn the fullest admitted of those four (highest primary
+remaining percent; equal percents break in roster order). A provider
+the snapshot rejects is skipped. If none admits with a number, the
+answer is `plan_exhausted` and nothing is spawned. The choice is
+`picked <provider> remaining=<n>%` on stderr, `provider` and
+`remaining_percent` on `task_started`, and `provider=` on the grant
+line. A later grant of the same name keeps that seat's provider.
+`--provider` and `--pick remaining` are alternatives. The daemon and
+the CLI both have to be this commit: `pick` is a request field an
+older daemon rejects.
 
 `--json` prints the wire: one `task_started`, then `task_event` lines,
 then `task_done`. The socket is the one `claudia broker socket` prints
@@ -1118,8 +1137,10 @@ brew/launchd, and starts `claudia broker serve` under supervisord —
 same shape as bullseye/mnemo/jevonsd. Elsewhere, operate it with
 `brew services start claudia` (Homebrew launchd plist, 🎯T2.7) or
 `claudia broker install` (owner-installed launchd user agent on
-macOS). Operator commands: `status`, `grants`, `usage [--refresh]`
-(`ADMIT` is the task_run gate), `task` (one `task_run`),
+macOS). Operator commands: `status`, `grants`, `usage [--refresh] [-json]`
+(`ADMIT` is the task_run gate; `-json` is the four-provider roster),
+`task` (one `task_run`; `--pick remaining` selects the fullest admitted
+of cursor, grok, claude, codex), `grant` (the same `--pick`),
 `tail` (NDJSON lifecycle events), `release NAME [--detach]`, `socket`.
 Seat driving from the shell is the HEAD CLI in the supported-path
 section above. `claudia --help-agent` prints this guide after the CLI

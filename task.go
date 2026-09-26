@@ -226,6 +226,14 @@ type TaskConfig struct {
 	// LastResult seeds Task.LastResult() before the first run — useful
 	// when re-hydrating a task from persisted state.
 	LastResult string
+
+	// PickByRemaining asks the broker to choose the fullest admitted
+	// fleet provider (cursor, grok, claude, codex) before spawning.
+	// Provider must be empty. The choice uses the daemon's plan-usage
+	// snapshot and [HasAvailableTokens]; none admitted is
+	// [ErrPlanExhausted]. It has no direct-path meaning: a run with no
+	// broker returns [ErrNoBroker] rather than guessing a provider.
+	PickByRemaining bool
 }
 
 // RawLogFunc receives raw NDJSON lines from the Claude process.
@@ -236,15 +244,16 @@ type RawLogFunc func(line []byte)
 // persistent tmux session), Task spawns a new process per prompt
 // and parses structured NDJSON events from stdout.
 type Task struct {
-	id       string
-	name     string
-	provider Provider
-	workDir  string
-	model    string
-	sandbox  string
-	gitWrite bool
-	approval string
-	disallow []string
+	id            string
+	name          string
+	provider      Provider
+	workDir       string
+	model         string
+	sandbox       string
+	gitWrite      bool
+	approval      string
+	disallow      []string
+	pickRemaining bool
 
 	mu            sync.Mutex
 	run           *taskRun
@@ -347,19 +356,20 @@ func NewTask(cfg TaskConfig) *Task {
 
 func newTaskWithBackend(cfg TaskConfig, backend taskBackend) *Task {
 	return &Task{
-		id:         cfg.ID,
-		name:       cfg.Name,
-		workDir:    cfg.WorkDir,
-		model:      cfg.Model,
-		provider:   cfg.Provider,
-		sandbox:    cfg.SandboxMode,
-		gitWrite:   cfg.SandboxGitWrite,
-		approval:   cfg.ApprovalPolicy,
-		disallow:   cfg.DisallowTools,
-		status:     TaskStatusIdle,
-		claudeID:   cfg.ClaudeID,
-		lastResult: cfg.LastResult,
-		backend:    backend,
+		id:            cfg.ID,
+		name:          cfg.Name,
+		workDir:       cfg.WorkDir,
+		model:         cfg.Model,
+		provider:      cfg.Provider,
+		sandbox:       cfg.SandboxMode,
+		gitWrite:      cfg.SandboxGitWrite,
+		approval:      cfg.ApprovalPolicy,
+		disallow:      cfg.DisallowTools,
+		pickRemaining: cfg.PickByRemaining,
+		status:        TaskStatusIdle,
+		claudeID:      cfg.ClaudeID,
+		lastResult:    cfg.LastResult,
+		backend:       backend,
 	}
 }
 
@@ -467,16 +477,24 @@ func (t *Task) Run(ctx context.Context, prompt string) (<-chan TaskEvent, error)
 	direct := t.direct
 	t.mu.Unlock()
 	if !direct {
-		bb = taskBackendConsideringBroker(TaskConfig{ID: t.id, Name: t.name, Provider: t.provider})
+		bb = taskBackendConsideringBroker(TaskConfig{
+			ID: t.id, Name: t.name, Provider: t.provider, PickByRemaining: t.pickRemaining,
+		})
 	}
 	if bb != nil {
 		run, err = bb.RunTask(cmdCtx, req)
 		if err != nil && brokerFellThrough(err) {
 			bb.client.Close()
-			run, err = t.backend.RunTask(cmdCtx, req)
+			if t.pickRemaining {
+				err = fmt.Errorf("pick by remaining requires the broker: %w", err)
+			} else {
+				run, err = t.backend.RunTask(cmdCtx, req)
+			}
 		} else if err != nil {
 			bb.client.Close()
 		}
+	} else if t.pickRemaining {
+		err = fmt.Errorf("pick by remaining requires the broker: %w", ErrNoBroker)
 	} else {
 		run, err = t.backend.RunTask(cmdCtx, req)
 	}

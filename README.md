@@ -133,7 +133,11 @@ SuperGrok weekly usage / Extra Credits and console prepaid balance are
 `QueryAllPlanUsage` expose subscription session + weekly % remaining and
 rollover times when a backend publishes them. Grok and Cursor unofficial
 billing surfaces are always fetched; a break is unavailable-with-reason
-(never invented numbers). Bedrock has no subscription window. See
+(never invented numbers). Bedrock has no subscription window. `claudia
+broker usage -json` lists Cursor, Grok (SuperGrok), Claude, and Codex
+with remaining percent and the ADMIT flag. `claudia broker task --pick
+remaining` and `claudia broker grant --pick remaining` select the
+fullest admitted of those four. See
 [docs/plan-usage.md](docs/plan-usage.md).
 
 Bedrock Task mode is available by selecting `ProviderBedrock`. It calls

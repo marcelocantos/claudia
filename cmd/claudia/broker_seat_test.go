@@ -24,7 +24,7 @@ func TestGrantHelpMentionsSeatFlags(t *testing.T) {
 		return nil
 	})
 	for _, want := range []string{
-		"--provider", "--workdir", "--purpose", "--parent", "--send", "--mode", "--wait", "--release",
+		"--provider", "--pick", "--workdir", "--purpose", "--parent", "--send", "--mode", "--wait", "--release",
 	} {
 		if !strings.Contains(errOut, want) {
 			t.Fatalf("grant -h missing %q:\n%s", want, errOut)

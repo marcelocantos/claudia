@@ -75,7 +75,11 @@ func (b *brokerTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*t
 			close(done)
 		}
 	})
-	resp, err := b.client.call(ctx, &broker.Request{Type: broker.TypeTaskRun, TaskRun: &broker.TaskRunRequest{Task: raw, Prompt: req.Prompt, RawLog: req.RawLog != nil}})
+	pick := ""
+	if cfg.PickByRemaining {
+		pick = PickRemaining
+	}
+	resp, err := b.client.call(ctx, &broker.Request{Type: broker.TypeTaskRun, TaskRun: &broker.TaskRunRequest{Task: raw, Prompt: req.Prompt, RawLog: req.RawLog != nil, Pick: pick}})
 	if err != nil {
 		return nil, err
 	}

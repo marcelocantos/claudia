@@ -27,10 +27,11 @@ func taskCmd(args []string) error {
 	fs := flag.NewFlagSet("task", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), "usage: claudia broker task [--provider P] [--model M] [--workdir DIR] [--id ID] [--timeout D] [--json] [--prompt TEXT | TEXT...]\n")
+		fmt.Fprintf(fs.Output(), "usage: claudia broker task [--provider P | --pick remaining] [--model M] [--workdir DIR] [--id ID] [--timeout D] [--json] [--prompt TEXT | TEXT...]\n")
 		fs.PrintDefaults()
 	}
-	provider := fs.String("provider", "claude", "provider: claude, codex, grok, cursor, bedrock, ollama")
+	provider := fs.String("provider", "", "provider: claude, codex, grok, cursor, bedrock, ollama (default claude, unless --pick remaining)")
+	pick := fs.String("pick", "", "remaining: fullest admitted of cursor, grok, claude, codex")
 	model := fs.String("model", "", "model override")
 	workdir := fs.String("workdir", ".", "working directory the task runs in")
 	id := fs.String("id", "", "task id")
@@ -56,11 +57,16 @@ func taskCmd(args []string) error {
 	if *timeout < 0 {
 		return errors.New("task: timeout must not be negative")
 	}
+	pickRemaining, prov, err := resolvePick(*pick, *provider)
+	if err != nil {
+		return fmt.Errorf("task: %w", err)
+	}
 	cfg := claudia.TaskConfig{
-		ID:       *id,
-		Provider: claudia.Provider(*provider),
-		Model:    *model,
-		WorkDir:  *workdir,
+		ID:              *id,
+		Provider:        prov,
+		Model:           *model,
+		WorkDir:         *workdir,
+		PickByRemaining: pickRemaining,
 	}
 	raw, err := claudia.EncodeTaskConfigWire(cfg)
 	if err != nil {
@@ -84,9 +90,13 @@ func taskCmd(args []string) error {
 		deadline = time.Now().Add(*timeout)
 	}
 	s := &cliConn{c: c}
+	taskRun := &broker.TaskRunRequest{Task: raw, Prompt: prompt}
+	if pickRemaining {
+		taskRun.Pick = claudia.PickRemaining
+	}
 	resp, pushes, err := s.call(ctx, &broker.Request{
 		Type:    broker.TypeTaskRun,
-		TaskRun: &broker.TaskRunRequest{Task: raw, Prompt: prompt},
+		TaskRun: taskRun,
 	}, deadline)
 	if err != nil {
 		return taskWireError(err)
@@ -150,7 +160,12 @@ func readTaskStream(ctx context.Context, s *cliConn, deadline time.Time, asJSON 
 func emitTaskResponses(rs []*broker.Response, asJSON bool, printed *strings.Builder) (done bool, bad bool, err error) {
 	for _, resp := range rs {
 		switch resp.Type {
-		case broker.TypeTaskStarted, broker.TypeTaskEvent, broker.TypeTaskDone:
+		case broker.TypeTaskStarted:
+			if !asJSON && resp.TaskStarted != nil && resp.TaskStarted.RemainingPercent != nil {
+				fmt.Fprintf(os.Stderr, "picked %s remaining=%.0f%%\n", resp.TaskStarted.Provider, *resp.TaskStarted.RemainingPercent)
+			}
+			fallthrough
+		case broker.TypeTaskEvent, broker.TypeTaskDone:
 			if asJSON {
 				line, err := resp.Encode()
 				if err != nil {
