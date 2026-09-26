@@ -15,6 +15,18 @@ export type SpoolRecord = {
   provider?: string;
   model?: string;
   snapshot?: unknown;
+  turn_id?: string;
+  session_id?: string;
+  cause?: string;
+  cause_detail?: string;
+  started_at?: string;
+  ended_at?: string;
+  stop?: string;
+  tool_calls?: number;
+  deltas?: number;
+  chars?: number;
+  stop_token?: string;
+  resume?: string;
 };
 
 const filePrefix = "events-";
@@ -84,7 +96,31 @@ export class Spool {
       this.closed.add(this.liveDay);
       this.liveDay = fileDay;
     }
-    const line = JSON.stringify({ ...rec, ts, seat: rec.seat }) + "\n";
+    // type sits ahead of snapshot so a search can name the line
+    // without reading the agent state (🎯T870).
+    const line = JSON.stringify({
+      ts,
+      seat: rec.seat,
+      type: rec.type,
+      turn_id: rec.turn_id,
+      session_id: rec.session_id,
+      cause: rec.cause,
+      cause_detail: rec.cause_detail,
+      started_at: rec.started_at,
+      ended_at: rec.ended_at,
+      stop: rec.stop,
+      tool_calls: rec.tool_calls,
+      deltas: rec.deltas,
+      chars: rec.chars,
+      stop_token: rec.stop_token,
+      resume: rec.resume,
+      text: rec.text,
+      call_id: rec.call_id,
+      name: rec.name,
+      provider: rec.provider,
+      model: rec.model,
+      snapshot: rec.snapshot,
+    }) + "\n";
     const path = this.pathForDay(fileDay);
     appendFileSync(path, line);
     return path;

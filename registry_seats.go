@@ -307,6 +307,11 @@ func (r *Registry) resumeSeat(ctx context.Context, out *ResumeOutcome, nudge str
 	if how == ResumeAdopted || nudge == NoRestartNudge {
 		return
 	}
+	proc.SetPromptCause(PromptCause{
+		Cause:  "restart-nudge",
+		Detail: oneLineCauseDetail(nudge),
+		Resume: string(how),
+	})
 	if err := proc.Send(nudge); err != nil {
 		out.NudgeErr = err
 		return

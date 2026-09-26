@@ -332,6 +332,14 @@ type Agent struct {
 	// inertTurns is the bounded live-turn log Migrate distills (🎯T55.1).
 	inertTurns []inertTurn
 
+	// promptCause is who prompted the next Send. ResumeAll sets it
+	// before the restart nudge so the sidecar digest can name the
+	// cause (🎯T870). Send moves it to armedPrompt.
+	promptCause    PromptCause
+	promptCauseSet bool
+	armedPrompt    PromptCause
+	armedOK        bool
+
 	// Terminal output streaming. termMu also guards termLog writes,
 	// termLog close, and termLogLive so Stop cannot close the file
 	// while pushTermOutput is mid-write.
@@ -1448,6 +1456,77 @@ func Run(ctx context.Context, prompt string, cfg Config) (string, error) {
 	}
 }
 
+// PromptCause names who prompted the next Send or Steer (🎯T870).
+type PromptCause struct {
+	Cause     string
+	Detail    string
+	Resume    string
+	SessionID string
+	TurnID    string
+}
+
+// SetPromptCause stamps the next Send or Steer. An empty Cause lets
+// the sidecar classify the prompt text.
+func (a *Agent) SetPromptCause(c PromptCause) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	a.promptCause = c
+	a.promptCauseSet = true
+	a.mu.Unlock()
+}
+
+func (a *Agent) takePromptCause() (PromptCause, bool) {
+	if a == nil {
+		return PromptCause{}, false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.promptCauseSet {
+		return PromptCause{}, false
+	}
+	c := a.promptCause
+	a.promptCause = PromptCause{}
+	a.promptCauseSet = false
+	return c, true
+}
+
+func (a *Agent) dropPromptCause() {
+	_, _ = a.takePromptCause()
+}
+
+func (a *Agent) noteArmed(c PromptCause, ok bool) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	a.armedPrompt = c
+	a.armedOK = ok
+	a.mu.Unlock()
+}
+
+func (a *Agent) armedPromptCause() (PromptCause, bool) {
+	if a == nil {
+		return PromptCause{}, false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.armedPrompt, a.armedOK
+}
+
+func oneLineCauseDetail(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexAny(s, "\r\n"); i >= 0 {
+		s = strings.TrimSpace(s[:i])
+	}
+	const max = 160
+	if len(s) > max {
+		s = s[:max]
+	}
+	return s
+}
+
 // SessionID returns the Claude Code session ID.
 func (a *Agent) SessionID() string { return a.sessionID }
 
@@ -1676,15 +1755,19 @@ func (a *Agent) PromptInFlight() bool {
 // interrupt intents live there and on [Agent.Steer] (🎯T72.2).
 func (a *Agent) Send(msg string) error {
 	if err := a.deliverable(); err != nil {
+		a.dropPromptCause()
 		return err
 	}
 	if a.ops.send == nil {
+		a.dropPromptCause()
 		return unsupportedCapability(a.provider, "send", "provider did not supply a send operation")
 	}
 	// Before the write: a Cursor opening prompt does not return until the
 	// peer has spoken, so the reply and its end_turn can be published
 	// while ops.send is still unwinding (🎯T98).
 	a.beginTurn()
+	cause, ok := a.takePromptCause()
+	a.noteArmed(cause, ok)
 	if err := a.ops.send(a, msg); err != nil {
 		return err
 	}

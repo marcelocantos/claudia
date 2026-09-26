@@ -213,6 +213,7 @@ func (a *Agent) Steer(text string) (DeliveryOutcome, error) {
 func (a *Agent) steer(text string, phase TurnPhase) (DeliveryOutcome, error) {
 	out := DeliveryOutcome{Mode: DeliverySteer, PhaseBefore: phase}
 	if a.ops.steer == nil {
+		a.dropPromptCause()
 		out.Mechanism = MechanismSteerUnsupported
 		reason := "steer mechanism not wired for this handle"
 		if !ProviderTurnCaps(a.Provider()).CanSteer {
@@ -222,15 +223,19 @@ func (a *Agent) steer(text string, phase TurnPhase) (DeliveryOutcome, error) {
 		return out, out.Err
 	}
 	if err := a.deliverable(); err != nil {
+		a.dropPromptCause()
 		out.Mechanism = MechanismNone
 		out.Err = err
 		return out, out.Err
 	}
 	if phase != TurnInTurn {
+		a.dropPromptCause()
 		out.Mechanism = MechanismNone
 		out.Err = ErrTurnIdle
 		return out, out.Err
 	}
+	cause, ok := a.takePromptCause()
+	a.noteArmed(cause, ok)
 	steered, err := a.ops.steer(a, text)
 	out.Mechanism, out.SupersededTurnID = steered.Mechanism, steered.SupersededTurnID
 	if err != nil {

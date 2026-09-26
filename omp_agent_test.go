@@ -151,6 +151,17 @@ func TestOMPStartLoadsTokenFromKeychain(t *testing.T) {
 	if prompt.Op != omp.OpPrompt || prompt.Text != "hello" {
 		t.Fatalf("prompt = %+v", prompt)
 	}
+	if prompt.Cause != omp.CauseOwner || prompt.TurnID == "" || prompt.SessionID == "" || prompt.CauseDetail != "hello" {
+		t.Fatalf("prompt did not name an owner turn: %+v", prompt)
+	}
+	agent.SetPromptCause(PromptCause{Cause: omp.CauseRestartNudge, Resume: "launched", Detail: "host restarted at 11:37:34"})
+	if err := agent.Send("[claudia] The host restarted at 11:37:34"); err != nil {
+		t.Fatal(err)
+	}
+	nudged := <-got
+	if nudged.Cause != omp.CauseRestartNudge || nudged.Resume != "launched" || nudged.SessionID != prompt.SessionID {
+		t.Fatalf("restart nudge = %+v, want cause restart-nudge resume=launched session %s", nudged, prompt.SessionID)
+	}
 	deadline := time.After(2 * time.Second)
 	var sawText, sawEnd bool
 	for !sawText || !sawEnd {
@@ -375,6 +386,9 @@ func TestOMPSidecarPromptCallsPiAgentCore(t *testing.T) {
 	}
 	if !strings.Contains(src, "type: \"turn_end\"") || !strings.Contains(src, "snapshot: agent.state") {
 		t.Fatal("turn_end must snapshot that Agent's context")
+	}
+	if !strings.Contains(src, `from "./turn.ts"`) || !strings.Contains(src, "stop_token") {
+		t.Fatal("seat.ts must write a turn digest and keep a stop token off the text stream")
 	}
 	if strings.Contains(src, `@oh-my-pi/pi-natives`) || strings.Contains(src, `@oh-my-pi/pi-coding-agent`) {
 		t.Fatal("sidecar must not load pi-natives or omp's tools")

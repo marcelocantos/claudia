@@ -20,6 +20,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/marcelocantos/claudia/omp"
 )
 
@@ -125,20 +127,25 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 		conn.Close()
 		return nil, fmt.Errorf("omp: sidecar said %q, want ready", ev.Type)
 	}
+	sessionID := req.Config.SessionID
+	if sessionID == "" {
+		sessionID = uuid.NewString()
+	}
 	ctrl := &ompControl{
 		conn: conn, bytes: make(chan []byte, 8),
 		token: token, provider: provider,
 		seat: req.Config.Name, model: req.Config.Model, cwd: req.Config.WorkDir,
+		sessionID: sessionID,
 	}
 	return &agentStart{
 		Control: ctrl,
 		Ops: agentOps{
-			send: func(_ *Agent, text string) error {
+			send: func(a *Agent, text string) error {
 				ctrl.inflight.Store(true)
-				return ctrl.send(omp.Message{Op: omp.OpPrompt, Seat: req.Config.Name, Text: text})
+				return ctrl.send(promptMessage(omp.OpPrompt, req.Config.Name, text, a, ctrl))
 			},
-			steer: func(_ *Agent, text string) (DeliveryOutcome, error) {
-				err := ctrl.send(omp.Message{Op: omp.OpSteer, Seat: req.Config.Name, Text: text})
+			steer: func(a *Agent, text string) (DeliveryOutcome, error) {
+				err := ctrl.send(promptMessage(omp.OpSteer, req.Config.Name, text, a, ctrl))
 				return DeliveryOutcome{}, err
 			},
 			interrupt: func(*Agent) error {
@@ -177,9 +184,46 @@ type ompControl struct {
 	seat      string
 	model     string
 	cwd       string
+	sessionID string
 	mu        sync.Mutex
 	inflight  atomic.Bool
 	refreshed atomic.Bool
+}
+
+func promptMessage(op, seat, text string, a *Agent, ctrl *ompControl) omp.Message {
+	cause, detail, resume, turnID, sessionID := "", "", "", "", ""
+	if c, ok := a.armedPromptCause(); ok {
+		cause, detail, resume = c.Cause, c.Detail, c.Resume
+		turnID, sessionID = c.TurnID, c.SessionID
+	}
+	if op == omp.OpSteer && cause == "" {
+		cause = omp.CauseSteer
+	}
+	if cause == "" || !omp.ValidCause(cause) {
+		cause, detail = omp.ClassifyCause(text)
+	}
+	if detail == "" {
+		detail = omp.OneLine(text)
+	} else {
+		detail = omp.OneLine(detail)
+	}
+	if !omp.ValidResume(resume) {
+		resume = ""
+	}
+	if sessionID == "" && a != nil {
+		sessionID = a.SessionID()
+	}
+	if sessionID == "" && ctrl != nil {
+		sessionID = ctrl.sessionID
+	}
+	if turnID == "" {
+		turnID = uuid.NewString()
+	}
+	return omp.Message{
+		Op: op, Seat: seat, Text: text,
+		TurnID: turnID, SessionID: sessionID,
+		Cause: cause, CauseDetail: detail, Resume: resume,
+	}
 }
 
 func (c *ompControl) send(msg omp.Message) error {
@@ -203,9 +247,13 @@ func (c *ompControl) pump(a *Agent) {
 		}
 		switch ev.Type {
 		case "text":
+			visible, token := omp.StripStopToken(ev.Text)
+			if visible == "" && token != "" {
+				break
+			}
 			a.publishEvent(Event{
 				Type:          "assistant",
-				Text:          ev.Text,
+				Text:          visible,
 				PreviewUpdate: PreviewUpdateAppend,
 			})
 		case "tool_call":

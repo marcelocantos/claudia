@@ -3,6 +3,17 @@
 
 import { Agent, type AgentTool } from "@oh-my-pi/pi-agent-core";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
+import {
+  beginTurn,
+  closeTurn,
+  flushHold,
+  noteDelta,
+  noteTool,
+  stripStopTokens,
+  type OpenTurn,
+  type PromptMeta,
+  type Stop,
+} from "./turn.ts";
 
 export type SeatEvent = {
   type: string;
@@ -16,8 +27,8 @@ export type SeatEmit = (ev: SeatEvent) => void;
 export type SeatCallTool = (callId: string, name: string, args: string) => Promise<string>;
 
 export type SeatAgent = {
-  prompt: (text: string) => Promise<void>;
-  steer: (text: string) => void;
+  prompt: (text: string, meta?: PromptMeta) => Promise<void>;
+  steer: (text: string, meta?: PromptMeta) => void;
   abort: () => void;
   setModel: (provider: string, model: string) => void;
   setToken: (token: string) => void;
@@ -39,6 +50,8 @@ export function createSeatAgent(opts: {
 }): SeatAgent {
   let token = opts.token;
   let cwd = opts.cwd;
+  let sessionId = "";
+  let turn: OpenTurn | null = null;
   const sink = { emit: opts.emit, callTool: opts.callTool };
   const model = resolveModel(opts.provider, opts.model);
   const agent = new Agent({
@@ -55,18 +68,54 @@ export function createSeatAgent(opts: {
     },
   });
 
-  agent.subscribe((event: { type?: string; assistantMessageEvent?: { type?: string; delta?: string } }) => {
+  const finish = (stop: Stop) => {
+    if (!turn || turn.closed) return;
+    const tail = flushHold(turn);
+    if (tail) sink.emit({ type: "text", text: tail });
+    const digest = closeTurn(turn, stop);
+    sink.emit(digest);
+  };
+
+  agent.subscribe((event: {
+    type?: string;
+    assistantMessageEvent?: { type?: string; delta?: string };
+  }) => {
+    if (event.type === "tool_execution_start" && turn && !turn.closed) {
+      noteTool(turn);
+      return;
+    }
     if (event.type === "message_update" && event.assistantMessageEvent?.type === "text_delta") {
-      sink.emit({ type: "text", text: event.assistantMessageEvent.delta ?? "" });
+      const delta = event.assistantMessageEvent.delta ?? "";
+      if (turn && !turn.closed) {
+        const visible = noteDelta(turn, delta);
+        if (visible) sink.emit({ type: "text", text: visible });
+        return;
+      }
+      const stripped = stripStopTokens(delta);
+      if (stripped.visible) sink.emit({ type: "text", text: stripped.visible });
     }
   });
 
   return {
-    prompt: async (text: string) => {
-      await agent.prompt(text);
+    prompt: async (text: string, meta?: PromptMeta) => {
+      if (turn && !turn.closed) finish("error");
+      const metaSession = meta?.session_id || sessionId;
+      turn = beginTurn({
+        seat: "",
+        text,
+        meta: { ...meta, session_id: metaSession || undefined },
+      });
+      sessionId = turn.session_id;
+      try {
+        await agent.prompt(text);
+        finish(turn?.stop_token ? "stop_token" : "end_turn");
+      } catch (err) {
+        finish("error");
+        throw err;
+      }
       sink.emit({ type: "turn_end", snapshot: agent.state });
     },
-    steer: (text: string) => {
+    steer: (text: string, _meta?: PromptMeta) => {
       agent.steer({
         role: "user",
         content: text,
@@ -75,6 +124,7 @@ export function createSeatAgent(opts: {
     },
     abort: () => {
       agent.abort();
+      finish("abort");
     },
     setModel: (provider: string, modelId: string) => {
       agent.setModel(resolveModel(provider, modelId));

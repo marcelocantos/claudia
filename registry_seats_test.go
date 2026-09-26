@@ -144,6 +144,12 @@ func TestRegistryResumeAllWithoutDaemon(t *testing.T) {
 	if o := byName["gone"]; o.How != ResumeLaunched || !o.Nudged || o.Agent == nil {
 		t.Fatalf("gone = %+v, want launched and nudged", o)
 	}
+	if c, ok := byName["gone"].Agent.armedPromptCause(); !ok || c.Cause != "restart-nudge" || c.Resume != string(ResumeLaunched) {
+		t.Fatalf("launched nudge cause = %+v ok=%v, want restart-nudge resume=launched", c, ok)
+	}
+	if _, ok := byName["still-there"].Agent.armedPromptCause(); ok {
+		t.Fatal("adopted seat was given a restart cause")
+	}
 	if o := byName["broken"]; o.Err == nil || !strings.Contains(o.Err.Error(), "permission") {
 		t.Fatalf("broken = %+v, want its start error", o)
 	}

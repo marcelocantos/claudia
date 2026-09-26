@@ -34,6 +34,11 @@ type Line = {
   text?: string;
   call_id?: string;
   result?: string;
+  turn_id?: string;
+  session_id?: string;
+  cause?: string;
+  cause_detail?: string;
+  resume?: string;
 };
 
 type Seat = {
@@ -60,16 +65,30 @@ const server = createServer((socket) => {
     if (seat) {
       try {
         const loaded = seats.get(seat);
+        const str = (k: string) => (typeof ev[k] === "string" ? ev[k] as string : undefined);
+        const num = (k: string) => (typeof ev[k] === "number" ? ev[k] as number : undefined);
         defaultWriter().append({
-          ts: new Date().toISOString(),
+          ts: str("ts") ?? new Date().toISOString(),
           seat,
           type: String(ev.type ?? ""),
-          text: typeof ev.text === "string" ? ev.text : undefined,
-          call_id: typeof ev.call_id === "string" ? ev.call_id : undefined,
-          name: typeof ev.name === "string" ? ev.name : undefined,
+          text: str("text"),
+          call_id: str("call_id"),
+          name: str("name"),
           provider: loaded?.provider,
           model: loaded?.model,
           snapshot: ev.snapshot,
+          turn_id: str("turn_id"),
+          session_id: str("session_id"),
+          cause: str("cause"),
+          cause_detail: str("cause_detail"),
+          started_at: str("started_at"),
+          ended_at: str("ended_at"),
+          stop: str("stop"),
+          tool_calls: num("tool_calls"),
+          deltas: num("deltas"),
+          chars: num("chars"),
+          stop_token: str("stop_token"),
+          resume: str("resume"),
         });
       } catch (err) {
         console.error("spool append failed", err);
@@ -167,12 +186,22 @@ async function handle(
     return;
   }
   if (msg.op === "steer") {
-    loaded.agent.steer(msg.text ?? "");
+    loaded.agent.steer(msg.text ?? "", promptMeta(msg));
     return;
   }
   if (msg.op === "prompt") {
-    await loaded.agent.prompt(msg.text ?? "");
+    await loaded.agent.prompt(msg.text ?? "", promptMeta(msg));
   }
+}
+
+function promptMeta(msg: Line) {
+  return {
+    turn_id: msg.turn_id,
+    session_id: msg.session_id,
+    cause: msg.cause,
+    cause_detail: msg.cause_detail,
+    resume: msg.resume,
+  };
 }
 
 server.listen(sock);

@@ -32,6 +32,13 @@ type Message struct {
 	Text     string `json:"text,omitempty"`
 	CallID   string `json:"call_id,omitempty"`
 	Result   string `json:"result,omitempty"`
+	// Turn fields name who prompted the seat (🎯T870). The sidecar
+	// writes them onto the digest when it accepts the prompt.
+	TurnID      string `json:"turn_id,omitempty"`
+	SessionID   string `json:"session_id,omitempty"`
+	Cause       string `json:"cause,omitempty"`
+	CauseDetail string `json:"cause_detail,omitempty"`
+	Resume      string `json:"resume,omitempty"`
 }
 
 // Event is one sidecar line. Type turn_end carries a context snapshot.
