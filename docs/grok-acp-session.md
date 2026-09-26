@@ -118,21 +118,26 @@ does not adopt, and a provider `agent_failed` is the daemon's answer,
 so the registry now returns it once (`TestLaunchReturnsBrokerAgentFailedOnce`).
 The grant wire itself is healthy. This is separate from the grant CLI.
 
-`omp` is a Node helper. Its log on that machine,
-`~/.local/state/claudia/omp-sidecar.log`, starts with zsh
+`omp` is a Node helper used by **Grok and Cursor** broker seats. Claude
+and Codex stay on their vendor paths and do not start it. Its log on
+that machine, `~/.local/state/claudia/omp-sidecar.log`, starts with zsh
 `(eval):7: command not found: setsid` and then repeats
 `Error: write EPIPE` (`node:net`). macOS does not ship a `setsid`
 binary. The helper's startup eval fails, the ready handshake returns
 the word `error` immediately, and the Node process writes to the pipe
-the parent has already closed. `EPIPE` is that closed pipe.
+the parent has already closed. `EPIPE` is that closed pipe. A later
+Cursor keep-open Launch failed the same way in about 6ms.
 
 Claudia moves existing user tool directories to the front of the
-**grok child's** `PATH` (the daemon's own `PATH` stays system-first).
-The handshake error names the helper, the status word, the log path,
-and `brew install util-linux` (that formula provides `setsid`) followed
-by `brew services restart claudia`. When the log is present, the error
-quotes its `setsid` and `EPIPE` lines. The handshake text itself is not
-produced by claudia.
+**Grok and Cursor child's** `PATH` (the daemon's own `PATH` stays
+system-first). When that PATH has no `setsid`, Claudia also prepends
+`~/.local/state/claudia/bin/setsid`, a perl shim that calls
+`setsid(2)`. Claude and Codex children do not get that shim. The
+handshake error names the helper, the status word, the log path, and
+`brew install util-linux` (a native `setsid` if perl cannot run the
+shim) followed by `brew services restart claudia`. When the log is
+present, the error quotes its `setsid` and `EPIPE` lines. The handshake
+text itself is not produced by claudia.
 
 Verify on a Mac after installing this build:
 
@@ -142,10 +147,11 @@ brew services restart claudia
 # sock is ~/.local/state/claudia/broker.sock when the brew unit is up
 ```
 
-Then acquire a Grok Session through broker `Start` (leave
+Then acquire a Grok or Cursor seat through broker `Start` (leave
 `CLAUDIA_NO_BROKER` unset). A healthy seat returns a handle with
-`DaemonHeld() == true`. A helper that still answers `error` names
-itself; read `~/.local/state/claudia/omp-sidecar.log`.
+`DaemonHeld() == true`. Claude and Codex keep-open grants do not go
+through omp. A helper that still answers `error` names itself; read
+`~/.local/state/claudia/omp-sidecar.log`.
 
 ### Oracles
 

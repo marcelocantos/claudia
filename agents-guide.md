@@ -1020,14 +1020,17 @@ Design record: [docs/metaharness.md](docs/metaharness.md).
    then known locations including `~/.grok/bin/grok`. Broker `Start`
    runs that CLI inside the daemon. A brew service `PATH` lists system
    directories first and `~/.grok/bin` last. Claudia moves existing
-   user tool directories to the front of the grok child's `PATH`. A
-   helper that answers its ready handshake with a status other than
-   `ready` (`omp: sidecar said "error", want ready`) fails the grant
-   immediately, with the helper name, that status, and
+   user tool directories to the front of the Grok and Cursor child's
+   `PATH` and, when the host has no `setsid` binary, prepends a perl
+   shim at `~/.local/state/claudia/bin/setsid`. Claude and Codex do not
+   use that helper. A handshake status other than `ready`
+   (`omp: sidecar said "error", want ready`) fails the Grok or Cursor
+   grant immediately, with the helper name, that status, and
    `~/.local/state/claudia/omp-sidecar.log`. When that log contains
-   `command not found: setsid`, install `util-linux` (macOS does not
-   ship `setsid`) and `brew services restart claudia`. The following
-   `write EPIPE` lines are the Node helper writing to a closed pipe.
+   `command not found: setsid`, restart the daemon on this build so the
+   shim is on the child PATH; `brew install util-linux` is the native
+   binary. The following `write EPIPE` lines are the Node helper
+   writing to a closed pipe.
    Ollama needs a
    reachable daemon (`CLAUDIA_OLLAMA_ENDPOINT`, default
    `http://127.0.0.1:11434`) and a model (`TaskConfig.Model` or

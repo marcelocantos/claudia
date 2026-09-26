@@ -63,6 +63,8 @@ func TestExplainGrokSidecarHandshakeNamesTheHelper(t *testing.T) {
 		"command not found: setsid",
 		"util-linux",
 		"write EPIPE",
+		"Cursor",
+		"shim",
 	} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("diagnosis %q missing %q", msg, want)
@@ -94,7 +96,7 @@ func TestExplainGrokSidecarHandshakeNamesTheHelper(t *testing.T) {
 
 	closed := fmt.Errorf("acp initialize: grok acp: connection closed waiting for initialize")
 	fromStderr := explainGrokSidecarHandshake(closed, "omp: sidecar said \"error\", want ready\n")
-	if !strings.Contains(fromStderr.Error(), `grok helper "omp"`) || !strings.Contains(fromStderr.Error(), "grok stderr:") {
+	if !strings.Contains(fromStderr.Error(), `helper "omp"`) || !strings.Contains(fromStderr.Error(), "child stderr:") {
 		t.Fatalf("stderr handshake was not diagnosed: %s", fromStderr)
 	}
 }
@@ -109,7 +111,7 @@ func TestStartGrokACPExplainsSidecarHandshakeOnStderr(t *testing.T) {
 		t.Fatal("expected startup failure")
 	}
 	msg := err.Error()
-	for _, want := range []string{`grok helper "omp"`, `sidecar said "error", want ready`, "brew services restart claudia", "grok stderr:"} {
+	for _, want := range []string{`helper "omp"`, `sidecar said "error", want ready`, "brew services restart claudia", "child stderr:"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("error %q missing %q", msg, want)
 		}
@@ -144,7 +146,83 @@ sys.stdout.flush()
 		t.Fatal("expected startup failure")
 	}
 	msg := err.Error()
-	for _, want := range []string{"acp initialize:", `grok helper "omp"`, `sidecar said "error", want ready`, "brew services restart claudia"} {
+	for _, want := range []string{"acp initialize:", `helper "omp"`, `sidecar said "error", want ready`, "brew services restart claudia"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error %q missing %q", msg, want)
+		}
+	}
+}
+
+func TestProviderChildEnvSuppliesSetsidWhenTheHostHasNone(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("setsid shim is a POSIX shell")
+	}
+	if _, err := exec.LookPath("perl"); err != nil {
+		t.Skip("perl required for the setsid shim")
+	}
+	if _, err := os.Stat("/usr/bin/python3"); err != nil {
+		t.Skip("python3 required to observe the session id")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("PATH", filepath.Join(home, "no-such-dir"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, "state"))
+
+	env := providerChildEnv(nil)
+	shimDir := filepath.Join(home, "state", "claudia", "bin")
+	shim := filepath.Join(shimDir, "setsid")
+	if _, err := os.Stat(shim); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(envValue(env, "PATH"), shimDir+string(os.PathListSeparator)) {
+		t.Fatalf("PATH %q, want shim dir first", envValue(env, "PATH"))
+	}
+	cmd := exec.Command(shim, "/usr/bin/python3", "-c", "import os; print(os.getpid(), os.getsid(0))")
+	cmd.Env = env
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("shim: %v\n%s", err, out)
+	}
+	fields := strings.Fields(string(out))
+	if len(fields) != 2 || fields[0] != fields[1] {
+		t.Fatalf("shim did not start a session leader, output %q", out)
+	}
+}
+
+func TestProviderChildEnvKeepsHostSetsid(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("setsid shim is a POSIX shell")
+	}
+	home := t.TempDir()
+	bin := filepath.Join(home, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	host := filepath.Join(bin, "setsid")
+	if err := os.WriteFile(host, []byte("#!/bin/sh\necho host-setsid\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("PATH", bin)
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, "state"))
+
+	env := providerChildEnv(nil)
+	if got := lookupExecutable(envValue(env, "PATH"), "setsid"); got != host {
+		t.Fatalf("setsid resolved to %q, want the host binary %s", got, host)
+	}
+}
+
+func TestStartCursorACPExplainsSidecarHandshake(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake cursor agent uses a POSIX shell")
+	}
+	bin := writeFailingGrok(t, "#!/bin/sh\necho 'omp: sidecar said \"error\", want ready' >&2\nexit 1\n")
+	_, err := startCursorACP(t.Context(), bin, t.TempDir(), "", "", false, nil, nil, nil, nil)
+	if err == nil {
+		t.Fatal("expected startup failure")
+	}
+	msg := err.Error()
+	for _, want := range []string{`helper "omp"`, `sidecar said "error", want ready`, "setsid", "Cursor", "child stderr:"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("error %q missing %q", msg, want)
 		}
