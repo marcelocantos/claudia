@@ -941,20 +941,18 @@ text, err := agent.WaitForResponse(ctx)
 
 Parent and Purpose are fleet labels on `AgentDef`, not fields of
 `Config`. Empty Purpose means `work`. They ride the grant when a
-consumer Registry launches the seat. An ephemeral Pimp seat uses
-Parent `pimp`, a name like `pimp-smoke-*`, and Purpose `work`, `aside`,
-or `overseer`:
+consumer Registry launches the seat. An ephemeral plumbing seat is a
+name prefixed `pimp-smoke-` or `pimp-handoff-` (the suffix is required;
+`pimp-smoke` alone is not one). Purpose stays `work`, `aside`, or
+`overseer`. Parent is `pimp`. `EphemeralSeatDef` sets those fields and
+a workdir under the system temp directory:
 
 ```go
-err = reg.Register(claudia.AgentDef{
-    Name:      "pimp-smoke-1",
-    Parent:    "pimp",
-    Purpose:   claudia.PurposeWork,
-    Provider:  claudia.ProviderGrok,
-    WorkDir:   workDir,
-    SessionID: uuid.NewString(),
-})
-agent, err = reg.Launch("pimp-smoke-1")
+def, err := claudia.EphemeralSeatDef(claudia.EphemeralSmoke, "1", claudia.PurposeWork)
+if err != nil { /* ... */ }
+def.Provider = claudia.ProviderGrok
+err = reg.Register(def)
+agent, err = reg.Launch(def.Name)
 // Send, Steer, Interrupt, WaitForResponse, Stop, and Detach, same as Start.
 ```
 
@@ -966,20 +964,29 @@ callers smoke it against `~/.local/state/claudia/broker.sock` today.
 The `grant` / `send` / `interrupt` / `events` CLI subcommands are on
 HEAD; that brew `claudia` binary does not have them yet, so smoke the
 CLI with a HEAD build against the same socket until the formula
-catches up. `claudia broker grant -h` lists the flags. One shell
+catches up. The orphan TTL is daemon-side too: `broker serve` has to
+be this commit. A brew 0.44.0 daemon accepts the grant and leaves it
+running. `claudia broker grant -h` lists the flags. One shell
 smoke, which holds one connection the way the `*Agent` does:
 
 ```bash
 claudia broker grant \
-  --name "pimp-smoke-$RANDOM" --provider grok --workdir "$PWD" \
+  --name "pimp-smoke-$RANDOM" --provider grok \
   --parent pimp --purpose work \
   --send 'Reply with exactly the word pong.' --wait --release stop
 ```
 
-Stdout is the assistant text. Exit without `--release stop` detaches
-(the seat keeps running). A later `send`, `interrupt`, or `events`
-re-grants from the fields `grants` lists and keeps the daemon's session
-id. A seat that also carries MCP servers or a sandbox policy stays on
+Stdout is the assistant text. The daemon runs that seat in
+`$TMPDIR/claudia-pimp/<name>` unless `--workdir` is already under the
+temp directory or a `_scratchpad` directory; a repo path is not used.
+`--release stop` tears the seat down. Exit without it, or a crashed
+client, detaches: the same name reconnects to the running seat
+(`grant`, `send`, `interrupt`, or `events`) and keeps the daemon's
+session id. Two minutes later (`EphemeralGrantTTL`), if nobody has
+reclaimed it, the daemon stops the process and drops the grant. A
+jevons seat — any other name — is not on that clock. Detach leaves it
+running for a later reclaim, including across a daemon restart.
+A seat that also carries MCP servers or a sandbox policy stays on
 the library, which re-grants the definition it first sent.
 
 - **Sessions are grants.** `Start` / `Registry.Launch` send the
@@ -1029,9 +1036,11 @@ the library, which re-grants the definition it first sent.
   model-intel refresher (`RunModelIntelRefresher`). What only a daemon
   gives is a seat that outlives its consumer (`Agent.Detach` lets go of
   one for a later reclaim), one seat owner at a time, one usage evaluator
-  for the host, and the socket. Auto-actuating policy (rebind 🎯T2.12,
-  reaping, preemption) will be opt-in library code, off in direct mode
-  unless enabled; none is built yet.
+  for the host, and the socket. Ephemeral plumbing seats are the one
+  grant the daemon releases on its own, after `EphemeralGrantTTL` unowned
+  (see above). Auto-actuating policy (rebind 🎯T2.12, idle reaping,
+  preemption) will be opt-in library code, off in direct mode unless
+  enabled; none of that is built yet.
 
 **Test suites must opt out.** A running daemon is reachable from
 `go test` like from any process, so a consumer's hermetic suite that
