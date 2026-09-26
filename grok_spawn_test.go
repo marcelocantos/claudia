@@ -59,6 +59,10 @@ func TestExplainGrokSidecarHandshakeNamesTheHelper(t *testing.T) {
 		`sidecar said "error", want ready`,
 		"brew services restart claudia",
 		"~/.grok/bin",
+		"omp-sidecar.log",
+		"command not found: setsid",
+		"util-linux",
+		"write EPIPE",
 	} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("diagnosis %q missing %q", msg, want)
@@ -71,6 +75,21 @@ func TestExplainGrokSidecarHandshakeNamesTheHelper(t *testing.T) {
 	unrelated := fmt.Errorf("acp initialize: acp initialize: boom")
 	if explainGrokSidecarHandshake(unrelated, "plain stderr") != unrelated {
 		t.Fatal("a non-handshake failure was rewritten")
+	}
+
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	logPath := filepath.Join(state, "claudia", "omp-sidecar.log")
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	logBody := "(eval):7: command not found: setsid\n\n[Uncaught Exception] Error: write EPIPE\n    at failWrite (node:net:60:30)\n"
+	if err := os.WriteFile(logPath, []byte(logBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	quoted := explainGrokSidecarHandshake(raw, "")
+	if !strings.Contains(quoted.Error(), "omp-sidecar.log:") || !strings.Contains(quoted.Error(), "command not found: setsid") || !strings.Contains(quoted.Error(), "write EPIPE") {
+		t.Fatalf("log excerpt missing: %s", quoted)
 	}
 
 	closed := fmt.Errorf("acp initialize: grok acp: connection closed waiting for initialize")

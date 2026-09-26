@@ -101,31 +101,51 @@ directories first on `PATH` and `~/.grok/bin` last, and it does not
 include directories an interactive shell adds (`~/.cargo/bin`,
 `~/.py/bin`, `~/.den/bin`, `~/.bun/bin`). Helpers the `grok` CLI execs
 by name therefore resolve differently from a shell that prepends
-`~/.grok/bin`. When such a helper answers its ready handshake with a
-status other than `ready`, the grant used to surface only:
+`~/.grok/bin`.
 
-```text
-agent_failed: omp: sidecar said "error", want ready
-```
+Colossus Pimp-1 smoke on 2026-09-26 (brew daemon socket healthy, grok
+weekly still 86%, so no turn was burned) failed both entry points on
+the same line, in milliseconds:
 
-Claudia now moves existing user tool directories to the front of the
+| Caller | Result |
+| --- | --- |
+| Library `Register` + `Launch` (`Parent=pimp`, `Purpose=work`, `ProviderGrok`) | `Launch FAIL` after **7ms**: `broker protocol: agent_failed: omp: sidecar said "error", want ready` |
+| CLI at `b21cb7d` | same `agent_failed` line, wall time **0s** |
+
+The library log also printed `WARN adopt failed; falling back to launch`
+with that same error. That line was a second broker grant: `Launch`
+does not adopt, and a provider `agent_failed` is the daemon's answer,
+so the registry now returns it once (`TestLaunchReturnsBrokerAgentFailedOnce`).
+The grant wire itself is healthy. This is separate from the grant CLI.
+
+`omp` is a Node helper. Its log on that machine,
+`~/.local/state/claudia/omp-sidecar.log`, starts with zsh
+`(eval):7: command not found: setsid` and then repeats
+`Error: write EPIPE` (`node:net`). macOS does not ship a `setsid`
+binary. The helper's startup eval fails, the ready handshake returns
+the word `error` immediately, and the Node process writes to the pipe
+the parent has already closed. `EPIPE` is that closed pipe.
+
+Claudia moves existing user tool directories to the front of the
 **grok child's** `PATH` (the daemon's own `PATH` stays system-first).
-If the helper still answers `error`, the grant error names the helper,
-the status word, `brew services restart claudia`, and any stderr the
-child wrote. The handshake itself is not produced by claudia; it is
-whatever the helper printed.
+The handshake error names the helper, the status word, the log path,
+and `brew install util-linux` (that formula provides `setsid`) followed
+by `brew services restart claudia`. When the log is present, the error
+quotes its `setsid` and `EPIPE` lines. The handshake text itself is not
+produced by claudia.
 
 Verify on a Mac after installing this build:
 
 ```bash
+brew install util-linux   # provides setsid
 brew services restart claudia
 # sock is ~/.local/state/claudia/broker.sock when the brew unit is up
 ```
 
 Then acquire a Grok Session through broker `Start` (leave
 `CLAUDIA_NO_BROKER` unset). A healthy seat returns a handle with
-`DaemonHeld() == true`. A helper that still fails names itself in the
-error; read that helper's log for the status word `error`.
+`DaemonHeld() == true`. A helper that still answers `error` names
+itself; read `~/.local/state/claudia/omp-sidecar.log`.
 
 ### Oracles
 

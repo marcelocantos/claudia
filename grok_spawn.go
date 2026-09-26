@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/marcelocantos/claudia/internal/broker"
 )
 
 // grokStderrCaptureMax bounds the startup stderr kept for a failed grant.
@@ -226,14 +228,57 @@ func grokSidecarHelperName(blob string, markerAt int) string {
 }
 
 func grokSidecarDiagnosis(name, status string) string {
-	return fmt.Sprintf(
+	msg := fmt.Sprintf(
 		"grok helper %q answered its ready handshake with %q (sidecar said %q, want ready). "+
-			"Broker Start runs this seat inside the claudia daemon, so the child receives the service environment. "+
-			"A brew-installed daemon keeps system directories first on PATH, places ~/.grok/bin last, and leaves off directories an interactive shell adds (~/.cargo/bin, ~/.py/bin, ~/.den/bin, ~/.bun/bin). "+
-			"This build moves existing user tool directories to the front of the grok child's PATH (~/.grok/bin, ~/.local/bin, ~/go/bin, ~/.cargo/bin, ~/.py/bin, ~/.den/bin, ~/.bun/bin), which is how an in-process StartDirect resolves them. "+
-			"When %s still answers %q, install that helper, restart the daemon (`brew services restart claudia`, or the supervisor/launchd unit that runs `claudia broker serve`), and read the helper's own log. The handshake returns only the status word.",
-		name, status, status, name, status,
+			"The broker grant returns as soon as the helper answers, so a failure in milliseconds is this handshake, with the socket up and no model turn burned. "+
+			"The helper log is %s. When that log contains `command not found: setsid`, omp is a Node process whose zsh startup eval cannot find the setsid binary; macOS does not ship one, and `brew install util-linux` does. "+
+			"Lines reading `write EPIPE` are that process writing to the pipe the parent closed after the handshake returned %q. "+
+			"Install setsid, then restart the daemon (`brew services restart claudia`). "+
+			"This build also moves existing user tool directories to the front of the grok child's PATH (~/.grok/bin, ~/.local/bin, ~/go/bin, ~/.cargo/bin, ~/.py/bin, ~/.den/bin, ~/.bun/bin) so a brew service PATH, which keeps system directories first, resolves the same helpers an interactive shell does.",
+		name, status, status, ompSidecarLogPath(), status,
 	)
+	if excerpt := ompSidecarLogExcerpt(); excerpt != "" {
+		msg += "\n\n" + excerpt
+	}
+	return msg
+}
+
+func ompSidecarLogPath() string {
+	dir, err := broker.StateDir()
+	if err != nil || dir == "" {
+		return "~/.local/state/claudia/omp-sidecar.log"
+	}
+	return filepath.Join(dir, "omp-sidecar.log")
+}
+
+// ompSidecarLogExcerpt quotes the setsid / EPIPE lines from the helper log
+// when this machine has them. Colossus 2026-09-26: one `command not found:
+// setsid`, then repeated Node `write EPIPE`.
+func ompSidecarLogExcerpt() string {
+	body := readFileTail(ompSidecarLogPath(), grokStderrCaptureMax)
+	if body == "" {
+		return ""
+	}
+	if !strings.Contains(body, "setsid") && !strings.Contains(body, "EPIPE") {
+		return ""
+	}
+	var lines []string
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if strings.Contains(line, "setsid") || strings.Contains(line, "EPIPE") {
+			lines = append(lines, line)
+		}
+		if len(lines) == 6 {
+			break
+		}
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return "omp-sidecar.log:\n" + strings.Join(lines, "\n")
 }
 
 func readFileTail(path string, max int) string {

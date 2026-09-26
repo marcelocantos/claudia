@@ -440,6 +440,13 @@ func (r *Registry) startHeld(ctx context.Context, op *registryLifecycle, name st
 	if usingBroker() && !direct {
 		proc, err = startViaBrokerContext(withGrantHint(ctx, grantHint{adopt: adopt, fallback: fallback, def: &def}), cfg)
 		if err == nil || !brokerFellThrough(err) {
+			// A provider failure is the daemon's answer. Continuing would
+			// call Start again, grant a second time, and log "adopt failed"
+			// for a Launch that never adopted. Colossus pimp-smoke did that:
+			// two identical OMP handshake refusals in 7ms.
+			if err != nil {
+				return nil, err
+			}
 			adopt, started = false, true
 		} else {
 			proc, err = nil, nil
