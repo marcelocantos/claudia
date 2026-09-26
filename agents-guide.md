@@ -1096,7 +1096,22 @@ Design record: [docs/metaharness.md](docs/metaharness.md).
    or auth falls through to API-key mode, the spawn fails closed with a
    loud warning so the no-per-token path is verified, not assumed.
    Grok Build CLI resolver checks `GROK_BIN`, then `grok` on `$PATH`,
-   then known locations including `~/.grok/bin/grok`. Ollama needs a
+   then known locations including `~/.grok/bin/grok`. Broker `Start`
+   runs that CLI inside the daemon. A brew service `PATH` lists system
+   directories first and `~/.grok/bin` last. Claudia moves existing
+   user tool directories to the front of the Grok and Cursor child's
+   `PATH` and, when the host has no `setsid` binary, inserts a perl
+   shim (`~/.local/state/claudia/bin/setsid`) after those directories.
+   Claude and Codex do not
+   use that helper. A handshake status other than `ready`
+   (`omp: sidecar said "error", want ready`) fails the Grok or Cursor
+   grant immediately, with the helper name, that status, and
+   `~/.local/state/claudia/omp-sidecar.log`. When that log contains
+   `command not found: setsid`, restart the daemon on this build so the
+   shim is on the child PATH; `brew install util-linux` is the native
+   binary. The following `write EPIPE` lines are the Node helper
+   writing to a closed pipe.
+   Ollama needs a
    reachable daemon (`CLAUDIA_OLLAMA_ENDPOINT`, default
    `http://127.0.0.1:11434`) and a model (`TaskConfig.Model` or
    `CLAUDIA_OLLAMA_MODEL`). Bedrock uses the AWS SDK default chain.

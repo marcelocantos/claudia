@@ -4,7 +4,6 @@
 package claudia
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -130,9 +129,10 @@ func startCursorACP(ctx context.Context, bin string, workDir, model, sessionID s
 	}
 	cmd := exec.Command(bin, cursorACPArgs(model)...)
 	cmd.Dir = workDir
-	if len(extraEnv) > 0 {
-		cmd.Env = appendEnv(nil, extraEnv)
-	}
+	// Same child environment as Grok. Both exec the omp helper, which
+	// needs setsid and the user tool directories a brew service PATH omits.
+	// Claude and Codex do not take this path.
+	cmd.Env = providerChildEnv(extraEnv)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -169,7 +169,8 @@ func startCursorACP(ctx context.Context, bin string, workDir, model, sessionID s
 		sessionID:   sessionID,
 	}
 
-	go c.drainStderr()
+	stderrCap := newGrokStderrCapture()
+	go stderrCap.consume(stderr)
 	go c.readLoop()
 
 	// Closing the transport does not acquire its write lock, so cancellation
@@ -185,16 +186,13 @@ func startCursorACP(ctx context.Context, bin string, workDir, model, sessionID s
 		}
 	}()
 	if err := c.initialize(ctx); err != nil {
-		c.Close()
-		return nil, err
+		return nil, c.failStart(err, stderrCap)
 	}
 	if err := c.authenticate(ctx); err != nil {
-		c.Close()
-		return nil, err
+		return nil, c.failStart(err, stderrCap)
 	}
 	if err := c.openSession(ctx, workDir, sessionID, requireResume, mcpServers); err != nil {
-		c.Close()
-		return nil, err
+		return nil, c.failStart(err, stderrCap)
 	}
 	// If cancellation won the handoff race, no closed client escapes. Once
 	// disarmed, a later cancellation cannot kill the successfully started agent.
@@ -216,15 +214,19 @@ func (c *cursorACPClient) SessionID() string {
 	return c.sessionID
 }
 
-func (c *cursorACPClient) drainStderr() {
-	if c.stderr == nil {
-		return
+// failStart kills the child, drains stderr, then reaps it. Wait must run
+// after the stderr reader finishes. The handshake line is the same one
+// Grok seats see: omp answered "error" instead of ready.
+func (c *cursorACPClient) failStart(err error, stderr *grokStderrCapture) error {
+	if c.cmd != nil && c.cmd.Process != nil {
+		_ = c.cmd.Process.Kill()
 	}
-	sc := bufio.NewScanner(c.stderr)
-	sc.Buffer(make([]byte, 256*1024), 256*1024)
-	for sc.Scan() {
-		slog.Debug("cursor acp stderr", "line", sc.Text())
+	text := ""
+	if stderr != nil {
+		text = stderr.wait()
 	}
+	c.Close()
+	return explainGrokSidecarHandshake(err, text)
 }
 
 func (c *cursorACPClient) readLoop() {
