@@ -8,6 +8,10 @@
 //	claudia broker grants           every seat, owner and liveness
 //	claudia broker tail             lifecycle events as NDJSON
 //	claudia broker usage [--refresh] the plan-usage snapshot
+//	claudia broker grant            start or reclaim a named seat
+//	claudia broker send             deliver a turn (submit, steer, or interrupt-then-submit)
+//	claudia broker interrupt        cancel the seat's current turn
+//	claudia broker events           follow one seat's event stream
 //	claudia broker release NAME [--detach | --force]
 //	claudia broker install|uninstall  launchd user agent (macOS)
 //	claudia broker socket           print the socket path
@@ -69,7 +73,7 @@ func run(args []string) int {
 }
 
 func usageText() string {
-	return `usage: claudia broker <serve|status|grants|tail|usage|release|install|uninstall|socket> [flags]
+	return `usage: claudia broker <serve|status|grants|tail|usage|release|grant|send|interrupt|events|install|uninstall|socket> [flags]
        claudia models intel <refresh|latest|history|drift> [flags]
        claudia version | --version | -v
        claudia --help | -h
@@ -99,6 +103,17 @@ func brokerCmd(args []string) error {
 		return usageCmd(args[1:])
 	case "release":
 		return release(args[1:])
+	case "grant":
+		return grantCmd(args[1:])
+	case "send":
+		return sendCmd(args[1:])
+	case "interrupt":
+		return interruptCmd(args[1:])
+	case "events":
+		return eventsCmd(args[1:])
+	case "-h", "--help", "help":
+		usage()
+		return nil
 	case "install":
 		return install(args[1:])
 	case "uninstall":
@@ -157,8 +172,15 @@ func serve(args []string) error {
 	return err
 }
 
-// dial connects to the daemon or explains why it cannot.
-func dial() (*broker.Conn, error) {
+// cliRPCTimeout bounds one status-style round trip. A seat command keeps
+// the connection open and applies its own --timeout; grant startup can
+// outlast this.
+const cliRPCTimeout = 30 * time.Second
+
+// dialConn connects to the daemon or explains why it cannot. The caller
+// sets any deadline: a one-shot round trip wants one, a seat command
+// that then waits on events does not.
+func dialConn() (*broker.Conn, error) {
 	path, err := broker.SocketPath()
 	if err != nil {
 		return nil, err
@@ -167,7 +189,16 @@ func dial() (*broker.Conn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("no daemon at %s (start one with `claudia broker serve` or `claudia broker install`): %w", path, err)
 	}
-	_ = c.SetDeadline(time.Now().Add(30 * time.Second))
+	return c, nil
+}
+
+// dial connects to the daemon for one short round trip.
+func dial() (*broker.Conn, error) {
+	c, err := dialConn()
+	if err != nil {
+		return nil, err
+	}
+	_ = c.SetDeadline(time.Now().Add(cliRPCTimeout))
 	return c, nil
 }
 

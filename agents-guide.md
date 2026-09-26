@@ -906,6 +906,82 @@ lifecycles for every claudia consumer on the host (🎯T2). Nothing in
 the API above changes when it runs; what changes is who owns the
 process.
 
+### Supported path
+
+The supported path, when a daemon is up, is the Go library holding one
+`*Agent`. The default socket is `~/.local/state/claudia/broker.sock`
+(`$XDG_STATE_HOME/claudia/broker.sock` when that variable is absolute;
+`CLAUDIA_BROKER_SOCKET` overrides; `claudia broker socket` prints it).
+`BrokerAvailable` reports whether a daemon is behind that socket.
+
+Leave `CLAUDIA_NO_BROKER`, `Registry.SetDirect`, `Task.SetDirect`, and
+`StartDirect` unset. Those select the in-process path. The handle's
+connection stays open for the life of the `*Agent`: that connection
+owns the grant and is where events arrive. `Send`, `Steer`,
+`Interrupt`, `WaitForResponse`, `Stop`, and `Detach` run on it.
+`WaitForResponse` is a client-side fold over that stream (assistant
+text through a terminal stop, then a short settle). The wire has no
+`wait` message. `Stop` releases the seat and tears it down. `Detach`
+releases ownership and leaves the seat running; a later `Start` or
+`Launch` of the same name reclaims it.
+
+`Config.Name` is the grant key:
+
+```go
+agent, err := claudia.Start(claudia.Config{
+    Name:     "pimp-smoke-1",
+    Provider: claudia.ProviderGrok,
+    WorkDir:  workDir,
+})
+if err != nil { /* ... */ }
+defer agent.Stop()
+if err := agent.Send("Reply with exactly the word pong."); err != nil { /* ... */ }
+text, err := agent.WaitForResponse(ctx)
+```
+
+Parent and Purpose are fleet labels on `AgentDef`, not fields of
+`Config`. Empty Purpose means `work`. They ride the grant when a
+consumer Registry launches the seat. An ephemeral Pimp seat uses
+Parent `pimp`, a name like `pimp-smoke-*`, and Purpose `work`, `aside`,
+or `overseer`:
+
+```go
+err = reg.Register(claudia.AgentDef{
+    Name:      "pimp-smoke-1",
+    Parent:    "pimp",
+    Purpose:   claudia.PurposeWork,
+    Provider:  claudia.ProviderGrok,
+    WorkDir:   workDir,
+    SessionID: uuid.NewString(),
+})
+agent, err = reg.Launch("pimp-smoke-1")
+// Send, Steer, Interrupt, WaitForResponse, Stop, and Detach, same as Start.
+```
+
+The registry file is the consumer's. The daemon keeps its own grants.
+`Launch` sends the definition over the socket.
+
+A daemon installed as brew 0.44.0 already speaks this grant. Library
+callers smoke it against `~/.local/state/claudia/broker.sock` today.
+The `grant` / `send` / `interrupt` / `events` CLI subcommands are on
+HEAD; that brew `claudia` binary does not have them yet, so smoke the
+CLI with a HEAD build against the same socket until the formula
+catches up. `claudia broker grant -h` lists the flags. One shell
+smoke, which holds one connection the way the `*Agent` does:
+
+```bash
+claudia broker grant \
+  --name "pimp-smoke-$RANDOM" --provider grok --workdir "$PWD" \
+  --parent pimp --purpose work \
+  --send 'Reply with exactly the word pong.' --wait --release stop
+```
+
+Stdout is the assistant text. Exit without `--release stop` detaches
+(the seat keeps running). A later `send`, `interrupt`, or `events`
+re-grants from the fields `grants` lists and keeps the daemon's session
+id. A seat that also carries MCP servers or a sandbox policy stays on
+the library, which re-grants the definition it first sent.
+
 - **Sessions are grants.** `Start` / `Registry.Launch` send the
   Config (as an `AgentDef` plus `Config.Name`) over the Unix socket;
   the daemon starts the provider process as its parent and streams
@@ -977,9 +1053,12 @@ brew/launchd, and starts `claudia broker serve` under supervisord —
 same shape as bullseye/mnemo/jevonsd. Elsewhere, operate it with
 `brew services start claudia` (Homebrew launchd plist, 🎯T2.7) or
 `claudia broker install` (owner-installed launchd user agent on
-macOS). Then `status`, `grants`, `usage [--refresh]`,
+macOS). Operator commands: `status`, `grants`, `usage [--refresh]`,
 `tail` (NDJSON lifecycle events), `release NAME [--detach]`, `socket`.
-`claudia --help-agent` prints this guide after the CLI usage text.
+Seat driving from the shell is the HEAD CLI in the supported-path
+section above. `claudia --help-agent` prints this guide after the CLI
+usage text.
+
 `Acquire` draws from a pool the daemon runs: every consumer on the
 host shares its warm windows, `Agent.Release` returns or drops the seat
 on the daemon, and a consumer that goes away returns what it held.

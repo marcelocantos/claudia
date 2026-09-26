@@ -620,6 +620,16 @@ func claudeAgentOps() agentOps {
 // Start spawns a new agent for cfg.Provider. Claude uses a tmux-backed
 // Session; Grok uses ACP over `grok agent stdio`; Cursor uses ACP over
 // `agent acp`; Codex uses `codex app-server` JSON-RPC.
+//
+// When a claudia daemon is listening, Start is a grant and the returned
+// *Agent keeps that connection open: Send, WaitForResponse, Interrupt,
+// Stop, and Detach all run on it. WaitForResponse folds the seat's
+// events in this process; the wire has no wait message. Stop tears the
+// seat down; Detach leaves it running for a later Start of the same
+// Config.Name. That is the supported path — leave CLAUDIA_NO_BROKER
+// unset and do not call StartDirect. The default socket is
+// ~/.local/state/claudia/broker.sock. Parent and Purpose are AgentDef
+// fields; Register them and Launch so the grant carries them.
 func Start(cfg Config) (*Agent, error) {
 	return StartContext(context.Background(), cfg)
 }
