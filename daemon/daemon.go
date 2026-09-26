@@ -28,9 +28,13 @@ import (
 // and keeps them running: consumers name seats over the socket, the daemon
 // starts the provider processes as their parent, streams their Events back,
 // and keeps the seat when the consumer's connection goes away so the
-// consumer can reclaim it after its own restart (🎯T2.10, 🎯T2.11). It is
-// also the one plan-usage evaluator on the host (🎯T2.9), and after a host
-// reboot it brings back the seats it held and tells them so.
+// consumer can reclaim it after its own restart (🎯T2.10, 🎯T2.11). An
+// ephemeral plumbing seat (parent pimp, name pimp-smoke-* or
+// pimp-handoff-*) stays reclaimable only for claudia.EphemeralGrantTTL
+// and is then stopped, so a crashed Pimp does not leave it behind. A
+// jevons grant is not on that clock. The daemon is also the one
+// plan-usage evaluator on the host (🎯T2.9), and after a host reboot it
+// brings back the seats it held and tells them so.
 //
 // The daemon's registry is a claudia Registry in direct mode: the same
 // lifecycle code every consumer already relies on (reservations, resume
@@ -139,8 +143,12 @@ type Daemon struct {
 
 	mu     sync.Mutex
 	grants map[string]*brokerGrant
-	tasks  map[string]*brokerDaemonTask
-	checks map[string]pendingGoalCheck
+	// orphanDecision, when set, observes one ephemeral TTL consideration
+	// (tests). stopped is false when the seat was reclaimed or the
+	// generation no longer matches. Nil outside tests.
+	orphanDecision func(name string, stopped bool)
+	tasks          map[string]*brokerDaemonTask
+	checks         map[string]pendingGoalCheck
 }
 
 // brokerGrant is the daemon's ownership record for one seat.
@@ -163,6 +171,13 @@ type brokerGrant struct {
 	// return rather than a promise of one (🎯T94). While it is set the
 	// seat is nobody's to take: liveGrantLocked reads it as absent.
 	returning bool
+	// ephemeral marks a plumbing seat. Once unowned it is reaped after
+	// claudia.EphemeralGrantTTL. A jevons grant leaves this false.
+	ephemeral bool
+	// orphanGen invalidates an in-flight reap. It changes when the seat
+	// becomes unowned and again when a consumer takes it back, so a timer
+	// from the previous gap cannot stop a seat that was reclaimed by name.
+	orphanGen uint64
 }
 
 type brokerDaemonTask struct {
@@ -405,9 +420,11 @@ func (d *Daemon) HandleRequest(c *broker.ClientConn, req *broker.Request) bool {
 }
 
 // ConnClosed implements broker.Handler: seats stay running, unowned.
+// Ephemeral plumbing seats stay only until their orphan TTL.
 func (d *Daemon) ConnClosed(c *broker.ClientConn) {
 	d.mu.Lock()
 	var detached []string
+	var ephemeral []string
 	var returned []*brokerGrant
 	for name, g := range d.grants {
 		if g.owner != c {
@@ -421,6 +438,11 @@ func (d *Daemon) ConnClosed(c *broker.ClientConn) {
 			continue
 		}
 		d.detachLocked(g)
+		if g.ephemeral {
+			d.noteUnownedLocked(name)
+			ephemeral = append(ephemeral, name)
+			continue
+		}
 		detached = append(detached, name)
 	}
 	var cancels []context.CancelFunc
@@ -433,6 +455,11 @@ func (d *Daemon) ConnClosed(c *broker.ClientConn) {
 	d.mu.Unlock()
 	for _, name := range detached {
 		d.log.Info("consumer connection closed; seat kept running", "grant", name)
+		d.emit(broker.EventMessage{Kind: broker.EventDetach, Name: name})
+	}
+	for _, name := range ephemeral {
+		d.log.Info("consumer connection closed; ephemeral seat reclaimable until TTL",
+			"grant", name, "ttl", claudia.EphemeralGrantTTL)
 		d.emit(broker.EventMessage{Kind: broker.EventDetach, Name: name})
 	}
 	for _, g := range returned {
@@ -458,6 +485,102 @@ func (d *Daemon) detachLocked(g *brokerGrant) {
 		// Closes the channel, which ends the terminal pump goroutine.
 		g.proc.UnsubscribeTerminal(g.termQ)
 		g.termQ = nil
+	}
+}
+
+// noteUnownedLocked arms the orphan TTL when name is an unowned plumbing
+// seat. Jevons grants and seats that still have an owner are left alone.
+// d.mu held.
+func (d *Daemon) noteUnownedLocked(name string) {
+	g := d.grants[name]
+	if g == nil || g.owner != nil || !g.ephemeral {
+		return
+	}
+	d.armEphemeralOrphanLocked(g)
+}
+
+// armEphemeralOrphanLocked starts the clock on an unowned plumbing seat.
+// The timer is registered before this returns, so a test can advance the
+// manual clock as soon as the detach that armed it has been observed.
+// d.mu held.
+func (d *Daemon) armEphemeralOrphanLocked(g *brokerGrant) {
+	g.orphanGen++
+	gen := g.orphanGen
+	name := g.name
+	timer := d.clock.After(claudia.EphemeralGrantTTL)
+	d.wg.Add(1)
+	go func() {
+		defer d.wg.Done()
+		select {
+		case <-d.ctx.Done():
+			return
+		case <-timer:
+		}
+		if d.ctx.Err() != nil {
+			return
+		}
+		d.stopEphemeralOrphan(name, gen)
+	}()
+}
+
+// stopEphemeralOrphan is the TTL firing. A reclaim by name, or a newer
+// gap, bumps orphanGen and this call does nothing.
+func (d *Daemon) stopEphemeralOrphan(name string, gen uint64) {
+	d.mu.Lock()
+	g := d.grants[name]
+	if g == nil || g.orphanGen != gen || g.owner != nil || !g.ephemeral {
+		d.mu.Unlock()
+		d.noteOrphanDecision(name, false)
+		return
+	}
+	d.detachLocked(g)
+	if g.proc != nil && g.sub != 0 {
+		g.proc.UnsubscribeEvents(g.sub)
+		g.sub = 0
+	}
+	delete(d.grants, name)
+	d.mu.Unlock()
+	if err := d.reg.Remove(name); err != nil {
+		d.log.Warn("ephemeral orphan release", "grant", name, "err", err)
+	}
+	d.log.Info("ephemeral plumbing seat released after TTL", "grant", name)
+	d.emit(broker.EventMessage{Kind: broker.EventRelease, Name: name, Detail: "ephemeral_ttl"})
+	d.noteOrphanDecision(name, true)
+}
+
+func (d *Daemon) noteOrphanDecision(name string, stopped bool) {
+	if d.orphanDecision != nil {
+		d.orphanDecision(name, stopped)
+	}
+}
+
+// prepareStoredEphemeral applies the plumbing convention to seats restored
+// from disk before they are resumed. A matching name with a foreign parent
+// or a purpose outside the fleet enum is dropped rather than brought back
+// as a long-lived grant. Jevons seats are not in this loop.
+func (d *Daemon) prepareStoredEphemeral() {
+	for _, def := range d.reg.List() {
+		if !claudia.EphemeralSeatName(def.Name) {
+			continue
+		}
+		next := def
+		if err := claudia.PrepareEphemeralGrant(&next); err != nil {
+			d.log.Warn("dropping ephemeral seat that does not match the plumbing convention", "grant", def.Name, "err", err)
+			if rmErr := d.reg.Remove(def.Name); rmErr != nil {
+				d.log.Warn("drop ephemeral seat", "grant", def.Name, "err", rmErr)
+			}
+			continue
+		}
+		if next.WorkDir == def.WorkDir && next.Parent == def.Parent && next.Purpose == def.Purpose {
+			continue
+		}
+		if err := os.MkdirAll(next.WorkDir, 0o700); err != nil {
+			d.log.Warn("ephemeral workdir", "grant", def.Name, "err", err)
+			continue
+		}
+		if err := d.reg.Register(next); err != nil {
+			d.log.Warn("persist ephemeral seat", "grant", def.Name, "err", err)
+		}
 	}
 }
 
@@ -504,6 +627,22 @@ func (d *Daemon) handleGrant(c *broker.ClientConn, req *broker.Request) {
 	}
 	d.mu.Unlock()
 
+	requestedWorkDir := def.WorkDir
+	if err := claudia.PrepareEphemeralGrant(&def); err != nil {
+		_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeUnsupportedValue, Field: "def", Msg: err.Error()})
+		return
+	}
+	if claudia.IsEphemeralGrant(def) {
+		if filepath.Clean(requestedWorkDir) != filepath.Clean(def.WorkDir) && requestedWorkDir != "" && requestedWorkDir != "." {
+			d.log.Info("ephemeral seat workdir isolated", "grant", name, "from", requestedWorkDir, "workdir", def.WorkDir)
+		}
+		if err := os.MkdirAll(def.WorkDir, 0o700); err != nil {
+			_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeMalformed, Field: "workdir",
+				Msg: fmt.Sprintf("ephemeral workdir: %v", err)})
+			return
+		}
+	}
+
 	// Merge the daemon's runtime knowledge onto the consumer's definition:
 	// the consumer does not know the connect-mode endpoint or that the
 	// seat has materialized. A different session id is a deliberate
@@ -546,6 +685,9 @@ func (d *Daemon) handleGrant(c *broker.ClientConn, req *broker.Request) {
 	if g.proc != proc {
 		d.bindSeatLocked(g, proc)
 	}
+	if claudia.IsEphemeralGrant(def) {
+		g.ephemeral = true
+	}
 	if g.owner != nil && g.owner != c {
 		d.detachLocked(g)
 	}
@@ -556,6 +698,9 @@ func (d *Daemon) handleGrant(c *broker.ClientConn, req *broker.Request) {
 	ring, lagged := g.ring, g.lag
 	g.ring, g.lag = nil, false
 	if !alreadyOwned {
+		// A timer armed while this seat was unowned must not fire after
+		// the name has been taken again.
+		g.orphanGen++
 		g.owner = c
 		pump := make(chan []byte, d.pumpCap())
 		g.pump = pump
@@ -810,6 +955,7 @@ func (d *Daemon) forwarder(name string) claudia.EventFunc {
 				d.log.Warn("consumer not reading; detaching seat", "grant", name)
 				owner := g.owner
 				d.detachLocked(g)
+				d.noteUnownedLocked(name)
 				// Silent detach left the consumer sending on a grant it no
 				// longer owned, one not_owner per send (🎯T125). Tell it.
 				d.notifyDetached(owner, name, "consumer not reading; event queue full")
@@ -874,6 +1020,7 @@ func (d *Daemon) runPump(g *brokerGrant, c *broker.ClientConn, pump chan []byte)
 			d.mu.Lock()
 			if g.owner == c {
 				d.detachLocked(g)
+				d.noteUnownedLocked(g.name)
 			}
 			g.retainUnowned(raw)
 			d.mu.Unlock()
@@ -940,6 +1087,7 @@ func (d *Daemon) handleRelease(c *broker.ClientConn, req *broker.Request) {
 				displaced = g.owner
 			}
 			d.detachLocked(g)
+			d.noteUnownedLocked(name)
 		}
 		d.mu.Unlock()
 		// An operator's forced detach must not leave the old owner sending
@@ -1358,6 +1506,7 @@ func (d *Daemon) resumeSeats() {
 			return
 		}
 	}
+	d.prepareStoredEphemeral()
 	held := 0
 	for _, def := range d.reg.List() {
 		if def.AutoStart {
@@ -1390,6 +1539,7 @@ func (d *Daemon) resumeSeats() {
 func (d *Daemon) onSeatEvent(ev claudia.SeatEvent) {
 	switch ev.Kind {
 	case claudia.SeatResumed:
+		def := d.reg.Def(ev.Name)
 		d.mu.Lock()
 		g := d.grants[ev.Name]
 		if g == nil {
@@ -1398,6 +1548,12 @@ func (d *Daemon) onSeatEvent(ev claudia.SeatEvent) {
 		}
 		if g.proc != ev.Agent {
 			d.bindSeatLocked(g, ev.Agent)
+		}
+		if def != nil && claudia.IsEphemeralGrant(*def) {
+			g.ephemeral = true
+		}
+		if g.owner == nil {
+			d.noteUnownedLocked(ev.Name)
 		}
 		d.mu.Unlock()
 		d.log.Info("seat resumed", "grant", ev.Name, "how", ev.How, "session", ev.SessionID)
