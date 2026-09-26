@@ -1,7 +1,8 @@
 name: specs
 
 # Formal-verification oracle for the broker lifecycle (T2.0/T2.8). Kept separate
-# from test.yml so the Go matrix and the TLA+ model-check evolve independently.
+# from test.yml so the Go tests and the TLA+ model-check evolve independently.
+# Same runner as the Go jobs: macos-latest.
 on:
   push:
     branches: [master]
@@ -9,7 +10,7 @@ on:
 
 jobs:
   tlc:
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v6
 
