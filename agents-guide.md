@@ -1163,10 +1163,11 @@ Otherwise, ignore it.
 
 The test suite has two tiers.
 
-**Hermetic tests are the default.** They run anywhere — no provider
-binary, no credentials, no API cost. CI runs `go test -race -count=1
-./...` on every push. Use them for parsers, capability refusals,
-lifecycle, and anything a fake peer can decide.
+**Hermetic tests are the default.** They need no provider binary, no
+credentials, and no API cost. On Colossus, `make gate` runs
+`go test -race -count=1 ./...` before an owner push. GitHub does not
+run them: there is no GitHub Actions workflow. Use them for parsers,
+capability refusals, lifecycle, and anything a fake peer can decide.
 
 **Live tests are a hard gate for backend changes.** Hermetic tests
 cannot decide spawn, submit, auth, or turn-loop behaviour. When you
@@ -1175,7 +1176,8 @@ change how a provider is started, spoken to, or observed (`Start`,
 auth, app-server/ACP/exec/tmux framing), run the live tests for
 **every backend whose wire you touched**. A Session-wide change is
 every Session backend you can authenticate — not just the one you
-had in mind. CI never sets these gates. A skipped live test is not
+had in mind. There is no GitHub Actions runner to set these gates;
+run them on Colossus. A skipped live test is not
 a pass; name it as residue. Full rule: [`AGENTS.md`](AGENTS.md).
 
 Do not use live tests as the everyday suite, and do not retire a
@@ -1200,7 +1202,8 @@ CLAUDIA_LIVE=1 CLAUDIA_GROK_LIVE=1 CLAUDIA_CODEX_LIVE=1 \
   CLAUDIA_CURSOR_LIVE=1 CLAUDIA_BEDROCK_LIVE=1 CLAUDIA_OLLAMA_LIVE=1 make live
 ```
 
-Unset gates skip. CI does not set any of them. Bedrock needs
+Unset gates skip. Nothing unattended sets them; run the ones you need
+on Colossus. Bedrock needs
 work-account AWS credentials ([docs/bedrock-work-account.md](docs/bedrock-work-account.md)).
 
 ## Stability

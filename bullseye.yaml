@@ -101,7 +101,7 @@ targets:
     - 'STABILITY.md''s "Testing and CI" subsection is rewritten: drop the "CI does not exercise tmux-backed Agent on Linux runners" gap (it is now a deliberate scope decision, not a gap), and drop the "Task mode still has no end-to-end smoke test" line (TaskRun''s CLAUDIA_LIVE-gated test in task_test.go already covers it — verify and reference by name).'
     - The /release skill's tests-exist gate runs the live test suite as part of pre-release verification (the skill already declares this in Phase 4.5 — verify it triggers for claudia and surfaces a failure if either CLAUDIA_LIVE is unset or the live tests fail).
     - If a stub-claude-binary path is later considered desirable, it is filed as a separate forked target (e.g. T1.4.1) rather than re-expanding T1.4's scope.
-    context: 'Original T1.4 wanted CI itself to exercise the tmux-backed Agent end-to-end on Linux. That''s infeasible without one of: (a) installing the `claude` binary on the runner and providing Anthropic auth as a GitHub secret (burns API credit per push, sets a precedent the rest of the ecosystem doesn''t follow); (b) building a stub `claude` binary that fakes the prompt-box readiness pattern and replays canned JSONL (real work, deferred). The honest answer for v1.0 is that the integration tests are CLAUDIA_LIVE-gated by design and only run locally before tagging. CI already installs tmux on Linux and runs every test that doesn''t require `claude` — that''s enough for the substrate-correctness claim. The pre-release live run, enforced by /release''s tests-exist gate, covers the rest. T1.4 is now about making that contract explicit in the docs and STABILITY.md rather than expanding CI.'
+    context: 'Original T1.4 wanted CI itself to exercise the tmux-backed Agent end-to-end on Linux. That''s infeasible without one of: (a) installing the `claude` binary on the runner and providing Anthropic auth as a GitHub secret (burns API credit per push, sets a precedent the rest of the ecosystem doesn''t follow); (b) building a stub `claude` binary that fakes the prompt-box readiness pattern and replays canned JSONL (real work, deferred). The honest answer for v1.0 is that the integration tests are CLAUDIA_LIVE-gated by design and only run locally before tagging. CI already installs tmux on Linux and runs every test that doesn''t require `claude` — that''s enough for the substrate-correctness claim. The pre-release live run, enforced by /release''s tests-exist gate, covers the rest. T1.4 is now about making that contract explicit in the docs and STABILITY.md rather than expanding CI. Superseded 2026-09-26: GitHub Actions was removed. Colossus (macOS) is the only runtime; there is no Linux runner and no Actions workflow. `make gate` on Colossus is the hermetic oracle. Do not restore a workflow to satisfy this target.'
     origin: reshaped from original CI-end-to-end framing after credentials/auth feasibility review on 2026-04-27
     discovered: 2026-04-27
     achieved: 2026-04-27
@@ -295,7 +295,7 @@ targets:
 
       Verified by claudia-po rather than taken on report: `grep -c TestGrokPlanUsageLive Makefile` → 0, `grep -c TestGrokPlanUsageLive AGENTS.md` → 0, and the function exists at plan_usage_grok_test.go:124. The gap is not one test — the module defines 32 `func Test…Live` functions while `make live`'s `-run` expression names 22. About a third of this repo's live tests cannot be reached by the command the project documents as its live gate.
 
-      Why this is a gate defect and not housekeeping. AGENTS.md's live-test section is written as a hard gate — "Run every backend whose wire you touched… Unset gates skip. CI never sets them. You are the gate" — and it hands the agent a table of required tests per backend. An agent doing exactly what that section says will consult the table, not find the surface it touched, and correctly conclude no live gate binds. That is how a live test that exists still fails to run. It only surfaced here because one seat went looking beyond its brief; the next seat will not.
+      Why this is a gate defect and not housekeeping. AGENTS.md's live-test section is written as a hard gate — "Run every backend whose wire you touched… Unset gates skip. There is no GitHub Actions runner to set them. Colossus is the runtime; you run the live tests there. You are the gate" — and it hands the agent a table of required tests per backend. An agent doing exactly what that section says will consult the table, not find the surface it touched, and correctly conclude no live gate binds. That is how a live test that exists still fails to run. It only surfaced here because one seat went looking beyond its brief; the next seat will not.
 
       It also matters for what has already been attested. 🎯T84/🎯T85 were achieved on the plan-usage wire, and the live evidence for the paced-fetch mechanism came from `go run ./cmd/usage` observation plus, belatedly, this test — which no gate row required. The achieve stands on cl-t84-t85-vcheck's clean-tree citations (7b8efef9, 334aad67, e44db155, each verified found=true GREEN tree=clean@86e49f9), not on this, so nothing is retracted. But the plan-usage wire being live-green on all four fetching backends is corroboration this repo could not have demanded, and that asymmetry is the defect.
 
@@ -1148,15 +1148,15 @@ targets:
     value: 5.0
     cost: 3.0
     actual_cost: 3.0
-    attestation: 'Independent PO gate: product SHA 40f17b52869a62c3fe5588d04246d1c592f933dc — fix(task): Cancel/Stop hermetics deterministic under -race. Platform process-group kill (task_proc_unix/windows) + hermetic test sync. Oracle EXIT 0: go test -race -count=20 -timeout 300s -run ''TestHermeticTaskCancelSendsSIGINT|TestHermeticTaskStopCancelsInFlight'' . → ok (6.4s). Residual: full-package CI matrix is release gate class-3 if env-specific; named Cancel/Stop path sealed. Local master T104.'
+    attestation: 'Independent PO gate: product SHA 40f17b52869a62c3fe5588d04246d1c592f933dc — fix(task): Cancel/Stop hermetics deterministic under -race. Platform process-group kill (task_proc_unix/windows) + hermetic test sync. Oracle EXIT 0: go test -race -count=20 -timeout 300s -run ''TestHermeticTaskCancelSendsSIGINT|TestHermeticTaskStopCancelsInFlight'' . → ok (6.4s). Residual: full-package CI matrix is release gate class-3 if env-specific; named Cancel/Stop path sealed. Local master T104. Superseded 2026-09-26: the ubuntu+macos GitHub Actions matrix this target named was removed. The hermetic oracle is `make gate` on Colossus. Do not restore a workflow to keep this acceptance green.'
     acceptance:
     - TestHermeticTaskCancelSendsSIGINT and TestHermeticTaskStopCancelsInFlight pass reliably under `go test -race -count=20 ./` locally AND on the ubuntu+macos CI matrix — not bimodally. (Currently each run either passes in ~0.11s or hangs the full deadline and the events channel never closes.)
     - 'Root cause is fixed in the Cancel()/Stop()/drain path (or the slow fake CLI''s signal handling), not by widening the deadline: a 5s->12s bump was verified NOT to fix it. The failure is an intermittent failure to terminate the child / close the events channel after SIGINT, with no data race reported.'
-    - master's `test` workflow (go test -race) is green on both platforms, unblocking the /release live gate and normal PR CI.
+    - 'The 2026-08 bar was master''s `test` workflow (go test -race) green on both platforms. Superseded 2026-09-26: there is no GitHub Actions workflow and no ubuntu/macos matrix. The hermetic oracle is `make gate` on Colossus. Do not restore a workflow to satisfy this line.'
     context: |-
       Discovered 2026-08-09 while releasing T16 (model observability). These hermetic oracles were added by T11 on 2026-08-03 and are untouched by T16 — T16 only adds Event.Model/TaskEvent.Model fields + Model() accessors. Reproduced locally under `go test -race`: bimodal, ~0.11s pass or full-deadline (5s, and 12s after a bump) hang with 'events channel did not close after Cancel' / 'events did not drain after Stop'; no 'WARNING: DATA RACE'. Fails single-run on CI (slower/loaded env raises the hit rate), so master CI is currently RED on both ubuntu and macos. This blocks any clean release (the release skill's live-test gate and PR CI both run this suite) and blocks PR #48 (T16) from a green merge. It is a real intermittent concurrency defect in the Cancel/Stop child-termination or channel-drain, not a flaky-deadline — the likely area is the 100ms 'give the fake time to install its trap' race in the test plus the interrupt()/CommandContext teardown ordering. Left for the T11 owner / a focused fix rather than rushed inline in the T16 PR.
 
-      Achieved 2026-08-09: Independent PO gate: product SHA 40f17b52869a62c3fe5588d04246d1c592f933dc — fix(task): Cancel/Stop hermetics deterministic under -race. Platform process-group kill (task_proc_unix/windows) + hermetic test sync. Oracle EXIT 0: go test -race -count=20 -timeout 300s -run 'TestHermeticTaskCancelSendsSIGINT|TestHermeticTaskStopCancelsInFlight' . → ok (6.4s). Residual: full-package CI matrix is release gate class-3 if env-specific; named Cancel/Stop path sealed. Local master T104.
+      Achieved 2026-08-09: Independent PO gate: product SHA 40f17b52869a62c3fe5588d04246d1c592f933dc — fix(task): Cancel/Stop hermetics deterministic under -race. Platform process-group kill (task_proc_unix/windows) + hermetic test sync. Oracle EXIT 0: go test -race -count=20 -timeout 300s -run 'TestHermeticTaskCancelSendsSIGINT|TestHermeticTaskStopCancelsInFlight' . → ok (6.4s). Residual: full-package CI matrix is release gate class-3 if env-specific; named Cancel/Stop path sealed. Local master T104. Superseded 2026-09-26: the ubuntu+macos GitHub Actions matrix this target named was removed. The hermetic oracle is `make gate` on Colossus. Do not restore a workflow to keep this acceptance green.
     origin: discovered during T16 release 2026-08-09
     discovered: 2026-08-09
     achieved: 2026-08-09
@@ -1598,7 +1598,7 @@ targets:
 
       4. ORACLE MAP: docs/broker-oracles.md (+84) declares per-T2.x verification class and gating oracle.
 
-      WIRED TO A STANDING ENFORCEMENT POINT (an oracle is a loop, not an artifact): the policy guard and clock tests are ordinary Go tests on the `go test ./...` path, and .github/workflows/specs.yml:31 runs `make verify-specs` in CI. Gate confirmed both.
+      WIRED TO A STANDING ENFORCEMENT POINT (an oracle is a loop, not an artifact): the policy guard and clock tests are ordinary Go tests on the `go test ./...` path, and `make verify-specs` runs on Colossus (`make gate-full`). GitHub Actions is not used. Gate confirmed both.
 
       NOTABLY GOOD — THE GUARD GUARDS ITSELF: the implementer added TestScanPolicySourceHasTeeth, TestExemptionsAreLiveAndNarrow, TestPinnedPolicyFilesStayEnrolled, TestTransportMarkerWaivesOnlyTheSocketRule and TestScanPolicySourceReportsEveryHit — meta-tests asserting the scanner detects what it claims, that exemptions stay narrow and live, that pinned files cannot silently drop out of enrolment, and that a waiver waives only the one rule. That directly answers the Goodhart risk in this target: a policy scanner whose exemption list quietly grows is worse than none, and these tests make that failure visible.
 
@@ -1633,7 +1633,7 @@ targets:
 
       4. ORACLE MAP: docs/broker-oracles.md (+84) declares per-T2.x verification class and gating oracle.
 
-      WIRED TO A STANDING ENFORCEMENT POINT (an oracle is a loop, not an artifact): the policy guard and clock tests are ordinary Go tests on the `go test ./...` path, and .github/workflows/specs.yml:31 runs `make verify-specs` in CI. Gate confirmed both.
+      WIRED TO A STANDING ENFORCEMENT POINT (an oracle is a loop, not an artifact): the policy guard and clock tests are ordinary Go tests on the `go test ./...` path, and `make verify-specs` runs on Colossus (`make gate-full`). GitHub Actions is not used. Gate confirmed both.
 
       NOTABLY GOOD — THE GUARD GUARDS ITSELF: the implementer added TestScanPolicySourceHasTeeth, TestExemptionsAreLiveAndNarrow, TestPinnedPolicyFilesStayEnrolled, TestTransportMarkerWaivesOnlyTheSocketRule and TestScanPolicySourceReportsEveryHit — meta-tests asserting the scanner detects what it claims, that exemptions stay narrow and live, that pinned files cannot silently drop out of enrolment, and that a waiver waives only the one rule. That directly answers the Goodhart risk in this target: a policy scanner whose exemption list quietly grows is worse than none, and these tests make that failure visible.
 
@@ -1684,7 +1684,7 @@ targets:
       - M3' neuter scrubServerEnv, the sole production guard (early `return nil`) → KILLED by TestEnsureServerScrubsAlreadyRunningServer AND TestEnsureServerStripsTestControlEnv.
       - M4 over-broadness: add provider config CLAUDIA_CODEX_AUTH_PATH to the strip → KILLED in two independent places, TestRegistryMembershipPinned and TestEnsureServerStripsTestControlEnv. The strip is pinned in both directions: it cannot silently narrow, and it cannot widen into agent configuration.
 
-      WIRING (the target requires a standing enforcement point, not an unwired helper): all six are ordinary Go tests in packages `go test ./...` already covers, and .github/workflows/test.yml invokes `go test -race -count=1 ./...` bare. The implementer additionally removed a status-swallowing pipe from the Makefile `bullseye` gate — it ran `go test ... | tail -n 5 && echo "✓ tests"`, so a FAILING suite printed "✓ tests" and exited 0. That is the same exit-status trap that produced a false green earlier in this session; an oracle behind that pipe was not wired at all. Gate confirms it is now bare.
+      WIRING (the target requires a standing enforcement point, not an unwired helper): all six are ordinary Go tests in packages `go test ./...` already covers, and `make gate` on Colossus invokes `go test -race -count=1 ./...` bare. The implementer additionally removed a status-swallowing pipe from the Makefile `bullseye` gate — it ran `go test ... | tail -n 5 && echo "✓ tests"`, so a FAILING suite printed "✓ tests" and exited 0. That is the same exit-status trap that produced a false green earlier in this session; an oracle behind that pipe was not wired at all. Gate confirms it is now bare.
 
       DISCREPANCY FOUND BY THE GATE, recorded rather than smoothed over: the implementer's report claims the server is started with `cmd.Env = testctlenv.Strip(os.Environ())`. It is not — server.go:99 starts it with raw `os.Environ()`, and `testctlenv.Strip` has NO production call site anywhere in the tree (verified by grep across all non-test .go files; only `All()` is used, by scrubServerEnv). The leak is nonetheless genuinely closed, because scrubServerEnv runs on EVERY EnsureServer call and covers both the new-server and existing-server paths — mutation M3' proves that guard is real and oracled. So the acceptance holds, but the belt-and-braces described in the report is absent, and Strip is exported, unit-tested, and dead. Residual, filed as follow-up rather than blocking: (a) remove or actually use Strip; (b) the brief window between `new-session` with a polluted env and scrubServerEnv is theoretically inheritable, though EnsureServer completes before any agent window is created.
 
@@ -1719,7 +1719,7 @@ targets:
       - M3' neuter scrubServerEnv, the sole production guard (early `return nil`) → KILLED by TestEnsureServerScrubsAlreadyRunningServer AND TestEnsureServerStripsTestControlEnv.
       - M4 over-broadness: add provider config CLAUDIA_CODEX_AUTH_PATH to the strip → KILLED in two independent places, TestRegistryMembershipPinned and TestEnsureServerStripsTestControlEnv. The strip is pinned in both directions: it cannot silently narrow, and it cannot widen into agent configuration.
 
-      WIRING (the target requires a standing enforcement point, not an unwired helper): all six are ordinary Go tests in packages `go test ./...` already covers, and .github/workflows/test.yml invokes `go test -race -count=1 ./...` bare. The implementer additionally removed a status-swallowing pipe from the Makefile `bullseye` gate — it ran `go test ... | tail -n 5 && echo "✓ tests"`, so a FAILING suite printed "✓ tests" and exited 0. That is the same exit-status trap that produced a false green earlier in this session; an oracle behind that pipe was not wired at all. Gate confirms it is now bare.
+      WIRING (the target requires a standing enforcement point, not an unwired helper): all six are ordinary Go tests in packages `go test ./...` already covers, and `make gate` on Colossus invokes `go test -race -count=1 ./...` bare. The implementer additionally removed a status-swallowing pipe from the Makefile `bullseye` gate — it ran `go test ... | tail -n 5 && echo "✓ tests"`, so a FAILING suite printed "✓ tests" and exited 0. That is the same exit-status trap that produced a false green earlier in this session; an oracle behind that pipe was not wired at all. Gate confirms it is now bare.
 
       DISCREPANCY FOUND BY THE GATE, recorded rather than smoothed over: the implementer's report claims the server is started with `cmd.Env = testctlenv.Strip(os.Environ())`. It is not — server.go:99 starts it with raw `os.Environ()`, and `testctlenv.Strip` has NO production call site anywhere in the tree (verified by grep across all non-test .go files; only `All()` is used, by scrubServerEnv). The leak is nonetheless genuinely closed, because scrubServerEnv runs on EVERY EnsureServer call and covers both the new-server and existing-server paths — mutation M3' proves that guard is real and oracled. So the acceptance holds, but the belt-and-braces described in the report is absent, and Strip is exported, unit-tested, and dead. Residual, filed as follow-up rather than blocking: (a) remove or actually use Strip; (b) the brief window between `new-session` with a polluted env and scrubServerEnv is theoretically inheritable, though EnsureServer completes before any agent window is created.
 
@@ -1878,7 +1878,7 @@ targets:
 
       (4) agents-guide.md matrix cell + sub-agents section and STABILITY.md Grok provider surface now state the position and explicitly say BaseDisallowedTools is Claude-only. Also corrected the TaskConfig.DisallowTools godoc, which claimed BaseDisallowedTools "is always applied" — verified false: disallowedToolList is only called at task.go:500 and agent.go:409, both Claude.
 
-      Oracle: go build ./... , go vet ./... , gofmt clean on touched files, go test -race -count=1 . green (CI parity with .github/workflows/test.yml).
+      Oracle: go build ./... , go vet ./... , gofmt clean on touched files, go test -race -count=1 . green (same commands as `make gate` on Colossus; no GitHub Actions).
 
       Residue: the refusal is deliberately the whole implementation — no --deny/--disallowed-tools translation is wired, and TestGrokTaskArgsCarryNoToolRestrictionFlags pins that. Wiring it needs a live grok oracle (docs/grok-provider-oracle-map.md) and belongs with T7.8.
     acceptance:
@@ -1903,7 +1903,7 @@ targets:
 
       (4) agents-guide.md matrix cell + sub-agents section and STABILITY.md Grok provider surface now state the position and explicitly say BaseDisallowedTools is Claude-only. Also corrected the TaskConfig.DisallowTools godoc, which claimed BaseDisallowedTools "is always applied" — verified false: disallowedToolList is only called at task.go:500 and agent.go:409, both Claude.
 
-      Oracle: go build ./... , go vet ./... , gofmt clean on touched files, go test -race -count=1 . green (CI parity with .github/workflows/test.yml).
+      Oracle: go build ./... , go vet ./... , gofmt clean on touched files, go test -race -count=1 . green (same commands as `make gate` on Colossus; no GitHub Actions).
 
       Residue: the refusal is deliberately the whole implementation — no --deny/--disallowed-tools translation is wired, and TestGrokTaskArgsCarryNoToolRestrictionFlags pins that. Wiring it needs a live grok oracle (docs/grok-provider-oracle-map.md) and belongs with T7.8.
     origin: discovered during T4.6 capability-gap audit 2026-08-09
@@ -2179,7 +2179,7 @@ targets:
     - JOURNEY 4 IS THE LOAD-BEARING ONE and is written first. Silent omission is undetectable in any single-shot test BY DEFINITION — the escalation that did not happen leaves no artifact at that instant, and the metric improves. It becomes observable only as a divergence between two series over a sequence, so this journey is the only place the architecture's central hazard is visible at all.
     - JOURNEY-OR-EXCEPTION. When a longitudinal defect is fixed, a journey covering it is added, or an explicit exception naming why point-in-time coverage suffices is recorded. Consistent with the existing convention in the fleet consumer's suite.
     - DELIVERED WORK IS MEASURED ALONGSIDE COST IN EVERY COST-CLAIMING JOURNEY. A journey that shows the model share falling without also showing outcomes holding has measured the wrong thing, and is exactly the measurement a system optimising away its own oversight would pass.
-    - 'Oracle: the journey suite runs in CI on the scripted provider and is invocable against a live provider on demand; each journey fails when its construct is mutated (a threshold lowered, a demotion trigger removed, an abstention decided locally), verified by mutation rather than assumed.'
+    - 'Oracle: the journey suite runs on Colossus via the hermetic gate on the scripted provider and is invocable against a live provider on demand; each journey fails when its construct is mutated (a threshold lowered, a demotion trigger removed, an abstention decided locally), verified by mutation rather than assumed. GitHub Actions is not used.'
     context: |-
       Owner, 2026-08-10: given the longitudinal nature of some of these constructs, define journeys for testing.
 
@@ -2770,7 +2770,7 @@ targets:
     value: 0.0
     cost: 0.0
     attestation: |-
-      scripts/check-mutation-evidence.py + mutation-evidence.json landed in 57f4f85 and wired to make bullseye + CI (.github/workflows/test.yml mutation-evidence job).
+      scripts/check-mutation-evidence.py + mutation-evidence.json landed in 57f4f85 and wired to make bullseye and make verify-mutation-evidence on Colossus (no GitHub Actions job).
 
       2026-08-16 at e8c83c05f064: make verify-mutation-evidence GREEN 4/4 entries (re-derive) and GREEN 4/4 (--prove-teeth). Worked instance is T28/overbroad-spinner-line: mutation bites TestT28DailyDeliveredFramesAreNotPasteChips and TestT28DeliveredFramesReportSuccessWithoutLandedEvidence; the 8c5e04a decay (landed=true at the Send call site) leaves every named test GREEN alone and makes the landed=false caller-visible half SURVIVE the mutation, so THIS check goes red. Logs: /var/folders/fn/8ffdcmbd13lfwzsm2h93xrx00000gn/T/mutation-evidence-kpbx6cj8.log and mutation-evidence-l724svnw.log.
     acceptance:
@@ -2789,7 +2789,7 @@ targets:
 
       That is a point fix for one target. The general mechanism is untreated: mutation evidence is quoted in a commit message once and never re-run, so any later commit that touches the inputs of those tests can retire the evidence silently. Doctrine already says an oracle is a loop, not an artifact, and that unwired oracles decay; this is that decay observed in the wild, with a named instance and a reproduction.
 
-      Achieved 2026-08-16: scripts/check-mutation-evidence.py + mutation-evidence.json landed in 57f4f85 and wired to make bullseye + CI (.github/workflows/test.yml mutation-evidence job).
+      Achieved 2026-08-16: scripts/check-mutation-evidence.py + mutation-evidence.json landed in 57f4f85 and wired to make bullseye and make verify-mutation-evidence on Colossus (no GitHub Actions job).
 
       2026-08-16 at e8c83c05f064: make verify-mutation-evidence GREEN 4/4 entries (re-derive) and GREEN 4/4 (--prove-teeth). Worked instance is T28/overbroad-spinner-line: mutation bites TestT28DailyDeliveredFramesAreNotPasteChips and TestT28DeliveredFramesReportSuccessWithoutLandedEvidence; the 8c5e04a decay (landed=true at the Send call site) leaves every named test GREEN alone and makes the landed=false caller-visible half SURVIVE the mutation, so THIS check goes red. Logs: /var/folders/fn/8ffdcmbd13lfwzsm2h93xrx00000gn/T/mutation-evidence-kpbx6cj8.log and mutation-evidence-l724svnw.log.
     origin: manual
@@ -3491,7 +3491,7 @@ targets:
     - '`go test -race -count=1 -run TestMCPProxyConcurrent401AuthorizesOnce .` must be green; a regression that unlocks the probe field must go red.'
     - 'ENT-001 in docs/audits/entropy-audit-2026-08-22.md is closed: the evidence cited there no longer reproduces on the shipped path'
     context: |-
-      Entropy-audit ENT-001 (P0). Status: observed fact. N concurrent 401s share one `proxiedMCP`. Probe cache is mutated under `p.mu` but the nil-check read is unlocked. Two goroutines can both see `probe == nil`, both call `p.probe`, and race on the pointer. `authMu` does not cover this prefix, so the T531 serialization is incomplete. Remediation: read/write `entry.probe` under `p.mu` (or take `authMu` at the start of `ensureAuth`); re-run `TestMCPProxyConcurrent401AuthorizesOnce` with `-race`. Blast: host-mounted `MCPProxy` (jevons `/upstream/…`) under parallel tool calls; token refresh/Authorize burst; any `-race` CI job on this commit. Report: docs/audits/entropy-audit-2026-08-22.md.
+      Entropy-audit ENT-001 (P0). Status: observed fact. N concurrent 401s share one `proxiedMCP`. Probe cache is mutated under `p.mu` but the nil-check read is unlocked. Two goroutines can both see `probe == nil`, both call `p.probe`, and race on the pointer. `authMu` does not cover this prefix, so the T531 serialization is incomplete. Remediation: read/write `entry.probe` under `p.mu` (or take `authMu` at the start of `ensureAuth`); re-run `TestMCPProxyConcurrent401AuthorizesOnce` with `-race`. Blast: host-mounted `MCPProxy` (jevons `/upstream/…`) under parallel tool calls; token refresh/Authorize burst; any `-race` run of the suite on this commit. Report: docs/audits/entropy-audit-2026-08-22.md.
 
       Achieved 2026-09-22: Fix e830985 (ensureAuth reads and publishes entry.probe under p.mu). The audit's ENT-001 was closed in faf419f and corrected in 7272376. The mutation is a standing check: the T47.1/probe-read-outside-p-mu entry with go_flags [-race]. Gates run by cl-t33 at load 41–82: `GATE check-mutation-evidence.py exit=0 GREEN id=17d13247 tree=clean@23956e0` (the entry bites) and `GATE go-test-TestMCPProxyConcurrent401AuthorizesOnce exit=0 GREEN id=ed505488 tree=clean@23956e0` (-race -count=200, no DATA RACE). claudia-po verified both records. No live gate is required: no provider or MCP-attach wire changed.
     tags:
@@ -3517,14 +3517,14 @@ targets:
     origin: entropy-audit 2026-08-22
     discovered: 2026-08-22
   T47.11:
-    name: A vulnerability, secret, or dependency-update gate in CI
+    name: A vulnerability, secret, or dependency-update check on Colossus
     status: identified
     value: 0.0
     cost: 0.0
     acceptance:
-    - CI job exists and fails on a known vulnerable pin (or a synthetic).
+    - A Colossus check (a make target or the owner gate, not a GitHub Actions job) exists and fails on a known vulnerable pin (or a synthetic).
     - 'ENT-011 in docs/audits/entropy-audit-2026-08-22.md is closed: the evidence cited there no longer reproduces on the shipped path'
-    context: 'Entropy-audit ENT-011 (P3). Status: observed fact. AWS SDK / websocket / Go stdlib CVEs and accidental credential files can land without a standing check. Codex/Grok/Claude auth files are read from the user home; tests isolate paths, production does not scan. Remediation: add a CI `govulncheck ./...` job when a go1.26-capable build exists; optional secret scan on PRs. Do not add Dependabot noise without owner preference. Blast: supply chain of a library that shells out to CLIs and proxies MCP HTTP. Report: docs/audits/entropy-audit-2026-08-22.md.'
+    context: 'Entropy-audit ENT-011 (P3). Status: observed fact. AWS SDK / websocket / Go stdlib CVEs and accidental credential files can land without a standing check. Codex/Grok/Claude auth files are read from the user home; tests isolate paths, production does not scan. Remediation: run `govulncheck ./...` on Colossus when a go1.26-capable build exists; optional local secret scan. Do not add a GitHub Actions job — policy 2026-09-26 forbids Actions; GitHub is backup only. Do not add Dependabot noise without owner preference. Blast: supply chain of a library that shells out to CLIs and proxies MCP HTTP. Report: docs/audits/entropy-audit-2026-08-22.md.'
     tags:
     - entropy-audit
     - ent-011
@@ -3662,7 +3662,7 @@ targets:
     value: 0.0
     cost: 0.0
     acceptance:
-    - make gate runs the hermetic suite CI currently runs (go vet, go test -race -count=1 ./..., verify-stability, verify-mutation-evidence) and is the pre-push hook oracle.
+    - make gate runs the hermetic suite on Colossus (go vet, go test -race -count=1 ./..., verify-stability, verify-mutation-evidence) and is the pre-push hook oracle. GitHub Actions is not used.
     - A planted failing test makes git push to origin refuse (mutation drill). git push --no-verify is not used by agents.
     - AGENTS.md Gates skip pr-workflow; ci-green is not the remaining owner gate — make gate is.
     - The next tagged release lands by gated push to master then gh release create, with no release-prep PR.

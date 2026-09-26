@@ -25,7 +25,7 @@ import (
 // makes "the wire format is stable" a checked claim rather than an intention.
 
 // updateGolden rewrites the vectors instead of comparing against them. It is a
-// separate flag rather than an env var so it cannot be set by accident in CI.
+// separate flag rather than an env var so a test run cannot set it by accident.
 var updateGolden = flag.Bool("update-golden", false, "rewrite the golden wire vectors")
 
 // goldenDir is where the vectors live.

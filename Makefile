@@ -1,4 +1,5 @@
-# Hermetic owner gate (🎯T48). Same suite as .github/workflows/test.yml.
+# Hermetic owner gate (🎯T48), run on Colossus. GitHub Actions is not used;
+# GitHub stores the code as backup.
 # On success it attests the tree it measured (scripts/gate-attest.sh);
 # pre-push checks that attestation rather than re-running the gate, which
 # takes ~25 minutes — longer than GitHub keeps an idle SSH connection open.
@@ -48,7 +49,8 @@ bullseye: gate
 # claimed that the tag does not have, every row assessed, and the stated
 # per-package counts matching. The surface is derived from `go doc -all` over a
 # clean worktree of that tag, never from the document, so the check cannot pass
-# by agreeing with itself. Needs the tag present locally (CI: fetch-depth 0).
+# by agreeing with itself. Needs the tag present locally (Colossus has the
+# history; there is no Actions checkout).
 .PHONY: verify-stability
 verify-stability:
 	@scripts/check-stability-surface.py
@@ -65,7 +67,7 @@ verify-stability:
 # unwired oracle: it applies the decay each entry declares (8c5e04a's landed=true
 # for T28) and requires it to be invisible to the suites AND to make this check
 # go red. A check that cannot be shown to fail is not evidence either.
-# CI runs this in .github/workflows/test.yml.
+# Part of make gate on Colossus. Not a GitHub Actions job.
 .PHONY: verify-mutation-evidence
 verify-mutation-evidence:
 	@scripts/check-mutation-evidence.py
@@ -74,7 +76,8 @@ verify-mutation-evidence:
 # Real-world backend tests (AGENTS.md "Live tests"). Hermetic `go test`
 # is the default. Run this when changing a provider backend — spawn,
 # protocol, Start/Send/Goal, event mapping. Each test skips unless its
-# gate is set; a skip is residue, not a pass. CI never sets the gates.
+# gate is set; a skip is residue, not a pass. Nothing unattended sets the
+# gates — run them on Colossus. GitHub Actions is not used.
 #
 # The -run names and AGENTS.md's table are checked against the source by
 # internal/livegate under `make gate` (T100): a live test this expression
@@ -97,7 +100,8 @@ live:
 # Model-check the broker lifecycle spec (T2.0/T2.8 oracle). The correct config
 # must be green AND every fault-injection mutant must be caught — a spec that
 # stays green on known-broken code is toothless. Requires Java + tla2tools.jar
-# (see scripts/tlc.sh). CI runs this in .github/workflows/specs.yml.
+# (see scripts/tlc.sh). Run on Colossus via make gate-full before a release.
+# Not a GitHub Actions job.
 .PHONY: supervisor-install supervisor-status
 supervisor-install:
 	@supervisor/install.sh
