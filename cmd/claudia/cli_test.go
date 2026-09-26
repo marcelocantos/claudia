@@ -54,6 +54,8 @@ func TestCLIHelpAgent(t *testing.T) {
 		"CLAUDIA_NO_BROKER=1",
 		"client-side fold",
 		"pimp-smoke",
+		"~/.local/state/claudia/broker.sock",
+		"0.44.0",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("--help-agent missing %q:\n%s", want, out)
