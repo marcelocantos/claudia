@@ -4,7 +4,6 @@
 package claudia
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -101,9 +100,10 @@ func grokACPArgs(model string, connect bool) []string {
 func startGrokACP(bin string, workDir, model, sessionID string, requireResume bool, mcpServers []any, extraEnv []string, onEvent func(Event), onClose func()) (*grokACPClient, error) {
 	cmd := exec.Command(bin, grokACPArgs(model, false)...)
 	cmd.Dir = workDir
-	if len(extraEnv) > 0 {
-		cmd.Env = appendEnv(nil, extraEnv)
-	}
+	// Always set Env. A daemon started by brew services has a service PATH
+	// (system directories first, ~/.grok/bin last). The child needs the
+	// user tool directories an interactive StartDirect already has.
+	cmd.Env = grokChildEnv(extraEnv)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -139,18 +139,37 @@ func startGrokACP(bin string, workDir, model, sessionID string, requireResume bo
 		sessionID:   sessionID,
 	}
 
-	go c.drainStderr()
+	stderrCap := newGrokStderrCapture()
+	go stderrCap.consume(stderr)
 	go c.readLoop()
 
 	if err := c.initialize(); err != nil {
-		c.Close()
-		return nil, err
+		return nil, c.failStart(err, stderrCap)
 	}
 	if err := c.openSession(workDir, sessionID, requireResume, mcpServers); err != nil {
-		c.Close()
-		return nil, err
+		return nil, c.failStart(err, stderrCap)
 	}
 	return c, nil
+}
+
+// failStart kills the child, drains stderr, then reaps it. Wait must run
+// after the stderr reader finishes: Cmd.Wait closes the pipe, and a Wait
+// that races the reader drops the handshake line. readLoop sets closed
+// when stdout hits EOF, and Close then returns without Wait, so reap here
+// as well.
+func (c *grokACPClient) failStart(err error, stderr *grokStderrCapture) error {
+	if c.cmd != nil && c.cmd.Process != nil {
+		_ = c.cmd.Process.Kill()
+	}
+	text := ""
+	if stderr != nil {
+		text = stderr.wait()
+	}
+	c.Close()
+	if c.cmd != nil {
+		_ = c.cmd.Wait()
+	}
+	return explainGrokSidecarHandshake(err, text)
 }
 
 // ConnectURL returns the durable serve WebSocket URL in connect-mode, or "".
@@ -163,17 +182,6 @@ func (c *grokACPClient) SessionID() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.sessionID
-}
-
-func (c *grokACPClient) drainStderr() {
-	if c.stderr == nil {
-		return
-	}
-	sc := bufio.NewScanner(c.stderr)
-	sc.Buffer(make([]byte, 256*1024), 256*1024)
-	for sc.Scan() {
-		slog.Debug("grok acp stderr", "line", sc.Text())
-	}
 }
 
 func (c *grokACPClient) readLoop() {
