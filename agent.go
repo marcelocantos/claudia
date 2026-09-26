@@ -65,6 +65,11 @@ type Config struct {
 	// grok, cursor, and the four subscription ids use the sidecar (🎯T866.5).
 	OMP bool
 
+	// AdoptOnly attaches to a sidecar seat that is already running
+	// (🎯T869). A seat that is not loaded is not created. Launch leaves
+	// this false and creates the seat.
+	AdoptOnly bool
+
 	// Name is the grant key when a claudia daemon holds the seat (🎯T2.10):
 	// a consumer that restarts reclaims the running agent by this name
 	// instead of starting another. Registry sets it to the AgentDef name.

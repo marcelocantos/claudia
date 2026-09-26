@@ -104,6 +104,65 @@ func TestEnsureSurvivesParentExit(t *testing.T) {
 	}
 }
 
+func TestT869AdoptDoesNotCreateAndSecondAttachIsSilent(t *testing.T) {
+	if _, err := os.Stat(ServerScript()); err != nil {
+		t.Skip("sidecar/server.ts missing")
+	}
+	dir, err := os.MkdirTemp("/tmp", "omp-adopt-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	socket := filepath.Join(dir, "adopt.sock")
+	t.Setenv(SocketEnv, socket)
+	t.Setenv("JEVONS_SPOOL_DIR", filepath.Join(dir, "spool"))
+	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+	defer cancel()
+	if _, err := Ensure(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = StopSidecar(socket) })
+
+	miss, err := Dial(ctx, socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer miss.Close()
+	if err := miss.Send(Message{Op: OpAdopt, Seat: "jevons", Provider: XAIOAuth, Token: "tok"}); err != nil {
+		t.Fatal(err)
+	}
+	ev, err := miss.Recv()
+	if err != nil || ev.Type != "error" {
+		t.Fatalf("adopt of an unloaded seat = %+v %v, want error", ev, err)
+	}
+
+	load, err := Dial(ctx, socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer load.Close()
+	if err := load.Send(Message{Op: OpLoad, Seat: "jevons", Provider: XAIOAuth, Model: "grok-4.6", Token: "tok"}); err != nil {
+		t.Fatal(err)
+	}
+	ev, err = load.Recv()
+	if err != nil || ev.Type != "ready" || ev.How != "launched" {
+		t.Fatalf("first load = %+v %v, want ready how=launched", ev, err)
+	}
+
+	again, err := Dial(ctx, socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer again.Close()
+	if err := again.Send(Message{Op: OpAdopt, Seat: "jevons", Provider: XAIOAuth, Token: "tok-2"}); err != nil {
+		t.Fatal(err)
+	}
+	ev, err = again.Recv()
+	if err != nil || ev.Type != "ready" || ev.How != "adopted" {
+		t.Fatalf("second adopt = %+v %v, want ready how=adopted", ev, err)
+	}
+}
+
 func TestBrokerRestartRebindsSeat(t *testing.T) {
 	if _, err := os.Stat(ServerScript()); err != nil {
 		t.Skip("sidecar/server.ts missing")

@@ -74,14 +74,20 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 	if provider == "" {
 		return nil, fmt.Errorf("omp: %s is not a sidecar provider", req.Config.Provider)
 	}
-	if req.Config.RequireResume {
+	// Adopting a seat that is already running must not mint one, and must
+	// not start a sidecar in order to discover that it is not there (🎯T869).
+	if req.Config.RequireResume && !req.Config.AdoptOnly {
 		if !omp.SeatHasHistory(omp.SpoolDir(), req.Config.Name) {
 			return nil, fmt.Errorf("session %s: existing conversation required but no spool records for seat %q under %s — refusing to mint a replacement session",
 				req.Config.SessionID, req.Config.Name, omp.SpoolDir())
 		}
 	}
 	socket := os.Getenv(omp.SocketEnv)
-	if socket == "" {
+	if req.Config.AdoptOnly {
+		if socket == "" || !omp.Listening(req.Context, socket) {
+			return nil, fmt.Errorf("%w: %s", ErrNoSessionWindow, req.Config.Name)
+		}
+	} else if socket == "" {
 		var err error
 		socket, err = omp.Ensure(req.Context)
 		if err != nil {
@@ -107,8 +113,12 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 	if err != nil {
 		return nil, err
 	}
+	op := omp.OpLoad
+	if req.Config.AdoptOnly {
+		op = omp.OpAdopt
+	}
 	if err := conn.Send(omp.Message{
-		Op:       omp.OpLoad,
+		Op:       op,
 		Seat:     req.Config.Name,
 		Provider: provider,
 		Model:    req.Config.Model,
@@ -118,13 +128,26 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 		conn.Close()
 		return nil, err
 	}
+	if req.Config.AdoptOnly {
+		// An older sidecar does not answer "adopt". Do not hold the resume.
+		_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+	}
 	ev, err := conn.Recv()
+	if req.Config.AdoptOnly {
+		_ = conn.SetDeadline(time.Time{})
+	}
 	if err != nil {
 		conn.Close()
+		if req.Config.AdoptOnly {
+			return nil, fmt.Errorf("%w: %s", ErrNoSessionWindow, req.Config.Name)
+		}
 		return nil, err
 	}
 	if ev.Type != "ready" {
 		conn.Close()
+		if req.Config.AdoptOnly {
+			return nil, fmt.Errorf("%w: %s", ErrNoSessionWindow, req.Config.Name)
+		}
 		return nil, fmt.Errorf("omp: sidecar said %q, want ready", ev.Type)
 	}
 	sessionID := req.Config.SessionID

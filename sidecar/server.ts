@@ -139,6 +139,22 @@ async function handle(
     }
     return;
   }
+  if (msg.op === "adopt") {
+    // A seat that is not already running is not created (🎯T869). ResumeAll
+    // treats that as a miss and launches, and only the launch is nudged.
+    if (!msg.token) {
+      write({ seat, type: "error", text: "adopt without an access token" });
+      return;
+    }
+    const existing = seats.get(seat);
+    if (!existing) {
+      write({ seat, type: "error", text: "seat is not loaded" });
+      return;
+    }
+    rebindSeat(existing, msg, seat, write, callTool);
+    write({ seat, type: "ready", how: "adopted" });
+    return;
+  }
   if (msg.op === "load") {
     if (!msg.token) {
       write({ seat, type: "error", text: "load without an access token" });
@@ -146,16 +162,8 @@ async function handle(
     }
     const existing = seats.get(seat);
     if (existing) {
-      existing.token = msg.token;
-      existing.agent.setToken(msg.token);
-      existing.agent.rebind((ev) => write({ seat, ...ev }), callTool);
-      if (msg.cwd) existing.agent.setCwd(msg.cwd);
-      if (msg.model && msg.model !== existing.model) {
-        existing.agent.setModel(msg.provider ?? existing.provider, msg.model);
-        existing.model = msg.model;
-      }
-      if (msg.provider) existing.provider = msg.provider;
-      write({ seat, type: "ready" });
+      rebindSeat(existing, msg, seat, write, callTool);
+      write({ seat, type: "ready", how: "adopted" });
       return;
     }
     const agent = createSeatAgent({
@@ -172,7 +180,7 @@ async function handle(
       token: msg.token,
       agent,
     });
-    write({ seat, type: "ready" });
+    write({ seat, type: "ready", how: "launched" });
     return;
   }
   const loaded = seats.get(seat);
@@ -192,6 +200,26 @@ async function handle(
   if (msg.op === "prompt") {
     await loaded.agent.prompt(msg.text ?? "", promptMeta(msg));
   }
+}
+
+function rebindSeat(
+  existing: Seat,
+  msg: Line,
+  seat: string,
+  write: (ev: Record<string, unknown>) => void,
+  callTool: (callId: string, name: string, args: string) => Promise<string>,
+) {
+  if (msg.token) {
+    existing.token = msg.token;
+    existing.agent.setToken(msg.token);
+  }
+  existing.agent.rebind((ev) => write({ seat, ...ev }), callTool);
+  if (msg.cwd) existing.agent.setCwd(msg.cwd);
+  if (msg.model && msg.model !== existing.model) {
+    existing.agent.setModel(msg.provider ?? existing.provider, msg.model);
+    existing.model = msg.model;
+  }
+  if (msg.provider) existing.provider = msg.provider;
 }
 
 function promptMeta(msg: Line) {

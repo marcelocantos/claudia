@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -25,6 +26,17 @@ var ompSidecarIDs = []Provider{
 	Provider(omp.OpenAICodex),
 	ProviderCursor,
 	Provider(omp.XAIOAuth),
+}
+
+func TestT869AdoptOnlyDoesNotStartASidecar(t *testing.T) {
+	t.Setenv(omp.SocketEnv, "")
+	_, err := (ompAgentBackend{}).StartAgent(agentStartRequest{
+		Context: context.Background(),
+		Config:  Config{Provider: ProviderGrok, Name: "jevons", AdoptOnly: true},
+	})
+	if !errors.Is(err, ErrNoSessionWindow) {
+		t.Fatalf("adopt with no sidecar = %v, want ErrNoSessionWindow", err)
+	}
 }
 
 func TestOMPStartRefusesVendorCLI(t *testing.T) {

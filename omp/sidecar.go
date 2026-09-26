@@ -9,11 +9,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"time"
 )
 
 // Verbs the broker sends. The sidecar streams Event messages back.
 const (
 	OpLoad   = "load"
+	OpAdopt  = "adopt"
 	OpPrompt = "prompt"
 	OpSteer  = "steer"
 	OpAbort  = "abort"
@@ -45,6 +47,7 @@ type Message struct {
 type Event struct {
 	Seat     string          `json:"seat,omitempty"`
 	Type     string          `json:"type"`
+	How      string          `json:"how,omitempty"`
 	Text     string          `json:"text,omitempty"`
 	CallID   string          `json:"call_id,omitempty"`
 	Name     string          `json:"name,omitempty"`
@@ -89,6 +92,16 @@ func (c *Conn) Recv() (Event, error) {
 		return Event{}, err
 	}
 	return ev, nil
+}
+
+// SetDeadline bounds the next read and write. The zero time clears it.
+// Adopt uses it so an older sidecar that does not answer "adopt" cannot
+// hold ResumeAll open.
+func (c *Conn) SetDeadline(t time.Time) error {
+	if c == nil || c.c == nil {
+		return nil
+	}
+	return c.c.SetDeadline(t)
 }
 
 func (c *Conn) Close() error {

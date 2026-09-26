@@ -248,6 +248,76 @@ func TestRegistryResumeAllConcurrencyIsBounded(t *testing.T) {
 // TestRegistryResumeAllRemintsRefusedConversation: a Cursor seat whose
 // saved conversation the provider refuses to load is started on a fresh
 // session, and the outcome names the session it left.
+// TestT869SecondResumeAdoptsRunningSidecar: a launch sends
+// DefaultRestartNudge. A second resume — same process, or a fresh one
+// whose sidecar still has the seat — adopts and does not nudge again.
+func TestT869SecondResumeAdoptsRunningSidecar(t *testing.T) {
+	f := newSeatFixture(t)
+	now := time.Date(2026, 9, 26, 1, 37, 34, 0, time.UTC)
+	running := map[string]*fakeAgentBackend{}
+	var adopted *fakeAgentBackend
+	registryStart = func(ctx context.Context, cfg Config) (*Agent, error) {
+		if cfg.AdoptOnly {
+			if running[cfg.Name] == nil {
+				return nil, fmt.Errorf("%w: %s", ErrNoSessionWindow, cfg.Name)
+			}
+			// Own control channel: the launch's agent and this handle both
+			// Stop, and one backend's Close must not run twice.
+			adopted = &fakeAgentBackend{name: "fake-claude"}
+			return startWithBackendContext(ctx, cfg, adopted)
+		}
+		b := &fakeAgentBackend{name: "fake-claude"}
+		running[cfg.Name] = b
+		f.mu.Lock()
+		f.backends[cfg.Name] = b
+		f.mu.Unlock()
+		return startWithBackendContext(ctx, cfg, b)
+	}
+	f.open(t, []AgentDef{{
+		Name: "jevons", WorkDir: t.TempDir(), SessionID: "sid-jevons",
+		AutoStart: true, Provider: ProviderGrok,
+	}})
+
+	out := f.reg.ResumeAll(context.Background(), &ResumeArgs{Now: now})
+	if len(out) != 1 || out[0].Err != nil || out[0].How != ResumeLaunched || !out[0].Nudged {
+		t.Fatalf("first resume = %+v, want launched and nudged", out)
+	}
+	want := fmt.Sprintf(DefaultRestartNudge, now.Format(time.RFC3339))
+	if got := f.sends("jevons"); len(got) != 1 || got[0] != want {
+		t.Fatalf("launch sends = %q, want the default restart nudge", got)
+	}
+
+	again := f.reg.ResumeAll(context.Background(), &ResumeArgs{Now: now.Add(25 * time.Second)})
+	if len(again) != 1 || again[0].Err != nil || again[0].How != ResumeAdopted || again[0].Nudged {
+		t.Fatalf("same-process second resume = %+v, want adopted without nudge", again)
+	}
+	if got := f.sends("jevons"); len(got) != 1 {
+		t.Fatalf("same-process second resume sent %q", got)
+	}
+
+	reg2, err := NewRegistry(f.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(reg2.StopAll)
+	fresh := reg2.ResumeAll(context.Background(), &ResumeArgs{Now: now.Add(25 * time.Second)})
+	if len(fresh) != 1 || fresh[0].Err != nil || fresh[0].How != ResumeAdopted || fresh[0].Nudged {
+		t.Fatalf("fresh resume of a running sidecar = %+v, want adopted without nudge", fresh)
+	}
+	if got := f.sends("jevons"); len(got) != 1 {
+		t.Fatalf("fresh resume sent another nudge: %q", got)
+	}
+	if adopted == nil {
+		t.Fatal("fresh resume did not adopt the running sidecar")
+	}
+	adopted.mu.Lock()
+	n := len(adopted.sends)
+	adopted.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("adopted handle was nudged %d times", n)
+	}
+}
+
 func TestRegistryResumeAllRemintsRefusedConversation(t *testing.T) {
 	f := newSeatFixture(t)
 	old := "b54f134f-f7ef-4780-a077-37132cd64d14"

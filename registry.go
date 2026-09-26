@@ -463,6 +463,16 @@ func (r *Registry) startHeld(ctx context.Context, op *registryLifecycle, name st
 	startProc, adoptProc := r.processSeams()
 	if proc == nil && err == nil && adopt {
 		switch {
+		case ompProviderID(def.Provider) != "" && def.ConnectURL == "" && def.ConnectPID == 0:
+			// A sidecar seat that is already running is adopted. AdoptOnly
+			// does not create one, so a miss falls through to launch — and
+			// only the launch sends the restart nudge (🎯T869).
+			cfg.AdoptOnly = true
+			proc, err = startProc(ctx, cfg)
+			cfg.AdoptOnly = false
+			if err != nil && def.Provider == ProviderCursor {
+				reapCursorACPDef(&def)
+			}
 		case isClaudeProvider(def.Provider):
 			proc, err = adoptProc(cfg)
 		case def.Provider == ProviderGrok && (def.ConnectURL != "" || def.ConnectPID > 0):
