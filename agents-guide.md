@@ -982,6 +982,58 @@ re-grants from the fields `grants` lists and keeps the daemon's session
 id. A seat that also carries MCP servers or a sandbox policy stays on
 the library, which re-grants the definition it first sent.
 
+### Task one-shot over the broker
+
+A Task one-shot that must run on the daemon uses `task_run`, not an
+in-process `NewTask`. `NewTask` / `Task.Run` still consult the daemon
+when one is listening, and spawn in this process when it is not. That
+fallback is the embedding path. `RunBrokerTask` and `claudia broker task`
+do not fall back.
+
+The daemon admits the run before it spawns anything. Admission reads
+the plan-usage snapshot (refreshing it when the TTL has elapsed). A
+provider row that `HasAvailableTokens` rejects is `plan_exhausted`
+(`ErrPlanExhausted`) and no provider process starts. A provider with
+no row is admitted: an unpublished reading is not a veto. `claudia
+broker usage` prints that snapshot. The `ADMIT` column is the same
+predicate, so a `no` on the provider you are about to use is the
+refusal the next `task_run` returns.
+
+```bash
+claudia broker usage
+claudia broker task --provider grok --model grok-4 --workdir "$PWD" \
+  'Reply with the single word pong.'
+```
+
+`--json` prints the wire: one `task_started`, then `task_event` lines,
+then `task_done`. The socket is the one `claudia broker socket` prints
+(default `~/.local/state/claudia/broker.sock`).
+
+```go
+events, err := claudia.RunBrokerTask(ctx, "Reply with the single word pong.", claudia.TaskConfig{
+    Provider: claudia.ProviderGrok,
+    Model:    "grok-4",
+    WorkDir:  workDir,
+})
+```
+
+`ErrNoBroker` means nothing is listening. Cancel the context to drop
+the connection; the daemon cancels the run.
+
+The messages are the existing grant protocol (🎯T2.10), one connection:
+
+1. client → `task_run` with a TaskConfig (`EncodeTaskConfigWire`) and the prompt
+2. broker → `task_started` with `run_id`
+3. broker → `task_event` (`EncodeTaskEventWire`) until
+4. broker → `task_done`
+
+A brew `claudia` from 0.44.0 already accepts `task_run` from the
+library. It does not refuse an exhausted plan. The `task` subcommand,
+the `ADMIT` column, and `plan_exhausted` admission are on HEAD, so
+smoke them with a HEAD build (the `task` client against the live
+socket; admission itself once this daemon is the one listening) until
+the formula catches up.
+
 - **Sessions are grants.** `Start` / `Registry.Launch` send the
   Config (as an `AgentDef` plus `Config.Name`) over the Unix socket;
   the daemon starts the provider process as its parent and streams
@@ -1003,9 +1055,13 @@ the library, which re-grants the definition it first sent.
   so a consumer's existing "not alive → relaunch" path is the
   reconnect.
 - **Tasks run on the daemon.** `Task.Run` streams the run over its
-  own connection; `Cancel` reaches it; a dropped connection cancels
-  the run. `Task.SetRawLog` receives the provider's raw lines from the
-  daemon, in order; without it they stay on the daemon.
+  own connection when a daemon answers, and spawns in-process when
+  one does not. `RunBrokerTask` and `claudia broker task` are the
+  one-shot that always uses `task_run` (see the task one-shot section). The daemon admits
+  each run against the usage snapshot first. `Cancel` reaches a
+  library run; a dropped connection cancels it. `Task.SetRawLog`
+  receives the provider's raw lines from the daemon, in order; without
+  it they stay on the daemon.
 - **Judge runs on the daemon.** `Judge.Ask` sends the request over its
   own connection and the daemon calls TypeSafe with its key; a caller
   that set its own key, endpoint or HTTP client stays direct.
@@ -1053,7 +1109,8 @@ brew/launchd, and starts `claudia broker serve` under supervisord —
 same shape as bullseye/mnemo/jevonsd. Elsewhere, operate it with
 `brew services start claudia` (Homebrew launchd plist, 🎯T2.7) or
 `claudia broker install` (owner-installed launchd user agent on
-macOS). Operator commands: `status`, `grants`, `usage [--refresh]`,
+macOS). Operator commands: `status`, `grants`, `usage [--refresh]`
+(`ADMIT` is the task_run gate), `task` (one `task_run`),
 `tail` (NDJSON lifecycle events), `release NAME [--detach]`, `socket`.
 Seat driving from the shell is the HEAD CLI in the supported-path
 section above. `claudia --help-agent` prints this guide after the CLI
