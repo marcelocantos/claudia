@@ -218,37 +218,44 @@ func (c *ompControl) pump(a *Agent) {
 			})
 			result := runOMPTool(ev.Name, ev.CallID, ev.Text)
 			_ = c.send(omp.Message{Op: omp.OpTool, CallID: ev.CallID, Result: result})
-		case "turn_end":
+		case "turn_end", "error":
 			c.inflight.Store(false)
-			rejected := oauthRejected(ev.Snapshot)
+			rejected := oauthRejected(ev.Text, ev.Snapshot)
 			if rejected && c.refreshed.CompareAndSwap(false, true) {
 				c.refreshRejectedToken()
 			}
 			a.publishEvent(Event{
 				Type:       "assistant",
 				Text:       ev.Text,
-				IsError:    rejected,
-				StopReason: "end_turn",
-			})
-		case "error":
-			c.inflight.Store(false)
-			a.publishEvent(Event{
-				Type:       "assistant",
-				Text:       ev.Text,
-				IsError:    true,
+				IsError:    rejected || ev.Type == "error",
 				StopReason: "end_turn",
 			})
 		}
 	}
 }
 
-func oauthRejected(snapshot json.RawMessage) bool {
-	if len(snapshot) == 0 {
+// oauthRejected reports a provider refusal of the access token, on the
+// error event or inside the turn snapshot. A bad refresh token for a
+// different plan is not this signal (🎯T868).
+func oauthRejected(text string, snapshot json.RawMessage) bool {
+	blob := text
+	if len(snapshot) > 0 {
+		blob += "\n" + string(snapshot)
+	}
+	if blob == "" {
 		return false
 	}
-	s := string(snapshot)
-	return strings.Contains(s, "could not be validated") ||
-		strings.Contains(s, "unauthenticated:bad-credentials")
+	for _, n := range []string{
+		"could not be validated",
+		"unauthenticated:bad-credentials",
+		"invalid_token",
+		"authentication_error",
+	} {
+		if strings.Contains(blob, n) {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *ompControl) refreshRejectedToken() {

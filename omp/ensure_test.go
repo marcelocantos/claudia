@@ -104,6 +104,81 @@ func TestEnsureSurvivesParentExit(t *testing.T) {
 	}
 }
 
+func TestBrokerRestartRebindsSeat(t *testing.T) {
+	if _, err := os.Stat(ServerScript()); err != nil {
+		t.Skip("sidecar/server.ts missing")
+	}
+	dir, err := os.MkdirTemp("/tmp", "omp-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	socket := filepath.Join(dir, "rebind.sock")
+	t.Setenv(SocketEnv, socket)
+	t.Setenv("JEVONS_SPOOL_DIR", filepath.Join(dir, "spool"))
+	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+	defer cancel()
+	if _, err := Ensure(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = StopSidecar(socket) })
+	first, err := Dial(ctx, socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Send(Message{Op: OpLoad, Seat: "jevons", Provider: XAIOAuth, Model: "grok-4.6", Token: "tok-1"}); err != nil {
+		t.Fatal(err)
+	}
+	ev, err := first.Recv()
+	if err != nil || ev.Type != "ready" {
+		t.Fatalf("first load = %+v %v", ev, err)
+	}
+	first.Close()
+
+	second, err := Dial(ctx, socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	if err := second.Send(Message{Op: OpLoad, Seat: "jevons", Provider: XAIOAuth, Model: "grok-4.6", Token: "tok-2"}); err != nil {
+		t.Fatal(err)
+	}
+	ev, err = second.Recv()
+	if err != nil || ev.Type != "ready" {
+		t.Fatalf("second load = %+v %v", ev, err)
+	}
+	if err := second.Send(Message{Op: OpAbort, Seat: "jevons"}); err != nil {
+		t.Fatal(err)
+	}
+	got := recvUntil(t, second, 5*time.Second)
+	if got.Type != "turn_end" {
+		t.Fatalf("abort after broker restart = %+v, want turn_end on the new connection", got)
+	}
+}
+
+func recvUntil(t *testing.T, conn *Conn, d time.Duration) Event {
+	t.Helper()
+	ch := make(chan Event, 1)
+	errc := make(chan error, 1)
+	go func() {
+		ev, err := conn.Recv()
+		if err != nil {
+			errc <- err
+			return
+		}
+		ch <- ev
+	}()
+	select {
+	case ev := <-ch:
+		return ev
+	case err := <-errc:
+		t.Fatal(err)
+	case <-time.After(d):
+		t.Fatal("timed out waiting for the rebound seat")
+	}
+	return Event{}
+}
+
 func TestSpoolAppendsDatedLog(t *testing.T) {
 	dir := t.TempDir()
 	now := "2026-09-25T15:04:05.000Z"

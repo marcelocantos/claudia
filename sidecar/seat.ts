@@ -12,6 +12,9 @@ export type SeatEvent = {
   snapshot?: unknown;
 };
 
+export type SeatEmit = (ev: SeatEvent) => void;
+export type SeatCallTool = (callId: string, name: string, args: string) => Promise<string>;
+
 export type SeatAgent = {
   prompt: (text: string) => Promise<void>;
   steer: (text: string) => void;
@@ -20,6 +23,10 @@ export type SeatAgent = {
   setToken: (token: string) => void;
   setCwd: (cwd: string) => void;
   snapshot: () => unknown;
+  // rebind points events and tool calls at the connection that just
+  // loaded the seat. A broker restart dials a new socket; the Agent
+  // stays, and the new socket has to hear it (🎯T868).
+  rebind: (emit: SeatEmit, callTool: SeatCallTool) => void;
 };
 
 export function createSeatAgent(opts: {
@@ -27,11 +34,12 @@ export function createSeatAgent(opts: {
   model: string;
   token: string;
   cwd: string;
-  emit: (ev: SeatEvent) => void;
-  callTool: (callId: string, name: string, args: string) => Promise<string>;
+  emit: SeatEmit;
+  callTool: SeatCallTool;
 }): SeatAgent {
   let token = opts.token;
   let cwd = opts.cwd;
+  const sink = { emit: opts.emit, callTool: opts.callTool };
   const model = resolveModel(opts.provider, opts.model);
   const agent = new Agent({
     initialState: {
@@ -43,20 +51,20 @@ export function createSeatAgent(opts: {
     getApiKey: async () => token,
     resolveFallbackTool: (name: string) => {
       if (!name.startsWith("jevons_")) return undefined;
-      return jevonsTool(name, opts.callTool);
+      return jevonsTool(name, (id, toolName, args) => sink.callTool(id, toolName, args));
     },
   });
 
   agent.subscribe((event: { type?: string; assistantMessageEvent?: { type?: string; delta?: string } }) => {
     if (event.type === "message_update" && event.assistantMessageEvent?.type === "text_delta") {
-      opts.emit({ type: "text", text: event.assistantMessageEvent.delta ?? "" });
+      sink.emit({ type: "text", text: event.assistantMessageEvent.delta ?? "" });
     }
   });
 
   return {
     prompt: async (text: string) => {
       await agent.prompt(text);
-      opts.emit({ type: "turn_end", snapshot: agent.state });
+      sink.emit({ type: "turn_end", snapshot: agent.state });
     },
     steer: (text: string) => {
       agent.steer({
@@ -78,6 +86,10 @@ export function createSeatAgent(opts: {
       if (next) cwd = next;
     },
     snapshot: () => agent.state,
+    rebind: (emit, callTool) => {
+      sink.emit = emit;
+      sink.callTool = callTool;
+    },
   };
 }
 

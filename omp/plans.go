@@ -5,6 +5,7 @@ package omp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -17,7 +18,8 @@ var PlanIDs = []string{Anthropic, OpenAICodex, Cursor, XAIOAuth}
 // Each success is saved immediately so a later failure cannot discard a
 // rotated refresh token. A login that is still valid is left as it is.
 // A provider with no refresh token is skipped — serve must not open a
-// browser. Failure does not fall through to an API key.
+// browser. One plan's bad refresh token does not abort the others
+// (🎯T868). Failure does not fall through to an API key.
 func RefreshPlans(ctx context.Context, store Store, login Login) (refreshed, skipped []string, err error) {
 	item, err := store.Load(ctx)
 	if err != nil {
@@ -46,17 +48,19 @@ func RefreshPlans(ctx context.Context, store Store, login Login) (refreshed, ski
 			skipped = append(skipped, id)
 			continue
 		}
-		next, err := login.fetch(ctx, id, rec)
-		if err != nil {
-			return refreshed, skipped, fmt.Errorf("omp: %s: %w", id, err)
+		next, ferr := login.fetch(ctx, id, rec)
+		if ferr != nil {
+			err = errors.Join(err, fmt.Errorf("omp: %s: %w", id, ferr))
+			continue
 		}
 		item.Records[id] = next
-		if err := store.Save(ctx, item); err != nil {
-			return refreshed, skipped, err
+		if serr := store.Save(ctx, item); serr != nil {
+			err = errors.Join(err, serr)
+			continue
 		}
 		refreshed = append(refreshed, id)
 	}
-	return refreshed, skipped, nil
+	return refreshed, skipped, err
 }
 
 func accessLive(store Store, rec Record) bool {

@@ -129,11 +129,13 @@ async function handle(
     if (existing) {
       existing.token = msg.token;
       existing.agent.setToken(msg.token);
+      existing.agent.rebind((ev) => write({ seat, ...ev }), callTool);
       if (msg.cwd) existing.agent.setCwd(msg.cwd);
       if (msg.model && msg.model !== existing.model) {
         existing.agent.setModel(msg.provider ?? existing.provider, msg.model);
         existing.model = msg.model;
       }
+      if (msg.provider) existing.provider = msg.provider;
       write({ seat, type: "ready" });
       return;
     }
