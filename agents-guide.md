@@ -526,7 +526,10 @@ Machine clients can use the Unix socket directly. Send a version 1
 and any excluded providers. The broker replies with `resolved` and a model
 pick. Send `task_run_restricted` with that provider, model, prompt, and a
 `tool_policy` containing `builtins`, `allow`, `deny`, `max_turns`, and (for
-Grok) `home_dir`. Keep the connection open for `task_event` messages through
+Grok) `home_dir`. Set `require_background_capacity: true` on `task_run` or
+`task_run_restricted` to make the daemon recheck published capacity and
+background pacing for the selected model before starting it. An older daemon
+rejects that field. Keep the connection open for `task_event` messages through
 `task_done`; closing it cancels the run. The broker owns the provider process.
 
 The channel closes when the process exits. Drain it until then:

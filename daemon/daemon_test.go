@@ -494,6 +494,52 @@ func TestBrokerRequiredTaskClient(t *testing.T) {
 	}
 }
 
+func TestBackgroundTaskAdmissionRefusesSpentCapacity(t *testing.T) {
+	zero, sixty := 0.0, 60.0
+	for _, tc := range []struct {
+		name     string
+		provider claudia.Provider
+		model    string
+		usage    []claudia.PlanUsage
+	}{
+		{name: "missing usage", provider: claudia.ProviderGrok, model: "grok-4.5"},
+		{name: "spent plan", provider: claudia.ProviderGrok, model: "grok-4.5", usage: []claudia.PlanUsage{{Provider: claudia.ProviderGrok, Status: claudia.PlanUsageAvailable,
+			Windows: []claudia.PlanWindow{{Name: claudia.PlanWindowWeekly, RemainingPercent: &zero}}}}},
+		{name: "spent model", provider: claudia.ProviderClaude, model: "claude-fable-5", usage: []claudia.PlanUsage{{Provider: claudia.ProviderClaude, Status: claudia.PlanUsageAvailable,
+			Windows: []claudia.PlanWindow{{Name: claudia.PlanWindowWeekly, RemainingPercent: &sixty},
+				{Name: claudia.PlanWindowModelWeekly, Model: "fable", RemainingPercent: &zero}}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			f.boot(t, tc.usage)
+			conn, err := broker.Dial(f.sock)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			raw, err := claudia.EncodeTaskConfigWire(claudia.TaskConfig{Provider: tc.provider, Model: tc.model,
+				WorkDir: t.TempDir(), ToolPolicy: &claudia.TaskToolPolicy{Builtins: []string{"read_file"}, MaxTurns: 2}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := conn.WriteRequest(&broker.Request{ID: "sen", Type: broker.TypeTaskRunRestricted,
+				TaskRun: &broker.TaskRunRequest{Task: raw, Prompt: "inspect", RequireBackgroundCapacity: true}}); err != nil {
+				t.Fatal(err)
+			}
+			response, err := conn.ReadResponse()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if response.Type != broker.TypeError || response.ID != "sen" || response.Error.Code != broker.CodePlanExhausted {
+				t.Fatalf("background admission = type %s id %s error %+v", response.Type, response.ID, response.Error)
+			}
+		})
+	}
+}
+
 // TestUsageIsTheHostEvaluator is 🎯T2.9: consumers read the daemon's
 // snapshot, the daemon fetches once per TTL, and a seat's stuck event forces
 // a refresh.

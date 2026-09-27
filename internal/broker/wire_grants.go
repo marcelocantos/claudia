@@ -116,6 +116,8 @@ const (
 	CodeAgentFailed ErrorCode = "agent_failed"
 	// CodeUnknownRun means the task run id is not one the daemon is running.
 	CodeUnknownRun ErrorCode = "unknown_run"
+	// CodePlanExhausted refuses a background task before a provider starts.
+	CodePlanExhausted ErrorCode = "plan_exhausted"
 )
 
 // Grant dispositions on release. DispositionStop tears the seat down;
@@ -218,6 +220,10 @@ type TaskRunRequest struct {
 	// RawLog asks for the provider's raw output lines as task_raw pushes
 	// (claudia.Task.SetRawLog). Omitted, nothing extra crosses the wire.
 	RawLog bool `json:"raw_log,omitempty"`
+	// RequireBackgroundCapacity makes the daemon recheck the selected model
+	// against published plan usage and background pacing before spawning.
+	// Older daemons reject this unknown field, so callers fail closed.
+	RequireBackgroundCapacity bool `json:"require_background_capacity,omitempty"`
 }
 
 // Validate checks the required fields.

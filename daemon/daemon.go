@@ -1173,6 +1173,12 @@ func (d *Daemon) handleTaskRun(c *broker.ClientConn, req *broker.Request) {
 		_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeMalformed, Field: "task.tool_policy", Msg: "restricted task requires tool_policy"})
 		return
 	}
+	if req.TaskRun.RequireBackgroundCapacity {
+		if err := d.admitBackgroundTask(cfg); err != nil {
+			_ = c.Fail(req.ID, err)
+			return
+		}
+	}
 	task := daemonNewTask(cfg)
 	runID := newRunID()
 	if req.TaskRun.RawLog {
@@ -1217,6 +1223,30 @@ func (d *Daemon) handleTaskRun(c *broker.ClientConn, req *broker.Request) {
 		_ = c.Reply(&broker.Response{Type: broker.TypeTaskDone, TaskDone: &broker.TaskDoneMessage{RunID: runID}})
 		d.emit(broker.EventMessage{Kind: broker.EventTaskDone, Name: runID})
 	}()
+}
+
+func (d *Daemon) admitBackgroundTask(cfg claudia.TaskConfig) error {
+	if cfg.Provider == "" || cfg.Model == "" {
+		return &broker.ProtocolError{Code: broker.CodeMissingField, Field: "task.provider/task.model", Msg: "background task requires a selected provider and model"}
+	}
+	snapshot := d.usage.Read(d.ctx, false)
+	if snapshot.FetchedAt.IsZero() || snapshot.Err != "" {
+		return &broker.ProtocolError{Code: broker.CodePlanExhausted, Field: "usage", Msg: "published plan usage is unavailable for background task admission"}
+	}
+	for _, usage := range snapshot.Backends {
+		if usage.Provider != cfg.Provider {
+			continue
+		}
+		now := d.clock.Now()
+		band := claudia.ClassifyPlan(usage, now, nil).Weekly
+		if usage.Status == claudia.PlanUsageAvailable && claudia.IsDestBand(band) &&
+			claudia.ModelHasAvailableTokens(usage, cfg.Model, now, nil) {
+			return nil
+		}
+		break
+	}
+	return &broker.ProtocolError{Code: broker.CodePlanExhausted, Field: "task.model", Value: cfg.Model,
+		Msg: "selected model has no published background capacity"}
 }
 
 // daemonRunJudge evaluates one judge request. Hermetic tests wrap it to see

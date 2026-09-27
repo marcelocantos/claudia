@@ -120,7 +120,7 @@ var requestVectors = map[string]requestVector{
 	"task_run_restricted": {
 		msg: &Request{
 			ID: "g3r", Type: TypeTaskRunRestricted,
-			TaskRun: &TaskRunRequest{Task: json.RawMessage(`{"provider":"grok","tool_policy":{"builtins":["read_file"],"max_turns":2,"home_dir":"/sen"}}`), Prompt: "inspect"},
+			TaskRun: &TaskRunRequest{Task: json.RawMessage(`{"provider":"grok","tool_policy":{"builtins":["read_file"],"max_turns":2,"home_dir":"/sen"}}`), Prompt: "inspect", RequireBackgroundCapacity: true},
 		},
 	},
 	"task_run_raw_log": {
@@ -366,6 +366,10 @@ var responseVectors = map[string]*Response{
 	"error_not_available": {
 		ID: "g1", Type: TypeError,
 		Error: &ErrorMessage{Code: CodeNotAvailable, Message: "this broker has no daemon runtime behind it", Field: "type", Value: "usage"},
+	},
+	"error_plan_exhausted": {
+		ID: "g3", Type: TypeError,
+		Error: &ErrorMessage{Code: CodePlanExhausted, Message: "selected model has no published background capacity", Field: "task.model", Value: "grok-4.5"},
 	},
 }
 
