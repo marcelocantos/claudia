@@ -955,7 +955,10 @@ func codexTaskArgs(req taskRunRequest) []string {
 	if req.Model != "" {
 		args = append(args, "--model", req.Model)
 	}
-	args = append(args, "exec")
+	// Task callers supply their own workdir, which need not be a Git checkout
+	// (for example, Sentinel's personal directory). Codex otherwise refuses
+	// the run before it can inspect the directory.
+	args = append(args, "exec", "--skip-git-repo-check")
 	if req.SessionID != "" {
 		args = append(args, "resume", "--json", req.SessionID, req.Prompt)
 	} else {

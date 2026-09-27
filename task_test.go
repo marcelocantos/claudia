@@ -238,7 +238,7 @@ func TestCodexTaskArgs(t *testing.T) {
 		"--cd", "/repo",
 		"--sandbox", "read-only",
 		"--model", "gpt-5.4",
-		"exec",
+		"exec", "--skip-git-repo-check",
 		"--json",
 		"summarize",
 	}
@@ -249,7 +249,7 @@ func TestCodexTaskArgs(t *testing.T) {
 
 func TestCodexTaskArgsResume(t *testing.T) {
 	got := codexTaskArgs(taskRunRequest{SessionID: "thread-123", Prompt: "continue"})
-	want := []string{"exec", "resume", "--json", "thread-123", "continue"}
+	want := []string{"exec", "--skip-git-repo-check", "resume", "--json", "thread-123", "continue"}
 	if !slicesEqual(got, want) {
 		t.Errorf("codexTaskArgs resume = %v, want %v", got, want)
 	}
@@ -1125,10 +1125,9 @@ func TestCodexTaskRunSmoke(t *testing.T) {
 		t.Skipf("codex binary not found: %v", err)
 	}
 
-	workDir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Getwd: %v", err)
-	}
+	// Sentinel and other task callers can use a personal directory that is
+	// not a Git checkout. The live smoke must cover that workdir shape.
+	workDir := t.TempDir()
 	pick, err := Resolve(context.Background(), ModelPredicates{
 		Mode:             CapabilityTask,
 		Quality:          ModelQualityStandard,
