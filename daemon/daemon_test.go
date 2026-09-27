@@ -584,8 +584,8 @@ func TestUsageIsTheHostEvaluator(t *testing.T) {
 }
 
 // TestResumesSeatsOnBoot: seats held before the last stop come back —
-// relaunched from the transcript when their process is gone — a relaunched
-// seat is told it was restarted, and a released seat stays released.
+// relaunched from the transcript when their process is gone — only a
+// relaunched seat is told it was restarted, and a released seat stays released.
 func TestResumesSeatsOnBoot(t *testing.T) {
 	f := newFixture(t)
 	prior := []claudia.AgentDef{
@@ -597,15 +597,20 @@ func TestResumesSeatsOnBoot(t *testing.T) {
 	f.bootWith(t, f.options(nil))
 
 	waitFor(t, "two seats resumed", func() bool { return f.seat(1) != nil })
-	waitFor(t, "nudges sent", func() bool {
-		n := 0
+	waitFor(t, "relaunched seat nudged", func() bool {
 		for i := 0; i < 2; i++ {
-			if sends := f.seat(i).sent(); len(sends) == 1 && sends[0] == "restart-nudge" {
-				n++
+			if f.seat(i).start().Config.Name == "held-b" {
+				sends := f.seat(i).sent()
+				return len(sends) == 1 && sends[0] == "restart-nudge"
 			}
 		}
-		return n == 2
+		return false
 	})
+	for i := 0; i < 2; i++ {
+		if f.seat(i).start().Config.Name == "held-a" && len(f.seat(i).sent()) != 0 {
+			t.Fatalf("adopted seat received a restart nudge: %v", f.seat(i).sent())
+		}
+	}
 	if f.seat(2) != nil {
 		t.Fatal("a released seat was resurrected")
 	}
