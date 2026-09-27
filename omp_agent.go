@@ -59,6 +59,11 @@ func agentBackendFor(cfg Config) agentBackend {
 // runner refuses rather than reading an API key from the environment.
 var ompKeychain omp.Runner
 
+// ompKeychainStdin writes the plan item through stdin. Tests that
+// replace ompKeychain leave this nil so Flush does not exec security.
+// Production uses omp.ExecSecurityStdin so tokens are not in argv (🎯T131).
+var ompKeychainStdin omp.StdinRunner
+
 // ompLogin is the pi-ai helper. Tests replace it. A zero value uses bun
 // sidecar/auth.ts.
 var ompLogin omp.Login
@@ -393,15 +398,19 @@ func FlushOMPPlans(ctx context.Context) error {
 
 func planStore() omp.Store {
 	run := ompKeychain
+	runStdin := ompKeychainStdin
 	if run == nil {
 		run = execKeychain
+		if runStdin == nil {
+			runStdin = omp.ExecSecurityStdin
+		}
 	}
 	path := omp.ProductBrokerPath()
 	seal := path != ""
 	if path == "" {
 		path = os.Args[0]
 	}
-	return omp.Store{BrokerPath: path, Run: run, SealPath: seal}
+	return omp.Store{BrokerPath: path, Run: run, RunStdin: runStdin, SealPath: seal}
 }
 
 // RefreshOMPPlans renews every stored subscription login through

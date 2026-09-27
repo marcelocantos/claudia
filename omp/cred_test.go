@@ -5,6 +5,7 @@ package omp
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
@@ -16,10 +17,16 @@ import (
 func TestSaveTrustsOnlyTheBroker(t *testing.T) {
 	resetKeychainShot()
 	var cmds []string
+	var stdin []byte
 	s := Store{
 		BrokerPath: "/usr/local/bin/claudia",
 		Run: func(_ context.Context, name string, args ...string) ([]byte, error) {
 			cmds = append(cmds, name+" "+strings.Join(args, " "))
+			return nil, nil
+		},
+		RunStdin: func(_ context.Context, in []byte, name string, args ...string) ([]byte, error) {
+			cmds = append(cmds, name+" "+strings.Join(args, " "))
+			stdin = append([]byte{}, in...)
 			return nil, nil
 		},
 	}
@@ -34,36 +41,48 @@ func TestSaveTrustsOnlyTheBroker(t *testing.T) {
 	if err := Flush(context.Background(), s); err != nil {
 		t.Fatal(err)
 	}
-	blob := strings.Join(cmds, "\n")
-	if strings.Contains(blob, "delete-generic-password") {
-		t.Fatalf("Save must not delete the item; that drops Always Allow: %s", blob)
+	argv := strings.Join(cmds, "\n")
+	if strings.Contains(argv, "delete-generic-password") {
+		t.Fatalf("Save must not delete the item; that drops Always Allow: %s", argv)
 	}
-	if !strings.Contains(blob, "-U") {
-		t.Fatalf("Save must update in place: %s", blob)
+	for _, c := range cmds {
+		if strings.Contains(c, "-i") && (strings.Contains(c, " -w ") || strings.HasSuffix(c, " -w")) {
+			t.Fatalf("password must not be in argv: %s", c)
+		}
 	}
-	if !strings.Contains(blob, "-T /usr/local/bin/claudia") {
-		t.Fatalf("ACL = %s", blob)
+	if !strings.Contains(argv, "-i") {
+		t.Fatalf("Flush must use security -i: %s", argv)
 	}
-	if strings.Contains(blob, "-A") || strings.Contains(blob, "jevonsd") || strings.Contains(blob, "bun") {
-		t.Fatalf("ACL trusts more than the broker: %s", blob)
+	body := string(stdin)
+	if !strings.Contains(body, "-U") {
+		t.Fatalf("Save must update in place: %s", body)
 	}
-	if strings.Contains(blob, " -p ") || strings.Contains(blob, " -P ") || strings.Contains(blob, "-p ") {
-		t.Fatalf("item has a passphrase flag: %s", blob)
+	if !strings.Contains(body, "-T /usr/local/bin/claudia") {
+		t.Fatalf("ACL = %s", body)
 	}
-	if strings.Contains(blob, "openai-api-key") || strings.Contains(blob, "xai-api-key") {
-		t.Fatalf("wrote a pay-as-you-go item: %s", blob)
+	if strings.Contains(body, "-A") || strings.Contains(body, "jevonsd") || strings.Contains(body, "bun") {
+		t.Fatalf("ACL trusts more than the broker: %s", body)
 	}
-	if !strings.Contains(blob, "-s "+KeychainService) {
-		t.Fatalf("service = %s", blob)
+	if strings.Contains(body, " -p ") || strings.Contains(body, " -P ") || strings.Contains(body, "-p ") {
+		t.Fatalf("item has a passphrase flag: %s", body)
+	}
+	if strings.Contains(body, "openai-api-key") || strings.Contains(body, "xai-api-key") {
+		t.Fatalf("wrote a pay-as-you-go item: %s", body)
+	}
+	if !strings.Contains(body, "-s "+KeychainService) {
+		t.Fatalf("service = %s", body)
+	}
+	if !strings.Contains(body, "-X ") {
+		t.Fatalf("secret must travel as -X hex on stdin: %s", body)
 	}
 	add := 0
 	for _, c := range cmds {
-		if strings.Contains(c, "add-generic-password") {
+		if strings.Contains(c, "-i") {
 			add++
 		}
 	}
 	if add != 1 {
-		t.Fatalf("Save must add once, got %s", blob)
+		t.Fatalf("Save must add once, got %s", argv)
 	}
 }
 
@@ -123,14 +142,11 @@ func TestItemHoldsFourPlanRecords(t *testing.T) {
 				reads++
 				return []byte(saved), nil
 			}
-			if name == "security" && len(args) > 0 && args[0] == "add-generic-password" {
-				writes++
-				for i, a := range args {
-					if a == "-w" && i+1 < len(args) {
-						saved = args[i+1]
-					}
-				}
-			}
+			return nil, nil
+		},
+		RunStdin: func(_ context.Context, in []byte, name string, args ...string) ([]byte, error) {
+			writes++
+			saved = string(itemJSONFromFlushStdin(t, in))
 			return nil, nil
 		},
 	}
@@ -187,13 +203,10 @@ func TestEnsureRefreshesExpiredRecord(t *testing.T) {
 						}
 						return []byte(blob), nil
 					}
-					if name == "security" && len(args) > 0 && args[0] == "add-generic-password" {
-						for i, a := range args {
-							if a == "-w" && i+1 < len(args) {
-								saved = args[i+1]
-							}
-						}
-					}
+					return nil, nil
+				},
+				RunStdin: func(_ context.Context, in []byte, name string, args ...string) ([]byte, error) {
+					saved = string(itemJSONFromFlushStdin(t, in))
 					return nil, nil
 				},
 			}
@@ -324,4 +337,20 @@ func TestSealPathRefusesOtherBinary(t *testing.T) {
 	if resolvePath(self) == resolvePath("/usr/local/bin/jevons-broker") {
 		t.Fatal("test binary collided with the sealed broker path")
 	}
+}
+
+func itemJSONFromFlushStdin(t *testing.T, stdin []byte) []byte {
+	t.Helper()
+	fields := strings.Fields(string(stdin))
+	for i, f := range fields {
+		if f == "-X" && i+1 < len(fields) {
+			raw, err := hex.DecodeString(fields[i+1])
+			if err != nil {
+				t.Fatalf("flush stdin -X: %v (%s)", err, stdin)
+			}
+			return raw
+		}
+	}
+	t.Fatalf("no -X hex in flush stdin: %s", stdin)
+	return nil
 }

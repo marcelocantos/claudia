@@ -8,6 +8,7 @@ package omp
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -61,7 +62,12 @@ type Item struct {
 // macOS security tool.
 type Runner func(ctx context.Context, name string, args ...string) ([]byte, error)
 
-// Store is the one Keychain item. BrokerPath is the only ACL entry.
+// StdinRunner executes a command with stdin. Flush uses it so plan
+// JSON is not in argv (🎯T131). Tests substitute it.
+type StdinRunner func(ctx context.Context, stdin []byte, name string, args ...string) ([]byte, error)
+
+// Store is the one Keychain item. BrokerPath is the ACL entry Flush
+// adds; a retained jevons-broker entry is left in place.
 //
 // Open reads it once at startup. Load, Save, and Put then use that
 // memory copy. Flush writes it back once, on the way out, when the
@@ -69,11 +75,15 @@ type Runner func(ctx context.Context, name string, args ...string) ([]byte, erro
 type Store struct {
 	BrokerPath string
 	Run        Runner
+	RunStdin   StdinRunner
 	Now        func() time.Time
 	// SealPath refuses Open/Flush unless this process is BrokerPath.
 	// A rebuilt copy at another path cannot read or write the item
 	// (🎯T865). Tests that mock Run leave this false.
 	SealPath bool
+	// Keychain, if set, is the keychain file. Empty is the default
+	// keychain. Disposable-keychain tests set this.
+	Keychain string
 }
 
 // keychainShot is the process-wide copy. Store values are copied at
@@ -131,8 +141,12 @@ func Open(ctx context.Context, store Store) error {
 		shot.openErr = fmt.Errorf("omp: no keychain runner")
 		return shot.openErr
 	}
-	out, err := store.Run(ctx, "security", "find-generic-password",
-		"-a", keychainAccount, "-s", KeychainService, "-w")
+	find := []string{"find-generic-password",
+		"-a", keychainAccount, "-s", KeychainService, "-w"}
+	if store.Keychain != "" {
+		find = append(find, store.Keychain)
+	}
+	out, err := store.Run(ctx, "security", find...)
 	if err != nil && !isMissing(err, out) {
 		shot.openErr = err
 		return err
@@ -217,7 +231,7 @@ func Flush(ctx context.Context, store Store) error {
 		shot.flushErr = fmt.Errorf("omp: broker path is required for the keychain ACL")
 		return shot.flushErr
 	}
-	if store.Run == nil {
+	if store.Run == nil && store.RunStdin == nil {
 		shot.flushed = true
 		shot.flushErr = fmt.Errorf("omp: no keychain runner")
 		return shot.flushErr
@@ -231,23 +245,84 @@ func Flush(ctx context.Context, store Store) error {
 	// Update the secret in place. Deleting the item and creating it
 	// again throws away Always Allow, so every login prompts again.
 	// -T on an update adds the broker; it does not replace the ACL.
+	// The password travels on security -i stdin as -X hex so access
+	// and refresh tokens never appear in argv (🎯T131).
+	err = flushWrite(ctx, store, shot.item, blob)
+	shot.flushed = true
+	shot.flushErr = err
+	return err
+}
+
+func flushWrite(ctx context.Context, store Store, item Item, blob []byte) error {
 	args := []string{
 		"add-generic-password",
 		"-U",
 		"-a", keychainAccount,
 		"-s", KeychainService,
 		"-T", store.BrokerPath,
-		"-w", string(blob),
 	}
 	if err := trustedPathOnly(args, store.BrokerPath); err != nil {
-		shot.flushed = true
-		shot.flushErr = err
 		return err
 	}
-	shot.flushed = true
-	_, err = store.Run(ctx, "security", args...)
-	shot.flushErr = err
+	args = append(args, "-X", hex.EncodeToString(blob))
+	if store.Keychain != "" {
+		args = append(args, store.Keychain)
+	}
+	stdin := []byte(interactiveLine(args))
+	argv := []string{"-q", "-i"}
+	spawned := append([]string{"security"}, argv...)
+	if err := refuseSecretArgv(spawned, item); err != nil {
+		return err
+	}
+	if store.RunStdin != nil {
+		_, err := store.RunStdin(ctx, stdin, "security", argv...)
+		return err
+	}
+	_, err := store.Run(ctx, "security", argv...)
 	return err
+}
+
+func interactiveLine(args []string) string {
+	parts := make([]string, len(args))
+	for i, a := range args {
+		if interactiveSafe(a) {
+			parts[i] = a
+		} else {
+			parts[i] = "'" + strings.ReplaceAll(a, "'", "'\\''") + "'"
+		}
+	}
+	return strings.Join(parts, " ") + "\n"
+}
+
+func interactiveSafe(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '-' || r == '_' || r == '.' || r == '/' || r == ':' || r == '=' || r == '+':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func refuseSecretArgv(args []string, item Item) error {
+	for _, rec := range item.Records {
+		for _, secret := range []string{rec.AccessToken, rec.RefreshToken} {
+			if len(secret) < 8 {
+				continue
+			}
+			for _, a := range args {
+				if strings.Contains(a, secret) {
+					return fmt.Errorf("omp: refusing to place a plan token in process argv")
+				}
+			}
+		}
+	}
+	return nil
 }
 
 func sameItem(a, b Item) bool {
