@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -16,11 +17,12 @@ import (
 
 // TestRecoverPlanDisposableKeychainAfterMissedRead exercises the real
 // security(1) read/write boundary. Run it only while an operator can answer
-// a macOS test-Keychain prompt:
+// a macOS test-Keychain prompt. The keychain is named
+// password-is-t131-pass, and that is its password:
 // CLAUDIA_RECOVERY_KEYCHAIN_LIVE=1 go test ./omp -run '^TestRecoverPlanDisposableKeychainAfterMissedRead$' -count=1 -v
 func TestRecoverPlanDisposableKeychainAfterMissedRead(t *testing.T) {
 	if os.Getenv("CLAUDIA_RECOVERY_KEYCHAIN_LIVE") != "1" {
-		t.Skip("set CLAUDIA_RECOVERY_KEYCHAIN_LIVE=1 with an operator present")
+		t.Skip("set CLAUDIA_RECOVERY_KEYCHAIN_LIVE=1 with an operator present; answer the keychain prompt with password " + disposableKeychainPass)
 	}
 	if runtime.GOOS != "darwin" {
 		t.Skip("disposable Keychain requires macOS")
@@ -37,6 +39,7 @@ func TestRecoverPlanDisposableKeychainAfterMissedRead(t *testing.T) {
 	reads := 0
 	store := Store{
 		BrokerPath: os.Args[0],
+		DataPath:   filepath.Join(t.TempDir(), "plan.enc"),
 		Keychain:   kc,
 		RunStdin:   ExecSecurityStdin,
 		Run: func(ctx context.Context, name string, args ...string) ([]byte, error) {

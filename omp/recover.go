@@ -26,16 +26,7 @@ func RetryOpen(ctx context.Context, store Store) error {
 		shot.openErr = fmt.Errorf("omp: no keychain runner")
 		return shot.openErr
 	}
-	find := []string{"find-generic-password", "-a", keychainAccount, "-s", KeychainService, "-w"}
-	if store.Keychain != "" {
-		find = append(find, store.Keychain)
-	}
-	out, err := store.Run(ctx, "security", find...)
-	if err != nil && !isMissing(err, out) {
-		shot.openErr = err
-		return err
-	}
-	item, err := decodeItem(out)
+	item, key, err := readItem(ctx, store)
 	if err != nil {
 		shot.openErr = err
 		return err
@@ -43,6 +34,7 @@ func RetryOpen(ctx context.Context, store Store) error {
 	shot.openErr = nil
 	shot.initial = cloneItem(item)
 	shot.item = cloneItem(item)
+	shot.key = key
 	shot.flushed = false
 	shot.flushErr = nil
 	return nil

@@ -43,7 +43,7 @@ exit 0
 	}
 
 	s := Store{
-		BrokerPath: "/usr/local/bin/claudia",
+		BrokerPath: "/usr/local/bin/claudia", DataPath: filepath.Join(t.TempDir(), "plan.enc"),
 		Run: func(ctx context.Context, name string, args ...string) ([]byte, error) {
 			cmd := exec.CommandContext(ctx, fake, args...)
 			return cmd.Output()
@@ -89,7 +89,7 @@ func TestT131FlushWithoutRunStdinDoesNotPassSecretInArgv(t *testing.T) {
 	resetKeychainShot()
 	var saw [][]string
 	s := Store{
-		BrokerPath: "/usr/local/bin/claudia",
+		BrokerPath: "/usr/local/bin/claudia", DataPath: filepath.Join(t.TempDir(), "plan.enc"),
 		Run: func(_ context.Context, name string, args ...string) ([]byte, error) {
 			saw = append(saw, append([]string{name}, args...))
 			if len(args) > 0 && args[0] == "find-generic-password" {
@@ -160,6 +160,7 @@ func TestT131DisposableKeychainWriteCompletesOrNamesInteraction(t *testing.T) {
 
 	s := Store{
 		BrokerPath: os.Args[0],
+		DataPath:   filepath.Join(t.TempDir(), "plan.enc"),
 		Keychain:   kc,
 		Run:        runSecurityOutput,
 		RunStdin:   ExecSecurityStdin,
@@ -215,10 +216,18 @@ func isInteractionErr(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "keychain ACL interaction required")
 }
 
+// disposableKeychainPass unlocks every test keychain. It guards nothing:
+// the keychain lives in t.TempDir and is deleted when the test ends.
+const disposableKeychainPass = "t131-pass"
+
 func makeDisposableKeychain(t *testing.T) string {
 	t.Helper()
-	kc := filepath.Join(t.TempDir(), "t131.keychain-db")
-	pass := "t131-pass"
+	// macOS names the keychain in any unlock or access dialog, so the
+	// name carries the password: an operator who did not create this
+	// throwaway keychain can still answer a prompt it raises.
+	pass := disposableKeychainPass
+	kc := filepath.Join(t.TempDir(), "password-is-"+pass+".keychain-db")
+	t.Logf("disposable keychain %s; if macOS asks for its password, it is %q", kc, pass)
 	run := func(args ...string) {
 		t.Helper()
 		out, err := exec.Command("security", args...).CombinedOutput()

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -19,7 +20,7 @@ func TestSaveTrustsOnlyTheBroker(t *testing.T) {
 	var cmds []string
 	var stdin []byte
 	s := Store{
-		BrokerPath: "/usr/local/bin/claudia",
+		BrokerPath: "/usr/local/bin/claudia", DataPath: filepath.Join(t.TempDir(), "plan.enc"),
 		Run: func(_ context.Context, name string, args ...string) ([]byte, error) {
 			cmds = append(cmds, name+" "+strings.Join(args, " "))
 			return nil, nil
@@ -108,7 +109,7 @@ func TestRefreshFailureDoesNotFallThrough(t *testing.T) {
 	exp := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
 	blob := `{"records":{"anthropic":{"refresh_token":"old-r","access_token":"old","expiry":"` + exp + `"}}}`
 	s := Store{
-		BrokerPath: "/usr/local/bin/claudia",
+		BrokerPath: "/usr/local/bin/claudia", DataPath: filepath.Join(t.TempDir(), "plan.enc"),
 		Run: func(_ context.Context, name string, args ...string) ([]byte, error) {
 			if name == "security" && len(args) > 0 && args[0] == "find-generic-password" {
 				return []byte(blob), nil
@@ -138,7 +139,7 @@ func TestItemHoldsFourPlanRecords(t *testing.T) {
 	saved := `{"records":{}}`
 	var reads, writes int
 	s := Store{
-		BrokerPath: "/usr/local/bin/claudia",
+		BrokerPath: "/usr/local/bin/claudia", DataPath: filepath.Join(t.TempDir(), "plan.enc"),
 		Run: func(_ context.Context, name string, args ...string) ([]byte, error) {
 			if name == "security" && len(args) > 0 && args[0] == "find-generic-password" {
 				reads++
@@ -196,8 +197,8 @@ func TestEnsureRefreshesExpiredRecord(t *testing.T) {
 			}})
 			var saved string
 			s := Store{
-				BrokerPath: "/usr/local/bin/claudia",
-				Now:        func() time.Time { return time.Now() },
+				BrokerPath: "/usr/local/bin/claudia", DataPath: filepath.Join(t.TempDir(), "plan.enc"),
+				Now: func() time.Time { return time.Now() },
 				Run: func(_ context.Context, name string, args ...string) ([]byte, error) {
 					if name == "security" && len(args) > 0 && args[0] == "find-generic-password" {
 						if saved != "" {
@@ -234,12 +235,17 @@ func TestEnsureRefreshesExpiredRecord(t *testing.T) {
 			if err := Flush(context.Background(), s); err != nil {
 				t.Fatal(err)
 			}
-			var item Item
-			if err := json.Unmarshal([]byte(saved), &item); err != nil {
+			// A fresh process reads the key back and decrypts the file.
+			resetKeychainShot()
+			if err := Open(context.Background(), s); err != nil {
+				t.Fatal(err)
+			}
+			item, err := s.Load(context.Background())
+			if err != nil {
 				t.Fatal(err)
 			}
 			if item.Records[id].AccessToken != "fresh" || item.Records[id].RefreshToken != "nr" || item.Records[id].Expiry.IsZero() {
-				t.Fatalf("keychain write-back = %+v", item.Records[id])
+				t.Fatalf("write-back = %+v", item.Records[id])
 			}
 		})
 	}
@@ -252,7 +258,7 @@ func TestEnsureMissingRecordUsesLogin(t *testing.T) {
 			resetKeychainShot()
 			var saved string
 			s := Store{
-				BrokerPath: "/usr/local/bin/claudia",
+				BrokerPath: "/usr/local/bin/claudia", DataPath: filepath.Join(t.TempDir(), "plan.enc"),
 				Run: func(_ context.Context, name string, args ...string) ([]byte, error) {
 					if name == "security" && len(args) > 0 && args[0] == "find-generic-password" {
 						if saved != "" {
@@ -324,8 +330,8 @@ func TestScrubEnvDropsPlanKeys(t *testing.T) {
 func TestSealPathRefusesOtherBinary(t *testing.T) {
 	resetKeychainShot()
 	s := Store{
-		BrokerPath: "/usr/local/bin/jevons-broker",
-		SealPath:   true,
+		BrokerPath: "/usr/local/bin/jevons-broker", DataPath: filepath.Join(t.TempDir(), "plan.enc"),
+		SealPath: true,
 		Run: func(context.Context, string, ...string) ([]byte, error) {
 			t.Fatal("untrusted binary must not call security")
 			return nil, nil

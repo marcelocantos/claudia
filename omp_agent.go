@@ -460,7 +460,10 @@ func planStore() omp.Store {
 	if path == "" {
 		path = os.Args[0]
 	}
-	return omp.Store{BrokerPath: path, Run: run, RunStdin: runStdin, SealPath: seal}
+	// An unresolvable path leaves DataPath empty; Flush and a key-holding
+	// Open then fail by name rather than write somewhere unexpected.
+	data, _ := omp.DefaultDataPath()
+	return omp.Store{BrokerPath: path, Run: run, RunStdin: runStdin, SealPath: seal, DataPath: data}
 }
 
 // RefreshOMPPlans renews every stored subscription login through

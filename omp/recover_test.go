@@ -6,6 +6,7 @@ package omp
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -16,7 +17,7 @@ func TestRecoverPlanRetriesMissedKeychainReadThenReauthenticates(t *testing.T) {
 	t.Cleanup(ResetKeychainShot)
 	reads, writes := 0, 0
 	stored := `{"records":{"anthropic":{"refresh_token":"old-refresh","access_token":"old-access","expiry":"2026-09-26T00:00:00Z"}}}`
-	store := Store{BrokerPath: "/test/claudia", Run: func(_ context.Context, name string, args ...string) ([]byte, error) {
+	store := Store{BrokerPath: "/test/claudia", DataPath: filepath.Join(t.TempDir(), "plan.enc"), Run: func(_ context.Context, name string, args ...string) ([]byte, error) {
 		if name != "security" {
 			t.Fatalf("command = %q", name)
 		}
@@ -57,7 +58,7 @@ func TestRecoverPlanDoesNotRereadHealthyKeychainOrOpenLoginWhenRefreshWorks(t *t
 	ResetKeychainShot()
 	t.Cleanup(ResetKeychainShot)
 	reads := 0
-	store := Store{BrokerPath: "/test/claudia", Run: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+	store := Store{BrokerPath: "/test/claudia", DataPath: filepath.Join(t.TempDir(), "plan.enc"), Run: func(_ context.Context, _ string, args ...string) ([]byte, error) {
 		if args[0] == "find-generic-password" {
 			reads++
 			return []byte(`{"records":{"anthropic":{"refresh_token":"old","access_token":"old","expiry":"2026-09-26T00:00:00Z"}}}`), nil

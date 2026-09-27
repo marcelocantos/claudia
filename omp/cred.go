@@ -8,6 +8,7 @@ package omp
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -84,6 +85,10 @@ type Store struct {
 	// Keychain, if set, is the keychain file. Empty is the default
 	// keychain. Disposable-keychain tests set this.
 	Keychain string
+	// DataPath is the encrypted plan file. The Keychain item holds only
+	// its key: security -i cuts stdin lines at 4 KiB, and the hex plan
+	// blob is larger than that.
+	DataPath string
 }
 
 // keychainShot is the process-wide copy. Store values are copied at
@@ -94,6 +99,7 @@ type keychainShot struct {
 	openErr  error
 	initial  Item
 	item     Item
+	key      []byte // nil until the Keychain item holds a data key
 	flushed  bool
 	flushErr error
 }
@@ -141,6 +147,21 @@ func Open(ctx context.Context, store Store) error {
 		shot.openErr = fmt.Errorf("omp: no keychain runner")
 		return shot.openErr
 	}
+	item, key, err := readItem(ctx, store)
+	if err != nil {
+		shot.openErr = err
+		return err
+	}
+	shot.initial = cloneItem(item)
+	shot.item = cloneItem(item)
+	shot.key = key
+	return nil
+}
+
+// readItem reads the Keychain item and, when it holds a data key, the
+// encrypted plan file. A legacy item holds the plan JSON itself; it has
+// no key, and the next Flush moves it into the file.
+func readItem(ctx context.Context, store Store) (Item, []byte, error) {
 	find := []string{"find-generic-password",
 		"-a", keychainAccount, "-s", KeychainService, "-w"}
 	if store.Keychain != "" {
@@ -148,17 +169,28 @@ func Open(ctx context.Context, store Store) error {
 	}
 	out, err := store.Run(ctx, "security", find...)
 	if err != nil && !isMissing(err, out) {
-		shot.openErr = err
-		return err
+		return Item{}, nil, err
 	}
-	item, err := decodeItem(out)
+	raw := strings.TrimSpace(string(out))
+	if raw == "" {
+		return Item{Records: map[string]Record{}}, nil, nil
+	}
+	var kc struct {
+		DataKey string `json:"data_key"`
+	}
+	if err := json.Unmarshal([]byte(raw), &kc); err != nil || kc.DataKey == "" {
+		item, err := decodeItem(out)
+		return item, nil, err
+	}
+	key, err := hex.DecodeString(kc.DataKey)
+	if err != nil || len(key) != dataKeyLen {
+		return Item{}, nil, fmt.Errorf("omp: keychain item holds a malformed data key")
+	}
+	item, err := readDataFile(store.DataPath, key)
 	if err != nil {
-		shot.openErr = err
-		return err
+		return Item{}, nil, err
 	}
-	shot.initial = cloneItem(item)
-	shot.item = cloneItem(item)
-	return nil
+	return item, key, nil
 }
 
 func decodeItem(out []byte) (Item, error) {
@@ -231,9 +263,9 @@ func Flush(ctx context.Context, store Store) error {
 		shot.flushErr = fmt.Errorf("omp: broker path is required for the keychain ACL")
 		return shot.flushErr
 	}
-	if store.Run == nil && store.RunStdin == nil {
+	if store.DataPath == "" {
 		shot.flushed = true
-		shot.flushErr = fmt.Errorf("omp: no keychain runner")
+		shot.flushErr = fmt.Errorf("omp: plan data path is required")
 		return shot.flushErr
 	}
 	blob, err := json.Marshal(shot.item)
@@ -242,18 +274,39 @@ func Flush(ctx context.Context, store Store) error {
 		shot.flushErr = err
 		return err
 	}
-	// Update the secret in place. Deleting the item and creating it
-	// again throws away Always Allow, so every login prompts again.
-	// -T on an update adds the broker; it does not replace the ACL.
-	// The password travels on security -i stdin as -X hex so access
-	// and refresh tokens never appear in argv (🎯T131).
-	err = flushWrite(ctx, store, shot.item, blob)
+	key := shot.key
+	if key == nil {
+		key = make([]byte, dataKeyLen)
+		if _, err := rand.Read(key); err != nil {
+			shot.flushed = true
+			shot.flushErr = fmt.Errorf("omp: generate plan data key: %w", err)
+			return shot.flushErr
+		}
+	}
+	// The file goes first. If the Keychain write then fails, the item
+	// still holds the old plan (or nothing) and the next Open reads that.
+	err = writeDataFile(store.DataPath, key, blob)
+	if err == nil && shot.key == nil {
+		if store.Run == nil && store.RunStdin == nil {
+			err = fmt.Errorf("omp: no keychain runner")
+		} else {
+			err = writeKey(ctx, store, shot.item, key)
+		}
+		if err == nil {
+			shot.key = key
+		}
+	}
 	shot.flushed = true
 	shot.flushErr = err
 	return err
 }
 
-func flushWrite(ctx context.Context, store Store, item Item, blob []byte) error {
+// writeKey stores the data key in the Keychain item. Update the secret
+// in place: deleting the item and creating it again throws away Always
+// Allow, so every login prompts again. -T on an update adds the broker;
+// it does not replace the ACL. The key travels on security -i stdin as
+// -X hex, so neither it nor any plan token appears in argv (🎯T131).
+func writeKey(ctx context.Context, store Store, item Item, key []byte) error {
 	args := []string{
 		"add-generic-password",
 		"-U",
@@ -264,7 +317,13 @@ func flushWrite(ctx context.Context, store Store, item Item, blob []byte) error 
 	if err := trustedPathOnly(args, store.BrokerPath); err != nil {
 		return err
 	}
-	args = append(args, "-X", hex.EncodeToString(blob))
+	value, err := json.Marshal(struct {
+		DataKey string `json:"data_key"`
+	}{hex.EncodeToString(key)})
+	if err != nil {
+		return err
+	}
+	args = append(args, "-X", hex.EncodeToString(value))
 	if store.Keychain != "" {
 		args = append(args, store.Keychain)
 	}
@@ -278,7 +337,7 @@ func flushWrite(ctx context.Context, store Store, item Item, blob []byte) error 
 		_, err := store.RunStdin(ctx, stdin, "security", argv...)
 		return err
 	}
-	_, err := store.Run(ctx, "security", argv...)
+	_, err = store.Run(ctx, "security", argv...)
 	return err
 }
 

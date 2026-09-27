@@ -6,7 +6,7 @@ package omp
 import (
 	"context"
 	"encoding/hex"
-	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -25,6 +25,7 @@ func TestRefreshPlansWritesAllFour(t *testing.T) {
 	var writes int
 	s := Store{
 		BrokerPath: "/usr/local/bin/jevons-broker",
+		DataPath:   filepath.Join(t.TempDir(), "plan.enc"),
 		Run: func(_ context.Context, name string, args ...string) ([]byte, error) {
 			if name == "security" && len(args) > 0 && args[0] == "find-generic-password" {
 				return []byte(saved), nil
@@ -89,8 +90,14 @@ func TestRefreshPlansWritesAllFour(t *testing.T) {
 	if writes != 1 {
 		t.Fatalf("keychain writes = %d, want 1", writes)
 	}
-	var item Item
-	if err := json.Unmarshal([]byte(saved), &item); err != nil {
+	// The Keychain now holds the data key; a fresh process decrypts the
+	// plan file with it.
+	resetKeychainShot()
+	if err := Open(context.Background(), s); err != nil {
+		t.Fatal(err)
+	}
+	item, err := s.Load(context.Background())
+	if err != nil {
 		t.Fatal(err)
 	}
 	for _, id := range PlanIDs {
