@@ -41,7 +41,8 @@ type MigrateArgs struct {
 	Reason   string
 	// ContextBrief is a bounded handover prepared outside the work session.
 	// The successor receives this brief, never the predecessor transcript.
-	// Empty uses Claudia's retained live-turn distillation.
+	// Empty runs Claudia's disposable, same-destination-provider transfer
+	// agent over the retained live turns before the work session moves.
 	ContextBrief string
 	// Force (cold) allows a migrate when the retained log has neither a
 	// last user request nor a last assistant action. Without it, that
@@ -276,6 +277,21 @@ func (a *Agent) Migrate(args *MigrateArgs) error {
 	if args == nil || args.Provider == "" {
 		return fmt.Errorf("Migrate: provider must be non-empty")
 	}
+	a.migrationMu.Lock()
+	defer a.migrationMu.Unlock()
+	if !useOMP(Config{Provider: a.provider, OMP: a.startCfg.OMP}) {
+		if err := CheckCapability(a.provider, CapabilityMigrate); err != nil {
+			return err
+		}
+	}
+	if !useOMP(Config{Provider: args.Provider, OMP: a.startCfg.OMP}) {
+		if err := CheckCapability(args.Provider, CapabilityMigrate); err != nil {
+			return err
+		}
+	}
+	if a.PromptInFlight() {
+		return fmt.Errorf("Migrate: turn in flight; wait for the current response or Interrupt first")
+	}
 	if args.Model == "" && useOMP(Config{Provider: args.Provider}) {
 		// A source model id is not a destination default. Choose a
 		// subscription model before the broker request so both sides agree.
@@ -289,12 +305,20 @@ func (a *Agent) Migrate(args *MigrateArgs) error {
 	}
 	// T866.5: grok, cursor, and the four subscription ids all go through
 	// the sidecar. Config.OMP is not required.
-	return a.migrateWithBackend(args, agentBackendFor(Config{Provider: args.Provider}))
+	prepared, err := a.prepareMigrationArgs(args)
+	if err != nil {
+		return err
+	}
+	return a.migrateWithBackendLocked(prepared, agentBackendFor(Config{Provider: prepared.Provider}))
 }
 
 func (a *Agent) migrateWithBackend(args *MigrateArgs, destBackend agentBackend) error {
 	a.migrationMu.Lock()
 	defer a.migrationMu.Unlock()
+	return a.migrateWithBackendLocked(args, destBackend)
+}
+
+func (a *Agent) migrateWithBackendLocked(args *MigrateArgs, destBackend agentBackend) error {
 	if !useOMP(Config{Provider: a.provider, OMP: a.startCfg.OMP}) {
 		if err := CheckCapability(a.provider, CapabilityMigrate); err != nil {
 			return err

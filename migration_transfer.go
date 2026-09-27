@@ -33,6 +33,56 @@ type MigrationTransferResult struct {
 	Model string
 }
 
+// prepareMigrationArgs gives a direct Agent.Migrate caller the same disposable
+// transfer step that a host with a prepared ContextBrief already ran. A
+// missing predecessor log is still sent to the transfer seat as an explicit
+// cold-start fact; it never silently falls back to local keyword extraction.
+func (a *Agent) prepareMigrationArgs(args *MigrateArgs) (*MigrateArgs, error) {
+	if strings.TrimSpace(args.ContextBrief) != "" {
+		return args, nil
+	}
+	a.mu.Lock()
+	from := a.provider
+	goal := a.goal
+	turns := append([]inertTurn(nil), a.inertTurns...)
+	summarize := a.migrationSummarizer
+	a.mu.Unlock()
+	if PlanProvider(from) == PlanProvider(args.Provider) {
+		return args, nil // same-provider retry is handled by migrateWithBackend
+	}
+	var history strings.Builder
+	for _, turn := range turns {
+		body := strings.TrimSpace(turn.Text)
+		if len(turn.ToolNames) > 0 {
+			body += " [inert tool names: " + strings.Join(turn.ToolNames, ", ") + "]"
+		}
+		if body != "" {
+			fmt.Fprintf(&history, "%s: %s\n", turn.Role, body)
+		}
+	}
+	if history.Len() == 0 {
+		if !args.Force {
+			return nil, fmt.Errorf("Migrate: no retained predecessor context to summarize")
+		}
+		history.WriteString("system: forced cold start; no predecessor turns were retained\n")
+	}
+	if summarize == nil {
+		summarize = SummarizeForMigration
+	}
+	result, err := summarize(context.Background(), MigrationTransferArgs{
+		Destination: args.Provider, Goal: goal, Transcript: history.String(),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("Migrate: context transfer: %w", err)
+	}
+	if strings.TrimSpace(result.Brief) == "" {
+		return nil, fmt.Errorf("Migrate: context transfer returned an empty brief")
+	}
+	prepared := *args
+	prepared.ContextBrief = clipRunes(strings.TrimSpace(result.Brief), maxBriefRunes)
+	return &prepared, nil
+}
+
 // SummarizeForMigration runs exactly one short-lived task. It is on-demand;
 // it neither enables background compaction nor retries a paid summary call.
 // Only the latest 60,000 transcript runes are sent, and the returned brief is

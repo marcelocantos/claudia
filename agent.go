@@ -342,6 +342,9 @@ type Agent struct {
 	migrationPersistencePending bool
 	migrationSeedPending        string
 	migrationMu                 sync.Mutex
+	// Tests may replace the disposable transfer operation without launching
+	// a paid provider seat. Nil uses SummarizeForMigration.
+	migrationSummarizer func(context.Context, MigrationTransferArgs) (MigrationTransferResult, error)
 	// inertTurns is the bounded live-turn log Migrate distills (🎯T55.1).
 	inertTurns []inertTurn
 

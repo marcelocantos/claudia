@@ -50,3 +50,40 @@ func TestMigrationTransferBoundsHistoryAndHasNoTools(t *testing.T) {
 		}
 	}
 }
+
+func TestAgentMigrateSummarizesRetainedHistoryBeforeMoving(t *testing.T) {
+	agent, _ := startMigrateFixture(t, ProviderClaude, "summary-source")
+	agent.PublishEvent(Event{Type: "user", Text: "finish the violet migration"})
+	agent.PublishEvent(Event{Type: "progress", ProgressType: ProgressToolUse, ToolTitle: "Bash"})
+	var got MigrationTransferArgs
+	agent.migrationSummarizer = func(_ context.Context, args MigrationTransferArgs) (MigrationTransferResult, error) {
+		got = args
+		return MigrationTransferResult{Brief: "violet handover"}, nil
+	}
+	var delivered string
+	agent.ops.migrate = func(_ *Agent, args *MigrateArgs) error {
+		delivered = args.ContextBrief
+		return nil
+	}
+	if err := agent.Migrate(&MigrateArgs{Provider: ProviderGrok, Model: "grok-4"}); err != nil {
+		t.Fatal(err)
+	}
+	if got.Destination != ProviderGrok || !strings.Contains(got.Transcript, "violet migration") ||
+		!strings.Contains(got.Transcript, "inert tool names: Bash") || delivered != "violet handover" {
+		t.Fatalf("transfer args=%+v, successor brief=%q", got, delivered)
+	}
+}
+
+func TestAgentMigrateRefusesFailedTransferBeforeMoving(t *testing.T) {
+	agent, _ := startMigrateFixture(t, ProviderClaude, "failed-summary-source")
+	agent.PublishEvent(Event{Type: "user", Text: "finish the violet migration"})
+	agent.migrationSummarizer = func(context.Context, MigrationTransferArgs) (MigrationTransferResult, error) {
+		return MigrationTransferResult{}, errors.New("summary provider unavailable")
+	}
+	moved := false
+	agent.ops.migrate = func(*Agent, *MigrateArgs) error { moved = true; return nil }
+	err := agent.Migrate(&MigrateArgs{Provider: ProviderGrok, Model: "grok-4"})
+	if err == nil || !strings.Contains(err.Error(), "summary provider unavailable") || moved {
+		t.Fatalf("transfer failure err=%v moved=%v", err, moved)
+	}
+}
