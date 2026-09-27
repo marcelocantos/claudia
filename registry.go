@@ -53,6 +53,14 @@ type AgentDef struct {
 	// Cursor Session uses ACP over `agent acp`.
 	Provider Provider `json:"provider,omitempty"`
 
+	// PreferProvider is an owner preference for a future provider move. It
+	// never excludes another eligible destination. AllowedProviders and
+	// ExcludeProviders are explicit per-seat migration constraints; nil
+	// AllowedProviders leaves the catalog open.
+	PreferProvider   Provider   `json:"prefer_provider,omitempty"`
+	AllowedProviders []Provider `json:"allowed_providers,omitempty"`
+	ExcludeProviders []Provider `json:"exclude_providers,omitempty"`
+
 	// SummaryOnly makes a disposable, tool-free context-transfer seat.
 	// It travels with the broker grant so the daemon launches the same mode.
 	SummaryOnly bool `json:"summary_only,omitempty"`

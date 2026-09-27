@@ -84,6 +84,40 @@ func TestRegistryRegisterRequiresSessionID(t *testing.T) {
 	}
 }
 
+func TestRegistrySeatProviderPolicyPersistsWithoutSharingSlices(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agents.json")
+	r, err := NewRegistry(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	allowed := []Provider{ProviderClaude, ProviderGrok}
+	excluded := []Provider{ProviderCursor}
+	if err := r.Register(AgentDef{
+		Name: "worker", SessionID: "session-worker", Provider: ProviderClaude,
+		PreferProvider: ProviderGrok, AllowedProviders: allowed, ExcludeProviders: excluded,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	allowed[1] = ProviderCodex
+	excluded[0] = ProviderCodex
+	reloaded, err := NewRegistry(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, registry := range []*Registry{r, reloaded} {
+		got := registry.Def("worker")
+		if got == nil || got.PreferProvider != ProviderGrok ||
+			len(got.AllowedProviders) != 2 || got.AllowedProviders[1] != ProviderGrok ||
+			len(got.ExcludeProviders) != 1 || got.ExcludeProviders[0] != ProviderCursor {
+			t.Fatalf("provider policy changed or was lost: %+v", got)
+		}
+		got.AllowedProviders[0] = ProviderCodex
+		if again := registry.Def("worker"); again.AllowedProviders[0] != ProviderClaude {
+			t.Fatalf("Def exposed mutable policy slice: %+v", again)
+		}
+	}
+}
+
 func TestRegistryRegisterPersists(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "registry.json")

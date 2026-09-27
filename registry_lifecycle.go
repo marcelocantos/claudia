@@ -91,6 +91,8 @@ func (r *Registry) beginLifecycle(ctx context.Context, name string, stop bool) (
 }
 
 func cloneAgentDef(def AgentDef) AgentDef {
+	def.AllowedProviders = slices.Clone(def.AllowedProviders)
+	def.ExcludeProviders = slices.Clone(def.ExcludeProviders)
 	def.DisallowTools = slices.Clone(def.DisallowTools)
 	def.ExtraArgs = slices.Clone(def.ExtraArgs)
 	def.SandboxWritableRoots = slices.Clone(def.SandboxWritableRoots)
@@ -111,6 +113,8 @@ func sameLaunchDefinition(a, b AgentDef) bool {
 	for _, d := range []*AgentDef{&a, &b} {
 		d.AutoStart = false
 		d.Parent, d.Purpose, d.Role, d.Description, d.TargetID = "", "", "", "", ""
+		d.PreferProvider = ""
+		d.AllowedProviders, d.ExcludeProviders = nil, nil
 	}
 	return reflect.DeepEqual(a, b)
 }
