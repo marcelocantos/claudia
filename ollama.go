@@ -80,6 +80,9 @@ type ollamaChunk struct {
 // sandbox to configure and no session to resume, and a caller who set any
 // of those was relying on behaviour they would not have got.
 func ollamaTaskPrecheck(req taskRunRequest) error {
+	if err := validateTaskToolPolicy(ProviderOllama, req.ToolPolicy); err != nil {
+		return err
+	}
 	if len(req.DisallowTools) > 0 {
 		return capabilityRefusal(ProviderOllama, CapabilityToolRestrictions,
 			"the Ollama tool_restrictions claim was flipped to supported, but /api/generate is still called with no tool configuration")

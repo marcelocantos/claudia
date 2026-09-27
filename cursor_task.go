@@ -37,6 +37,9 @@ func cursorTaskArgs(req taskRunRequest) []string {
 }
 
 func cursorTaskPrecheck(req taskRunRequest) error {
+	if err := validateTaskToolPolicy(ProviderCursor, req.ToolPolicy); err != nil {
+		return err
+	}
 	if len(req.DisallowTools) > 0 {
 		return capabilityRefusal(ProviderCursor, CapabilityToolRestrictions, cursorToolRestrictionsReason)
 	}

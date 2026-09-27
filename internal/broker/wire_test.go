@@ -117,6 +117,12 @@ var requestVectors = map[string]requestVector{
 			TaskRun: &TaskRunRequest{Task: json.RawMessage(`{"provider":"grok","workdir":"/w"}`), Prompt: "summarise"},
 		},
 	},
+	"task_run_restricted": {
+		msg: &Request{
+			ID: "g3r", Type: TypeTaskRunRestricted,
+			TaskRun: &TaskRunRequest{Task: json.RawMessage(`{"provider":"grok","tool_policy":{"builtins":["read_file"],"max_turns":2,"home_dir":"/sen"}}`), Prompt: "inspect"},
+		},
+	},
 	"task_run_raw_log": {
 		msg: &Request{
 			ID: "g3", Type: TypeTaskRun,

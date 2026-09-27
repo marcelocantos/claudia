@@ -8,6 +8,7 @@
 //	claudia broker grants           every seat, owner and liveness
 //	claudia broker tail             lifecycle events as NDJSON
 //	claudia broker usage [--refresh] the plan-usage snapshot
+//	claudia broker run               select and stream one task from JSON stdin
 //	claudia broker release NAME [--detach | --force]
 //	claudia broker install|uninstall  launchd user agent (macOS)
 //	claudia broker socket           print the socket path
@@ -70,7 +71,7 @@ func run(args []string) int {
 }
 
 func usageText() string {
-	return `usage: claudia broker <serve|status|grants|tail|usage|release|install|uninstall|socket> [flags]
+	return `usage: claudia broker <serve|status|grants|tail|usage|run|release|install|uninstall|socket> [flags]
        claudia models intel <refresh|latest|history|drift> [flags]
        claudia version | --version | -v
        claudia --help | -h
@@ -98,6 +99,8 @@ func brokerCmd(args []string) error {
 		return tail()
 	case "usage":
 		return usageCmd(args[1:])
+	case "run":
+		return brokerRunCmd(args[1:], os.Stdin, os.Stdout)
 	case "release":
 		return release(args[1:])
 	case "install":

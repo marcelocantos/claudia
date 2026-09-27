@@ -492,6 +492,45 @@ runtime, or `SetDirect(true)` was selected, `Run` returns
 `ErrBrokerRequired` without starting a provider directly. The default
 remains the direct fallback for callers that do not require the daemon.
 
+For an unattended host check, set `ToolPolicy` on a Claude or Grok
+Task. It lists provider-native built-in tool IDs, explicit allow/deny
+permission rules, and a maximum number of agent turns. Restricted tasks
+use `dontAsk`, never permission bypass; Claude also suppresses permission
+prompts and ignores inherited MCP configuration. Grok additionally needs
+a private absolute `HomeDir` to isolate its config and compatibility
+discovery. `GROK_AUTH_PATH` may still point at the normal auth file.
+Other providers refuse `ToolPolicy`; a Codex check can instead use
+`SandboxMode: "read-only"` and `ApprovalPolicy: "never"`.
+
+```go
+task := claudia.NewTask(claudia.TaskConfig{
+    Provider:      claudia.ProviderGrok,
+    WorkDir:       senHome,
+    RequireBroker: true,
+    ToolPolicy: &claudia.TaskToolPolicy{
+        Builtins: []string{"run_terminal_cmd", "read_file", "list_dir"},
+        Allow:    []string{"Bash(ps -axo *)", "Read(" + senHome + "/*)"},
+        MaxTurns: 2,
+        HomeDir:  senHome,
+    },
+})
+```
+
+The broker sends these runs as `task_run_restricted`. An older daemon
+rejects the request type rather than silently dropping the policy.
+`DisallowTools` remains Claude-only; `ToolPolicy` is a separate
+provider-native allowlist, not a translation of that field.
+
+`claudia broker run` is the machine-facing client for a single selected
+turn. It reads one JSON object with `predicates`, `tasks` keyed by
+provider, and `prompt` from stdin, then writes task events as JSONL to
+stdout. The broker resolves a standard or requested quality model from
+published plan usage, excludes providers absent from `tasks`, and applies
+background pacing. It runs the selected task through the broker and
+never starts a direct provider process. A task config may include
+`tool_policy` with `builtins`, `allow`, `deny`, `max_turns`, and (for Grok)
+`home_dir`. The command exits nonzero if selection or the task fails.
+
 The channel closes when the process exits. Drain it until then:
 
 ```go

@@ -53,12 +53,14 @@ var taskFieldFates = map[Provider]map[string]fieldDecl{
 		"ID":              {fateLocal, "caller-assigned id; never sent to the process"},
 		"Name":            {fateLocal, "human label; never sent to the process"},
 		"Provider":        {fateLocal, "selects this path"},
+		"RequireBroker":   {fateLocal, "caller-side admission guard"},
 		"WorkDir":         {fateConsumed, ""},
 		"Model":           {fateConsumed, ""},
 		"SandboxMode":     {fateRefused, "claudeTaskArgs emits no sandbox flag"},
 		"SandboxGitWrite": {fateRefused, "a Codex sandbox grant; refused with SandboxMode"},
 		"ApprovalPolicy":  {fateRefused, "claudeTaskArgs emits no approval flag"},
 		"DisallowTools":   {fateConsumed, ""},
+		"ToolPolicy":      {fateConsumed, ""},
 		"ClaudeID":        {fateConsumed, ""},
 		"LastResult":      {fateLocal, "rehydration seed for Task.LastResult; never sent to the process"},
 	},
@@ -66,12 +68,14 @@ var taskFieldFates = map[Provider]map[string]fieldDecl{
 		"ID":              {fateLocal, "caller-assigned id; never sent to the process"},
 		"Name":            {fateLocal, "human label; never sent to the process"},
 		"Provider":        {fateLocal, "selects this path"},
+		"RequireBroker":   {fateLocal, "caller-side admission guard"},
 		"WorkDir":         {fateConsumed, ""},
 		"Model":           {fateConsumed, ""},
 		"SandboxMode":     {fateConsumed, ""},
 		"SandboxGitWrite": {fateConsumed, "a -c writable_roots override before exec"},
 		"ApprovalPolicy":  {fateConsumed, ""},
 		"DisallowTools":   {fateRefused, "codex exec has no per-tool disallow flag"},
+		"ToolPolicy":      {fateRefused, "Codex uses SandboxMode rather than this provider-native policy"},
 		"ClaudeID":        {fateConsumed, ""},
 		"LastResult":      {fateLocal, "rehydration seed for Task.LastResult; never sent to the process"},
 	},
@@ -79,12 +83,14 @@ var taskFieldFates = map[Provider]map[string]fieldDecl{
 		"ID":              {fateLocal, "caller-assigned id; never sent to the process"},
 		"Name":            {fateLocal, "human label; never sent to the process"},
 		"Provider":        {fateLocal, "selects this path"},
+		"RequireBroker":   {fateLocal, "caller-side admission guard"},
 		"WorkDir":         {fateConsumed, ""},
 		"Model":           {fateConsumed, ""},
 		"SandboxMode":     {fateRefused, "grokTaskArgs emits no sandbox flag"},
 		"SandboxGitWrite": {fateRefused, "a Codex sandbox grant; refused with SandboxMode"},
 		"ApprovalPolicy":  {fateRefused, "grokTaskArgs emits no approval flag"},
 		"DisallowTools":   {fateRefused, "DisallowTools is not translated onto --deny / --disallowed-tools"},
+		"ToolPolicy":      {fateConsumed, ""},
 		"ClaudeID":        {fateConsumed, ""},
 		"LastResult":      {fateLocal, "rehydration seed for Task.LastResult; never sent to the process"},
 	},
@@ -92,12 +98,14 @@ var taskFieldFates = map[Provider]map[string]fieldDecl{
 		"ID":              {fateLocal, "caller-assigned id; never sent to the API"},
 		"Name":            {fateLocal, "human label; never sent to the API"},
 		"Provider":        {fateLocal, "selects this path"},
+		"RequireBroker":   {fateLocal, "caller-side admission guard"},
 		"WorkDir":         {fateIgnored, "ConverseStream is an HTTP call; there is no process directory"},
 		"Model":           {fateConsumed, ""},
 		"SandboxMode":     {fateRefused, "ConverseStream has no sandbox setting"},
 		"SandboxGitWrite": {fateRefused, "a Codex sandbox grant; refused with SandboxMode"},
 		"ApprovalPolicy":  {fateRefused, "ConverseStream has no approval setting"},
 		"DisallowTools":   {fateRefused, "claudia sends no Bedrock toolConfig"},
+		"ToolPolicy":      {fateRefused, "ConverseStream has no headless CLI tool policy"},
 		"ClaudeID":        {fateRefused, "ConverseStream is stateless; a session id would start cold"},
 		"LastResult":      {fateLocal, "rehydration seed for Task.LastResult; never sent to the API"},
 	},
@@ -105,12 +113,14 @@ var taskFieldFates = map[Provider]map[string]fieldDecl{
 		"ID":              {fateLocal, "caller-assigned id; never sent to the API"},
 		"Name":            {fateLocal, "human label; never sent to the API"},
 		"Provider":        {fateLocal, "selects this path"},
+		"RequireBroker":   {fateLocal, "caller-side admission guard"},
 		"WorkDir":         {fateIgnored, "/api/generate is an HTTP call; there is no process directory"},
 		"Model":           {fateConsumed, ""},
 		"SandboxMode":     {fateRefused, "/api/generate has no sandbox setting"},
 		"SandboxGitWrite": {fateRefused, "a Codex sandbox grant; refused with SandboxMode"},
 		"ApprovalPolicy":  {fateRefused, "/api/generate has no approval setting"},
 		"DisallowTools":   {fateRefused, "/api/generate runs no tools"},
+		"ToolPolicy":      {fateRefused, "/api/generate has no headless CLI tool policy"},
 		"ClaudeID":        {fateRefused, "/api/generate carries no conversation state"},
 		"LastResult":      {fateLocal, "rehydration seed for Task.LastResult; never sent to the API"},
 	},
@@ -118,12 +128,14 @@ var taskFieldFates = map[Provider]map[string]fieldDecl{
 		"ID":              {fateLocal, "caller-assigned id; never sent to the process"},
 		"Name":            {fateLocal, "human label; never sent to the process"},
 		"Provider":        {fateLocal, "selects this path"},
+		"RequireBroker":   {fateLocal, "caller-side admission guard"},
 		"WorkDir":         {fateConsumed, ""},
 		"Model":           {fateConsumed, ""},
 		"SandboxMode":     {fateRefused, "SandboxMode is a Codex app-server field"},
 		"SandboxGitWrite": {fateRefused, "a Codex sandbox grant; refused with SandboxMode"},
 		"ApprovalPolicy":  {fateRefused, "Cursor Task has no ApprovalPolicy flag"},
 		"DisallowTools":   {fateRefused, "Cursor Task has no per-tool disallow flag"},
+		"ToolPolicy":      {fateRefused, "Cursor Task has no provider-native tool allowlist"},
 		"ClaudeID":        {fateConsumed, ""},
 		"LastResult":      {fateLocal, "rehydration seed for Task.LastResult; never sent to the process"},
 	},
@@ -160,6 +172,7 @@ var sessionFieldFates = map[Provider]map[string]fieldDecl{
 		"Goal":                 {fateLocal, "host-owned continuation; never sent to the provider"},
 		"GoalCompleteCheck":    {fateLocal, "host completeness hook; never sent to the provider"},
 		"OMP":                  {fateLocal, "selects the Oh My Pi sidecar; never sent to a vendor CLI"},
+		"AdoptOnly":            {fateLocal, "sidecar-only adoption gate; never sent to a vendor CLI"},
 	},
 	ProviderGrok: {
 		"Provider":             {fateLocal, "selects this path"},
@@ -188,6 +201,7 @@ var sessionFieldFates = map[Provider]map[string]fieldDecl{
 		"Goal":                 {fateLocal, "host-owned continuation; never sent to the provider"},
 		"GoalCompleteCheck":    {fateLocal, "host completeness hook; never sent to the provider"},
 		"OMP":                  {fateLocal, "selects the Oh My Pi sidecar; never sent to a vendor CLI"},
+		"AdoptOnly":            {fateLocal, "sidecar-only adoption gate; never sent to a vendor CLI"},
 	},
 	ProviderCodex: {
 		"Provider":             {fateLocal, "selects this path"},
@@ -216,6 +230,7 @@ var sessionFieldFates = map[Provider]map[string]fieldDecl{
 		"Goal":                 {fateLocal, "host-owned continuation; never sent to the provider"},
 		"GoalCompleteCheck":    {fateLocal, "host completeness hook; never sent to the provider"},
 		"OMP":                  {fateLocal, "selects the Oh My Pi sidecar; never sent to a vendor CLI"},
+		"AdoptOnly":            {fateLocal, "sidecar-only adoption gate; never sent to a vendor CLI"},
 	},
 	ProviderCursor: {
 		"Provider":             {fateLocal, "selects this path"},
@@ -244,6 +259,7 @@ var sessionFieldFates = map[Provider]map[string]fieldDecl{
 		"Goal":                 {fateLocal, "host-owned continuation; never sent to the provider"},
 		"GoalCompleteCheck":    {fateLocal, "host completeness hook; never sent to the provider"},
 		"OMP":                  {fateLocal, "selects the Oh My Pi sidecar; never sent to a vendor CLI"},
+		"AdoptOnly":            {fateLocal, "sidecar-only adoption gate; never sent to a vendor CLI"},
 	},
 }
 
@@ -283,7 +299,7 @@ func taskPrecheck(provider Provider, req taskRunRequest) error {
 	}
 }
 
-func setTaskField(req *taskRunRequest, field string) {
+func setTaskField(req *taskRunRequest, field string) func() {
 	switch field {
 	case "WorkDir":
 		req.WorkDir = "/tmp/claudia-t24-workdir"
@@ -297,14 +313,25 @@ func setTaskField(req *taskRunRequest, field string) {
 		req.ApprovalPolicy = "never"
 	case "DisallowTools":
 		req.DisallowTools = []string{"WebFetch"}
+	case "ToolPolicy":
+		home, err := os.MkdirTemp("", "claudia-tool-policy-audit-")
+		if err != nil {
+			panic(err)
+		}
+		req.ToolPolicy = &TaskToolPolicy{Builtins: []string{"Read", "read_file"}, MaxTurns: 1, HomeDir: home}
+		return func() { _ = os.RemoveAll(home) }
 	case "ClaudeID":
 		req.SessionID = "t24-session"
 	}
+	return func() {}
 }
 
 func taskMaterialises(provider Provider, field string) bool {
 	req := taskRunRequest{Prompt: "t24-prompt"}
-	setTaskField(&req, field)
+	defer setTaskField(&req, field)()
+	if field == "ToolPolicy" && provider == ProviderClaude {
+		req.ToolPolicy.HomeDir = ""
+	}
 	switch provider {
 	case ProviderClaude:
 		return argvHolds(claudeTaskArgs(req), taskNeedle(field, req))
@@ -352,6 +379,8 @@ func taskNeedle(field string, req taskRunRequest) string {
 		return req.ApprovalPolicy
 	case "DisallowTools":
 		return "WebFetch"
+	case "ToolPolicy":
+		return "read_file"
 	case "ClaudeID":
 		return req.SessionID
 	default:
@@ -396,7 +425,10 @@ func auditTaskFates(fates map[Provider]map[string]fieldDecl) []string {
 				continue
 			}
 			req := taskRunRequest{Prompt: "t24-prompt"}
-			setTaskField(&req, field)
+			defer setTaskField(&req, field)()
+			if field == "ToolPolicy" && provider == ProviderClaude {
+				req.ToolPolicy.HomeDir = ""
+			}
 			err := taskPrecheck(provider, req)
 			switch d.fate {
 			case fateRefused:

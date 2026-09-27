@@ -437,6 +437,9 @@ func TestTaskRunStreamsThroughDaemon(t *testing.T) {
 		if cfg.RequireBroker {
 			t.Error("caller-only RequireBroker guard reached the daemon task")
 		}
+		if cfg.ToolPolicy == nil || cfg.ToolPolicy.MaxTurns != 2 || len(cfg.ToolPolicy.Builtins) != 1 || cfg.ToolPolicy.Builtins[0] != "read_file" {
+			t.Errorf("restricted tool policy lost across broker wire: %+v", cfg.ToolPolicy)
+		}
 		return claudia.NewStubTask(cfg, &claudia.StubTaskOps{Run: func(_ context.Context, run claudia.StubTaskRun) (<-chan claudia.TaskEvent, error) {
 			prompts <- run.Prompt
 			ch := make(chan claudia.TaskEvent, 3)
@@ -469,7 +472,12 @@ func TestBrokerRequiredTaskClient(t *testing.T) {
 	if os.Getenv("CLAUDIA_TEST_BROKER_TASK_CLIENT") != "1" {
 		return
 	}
-	task := claudia.NewTask(claudia.TaskConfig{ID: "t-1", Provider: claudia.ProviderGrok, WorkDir: t.TempDir(), RequireBroker: true})
+	home := t.TempDir()
+	if err := os.Chmod(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	task := claudia.NewTask(claudia.TaskConfig{ID: "t-1", Provider: claudia.ProviderGrok, WorkDir: home, RequireBroker: true,
+		ToolPolicy: &claudia.TaskToolPolicy{Builtins: []string{"read_file"}, MaxTurns: 2, HomeDir: home}})
 	ch, err := task.Run(context.Background(), "summarise")
 	if err != nil {
 		t.Fatal(err)
