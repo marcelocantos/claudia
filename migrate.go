@@ -268,8 +268,9 @@ func classifyStuckEvent(ev Event) (class, detail string) {
 // Migrate moves this live Session onto args.Provider, keeping the same
 // [Agent] handle and event subscriptions (🎯T55). The destination is a
 // new native session — never --resume / session/load of the predecessor
-// id. Continuity is an inert distilled seed from the retained live-turn
-// log. Claudia does not choose when to migrate; the host calls this.
+// id. Continuity is a bounded brief from a disposable transfer agent on
+// the destination provider. Claudia does not choose when to migrate; the
+// host calls this.
 func (a *Agent) Migrate(args *MigrateArgs) error {
 	if a == nil {
 		return fmt.Errorf("Migrate: nil agent")

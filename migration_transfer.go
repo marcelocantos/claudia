@@ -47,6 +47,9 @@ func (a *Agent) prepareMigrationArgs(args *MigrateArgs) (*MigrateArgs, error) {
 	turns := append([]inertTurn(nil), a.inertTurns...)
 	summarize := a.migrationSummarizer
 	a.mu.Unlock()
+	if from == "" {
+		from = ProviderClaude
+	}
 	if PlanProvider(from) == PlanProvider(args.Provider) {
 		return args, nil // same-provider retry is handled by migrateWithBackend
 	}
