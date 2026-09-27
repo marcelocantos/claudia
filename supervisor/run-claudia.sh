@@ -14,6 +14,12 @@ export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:${HOME}/.bun/bi
 export TERM="${TERM:-xterm-256color}"
 export LANG="${LANG:-en_US.UTF-8}"
 
+# Go's runtime.Caller path can point at a throwaway clean build worktree.
+# Resolve the OMP scripts from this installed supervisor checkout instead.
+ROOT="$(CDPATH= cd "$(dirname "$0")/.." && pwd)"
+export CLAUDIA_OMP_SERVER="${CLAUDIA_OMP_SERVER:-$ROOT/sidecar/server.ts}"
+export CLAUDIA_OMP_AUTH="${CLAUDIA_OMP_AUTH:-$ROOT/sidecar/auth.ts}"
+
 if [ -n "${CLAUDIA_BIN:-}" ]; then
   BIN="$CLAUDIA_BIN"
   if [ ! -x "$BIN" ]; then
