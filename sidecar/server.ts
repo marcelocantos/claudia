@@ -166,7 +166,11 @@ async function handle(
       return;
     }
     const existing = seats.get(seat);
-    if (existing) {
+    const summaryOnly = msg.summary_only === true;
+    // A reconnect keeps the session. A provider switch mints a fresh
+    // work agent: handing the old in-memory transcript to the new provider
+    // would bypass the bounded transfer brief.
+    if (existing && existing.provider === msg.provider && existing.summaryOnly === summaryOnly) {
       rebindSeat(existing, msg, seat, write, callTool);
       write({ seat, type: "ready", how: "adopted" });
       return;
@@ -176,15 +180,16 @@ async function handle(
       model: msg.model ?? "",
       token: msg.token,
       cwd: msg.cwd ?? "",
-      summaryOnly: msg.summary_only === true,
+      summaryOnly,
       emit: (ev) => write({ seat, ...ev }),
       callTool,
     });
+    if (existing) existing.agent.abort();
     seats.set(seat, {
       provider: msg.provider ?? "",
       model: msg.model ?? "",
       token: msg.token,
-      summaryOnly: msg.summary_only === true,
+      summaryOnly,
       agent,
     });
     write({ seat, type: "ready", how: "launched" });
