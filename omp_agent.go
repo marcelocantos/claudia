@@ -169,6 +169,7 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 	}
 	return &agentStart{
 		Control: ctrl,
+		SessionID: sessionID,
 		Ops: agentOps{
 			send: func(a *Agent, text string) error {
 				ctrl.inflight.Store(true)
