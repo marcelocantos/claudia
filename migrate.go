@@ -293,6 +293,8 @@ func (a *Agent) Migrate(args *MigrateArgs) error {
 }
 
 func (a *Agent) migrateWithBackend(args *MigrateArgs, destBackend agentBackend) error {
+	a.migrationMu.Lock()
+	defer a.migrationMu.Unlock()
 	if !useOMP(Config{Provider: a.provider, OMP: a.startCfg.OMP}) {
 		if err := CheckCapability(a.provider, CapabilityMigrate); err != nil {
 			return err
@@ -305,13 +307,35 @@ func (a *Agent) migrateWithBackend(args *MigrateArgs, destBackend agentBackend) 
 	}
 	if args.Provider == a.provider || (a.provider == "" && args.Provider == ProviderClaude) ||
 		(a.provider == ProviderClaude && args.Provider == "") {
+		a.mu.Lock()
+		pending := a.migrationPersistencePending
+		seed := a.migrationSeedPending
+		a.mu.Unlock()
+		if pending {
+			if err := a.notifyMigrated(); err != nil {
+				return fmt.Errorf("Migrate: destination started but registry persistence failed: %w", err)
+			}
+		}
+		if seed != "" {
+			if err := a.Send(seed); err != nil {
+				return fmt.Errorf("Migrate: destination started but seed send failed: %w", err)
+			}
+			a.mu.Lock()
+			a.migrationSeedPending = ""
+			a.mu.Unlock()
+		}
+		if pending || seed != "" {
+			return nil
+		}
 		return fmt.Errorf("Migrate: same provider %s; use SetModel", a.provider)
 	}
 	if a.ops.migrate != nil {
 		if err := a.ops.migrate(a, args); err != nil {
 			return err
 		}
-		a.notifyMigrated()
+		if err := a.notifyMigrated(); err != nil {
+			return fmt.Errorf("Migrate: destination started but registry persistence failed: %w", err)
+		}
 		return nil
 	}
 	<-a.ready
@@ -413,23 +437,36 @@ func (a *Agent) migrateWithBackend(args *MigrateArgs, destBackend agentBackend) 
 	})
 	// The handle names the destination from here on, whether or not the
 	// seed lands, so the launching Registry records it now (🎯T75.3).
-	a.notifyMigrated()
+	a.mu.Lock()
+	a.migrationSeedPending = seedText
+	a.mu.Unlock()
+	if err := a.notifyMigrated(); err != nil {
+		return fmt.Errorf("Migrate: destination started but registry persistence failed: %w", err)
+	}
 
 	if err := a.Send(seedText); err != nil {
 		return fmt.Errorf("Migrate: destination started but seed send failed: %w", err)
 	}
+	a.mu.Lock()
+	a.migrationSeedPending = ""
+	a.mu.Unlock()
 	return nil
 }
 
 // notifyMigrated tells the Registry that launched this agent that the
 // handle now names a different backend.
-func (a *Agent) notifyMigrated() {
+func (a *Agent) notifyMigrated() error {
 	a.mu.Lock()
 	fn := a.onMigrated
 	a.mu.Unlock()
 	if fn != nil {
-		fn()
+		err := fn()
+		a.mu.Lock()
+		a.migrationPersistencePending = err != nil
+		a.mu.Unlock()
+		return err
 	}
+	return nil
 }
 
 func migrateDestConfig(src Config, args *MigrateArgs) Config {

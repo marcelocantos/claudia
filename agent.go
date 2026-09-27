@@ -336,7 +336,12 @@ type Agent struct {
 	// onMigrated is set by the Registry that launched this agent (🎯T75.3):
 	// it runs once the handle names the destination, so the persisted
 	// definition follows the seat. Guarded by mu.
-	onMigrated func()
+	onMigrated func() error
+	// A migration may reach the destination while its registry write fails.
+	// Retrying the same destination must finish that write, not mint a third seat.
+	migrationPersistencePending bool
+	migrationSeedPending        string
+	migrationMu                 sync.Mutex
 	// inertTurns is the bounded live-turn log Migrate distills (🎯T55.1).
 	inertTurns []inertTurn
 

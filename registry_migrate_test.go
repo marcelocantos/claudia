@@ -7,6 +7,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/marcelocantos/claudia/internal/broker"
@@ -66,6 +67,59 @@ func TestRegistryRecordsMigrate(t *testing.T) {
 	}
 	if def.Materialized {
 		t.Fatal("destination is a new native session; Materialized must be cleared")
+	}
+}
+
+func TestRegistryMigrateDoesNotReportAnUnpersistedDestination(t *testing.T) {
+	prev := registryStart
+	t.Cleanup(func() { registryStart = prev })
+	registryStart = func(_ context.Context, cfg Config) (*Agent, error) {
+		return startWithBackend(cfg, &fakeAgentBackend{name: "fake-claude"})
+	}
+	reg, err := NewRegistry(filepath.Join(t.TempDir(), "agents.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.Register(AgentDef{Name: "seat", Provider: ProviderClaude, WorkDir: t.TempDir(), SessionID: "source"}); err != nil {
+		t.Fatal(err)
+	}
+	proc, err := reg.Launch("seat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(proc.Stop)
+	proc.PublishEvent(Event{Type: "user", Text: "remember violet"})
+	proc.PublishEvent(Event{Type: "assistant", Text: "working"})
+	path := reg.path
+	reg.path = filepath.Join(t.TempDir(), "missing", "agents.json")
+	dest := &fakeAgentBackend{name: "fake-grok", assignedSession: "destination"}
+	err = proc.migrateWithBackend(&MigrateArgs{Provider: ProviderGrok, ContextBrief: "violet"},
+		dest)
+	if err == nil || !strings.Contains(err.Error(), "registry persistence failed") {
+		t.Fatalf("unpersisted migration returned %v", err)
+	}
+	if got := reg.Def("seat"); got == nil || got.Provider != ProviderClaude || got.SessionID != "source" {
+		t.Fatalf("registry claimed an unpersisted destination: %+v", got)
+	}
+	if proc.Provider() != ProviderGrok {
+		t.Fatalf("destination was not started; test did not cross persistence boundary: %s", proc.Provider())
+	}
+	reg.path = path
+	if err := proc.migrateWithBackend(&MigrateArgs{Provider: ProviderGrok, ContextBrief: "violet"}, dest); err != nil {
+		t.Fatalf("retry must persist the already-running destination: %v", err)
+	}
+	if len(dest.requests) != 1 {
+		t.Fatalf("retry started another destination: %d starts", len(dest.requests))
+	}
+	if len(dest.sends) != 1 || !strings.Contains(dest.sends[0], "violet") {
+		t.Fatalf("retry did not send the prepared brief exactly once: %v", dest.sends)
+	}
+	reopened, err := NewRegistry(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reopened.Def("seat"); got == nil || got.Provider != ProviderGrok || got.SessionID != "destination" {
+		t.Fatalf("retry did not persist the destination: %+v", got)
 	}
 }
 

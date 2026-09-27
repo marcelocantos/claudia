@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"sync"
 
 	"github.com/google/uuid"
@@ -235,7 +236,27 @@ func (r *Registry) save() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(r.path, data, 0o644)
+	tmp, err := os.CreateTemp(filepath.Dir(r.path), ".agents-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if err := tmp.Chmod(0o644); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), r.path)
 }
 
 // processSeams is how this Registry starts and adopts processes: its
@@ -560,7 +581,7 @@ func (r *Registry) startHeld(ctx context.Context, op *registryLifecycle, name st
 	materialized := current.Materialized
 	r.mu.Unlock()
 	proc.mu.Lock()
-	proc.onMigrated = func() { r.recordMigrate(name, proc) }
+	proc.onMigrated = func() error { return r.recordMigrate(name, proc) }
 	proc.mu.Unlock()
 	message := "agent adopted"
 	if started {
@@ -576,23 +597,27 @@ func (r *Registry) startHeld(ctx context.Context, op *registryLifecycle, name st
 // launch resumes a conversation the seat is no longer on. Materialized is
 // cleared because the destination is a new native session with no durable
 // transcript yet.
-func (r *Registry) recordMigrate(name string, proc *Agent) {
+func (r *Registry) recordMigrate(name string, proc *Agent) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	def := r.agents[name]
 	if def == nil || r.procs[name] != proc {
-		return
+		return fmt.Errorf("agent %q is no longer registered to this process", name)
 	}
-	def.Provider = proc.Provider()
-	if def.Provider == "" {
-		def.Provider = ProviderClaude
+	next := cloneAgentDef(*def)
+	next.Provider = proc.Provider()
+	if next.Provider == "" {
+		next.Provider = ProviderClaude
 	}
-	def.SessionID, def.Model = proc.SessionID(), proc.Model()
-	def.ConnectURL, def.ConnectPID = proc.ConnectURL(), proc.PID()
-	def.Materialized = false
+	next.SessionID, next.Model = proc.SessionID(), proc.Model()
+	next.ConnectURL, next.ConnectPID = proc.ConnectURL(), proc.PID()
+	next.Materialized = false
+	r.agents[name] = &next
 	if err := r.save(); err != nil {
-		slog.Warn("persist migrated agent def", "name", name, "err", err)
+		r.agents[name] = def
+		return fmt.Errorf("persist migrated agent %q: %w", name, err)
 	}
+	return nil
 }
 
 // MarkMaterialized records that name has hosted a real conversation and
