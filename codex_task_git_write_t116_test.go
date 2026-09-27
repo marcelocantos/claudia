@@ -43,7 +43,7 @@ func TestT116GrantArmPutsTheGitDirBeforeExec(t *testing.T) {
 		"--cd", repo,
 		"--sandbox", "workspace-write",
 		"-c", "sandbox_workspace_write.writable_roots=[" + strconv.Quote(filepath.Join(repo, ".git")) + "]",
-		"exec", "--json", "p",
+		"exec", "--skip-git-repo-check", "--json", "p",
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("argv = %q\nwant   %q", got, want)
@@ -69,7 +69,7 @@ func TestT116DefaultArmWithholdsTheGrantAndSaysSo(t *testing.T) {
 	repo := t109Repo(t)
 	logs := t112CaptureLogs(t)
 	got := t116Args(t, taskRunRequest{WorkDir: repo, SandboxMode: "workspace-write", ApprovalPolicy: "never", Prompt: "p"})
-	want := []string{"--ask-for-approval", "never", "--cd", repo, "--sandbox", "workspace-write", "exec", "--json", "p"}
+	want := []string{"--ask-for-approval", "never", "--cd", repo, "--sandbox", "workspace-write", "exec", "--skip-git-repo-check", "--json", "p"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("argv = %q\nwant   %q", got, want)
 	}
