@@ -133,7 +133,9 @@ type AgentDef struct {
 	// with the destination identity before Migrate reports success, then
 	// cleared only after the destination accepts it. A daemon restart in
 	// that interval retries the seed on the same destination session.
-	MigrationSeed string `json:"migration_seed,omitempty"`
+	MigrationSeed        string   `json:"migration_seed,omitempty"`
+	MigrationFrom        Provider `json:"migration_from,omitempty"`
+	MigrationFromSession string   `json:"migration_from_session,omitempty"`
 	// MigrationPendingStart distinguishes a persisted destination intent
 	// from a session that already started. A restart may mint the intended
 	// destination only while this bit remains true.
@@ -341,6 +343,15 @@ func (r *Registry) SetMCPHost(h *MCPHost) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.mcpHost = h
+}
+
+// SetMigrationSummarizer replaces the disposable transfer runner for an
+// individual registry. It is primarily a deterministic test seam; nil
+// restores the production SummarizeForMigration operation.
+func (r *Registry) SetMigrationSummarizer(f func(context.Context, MigrationTransferArgs) (MigrationTransferResult, error)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.migrationSummarizer = f
 }
 
 // Register adds or updates an agent definition and persists the registry.
@@ -714,6 +725,8 @@ func (r *Registry) settleMigrationSeed(name string, proc *Agent, send bool) erro
 	}
 	next := cloneAgentDef(*def)
 	next.MigrationSeed = ""
+	next.MigrationFrom = ""
+	next.MigrationFromSession = ""
 	r.agents[name] = &next
 	if err := r.save(); err != nil {
 		r.agents[name] = def

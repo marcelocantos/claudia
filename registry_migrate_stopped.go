@@ -64,6 +64,10 @@ func (r *Registry) MigrateStopped(ctx context.Context, name string, args Migrate
 		if err != nil {
 			return StoppedMigration{Source: source, Destination: source}, fmt.Errorf("migrate stopped %q: retry pending destination: %w", name, err)
 		}
+		if source.MigrationFrom != "" {
+			source.Provider = source.MigrationFrom
+			source.SessionID = source.MigrationFromSession
+		}
 		return StoppedMigration{Source: source, Destination: *r.Def(name), Agent: proc}, nil
 	}
 	transcript = strings.TrimSpace(transcript)
@@ -114,6 +118,8 @@ func (r *Registry) MigrateStopped(ctx context.Context, name string, args Migrate
 	next.Materialized = false
 	next.ConnectURL, next.ConnectPID = "", 0
 	next.MigrationSeed = migrateSeedHeader + "\n\n" + prepared.ContextBrief
+	next.MigrationFrom = source.Provider
+	next.MigrationFromSession = source.SessionID
 	next.MigrationPendingStart = true
 	priorFresh, hadFresh := r.freshSession[name]
 	r.agents[name] = &next
