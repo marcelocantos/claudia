@@ -103,23 +103,46 @@ func ResolveSeatPlacement(ctx context.Context, args *SeatPlacementArgs) (SeatPla
 		excluded[PlanProvider(p)] = true
 	}
 	var eligible int
+	seen := map[Provider]bool{}
+	uncertainDest := false
 	for _, u := range usage {
 		p := u.Provider
+		seen[p] = true
 		if args.AllowedProviders != nil && !allowed[p] {
 			excluded[p] = true
 			continue
 		}
-		if stalePlanReading(u, now, args.MaxUsageAge) {
-			excluded[p] = true
+		if excluded[p] {
 			continue
 		}
-		if !excluded[p] && u.Status == PlanUsageAvailable &&
-			HasAvailableTokens(u, now, args.Thresholds) &&
+		if stalePlanReading(u, now, args.MaxUsageAge) {
+			excluded[p] = true
+			uncertainDest = true
+			continue
+		}
+		if u.Status != PlanUsageAvailable {
+			uncertainDest = true
+			continue
+		}
+		if HasAvailableTokens(u, now, args.Thresholds) &&
 			IsDestBand(ClassifyPlan(u, now, args.Thresholds).Weekly) {
 			eligible++
 		}
 	}
+	for _, row := range ModelCatalog() {
+		p := row.Provider
+		if row.Access != ModelAccessPlan || !row.Session || p == from || excluded[p] || seen[p] ||
+			(args.AllowedProviders != nil && !allowed[p]) {
+			continue
+		}
+		uncertainDest = true
+	}
 	if eligible == 0 {
+		if uncertainDest {
+			decision.Action = SeatDefer
+			decision.Reason = pressure + "; destination plan readings incomplete or stale"
+			return decision, nil
+		}
 		decision.Action = SeatPark
 		decision.Reason = pressure + "; no eligible destination"
 		return decision, nil

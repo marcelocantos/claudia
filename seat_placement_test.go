@@ -48,7 +48,8 @@ func TestResolveSeatPlacementMovesSidecarGrokToClaude(t *testing.T) {
 func TestResolveSeatPlacementSeparatesPreferenceFromProhibition(t *testing.T) {
 	now := time.Date(2026, 9, 27, 9, 0, 0, 0, time.UTC)
 	args := &SeatPlacementArgs{CurrentProvider: "xai-oauth", Usage: seatPlacementUsage(now),
-		PreferProvider: ProviderGrok, ExcludeProviders: []Provider{ProviderClaude}, Now: now}
+		PreferProvider: ProviderGrok, ExcludeProviders: []Provider{ProviderClaude},
+		AllowedProviders: []Provider{ProviderGrok, ProviderCodex, ProviderClaude}, Now: now}
 	got, err := ResolveSeatPlacement(context.Background(), args)
 	if err != nil || got.Action != SeatPark {
 		t.Fatalf("explicit Claude prohibition with no eligible dest = %+v, %v", got, err)
@@ -59,5 +60,29 @@ func TestResolveSeatPlacementSeparatesPreferenceFromProhibition(t *testing.T) {
 	got, err = ResolveSeatPlacement(context.Background(), args)
 	if err != nil || got.Action != SeatStay {
 		t.Fatalf("stale source must not cause migration: %+v, %v", got, err)
+	}
+}
+
+func TestResolveSeatPlacementDefersWhenDestinationHealthIsIncomplete(t *testing.T) {
+	now := time.Date(2026, 9, 27, 9, 0, 0, 0, time.UTC)
+	usage := seatPlacementUsage(now)
+	args := &SeatPlacementArgs{CurrentProvider: "xai-oauth", Usage: usage[:1],
+		Now: now, MaxUsageAge: 15 * time.Minute}
+	got, err := ResolveSeatPlacement(context.Background(), args)
+	if err != nil || got.Action != SeatDefer || got.Reason == "" {
+		t.Fatalf("hot source with missing destination feed = %+v, %v; want reasoned defer", got, err)
+	}
+	args.AllowedProviders = []Provider{ProviderGrok, ProviderCodex}
+	args.Usage = usage[:2]
+	args.Usage[1].Status = PlanUsageUnavailable
+	got, err = ResolveSeatPlacement(context.Background(), args)
+	if err != nil || got.Action != SeatDefer {
+		t.Fatalf("unavailable allowed destination = %+v, %v; want defer", got, err)
+	}
+	args.Usage[1].Status = PlanUsageAvailable
+	args.Usage[1].FetchedAt = now.Add(-time.Hour)
+	got, err = ResolveSeatPlacement(context.Background(), args)
+	if err != nil || got.Action != SeatDefer {
+		t.Fatalf("stale allowed destination = %+v, %v; want defer", got, err)
 	}
 }
