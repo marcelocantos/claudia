@@ -521,18 +521,13 @@ rejects the request type rather than silently dropping the policy.
 `DisallowTools` remains Claude-only; `ToolPolicy` is a separate
 provider-native allowlist, not a translation of that field.
 
-`claudia broker run` is the machine-facing client for a single selected
-turn. It reads one JSON object with `predicates`, `tasks` keyed by
-provider, and `prompt` from stdin, then writes a selection record followed
-by task events as JSONL to
-stdout. The broker resolves a standard or requested quality model from
-published plan usage, excludes providers absent from `tasks`, and applies
-background pacing. It runs the selected task through the broker and
-never starts a direct provider process. A task config may include
-`tool_policy` with `builtins`, `allow`, `deny`, `max_turns`, and (for Grok)
-`home_dir`. The command exits nonzero if selection or the task fails.
-Failures also appear as `type: "error"` JSONL records so an unattended
-caller can put the reason in its own log.
+Machine clients can use the Unix socket directly. Send a version 1
+`resolve` request with task mode, background pacing, published usage required,
+and any excluded providers. The broker replies with `resolved` and a model
+pick. Send `task_run_restricted` with that provider, model, prompt, and a
+`tool_policy` containing `builtins`, `allow`, `deny`, `max_turns`, and (for
+Grok) `home_dir`. Keep the connection open for `task_event` messages through
+`task_done`; closing it cancels the run. The broker owns the provider process.
 
 The channel closes when the process exits. Drain it until then:
 
