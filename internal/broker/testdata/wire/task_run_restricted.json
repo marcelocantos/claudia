@@ -1,0 +1,1 @@
+{"v":1,"type":"task_run_restricted","id":"g3r","body":{"task":{"provider":"grok","tool_policy":{"builtins":["read_file"],"max_turns":2,"home_dir":"/sen"}},"prompt":"inspect"}}

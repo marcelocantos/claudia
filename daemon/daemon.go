@@ -377,7 +377,7 @@ func (d *Daemon) HandleRequest(c *broker.ClientConn, req *broker.Request) bool {
 		d.handleAgentOp(c, req)
 	case broker.TypeGoalVerdict:
 		d.handleGoalVerdict(c, req)
-	case broker.TypeTaskRun:
+	case broker.TypeTaskRun, broker.TypeTaskRunRestricted:
 		d.handleTaskRun(c, req)
 	case broker.TypeTaskCancel:
 		d.handleTaskCancel(c, req)
@@ -1167,6 +1167,10 @@ func (d *Daemon) handleTaskRun(c *broker.ClientConn, req *broker.Request) {
 	cfg, err := claudia.DecodeTaskConfigWire(req.TaskRun.Task)
 	if err != nil {
 		_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeMalformed, Field: "task", Msg: err.Error()})
+		return
+	}
+	if req.Type == broker.TypeTaskRunRestricted && cfg.ToolPolicy == nil {
+		_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeMalformed, Field: "task.tool_policy", Msg: "restricted task requires tool_policy"})
 		return
 	}
 	task := daemonNewTask(cfg)

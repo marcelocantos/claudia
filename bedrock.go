@@ -76,6 +76,9 @@ func (bedrockTaskBackend) Capabilities() providerCapabilities {
 // summariser got the same fail-open 🎯T4.6 closed for Codex and 🎯T23 for
 // Grok, one provider further along.
 func bedrockTaskPrecheck(req taskRunRequest) error {
+	if err := validateTaskToolPolicy(ProviderBedrock, req.ToolPolicy); err != nil {
+		return err
+	}
 	if len(req.DisallowTools) > 0 {
 		return capabilityRefusal(ProviderBedrock, CapabilityToolRestrictions,
 			"the Bedrock tool_restrictions claim was flipped to supported, but buildBedrockConverseInput still sends no toolConfig")

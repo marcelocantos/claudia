@@ -40,6 +40,7 @@ func (b *brokerTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*t
 	cfg.SandboxGitWrite = req.SandboxGitWrite
 	cfg.ApprovalPolicy = req.ApprovalPolicy
 	cfg.DisallowTools = req.DisallowTools
+	cfg.ToolPolicy = req.ToolPolicy
 	cfg.ClaudeID = req.SessionID
 	raw, err := EncodeTaskConfigWire(cfg)
 	if err != nil {
@@ -74,7 +75,11 @@ func (b *brokerTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*t
 			close(done)
 		}
 	})
-	resp, err := b.client.call(ctx, &broker.Request{Type: broker.TypeTaskRun, TaskRun: &broker.TaskRunRequest{Task: raw, Prompt: req.Prompt, RawLog: req.RawLog != nil}})
+	requestType := broker.TypeTaskRun
+	if req.ToolPolicy != nil {
+		requestType = broker.TypeTaskRunRestricted
+	}
+	resp, err := b.client.call(ctx, &broker.Request{Type: requestType, TaskRun: &broker.TaskRunRequest{Task: raw, Prompt: req.Prompt, RawLog: req.RawLog != nil}})
 	if err != nil {
 		return nil, err
 	}

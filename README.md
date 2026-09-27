@@ -343,6 +343,10 @@ so. The library API is unchanged; with no socket (or
 `CLAUDIA_NO_BROKER=1`) everything runs in-process as before. See the
 [agents guide](agents-guide.md#daemon-claudia-broker-optional-host-wide).
 
+Unattended callers can set `TaskConfig.RequireBroker` to refuse the
+direct fallback and `TaskConfig.ToolPolicy` to restrict Claude or Grok
+tools and turns. See [Task mode: essential patterns](agents-guide.md#task-mode-essential-patterns).
+
 ## Registry
 
 For long-lived programs that manage several persistent agents

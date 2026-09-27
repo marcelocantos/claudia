@@ -32,6 +32,9 @@ const (
 	TypeResolve MessageType = "resolve"
 	// TypeTaskRun runs one Task turn; events stream back on this connection.
 	TypeTaskRun MessageType = "task_run"
+	// TypeTaskRunRestricted requires a daemon that understands ToolPolicy.
+	// Older daemons reject this type instead of silently dropping the policy.
+	TypeTaskRunRestricted MessageType = "task_run_restricted"
 	// TypeTaskCancel interrupts a running task.
 	TypeTaskCancel MessageType = "task_cancel"
 	// TypeGrant names a seat: start it, or reclaim it if the daemon already

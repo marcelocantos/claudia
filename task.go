@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -224,6 +225,12 @@ type TaskConfig struct {
 	// Removing the tools is what makes that misfire harmless.
 	DisallowTools []string
 
+	// ToolPolicy restricts a headless Claude or Grok task to explicit
+	// built-in tools and permission rules. A non-nil policy fails closed on
+	// providers without this contract. Names use the selected provider's
+	// CLI spelling. The zero value keeps the provider's usual behavior.
+	ToolPolicy *TaskToolPolicy
+
 	// ClaudeID is the claude session ID to resume with --resume. If
 	// empty, each Run starts a fresh session. After the first run,
 	// Task.ClaudeID() returns the session ID for subsequent calls.
@@ -232,6 +239,63 @@ type TaskConfig struct {
 	// LastResult seeds Task.LastResult() before the first run — useful
 	// when re-hydrating a task from persisted state.
 	LastResult string
+}
+
+// TaskToolPolicy is a provider-native allowlist for one headless turn.
+// Builtins and MaxTurns are required when the policy is set. Allow and
+// Deny contain permission rules such as Bash(ps -axo *) and Edit(/dir/*).
+// HomeDir isolates Grok's config and compatibility discovery; it must be
+// an absolute private directory. Claude does not yet support HomeDir.
+type TaskToolPolicy struct {
+	Builtins []string `json:"builtins"`
+	Allow    []string `json:"allow,omitempty"`
+	Deny     []string `json:"deny,omitempty"`
+	MaxTurns int      `json:"max_turns"`
+	HomeDir  string   `json:"home_dir,omitempty"`
+}
+
+func validateTaskToolPolicy(provider Provider, policy *TaskToolPolicy) error {
+	if policy == nil {
+		return nil
+	}
+	if provider == "" {
+		provider = ProviderClaude
+	}
+	if provider != ProviderClaude && provider != ProviderGrok {
+		return unsupportedCapability(provider, CapabilityToolRestrictions,
+			"TaskToolPolicy is supported only by Claude and Grok headless tasks")
+	}
+	if len(policy.Builtins) == 0 || policy.MaxTurns < 1 {
+		return fmt.Errorf("task tool policy requires builtins and a positive max turns")
+	}
+	for _, builtin := range policy.Builtins {
+		if builtin == "" || strings.ContainsAny(builtin, ", \t\r\n") {
+			return fmt.Errorf("invalid task tool name %q", builtin)
+		}
+	}
+	for _, rule := range append(append([]string(nil), policy.Allow...), policy.Deny...) {
+		if strings.TrimSpace(rule) == "" || strings.ContainsAny(rule, "\r\n") {
+			return fmt.Errorf("invalid task permission rule %q", rule)
+		}
+	}
+	if policy.HomeDir != "" {
+		if provider != ProviderGrok {
+			return fmt.Errorf("task tool policy home is supported only for Grok")
+		}
+		if !filepath.IsAbs(policy.HomeDir) {
+			return fmt.Errorf("task tool policy home must be absolute")
+		}
+		info, err := os.Lstat(policy.HomeDir)
+		if err != nil {
+			return fmt.Errorf("task tool policy home: %w", err)
+		}
+		if !info.IsDir() || info.Mode().Perm()&0o077 != 0 {
+			return fmt.Errorf("task tool policy home %s must be a private directory", policy.HomeDir)
+		}
+	} else if provider == ProviderGrok {
+		return fmt.Errorf("restricted Grok task requires an isolated home")
+	}
+	return nil
 }
 
 // RawLogFunc receives raw NDJSON lines from the Claude process.
@@ -252,6 +316,7 @@ type Task struct {
 	gitWrite      bool
 	approval      string
 	disallow      []string
+	toolPolicy    *TaskToolPolicy
 
 	mu            sync.Mutex
 	run           *taskRun
@@ -276,6 +341,7 @@ type taskRunRequest struct {
 	gitRoots       []string
 	ApprovalPolicy string
 	DisallowTools  []string
+	ToolPolicy     *TaskToolPolicy
 	SessionID      string
 	Prompt         string
 	RawLog         RawLogFunc
@@ -364,6 +430,7 @@ func newTaskWithBackend(cfg TaskConfig, backend taskBackend) *Task {
 		gitWrite:      cfg.SandboxGitWrite,
 		approval:      cfg.ApprovalPolicy,
 		disallow:      cfg.DisallowTools,
+		toolPolicy:    cfg.ToolPolicy,
 		status:        TaskStatusIdle,
 		claudeID:      cfg.ClaudeID,
 		lastResult:    cfg.LastResult,
@@ -447,6 +514,12 @@ func (t *Task) Run(ctx context.Context, prompt string) (<-chan TaskEvent, error)
 	}
 	t.status = TaskStatusRunning
 	t.mu.Unlock()
+	if err := validateTaskToolPolicy(t.provider, t.toolPolicy); err != nil {
+		t.mu.Lock()
+		t.status = TaskStatusError
+		t.mu.Unlock()
+		return nil, err
+	}
 
 	cmdCtx, cancel := context.WithCancel(ctx)
 
@@ -462,6 +535,7 @@ func (t *Task) Run(ctx context.Context, prompt string) (<-chan TaskEvent, error)
 		SandboxGitWrite: t.gitWrite,
 		ApprovalPolicy:  t.approval,
 		DisallowTools:   t.disallow,
+		ToolPolicy:      t.toolPolicy,
 		SessionID:       cid,
 		Prompt:          prompt,
 		RawLog:          rawFn,
@@ -634,6 +708,9 @@ func forwardTaskStream(
 // one; together they are what the request-field audit
 // (TestProviderPathsHonourOrRefuseEveryRequestField) probes.
 func claudeTaskPrecheck(req taskRunRequest) error {
+	if err := validateTaskToolPolicy(ProviderClaude, req.ToolPolicy); err != nil {
+		return err
+	}
 	if req.SandboxMode != "" || req.SandboxGitWrite || req.ApprovalPolicy != "" {
 		return capabilityRefusal(ProviderClaude, CapabilitySandboxPolicy,
 			"the Claude tool_restrictions claim covers --disallowedTools only; claudeTaskArgs emits no sandbox or approval flag")
@@ -647,13 +724,24 @@ func claudeTaskArgs(req taskRunRequest) []string {
 		"--verbose",
 		"--output-format", "stream-json",
 		"--include-partial-messages",
-		"--dangerously-skip-permissions",
-		// Task mode previously passed NO tool restriction at all, while
-		// the package documented Agent and friends as always disallowed
-		// — that guarantee lived only in Session mode. Callers reading
-		// the docs reasonably believed they were protected and were not.
-		"--disallowedTools", disallowedToolList(req.DisallowTools),
 	}
+	disallowed := append([]string(nil), req.DisallowTools...)
+	if req.ToolPolicy == nil {
+		args = append(args, "--dangerously-skip-permissions")
+	} else {
+		policy := req.ToolPolicy
+		args = append(args,
+			"--permission-mode", "dontAsk", "--permission-prompts", "none", "--strict-mcp-config",
+			"--restricted", "--no-session-persistence",
+			"--tools", strings.Join(policy.Builtins, ","),
+			"--max-turns", strconv.Itoa(policy.MaxTurns))
+		for _, rule := range policy.Allow {
+			args = append(args, "--allowedTools", rule)
+		}
+		disallowed = append(disallowed, policy.Deny...)
+	}
+	// The baseline applies in both unrestricted and restricted Task mode.
+	args = append(args, "--disallowedTools", disallowedToolList(disallowed))
 	if req.SessionID != "" {
 		args = append(args, "--resume", req.SessionID)
 	}
@@ -757,6 +845,9 @@ func (claudeTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*task
 // BaseDisallowedTools documents. Refuse before spawning rather than
 // dropping the request on the floor.
 func codexTaskPrecheck(req taskRunRequest) error {
+	if err := validateTaskToolPolicy(ProviderCodex, req.ToolPolicy); err != nil {
+		return err
+	}
 	if len(req.DisallowTools) > 0 {
 		return capabilityRefusal(ProviderCodex, CapabilityToolRestrictions,
 			"the Codex tool_restrictions claim was flipped to supported, but codexTaskArgs still emits no per-tool disallow flag")
@@ -895,6 +986,9 @@ func codexTaskArgs(req taskRunRequest) []string {
 // docs/grok-provider-oracle-map.md for the live oracle that would
 // settle it.
 func grokTaskPrecheck(req taskRunRequest) error {
+	if err := validateTaskToolPolicy(ProviderGrok, req.ToolPolicy); err != nil {
+		return err
+	}
 	if len(req.DisallowTools) > 0 {
 		return grokToolRestrictionRefusal(
 			CheckCapability(ProviderGrok, CapabilityToolRestrictions))
@@ -921,6 +1015,13 @@ func (grokTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*taskRu
 	cmd := exec.CommandContext(ctx, grokBin, args...)
 	if req.WorkDir != "" {
 		cmd.Dir = req.WorkDir
+	}
+	if req.ToolPolicy != nil {
+		env, err := grokTaskPolicyEnv(req.ToolPolicy.HomeDir)
+		if err != nil {
+			return nil, err
+		}
+		cmd.Env = env
 	}
 	setTaskProcessGroup(cmd)
 
@@ -994,10 +1095,24 @@ func grokToolRestrictionRefusal(claimed error) error {
 // refused any request carrying DisallowTools, and pinning that here keeps
 // the half-fix (emit a flag, keep the claim) from looking green.
 func grokTaskArgs(req taskRunRequest) []string {
+	permissionMode := "bypassPermissions"
+	if req.ToolPolicy != nil {
+		permissionMode = "dontAsk"
+	}
 	args := []string{
 		"-p", req.Prompt,
 		"--output-format", "streaming-json",
-		"--permission-mode", "bypassPermissions",
+		"--permission-mode", permissionMode,
+	}
+	if policy := req.ToolPolicy; policy != nil {
+		args = append(args, "--no-subagents", "--disable-web-search", "--tools", strings.Join(policy.Builtins, ","),
+			"--max-turns", strconv.Itoa(policy.MaxTurns))
+		for _, rule := range policy.Allow {
+			args = append(args, "--allow", rule)
+		}
+		for _, rule := range policy.Deny {
+			args = append(args, "--deny", rule)
+		}
 	}
 	if req.WorkDir != "" {
 		args = append(args, "--cwd", req.WorkDir)
@@ -1009,6 +1124,32 @@ func grokTaskArgs(req taskRunRequest) []string {
 		args = append(args, "--resume", req.SessionID)
 	}
 	return args
+}
+
+func grokTaskPolicyEnv(homeDir string) ([]string, error) {
+	grokHome := filepath.Join(homeDir, ".grok")
+	if err := os.MkdirAll(grokHome, 0o700); err != nil {
+		return nil, fmt.Errorf("create restricted Grok home: %w", err)
+	}
+	info, err := os.Lstat(grokHome)
+	if err != nil {
+		return nil, fmt.Errorf("inspect restricted Grok home: %w", err)
+	}
+	if !info.IsDir() || info.Mode().Perm()&0o077 != 0 {
+		return nil, fmt.Errorf("restricted Grok home %s must be a private directory", grokHome)
+	}
+	env := append(os.Environ(), "HOME="+homeDir, "GROK_HOME="+grokHome)
+	if os.Getenv("GROK_AUTH_PATH") == "" {
+		userHome, err := os.UserHomeDir()
+		if err != nil {
+			return nil, fmt.Errorf("locate Grok authentication: %w", err)
+		}
+		authPath := filepath.Join(userHome, ".grok", "auth.json")
+		if info, err := os.Stat(authPath); err == nil && info.Mode().IsRegular() {
+			env = append(env, "GROK_AUTH_PATH="+authPath)
+		}
+	}
+	return env, nil
 }
 
 // grokTaskParser maps Grok Build headless streaming-json lines to TaskEvent.

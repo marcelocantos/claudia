@@ -134,15 +134,16 @@ type taskConfigWire struct {
 	Provider Provider `json:"provider,omitempty"`
 	// RequireBroker is a caller-side admission guard. The daemon runs the
 	// task directly once the caller has a grant, so this flag stays local.
-	RequireBroker   bool     `json:"-"`
-	WorkDir         string   `json:"workdir,omitempty"`
-	Model           string   `json:"model,omitempty"`
-	SandboxMode     string   `json:"sandbox_mode,omitempty"`
-	SandboxGitWrite bool     `json:"sandbox_git_write,omitempty"`
-	ApprovalPolicy  string   `json:"approval_policy,omitempty"`
-	DisallowTools   []string `json:"disallow_tools,omitempty"`
-	ClaudeID        string   `json:"claude_id,omitempty"`
-	LastResult      string   `json:"last_result,omitempty"`
+	RequireBroker   bool            `json:"-"`
+	WorkDir         string          `json:"workdir,omitempty"`
+	Model           string          `json:"model,omitempty"`
+	SandboxMode     string          `json:"sandbox_mode,omitempty"`
+	SandboxGitWrite bool            `json:"sandbox_git_write,omitempty"`
+	ApprovalPolicy  string          `json:"approval_policy,omitempty"`
+	DisallowTools   []string        `json:"disallow_tools,omitempty"`
+	ToolPolicy      *TaskToolPolicy `json:"tool_policy,omitempty"`
+	ClaudeID        string          `json:"claude_id,omitempty"`
+	LastResult      string          `json:"last_result,omitempty"`
 }
 
 // EncodeTaskConfigWire is a TaskConfig in its daemon-protocol form (task_run).
