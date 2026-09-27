@@ -250,6 +250,10 @@ func (f *fixture) bootWith(t *testing.T, opts Options) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// New marks its process self-hosted for production. Here the client is
+	// intentionally in the same process, while the daemon's Registry and Task
+	// paths explicitly use direct mode.
+	broker.AllowInProcessClientsForTest()
 	f.d = d
 	t.Cleanup(func() { _ = d.Close() })
 }

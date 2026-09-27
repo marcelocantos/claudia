@@ -86,6 +86,11 @@ var selfHosted atomic.Bool
 // MarkSelfHosted declares this process the daemon.
 func MarkSelfHosted() { selfHosted.Store(true) }
 
+// AllowInProcessClientsForTest permits a hermetic broker fixture and its
+// public-API client to share one test process. Production daemon processes
+// must remain marked self-hosted so library calls cannot dial their own socket.
+func AllowInProcessClientsForTest() { selfHosted.Store(false) }
+
 // SelfHosted reports whether this process is the daemon.
 func SelfHosted() bool { return selfHosted.Load() }
 
