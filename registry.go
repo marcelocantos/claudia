@@ -129,6 +129,11 @@ type AgentDef struct {
 	// onto Config.Goal at Launch/Adopt so a provider switch keeps the
 	// same objective. Empty means one-shot Send.
 	Goal string `json:"goal,omitempty"`
+	// MigrationSeed is the destination's bounded handover. It is persisted
+	// with the destination identity before Migrate reports success, then
+	// cleared only after the destination accepts it. A daemon restart in
+	// that interval retries the seed on the same destination session.
+	MigrationSeed string `json:"migration_seed,omitempty"`
 
 	// MCPServers is the session-scoped MCP list (🎯T40). Copied onto
 	// Config.MCPServers at Launch. Session never writes provider config
@@ -452,6 +457,9 @@ func (r *Registry) startHeld(ctx context.Context, op *registryLifecycle, name st
 		if err := prior.ensureOwned(); err != nil {
 			return nil, err
 		}
+		if err := r.deliverMigrationSeed(name, prior); err != nil {
+			return nil, err
+		}
 		return prior, nil
 	}
 	if denied != nil {
@@ -603,6 +611,9 @@ func (r *Registry) startHeld(ctx context.Context, op *registryLifecycle, name st
 	proc.mu.Lock()
 	proc.onMigrated = func() error { return r.recordMigrate(name, proc) }
 	proc.mu.Unlock()
+	if err := r.deliverMigrationSeed(name, proc); err != nil {
+		return nil, err
+	}
 	message := "agent adopted"
 	if started {
 		message = "agent started"
@@ -632,10 +643,47 @@ func (r *Registry) recordMigrate(name string, proc *Agent) error {
 	next.SessionID, next.Model = proc.SessionID(), proc.Model()
 	next.ConnectURL, next.ConnectPID = proc.ConnectURL(), proc.PID()
 	next.Materialized = false
+	proc.mu.Lock()
+	next.MigrationSeed = proc.migrationSeedPending
+	proc.mu.Unlock()
 	r.agents[name] = &next
 	if err := r.save(); err != nil {
 		r.agents[name] = def
 		return fmt.Errorf("persist migrated agent %q: %w", name, err)
+	}
+	return nil
+}
+
+// deliverMigrationSeed completes a move whose destination was persisted
+// before its seed could be sent. A failed send leaves the seed durable and
+// refuses to hand an apparently ready seat back to the host.
+func (r *Registry) deliverMigrationSeed(name string, proc *Agent) error {
+	r.mu.Lock()
+	def := r.agents[name]
+	if def == nil || r.procs[name] != proc {
+		r.mu.Unlock()
+		return fmt.Errorf("agent %q is no longer registered to this process", name)
+	}
+	seed := def.MigrationSeed
+	r.mu.Unlock()
+	if seed == "" {
+		return nil
+	}
+	if err := proc.Send(seed); err != nil {
+		return fmt.Errorf("deliver migration handover to %q: %w", name, err)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	def = r.agents[name]
+	if def == nil || r.procs[name] != proc || def.MigrationSeed != seed {
+		return fmt.Errorf("migration handover for %q changed while being delivered", name)
+	}
+	next := cloneAgentDef(*def)
+	next.MigrationSeed = ""
+	r.agents[name] = &next
+	if err := r.save(); err != nil {
+		r.agents[name] = def
+		return fmt.Errorf("persist migration handover delivery for %q: %w", name, err)
 	}
 	return nil
 }

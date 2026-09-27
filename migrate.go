@@ -363,6 +363,9 @@ func (a *Agent) migrateWithBackendLocked(args *MigrateArgs, destBackend agentBac
 			a.mu.Lock()
 			a.migrationSeedPending = ""
 			a.mu.Unlock()
+			if err := a.notifyMigrated(); err != nil {
+				return fmt.Errorf("Migrate: handover sent but delivery persistence failed: %w", err)
+			}
 		}
 		if pending || seed != "" {
 			return nil
@@ -490,6 +493,9 @@ func (a *Agent) migrateWithBackendLocked(args *MigrateArgs, destBackend agentBac
 	a.mu.Lock()
 	a.migrationSeedPending = ""
 	a.mu.Unlock()
+	if err := a.notifyMigrated(); err != nil {
+		return fmt.Errorf("Migrate: handover sent but delivery persistence failed: %w", err)
+	}
 	return nil
 }
 
