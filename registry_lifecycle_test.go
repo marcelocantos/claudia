@@ -256,6 +256,13 @@ func TestRegistryDefinitionSnapshotsOwnMCPData(t *testing.T) {
 }
 
 func TestRegistryCursorStopCancelsActualACPStartup(t *testing.T) {
+	// The product Cursor route now uses the sidecar. This test exercises
+	// cancellation of the retained ACP transport, so select it explicitly.
+	previousStart := registryStart
+	registryStart = func(ctx context.Context, cfg Config) (*Agent, error) {
+		return startWithBackendContext(ctx, cfg, cursorAgentBackend{})
+	}
+	t.Cleanup(func() { registryStart = previousStart })
 	t.Setenv("CURSOR_BIN", writeFakeCursorACP(t))
 	t.Setenv("FAKE_ACP_WITHHOLD", "session/load")
 	logPath := filepath.Join(t.TempDir(), "requests.jsonl")
