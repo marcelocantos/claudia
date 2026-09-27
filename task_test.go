@@ -296,6 +296,24 @@ func TestCodexTaskParser(t *testing.T) {
 	}
 }
 
+func TestCodexTaskParserAuditsCommandOnce(t *testing.T) {
+	parser := codexTaskParser{}
+	var calls int
+	for _, line := range []string{
+		`{"type":"item.started","item":{"id":"cmd-1","type":"command_execution","command":"ps -axo pid,command","status":"in_progress"}}`,
+		`{"type":"item.completed","item":{"id":"cmd-1","type":"command_execution","command":"ps -axo pid,command","status":"completed"}}`,
+	} {
+		for _, event := range parser.Parse([]byte(line)) {
+			if event.Type == TaskEventToolUse {
+				calls++
+			}
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("command audit events = %d, want 1", calls)
+	}
+}
+
 func TestCodexTaskSuccessOracleRejectsFaults(t *testing.T) {
 	lines := readFixtureLines(t, "testdata/codex/exec/success.jsonl")
 	if err := codexTaskSuccessOracle(lines); err != nil {

@@ -1239,6 +1239,7 @@ func (p *grokTaskParser) Parse(line []byte) []TaskEvent {
 
 type codexTaskParser struct {
 	lastAgentMessage string
+	seenCommands     map[string]bool
 }
 
 func (p *codexTaskParser) Parse(line []byte) []TaskEvent {
@@ -1334,6 +1335,15 @@ func (p *codexTaskParser) parseCodexItem(line []byte) []TaskEvent {
 		return []TaskEvent{{Type: TaskEventText, Content: msg.Item.Text}}
 	}
 	if msg.Item.Type == "command_execution" {
+		if msg.Item.ID != "" {
+			if p.seenCommands[msg.Item.ID] {
+				return nil
+			}
+			if p.seenCommands == nil {
+				p.seenCommands = make(map[string]bool)
+			}
+			p.seenCommands[msg.Item.ID] = true
+		}
 		input := string(msg.Item.Raw)
 		if input == "" {
 			input = fmt.Sprintf(`{"command":%q,"status":%q}`, msg.Item.Command, msg.Item.Status)
