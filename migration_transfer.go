@@ -94,10 +94,10 @@ func migrationSummaryModel(ctx context.Context, provider Provider) (string, erro
 		Usage: []PlanUsage{},
 	})
 	if err != nil {
-		return "", fmt.Errorf("migration transfer: choose summary model: %w", err)
+		return "", fmt.Errorf("choose standard session model: %w", err)
 	}
 	if pick.Provider != provider {
-		return "", fmt.Errorf("migration transfer: no standard session model on destination provider %s", provider)
+		return "", fmt.Errorf("no standard session model on destination provider %s", provider)
 	}
 	return pick.Model, nil
 }

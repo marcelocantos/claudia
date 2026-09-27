@@ -276,6 +276,17 @@ func (a *Agent) Migrate(args *MigrateArgs) error {
 	if args == nil || args.Provider == "" {
 		return fmt.Errorf("Migrate: provider must be non-empty")
 	}
+	if args.Model == "" && useOMP(Config{Provider: args.Provider}) {
+		// A source model id is not a destination default. Choose a
+		// subscription model before the broker request so both sides agree.
+		model, err := migrationSummaryModel(context.Background(), PlanProvider(args.Provider))
+		if err != nil {
+			return fmt.Errorf("Migrate: destination model: %w", err)
+		}
+		withModel := *args
+		withModel.Model = model
+		args = &withModel
+	}
 	// T866.5: grok, cursor, and the four subscription ids all go through
 	// the sidecar. Config.OMP is not required.
 	return a.migrateWithBackend(args, agentBackendFor(Config{Provider: args.Provider}))
