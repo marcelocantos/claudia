@@ -444,19 +444,26 @@ func TestGrokTaskParserReturnsFinalResponseAfterToolTurn(t *testing.T) {
 	lines := []string{
 		`{"type":"text","data":"I'll read the transcript first."}`,
 		`{"type":"usage","messageId":"progress","stopReason":"tool_use"}`,
-		`{"type":"tool_call","toolCallId":"read-1","toolName":"read_file"}`,
+		`{"type":"tool_call","toolCallId":"read-1","toolName":"read_file","rawInput":{"path":"runbook.md"}}`,
 		`{"type":"tool_call_update","toolCallId":"read-1","status":"completed"}`,
 		`{"type":"text","data":"frontier-ai-enterprise-rejection.md\n\n# Frontier AI Enterprise Rejection\n\n**TL;DR**: The thesis."}`,
 		`{"type":"usage","messageId":"final","stopReason":"end_turn"}`,
 		`{"type":"end","stopReason":"end_turn","sessionId":"session-1"}`,
 	}
 	var result string
+	var tool TaskEvent
 	for _, line := range lines {
 		for _, event := range parser.Parse([]byte(line)) {
 			if event.Type == TaskEventResult {
 				result = event.Content
 			}
+			if event.Type == TaskEventToolUse {
+				tool = event
+			}
 		}
+	}
+	if tool.ToolID != "read-1" || tool.ToolName != "read_file" || tool.ToolInput != `{"path":"runbook.md"}` {
+		t.Errorf("tool audit event = %+v", tool)
 	}
 	want := "frontier-ai-enterprise-rejection.md\n\n# Frontier AI Enterprise Rejection\n\n**TL;DR**: The thesis."
 	if result != want {

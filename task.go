@@ -32,7 +32,7 @@ const (
 	// in TaskEvent.Content.
 	TaskEventText TaskEventType = "text"
 
-	// TaskEventToolUse is emitted when Claude invokes a tool. The tool
+	// TaskEventToolUse is emitted when a provider invokes a tool. The tool
 	// name, ID, and JSON-encoded input are in TaskEvent.ToolName,
 	// ToolID, and ToolInput respectively.
 	TaskEventToolUse TaskEventType = "tool_use"
@@ -58,7 +58,7 @@ type Usage struct {
 	CacheReadInputTokens int `json:"cache_read_input_tokens"`
 }
 
-// TaskEvent is a parsed event from Claude Code's stream-json output.
+// TaskEvent is a parsed event from a provider's headless task stream.
 type TaskEvent struct {
 	// Type identifies the event kind; see the TaskEvent* constants.
 	Type TaskEventType
@@ -1180,6 +1180,21 @@ func (p *grokTaskParser) Parse(line []byte) []TaskEvent {
 		}
 		p.text.WriteString(msg.Data)
 		return []TaskEvent{{Type: TaskEventText, Content: msg.Data}}
+	case "tool_call":
+		var msg struct {
+			ToolCallID string          `json:"toolCallId"`
+			ToolName   string          `json:"toolName"`
+			Title      string          `json:"title"`
+			RawInput   json.RawMessage `json:"rawInput"`
+		}
+		if err := json.Unmarshal(line, &msg); err != nil {
+			return nil
+		}
+		name := msg.ToolName
+		if name == "" {
+			name = msg.Title
+		}
+		return []TaskEvent{{Type: TaskEventToolUse, ToolID: msg.ToolCallID, ToolName: name, ToolInput: string(msg.RawInput)}}
 	case "thought":
 		// Internal reasoning — not part of the provider-neutral result text.
 		return nil
