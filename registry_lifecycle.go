@@ -115,6 +115,7 @@ func sameLaunchDefinition(a, b AgentDef) bool {
 		d.Parent, d.Purpose, d.Role, d.Description, d.TargetID = "", "", "", "", ""
 		d.PreferProvider = ""
 		d.AllowedProviders, d.ExcludeProviders = nil, nil
+		d.HostMayInterrupt, d.HostNeverPark = false, false
 	}
 	return reflect.DeepEqual(a, b)
 }

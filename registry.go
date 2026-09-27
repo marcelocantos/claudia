@@ -61,6 +61,12 @@ type AgentDef struct {
 	PreferProvider   Provider   `json:"prefer_provider,omitempty"`
 	AllowedProviders []Provider `json:"allowed_providers"`
 	ExcludeProviders []Provider `json:"exclude_providers,omitempty"`
+	// HostMayInterrupt opts this seat into host-initiated interruption for
+	// automatic migration. HostNeverPark forbids a host from parking the seat
+	// solely because its plan has no eligible destination. Both are host
+	// constraints, not Claudia placement verdicts.
+	HostMayInterrupt bool `json:"host_may_interrupt,omitempty"`
+	HostNeverPark    bool `json:"host_never_park,omitempty"`
 
 	// SummaryOnly makes a disposable, tool-free context-transfer seat.
 	// It travels with the broker grant so the daemon launches the same mode.
@@ -372,10 +378,10 @@ func (r *Registry) Register(def AgentDef) error {
 	return r.registerLocked(def)
 }
 
-// SetSeatProviderPolicy atomically replaces one seat's future placement
-// constraints without rewriting its live provider, session or migration state.
+// SetSeatPlanPolicy atomically replaces one seat's future placement and host
+// execution constraints without rewriting its live provider or migration state.
 // An empty, non-nil allowed slice deliberately permits no destination.
-func (r *Registry) SetSeatProviderPolicy(name string, prefer Provider, allowed, excluded []Provider) error {
+func (r *Registry) SetSeatPlanPolicy(name string, prefer Provider, allowed, excluded []Provider, mayInterrupt, neverPark bool) error {
 	valid := map[Provider]bool{}
 	for _, row := range ModelCatalog() {
 		if row.Access == ModelAccessPlan && row.Session {
@@ -406,6 +412,8 @@ func (r *Registry) SetSeatProviderPolicy(name string, prefer Provider, allowed, 
 	next.PreferProvider = prefer
 	next.AllowedProviders = allowed
 	next.ExcludeProviders = excluded
+	next.HostMayInterrupt = mayInterrupt
+	next.HostNeverPark = neverPark
 	r.agents[name] = &next
 	if err := r.save(); err != nil {
 		r.agents[name] = current

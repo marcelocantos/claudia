@@ -139,7 +139,7 @@ func TestRegistryEmptyAllowedProvidersSurvivesReload(t *testing.T) {
 	}
 }
 
-func TestSetSeatProviderPolicyPreservesSeatAndCanonicalizesProviders(t *testing.T) {
+func TestSetSeatPlanPolicyPreservesSeatAndCanonicalizesProviders(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "agents.json")
 	r, err := NewRegistry(path)
 	if err != nil {
@@ -152,13 +152,13 @@ func TestSetSeatProviderPolicyPreservesSeatAndCanonicalizesProviders(t *testing.
 		t.Fatal(err)
 	}
 	allowed := []Provider{"openai-codex"}
-	if err := r.SetSeatProviderPolicy("worker", "openai-codex", allowed, []Provider{"xai-oauth"}); err != nil {
+	if err := r.SetSeatPlanPolicy("worker", "openai-codex", allowed, []Provider{"xai-oauth"}, true, true); err != nil {
 		t.Fatal(err)
 	}
 	if allowed[0] != "openai-codex" {
 		t.Fatal("caller-owned policy slice was mutated")
 	}
-	if err := r.SetSeatProviderPolicy("worker", "unknown", nil, nil); err == nil {
+	if err := r.SetSeatPlanPolicy("worker", "unknown", nil, nil, false, false); err == nil {
 		t.Fatal("unknown provider accepted")
 	}
 	reloaded, err := NewRegistry(path)
@@ -169,17 +169,19 @@ func TestSetSeatProviderPolicyPreservesSeatAndCanonicalizesProviders(t *testing.
 	if got == nil || got.SessionID != "session-worker" || got.Provider != ProviderClaude ||
 		got.Model != "claude-opus-5" || got.PreferProvider != ProviderCodex ||
 		len(got.AllowedProviders) != 1 || got.AllowedProviders[0] != ProviderCodex ||
-		len(got.ExcludeProviders) != 1 || got.ExcludeProviders[0] != ProviderGrok {
+		len(got.ExcludeProviders) != 1 || got.ExcludeProviders[0] != ProviderGrok ||
+		!got.HostMayInterrupt || !got.HostNeverPark {
 		t.Fatalf("policy update changed seat state or lost canonical policy: %+v", got)
 	}
-	if err := r.SetSeatProviderPolicy("worker", "", []Provider{}, nil); err != nil {
+	if err := r.SetSeatPlanPolicy("worker", "", []Provider{}, nil, false, false); err != nil {
 		t.Fatal(err)
 	}
 	reloaded, err = NewRegistry(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got = reloaded.Def("worker"); got.AllowedProviders == nil || len(got.AllowedProviders) != 0 {
+	if got = reloaded.Def("worker"); got.AllowedProviders == nil || len(got.AllowedProviders) != 0 ||
+		got.HostMayInterrupt || got.HostNeverPark {
 		t.Fatalf("explicit empty allowed set lost: %+v", got)
 	}
 }
