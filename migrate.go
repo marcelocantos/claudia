@@ -44,6 +44,11 @@ type MigrateArgs struct {
 	// Empty runs Claudia's disposable, same-destination-provider transfer
 	// agent over the retained live turns before the work session moves.
 	ContextBrief string
+	// RetainedTranscript is inert host history for an adopted live seat whose
+	// process-local turn log may be empty after a daemon restart. Claudia
+	// summarizes it on the destination provider and clears it before sending
+	// MigrateArgs to the successor or broker.
+	RetainedTranscript string
 	// Force (cold) allows a migrate when the retained log has neither a
 	// last user request nor a last assistant action. Without it, that
 	// case refuses rather than minting a blank destination.
