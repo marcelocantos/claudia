@@ -427,7 +427,6 @@ func TestRegistryLaunchGoesThroughDaemon(t *testing.T) {
 // and the events come back in order.
 func TestTaskRunStreamsThroughDaemon(t *testing.T) {
 	f := newFixture(t)
-	f.boot(t, nil)
 	prompts := make(chan string, 1)
 	prev := daemonNewTask
 	daemonNewTask = func(cfg claudia.TaskConfig) *claudia.Task {
@@ -451,6 +450,7 @@ func TestTaskRunStreamsThroughDaemon(t *testing.T) {
 		}})
 	}
 	t.Cleanup(func() { daemonNewTask = prev })
+	f.boot(t, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestBrokerRequiredTaskClient$")

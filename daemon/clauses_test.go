@@ -6,9 +6,11 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -630,26 +632,63 @@ func TestCarriesTaskRawLog(t *testing.T) {
 	drain(direct)
 
 	f := newFixture(t)
-	f.boot(t, nil)
 	prev := daemonNewTask
 	daemonNewTask = func(cfg claudia.TaskConfig) *claudia.Task {
 		return claudia.NewStubTask(cfg, &claudia.StubTaskOps{Run: stubRun})
 	}
 	t.Cleanup(func() { daemonNewTask = prev })
+	f.boot(t, nil)
 
-	brokered := claudia.NewTask(claudia.TaskConfig{ID: "brokered", WorkDir: t.TempDir()})
-	brokeredLines := collect(brokered)
-	drain(brokered)
-	if got, want := brokeredLines(), directLines(); !reflect.DeepEqual(got, want) || len(want) != len(lines) {
+	outputPath := filepath.Join(t.TempDir(), "raw.json")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestCarriesTaskRawLogClient$")
+	cmd.Env = append(os.Environ(), "CLAUDIA_NO_BROKER=0", "CLAUDIA_TEST_RAW_LOG_CLIENT=1", "CLAUDIA_TEST_RAW_LOG_OUTPUT="+outputPath)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("broker-only raw-log client: %v\n%s", err, output)
+	}
+	raw, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var brokeredLines []string
+	if err := json.Unmarshal(raw, &brokeredLines); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := brokeredLines, directLines(); !reflect.DeepEqual(got, want) || len(want) != len(lines) {
 		t.Fatalf("raw lines through the daemon = %q, direct = %q", got, want)
 	}
-
-	plain := claudia.NewTask(claudia.TaskConfig{ID: "plain", WorkDir: t.TempDir()})
-	drain(plain)
 	mu.Lock()
 	defer mu.Unlock()
 	if !reflect.DeepEqual(asked, []bool{true, true, false}) {
 		t.Fatalf("raw-log funcs handed to the stub = %v, want direct, brokered, then none for the plain run", asked)
+	}
+}
+
+func TestCarriesTaskRawLogClient(t *testing.T) {
+	if os.Getenv("CLAUDIA_TEST_RAW_LOG_CLIENT") != "1" {
+		return
+	}
+	var lines []string
+	brokered := claudia.NewTask(claudia.TaskConfig{ID: "brokered", WorkDir: t.TempDir(), RequireBroker: true})
+	brokered.SetRawLog(func(line []byte) { lines = append(lines, string(line)) })
+	for _, task := range []*claudia.Task{brokered, claudia.NewTask(claudia.TaskConfig{ID: "plain", WorkDir: t.TempDir(), RequireBroker: true})} {
+		ch, err := task.Run(context.Background(), "go")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for ev := range ch {
+			if ev.Type == claudia.TaskEventError {
+				t.Fatal(ev.ErrorMsg)
+			}
+		}
+	}
+	raw, err := json.Marshal(lines)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(os.Getenv("CLAUDIA_TEST_RAW_LOG_OUTPUT"), raw, 0o600); err != nil {
+		t.Fatal(err)
 	}
 }
 
