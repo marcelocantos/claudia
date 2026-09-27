@@ -394,7 +394,7 @@ func TestRegistryAdoptPersistsBrokerMigratedDestination(t *testing.T) {
 	}
 	failed.path = filepath.Join(root, "missing-directory", "agents.json")
 	if _, err := failed.AdoptOrLaunch("moved"); err == nil ||
-		!strings.Contains(err.Error(), "persist broker destination") {
+		!strings.Contains(err.Error(), "persist migration destination") {
 		t.Fatalf("unpersisted broker migration was reported as adopted: %v", err)
 	}
 	if got := failed.Def("moved"); got.Provider != ProviderGrok || got.SessionID != "source-session" {
