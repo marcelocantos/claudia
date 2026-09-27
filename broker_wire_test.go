@@ -93,6 +93,28 @@ func TestBrokerWireMirrorsAreComplete(t *testing.T) {
 	}
 }
 
+func TestBrokerGrantCarriesPendingMigrationHandover(t *testing.T) {
+	base := AgentDef{
+		MigrationSeed: "inert predecessor brief", MigrationFrom: ProviderCodex,
+		MigrationFromSession: "source-session", MigrationPendingStart: true,
+	}
+	wire := configToGrantDef("worker", Config{
+		Provider: ProviderCursor, SessionID: "destination-session", WorkDir: t.TempDir(), Model: "composer-2.5",
+	}, &base)
+	raw, err := EncodeGrantDefinition(wire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := DecodeGrantDefinition(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.MigrationSeed != base.MigrationSeed || got.MigrationFrom != base.MigrationFrom ||
+		got.MigrationFromSession != base.MigrationFromSession || !got.MigrationPendingStart {
+		t.Fatalf("broker grant lost pending handover: %+v", got.AgentDef)
+	}
+}
+
 func TestDecodePredicatesWireSkillAlias(t *testing.T) {
 	got, err := DecodePredicatesWire([]byte(`{"skill":"analysis","quality":"standard"}`))
 	if err != nil {
