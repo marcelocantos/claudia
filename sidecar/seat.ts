@@ -112,7 +112,9 @@ export function createSeatAgent(opts: {
 
   return {
     prompt: async (text: string, meta?: PromptMeta) => {
-      if (turn && !turn.closed) finish("error");
+      if (turn && !turn.closed) {
+        throw new Error("seat is already processing; wait for its current turn or steer it");
+      }
       const metaSession = meta?.session_id || sessionId;
       turn = beginTurn({
         seat: "",
