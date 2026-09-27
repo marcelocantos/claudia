@@ -523,7 +523,8 @@ provider-native allowlist, not a translation of that field.
 
 `claudia broker run` is the machine-facing client for a single selected
 turn. It reads one JSON object with `predicates`, `tasks` keyed by
-provider, and `prompt` from stdin, then writes task events as JSONL to
+provider, and `prompt` from stdin, then writes a selection record followed
+by task events as JSONL to
 stdout. The broker resolves a standard or requested quality model from
 published plan usage, excludes providers absent from `tasks`, and applies
 background pacing. It runs the selected task through the broker and

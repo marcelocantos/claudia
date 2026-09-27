@@ -90,6 +90,18 @@ func brokerRunCmd(args []string, input io.Reader, output io.Writer) error {
 	cfg.Provider = pick.Provider
 	cfg.Model = pick.Model
 	cfg.RequireBroker = true
+	selection, err := json.Marshal(struct {
+		Type     string           `json:"type"`
+		Provider claudia.Provider `json:"provider"`
+		Model    string           `json:"model"`
+		Reason   string           `json:"reason"`
+	}{Type: "selection", Provider: pick.Provider, Model: pick.Model, Reason: pick.Reason})
+	if err != nil {
+		return err
+	}
+	if _, err := output.Write(append(selection, '\n')); err != nil {
+		return err
+	}
 	events, err := claudia.NewTask(cfg).Run(context.Background(), request.Prompt)
 	if err != nil {
 		return fmt.Errorf("broker run task: %w", err)
