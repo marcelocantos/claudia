@@ -447,6 +447,9 @@ type agentOps struct {
 	// provider swap and this handle re-points at the destination. Nil →
 	// Migrate runs the in-process swap.
 	migrate func(*Agent, *MigrateArgs) error
+	// migrationState reconciles a broker-held handle after a lost migrate
+	// reply, before a retry pays for another context transfer.
+	migrationState func(*Agent) (bool, error)
 	// rewind is set only by the broker backend: the daemon rolls the seat
 	// back and relaunches it, and this handle re-points (🎯T75.8).
 	rewind func(*Agent, int) (*RewindResult, error)

@@ -315,9 +315,10 @@ func (b *brokerAgentBackend) ops() agentOps {
 				BusyOnSecondSubmit: w.BusyOnSecondSubmit,
 			}
 		},
-		migrate: b.migrate,
-		rewind:  b.rewind,
-		release: b.release,
+		migrate:        b.migrate,
+		migrationState: b.migrationState,
+		rewind:         b.rewind,
+		release:        b.release,
 		closeGoal: func(*Agent) {
 			if _, err := b.opCall(&broker.Request{Type: broker.TypeCloseGoal, CloseGoal: b.named()}); err != nil {
 				slog.Warn("broker close_goal failed", "grant", b.named().Name, "err", err)
@@ -334,6 +335,31 @@ func (b *brokerAgentBackend) ops() agentOps {
 			}
 		},
 	}
+}
+
+// migrationState asks the daemon which seat owns this grant before a retry
+// summarizes anything. A migrate reply can be lost after the daemon has
+// already committed and seeded the destination.
+func (b *brokerAgentBackend) migrationState(a *Agent) (bool, error) {
+	resp, err := b.opCall(&broker.Request{Type: broker.TypeAgentInfo, AgentInfo: b.named()})
+	if err != nil {
+		return false, fmt.Errorf("broker migration state: %w", err)
+	}
+	info := resp.AgentInfo
+	if info == nil || info.Provider == "" || info.SessionID == "" {
+		return false, fmt.Errorf("broker migration state: incomplete agent info")
+	}
+	a.mu.Lock()
+	fromProvider, fromSession := a.provider, a.sessionID
+	a.mu.Unlock()
+	toProvider := Provider(info.Provider)
+	if fromProvider == toProvider && fromSession == info.SessionID {
+		return false, nil
+	}
+	b.repoint(a, seatWhere{provider: toProvider, sessionID: info.SessionID, model: info.Model,
+		windowID: info.WindowID, jsonlPath: info.JSONLPath, termLogPath: info.TermLogPath,
+		attach: info.AttachCommand})
+	return PlanProvider(fromProvider) != PlanProvider(toProvider), nil
 }
 
 // migrate asks the daemon to swap providers, then re-points this handle at
@@ -430,10 +456,13 @@ func (b *brokerAgentBackend) repoint(a *Agent, w seatWhere) {
 	a.backendGen.Add(1)
 	a.provider = w.provider
 	a.sessionID = w.sessionID
+	a.startCfg.Provider = w.provider
+	a.startCfg.SessionID = w.sessionID
 	a.jsonlPath = w.jsonlPath
 	a.tmuxWindowID = w.windowID
 	if w.model != "" {
 		a.model = w.model
+		a.startCfg.Model = w.model
 	}
 	a.mu.Unlock()
 	a.termMu.Lock()

@@ -280,6 +280,21 @@ func (a *Agent) Migrate(args *MigrateArgs) error {
 	}
 	a.migrationMu.Lock()
 	defer a.migrationMu.Unlock()
+	if a.ops.migrationState != nil {
+		moved, err := a.ops.migrationState(a)
+		if err != nil {
+			return fmt.Errorf("Migrate: reconcile broker seat: %w", err)
+		}
+		if moved {
+			if err := a.notifyMigrated(); err != nil {
+				return fmt.Errorf("Migrate: destination running but registry persistence failed: %w", err)
+			}
+			if PlanProvider(a.Provider()) == PlanProvider(args.Provider) {
+				return nil // the daemon already moved and seeded this seat
+			}
+			return fmt.Errorf("Migrate: broker seat is now on %s; retry placement from that provider", a.Provider())
+		}
+	}
 	if !useOMP(Config{Provider: a.provider, OMP: a.startCfg.OMP}) {
 		if err := CheckCapability(a.provider, CapabilityMigrate); err != nil {
 			return err

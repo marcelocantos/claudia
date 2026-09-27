@@ -167,6 +167,10 @@ func (d migrateOnlyDaemon) HandleRequest(c *broker.ClientConn, req *broker.Reque
 		_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeMigrated, Migrated: &broker.MigrateResponse{
 			Name: req.Migrate.Name, SessionID: "grok-dest-2", Provider: broker.Provider(req.Migrate.Provider), Model: req.Migrate.Model,
 		}})
+	case broker.TypeAgentInfo:
+		_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeAgentInfoResult, AgentInfo: &broker.AgentInfoResponse{
+			Name: req.AgentInfo.Name, SessionID: "src-session", Provider: broker.ProviderClaude, Model: "src-model",
+		}})
 	case broker.TypeRelease:
 		_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeReleased, Released: &broker.ReleaseResponse{
 			Name: req.Release.Name, Disposition: req.Release.Disposition,
@@ -231,6 +235,78 @@ func TestRegistryRecordsMigrateOnDaemonHeldSeat(t *testing.T) {
 	def := reopened.Def("held")
 	if def == nil || def.Provider != ProviderGrok || def.SessionID != "grok-dest-2" || def.Model != "grok-4" || def.Materialized {
 		t.Fatalf("reopened def = %+v, want the daemon's migrate destination", def)
+	}
+}
+
+type alreadyMovedDaemon struct{ t *testing.T }
+
+func (d alreadyMovedDaemon) HandleRequest(c *broker.ClientConn, req *broker.Request) bool {
+	switch req.Type {
+	case broker.TypeGrant:
+		_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeGranted, Granted: &broker.GrantResponse{
+			Name: req.Grant.Name, SessionID: "source-session", Provider: broker.ProviderClaude, Model: "source-model",
+		}})
+	case broker.TypeAgentInfo:
+		// The daemon committed and seeded the successor, but the previous
+		// migrate response never reached this consumer handle.
+		_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeAgentInfoResult, AgentInfo: &broker.AgentInfoResponse{
+			Name: req.AgentInfo.Name, SessionID: "destination-session", Provider: broker.Provider(ProviderCodex), Model: "gpt-6-sol", Alive: true,
+		}})
+	case broker.TypeMigrate:
+		d.t.Error("retry requested a second migration")
+		_ = c.Fail(req.ID, &broker.ProtocolError{Msg: "second migration"})
+	case broker.TypeRelease:
+		_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeReleased, Released: &broker.ReleaseResponse{
+			Name: req.Release.Name, Disposition: req.Release.Disposition,
+		}})
+	default:
+		return false
+	}
+	return true
+}
+
+func (alreadyMovedDaemon) ConnClosed(*broker.ClientConn) {}
+
+func TestMigrationRetryReconcilesBrokerBeforeSecondSummary(t *testing.T) {
+	root, err := os.MkdirTemp("/tmp", "cmr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	t.Setenv(broker.SocketPathEnv, filepath.Join(root, "b.sock"))
+	t.Setenv(broker.NoBrokerEnv, "")
+	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
+	ln, err := broker.Listen(filepath.Join(root, "b.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv, err := broker.Serve(&broker.ServeArgs{Listener: ln, Handler: alreadyMovedDaemon{t: t}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = srv.Close() })
+	path := filepath.Join(t.TempDir(), "agents.json")
+	reg, err := NewRegistry(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.Register(AgentDef{Name: "held", Provider: ProviderClaude, WorkDir: t.TempDir(), SessionID: "source-session", Model: "source-model"}); err != nil {
+		t.Fatal(err)
+	}
+	proc, err := reg.Launch("held")
+	if err != nil {
+		t.Fatal(err)
+	}
+	proc.migrationSummarizer = func(context.Context, MigrationTransferArgs) (MigrationTransferResult, error) {
+		t.Fatal("retry paid for a second transfer summary")
+		return MigrationTransferResult{}, nil
+	}
+	if err := proc.Migrate(&MigrateArgs{Provider: ProviderCodex, Model: "gpt-6-sol"}); err != nil {
+		t.Fatal(err)
+	}
+	got := reg.Def("held")
+	if got == nil || got.Provider != ProviderCodex || got.SessionID != "destination-session" || got.Model != "gpt-6-sol" {
+		t.Fatalf("broker destination was not persisted: %+v", got)
 	}
 }
 
