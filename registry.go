@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 
 	"github.com/google/uuid"
@@ -58,7 +59,7 @@ type AgentDef struct {
 	// ExcludeProviders are explicit per-seat migration constraints; nil
 	// AllowedProviders leaves the catalog open.
 	PreferProvider   Provider   `json:"prefer_provider,omitempty"`
-	AllowedProviders []Provider `json:"allowed_providers,omitempty"`
+	AllowedProviders []Provider `json:"allowed_providers"`
 	ExcludeProviders []Provider `json:"exclude_providers,omitempty"`
 
 	// SummaryOnly makes a disposable, tool-free context-transfer seat.
@@ -369,6 +370,48 @@ func (r *Registry) Register(def AgentDef) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.registerLocked(def)
+}
+
+// SetSeatProviderPolicy atomically replaces one seat's future placement
+// constraints without rewriting its live provider, session or migration state.
+// An empty, non-nil allowed slice deliberately permits no destination.
+func (r *Registry) SetSeatProviderPolicy(name string, prefer Provider, allowed, excluded []Provider) error {
+	valid := map[Provider]bool{}
+	for _, row := range ModelCatalog() {
+		if row.Access == ModelAccessPlan && row.Session {
+			valid[row.Provider] = true
+		}
+	}
+	prefer = PlanProvider(prefer)
+	if prefer != "" && !valid[prefer] {
+		return fmt.Errorf("seat provider policy: unsupported preferred provider %q", prefer)
+	}
+	allowed = slices.Clone(allowed)
+	excluded = slices.Clone(excluded)
+	for _, providers := range [][]Provider{allowed, excluded} {
+		for i, provider := range providers {
+			providers[i] = PlanProvider(provider)
+			if !valid[providers[i]] {
+				return fmt.Errorf("seat provider policy: unsupported provider %q", provider)
+			}
+		}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	current := r.agents[name]
+	if current == nil {
+		return fmt.Errorf("agent %q is not registered", name)
+	}
+	next := cloneAgentDef(*current)
+	next.PreferProvider = prefer
+	next.AllowedProviders = allowed
+	next.ExcludeProviders = excluded
+	r.agents[name] = &next
+	if err := r.save(); err != nil {
+		r.agents[name] = current
+		return fmt.Errorf("persist provider policy for %q: %w", name, err)
+	}
+	return nil
 }
 
 func (r *Registry) registerLocked(def AgentDef) error {

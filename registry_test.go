@@ -118,6 +118,72 @@ func TestRegistrySeatProviderPolicyPersistsWithoutSharingSlices(t *testing.T) {
 	}
 }
 
+func TestRegistryEmptyAllowedProvidersSurvivesReload(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agents.json")
+	r, err := NewRegistry(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Register(AgentDef{
+		Name: "worker", SessionID: "session-worker", Provider: ProviderClaude,
+		AllowedProviders: []Provider{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := NewRegistry(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reloaded.Def("worker"); got == nil || got.AllowedProviders == nil || len(got.AllowedProviders) != 0 {
+		t.Fatalf("explicit empty allowed set became unrestricted: %+v", got)
+	}
+}
+
+func TestSetSeatProviderPolicyPreservesSeatAndCanonicalizesProviders(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agents.json")
+	r, err := NewRegistry(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Register(AgentDef{
+		Name: "worker", SessionID: "session-worker", Provider: ProviderClaude,
+		Model: "claude-opus-5",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	allowed := []Provider{"openai-codex"}
+	if err := r.SetSeatProviderPolicy("worker", "openai-codex", allowed, []Provider{"xai-oauth"}); err != nil {
+		t.Fatal(err)
+	}
+	if allowed[0] != "openai-codex" {
+		t.Fatal("caller-owned policy slice was mutated")
+	}
+	if err := r.SetSeatProviderPolicy("worker", "unknown", nil, nil); err == nil {
+		t.Fatal("unknown provider accepted")
+	}
+	reloaded, err := NewRegistry(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := reloaded.Def("worker")
+	if got == nil || got.SessionID != "session-worker" || got.Provider != ProviderClaude ||
+		got.Model != "claude-opus-5" || got.PreferProvider != ProviderCodex ||
+		len(got.AllowedProviders) != 1 || got.AllowedProviders[0] != ProviderCodex ||
+		len(got.ExcludeProviders) != 1 || got.ExcludeProviders[0] != ProviderGrok {
+		t.Fatalf("policy update changed seat state or lost canonical policy: %+v", got)
+	}
+	if err := r.SetSeatProviderPolicy("worker", "", []Provider{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err = NewRegistry(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got = reloaded.Def("worker"); got.AllowedProviders == nil || len(got.AllowedProviders) != 0 {
+		t.Fatalf("explicit empty allowed set lost: %+v", got)
+	}
+}
+
 func TestRegistryRegisterPersists(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "registry.json")
