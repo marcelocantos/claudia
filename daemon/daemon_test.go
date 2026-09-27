@@ -7,6 +7,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -426,14 +428,17 @@ func TestRegistryLaunchGoesThroughDaemon(t *testing.T) {
 func TestTaskRunStreamsThroughDaemon(t *testing.T) {
 	f := newFixture(t)
 	f.boot(t, nil)
-	var prompts []string
+	prompts := make(chan string, 1)
 	prev := daemonNewTask
 	daemonNewTask = func(cfg claudia.TaskConfig) *claudia.Task {
 		if cfg.Provider != claudia.ProviderGrok || cfg.ID != "t-1" {
 			t.Errorf("daemon task cfg = %+v", cfg)
 		}
+		if cfg.RequireBroker {
+			t.Error("caller-only RequireBroker guard reached the daemon task")
+		}
 		return claudia.NewStubTask(cfg, &claudia.StubTaskOps{Run: func(_ context.Context, run claudia.StubTaskRun) (<-chan claudia.TaskEvent, error) {
-			prompts = append(prompts, run.Prompt)
+			prompts <- run.Prompt
 			ch := make(chan claudia.TaskEvent, 3)
 			ch <- claudia.TaskEvent{Type: claudia.TaskEventInit, SessionID: "run-sid", Model: "grok-4"}
 			ch <- claudia.TaskEvent{Type: claudia.TaskEventText, Content: "part"}
@@ -443,8 +448,28 @@ func TestTaskRunStreamsThroughDaemon(t *testing.T) {
 		}})
 	}
 	t.Cleanup(func() { daemonNewTask = prev })
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestBrokerRequiredTaskClient$")
+	cmd.Env = append(os.Environ(), "CLAUDIA_NO_BROKER=0", "CLAUDIA_TEST_BROKER_TASK_CLIENT=1")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("broker-only client: %v\n%s", err, output)
+	}
+	select {
+	case prompt := <-prompts:
+		if prompt != "summarise" {
+			t.Fatalf("daemon ran prompt %q", prompt)
+		}
+	default:
+		t.Fatal("daemon received no task prompt")
+	}
+}
 
-	task := claudia.NewTask(claudia.TaskConfig{ID: "t-1", Provider: claudia.ProviderGrok, WorkDir: t.TempDir()})
+func TestBrokerRequiredTaskClient(t *testing.T) {
+	if os.Getenv("CLAUDIA_TEST_BROKER_TASK_CLIENT") != "1" {
+		return
+	}
+	task := claudia.NewTask(claudia.TaskConfig{ID: "t-1", Provider: claudia.ProviderGrok, WorkDir: t.TempDir(), RequireBroker: true})
 	ch, err := task.Run(context.Background(), "summarise")
 	if err != nil {
 		t.Fatal(err)
@@ -458,9 +483,6 @@ func TestTaskRunStreamsThroughDaemon(t *testing.T) {
 	}
 	if task.ClaudeID() != "run-sid" || task.LastResult() != "final" {
 		t.Fatalf("task state not recorded: id=%q last=%q", task.ClaudeID(), task.LastResult())
-	}
-	if len(prompts) != 1 || prompts[0] != "summarise" {
-		t.Fatalf("daemon ran prompts %q", prompts)
 	}
 }
 

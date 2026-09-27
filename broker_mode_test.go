@@ -5,12 +5,48 @@ package claudia
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/marcelocantos/claudia/internal/broker"
 )
+
+func TestTaskRequireBrokerNeverStartsDirectly(t *testing.T) {
+	for _, tc := range []struct {
+		name, setup string
+	}{
+		{name: "missing socket", setup: "missing"},
+		{name: "bare protocol server", setup: "bare"},
+		{name: "direct override", setup: "direct"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(broker.NoBrokerEnv, "")
+			switch tc.setup {
+			case "missing":
+				t.Setenv(broker.SocketPathEnv, filepath.Join(t.TempDir(), "absent.sock"))
+			case "bare", "direct":
+				startLibraryBroker(t)
+			}
+			backend := &fakeTaskBackend{name: "fake-claude"}
+			task := newTaskWithBackend(TaskConfig{ID: "broker-only", WorkDir: t.TempDir(), RequireBroker: true}, backend)
+			if tc.setup == "direct" {
+				task.SetDirect(true)
+			}
+			ch, err := task.Run(context.Background(), "hi")
+			if ch != nil || !errors.Is(err, ErrBrokerRequired) {
+				t.Fatalf("Run() = (%v, %v), want ErrBrokerRequired without events", ch, err)
+			}
+			backend.mu.Lock()
+			n := len(backend.requests)
+			backend.mu.Unlock()
+			if n != 0 {
+				t.Fatalf("direct backend received %d requests", n)
+			}
+		})
+	}
+}
 
 func startLibraryBroker(t *testing.T) *broker.Server {
 	t.Helper()
