@@ -346,8 +346,15 @@ and after a reboot the daemon resumes the seats it held and tells them
 so. The library API is unchanged; with no socket (or
 `CLAUDIA_NO_BROKER=1`) everything runs in-process as before.
 
+Named grants can be driven through `claudia broker grant`, `send`,
+`interrupt`, and `events`. Ephemeral plumbing seats use the
+`pimp-smoke-` or `pimp-handoff-` name prefix and are reaped after a
+two-minute orphan period; see [agents-guide.md](agents-guide.md) for
+their lifecycle and shell commands.
+
 A one-shot that must use the broker, with no in-process fallback, is
-`claudia broker task` or `claudia.RunBrokerTask`. The daemon admits the
+`claudia broker task`, `claudia.RunBrokerTask`, or a `TaskConfig` with
+`RequireBroker: true`. The daemon admits the
 run against the plan-usage snapshot first; `claudia broker usage` prints
 that snapshot and an `ADMIT` column for the same decision. See
 [Task one-shot over the broker](agents-guide.md#task-one-shot-over-the-broker).

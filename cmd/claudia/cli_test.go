@@ -55,7 +55,7 @@ func TestCLIHelpAgent(t *testing.T) {
 		"client-side fold",
 		"pimp-smoke",
 		"~/.local/state/claudia/broker.sock",
-		"0.44.0",
+		"RequireBroker",
 		"Task one-shot over the broker",
 		"RunBrokerTask",
 		"ADMIT",

@@ -965,14 +965,9 @@ agent, err = reg.Launch(def.Name)
 The registry file is the consumer's. The daemon keeps its own grants.
 `Launch` sends the definition over the socket.
 
-A daemon installed as brew 0.44.0 already speaks this grant. Library
-callers smoke it against `~/.local/state/claudia/broker.sock` today.
-The `grant` / `send` / `interrupt` / `events` CLI subcommands are on
-HEAD; that brew `claudia` binary does not have them yet, so smoke the
-CLI with a HEAD build against the same socket until the formula
-catches up. The orphan TTL is daemon-side too: `broker serve` has to
-be this commit. A brew 0.44.0 daemon accepts the grant and leaves it
-running. `claudia broker grant -h` lists the flags. One shell
+The broker daemon owns grants and reaps abandoned plumbing seats after
+its orphan TTL. Use a daemon and CLI from the same release so the CLI
+and socket protocol agree. `claudia broker grant -h` lists the flags. One shell
 smoke, which holds one connection the way the `*Agent` does:
 
 ```bash
@@ -1033,9 +1028,8 @@ answer is `plan_exhausted` and nothing is spawned. The choice is
 `picked <provider> remaining=<n>%` on stderr, `provider` and
 `remaining_percent` on `task_started`, and `provider=` on the grant
 line. A later grant of the same name keeps that seat's provider.
-`--provider` and `--pick remaining` are alternatives. The daemon and
-the CLI both have to be this commit: `pick` is a request field an
-older daemon rejects.
+`--provider` and `--pick remaining` are alternatives. Both the daemon
+and CLI must support `pick`; an older daemon rejects that request field.
 
 `--json` prints the wire: one `task_started`, then `task_event` lines,
 then `task_done`. The socket is the one `claudia broker socket` prints
@@ -1059,12 +1053,9 @@ The messages are the existing grant protocol (🎯T2.10), one connection:
 3. broker → `task_event` (`EncodeTaskEventWire`) until
 4. broker → `task_done`
 
-A brew `claudia` from 0.44.0 already accepts `task_run` from the
-library. It does not refuse an exhausted plan. The `task` subcommand,
-the `ADMIT` column, and `plan_exhausted` admission are on HEAD, so
-smoke them with a HEAD build (the `task` client against the live
-socket; admission itself once this daemon is the one listening) until
-the formula catches up.
+The daemon admits `task_run` against its current plan usage. An exhausted
+plan returns `plan_exhausted` without spawning a provider. Keep the
+daemon and CLI on compatible releases for this admission contract.
 
 - **Sessions are grants.** `Start` / `Registry.Launch` send the
   Config (as an `AgentDef` plus `Config.Name`) over the Unix socket;
@@ -1148,8 +1139,8 @@ macOS). Operator commands: `status`, `grants`, `usage [--refresh] [-json]`
 `task` (one `task_run`; `--pick remaining` selects the fullest admitted
 of cursor, grok, claude, codex), `grant` (the same `--pick`),
 `tail` (NDJSON lifecycle events), `release NAME [--detach]`, `socket`.
-Seat driving from the shell is the HEAD CLI in the supported-path
-section above. `claudia --help-agent` prints this guide after the CLI
+Seat driving from the shell is described in the supported-path section
+above. `claudia --help-agent` prints this guide after the CLI
 usage text.
 
 `Acquire` draws from a pool the daemon runs: every consumer on the
