@@ -5,6 +5,7 @@ package omp
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -28,17 +29,28 @@ func TestRefreshPlansWritesAllFour(t *testing.T) {
 			if name == "security" && len(args) > 0 && args[0] == "find-generic-password" {
 				return []byte(saved), nil
 			}
-			if name == "security" && len(args) > 0 && args[0] == "add-generic-password" {
+			t.Fatalf("unexpected keychain read command: %s %v", name, args)
+			return nil, nil
+		},
+		RunStdin: func(_ context.Context, stdin []byte, name string, args ...string) ([]byte, error) {
+			if name == "security" && len(args) == 2 && args[0] == "-q" && args[1] == "-i" {
 				writes++
-				if err := trustedPathOnly(args, "/usr/local/bin/jevons-broker"); err != nil {
+				fields := strings.Fields(string(stdin))
+				if err := trustedPathOnly(fields, "/usr/local/bin/jevons-broker"); err != nil {
 					t.Fatal(err)
 				}
-				for i, a := range args {
-					if a == "-w" && i+1 < len(args) {
-						saved = args[i+1]
+				for i, a := range fields {
+					if a == "-X" && i+1 < len(fields) {
+						blob, err := hex.DecodeString(fields[i+1])
+						if err != nil {
+							t.Fatal(err)
+						}
+						saved = string(blob)
 					}
 				}
+				return nil, nil
 			}
+			t.Fatalf("unexpected keychain write command: %s %v", name, args)
 			return nil, nil
 		},
 	}
