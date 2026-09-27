@@ -283,14 +283,31 @@ func captureFD(t *testing.T, fd **os.File, fn func() error) string {
 	}
 	old := *fd
 	*fd = w
+	defer func() {
+		*fd = old
+		_ = w.Close()
+		_ = r.Close()
+	}()
+	type readResult struct {
+		body []byte
+		err  error
+	}
+	read := make(chan readResult, 1)
+	go func() {
+		body, err := io.ReadAll(r)
+		read <- readResult{body: body, err: err}
+	}()
 	fnErr := fn()
 	_ = w.Close()
 	*fd = old
-	body, _ := io.ReadAll(r)
+	result := <-read
 	if fnErr != nil {
 		t.Fatal(fnErr)
 	}
-	return string(body)
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	return string(result.body)
 }
 
 func ptr[T any](v T) *T { return &v }
