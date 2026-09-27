@@ -301,6 +301,11 @@ func TestMigrationRetryReconcilesBrokerBeforeSecondSummary(t *testing.T) {
 		t.Fatal("retry paid for a second transfer summary")
 		return MigrationTransferResult{}, nil
 	}
+	reg.path = filepath.Join(root, "missing", "agents.json")
+	if err := proc.Migrate(&MigrateArgs{Provider: ProviderCodex, Model: "gpt-6-sol"}); err == nil || !strings.Contains(err.Error(), "registry persistence failed") {
+		t.Fatalf("destination must remain pending after consumer persistence failure: %v", err)
+	}
+	reg.path = path
 	if err := proc.Migrate(&MigrateArgs{Provider: ProviderCodex, Model: "gpt-6-sol"}); err != nil {
 		t.Fatal(err)
 	}

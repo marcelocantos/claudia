@@ -341,6 +341,11 @@ func (b *brokerAgentBackend) ops() agentOps {
 // summarizes anything. A migrate reply can be lost after the daemon has
 // already committed and seeded the destination.
 func (b *brokerAgentBackend) migrationState(a *Agent) (bool, error) {
+	if b.hint.pool == nil {
+		if err := b.reclaim(); err != nil {
+			return false, fmt.Errorf("broker migration ownership: %w", err)
+		}
+	}
 	resp, err := b.opCall(&broker.Request{Type: broker.TypeAgentInfo, AgentInfo: b.named()})
 	if err != nil {
 		return false, fmt.Errorf("broker migration state: %w", err)
