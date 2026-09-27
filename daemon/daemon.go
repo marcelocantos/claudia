@@ -560,6 +560,13 @@ func (d *Daemon) handleGrant(c *broker.ClientConn, req *broker.Request) {
 			def.ConnectURL, def.ConnectPID = existing.ConnectURL, existing.ConnectPID
 			def.Materialized = def.Materialized || existing.Materialized
 			def.GrokConnect = def.GrokConnect || existing.GrokConnect
+			if req.Grant.Adopt {
+				// The daemon may already have delivered a migration seed
+				// whose acknowledgement the consumer lost. Its durable
+				// delivery state wins over the consumer's stale copy.
+				def.MigrationSeed = existing.MigrationSeed
+				def.MigrationPendingStart = existing.MigrationPendingStart
+			}
 		}
 	}
 	if err := d.reg.Register(def); err != nil && !errors.Is(err, claudia.ErrLifecycleInProgress) {

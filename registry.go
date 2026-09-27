@@ -134,6 +134,10 @@ type AgentDef struct {
 	// cleared only after the destination accepts it. A daemon restart in
 	// that interval retries the seed on the same destination session.
 	MigrationSeed string `json:"migration_seed,omitempty"`
+	// MigrationPendingStart distinguishes a persisted destination intent
+	// from a session that already started. A restart may mint the intended
+	// destination only while this bit remains true.
+	MigrationPendingStart bool `json:"migration_pending_start,omitempty"`
 
 	// MCPServers is the session-scoped MCP list (🎯T40). Copied onto
 	// Config.MCPServers at Launch. Session never writes provider config
@@ -197,6 +201,9 @@ type Registry struct {
 	// launchers, when set, replace the providers for this Registry's
 	// starts and adopts. Guarded by mu.
 	launchers *RegistryLaunchers
+	// migrationSummarizer is the injectable disposable transfer seam. Nil
+	// uses SummarizeForMigration; production always runs one transfer task.
+	migrationSummarizer func(context.Context, MigrationTransferArgs) (MigrationTransferResult, error)
 	// Seat lifecycle subscribers (registry_seats.go). seatMu is separate
 	// from mu because subscribers are called while lifecycle operations
 	// that take mu are in flight.
@@ -588,19 +595,28 @@ func (r *Registry) startHeld(ctx context.Context, op *registryLifecycle, name st
 		current.ConnectPID = p
 		changed = true
 	}
+	if current.MigrationPendingStart {
+		if PlanProvider(proc.Provider()) != PlanProvider(current.Provider) {
+			r.mu.Unlock()
+			_ = proc.Detach()
+			return nil, fmt.Errorf("agent %q: broker returned %s for pending destination %s", name, proc.Provider(), current.Provider)
+		}
+		current.MigrationPendingStart = false
+		changed = true
+	}
 	if !current.Materialized && claudeSessionEvidence(current.Provider, current.SessionID, current.WorkDir) {
 		current.Materialized = true
 		changed = true
 	}
 	if changed {
 		if err := r.save(); err != nil {
-			if brokerMigration {
+			if brokerMigration || priorDef.MigrationPendingStart || priorDef.MigrationSeed != "" {
 				*current = priorDef
 				r.mu.Unlock()
 				if detachErr := proc.Detach(); detachErr != nil {
-					slog.Warn("detach broker destination after failed registry adoption", "name", name, "err", detachErr)
+					slog.Warn("detach migration destination after failed registry save", "name", name, "err", detachErr)
 				}
-				return nil, fmt.Errorf("persist broker destination for %q: %w", name, err)
+				return nil, fmt.Errorf("persist migration destination for %q: %w", name, err)
 			}
 			slog.Warn("persist agent def after startup", "name", name, "err", err)
 		}
@@ -611,7 +627,12 @@ func (r *Registry) startHeld(ctx context.Context, op *registryLifecycle, name st
 	proc.mu.Lock()
 	proc.onMigrated = func() error { return r.recordMigrate(name, proc) }
 	proc.mu.Unlock()
-	if err := r.deliverMigrationSeed(name, proc); err != nil {
+	if brokerAnswered {
+		err = r.confirmBrokerMigrationSeed(name, proc)
+	} else {
+		err = r.deliverMigrationSeed(name, proc)
+	}
+	if err != nil {
 		return nil, err
 	}
 	message := "agent adopted"
@@ -643,6 +664,7 @@ func (r *Registry) recordMigrate(name string, proc *Agent) error {
 	next.SessionID, next.Model = proc.SessionID(), proc.Model()
 	next.ConnectURL, next.ConnectPID = proc.ConnectURL(), proc.PID()
 	next.Materialized = false
+	next.MigrationPendingStart = false
 	proc.mu.Lock()
 	next.MigrationSeed = proc.migrationSeedPending
 	proc.mu.Unlock()
@@ -658,6 +680,16 @@ func (r *Registry) recordMigrate(name string, proc *Agent) error {
 // before its seed could be sent. A failed send leaves the seed durable and
 // refuses to hand an apparently ready seat back to the host.
 func (r *Registry) deliverMigrationSeed(name string, proc *Agent) error {
+	return r.settleMigrationSeed(name, proc, true)
+}
+
+// The broker does not return a grant until its registry has delivered the
+// seed. The consumer clears its mirrored pending bit without sending again.
+func (r *Registry) confirmBrokerMigrationSeed(name string, proc *Agent) error {
+	return r.settleMigrationSeed(name, proc, false)
+}
+
+func (r *Registry) settleMigrationSeed(name string, proc *Agent, send bool) error {
 	r.mu.Lock()
 	def := r.agents[name]
 	if def == nil || r.procs[name] != proc {
@@ -669,8 +701,10 @@ func (r *Registry) deliverMigrationSeed(name string, proc *Agent) error {
 	if seed == "" {
 		return nil
 	}
-	if err := proc.Send(seed); err != nil {
-		return fmt.Errorf("deliver migration handover to %q: %w", name, err)
+	if send {
+		if err := proc.Send(seed); err != nil {
+			return fmt.Errorf("deliver migration handover to %q: %w", name, err)
+		}
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -726,6 +760,9 @@ func isClaudeProvider(p Provider) bool {
 // rather than mint a replacement session. Caller holds r.mu.
 func (r *Registry) requireResumeLocked(def *AgentDef) bool {
 	if def == nil {
+		return false
+	}
+	if def.MigrationPendingStart {
 		return false
 	}
 	if def.Materialized {
