@@ -178,6 +178,15 @@ func (b *brokerAgentBackend) StartAgent(req agentStartRequest) (*agentStart, err
 			b.agent = a
 			b.mu.Unlock()
 			a.mu.Lock()
+			// The broker may have committed a migration while this consumer
+			// still held the old provider/session in its own registry. Grant
+			// reports the seat that actually owns the name.
+			if g.Provider != "" {
+				a.provider = Provider(g.Provider)
+				a.startCfg.Provider = a.provider
+			}
+			a.model = g.Model
+			a.startCfg.Model = g.Model
 			a.onSubscribe = func() { b.subOnce.Do(func() { close(b.subscribed) }) }
 			a.mu.Unlock()
 			close(b.ready)

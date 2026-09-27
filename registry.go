@@ -431,6 +431,7 @@ func (r *Registry) startLifecycle(ctx context.Context, name string, adopt, fallb
 // startHeld is the body of a start under a reservation the caller holds.
 func (r *Registry) startHeld(ctx context.Context, op *registryLifecycle, name string, adopt, fallback bool) (*Agent, error) {
 	var err error
+	requestedAdopt := adopt
 	r.mu.Lock()
 	registered, ok := r.agents[name]
 	if !ok {
@@ -550,13 +551,23 @@ func (r *Registry) startHeld(ctx context.Context, op *registryLifecycle, name st
 		return nil, fmt.Errorf("agent %q: startup returned no process", name)
 	}
 	current := r.agents[name]
-	if sid := proc.SessionID(); sid != "" && sid != def.SessionID && (wantResume || current.Materialized) {
+	brokerMigration := brokerAnswered && requestedAdopt &&
+		PlanProvider(proc.Provider()) != PlanProvider(def.Provider)
+	if sid := proc.SessionID(); sid != "" && sid != def.SessionID &&
+		(wantResume || current.Materialized) && !brokerMigration {
 		r.mu.Unlock()
 		proc.Stop()
 		return nil, fmt.Errorf("refusing remint of %s: session %s → %s — existing conversation required", name, def.SessionID, sid)
 	}
 	delete(r.resumeDenied, name)
+	priorDef := cloneAgentDef(*current)
 	changed := false
+	if brokerMigration {
+		current.Provider = proc.Provider()
+		current.Model = proc.Model()
+		current.Materialized = false
+		changed = true
+	}
 	if sid := proc.SessionID(); sid != "" && sid != current.SessionID {
 		current.SessionID = sid
 		changed = true
@@ -575,6 +586,14 @@ func (r *Registry) startHeld(ctx context.Context, op *registryLifecycle, name st
 	}
 	if changed {
 		if err := r.save(); err != nil {
+			if brokerMigration {
+				*current = priorDef
+				r.mu.Unlock()
+				if detachErr := proc.Detach(); detachErr != nil {
+					slog.Warn("detach broker destination after failed registry adoption", "name", name, "err", detachErr)
+				}
+				return nil, fmt.Errorf("persist broker destination for %q: %w", name, err)
+			}
 			slog.Warn("persist agent def after startup", "name", name, "err", err)
 		}
 	}

@@ -233,3 +233,90 @@ func TestRegistryRecordsMigrateOnDaemonHeldSeat(t *testing.T) {
 		t.Fatalf("reopened def = %+v, want the daemon's migrate destination", def)
 	}
 }
+
+type migratedGrantDaemon struct{ t *testing.T }
+
+func (d migratedGrantDaemon) HandleRequest(c *broker.ClientConn, req *broker.Request) bool {
+	switch req.Type {
+	case broker.TypeGrant:
+		if !req.Grant.Adopt {
+			d.t.Error("stale consumer must adopt the broker seat")
+		}
+		_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeGranted, Granted: &broker.GrantResponse{
+			Name: req.Grant.Name, SessionID: "destination-session",
+			Provider: broker.Provider(ProviderCodex), Model: "gpt-6-sol",
+		}})
+	case broker.TypeRelease:
+		_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeReleased, Released: &broker.ReleaseResponse{
+			Name: req.Release.Name, Disposition: req.Release.Disposition,
+		}})
+	default:
+		return false
+	}
+	return true
+}
+
+func (migratedGrantDaemon) ConnClosed(*broker.ClientConn) {}
+
+func TestRegistryAdoptPersistsBrokerMigratedDestination(t *testing.T) {
+	root, err := os.MkdirTemp("/tmp", "cad")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	t.Setenv(broker.SocketPathEnv, filepath.Join(root, "b.sock"))
+	t.Setenv(broker.NoBrokerEnv, "")
+	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
+	ln, err := broker.Listen(filepath.Join(root, "b.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv, err := broker.Serve(&broker.ServeArgs{Listener: ln, Handler: migratedGrantDaemon{t: t}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = srv.Close() })
+	path := filepath.Join(root, "agents.json")
+	reg, err := NewRegistry(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.Register(AgentDef{
+		Name: "moved", Provider: ProviderGrok, WorkDir: t.TempDir(),
+		SessionID: "source-session", Model: "grok-4.5", Materialized: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	proc, err := reg.AdoptOrLaunch("moved")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = proc.Detach() })
+	reopened, err := NewRegistry(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := reopened.Def("moved")
+	if got == nil || got.Provider != ProviderCodex || got.SessionID != "destination-session" ||
+		got.Model != "gpt-6-sol" || got.Materialized {
+		t.Fatalf("consumer did not persist broker destination: %+v", got)
+	}
+	failed, err := NewRegistry(filepath.Join(root, "other-agents.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := failed.Register(AgentDef{
+		Name: "moved", Provider: ProviderGrok, WorkDir: t.TempDir(),
+		SessionID: "source-session", Materialized: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	failed.path = filepath.Join(root, "missing-directory", "agents.json")
+	if _, err := failed.AdoptOrLaunch("moved"); err == nil ||
+		!strings.Contains(err.Error(), "persist broker destination") {
+		t.Fatalf("unpersisted broker migration was reported as adopted: %v", err)
+	}
+	if got := failed.Def("moved"); got.Provider != ProviderGrok || got.SessionID != "source-session" {
+		t.Fatalf("failed persistence changed the consumer's durable identity: %+v", got)
+	}
+}

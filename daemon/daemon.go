@@ -541,12 +541,22 @@ func (d *Daemon) handleGrant(c *broker.ClientConn, req *broker.Request) {
 	}
 	d.mu.Unlock()
 
-	// Merge the daemon's runtime knowledge onto the consumer's definition:
-	// the consumer does not know the connect-mode endpoint or that the
-	// seat has materialized. A different session id is a deliberate
-	// remint by the consumer and wins.
+	// Merge the daemon's runtime knowledge onto the consumer's definition.
+	// An adopting consumer may have crashed after this daemon committed a
+	// migration but before its own registry recorded it. In that case the
+	// broker's destination is authoritative; accepting the stale source
+	// would overwrite the only durable record of the moved seat.
 	if existing := d.reg.Def(name); existing != nil {
-		if def.SessionID == existing.SessionID {
+		if req.Grant.Adopt && def.Provider != existing.Provider && def.SessionID != existing.SessionID {
+			d.log.Warn("adopting broker migration over stale consumer definition", "name", name,
+				"consumer_provider", def.Provider, "broker_provider", existing.Provider)
+			// Keep the consumer's current role, goal and host constraints;
+			// only the seat identity belongs to the broker here.
+			def.Provider, def.SessionID, def.Model = existing.Provider, existing.SessionID, existing.Model
+			def.ConnectURL, def.ConnectPID = existing.ConnectURL, existing.ConnectPID
+			def.Materialized, def.GrokConnect = existing.Materialized, existing.GrokConnect
+			def.OMP, def.SummaryOnly, def.TermLogPath = existing.OMP, existing.SummaryOnly, existing.TermLogPath
+		} else if def.SessionID == existing.SessionID {
 			def.ConnectURL, def.ConnectPID = existing.ConnectURL, existing.ConnectPID
 			def.Materialized = def.Materialized || existing.Materialized
 			def.GrokConnect = def.GrokConnect || existing.GrokConnect

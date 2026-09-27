@@ -111,6 +111,42 @@ func TestT124ReadoptOfDetachedSeatReclaims(t *testing.T) {
 	}
 }
 
+func TestAdoptRecoversBrokerCommittedMigrationFromStaleConsumer(t *testing.T) {
+	f := newFixture(t)
+	f.boot(t, nil)
+	destination := claudia.AgentDef{
+		Name: "moved", WorkDir: t.TempDir(), SessionID: "destination-session",
+		Provider: claudia.ProviderCodex, Model: "gpt-6-sol", Materialized: true,
+	}
+	if err := f.d.reg.Register(destination); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.d.reg.Launch("moved"); err != nil {
+		t.Fatal(err)
+	}
+	stale, err := claudia.EncodeGrantDefinition(claudia.GrantDefinition{AgentDef: claudia.AgentDef{
+		Name: "moved", WorkDir: destination.WorkDir, SessionID: "source-session",
+		Provider: claudia.ProviderGrok, Model: "grok-4.5", Materialized: true,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := dialRaw(t, f.sock)
+	resp := rawCall(t, c, &broker.Request{ID: "adopt-moved", Type: broker.TypeGrant,
+		Grant: &broker.GrantRequest{Name: "moved", Def: stale, Adopt: true, Fallback: true}})
+	if resp.Type != broker.TypeGranted || resp.Granted == nil {
+		t.Fatalf("stale consumer grant failed: %+v", resp)
+	}
+	if got := f.d.reg.Def("moved"); got.Provider != destination.Provider ||
+		got.SessionID != destination.SessionID || got.Model != destination.Model {
+		t.Fatalf("broker adopted stale source instead of destination: %+v", got)
+	}
+	if resp.Granted.Provider != broker.Provider(destination.Provider) ||
+		resp.Granted.SessionID != destination.SessionID || f.seat(1) != nil {
+		t.Fatalf("adopted grant=%+v seats=%d", resp.Granted, f.seatCount())
+	}
+}
+
 // TestT124StatusShowsOwnerAndOperatorForceDetach: grants list names the
 // holding connection and its peer pid; a third connection can clear the
 // grant with a forced detach, the old owner is told, the seat process
