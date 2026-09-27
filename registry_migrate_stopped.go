@@ -70,6 +70,16 @@ func (r *Registry) MigrateStopped(ctx context.Context, name string, args Migrate
 		}
 		return StoppedMigration{Source: source, Destination: *r.Def(name), Agent: proc}, nil
 	}
+	// Check broker state before paying for transfer. A prior migration may
+	// have committed in the daemon while this consumer kept a stale row.
+	proc, adoptErr := r.startHeld(ctx, op, name, true, false)
+	if adoptErr == nil && PlanProvider(proc.Provider()) == PlanProvider(target) {
+		return StoppedMigration{Source: source, Destination: *r.Def(name), Agent: proc}, nil
+	}
+	if adoptErr != nil && !errors.Is(adoptErr, ErrNoSessionWindow) &&
+		!strings.Contains(adoptErr.Error(), ErrNoSessionWindow.Error()) {
+		return StoppedMigration{}, fmt.Errorf("migrate stopped %q: predecessor adoption refused: %w", name, adoptErr)
+	}
 	transcript = strings.TrimSpace(transcript)
 	if transcript == "" {
 		if !args.Force {
@@ -92,17 +102,11 @@ func (r *Registry) MigrateStopped(ctx context.Context, name string, args Migrate
 	prepared := args
 	prepared.Provider = target
 	prepared.ContextBrief = clipRunes(strings.TrimSpace(transfer.Brief), maxBriefRunes)
-	// A broker may still hold the predecessor after this consumer lost its
-	// handle. Adopt only: never start the exhausted source just to move it.
-	proc, adoptErr := r.startHeld(ctx, op, name, true, false)
 	if adoptErr == nil {
 		if err := proc.Migrate(&prepared); err != nil {
 			return StoppedMigration{}, fmt.Errorf("migrate stopped %q: adopted predecessor migration: %w", name, err)
 		}
 		return StoppedMigration{Source: source, Destination: *r.Def(name), Agent: proc, Transfer: transfer}, nil
-	}
-	if !errors.Is(adoptErr, ErrNoSessionWindow) && !strings.Contains(adoptErr.Error(), ErrNoSessionWindow.Error()) {
-		return StoppedMigration{}, fmt.Errorf("migrate stopped %q: predecessor adoption refused: %w", name, adoptErr)
 	}
 
 	r.mu.Lock()
