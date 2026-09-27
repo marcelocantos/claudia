@@ -497,11 +497,12 @@ func (r *SetModelRequest) Validate() error {
 
 // MigrateRequest moves the seat to another provider (claudia.MigrateArgs).
 type MigrateRequest struct {
-	Name     string   `json:"name"`
-	Provider Provider `json:"provider"`
-	Model    string   `json:"model,omitempty"`
-	Reason   string   `json:"reason,omitempty"`
-	Force    bool     `json:"force,omitempty"`
+	Name         string   `json:"name"`
+	Provider     Provider `json:"provider"`
+	Model        string   `json:"model,omitempty"`
+	Reason       string   `json:"reason,omitempty"`
+	ContextBrief string   `json:"context_brief,omitempty"`
+	Force        bool     `json:"force,omitempty"`
 }
 
 // Validate checks the fields.

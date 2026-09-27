@@ -341,8 +341,9 @@ func DecodePickWire(raw json.RawMessage) (ModelPick, error) {
 // migrateArgsWire mirrors MigrateArgs on the wire (broker.MigrateRequest
 // carries the same fields by name; this keeps the census honest).
 type migrateArgsWire struct {
-	Provider Provider `json:"provider"`
-	Model    string   `json:"model,omitempty"`
-	Reason   string   `json:"reason,omitempty"`
-	Force    bool     `json:"force,omitempty"`
+	Provider     Provider `json:"provider"`
+	Model        string   `json:"model,omitempty"`
+	Reason       string   `json:"reason,omitempty"`
+	ContextBrief string   `json:"context_brief,omitempty"`
+	Force        bool     `json:"force,omitempty"`
 }

@@ -1125,7 +1125,7 @@ func (d *Daemon) handleAgentOp(c *broker.ClientConn, req *broker.Request) {
 		_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeModelSet, ModelSet: named})
 	case broker.TypeMigrate:
 		if err := proc.Migrate(&claudia.MigrateArgs{Provider: claudia.Provider(req.Migrate.Provider), Model: req.Migrate.Model,
-			Reason: req.Migrate.Reason, Force: req.Migrate.Force}); err != nil {
+			Reason: req.Migrate.Reason, ContextBrief: req.Migrate.ContextBrief, Force: req.Migrate.Force}); err != nil {
 			_ = c.Fail(req.ID, err)
 			return
 		}

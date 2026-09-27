@@ -333,7 +333,8 @@ func (b *brokerAgentBackend) migrate(a *Agent, args *MigrateArgs) error {
 	ctx, cancel := context.WithTimeout(context.Background(), grantStartTimeout)
 	defer cancel()
 	resp, err := b.client.call(ctx, &broker.Request{Type: broker.TypeMigrate, Migrate: &broker.MigrateRequest{
-		Name: b.named().Name, Provider: broker.Provider(args.Provider), Model: args.Model, Reason: args.Reason, Force: args.Force,
+		Name: b.named().Name, Provider: broker.Provider(args.Provider), Model: args.Model, Reason: args.Reason,
+		ContextBrief: args.ContextBrief, Force: args.Force,
 	}})
 	if err != nil {
 		return err

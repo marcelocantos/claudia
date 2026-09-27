@@ -72,15 +72,20 @@ func TestRegistryRecordsMigrate(t *testing.T) {
 // migrateOnlyDaemon answers grant, migrate and release like a daemon whose
 // seat moves to Grok, and nothing else: enough to drive a consumer's
 // daemon-held handle through Migrate.
-type migrateOnlyDaemon struct{}
+type migrateOnlyDaemon struct {
+	t *testing.T
+}
 
-func (migrateOnlyDaemon) HandleRequest(c *broker.ClientConn, req *broker.Request) bool {
+func (d migrateOnlyDaemon) HandleRequest(c *broker.ClientConn, req *broker.Request) bool {
 	switch req.Type {
 	case broker.TypeGrant:
 		_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeGranted, Granted: &broker.GrantResponse{
 			Name: req.Grant.Name, SessionID: "src-session", Provider: broker.ProviderClaude, Model: "src-model",
 		}})
 	case broker.TypeMigrate:
+		if req.Migrate.ContextBrief != "predecessor decision: violet" {
+			d.t.Errorf("prepared context brief was lost on broker wire: %q", req.Migrate.ContextBrief)
+		}
 		_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeMigrated, Migrated: &broker.MigrateResponse{
 			Name: req.Migrate.Name, SessionID: "grok-dest-2", Provider: broker.Provider(req.Migrate.Provider), Model: req.Migrate.Model,
 		}})
@@ -116,7 +121,7 @@ func TestRegistryRecordsMigrateOnDaemonHeldSeat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv, err := broker.Serve(&broker.ServeArgs{Listener: ln, Handler: migrateOnlyDaemon{}})
+	srv, err := broker.Serve(&broker.ServeArgs{Listener: ln, Handler: migrateOnlyDaemon{t: t}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +142,7 @@ func TestRegistryRecordsMigrateOnDaemonHeldSeat(t *testing.T) {
 	if !proc.DaemonHeld() {
 		t.Fatal("seat is not daemon-held")
 	}
-	if err := proc.Migrate(&MigrateArgs{Provider: ProviderGrok, Model: "grok-4"}); err != nil {
+	if err := proc.Migrate(&MigrateArgs{Provider: ProviderGrok, Model: "grok-4", ContextBrief: "predecessor decision: violet"}); err != nil {
 		t.Fatal(err)
 	}
 
