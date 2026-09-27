@@ -531,6 +531,8 @@ background pacing. It runs the selected task through the broker and
 never starts a direct provider process. A task config may include
 `tool_policy` with `builtins`, `allow`, `deny`, `max_turns`, and (for Grok)
 `home_dir`. The command exits nonzero if selection or the task fails.
+Failures also appear as `type: "error"` JSONL records so an unattended
+caller can put the reason in its own log.
 
 The channel closes when the process exits. Drain it until then:
 

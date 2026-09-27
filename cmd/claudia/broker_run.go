@@ -18,8 +18,22 @@ import (
 
 // brokerRunCmd is a machine-facing one-turn client. The daemon chooses a
 // capacity-eligible model, then owns the provider process and its event stream.
-// Input is one JSON object on stdin; output is TaskEvent wire JSONL.
-func brokerRunCmd(args []string, input io.Reader, output io.Writer) error {
+// Input is one JSON object on stdin; output is a selection record followed
+// by TaskEvent wire JSONL. Failures are also emitted as error records.
+func brokerRunCmd(args []string, input io.Reader, output io.Writer) (runErr error) {
+	var errorEventSent bool
+	defer func() {
+		if runErr == nil || errorEventSent {
+			return
+		}
+		line, err := json.Marshal(struct {
+			Type     string `json:"type"`
+			ErrorMsg string `json:"error_msg"`
+		}{Type: "error", ErrorMsg: runErr.Error()})
+		if err == nil {
+			_, _ = output.Write(append(line, '\n'))
+		}
+	}()
 	if len(args) != 0 {
 		return errors.New("broker run takes one JSON request on stdin and no arguments")
 	}
@@ -121,6 +135,7 @@ func brokerRunCmd(args []string, input io.Reader, output io.Writer) error {
 		}
 		if ev.Type == claudia.TaskEventError {
 			taskErr = errors.New(ev.ErrorMsg)
+			errorEventSent = true
 		}
 	}
 	if taskErr != nil {
