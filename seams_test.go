@@ -134,12 +134,16 @@ func TestRegistryLaunchersAndSetDirect(t *testing.T) {
 				t.Fatal(err)
 			}
 			a, err := reg.Launch("seat")
-			if err != nil {
-				t.Fatal(err)
-			}
 			t.Cleanup(reg.StopAll)
-			if launched.Load() != launchedBefore+1 || a.DaemonHeld() {
-				t.Fatal("the launcher did not start the seat")
+			if tc.direct {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if launched.Load() != launchedBefore+1 || a.DaemonHeld() {
+					t.Fatal("the direct launcher did not start the seat")
+				}
+			} else if err == nil || a != nil || launched.Load() != launchedBefore {
+				t.Fatalf("a listening but broken daemon must not fork a local seat: agent=%v err=%v", a, err)
 			}
 			if dialed := dials.Load() > before; dialed != tc.wantDials {
 				t.Fatalf("dialled the daemon socket = %v, want %v", dialed, tc.wantDials)
