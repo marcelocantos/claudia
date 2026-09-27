@@ -173,6 +173,7 @@ var sessionFieldFates = map[Provider]map[string]fieldDecl{
 		"GoalCompleteCheck":    {fateLocal, "host completeness hook; never sent to the provider"},
 		"OMP":                  {fateLocal, "selects the Oh My Pi sidecar; never sent to a vendor CLI"},
 		"AdoptOnly":            {fateLocal, "sidecar-only adoption gate; never sent to a vendor CLI"},
+		"SummaryOnly":          {fateLocal, "subscription-sidecar transfer mode; never sent to a vendor CLI"},
 	},
 	ProviderGrok: {
 		"Provider":             {fateLocal, "selects this path"},
@@ -202,6 +203,7 @@ var sessionFieldFates = map[Provider]map[string]fieldDecl{
 		"GoalCompleteCheck":    {fateLocal, "host completeness hook; never sent to the provider"},
 		"OMP":                  {fateLocal, "selects the Oh My Pi sidecar; never sent to a vendor CLI"},
 		"AdoptOnly":            {fateLocal, "sidecar-only adoption gate; never sent to a vendor CLI"},
+		"SummaryOnly":          {fateLocal, "subscription-sidecar transfer mode; never sent to a vendor CLI"},
 	},
 	ProviderCodex: {
 		"Provider":             {fateLocal, "selects this path"},
@@ -231,6 +233,7 @@ var sessionFieldFates = map[Provider]map[string]fieldDecl{
 		"GoalCompleteCheck":    {fateLocal, "host completeness hook; never sent to the provider"},
 		"OMP":                  {fateLocal, "selects the Oh My Pi sidecar; never sent to a vendor CLI"},
 		"AdoptOnly":            {fateLocal, "sidecar-only adoption gate; never sent to a vendor CLI"},
+		"SummaryOnly":          {fateLocal, "subscription-sidecar transfer mode; never sent to a vendor CLI"},
 	},
 	ProviderCursor: {
 		"Provider":             {fateLocal, "selects this path"},
@@ -260,6 +263,7 @@ var sessionFieldFates = map[Provider]map[string]fieldDecl{
 		"GoalCompleteCheck":    {fateLocal, "host completeness hook; never sent to the provider"},
 		"OMP":                  {fateLocal, "selects the Oh My Pi sidecar; never sent to a vendor CLI"},
 		"AdoptOnly":            {fateLocal, "sidecar-only adoption gate; never sent to a vendor CLI"},
+		"SummaryOnly":          {fateLocal, "subscription-sidecar transfer mode; never sent to a vendor CLI"},
 	},
 }
 
