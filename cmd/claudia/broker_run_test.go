@@ -96,8 +96,12 @@ func TestBrokerRunClient(t *testing.T) {
 
 func TestBrokerRunRejectsIncompleteInput(t *testing.T) {
 	for _, input := range []string{`{}`, `{"prompt":"hi"}`, `{"prompt":"hi","tasks":{"grok":{}}} {}`} {
-		if err := brokerRunCmd(nil, strings.NewReader(input), &bytes.Buffer{}); err == nil {
+		var output bytes.Buffer
+		if err := brokerRunCmd(nil, strings.NewReader(input), &output); err == nil {
 			t.Errorf("accepted %s", input)
+		}
+		if !strings.Contains(output.String(), `"type":"error"`) {
+			t.Errorf("error was not emitted as a JSONL event: %s", output.String())
 		}
 	}
 }
