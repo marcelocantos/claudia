@@ -5,6 +5,7 @@ package omp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -27,12 +28,22 @@ func RetryOpen(ctx context.Context, store Store) error {
 		return shot.openErr
 	}
 	item, key, err := readItem(ctx, store)
+	initial := item
+	var bad *unreadableItemError
+	if errors.As(err, &bad) {
+		// The owner asked for recovery, so keep every record that still
+		// decodes and let this login replace the damaged item. An empty
+		// initial copy makes the recovery Flush write even when nothing
+		// else changes.
+		item, key, err = salvageItem(bad.raw), nil, nil
+		initial = Item{Records: map[string]Record{}}
+	}
 	if err != nil {
 		shot.openErr = err
 		return err
 	}
 	shot.openErr = nil
-	shot.initial = cloneItem(item)
+	shot.initial = cloneItem(initial)
 	shot.item = cloneItem(item)
 	shot.key = key
 	shot.flushed = false

@@ -200,7 +200,7 @@ func decodeItem(out []byte) (Item, error) {
 	}
 	var item Item
 	if err := json.Unmarshal([]byte(raw), &item); err != nil {
-		return Item{}, fmt.Errorf("omp: keychain item is not the plan blob: %w", err)
+		return Item{}, &unreadableItemError{raw: []byte(raw), err: err}
 	}
 	if item.Records == nil {
 		item.Records = map[string]Record{}
