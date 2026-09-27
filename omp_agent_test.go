@@ -405,6 +405,19 @@ func TestOMPSidecarPromptCallsPiAgentCore(t *testing.T) {
 	if strings.Contains(src, `@oh-my-pi/pi-natives`) || strings.Contains(src, `@oh-my-pi/pi-coding-agent`) {
 		t.Fatal("sidecar must not load pi-natives or omp's tools")
 	}
+	if !strings.Contains(src, `from "./coding.ts"`) || !strings.Contains(src, "setTools(codingTools") {
+		t.Fatal("seat.ts must advertise host coding tools (Bash/Read/Write/Glob/Grep)")
+	}
+	coding, err := os.ReadFile("sidecar/coding.ts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	csrc := string(coding)
+	for _, name := range []string{`"Bash"`, `"Read"`, `"Write"`, `"Glob"`, `"Grep"`} {
+		if !strings.Contains(csrc, name) {
+			t.Fatalf("coding.ts missing %s", name)
+		}
+	}
 	server, err := os.ReadFile("sidecar/server.ts")
 	if err != nil {
 		t.Fatal(err)
