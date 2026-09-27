@@ -5,6 +5,7 @@ package claudia
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -67,6 +68,29 @@ func TestRegistryRecordsMigrate(t *testing.T) {
 	}
 	if def.Materialized {
 		t.Fatal("destination is a new native session; Materialized must be cleared")
+	}
+}
+
+func TestRegistryDoesNotLaunchOverMismatchedSidecarSeat(t *testing.T) {
+	t.Setenv(broker.NoBrokerEnv, "1")
+	reg, err := NewRegistry(filepath.Join(t.TempDir(), "agents.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.Register(AgentDef{Name: "seat", Provider: "xai-oauth", WorkDir: t.TempDir(), SessionID: "source"}); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	reg.SetLaunchers(&RegistryLaunchers{Start: func(_ context.Context, cfg Config) (*Agent, error) {
+		calls++
+		if !cfg.AdoptOnly {
+			t.Fatal("registry launched over a seat whose provider differed")
+		}
+		return nil, ErrSeatIdentityMismatch
+	}})
+	_, err = reg.AdoptOrLaunch("seat")
+	if !errors.Is(err, ErrSeatIdentityMismatch) || calls != 1 {
+		t.Fatalf("adopt outcome err=%v calls=%d; want mismatch without launch", err, calls)
 	}
 }
 

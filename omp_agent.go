@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -25,6 +26,8 @@ import (
 	"github.com/marcelocantos/claudia/internal/broker"
 	"github.com/marcelocantos/claudia/omp"
 )
+
+var ErrSeatIdentityMismatch = errors.New("omp: loaded seat differs from registered provider or purpose")
 
 // useOMP selects the sidecar. The four subscription plans and the
 // fleet ids grok / claude / codex / cursor all go through it (🎯T866.5).
@@ -152,6 +155,9 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 	}
 	if ev.Type != "ready" {
 		conn.Close()
+		if ev.Reason == "seat_identity_mismatch" {
+			return nil, fmt.Errorf("%w: %s", ErrSeatIdentityMismatch, ev.Text)
+		}
 		if req.Config.AdoptOnly {
 			return nil, fmt.Errorf("%w: %s", ErrNoSessionWindow, req.Config.Name)
 		}
@@ -168,7 +174,7 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 		sessionID: sessionID, summaryOnly: req.Config.SummaryOnly,
 	}
 	return &agentStart{
-		Control: ctrl,
+		Control:   ctrl,
 		SessionID: sessionID,
 		Ops: agentOps{
 			send: func(a *Agent, text string) error {

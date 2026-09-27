@@ -50,6 +50,7 @@ type Event struct {
 	Seat     string          `json:"seat,omitempty"`
 	Type     string          `json:"type"`
 	How      string          `json:"how,omitempty"`
+	Reason   string          `json:"reason,omitempty"`
 	Text     string          `json:"text,omitempty"`
 	CallID   string          `json:"call_id,omitempty"`
 	Name     string          `json:"name,omitempty"`

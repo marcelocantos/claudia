@@ -156,6 +156,11 @@ async function handle(
       write({ seat, type: "error", text: "seat is not loaded" });
       return;
     }
+    if (existing.provider !== msg.provider || existing.summaryOnly !== (msg.summary_only === true)) {
+      write({ seat, type: "error", reason: "seat_identity_mismatch",
+        text: `loaded seat is ${existing.provider}; registry asked for ${msg.provider ?? ""}` });
+      return;
+    }
     rebindSeat(existing, msg, seat, write, callTool);
     write({ seat, type: "ready", how: "adopted" });
     return;

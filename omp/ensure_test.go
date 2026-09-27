@@ -161,6 +161,18 @@ func TestT869AdoptDoesNotCreateAndSecondAttachIsSilent(t *testing.T) {
 	if err != nil || ev.Type != "ready" || ev.How != "adopted" {
 		t.Fatalf("second adopt = %+v %v, want ready how=adopted", ev, err)
 	}
+	mismatch, err := Dial(ctx, socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mismatch.Close()
+	if err := mismatch.Send(Message{Op: OpAdopt, Seat: "jevons", Provider: OpenAICodex, Token: "tok-3"}); err != nil {
+		t.Fatal(err)
+	}
+	ev, err = mismatch.Recv()
+	if err != nil || ev.Type != "error" || ev.Reason != "seat_identity_mismatch" {
+		t.Fatalf("wrong-provider adopt = %+v %v, want identity mismatch", ev, err)
+	}
 }
 
 func TestBrokerRestartRebindsSeat(t *testing.T) {
