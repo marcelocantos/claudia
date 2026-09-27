@@ -74,6 +74,34 @@ func TestAgentMigrateSummarizesRetainedHistoryBeforeMoving(t *testing.T) {
 	}
 }
 
+func TestAgentMigrateSummarizesHostHistoryAfterAdoption(t *testing.T) {
+	agent, _ := startMigrateFixture(t, ProviderGrok, "adopted-source")
+	// The adopted handle has no process-local turns. Jevons retained these
+	// before the daemon restarted and supplies them as inert input.
+	const predecessor = "user: Complete T691 and remember VIOLET67\nassistant: The live seat is still on Grok\n"
+	var summarized MigrationTransferArgs
+	agent.migrationSummarizer = func(_ context.Context, args MigrationTransferArgs) (MigrationTransferResult, error) {
+		summarized = args
+		return MigrationTransferResult{Brief: "Continue T691; VIOLET67 is retained"}, nil
+	}
+	var successor MigrateArgs
+	agent.ops.migrate = func(_ *Agent, args *MigrateArgs) error {
+		successor = *args
+		return nil
+	}
+	if err := agent.Migrate(&MigrateArgs{
+		Provider: ProviderCodex, Model: "gpt-6-sol", RetainedTranscript: predecessor,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if summarized.Transcript != strings.TrimSpace(predecessor) || summarized.Destination != ProviderCodex {
+		t.Fatalf("disposable transfer input = %+v", summarized)
+	}
+	if successor.ContextBrief != "Continue T691; VIOLET67 is retained" || successor.RetainedTranscript != "" {
+		t.Fatalf("work successor received raw history or lost brief: %+v", successor)
+	}
+}
+
 func TestAgentMigrateRefusesFailedTransferBeforeMoving(t *testing.T) {
 	agent, _ := startMigrateFixture(t, ProviderClaude, "failed-summary-source")
 	agent.PublishEvent(Event{Type: "user", Text: "finish the violet migration"})

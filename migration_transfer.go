@@ -39,7 +39,9 @@ type MigrationTransferResult struct {
 // cold-start fact; it never silently falls back to local keyword extraction.
 func (a *Agent) prepareMigrationArgs(args *MigrateArgs) (*MigrateArgs, error) {
 	if strings.TrimSpace(args.ContextBrief) != "" {
-		return args, nil
+		prepared := *args
+		prepared.RetainedTranscript = ""
+		return &prepared, nil
 	}
 	a.mu.Lock()
 	from := a.provider
@@ -51,16 +53,22 @@ func (a *Agent) prepareMigrationArgs(args *MigrateArgs) (*MigrateArgs, error) {
 		from = ProviderClaude
 	}
 	if PlanProvider(from) == PlanProvider(args.Provider) {
-		return args, nil // same-provider retry is handled by migrateWithBackend
+		prepared := *args
+		prepared.RetainedTranscript = ""
+		return &prepared, nil // same-provider retry is handled by migrateWithBackend
 	}
 	var history strings.Builder
-	for _, turn := range turns {
-		body := strings.TrimSpace(turn.Text)
-		if len(turn.ToolNames) > 0 {
-			body += " [inert tool names: " + strings.Join(turn.ToolNames, ", ") + "]"
-		}
-		if body != "" {
-			fmt.Fprintf(&history, "%s: %s\n", turn.Role, body)
+	if retained := strings.TrimSpace(args.RetainedTranscript); retained != "" {
+		history.WriteString(retained)
+	} else {
+		for _, turn := range turns {
+			body := strings.TrimSpace(turn.Text)
+			if len(turn.ToolNames) > 0 {
+				body += " [inert tool names: " + strings.Join(turn.ToolNames, ", ") + "]"
+			}
+			if body != "" {
+				fmt.Fprintf(&history, "%s: %s\n", turn.Role, body)
+			}
 		}
 	}
 	if history.Len() == 0 {
@@ -83,6 +91,7 @@ func (a *Agent) prepareMigrationArgs(args *MigrateArgs) (*MigrateArgs, error) {
 	}
 	prepared := *args
 	prepared.ContextBrief = clipRunes(strings.TrimSpace(result.Brief), maxBriefRunes)
+	prepared.RetainedTranscript = "" // Raw history never reaches the work successor or broker.
 	return &prepared, nil
 }
 
