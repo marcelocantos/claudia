@@ -9,6 +9,7 @@
 //	claudia broker tail             lifecycle events as NDJSON
 //	claudia broker usage [--refresh] the plan-usage snapshot
 //	claudia broker release NAME [--detach | --force]
+//	claudia broker auth-recover PROVIDER  repair subscription authentication
 //	claudia broker install|uninstall  launchd user agent (macOS)
 //	claudia broker socket           print the socket path
 //	claudia models intel …          purpose-quality series (🎯T71)
@@ -70,7 +71,7 @@ func run(args []string) int {
 }
 
 func usageText() string {
-	return `usage: claudia broker <serve|status|grants|tail|usage|release|install|uninstall|socket> [flags]
+	return `usage: claudia broker <serve|status|grants|tail|usage|release|auth-recover|install|uninstall|socket> [flags]
        claudia models intel <refresh|latest|history|drift> [flags]
        claudia version | --version | -v
        claudia --help | -h
@@ -100,6 +101,17 @@ func brokerCmd(args []string) error {
 		return usageCmd(args[1:])
 	case "release":
 		return release(args[1:])
+	case "auth-recover":
+		if len(args) != 2 {
+			return errors.New("auth-recover requires one subscription provider")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+		defer cancel()
+		if err := claudia.RecoverOMPAuth(ctx, claudia.Provider(args[1])); err != nil {
+			return err
+		}
+		fmt.Printf("authentication recovered for %s\n", args[1])
+		return nil
 	case "install":
 		return install(args[1:])
 	case "uninstall":

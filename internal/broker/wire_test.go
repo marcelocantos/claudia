@@ -171,6 +171,7 @@ var requestVectors = map[string]requestVector{
 	"rewind":         {msg: &Request{ID: "g15", Type: TypeRewind, Rewind: &RewindRequest{Name: "jv-worker-1", Turns: 2}}},
 	"goal_verdict": {msg: &Request{ID: "g16", Type: TypeGoalVerdict,
 		GoalVerdict: &GoalVerdictRequest{Name: "jv-worker-1", CheckID: "c-1", Complete: true, Answered: true}}},
+	"auth_recover": {msg: &Request{ID: "g17", Type: TypeAuthRecover, AuthRecover: &NamedRequest{Name: "anthropic"}}},
 }
 
 // responseVectors is every broker → client message, in canonical form.
@@ -355,10 +356,11 @@ var responseVectors = map[string]*Response{
 		ID: "g6", Type: TypeError,
 		Error: &ErrorMessage{Code: CodeUnsupportedValue, Message: `mode "nudge" is not one of "submit", "steer", "interrupt", "queue"`, Field: "mode", Value: "nudge"},
 	},
-	"goal_closed":  {ID: "g14", Type: TypeGoalClosed, GoalClosed: &NamedResponse{Name: "jv-worker-1"}},
-	"event_grant":  {Type: TypeEvent, Event: &EventMessage{Kind: EventGrant, Name: "jv-worker-1", At: goldenAt}},
-	"event_detach": {Type: TypeEvent, Event: &EventMessage{Kind: EventDetach, Name: "jv-worker-1", At: goldenAt}},
-	"event_usage":  {Type: TypeEvent, Event: &EventMessage{Kind: EventUsageUpdate, Detail: "claude", At: goldenAt}},
+	"goal_closed":    {ID: "g14", Type: TypeGoalClosed, GoalClosed: &NamedResponse{Name: "jv-worker-1"}},
+	"auth_recovered": {ID: "g17", Type: TypeAuthRecovered, AuthRecovered: &NamedResponse{Name: "anthropic"}},
+	"event_grant":    {Type: TypeEvent, Event: &EventMessage{Kind: EventGrant, Name: "jv-worker-1", At: goldenAt}},
+	"event_detach":   {Type: TypeEvent, Event: &EventMessage{Kind: EventDetach, Name: "jv-worker-1", At: goldenAt}},
+	"event_usage":    {Type: TypeEvent, Event: &EventMessage{Kind: EventUsageUpdate, Detail: "claude", At: goldenAt}},
 	"error_grant_held": {
 		ID: "g5", Type: TypeError,
 		Error: &ErrorMessage{Code: CodeGrantHeld, Message: "grant jv-worker-1 is owned by another connection", Field: "name", Value: "jv-worker-1"},

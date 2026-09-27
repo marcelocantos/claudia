@@ -519,6 +519,7 @@ type Request struct {
 	Rewind        *RewindRequest
 	GoalVerdict   *GoalVerdictRequest
 	Judge         *JudgeRequest
+	AuthRecover   *NamedRequest
 }
 
 // Response is a decoded broker → client message. Exactly one of the body
@@ -560,6 +561,7 @@ type Response struct {
 	GoalCheck        *GoalCheckMessage
 	GoalVerdictNoted *NamedResponse
 	Judged           *JudgedResponse
+	AuthRecovered    *NamedResponse
 }
 
 // validator is implemented by bodies that normalise defaults or refuse
@@ -621,6 +623,7 @@ var requestSpecs = map[MessageType]bodySpec[Request]{
 	TypeRewind:            spec("rewind body", func(r *Request) **RewindRequest { return &r.Rewind }, false),
 	TypeGoalVerdict:       spec("goal_verdict body", func(r *Request) **GoalVerdictRequest { return &r.GoalVerdict }, false),
 	TypeJudge:             spec("judge body", func(r *Request) **JudgeRequest { return &r.Judge }, false),
+	TypeAuthRecover:       spec("auth_recover body", func(r *Request) **NamedRequest { return &r.AuthRecover }, false),
 }
 
 // responseSpecs is the broker → client namespace.
@@ -656,6 +659,7 @@ var responseSpecs = map[MessageType]bodySpec[Response]{
 	TypeGoalCheck:        spec("goal_check body", func(r *Response) **GoalCheckMessage { return &r.GoalCheck }, false),
 	TypeGoalVerdictNoted: spec("goal_verdict_noted body", func(r *Response) **NamedResponse { return &r.GoalVerdictNoted }, false),
 	TypeJudged:           spec("judged body", func(r *Response) **JudgedResponse { return &r.Judged }, false),
+	TypeAuthRecovered:    spec("auth_recovered body", func(r *Response) **NamedResponse { return &r.AuthRecovered }, false),
 }
 
 // RequestTypes lists every client → broker type in this wire version.

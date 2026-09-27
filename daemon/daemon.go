@@ -117,13 +117,18 @@ const (
 
 // Daemon is a running daemon.
 type Daemon struct {
-	opts  Options
-	log   *slog.Logger
-	clock broker.Clock
-	reg   *claudia.Registry
-	srv   *broker.Server
-	usage *claudia.PlanUsageMonitor
-	path  string
+	// One interactive plan login at a time: concurrent seats must not open
+	// several browser/device-code prompts for the same owner.
+	reauthMu sync.Mutex
+	// Tests replace the credential operation; production leaves it nil.
+	authRecover func(context.Context, string) error
+	opts        Options
+	log         *slog.Logger
+	clock       broker.Clock
+	reg         *claudia.Registry
+	srv         *broker.Server
+	usage       *claudia.PlanUsageMonitor
+	path        string
 	// stateDir is the resolved state directory. opts.StateDir is empty on a
 	// default serve and must not be read after construction.
 	stateDir string
@@ -399,6 +404,8 @@ func (d *Daemon) HandleRequest(c *broker.ClientConn, req *broker.Request) bool {
 	case broker.TypeGrants:
 		_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeGrantsResult,
 			Grants: &broker.GrantsResponse{Grants: d.grantList()}})
+	case broker.TypeAuthRecover:
+		go d.handleReauth(c, req)
 	case broker.TypeSpawn:
 		_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeUnsupportedValue, Field: "type", Value: string(req.Type),
 			Msg: "the daemon grants seats by name; use grant (Session) or task_run (Task)"})
@@ -406,6 +413,32 @@ func (d *Daemon) HandleRequest(c *broker.ClientConn, req *broker.Request) bool {
 		return false
 	}
 	return true
+}
+
+func (d *Daemon) handleReauth(c *broker.ClientConn, req *broker.Request) {
+	provider := req.AuthRecover.Name
+	if !claudia.IsOMPPlan(provider) {
+		_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeUnsupportedValue, Field: "name", Value: provider,
+			Msg: "not a subscription provider"})
+		return
+	}
+	if !d.reauthMu.TryLock() {
+		_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeAgentFailed, Msg: "another plan reauthentication is in progress"})
+		return
+	}
+	defer d.reauthMu.Unlock()
+	ctx, cancel := context.WithTimeout(d.ctx, 3*time.Minute)
+	defer cancel()
+	recoverAuth := d.authRecover
+	if recoverAuth == nil {
+		recoverAuth = claudia.RecoverOMPPlan
+	}
+	if err := recoverAuth(ctx, provider); err != nil {
+		_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeAgentFailed, Msg: err.Error()})
+		return
+	}
+	_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeAuthRecovered,
+		AuthRecovered: &broker.NamedResponse{Name: provider}})
 }
 
 // ConnClosed implements broker.Handler: seats stay running, unowned.

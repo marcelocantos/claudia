@@ -71,17 +71,17 @@ func (l Login) fetch(ctx context.Context, provider string, existing Record) (Rec
 	}
 	out, err := l.Run(ctx, cmd, l.Script, verb, provider, string(blob))
 	if err != nil {
-		return Record{}, fmt.Errorf("omp: %s refresh failed: %w", provider, err)
+		return Record{}, fmt.Errorf("omp: %s %s failed: %w", provider, verb, err)
 	}
 	var rec Record
 	if err := json.Unmarshal(out, &rec); err != nil {
-		return Record{}, fmt.Errorf("omp: %s refresh returned %s: %w", provider, strings.TrimSpace(string(out)), err)
+		return Record{}, fmt.Errorf("omp: %s %s returned %s: %w", provider, verb, strings.TrimSpace(string(out)), err)
 	}
 	if rec.AccessToken == "" || rec.RefreshToken == "" || rec.Expiry.IsZero() {
-		return Record{}, fmt.Errorf("omp: %s refresh omitted access token, refresh token, or expiry", provider)
+		return Record{}, fmt.Errorf("omp: %s %s omitted access token, refresh token, or expiry", provider, verb)
 	}
 	if rec.Expiry.Before(time.Now().Add(-time.Minute)) {
-		return Record{}, fmt.Errorf("omp: %s refresh returned an already-expired token", provider)
+		return Record{}, fmt.Errorf("omp: %s %s returned an already-expired token", provider, verb)
 	}
 	return rec, nil
 }

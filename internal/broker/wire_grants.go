@@ -65,6 +65,8 @@ const (
 	TypeGoalVerdict MessageType = "goal_verdict"
 	// TypeJudge asks the daemon to evaluate one Judge request (🎯T127).
 	TypeJudge MessageType = "judge"
+	// TypeAuthRecover asks the credential-owning broker to repair one plan.
+	TypeAuthRecover MessageType = "auth_recover"
 )
 
 // Response types (broker → client) added by the grant protocol.
@@ -98,7 +100,8 @@ const (
 	TypeGoalCheck        MessageType = "goal_check"
 	TypeGoalVerdictNoted MessageType = "goal_verdict_noted"
 	// TypeJudged answers a judge request: the result, or the refusal.
-	TypeJudged MessageType = "judged"
+	TypeJudged        MessageType = "judged"
+	TypeAuthRecovered MessageType = "auth_recovered"
 )
 
 // Error codes added by the grant protocol.

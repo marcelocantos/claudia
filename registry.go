@@ -434,6 +434,7 @@ func (r *Registry) startHeld(ctx context.Context, op *registryLifecycle, name st
 	cfg := registryConfig(&def, wantResume)
 	var proc *Agent
 	started := !adopt
+	brokerAnswered := false
 	// A listening daemon holds the seat (🎯T2.10 / 🎯T2.11): adopt and
 	// launch are one grant, and the daemon decides whether the process is
 	// still there. Without a daemon the per-provider adopt logic below is
@@ -444,6 +445,7 @@ func (r *Registry) startHeld(ctx context.Context, op *registryLifecycle, name st
 	if usingBroker() && !direct {
 		proc, err = startViaBrokerContext(withGrantHint(ctx, grantHint{adopt: adopt, fallback: fallback, def: &def}), cfg)
 		if err == nil || !brokerFellThrough(err) {
+			brokerAnswered = true
 			adopt, started = false, true
 		} else {
 			proc, err = nil, nil
@@ -490,7 +492,7 @@ func (r *Registry) startHeld(ctx context.Context, op *registryLifecycle, name st
 	// processes on one JSONL this way on 2026-09-22, and the owner's messages
 	// went to the one nobody was reading. The refusal goes back to the caller,
 	// who may ask again.
-	if proc == nil && (!adopt || (fallback && err != nil && ctx.Err() == nil && !grantHeldElsewhere(err))) {
+	if proc == nil && !brokerAnswered && (!adopt || (fallback && err != nil && ctx.Err() == nil && !grantHeldElsewhere(err))) {
 		started = true
 		if err != nil && !errors.Is(err, ErrNoSessionWindow) {
 			slog.Warn("adopt failed; falling back to launch", "agent", name, "err", err)

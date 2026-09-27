@@ -22,6 +22,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/marcelocantos/claudia/internal/broker"
 	"github.com/marcelocantos/claudia/omp"
 )
 
@@ -450,6 +451,50 @@ func LoginOMPPlans(ctx context.Context, ids ...string) (int, error) {
 		login.Script = sidecarAuthScript()
 	}
 	return omp.LoginPlans(ctx, store, login, ids...)
+}
+
+// RecoverOMPAuth asks the running broker to repair a plan's authentication.
+// The broker owns the in-memory Keychain copy; a separate client process must
+// never attempt to update that copy itself.
+func RecoverOMPAuth(ctx context.Context, provider Provider) error {
+	id := ompProviderID(provider)
+	if id == "" {
+		return fmt.Errorf("omp: %s is not a subscription provider", provider)
+	}
+	client, err := dialBroker()
+	if err != nil {
+		return fmt.Errorf("omp: broker is required for reauthentication: %w", err)
+	}
+	defer client.Close()
+	resp, err := client.call(ctx, &broker.Request{Type: broker.TypeAuthRecover,
+		AuthRecover: &broker.NamedRequest{Name: id}})
+	if err != nil {
+		return err
+	}
+	if resp.Type != broker.TypeAuthRecovered || resp.AuthRecovered == nil || resp.AuthRecovered.Name != id {
+		return fmt.Errorf("omp: unexpected reauthentication response %q", resp.Type)
+	}
+	return nil
+}
+
+// IsOMPPlan reports whether the broker can reauthenticate a plan id.
+func IsOMPPlan(provider string) bool { return omp.Subscription(provider) }
+
+// RecoverOMPPlan runs inside the broker, which owns the plan Keychain copy.
+// It retries a failed read, refreshes the named plan, and falls back to
+// interactive login only for an invalid refresh grant.
+func RecoverOMPPlan(ctx context.Context, provider string) error {
+	login := ompLogin
+	if login.Run == nil {
+		login.Run = execBunLogin
+	}
+	if login.Command == "" {
+		login.Command = "bun"
+	}
+	if login.Script == "" {
+		login.Script = sidecarAuthScript()
+	}
+	return omp.RecoverPlan(ctx, planStore(), login, provider)
 }
 
 // SetOMPToolExec installs the jevons_* callback the sidecar invokes
