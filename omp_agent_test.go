@@ -85,6 +85,79 @@ func TestUseOMPIncludesGrokAndCursorWithoutFlag(t *testing.T) {
 	}
 }
 
+func TestOMPEmptyModelLoadsProviderLocalDefault(t *testing.T) {
+	socket := filepath.Join(os.TempDir(), fmt.Sprintf("claudia-omp-default-%d.sock", os.Getpid()))
+	t.Cleanup(func() { _ = os.Remove(socket) })
+	ln, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	loads := make(chan omp.Message, 6)
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				r := bufio.NewReader(conn)
+				for {
+					line, err := r.ReadBytes('\n')
+					if err != nil {
+						return
+					}
+					var msg omp.Message
+					if json.Unmarshal(line, &msg) != nil {
+						return
+					}
+					if msg.Op == omp.OpLoad {
+						loads <- msg
+						_, _ = conn.Write([]byte("{\"type\":\"ready\"}\n"))
+					}
+				}
+			}()
+		}
+	}()
+	exp := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	blob := `{"records":{` +
+		`"anthropic":{"refresh_token":"r","access_token":"token","expiry":"` + exp + `"},` +
+		`"openai-codex":{"refresh_token":"r","access_token":"token","expiry":"` + exp + `"},` +
+		`"xai-oauth":{"refresh_token":"r","access_token":"token","expiry":"` + exp + `"},` +
+		`"cursor":{"refresh_token":"r","access_token":"token","expiry":"` + exp + `"}}}`
+	ompKeychain = func(context.Context, string, ...string) ([]byte, error) { return []byte(blob), nil }
+	t.Cleanup(func() { ompKeychain = nil; omp.ResetKeychainShot() })
+	if err := OpenOMPPlans(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(omp.SocketEnv, socket)
+	for _, tc := range []struct {
+		provider  Provider
+		wantID    string
+		wantModel string
+	}{
+		{ProviderGrok, omp.XAIOAuth, "grok-4.5"},
+		{ProviderCursor, omp.Cursor, "composer-2.5"},
+		{Provider(omp.Anthropic), omp.Anthropic, "claude-sonnet-5"},
+		{Provider(omp.OpenAICodex), omp.OpenAICodex, "gpt-6-sol"},
+		{Provider(omp.XAIOAuth), omp.XAIOAuth, "grok-4.5"},
+	} {
+		agent, err := StartDirect(Config{Name: "default-" + string(tc.provider), Provider: tc.provider, WorkDir: t.TempDir(), TermLogPath: "-"})
+		if err != nil {
+			t.Fatalf("%s: %v", tc.provider, err)
+		}
+		msg := <-loads
+		if msg.Provider != tc.wantID || msg.Model != tc.wantModel || agent.Model() != tc.wantModel {
+			t.Errorf("%s load=%s/%s agent model=%s, want %s/%s", tc.provider, msg.Provider, msg.Model, agent.Model(), tc.wantID, tc.wantModel)
+		}
+		agent.Stop()
+	}
+	if _, err := providerLocalSessionModel(t.Context(), Provider("missing")); !errors.Is(err, ErrNoSubscriptionModel) {
+		t.Fatalf("missing provider model error = %v, want ErrNoSubscriptionModel", err)
+	}
+}
+
 func TestOMPStartLoadsTokenFromKeychain(t *testing.T) {
 	dir := t.TempDir()
 	socket := filepath.Join(os.TempDir(), fmt.Sprintf("claudia-omp-%d.sock", os.Getpid()))
@@ -153,7 +226,7 @@ func TestOMPStartLoadsTokenFromKeychain(t *testing.T) {
 		}
 	})
 	msg := <-got
-	if msg.Op != omp.OpLoad || msg.Token != "plan-token" || msg.Provider != omp.Anthropic || msg.Cwd != dir {
+	if msg.Op != omp.OpLoad || msg.Token != "plan-token" || msg.Provider != omp.Anthropic || msg.Model != "claude-opus" || agent.Model() != "claude-opus" || msg.Cwd != dir {
 		t.Fatalf("load = %+v", msg)
 	}
 	if err := agent.Send("hello"); err != nil {

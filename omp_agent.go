@@ -28,6 +28,7 @@ import (
 )
 
 var ErrSeatIdentityMismatch = errors.New("omp: loaded seat differs from registered provider or purpose")
+var ErrNoSubscriptionModel = errors.New("omp: no provider-local subscription session model")
 
 // useOMP selects the sidecar. The four subscription plans and the
 // fleet ids grok / claude / codex / cursor all go through it (🎯T866.5).
@@ -57,6 +58,32 @@ func agentBackendFor(cfg Config) agentBackend {
 		return ompAgentBackend{}
 	}
 	return agentBackendForProvider(cfg.Provider)
+}
+
+// withDefaultOMPModel resolves an omitted model before either a broker grant
+// or a direct start records the seat. An adopt reports the broker's persisted
+// model instead of choosing a potentially different current default.
+func withDefaultOMPModel(ctx context.Context, cfg Config) (Config, error) {
+	if !useOMP(cfg) || cfg.Model != "" || cfg.AdoptOnly {
+		return cfg, nil
+	}
+	model, err := providerLocalSessionModel(ctx, cfg.Provider)
+	if err != nil {
+		return cfg, err
+	}
+	cfg.Model = model
+	return cfg, nil
+}
+
+func providerLocalSessionModel(ctx context.Context, provider Provider) (string, error) {
+	model, err := migrationSummaryModel(ctx, PlanProvider(provider))
+	if err != nil {
+		return "", fmt.Errorf("%w on %s: %v", ErrNoSubscriptionModel, provider, err)
+	}
+	if model == "" {
+		return "", fmt.Errorf("%w on %s: resolved an empty model id", ErrNoSubscriptionModel, provider)
+	}
+	return model, nil
 }
 
 // ompKeychain is the Keychain command runner. Tests replace it. A nil

@@ -53,12 +53,12 @@ import (
 	"github.com/marcelocantos/claudia/internal/tmuxagent"
 )
 
-// Config configures a Claude Code agent.
+// Config configures a session agent.
 type Config struct {
 	// Provider selects the runtime backing this agent. Empty means
-	// ProviderClaude. ProviderGrok uses ACP over `grok agent stdio`.
+	// ProviderClaude. ProviderGrok and ProviderCursor use the subscription
+	// sidecar.
 	// ProviderCodex Session mode uses `codex app-server` JSON-RPC.
-	// ProviderCursor uses ACP over `agent acp`.
 	Provider Provider
 	// SummaryOnly creates a tool-free, disposable Oh My Pi seat for one
 	// context-transfer turn. It is not a normal work-seat setting.
@@ -95,7 +95,8 @@ type Config struct {
 	// false for locally minted ids that have no conversation yet.
 	RequireResume bool
 
-	// Model overrides the default Claude model (e.g. "opus", "sonnet").
+	// Model overrides the provider default. For a subscription sidecar seat,
+	// empty selects Claudia's standard session model on that provider.
 	Model string
 
 	// PermissionMode sets the Claude Code permission mode.
@@ -649,8 +650,8 @@ func claudeAgentOps() agentOps {
 }
 
 // Start spawns a new agent for cfg.Provider. Claude uses a tmux-backed
-// Session; Grok uses ACP over `grok agent stdio`; Cursor uses ACP over
-// `agent acp`; Codex uses `codex app-server` JSON-RPC.
+// Session; Grok and Cursor use the subscription sidecar; Codex uses
+// `codex app-server` JSON-RPC.
 func Start(cfg Config) (*Agent, error) {
 	return StartContext(context.Background(), cfg)
 }
@@ -662,6 +663,11 @@ func Start(cfg Config) (*Agent, error) {
 // startup and clean up its result before completing.
 func StartContext(ctx context.Context, cfg Config) (*Agent, error) {
 	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	var err error
+	cfg, err = withDefaultOMPModel(ctx, cfg)
+	if err != nil {
 		return nil, err
 	}
 	if cfg.SummaryOnly {
@@ -736,6 +742,11 @@ func (a *Agent) ensureOwned() error {
 
 func startDirectContext(ctx context.Context, cfg Config) (*Agent, error) {
 	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	var err error
+	cfg, err = withDefaultOMPModel(ctx, cfg)
+	if err != nil {
 		return nil, err
 	}
 	if cfg.SummaryOnly && !useOMP(cfg) {
