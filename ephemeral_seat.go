@@ -182,8 +182,16 @@ func defaultEphemeralWorkDir(name string) (string, error) {
 
 func ephemeralWorkDirOK(abs string) bool {
 	tmp, err := filepath.Abs(os.TempDir())
-	if err == nil && underDir(abs, filepath.Clean(tmp)) {
-		return true
+	if err == nil {
+		tmp = filepath.Clean(tmp)
+		if underDir(abs, tmp) {
+			return true
+		}
+		// macOS may spell the same temporary directory as /var/folders
+		// in TMPDIR and /private/var/folders in a caller-supplied path.
+		if resolved, err := filepath.EvalSymlinks(tmp); err == nil && underDir(abs, resolved) {
+			return true
+		}
 	}
 	return hasPathElem(abs, "_scratchpad")
 }

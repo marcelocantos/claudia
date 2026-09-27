@@ -265,8 +265,11 @@ func TestEphemeralWorkDirIsolated(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := startedSeat(f, kept.Name).start().Config.WorkDir; got != filepath.Clean(abs) {
-		t.Fatalf("explicit temp workdir = %s, want %s", got, filepath.Clean(abs))
+	gotWorkDir := startedSeat(f, kept.Name).start().Config.WorkDir
+	resolvedGot, gotErr := filepath.EvalSymlinks(gotWorkDir)
+	resolvedWant, wantErr := filepath.EvalSymlinks(abs)
+	if gotErr != nil || wantErr != nil || resolvedGot != resolvedWant {
+		t.Fatalf("explicit temp workdir = %s (%v), want %s (%v)", gotWorkDir, gotErr, abs, wantErr)
 	}
 }
 
