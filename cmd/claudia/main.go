@@ -146,6 +146,22 @@ func serve(args []string) error {
 		log.Info("omp sidecar listening", "socket", sock)
 	}
 	claudia.SetOMPToolExec(claudia.DefaultOMPToolExec)
+	refreshCtx, refreshCancel := context.WithTimeout(context.Background(), 8*time.Second)
+	if err := claudia.OpenOMPPlans(refreshCtx); err != nil {
+		log.Warn("plan keychain was not read; Launch will not prompt again", "err", err)
+	} else {
+		defer func() {
+			if err := claudia.FlushOMPPlans(context.Background()); err != nil {
+				log.Warn("plan keychain flush failed", "err", err)
+			}
+		}()
+		if refreshed, skipped, err := claudia.RefreshOMPPlans(refreshCtx); err != nil {
+			log.Warn("plan refresh failed; Launch will retry", "err", err, "refreshed", refreshed, "skipped", skipped)
+		} else {
+			log.Info("plan credentials", "refreshed", refreshed, "skipped", skipped)
+		}
+	}
+	refreshCancel()
 
 	d, err := daemon.New(daemon.Options{
 		SocketPath:    *socket,

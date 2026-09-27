@@ -356,20 +356,13 @@ func resolvePath(p string) string {
 	return p
 }
 
-// ProductBrokerPath is the one binary the Keychain ACL trusts (🎯T865).
-// JEVONS_BROKER_BIN wins; otherwise this process, when it is jevons-broker.
+// ProductBrokerPath is the Claudia binary the Keychain ACL trusts (🎯T875).
 func ProductBrokerPath() string {
-	if p := strings.TrimSpace(os.Getenv("JEVONS_BROKER_BIN")); p != "" {
-		return resolvePath(p)
-	}
-	if repo := strings.TrimSpace(os.Getenv("JEVONS_DEV_REPO")); repo != "" {
-		return resolvePath(filepath.Join(repo, "bin", "jevons-broker"))
-	}
 	self, err := os.Executable()
 	if err != nil {
 		return ""
 	}
-	if filepath.Base(self) != "jevons-broker" {
+	if filepath.Base(self) != "claudia" {
 		return ""
 	}
 	return resolvePath(self)
