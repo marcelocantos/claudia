@@ -168,6 +168,12 @@ type TaskConfig struct {
 	// ProviderClaude.
 	Provider Provider
 
+	// RequireBroker refuses the run if the host daemon cannot accept it.
+	// It prevents the usual direct-process fallback when the broker is
+	// absent or loses its runtime. Use it when admission and host-wide
+	// accounting must never be bypassed.
+	RequireBroker bool
+
 	// WorkDir is the working directory passed to the claude process.
 	WorkDir string
 
@@ -236,15 +242,16 @@ type RawLogFunc func(line []byte)
 // persistent tmux session), Task spawns a new process per prompt
 // and parses structured NDJSON events from stdout.
 type Task struct {
-	id       string
-	name     string
-	provider Provider
-	workDir  string
-	model    string
-	sandbox  string
-	gitWrite bool
-	approval string
-	disallow []string
+	id            string
+	name          string
+	provider      Provider
+	requireBroker bool
+	workDir       string
+	model         string
+	sandbox       string
+	gitWrite      bool
+	approval      string
+	disallow      []string
 
 	mu            sync.Mutex
 	run           *taskRun
@@ -347,19 +354,20 @@ func NewTask(cfg TaskConfig) *Task {
 
 func newTaskWithBackend(cfg TaskConfig, backend taskBackend) *Task {
 	return &Task{
-		id:         cfg.ID,
-		name:       cfg.Name,
-		workDir:    cfg.WorkDir,
-		model:      cfg.Model,
-		provider:   cfg.Provider,
-		sandbox:    cfg.SandboxMode,
-		gitWrite:   cfg.SandboxGitWrite,
-		approval:   cfg.ApprovalPolicy,
-		disallow:   cfg.DisallowTools,
-		status:     TaskStatusIdle,
-		claudeID:   cfg.ClaudeID,
-		lastResult: cfg.LastResult,
-		backend:    backend,
+		id:            cfg.ID,
+		name:          cfg.Name,
+		workDir:       cfg.WorkDir,
+		model:         cfg.Model,
+		provider:      cfg.Provider,
+		requireBroker: cfg.RequireBroker,
+		sandbox:       cfg.SandboxMode,
+		gitWrite:      cfg.SandboxGitWrite,
+		approval:      cfg.ApprovalPolicy,
+		disallow:      cfg.DisallowTools,
+		status:        TaskStatusIdle,
+		claudeID:      cfg.ClaudeID,
+		lastResult:    cfg.LastResult,
+		backend:       backend,
 	}
 }
 
@@ -460,8 +468,9 @@ func (t *Task) Run(ctx context.Context, prompt string) (<-chan TaskEvent, error)
 	}
 	var run *taskRun
 	var err error
-	// A listening daemon owns the run (🎯T2.10). A bare protocol server, or
-	// no socket, is the direct path — today's behaviour, byte for byte.
+	// A listening daemon owns the run (🎯T2.10). By default a bare protocol
+	// server or absent socket falls through to a direct process. Callers that
+	// require host-wide admission explicitly refuse that fallback.
 	var bb *brokerTaskBackend
 	t.mu.Lock()
 	direct := t.direct
@@ -473,12 +482,24 @@ func (t *Task) Run(ctx context.Context, prompt string) (<-chan TaskEvent, error)
 		run, err = bb.RunTask(cmdCtx, req)
 		if err != nil && brokerFellThrough(err) {
 			bb.client.Close()
-			run, err = t.backend.RunTask(cmdCtx, req)
+			if t.requireBroker {
+				err = fmt.Errorf("%w: %v", ErrBrokerRequired, err)
+			} else {
+				run, err = t.backend.RunTask(cmdCtx, req)
+			}
 		} else if err != nil {
 			bb.client.Close()
 		}
 	} else {
-		run, err = t.backend.RunTask(cmdCtx, req)
+		if t.requireBroker {
+			if direct {
+				err = fmt.Errorf("%w: direct mode selected", ErrBrokerRequired)
+			} else {
+				err = fmt.Errorf("%w: no daemon at %s", ErrBrokerRequired, brokerSocketPath())
+			}
+		} else {
+			run, err = t.backend.RunTask(cmdCtx, req)
+		}
 	}
 	if err != nil {
 		cancel()
