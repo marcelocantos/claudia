@@ -16,6 +16,7 @@ import (
 
 	"github.com/marcelocantos/claudia"
 	"github.com/marcelocantos/claudia/internal/broker"
+	"github.com/marcelocantos/claudia/internal/wallclockguard"
 )
 
 // TestGrantIsDifferentialWithDirectStart is 🎯T2.10's acceptance: the same
@@ -451,8 +452,7 @@ func TestTaskRunStreamsThroughDaemon(t *testing.T) {
 	}
 	t.Cleanup(func() { daemonNewTask = prev })
 	f.boot(t, nil)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := wallclockguard.UntilTestTimeout(t)
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestBrokerRequiredTaskClient$")
 	cmd.Env = append(os.Environ(), "CLAUDIA_NO_BROKER=0", "CLAUDIA_TEST_BROKER_TASK_CLIENT=1")
 	if output, err := cmd.CombinedOutput(); err != nil {

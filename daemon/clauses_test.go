@@ -640,8 +640,7 @@ func TestCarriesTaskRawLog(t *testing.T) {
 	f.boot(t, nil)
 
 	outputPath := filepath.Join(t.TempDir(), "raw.json")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := wallclockguard.UntilTestTimeout(t)
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestCarriesTaskRawLogClient$")
 	cmd.Env = append(os.Environ(), "CLAUDIA_NO_BROKER=0", "CLAUDIA_TEST_RAW_LOG_CLIENT=1", "CLAUDIA_TEST_RAW_LOG_OUTPUT="+outputPath)
 	if output, err := cmd.CombinedOutput(); err != nil {

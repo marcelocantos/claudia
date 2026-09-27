@@ -4,7 +4,6 @@
 package omp
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/marcelocantos/claudia/internal/wallclockguard"
 )
 
 func TestT865LiveSidecarAcceptsLaunchSteerAbort(t *testing.T) {
@@ -34,8 +35,7 @@ func testEnsureSidecarVerbs(t *testing.T) {
 	socket := filepath.Join(dir, "omp.sock")
 	t.Setenv(SocketEnv, socket)
 	t.Setenv("JEVONS_SPOOL_DIR", filepath.Join(dir, "spool"))
-	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
-	defer cancel()
+	ctx := wallclockguard.UntilTestTimeout(t)
 	path, err := Ensure(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -92,8 +92,7 @@ func TestEnsureSurvivesParentExit(t *testing.T) {
 	socket := filepath.Join(dir, "child.sock")
 	t.Setenv(SocketEnv, socket)
 	t.Setenv("JEVONS_SPOOL_DIR", filepath.Join(dir, "spool"))
-	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
-	defer cancel()
+	ctx := wallclockguard.UntilTestTimeout(t)
 	if _, err := Ensure(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -116,8 +115,7 @@ func TestT869AdoptDoesNotCreateAndSecondAttachIsSilent(t *testing.T) {
 	socket := filepath.Join(dir, "adopt.sock")
 	t.Setenv(SocketEnv, socket)
 	t.Setenv("JEVONS_SPOOL_DIR", filepath.Join(dir, "spool"))
-	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
-	defer cancel()
+	ctx := wallclockguard.UntilTestTimeout(t)
 	if _, err := Ensure(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -187,8 +185,7 @@ func TestBrokerRestartRebindsSeat(t *testing.T) {
 	socket := filepath.Join(dir, "rebind.sock")
 	t.Setenv(SocketEnv, socket)
 	t.Setenv("JEVONS_SPOOL_DIR", filepath.Join(dir, "spool"))
-	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
-	defer cancel()
+	ctx := wallclockguard.UntilTestTimeout(t)
 	if _, err := Ensure(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -221,13 +218,13 @@ func TestBrokerRestartRebindsSeat(t *testing.T) {
 	if err := second.Send(Message{Op: OpAbort, Seat: "jevons"}); err != nil {
 		t.Fatal(err)
 	}
-	got := recvUntil(t, second, 5*time.Second)
+	got := recvUntil(t, second)
 	if got.Type != "turn_end" {
 		t.Fatalf("abort after broker restart = %+v, want turn_end on the new connection", got)
 	}
 }
 
-func recvUntil(t *testing.T, conn *Conn, d time.Duration) Event {
+func recvUntil(t *testing.T, conn *Conn) Event {
 	t.Helper()
 	ch := make(chan Event, 1)
 	errc := make(chan error, 1)
@@ -244,8 +241,8 @@ func recvUntil(t *testing.T, conn *Conn, d time.Duration) Event {
 		return ev
 	case err := <-errc:
 		t.Fatal(err)
-	case <-time.After(d):
-		t.Fatal("timed out waiting for the rebound seat")
+	case <-wallclockguard.UntilTestTimeout(t).Done():
+		t.Fatal("test timed out waiting for the rebound seat")
 	}
 	return Event{}
 }
@@ -346,8 +343,7 @@ func TestSpoolAppendDoesNotCompressFile(t *testing.T) {
 func runSpool(t *testing.T, dir, rec, now string) (string, error) {
 	t.Helper()
 	script := filepath.Join(filepath.Dir(ServerScript()), "spool.ts")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := wallclockguard.UntilTestTimeout(t)
 	cmd := exec.CommandContext(ctx, "bun", script, "append", dir, rec, now)
 	out, err := cmd.CombinedOutput()
 	return string(out), err

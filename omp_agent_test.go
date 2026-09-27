@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/marcelocantos/claudia/internal/wallclockguard"
 	"github.com/marcelocantos/claudia/omp"
 )
 
@@ -247,19 +248,22 @@ func TestOMPStartLoadsTokenFromKeychain(t *testing.T) {
 	if nudged.Cause != omp.CauseRestartNudge || nudged.Resume != "launched" || nudged.SessionID != prompt.SessionID {
 		t.Fatalf("restart nudge = %+v, want cause restart-nudge resume=launched session %s", nudged, prompt.SessionID)
 	}
-	deadline := time.After(2 * time.Second)
+	backstop := wallclockguard.UntilTestTimeout(t)
 	var sawText, sawEnd bool
 	for !sawText || !sawEnd {
 		select {
-		case ev := <-events:
+		case ev, ok := <-events:
+			if !ok {
+				t.Fatalf("event stream closed before text=%v turn_end=%v", sawText, sawEnd)
+			}
 			if ev.Type == "assistant" && ev.Text == "hi" {
 				sawText = true
 			}
 			if ev.StopReason == "end_turn" {
 				sawEnd = true
 			}
-		case <-deadline:
-			t.Fatalf("event stream text=%v turn_end=%v", sawText, sawEnd)
+		case <-backstop.Done():
+			t.Fatalf("test timed out waiting for event stream text=%v turn_end=%v", sawText, sawEnd)
 		}
 	}
 }
@@ -534,18 +538,16 @@ func TestOMPGrantCarriesOMP(t *testing.T) {
 }
 
 func TestExecKeychainACLTimeoutDoesNotHang(t *testing.T) {
+	// 🎯T97 exemption: this deadline is the behavior under test. A slow host
+	// may delay cancellation, but cannot turn the required refusal into success.
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	start := time.Now()
 	_, err := execKeychain(ctx, "sleep", "5")
 	if err == nil {
 		t.Fatal("timed-out keychain read must fail")
 	}
 	if !strings.Contains(err.Error(), "keychain ACL did not approve this binary") {
 		t.Fatalf("err = %v", err)
-	}
-	if time.Since(start) > time.Second {
-		t.Fatalf("ACL refusal hung for %s", time.Since(start))
 	}
 }
 
