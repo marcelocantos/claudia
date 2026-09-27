@@ -10,7 +10,7 @@ if [ -z "${HOME:-}" ]; then
   export HOME
 fi
 export USER="${USER:-$(id -un)}"
-export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:${HOME}/.cargo/bin:${HOME}/.local/bin:${HOME}/.py/bin:${HOME}/go/bin:${HOME}/.grok/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:${HOME}/.bun/bin:${HOME}/.cargo/bin:${HOME}/.local/bin:${HOME}/.py/bin:${HOME}/go/bin:${HOME}/.grok/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 export TERM="${TERM:-xterm-256color}"
 export LANG="${LANG:-en_US.UTF-8}"
 
