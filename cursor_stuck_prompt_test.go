@@ -59,7 +59,7 @@ func TestCursorStuckFirstPromptFailsTypedAndLeavesSeatUsable(t *testing.T) {
 	t.Setenv("CURSOR_BIN", bin)
 	t.Setenv("FAKE_ACP_WITHHOLD", "session/prompt")
 
-	agent, err := Start(Config{Provider: ProviderCursor, WorkDir: t.TempDir(), TermLogPath: "-"})
+	agent, err := startLegacyCursorSession(Config{Provider: ProviderCursor, WorkDir: t.TempDir(), TermLogPath: "-"})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestCursorSlowFirstPromptIsNotStuck(t *testing.T) {
 	t.Setenv("CURSOR_BIN", bin)
 	t.Setenv("FAKE_ACP_PROMPT_DELAY_MS", "600")
 
-	agent, err := Start(Config{Provider: ProviderCursor, WorkDir: t.TempDir(), TermLogPath: "-"})
+	agent, err := startLegacyCursorSession(Config{Provider: ProviderCursor, WorkDir: t.TempDir(), TermLogPath: "-"})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestCursorStuckFirstPromptRecoversOnReissue(t *testing.T) {
 	t.Setenv("CURSOR_BIN", bin)
 	t.Setenv("FAKE_ACP_SWALLOW_FIRST_PROMPT", "1")
 
-	agent, err := Start(Config{Provider: ProviderCursor, WorkDir: t.TempDir(), TermLogPath: "-"})
+	agent, err := startLegacyCursorSession(Config{Provider: ProviderCursor, WorkDir: t.TempDir(), TermLogPath: "-"})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -175,7 +175,7 @@ func TestCursorSlowPeerAnswersTheAbandonedDeliveryAndTheCallerSeesIt(t *testing.
 	t.Setenv("CURSOR_BIN", bin)
 	t.Setenv("FAKE_ACP_ANSWER_ABANDONED", "1")
 
-	agent, err := Start(Config{Provider: ProviderCursor, WorkDir: t.TempDir(), TermLogPath: "-"})
+	agent, err := startLegacyCursorSession(Config{Provider: ProviderCursor, WorkDir: t.TempDir(), TermLogPath: "-"})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -201,7 +201,7 @@ func TestCursorSecondPromptIsNotWatched(t *testing.T) {
 	bin := writeFakeCursorACP(t)
 	t.Setenv("CURSOR_BIN", bin)
 
-	agent, err := Start(Config{Provider: ProviderCursor, WorkDir: t.TempDir(), TermLogPath: "-"})
+	agent, err := startLegacyCursorSession(Config{Provider: ProviderCursor, WorkDir: t.TempDir(), TermLogPath: "-"})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}

@@ -51,7 +51,7 @@ func TestT92MeasureFakePeerTurnaround(t *testing.T) {
 	samples := make([]time.Duration, 0, mints)
 	for i := range mints {
 		func() {
-			agent, err := Start(Config{Provider: ProviderCursor, WorkDir: t.TempDir(), TermLogPath: "-"})
+			agent, err := startLegacyCursorSession(Config{Provider: ProviderCursor, WorkDir: t.TempDir(), TermLogPath: "-"})
 			if err != nil {
 				t.Fatalf("mint %d: Start: %v", i, err)
 			}

@@ -67,12 +67,22 @@ func writeFakeCursorACP(t *testing.T) string {
 	return bin
 }
 
+// startLegacyCursorSession exercises the retained ACP backend directly. Product Cursor
+// sessions use the OMP sidecar, so Start would test a different protocol.
+func startLegacyCursorSession(cfg Config) (*Agent, error) {
+	return startWithBackend(cfg, cursorAgentBackend{})
+}
+
+func runCursorACP(ctx context.Context, prompt string, cfg Config) (string, error) {
+	return runLegacyACP(ctx, prompt, cfg, cursorAgentBackend{})
+}
+
 func TestHermeticCursorSessionStartSendWait(t *testing.T) {
 	bin := writeFakeCursorACP(t)
 	t.Setenv("CURSOR_BIN", bin)
 
 	workDir := t.TempDir()
-	agent, err := Start(Config{
+	agent, err := startLegacyCursorSession(Config{
 		Provider:    ProviderCursor,
 		WorkDir:     workDir,
 		TermLogPath: "-",
@@ -121,12 +131,12 @@ func TestHermeticCursorSessionStartSendWait(t *testing.T) {
 	}
 }
 
-func TestHermeticCursorSessionRunHelper(t *testing.T) {
+func TestHermeticCursorACPSingleTurn(t *testing.T) {
 	bin := writeFakeCursorACP(t)
 	t.Setenv("CURSOR_BIN", bin)
 
 	ctx := t.Context()
-	text, err := Run(ctx, "Reply with exactly: pong", Config{
+	text, err := runCursorACP(ctx, "Reply with exactly: pong", Config{
 		Provider:    ProviderCursor,
 		WorkDir:     t.TempDir(),
 		TermLogPath: "-",
@@ -143,7 +153,7 @@ func TestHermeticCursorSessionLoad(t *testing.T) {
 	bin := writeFakeCursorACP(t)
 	t.Setenv("CURSOR_BIN", bin)
 
-	agent, err := Start(Config{
+	agent, err := startLegacyCursorSession(Config{
 		Provider:    ProviderCursor,
 		WorkDir:     t.TempDir(),
 		SessionID:   "sess-resume-me",
@@ -163,7 +173,7 @@ func TestHermeticCursorLoadSurvivesMultiMegabyteJSONLine(t *testing.T) {
 	t.Setenv("CURSOR_BIN", bin)
 	t.Setenv("FAKE_ACP_HUGE_LOAD", "1")
 
-	agent, err := Start(Config{
+	agent, err := startLegacyCursorSession(Config{
 		Provider:      ProviderCursor,
 		WorkDir:       t.TempDir(),
 		SessionID:     "sess-huge-replay",
@@ -184,7 +194,7 @@ func TestHermeticCursorLoadFailsClosedWhenRequireResume(t *testing.T) {
 	t.Setenv("CURSOR_BIN", bin)
 	t.Setenv("FAKE_ACP_REJECT_LOAD", "1")
 
-	agent, err := Start(Config{
+	agent, err := startLegacyCursorSession(Config{
 		Provider:      ProviderCursor,
 		WorkDir:       t.TempDir(),
 		SessionID:     "sess-exists",
@@ -228,7 +238,7 @@ func TestHermeticCursorLoadFailsClosedWhenStoreExists(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	agent, err := Start(Config{
+	agent, err := startLegacyCursorSession(Config{
 		Provider:    ProviderCursor,
 		WorkDir:     t.TempDir(),
 		SessionID:   sid,
@@ -251,7 +261,7 @@ func TestHermeticCursorLoadFallsThroughForMintedID(t *testing.T) {
 	t.Setenv("CURSOR_BIN", bin)
 	t.Setenv("FAKE_ACP_REJECT_LOAD", "1")
 
-	agent, err := Start(Config{
+	agent, err := startLegacyCursorSession(Config{
 		Provider:    ProviderCursor,
 		WorkDir:     t.TempDir(),
 		SessionID:   "sess-never-materialized",
@@ -274,7 +284,7 @@ func TestHermeticCursorHyphenPermissionOptionID(t *testing.T) {
 	t.Setenv("CURSOR_BIN", bin)
 	t.Setenv("FAKE_ACP_CURSOR_PERMISSION", "1")
 
-	agent, err := Start(Config{
+	agent, err := startLegacyCursorSession(Config{
 		Provider:    ProviderCursor,
 		WorkDir:     t.TempDir(),
 		TermLogPath: "-",
@@ -318,7 +328,7 @@ func TestHermeticCursorAskQuestionDoesNotStall(t *testing.T) {
 	t.Setenv("CURSOR_BIN", bin)
 	t.Setenv("FAKE_ACP_CURSOR_ASK", "1")
 
-	text, err := Run(t.Context(), "Reply with exactly: pong", Config{
+	text, err := runCursorACP(t.Context(), "Reply with exactly: pong", Config{
 		Provider:    ProviderCursor,
 		WorkDir:     t.TempDir(),
 		TermLogPath: "-",
@@ -690,7 +700,7 @@ func TestHermeticCursorSessionMultiChunkReply(t *testing.T) {
 	t.Setenv("CURSOR_BIN", bin)
 	t.Setenv("FAKE_ACP_CHUNKS", "p|ong")
 
-	agent, err := Start(Config{
+	agent, err := startLegacyCursorSession(Config{
 		Provider:    ProviderCursor,
 		WorkDir:     t.TempDir(),
 		TermLogPath: "-",

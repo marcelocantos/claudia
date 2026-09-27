@@ -393,7 +393,7 @@ func TestStartGrokSessionNonExecutableBinary(t *testing.T) {
 	// Absolute path that exists but is not executable so resolve returns it
 	// and spawn fails (no fallthrough to a host grok install).
 	t.Setenv("GROK_BIN", t.TempDir())
-	_, err := Start(Config{Provider: ProviderGrok, WorkDir: t.TempDir(), TermLogPath: "-"})
+	_, err := startLegacyGrokSession(Config{Provider: ProviderGrok, WorkDir: t.TempDir(), TermLogPath: "-"})
 	if err == nil {
 		t.Fatal("Start returned nil error for non-executable GROK_BIN")
 	}

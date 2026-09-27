@@ -67,7 +67,7 @@ func TestCursorWaitForResponseAfterTurnEndedStillReturnsTheReply(t *testing.T) {
 	bin := writeFakeCursorACP(t)
 	t.Setenv("CURSOR_BIN", bin)
 
-	agent, err := Start(Config{Provider: ProviderCursor, WorkDir: t.TempDir(), TermLogPath: "-"})
+	agent, err := startLegacyCursorSession(Config{Provider: ProviderCursor, WorkDir: t.TempDir(), TermLogPath: "-"})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}

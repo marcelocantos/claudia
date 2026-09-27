@@ -21,7 +21,7 @@ func TestExclusiveGrokHomeSurvivesAgentStopAndReturnedID(t *testing.T) {
 	t.Setenv("GROK_BIN", writeFakeGrokACP(t))
 	t.Setenv("FAKE_ACP_REJECT_LOAD", "1")
 	cfg := Config{Provider: ProviderGrok, WorkDir: t.TempDir(), SessionID: "requested-id", MCPExclusive: true, TermLogPath: "-"}
-	agent, err := Start(cfg)
+	agent, err := startLegacyGrokSession(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +41,7 @@ func TestExclusiveGrokHomeSurvivesAgentStopAndReturnedID(t *testing.T) {
 	}
 	t.Setenv("FAKE_ACP_REJECT_LOAD", "")
 	cfg.SessionID, cfg.RequireResume = sid, true
-	next, err := Start(cfg)
+	next, err := startLegacyGrokSession(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +129,7 @@ func TestExclusiveGrokHomeRefreshKeepsConversationAndExcludesUserMCP(t *testing.
 }
 
 // Real provider persistence is the oracle: the successor is never told the
-// retained fact. Run both stdio and detached serve, through ordinary Start/Stop.
+// retained fact. Run both retained ACP modes, stdio and detached serve.
 func TestExclusiveGrokSessionResumeLive(t *testing.T) {
 	if os.Getenv("CLAUDIA_GROK_LIVE") == "" {
 		t.Skip("CLAUDIA_GROK_LIVE not set")
@@ -141,7 +141,7 @@ func TestExclusiveGrokSessionResumeLive(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 			defer cancel()
 			cfg := Config{Provider: ProviderGrok, WorkDir: t.TempDir(), MCPExclusive: true, GrokConnect: connect, TermLogPath: "-"}
-			agent, err := Start(cfg)
+			agent, err := startLegacyGrokSession(cfg)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -210,7 +210,7 @@ func TestExclusiveGrokSessionResumeLive(t *testing.T) {
 				t.Fatalf("Stop removed provider home: %v", err)
 			}
 			cfg.SessionID, cfg.RequireResume = sid, true
-			next, err := Start(cfg)
+			next, err := startLegacyGrokSession(cfg)
 			if err != nil {
 				t.Fatal(err)
 			}

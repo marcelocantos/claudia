@@ -154,7 +154,7 @@ func TestCursorStuckPromptErrorNamesBothDeliveries(t *testing.T) {
 	t.Setenv("CURSOR_BIN", bin)
 	t.Setenv("FAKE_ACP_WITHHOLD", "session/prompt")
 
-	agent, err := Start(Config{Provider: ProviderCursor, WorkDir: t.TempDir(), TermLogPath: "-"})
+	agent, err := startLegacyCursorSession(Config{Provider: ProviderCursor, WorkDir: t.TempDir(), TermLogPath: "-"})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}

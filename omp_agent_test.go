@@ -256,8 +256,10 @@ func TestOMPStartRefreshesExpiredToken(t *testing.T) {
 }
 
 func TestOMPStartRefreshFailureDoesNotStart(t *testing.T) {
+	exp := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
+	blob := `{"records":{"anthropic":{"refresh_token":"old-r","access_token":"old","expiry":"` + exp + `"}}}`
 	ompKeychain = func(context.Context, string, ...string) ([]byte, error) {
-		return nil, fmt.Errorf("The specified item could not be found in the keychain.")
+		return []byte(blob), nil
 	}
 	ompLogin = omp.Login{
 		Script: "auth.ts",

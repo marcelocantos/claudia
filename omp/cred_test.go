@@ -105,11 +105,13 @@ func TestSaveRefusesPayAsYouGoService(t *testing.T) {
 
 func TestRefreshFailureDoesNotFallThrough(t *testing.T) {
 	resetKeychainShot()
+	exp := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
+	blob := `{"records":{"anthropic":{"refresh_token":"old-r","access_token":"old","expiry":"` + exp + `"}}}`
 	s := Store{
 		BrokerPath: "/usr/local/bin/claudia",
 		Run: func(_ context.Context, name string, args ...string) ([]byte, error) {
 			if name == "security" && len(args) > 0 && args[0] == "find-generic-password" {
-				return nil, errors.New("The specified item could not be found in the keychain.")
+				return []byte(blob), nil
 			}
 			t.Fatalf("refresh failure wrote the keychain: %s %v", name, args)
 			return nil, nil

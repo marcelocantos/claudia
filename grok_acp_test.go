@@ -40,12 +40,22 @@ func writeFakeGrokACP(t *testing.T) string {
 	return bin
 }
 
+// startLegacyGrokSession exercises the retained ACP backend directly. Product Grok
+// sessions use the OMP sidecar, so Start would test a different protocol.
+func startLegacyGrokSession(cfg Config) (*Agent, error) {
+	return startWithBackend(cfg, grokAgentBackend{})
+}
+
+func runGrokACP(ctx context.Context, prompt string, cfg Config) (string, error) {
+	return runLegacyACP(ctx, prompt, cfg, grokAgentBackend{})
+}
+
 func TestHermeticGrokSessionStartSendWait(t *testing.T) {
 	bin := writeFakeGrokACP(t)
 	t.Setenv("GROK_BIN", bin)
 
 	workDir := t.TempDir()
-	agent, err := Start(Config{
+	agent, err := startLegacyGrokSession(Config{
 		Provider:    ProviderGrok,
 		WorkDir:     workDir,
 		TermLogPath: "-",
@@ -160,7 +170,7 @@ func TestHermeticGrokBashPermissionOptionID(t *testing.T) {
 	t.Setenv("FAKE_ACP_BASH_PERMISSION", "1")
 
 	workDir := t.TempDir()
-	agent, err := Start(Config{
+	agent, err := startLegacyGrokSession(Config{
 		Provider:    ProviderGrok,
 		WorkDir:     workDir,
 		TermLogPath: "-",
@@ -201,13 +211,13 @@ func TestHermeticGrokBashPermissionOptionID(t *testing.T) {
 	}
 }
 
-func TestHermeticGrokSessionRunHelper(t *testing.T) {
+func TestHermeticGrokACPSingleTurn(t *testing.T) {
 	bin := writeFakeGrokACP(t)
 	t.Setenv("GROK_BIN", bin)
 
 	// t.Context(), not a deadline that can decide the verdict (🎯T31).
 	ctx := t.Context()
-	text, err := Run(ctx, "Reply with exactly: pong", Config{
+	text, err := runGrokACP(ctx, "Reply with exactly: pong", Config{
 		Provider:    ProviderGrok,
 		WorkDir:     t.TempDir(),
 		TermLogPath: "-",
@@ -224,7 +234,7 @@ func TestHermeticGrokSessionLoad(t *testing.T) {
 	bin := writeFakeGrokACP(t)
 	t.Setenv("GROK_BIN", bin)
 
-	agent, err := Start(Config{
+	agent, err := startLegacyGrokSession(Config{
 		Provider:    ProviderGrok,
 		WorkDir:     t.TempDir(),
 		SessionID:   "sess-resume-me",
@@ -279,7 +289,7 @@ func TestHermeticGrokLoadFailsClosedWhenRequireResume(t *testing.T) {
 	t.Setenv("GROK_BIN", bin)
 	t.Setenv("FAKE_ACP_REJECT_LOAD", "1")
 
-	agent, err := Start(Config{
+	agent, err := startLegacyGrokSession(Config{
 		Provider:      ProviderGrok,
 		WorkDir:       t.TempDir(),
 		SessionID:     "sess-exists",
@@ -302,7 +312,7 @@ func TestHermeticGrokLoadFallsThroughForMintedID(t *testing.T) {
 	t.Setenv("GROK_BIN", bin)
 	t.Setenv("FAKE_ACP_REJECT_LOAD", "1")
 
-	agent, err := Start(Config{
+	agent, err := startLegacyGrokSession(Config{
 		Provider:    ProviderGrok,
 		WorkDir:     t.TempDir(),
 		SessionID:   "sess-never-materialized",
@@ -333,7 +343,7 @@ func TestHermeticGrokTooledUnmaterializedLoads(t *testing.T) {
 	}
 
 	const wantID = "sess-old-tooled"
-	agent, err := Start(Config{
+	agent, err := startLegacyGrokSession(Config{
 		Provider:    ProviderGrok,
 		WorkDir:     dir,
 		SessionID:   wantID,
@@ -362,7 +372,7 @@ func TestHermeticGrokTooledUnmaterializedFallsThrough(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	agent, err := Start(Config{
+	agent, err := startLegacyGrokSession(Config{
 		Provider:    ProviderGrok,
 		WorkDir:     dir,
 		SessionID:   "sess-old-tooled",
@@ -396,7 +406,7 @@ func TestHermeticGrokRequireResumeWithMCPFailsClosed(t *testing.T) {
 	}
 
 	const wantID = "sess-exists"
-	agent, err := Start(Config{
+	agent, err := startLegacyGrokSession(Config{
 		Provider:      ProviderGrok,
 		WorkDir:       dir,
 		SessionID:     wantID,
@@ -427,7 +437,7 @@ func TestHermeticGrokRequireResumeWithMCPKeepsSessionID(t *testing.T) {
 	}
 
 	const wantID = "sess-exists"
-	agent, err := Start(Config{
+	agent, err := startLegacyGrokSession(Config{
 		Provider:      ProviderGrok,
 		WorkDir:       dir,
 		SessionID:     wantID,
