@@ -60,7 +60,16 @@ func TestBrokerRunSelectsAndStreamsRestrictedTask(t *testing.T) {
 		t.Fatalf("broker run client: %v", err)
 	}
 	var sawResult bool
-	for _, line := range bytes.Split(bytes.TrimSpace(output), []byte{'\n'}) {
+	lines := bytes.Split(bytes.TrimSpace(output), []byte{'\n'})
+	var selection struct {
+		Type     string `json:"type"`
+		Provider string `json:"provider"`
+		Model    string `json:"model"`
+	}
+	if err := json.Unmarshal(lines[0], &selection); err != nil || selection.Type != "selection" || selection.Provider != "grok" || selection.Model != "grok-4.5" {
+		t.Fatalf("broker selection = %+v (%v)", selection, err)
+	}
+	for _, line := range lines[1:] {
 		ev, err := claudia.DecodeTaskEventWire(line)
 		if err != nil {
 			t.Fatal(err)
