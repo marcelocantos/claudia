@@ -10,6 +10,10 @@ import (
 	"github.com/marcelocantos/claudia/internal/broker"
 )
 
+// ErrBrokerRequired means a Task configured for broker-only execution
+// could not run through the host daemon. The Task did not start directly.
+var ErrBrokerRequired = errors.New("claudia: task requires broker")
+
 // The library consult (🎯T3). Start and Task.Run ask usingBroker before any
 // socket work so CLAUDIA_NO_BROKER=1 is a live escape hatch: no filesystem
 // or network syscall in between. When a daemon answers, the seat or the run

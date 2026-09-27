@@ -486,6 +486,12 @@ task := claudia.NewTask(claudia.TaskConfig{
 events, err := task.Run(ctx, prompt)
 ```
 
+Set `TaskConfig.RequireBroker` when this run must be admitted by the
+standalone daemon. If the daemon is absent, the socket has no daemon
+runtime, or `SetDirect(true)` was selected, `Run` returns
+`ErrBrokerRequired` without starting a provider directly. The default
+remains the direct fallback for callers that do not require the daemon.
+
 The channel closes when the process exits. Drain it until then:
 
 ```go

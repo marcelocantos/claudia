@@ -168,6 +168,12 @@ type TaskConfig struct {
 	// ProviderClaude.
 	Provider Provider
 
+	// RequireBroker refuses the run if the host daemon cannot accept it.
+	// It prevents the usual direct-process fallback when the broker is
+	// absent or loses its runtime. Use it when admission and host-wide
+	// accounting must never be bypassed.
+	RequireBroker bool
+
 	// WorkDir is the working directory passed to the claude process.
 	WorkDir string
 
@@ -247,6 +253,7 @@ type Task struct {
 	id            string
 	name          string
 	provider      Provider
+	requireBroker bool
 	workDir       string
 	model         string
 	sandbox       string
@@ -361,6 +368,7 @@ func newTaskWithBackend(cfg TaskConfig, backend taskBackend) *Task {
 		workDir:       cfg.WorkDir,
 		model:         cfg.Model,
 		provider:      cfg.Provider,
+		requireBroker: cfg.RequireBroker,
 		sandbox:       cfg.SandboxMode,
 		gitWrite:      cfg.SandboxGitWrite,
 		approval:      cfg.ApprovalPolicy,
@@ -470,8 +478,9 @@ func (t *Task) Run(ctx context.Context, prompt string) (<-chan TaskEvent, error)
 	}
 	var run *taskRun
 	var err error
-	// A listening daemon owns the run (🎯T2.10). A bare protocol server, or
-	// no socket, is the direct path — today's behaviour, byte for byte.
+	// A listening daemon owns the run (🎯T2.10). By default a bare protocol
+	// server or absent socket falls through to a direct process. Callers that
+	// require host-wide admission explicitly refuse that fallback.
 	var bb *brokerTaskBackend
 	t.mu.Lock()
 	direct := t.direct
@@ -485,7 +494,9 @@ func (t *Task) Run(ctx context.Context, prompt string) (<-chan TaskEvent, error)
 		run, err = bb.RunTask(cmdCtx, req)
 		if err != nil && brokerFellThrough(err) {
 			bb.client.Close()
-			if t.pickRemaining {
+			if t.requireBroker {
+				err = fmt.Errorf("%w: %v", ErrBrokerRequired, err)
+			} else if t.pickRemaining {
 				err = fmt.Errorf("pick by remaining requires the broker: %w", err)
 			} else {
 				run, err = t.backend.RunTask(cmdCtx, req)
@@ -496,7 +507,15 @@ func (t *Task) Run(ctx context.Context, prompt string) (<-chan TaskEvent, error)
 	} else if t.pickRemaining {
 		err = fmt.Errorf("pick by remaining requires the broker: %w", ErrNoBroker)
 	} else {
-		run, err = t.backend.RunTask(cmdCtx, req)
+		if t.requireBroker {
+			if direct {
+				err = fmt.Errorf("%w: direct mode selected", ErrBrokerRequired)
+			} else {
+				err = fmt.Errorf("%w: no daemon at %s", ErrBrokerRequired, brokerSocketPath())
+			}
+		} else {
+			run, err = t.backend.RunTask(cmdCtx, req)
+		}
 	}
 	if err != nil {
 		cancel()

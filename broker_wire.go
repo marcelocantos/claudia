@@ -129,9 +129,12 @@ func DecodeTaskEventWire(raw json.RawMessage) (TaskEvent, error) {
 
 // taskConfigWire is TaskConfig with wire tags.
 type taskConfigWire struct {
-	ID              string   `json:"id,omitempty"`
-	Name            string   `json:"name,omitempty"`
-	Provider        Provider `json:"provider,omitempty"`
+	ID       string   `json:"id,omitempty"`
+	Name     string   `json:"name,omitempty"`
+	Provider Provider `json:"provider,omitempty"`
+	// RequireBroker is a caller-side admission guard. The daemon runs the
+	// task directly once the caller has a grant, so this flag stays local.
+	RequireBroker   bool     `json:"-"`
 	WorkDir         string   `json:"workdir,omitempty"`
 	Model           string   `json:"model,omitempty"`
 	SandboxMode     string   `json:"sandbox_mode,omitempty"`
