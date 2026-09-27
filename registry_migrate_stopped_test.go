@@ -53,7 +53,7 @@ func TestStoppedMigrationPersistsOneTransferAcrossFailedLaunch(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "launch failed") {
 		t.Fatalf("first attempt = %+v, %v; want persisted launch failure", first, err)
 	}
-	if summaries != 1 || PlanProvider(first.Destination.Provider) != ProviderClaude || first.Destination.SessionID == "" {
+	if summaries != 1 || PlanProvider(first.Destination.Provider) != ProviderClaude || first.Destination.SessionID == "" || first.Destination.Model == "" {
 		t.Fatalf("first attempt lost the prepared destination: %+v summaries=%d", first, summaries)
 	}
 	reopened, err := NewRegistry(r.path)

@@ -99,8 +99,22 @@ func (r *Registry) MigrateStopped(ctx context.Context, name string, args Migrate
 	if strings.TrimSpace(transfer.Brief) == "" {
 		return StoppedMigration{}, fmt.Errorf("migrate stopped %q: context transfer returned an empty brief", name)
 	}
+	destinationModel := strings.TrimSpace(args.Model)
+	if destinationModel == "" && useOMP(Config{Provider: target}) {
+		// The sidecar requires a concrete model id. The transfer seat already
+		// selected one on this provider; a fixture or alternate summarizer may
+		// omit it, in which case resolve the same standard tier explicitly.
+		destinationModel = strings.TrimSpace(transfer.Model)
+		if destinationModel == "" {
+			destinationModel, err = migrationSummaryModel(ctx, PlanProvider(target))
+			if err != nil {
+				return StoppedMigration{}, fmt.Errorf("migrate stopped %q: destination model: %w", name, err)
+			}
+		}
+	}
 	prepared := args
 	prepared.Provider = target
+	prepared.Model = destinationModel
 	prepared.ContextBrief = clipRunes(strings.TrimSpace(transfer.Brief), maxBriefRunes)
 	if adoptErr == nil {
 		if err := proc.Migrate(&prepared); err != nil {
@@ -117,7 +131,7 @@ func (r *Registry) MigrateStopped(ctx context.Context, name string, args Migrate
 	}
 	next := cloneAgentDef(*def)
 	next.Provider = target
-	next.Model = strings.TrimSpace(args.Model)
+	next.Model = destinationModel
 	next.SessionID = uuid.NewString()
 	next.Materialized = false
 	next.ConnectURL, next.ConnectPID = "", 0
