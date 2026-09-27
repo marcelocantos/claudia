@@ -60,6 +60,9 @@ type Config struct {
 	// ProviderCodex Session mode uses `codex app-server` JSON-RPC.
 	// ProviderCursor uses ACP over `agent acp`.
 	Provider Provider
+	// SummaryOnly creates a tool-free, disposable Oh My Pi seat for one
+	// context-transfer turn. It is not a normal work-seat setting.
+	SummaryOnly bool
 
 	// OMP is retained on persisted grants. Launch no longer needs it:
 	// grok, cursor, and the four subscription ids use the sidecar (🎯T866.5).
@@ -650,6 +653,14 @@ func StartContext(ctx context.Context, cfg Config) (*Agent, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	if cfg.SummaryOnly {
+		if !useOMP(cfg) {
+			return nil, fmt.Errorf("SummaryOnly requires an Oh My Pi provider")
+		}
+		// The broker owns the subscription Keychain item. Never fall back to
+		// direct startup for a disposable context-transfer seat.
+		return startViaBrokerContext(ctx, cfg)
+	}
 	// Gate on the published capability matrix rather than a per-provider
 	// branch list, so Start cannot drift into offering a session claudia
 	// has not claimed. Unknown providers still fall through to the
@@ -715,6 +726,9 @@ func (a *Agent) ensureOwned() error {
 func startDirectContext(ctx context.Context, cfg Config) (*Agent, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	if cfg.SummaryOnly && !useOMP(cfg) {
+		return nil, fmt.Errorf("SummaryOnly requires an Oh My Pi provider")
 	}
 	if _, known := providerCapabilityClaims[cfg.Provider]; known || cfg.Provider == "" {
 		if err := CheckCapability(cfg.Provider, CapabilitySession); err != nil {

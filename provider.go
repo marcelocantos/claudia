@@ -24,6 +24,40 @@ const (
 // Provider identifies the CLI/runtime backing a Task or Agent.
 type Provider string
 
+// PlanProvider maps a session backend to the subscription whose allowance it
+// spends. The Oh My Pi sidecar uses protocol identifiers while the plan meter
+// and model catalog use product identifiers. Keep that translation here so
+// every host evaluates a seat against the same allowance.
+func PlanProvider(provider Provider) Provider {
+	switch provider {
+	case "anthropic":
+		return ProviderClaude
+	case "openai-codex":
+		return ProviderCodex
+	case "xai-oauth":
+		return ProviderGrok
+	default:
+		return provider
+	}
+}
+
+// SubscriptionSeatProvider returns the runtime id of a subscription plan
+// on the Oh My Pi sidecar. Hosts pass the selected plan provider through
+// this function before starting or migrating a broker seat; legacy CLI
+// identities stay readable through PlanProvider.
+func SubscriptionSeatProvider(provider Provider) Provider {
+	switch PlanProvider(provider) {
+	case ProviderClaude:
+		return "anthropic"
+	case ProviderCodex:
+		return "openai-codex"
+	case ProviderGrok:
+		return "xai-oauth"
+	default:
+		return provider
+	}
+}
+
 const (
 	// ProviderClaude uses Claude Code and is the default when Provider is empty.
 	ProviderClaude Provider = "claude"

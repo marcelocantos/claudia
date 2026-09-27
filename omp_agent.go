@@ -124,12 +124,13 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 		op = omp.OpAdopt
 	}
 	if err := conn.Send(omp.Message{
-		Op:       op,
-		Seat:     req.Config.Name,
-		Provider: provider,
-		Model:    req.Config.Model,
-		Token:    token,
-		Cwd:      req.Config.WorkDir,
+		Op:          op,
+		Seat:        req.Config.Name,
+		Provider:    provider,
+		Model:       req.Config.Model,
+		SummaryOnly: req.Config.SummaryOnly,
+		Token:       token,
+		Cwd:         req.Config.WorkDir,
 	}); err != nil {
 		conn.Close()
 		return nil, err
@@ -164,7 +165,7 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 		conn: conn, bytes: make(chan []byte, 8),
 		token: token, provider: provider,
 		seat: req.Config.Name, model: req.Config.Model, cwd: req.Config.WorkDir,
-		sessionID: sessionID,
+		sessionID: sessionID, summaryOnly: req.Config.SummaryOnly,
 	}
 	return &agentStart{
 		Control: ctrl,
@@ -182,16 +183,22 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 			},
 			setModel: func(_ *Agent, model string) error {
 				return ctrl.send(omp.Message{
-					Op:       omp.OpLoad,
-					Seat:     req.Config.Name,
-					Provider: provider,
-					Model:    model,
-					Token:    ctrl.token,
-					Cwd:      req.Config.WorkDir,
+					Op:          omp.OpLoad,
+					Seat:        req.Config.Name,
+					Provider:    provider,
+					Model:       model,
+					SummaryOnly: req.Config.SummaryOnly,
+					Token:       ctrl.token,
+					Cwd:         req.Config.WorkDir,
 				})
 			},
 			promptInFlight: func(*Agent) bool { return ctrl.inflight.Load() },
-			stop:           func(*Agent) { conn.Close() },
+			stop: func(*Agent) {
+				if req.Config.SummaryOnly {
+					_ = ctrl.send(omp.Message{Op: omp.OpDrop, Seat: req.Config.Name})
+				}
+				conn.Close()
+			},
 		},
 		DetectReady: func(a *Agent) {
 			go ctrl.pump(a)
@@ -206,17 +213,18 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 }
 
 type ompControl struct {
-	conn      *omp.Conn
-	bytes     chan []byte
-	token     string
-	provider  string
-	seat      string
-	model     string
-	cwd       string
-	sessionID string
-	mu        sync.Mutex
-	inflight  atomic.Bool
-	refreshed atomic.Bool
+	conn        *omp.Conn
+	bytes       chan []byte
+	token       string
+	provider    string
+	seat        string
+	model       string
+	cwd         string
+	sessionID   string
+	summaryOnly bool
+	mu          sync.Mutex
+	inflight    atomic.Bool
+	refreshed   atomic.Bool
 }
 
 func promptMessage(op, seat, text string, a *Agent, ctrl *ompControl) omp.Message {
@@ -286,6 +294,10 @@ func (c *ompControl) pump(a *Agent) {
 				PreviewUpdate: PreviewUpdateAppend,
 			})
 		case "tool_call":
+			if c.summaryOnly {
+				_ = c.send(omp.Message{Op: omp.OpTool, CallID: ev.CallID, Result: "tools are unavailable to a migration summarizer"})
+				continue
+			}
 			a.publishEvent(Event{
 				Type:         "progress",
 				ProgressType: "tool_use",
@@ -360,7 +372,7 @@ func (c *ompControl) refreshRejectedToken() {
 	c.mu.Unlock()
 	if err := c.send(omp.Message{
 		Op: omp.OpLoad, Seat: c.seat, Provider: c.provider,
-		Model: c.model, Token: rec.AccessToken, Cwd: c.cwd,
+		Model: c.model, SummaryOnly: c.summaryOnly, Token: rec.AccessToken, Cwd: c.cwd,
 	}); err != nil {
 		slog.Warn("omp token refreshed; sidecar reload failed", "seat", c.seat, "err", err)
 	}

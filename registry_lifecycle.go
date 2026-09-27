@@ -119,6 +119,7 @@ func registryConfig(def *AgentDef, requireResume bool) Config {
 	return Config{
 		Name:     def.Name,
 		Provider: def.Provider, WorkDir: def.WorkDir, SessionID: def.SessionID,
+		SummaryOnly:   def.SummaryOnly,
 		RequireResume: requireResume, Model: def.Model, DisallowTools: def.DisallowTools,
 		MCPServers: def.MCPServers, MCPExclusive: def.MCPExclusive,
 		GrokConnect: def.GrokConnect || def.ConnectURL != "", ConnectURL: def.ConnectURL,

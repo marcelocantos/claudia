@@ -29,6 +29,7 @@ type Line = {
   seat?: string;
   provider?: string;
   model?: string;
+  summary_only?: boolean;
   token?: string;
   cwd?: string;
   text?: string;
@@ -45,6 +46,7 @@ type Seat = {
   provider: string;
   model: string;
   token: string;
+  summaryOnly: boolean;
   agent: SeatAgent;
 };
 
@@ -62,7 +64,10 @@ const server = createServer((socket) => {
 
   const write = (ev: Record<string, unknown>) => {
     const seat = typeof ev.seat === "string" ? ev.seat : "";
-    if (seat) {
+    // A one-shot transfer seat carries a full predecessor transcript.
+    // Return its events to the caller without duplicating them in the
+    // durable fleet spool.
+    if (seat && ev.type !== "dropped" && !seats.get(seat)?.summaryOnly) {
       try {
         const loaded = seats.get(seat);
         const str = (k: string) => (typeof ev[k] === "string" ? ev[k] as string : undefined);
@@ -171,6 +176,7 @@ async function handle(
       model: msg.model ?? "",
       token: msg.token,
       cwd: msg.cwd ?? "",
+      summaryOnly: msg.summary_only === true,
       emit: (ev) => write({ seat, ...ev }),
       callTool,
     });
@@ -178,6 +184,7 @@ async function handle(
       provider: msg.provider ?? "",
       model: msg.model ?? "",
       token: msg.token,
+      summaryOnly: msg.summary_only === true,
       agent,
     });
     write({ seat, type: "ready", how: "launched" });
@@ -191,6 +198,12 @@ async function handle(
   if (msg.op === "abort") {
     loaded.agent.abort();
     write({ seat, type: "turn_end", text: "aborted", snapshot: loaded.agent.snapshot() });
+    return;
+  }
+  if (msg.op === "drop") {
+    loaded.agent.abort();
+    seats.delete(seat);
+    write({ seat, type: "dropped" });
     return;
   }
   if (msg.op === "steer") {

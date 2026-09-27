@@ -174,6 +174,7 @@ type GrantDefinition struct {
 // carry, with the reason. TestBrokerWireMirrorsAreComplete refuses any other
 // omission.
 var configNotOnGrantWire = map[string]string{
+	"AdoptOnly":  "registry-local sidecar adoption probe; daemon sets it while reattaching a seat",
 	"PoolPolicy": "Acquire pool policy; carried as grant.pool on an acquire, not on the definition",
 	"PoolCap":    "Acquire pool cap; carried as grant.pool on an acquire, not on the definition",
 	// The wait it bounds runs in the consumer's process, on its own
@@ -208,6 +209,7 @@ func configToGrantDef(name string, cfg Config, base *AgentDef) GrantDefinition {
 			WorkDir:              cfg.WorkDir,
 			SessionID:            cfg.SessionID,
 			Provider:             cfg.Provider,
+			SummaryOnly:          cfg.SummaryOnly,
 			Model:                cfg.Model,
 			DisallowTools:        cfg.DisallowTools,
 			ConnectURL:           cfg.ConnectURL,

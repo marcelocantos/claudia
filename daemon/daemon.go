@@ -527,9 +527,9 @@ func (d *Daemon) handleGrant(c *broker.ClientConn, req *broker.Request) {
 	if def.WorkDir == "" {
 		def.WorkDir = "."
 	}
-	// A seat is marked live (AutoStart) while the daemon holds it, so a
-	// daemon that comes back after a reboot knows which seats to bring back.
-	def.AutoStart = true
+	// Work seats survive a broker restart. A one-shot transfer seat must
+	// disappear if its caller cannot finish and release it.
+	def.AutoStart = !def.SummaryOnly
 
 	d.mu.Lock()
 	g := d.liveGrantLocked(name)
@@ -569,6 +569,13 @@ func (d *Daemon) handleGrant(c *broker.ClientConn, req *broker.Request) {
 		proc, err = d.reg.LaunchContext(ctx, name)
 	}
 	if err != nil {
+		if def.SummaryOnly {
+			// A failed one-shot transfer has no owner handle to release it.
+			// Ordinary failed grants remain registered for recovery.
+			if removeErr := d.reg.Remove(name); removeErr != nil {
+				d.log.Warn("remove failed transfer seat", "grant", name, "err", removeErr)
+			}
+		}
 		_ = c.Fail(req.ID, err)
 		return
 	}

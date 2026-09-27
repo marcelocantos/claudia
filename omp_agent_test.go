@@ -405,7 +405,7 @@ func TestOMPSidecarPromptCallsPiAgentCore(t *testing.T) {
 	if strings.Contains(src, `@oh-my-pi/pi-natives`) || strings.Contains(src, `@oh-my-pi/pi-coding-agent`) {
 		t.Fatal("sidecar must not load pi-natives or omp's tools")
 	}
-	if !strings.Contains(src, `from "./coding.ts"`) || !strings.Contains(src, "setTools(codingTools") {
+	if !strings.Contains(src, `from "./coding.ts"`) || !strings.Contains(src, "setTools(opts.summaryOnly ? [] : codingTools") {
 		t.Fatal("seat.ts must advertise host coding tools (Bash/Read/Write/Glob/Grep)")
 	}
 	coding, err := os.ReadFile("sidecar/coding.ts")
@@ -448,12 +448,12 @@ func TestOMPSidecarPromptCallsPiAgentCore(t *testing.T) {
 }
 
 func TestOMPGrantCarriesOMP(t *testing.T) {
-	def := configToGrantDef("seat", Config{Provider: ProviderCursor, OMP: true, WorkDir: "/w"}, nil)
+	def := configToGrantDef("seat", Config{Provider: ProviderCursor, OMP: true, SummaryOnly: true, WorkDir: "/w"}, nil)
 	if !def.OMP {
 		t.Fatal("grant must persist Config.OMP so a bounce does not start the vendor CLI")
 	}
 	cfg := def.Config()
-	if !cfg.OMP || cfg.Provider != ProviderCursor {
+	if !cfg.OMP || !cfg.SummaryOnly || cfg.Provider != ProviderCursor {
 		t.Fatalf("rehydrated cfg = %+v", cfg)
 	}
 }

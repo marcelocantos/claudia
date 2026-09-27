@@ -52,6 +52,10 @@ type AgentDef struct {
 	// Cursor Session uses ACP over `agent acp`.
 	Provider Provider `json:"provider,omitempty"`
 
+	// SummaryOnly makes a disposable, tool-free context-transfer seat.
+	// It travels with the broker grant so the daemon launches the same mode.
+	SummaryOnly bool `json:"summary_only,omitempty"`
+
 	// Model overrides the default model (e.g. "opus", "sonnet", "grok-4").
 	Model string `json:"model,omitempty"`
 

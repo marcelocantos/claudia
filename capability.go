@@ -477,6 +477,13 @@ func providerCapabilityClaim(provider Provider, capability Capability) capabilit
 	if provider == "" {
 		provider = ProviderClaude
 	}
+	// A sidecar seat is named by its protocol provider (for example
+	// xai-oauth), not the plan/catalog provider. Every subscription sidecar
+	// session supports a fresh-session migrate; do not inherit unrelated
+	// CLI capability claims from the plan provider.
+	if capability == CapabilityMigrate && useOMP(Config{Provider: provider}) {
+		return capabilityClaim{status: CapabilitySupported}
+	}
 	if claims, ok := providerCapabilityClaims[provider]; ok {
 		if claim, ok := claims[capability]; ok {
 			return claim
