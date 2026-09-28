@@ -21,6 +21,9 @@ func TestHostJevonsToolsListsOnlyJevonsToolsWithSchemas(t *testing.T) {
 		`{"name":"playwright_click","description":"not ours","inputSchema":{"type":"object"}}]}}`
 	for _, sse := range []bool{false, true} {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/not-ours" {
+				t.Error("asked a server that is not the host's jevons server")
+			}
 			b, _ := io.ReadAll(r.Body)
 			if !strings.Contains(string(b), `"tools/list"`) {
 				t.Errorf("asked %s, want tools/list", b)
@@ -37,7 +40,8 @@ func TestHostJevonsToolsListsOnlyJevonsToolsWithSchemas(t *testing.T) {
 		dead.Close()
 		raw := hostJevonsTools(context.Background(), []MCPServer{
 			{Name: "stdio", Command: "true"},
-			{Name: "gone", Type: "http", URL: dead.URL},
+			{Name: "jevons-gone", Type: "http", URL: dead.URL},
+			{Name: "playwright", Type: "http", URL: srv.URL + "/not-ours"},
 			{Name: "jevonsmcp", Type: "http", URL: srv.URL},
 		})
 		srv.Close()

@@ -720,7 +720,9 @@ type hostJevonsTool struct {
 // or one that does not answer, gets no host tools; the seat still starts.
 func hostJevonsTools(ctx context.Context, servers []MCPServer) json.RawMessage {
 	for _, srv := range servers {
-		if srv.URL == "" || (srv.Type != "" && srv.Type != "http") {
+		// Only the host's own server carries jevons_* tools. Asking every
+		// proxied server cost a seat start up to 5 s per dead proxy.
+		if srv.URL == "" || (srv.Type != "" && srv.Type != "http") || !strings.HasPrefix(srv.Name, "jevons") {
 			continue
 		}
 		if tools := listJevonsMCPTools(ctx, srv.URL); len(tools) > 0 {
