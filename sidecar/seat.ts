@@ -139,8 +139,19 @@ export function createSeatAgent(opts: {
 
   return {
     prompt: async (text: string, meta?: PromptMeta) => {
-      if (turn && !turn.closed) {
-        throw new Error("seat is already processing; wait for its current turn or steer it");
+      // A prompt that arrives mid-turn is queued, not refused. The running
+      // turn answers it before it ends. Refusing lost the message: the
+      // refusal reached the owner as the seat's own reply and nothing retried
+      // (2026-09-28, owner messages to a busy product owner). Checking the
+      // agent too covers the gap after this turn closes while pi-agent-core
+      // is still finishing, where prompt() throws AgentBusyError.
+      if ((turn && !turn.closed) || agent.state.isStreaming) {
+        agent.followUp({
+          role: "user",
+          content: text,
+          timestamp: Date.now(),
+        });
+        return;
       }
       const metaSession = meta?.session_id || sessionId;
       turn = beginTurn({
@@ -152,6 +163,11 @@ export function createSeatAgent(opts: {
       let refusal = "";
       try {
         await agent.prompt(text);
+        // A follow-up queued after the run's own last check would wait for
+        // the next prompt. Drain it inside this turn (bounded).
+        for (let i = 0; i < 8 && agent.hasQueuedMessages() && !agent.state.isStreaming; i++) {
+          await agent.continue();
+        }
         refusal = turnRefusal(agent.state);
         finish(refusal ? "error" : turn?.stop_token ? "stop_token" : "end_turn");
       } catch (err) {

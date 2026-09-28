@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 )
@@ -56,5 +57,25 @@ func TestHostJevonsToolsListsOnlyJevonsToolsWithSchemas(t *testing.T) {
 	}
 	if raw := hostJevonsTools(context.Background(), nil); raw != nil {
 		t.Fatalf("no servers should offer no tools, got %s", raw)
+	}
+}
+
+// A prompt that reaches a busy seat is queued as a pi-agent-core follow-up,
+// not refused: the refusal reached the owner as the seat's reply and the
+// message was lost (2026-09-28). Leftover follow-ups drain inside the turn.
+func TestOMPSidecarQueuesPromptWhileBusy(t *testing.T) {
+	seat, err := os.ReadFile("sidecar/seat.ts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(seat)
+	if strings.Contains(src, "seat is already processing") {
+		t.Fatal("a busy seat must not refuse a prompt")
+	}
+	if !strings.Contains(src, "if ((turn && !turn.closed) || agent.state.isStreaming) {\n        agent.followUp({") {
+		t.Fatal("a prompt that arrives mid-turn must be queued with agent.followUp")
+	}
+	if !strings.Contains(src, "agent.hasQueuedMessages() && !agent.state.isStreaming") || !strings.Contains(src, "await agent.continue()") {
+		t.Fatal("follow-ups left after the run must drain inside the turn")
 	}
 }
