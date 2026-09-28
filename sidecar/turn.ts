@@ -209,6 +209,21 @@ export function closeTurn(turn: OpenTurn, stop: Stop, now: Date = new Date()): T
   return digest;
 }
 
+// turnRefusal is the provider's reason when a turn ended on a refused
+// request (usage limit, rate limit, auth) rather than on an answer, and ""
+// otherwise. pi-agent-core resolves prompt() normally in that case and
+// keeps the reason only on the last assistant message, so without this the
+// owner sees a turn that answered nothing (🎯T137). An aborted turn is not
+// a refusal.
+export function turnRefusal(state: { messages?: unknown[] } | undefined): string {
+  const messages = state?.messages;
+  const last = (messages && messages.length > 0 ? messages[messages.length - 1] : undefined) as
+    | { role?: string; stopReason?: string; errorMessage?: string }
+    | undefined;
+  if (last?.role !== "assistant" || last.stopReason !== "error") return "";
+  return (last.errorMessage ?? "").trim() || "the provider ended the turn with an error";
+}
+
 // stripStopTokens is the non-streaming form used when no turn is open.
 export function stripStopTokens(delta: string): { visible: string; token?: string } {
   const scratch: OpenTurn = {

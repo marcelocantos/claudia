@@ -10,6 +10,7 @@ import {
   noteDelta,
   noteTool,
   stripStopTokens,
+  turnRefusal,
 } from "./turn.ts";
 
 describe("classifyCause", () => {
@@ -115,5 +116,29 @@ describe("digest", () => {
     const typeAt = line.indexOf('"type"');
     expect(typeAt).toBeGreaterThan(0);
     expect(typeAt).toBeLessThan(80);
+  });
+});
+
+describe("turnRefusal", () => {
+  test("names the provider's reason for a refused turn", () => {
+    const state = {
+      messages: [
+        { role: "user", content: "summarize" },
+        { role: "assistant", content: [{ type: "text", text: "" }], stopReason: "error",
+          errorMessage: "429 usage_limit_reached: weekly limit resets 2026-10-03T23:20Z" },
+      ],
+    };
+    expect(turnRefusal(state)).toBe("429 usage_limit_reached: weekly limit resets 2026-10-03T23:20Z");
+  });
+  test("is empty for a turn that answered, even with no text", () => {
+    expect(turnRefusal({ messages: [{ role: "assistant", content: [], stopReason: "stop" }] })).toBe("");
+    expect(turnRefusal({ messages: [] })).toBe("");
+    expect(turnRefusal(undefined)).toBe("");
+  });
+  test("is empty for an aborted turn", () => {
+    expect(turnRefusal({ messages: [{ role: "assistant", stopReason: "aborted", errorMessage: "aborted" }] })).toBe("");
+  });
+  test("still reports a refusal with no reason", () => {
+    expect(turnRefusal({ messages: [{ role: "assistant", stopReason: "error" }] })).not.toBe("");
   });
 });

@@ -350,10 +350,18 @@ func (c *ompControl) pump(a *Agent) {
 			if rejected && c.refreshed.CompareAndSwap(false, true) {
 				c.refreshRejectedToken()
 			}
+			// A refused turn (usage limit, rate limit, auth) ends with no
+			// text. Said as an error, WaitForResponse names the refusal
+			// instead of returning an empty answer (🎯T137).
+			text := ev.Text
+			refusal := ev.Refusal()
+			if refusal != "" {
+				text = "provider refused the turn: " + refusal
+			}
 			a.publishEvent(Event{
 				Type:       "assistant",
-				Text:       ev.Text,
-				IsError:    rejected || ev.Type == "error",
+				Text:       text,
+				IsError:    rejected || ev.Type == "error" || refusal != "",
 				StopReason: "end_turn",
 			})
 		}

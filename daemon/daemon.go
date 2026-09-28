@@ -217,6 +217,17 @@ func New(opts Options) (*Daemon, error) {
 	if opts.launchers != nil {
 		reg.SetLaunchers(opts.launchers)
 	}
+	// A transfer seat left in the table was stranded by a crash, or by a
+	// daemon that predated SummaryOnly and marked it auto-start. Pruning
+	// before resume keeps a restart from refreshing an OAuth token for each
+	// one (🎯T136: 534 of them once cost ~90s before real seats resumed).
+	pruned, err := reg.PruneMigrationTransferSeats()
+	if err != nil {
+		return nil, fmt.Errorf("broker daemon: prune migration transfer seats: %w", err)
+	}
+	if len(pruned) > 0 {
+		log.Info("pruned stranded migration transfer seats", "count", len(pruned))
+	}
 
 	ln, err := broker.Listen(path)
 	if err != nil {
@@ -441,10 +452,13 @@ func (d *Daemon) handleReauth(c *broker.ClientConn, req *broker.Request) {
 		AuthRecovered: &broker.NamedResponse{Name: provider}})
 }
 
-// ConnClosed implements broker.Handler: seats stay running, unowned.
+// ConnClosed implements broker.Handler: seats stay running, unowned. A
+// migration transfer seat is the exception: it answers one call on the
+// connection that made it, so when that connection goes it is stopped
+// and forgotten (🎯T136).
 func (d *Daemon) ConnClosed(c *broker.ClientConn) {
 	d.mu.Lock()
-	var detached []string
+	var detached, dropped []string
 	var returned []*brokerGrant
 	for name, g := range d.grants {
 		if g.owner != c {
@@ -458,6 +472,14 @@ func (d *Daemon) ConnClosed(c *broker.ClientConn) {
 			continue
 		}
 		d.detachLocked(g)
+		if def := d.reg.Def(name); def != nil && claudia.IsMigrationTransferSeat(*def) {
+			if g.proc != nil && g.sub != 0 {
+				g.proc.UnsubscribeEvents(g.sub)
+			}
+			delete(d.grants, name)
+			dropped = append(dropped, name)
+			continue
+		}
 		detached = append(detached, name)
 	}
 	var cancels []context.CancelFunc
@@ -471,6 +493,13 @@ func (d *Daemon) ConnClosed(c *broker.ClientConn) {
 	for _, name := range detached {
 		d.log.Info("consumer connection closed; seat kept running", "grant", name)
 		d.emit(broker.EventMessage{Kind: broker.EventDetach, Name: name})
+	}
+	for _, name := range dropped {
+		d.log.Info("consumer connection closed; migration transfer seat removed", "grant", name)
+		if err := d.reg.Remove(name); err != nil {
+			d.log.Warn("remove orphaned transfer seat", "grant", name, "err", err)
+		}
+		d.emit(broker.EventMessage{Kind: broker.EventRelease, Name: name})
 	}
 	for _, g := range returned {
 		d.log.Info("consumer connection closed; returning pooled seat", "grant", g.name)
@@ -529,7 +558,8 @@ func (d *Daemon) handleGrant(c *broker.ClientConn, req *broker.Request) {
 	}
 	// Work seats survive a broker restart. A one-shot transfer seat must
 	// disappear if its caller cannot finish and release it.
-	def.AutoStart = !def.SummaryOnly
+	transfer := claudia.IsMigrationTransferSeat(def)
+	def.AutoStart = !transfer
 
 	d.mu.Lock()
 	g := d.liveGrantLocked(name)
@@ -586,7 +616,7 @@ func (d *Daemon) handleGrant(c *broker.ClientConn, req *broker.Request) {
 		proc, err = d.reg.LaunchContext(ctx, name)
 	}
 	if err != nil {
-		if def.SummaryOnly {
+		if transfer {
 			// A failed one-shot transfer has no owner handle to release it.
 			// Ordinary failed grants remain registered for recovery.
 			if removeErr := d.reg.Remove(name); removeErr != nil {

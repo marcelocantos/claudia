@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"strings"
 	"time"
 )
 
@@ -47,14 +48,52 @@ type Message struct {
 
 // Event is one sidecar line. Type turn_end carries a context snapshot.
 type Event struct {
-	Seat     string          `json:"seat,omitempty"`
-	Type     string          `json:"type"`
-	How      string          `json:"how,omitempty"`
-	Reason   string          `json:"reason,omitempty"`
-	Text     string          `json:"text,omitempty"`
-	CallID   string          `json:"call_id,omitempty"`
-	Name     string          `json:"name,omitempty"`
+	Seat   string `json:"seat,omitempty"`
+	Type   string `json:"type"`
+	How    string `json:"how,omitempty"`
+	Reason string `json:"reason,omitempty"`
+	Text   string `json:"text,omitempty"`
+	CallID string `json:"call_id,omitempty"`
+	Name   string `json:"name,omitempty"`
+	// Error is the provider's refusal on a turn_end that got no answer
+	// (usage limit, rate limit, auth). Empty on a turn that answered.
+	Error    string          `json:"error,omitempty"`
 	Snapshot json.RawMessage `json:"snapshot,omitempty"`
+}
+
+// Refusal is the provider's reason when a turn_end closed a refused turn,
+// and "" otherwise (🎯T137). It reads Error, and falls back to the
+// snapshot's last message for a sidecar started before Error existed: the
+// sidecar outlives broker and host bounces, so an older one may be the one
+// answering. An aborted turn is not a refusal.
+func (ev Event) Refusal() string {
+	if ev.Type != "turn_end" {
+		return ""
+	}
+	if ev.Error != "" {
+		return ev.Error
+	}
+	if len(ev.Snapshot) == 0 {
+		return ""
+	}
+	var state struct {
+		Messages []struct {
+			Role         string `json:"role"`
+			StopReason   string `json:"stopReason"`
+			ErrorMessage string `json:"errorMessage"`
+		} `json:"messages"`
+	}
+	if json.Unmarshal(ev.Snapshot, &state) != nil || len(state.Messages) == 0 {
+		return ""
+	}
+	last := state.Messages[len(state.Messages)-1]
+	if last.Role != "assistant" || last.StopReason != "error" {
+		return ""
+	}
+	if reason := strings.TrimSpace(last.ErrorMessage); reason != "" {
+		return reason
+	}
+	return "the provider ended the turn with an error"
 }
 
 // Conn is one line-oriented connection to the long-lived sidecar.

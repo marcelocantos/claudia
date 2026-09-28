@@ -11,6 +11,7 @@ import {
   noteDelta,
   noteTool,
   stripStopTokens,
+  turnRefusal,
   type OpenTurn,
   type PromptMeta,
   type Stop,
@@ -21,6 +22,8 @@ export type SeatEvent = {
   text?: string;
   call_id?: string;
   name?: string;
+  // error is the provider's refusal on a turn_end that got no answer.
+  error?: string;
   snapshot?: unknown;
 };
 
@@ -122,12 +125,18 @@ export function createSeatAgent(opts: {
         meta: { ...meta, session_id: metaSession || undefined },
       });
       sessionId = turn.session_id;
+      let refusal = "";
       try {
         await agent.prompt(text);
-        finish(turn?.stop_token ? "stop_token" : "end_turn");
+        refusal = turnRefusal(agent.state);
+        finish(refusal ? "error" : turn?.stop_token ? "stop_token" : "end_turn");
       } catch (err) {
         finish("error");
         throw err;
+      }
+      if (refusal) {
+        sink.emit({ type: "turn_end", error: refusal, snapshot: agent.state });
+        return;
       }
       sink.emit({ type: "turn_end", snapshot: agent.state });
     },
