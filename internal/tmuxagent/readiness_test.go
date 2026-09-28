@@ -425,6 +425,53 @@ func TestMatchReadyRejectsStartupSplash(t *testing.T) {
 	}
 }
 
+// t891SpecimenFrame is the verbatim last frame from the 🎯T891 specimen
+// (jv-t888-gate-clean-sibling, 2026-09-28T17:37:32Z, claude v2.1.283): a
+// fully drawn, ready idle composer that happens to be showing Claude
+// Code's standing `Try "..."` idle-composer hint, with no /rc connecting
+// anywhere. The old signal rejected this as splash and waited forever,
+// because the hint never clears until something is typed -- logged 16
+// times in one day (jevonsd.log, 2026-09-28).
+const t891SpecimenFrame = "" +
+	"  claude v2.1.283\n" +
+	"\n" +
+	"────────────────────────────────────────────────────────────────────────────────\n" +
+	"❯ Try \"write a test for Makefile\"\n" +
+	"────────────────────────────────────────────────────────────────────────────────\n" +
+	"  ⏵⏵ bypass permissions on · PR #68\n"
+
+// t891GenuineSplashNoComposerFrame: the true splash case the fix must
+// keep rejecting -- no composer row drawn at all yet (TUI still
+// mounting), distinct from "composer drawn, still connecting" and from
+// "composer drawn, ghost hint, fully wired" (t891SpecimenFrame).
+const t891GenuineSplashNoComposerFrame = "" +
+	"  claude v2.1.283\n" +
+	"\n\n\n\n\n"
+
+// TestT891GhostHintWithoutConnectingIsReady is the 🎯T891 oracle: a
+// composer holding Claude Code's standing `Try "..."` idle hint, with no
+// /rc connecting, is a normal ready idle pane -- brief-deliverable,
+// never startup_stall/splash. A frame with no composer row at all is
+// still correctly rejected.
+func TestT891GhostHintWithoutConnectingIsReady(t *testing.T) {
+	if !MatchReady([]byte(t891SpecimenFrame)) {
+		t.Fatalf("MatchReady = false on the T891 specimen (ghost hint, /rc not connecting): must be ready:\n%s", t891SpecimenFrame)
+	}
+	if MatchStartupSplash([]byte(t891SpecimenFrame)) {
+		t.Fatalf("MatchStartupSplash = true on the T891 specimen: ghost hint without /rc connecting is not splash")
+	}
+	if got := NotReadyReason([]byte(t891SpecimenFrame)); got != "" {
+		t.Fatalf("NotReadyReason = %q on the T891 specimen, want \"\" (ready)", got)
+	}
+
+	if MatchReady([]byte(t891GenuineSplashNoComposerFrame)) {
+		t.Fatalf("MatchReady = true on a frame with no composer row at all")
+	}
+	if got := NotReadyReason([]byte(t891GenuineSplashNoComposerFrame)); got != NotReadyNoComposer {
+		t.Fatalf("NotReadyReason = %q on a composer-less frame, want %q", got, NotReadyNoComposer)
+	}
+}
+
 // TestMatchReadyRecognisesMultiLineComposer is the 🎯T25 oracle. Claude
 // Code soft-wraps a pasted brief across several rows inside the box; the
 // single-line body pattern could not see it, so a pane visibly holding a
@@ -636,7 +683,10 @@ func TestMatchConnectingReadsOnlyTheStatusTail(t *testing.T) {
 
 func TestNotReadyReasonTokens(t *testing.T) {
 	t.Parallel()
-	splashNoRC := strings.ReplaceAll(startupSplashFrame, " /rc connecting…", "")
+	// 🎯T891: the ghost `Try "..."` hint without /rc connecting is Claude
+	// Code's standing idle-composer suggestion, not a splash -- the box
+	// is live. Only ghost-hint-WHILE-still-connecting is splash.
+	ghostNoRC := strings.ReplaceAll(startupSplashFrame, " /rc connecting…", "")
 	cases := []struct {
 		name  string
 		frame string
@@ -644,7 +694,8 @@ func TestNotReadyReasonTokens(t *testing.T) {
 	}{
 		{"connecting status", connectingFrame, NotReadyRCConnecting},
 		{"warnings only", settingsWarningsFrame, NotReadySettingsWarning},
-		{"splash without /rc connecting", splashNoRC, NotReadySplash},
+		{"splash, still connecting", startupSplashFrame, NotReadyRCConnecting},
+		{"ghost hint without /rc connecting is ready, not splash", ghostNoRC, ""},
 		{"streaming, no box", streamingFrame, NotReadyNoComposer},
 		{"live composer", liveComposerFrame, ""},
 	}
@@ -659,7 +710,6 @@ func TestNotReadyReasonTokens(t *testing.T) {
 
 func TestWaitReadyTimeoutNamesReason(t *testing.T) {
 	t.Parallel()
-	splashNoRC := strings.ReplaceAll(startupSplashFrame, " /rc connecting…", "")
 	cases := []struct {
 		name  string
 		frame string
@@ -667,7 +717,9 @@ func TestWaitReadyTimeoutNamesReason(t *testing.T) {
 	}{
 		{"rc_connecting", connectingFrame, NotReadyRCConnecting},
 		{"settings_warning", settingsWarningsFrame, NotReadySettingsWarning},
-		{"splash", splashNoRC, NotReadySplash},
+		// 🎯T891: splash requires the ghost hint AND still-connecting;
+		// this frame carries both.
+		{"splash", startupSplashFrame, NotReadyRCConnecting},
 		// A frame with no box, unchanged for a wait far shorter than
 		// drawingQuietWindow, is a TUI the bound cut off, not a wedge.
 		{"still_drawing", streamingFrame, NotReadyStillDrawing},
@@ -750,8 +802,10 @@ func TestWaitVerdictSplitsNoComposer(t *testing.T) {
 // no box and stays there until the bound.
 func TestWaitReadyComposerSeenIsNeverNoComposer(t *testing.T) {
 	t.Parallel()
-	splashNoRC := strings.ReplaceAll(startupSplashFrame, " /rc connecting…", "")
-	frames := []string{"", "", splashNoRC}
+	// 🎯T891: startupSplashFrame (ghost hint + /rc connecting) is a
+	// genuine not-ready composer, unlike the ghost-without-connecting
+	// frame elsewhere in this file, which is now correctly ready.
+	frames := []string{"", "", startupSplashFrame}
 	i := 0
 	// Each capture is 10ms of wait on a clock the test owns, so the loop
 	// sees every frame below before its 100ms bound whatever the host load.

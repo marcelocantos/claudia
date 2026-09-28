@@ -61,16 +61,27 @@ var readyPattern = regexp.MustCompile(`─{10,}\n❯([^\n]*` + composerContinuat
 
 // startupPlaceholder matches the ghost hint Claude Code renders inside
 // the composer before the TUI has wired up input handling — a dimmed
-// example prompt such as `Try "fix lint errors"`. The box is already
-// drawn at this point, so it satisfies readyPattern exactly, which is
-// why the naive signal reported ready roughly 100ms too early and
-// keystrokes sent on that frame could be swallowed (🎯T284).
+// example prompt such as `Try "fix lint errors"`. It anchors on the
+// composer body: the NBSP (U+00A0) Claude Code pads the prompt glyph
+// with, then the literal `Try "`.
 //
-// It anchors on the composer body: the NBSP (U+00A0) Claude Code pads
-// the prompt glyph with, then the literal `Try "`. Real input the owner
-// has typed but not yet submitted still counts as ready — the one
-// exception being a message that itself begins `Try "`, which costs a
-// single extra poll and nothing else.
+// 🎯T284 used this text alone (no /rc connecting required) to reject the
+// startup splash, because at the time the ghost hint only ever rendered
+// during that ~100ms unwired window. That stopped being true: Claude
+// Code v2.1.283 draws the same dimmed `Try "…"` suggestion as a STANDING
+// idle-composer hint that never clears until something is typed — a
+// fully ready, input-accepting box (jv-t888-gate-clean-sibling,
+// 2026-09-28 17:37:32, 🎯T891). Waiting for it to disappear can never
+// succeed, and treating its mere presence as "not ready" retired a
+// seat 16 times in one day that was, in fact, sitting idle and ready.
+//
+// Text alone therefore no longer discriminates splash from ready — see
+// MatchStartupSplash and MatchReady, which only call this pattern
+// combined with MatchConnecting (the actual "not yet wired" signal).
+// Real input the owner has typed but not yet submitted still counts as
+// ready either way — the one residual cost is a message that itself
+// begins `Try "` while /rc is still connecting, which costs a single
+// extra poll and nothing else.
 var startupPlaceholder = regexp.MustCompile(`^\x{00A0}?\s*Try "`)
 
 // startupMenuCursor matches a selection menu's highlighted numbered
@@ -168,25 +179,31 @@ func statusTail(f []byte) []byte {
 }
 
 // MatchReady reports whether the captured frame shows Claude's idle
-// input box at the tail of the visible pane AND that box is live —
-// i.e. it will accept and submit a turn. The startup splash draws the
-// same box holding a ghost placeholder while input is still dead, and
-// is explicitly not ready. /rc connecting is also not ready (🎯T305).
+// input box at the tail of the visible pane AND that box is live — i.e.
+// it will accept and submit a turn. /rc connecting is not ready
+// (🎯T305): the TUI is drawn but not yet wired for input, whether or
+// not the composer body holds the dimmed `Try "…"` ghost hint. Once
+// /rc has connected, a composer holding that same hint IS ready — it
+// is Claude Code's standing idle-composer suggestion, not a sign the
+// box is still dead (🎯T891; see startupPlaceholder).
 func MatchReady(frame []byte) bool {
 	if MatchConnecting(frame) {
 		return false
 	}
-	body := composerBody(frame)
-	return body != nil && !startupPlaceholder.Match(body)
+	return composerBody(frame) != nil
 }
 
 // MatchStartupSplash reports whether the frame shows the composer box
-// still holding Claude Code's ghost placeholder hint — drawn, but not
-// yet accepting input. Exposed so callers probing launch behaviour can
-// assert that a ready verdict never lands on a splash frame.
+// still holding Claude Code's ghost placeholder hint WHILE /rc is still
+// connecting — drawn, but not yet accepting input. The ghost hint alone
+// is not enough (🎯T891): Claude Code v2.1.283 keeps showing it as a
+// standing idle-composer suggestion long after the box is live, so a
+// splash verdict requires the actual not-wired signal (MatchConnecting)
+// too. Exposed so callers probing launch behaviour can assert that a
+// ready verdict never lands on a genuine splash frame.
 func MatchStartupSplash(frame []byte) bool {
 	body := composerBody(frame)
-	return body != nil && startupPlaceholder.Match(body)
+	return body != nil && startupPlaceholder.Match(body) && MatchConnecting(frame)
 }
 
 // composerBody returns the text after the ❯ prompt glyph when the
