@@ -6,7 +6,7 @@
 
 import { createServer } from "node:net";
 import { unlinkSync } from "node:fs";
-import { createSeatAgent, type SeatAgent } from "./seat.ts";
+import { createSeatAgent, type HostTool, type SeatAgent } from "./seat.ts";
 import { defaultWriter } from "./spool.ts";
 
 const banned = [
@@ -40,6 +40,7 @@ type Line = {
   cause?: string;
   cause_detail?: string;
   resume?: string;
+  tools?: HostTool[];
 };
 
 type Seat = {
@@ -188,6 +189,7 @@ async function handle(
       summaryOnly,
       emit: (ev) => write({ seat, ...ev }),
       callTool,
+      tools: msg.tools,
     });
     if (existing) existing.agent.abort();
     seats.set(seat, {
@@ -237,6 +239,7 @@ function rebindSeat(
     existing.agent.setToken(msg.token);
   }
   existing.agent.rebind((ev) => write({ seat, ...ev }), callTool);
+  if (msg.tools) existing.agent.setHostTools(msg.tools);
   if (msg.cwd) existing.agent.setCwd(msg.cwd);
   if (msg.model && msg.model !== existing.model) {
     existing.agent.setModel(msg.provider ?? existing.provider, msg.model);

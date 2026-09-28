@@ -42,6 +42,17 @@ export type SeatAgent = {
   // loaded the seat. A broker restart dials a new socket; the Agent
   // stays, and the new socket has to hear it (🎯T868).
   rebind: (emit: SeatEmit, callTool: SeatCallTool) => void;
+  // setHostTools replaces the host tools offered beside the coding tools.
+  setHostTools: (tools: HostTool[] | undefined) => void;
+};
+
+// HostTool is one tool the host offers a work seat (🎯T886): shown to the
+// model with its own description and schema, executed by calling back into
+// the host.
+export type HostTool = {
+  name: string;
+  description?: string;
+  input_schema?: Record<string, unknown>;
 };
 
 export function createSeatAgent(opts: {
@@ -52,6 +63,7 @@ export function createSeatAgent(opts: {
   summaryOnly?: boolean;
   emit: SeatEmit;
   callTool: SeatCallTool;
+  tools?: HostTool[];
 }): SeatAgent {
   let token = opts.token;
   let cwd = opts.cwd;
@@ -66,6 +78,7 @@ export function createSeatAgent(opts: {
         : [
             "You are a coding agent hosted by Claudia.",
             "You have Bash, Read, Write, Glob, and Grep in the seat working directory.",
+            "Your host may add its own tools (jevons_*) for fleet actions such as messaging or starting agents; use those to act, not prose that names them.",
             "Use them. Do not emit XML tool_call prose.",
           ],
       model,
@@ -79,7 +92,18 @@ export function createSeatAgent(opts: {
       return jevonsTool(name, (id, toolName, args) => sink.callTool(id, toolName, args));
     },
   });
-  agent.setTools(opts.summaryOnly ? [] : codingTools(() => cwd));
+  const callBack = (id: string, toolName: string, args: string) => sink.callTool(id, toolName, args);
+  const applyTools = (host: HostTool[] | undefined) => {
+    if (opts.summaryOnly) {
+      agent.setTools([]);
+      return;
+    }
+    const hosted = (host ?? [])
+      .filter((t) => t.name.startsWith("jevons_"))
+      .map((t) => jevonsTool(t.name, callBack, t.description, t.input_schema));
+    agent.setTools([...codingTools(() => cwd), ...hosted]);
+  };
+  applyTools(opts.tools);
 
   // Context transfer needs a short analytical pass, not a work seat's
   // potentially expensive default reasoning setting.
@@ -165,6 +189,7 @@ export function createSeatAgent(opts: {
       sink.emit = emit;
       sink.callTool = callTool;
     },
+    setHostTools: (tools) => applyTools(tools),
   };
 }
 
@@ -182,12 +207,14 @@ function resolveModel(provider: string, model: string) {
 function jevonsTool(
   name: string,
   callTool: (callId: string, name: string, args: string) => Promise<string>,
+  description?: string,
+  schema?: Record<string, unknown>,
 ): AgentTool {
   return {
     name,
     label: name,
-    description: "Jevons host tool; execute calls back into Go",
-    parameters: { type: "object" },
+    description: description || "Jevons host tool; execute calls back into Go",
+    parameters: schema && typeof schema === "object" ? schema : { type: "object" },
     execute: async (toolCallId: string, params: unknown) => {
       const result = await callTool(toolCallId, name, JSON.stringify(params ?? {}));
       return { content: [{ type: "text", text: result }], details: {} };

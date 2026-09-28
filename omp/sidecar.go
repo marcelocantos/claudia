@@ -44,6 +44,10 @@ type Message struct {
 	Cause       string `json:"cause,omitempty"`
 	CauseDetail string `json:"cause_detail,omitempty"`
 	Resume      string `json:"resume,omitempty"`
+	// Tools is the host's own tool list (name, description, input_schema)
+	// offered to a work seat on load and adopt, so the model can choose
+	// them. Calls still come back to the host as tool_call (🎯T886).
+	Tools json.RawMessage `json:"tools,omitempty"`
 }
 
 // Event is one sidecar line. Type turn_end carries a context snapshot.

@@ -153,6 +153,10 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 	if req.Config.AdoptOnly {
 		op = omp.OpAdopt
 	}
+	var tools json.RawMessage
+	if !req.Config.SummaryOnly {
+		tools = hostJevonsTools(req.Context, req.Config.MCPServers)
+	}
 	if err := conn.Send(omp.Message{
 		Op:          op,
 		Seat:        req.Config.Name,
@@ -161,6 +165,7 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 		SummaryOnly: req.Config.SummaryOnly,
 		Token:       token,
 		Cwd:         req.Config.WorkDir,
+		Tools:       tools,
 	}); err != nil {
 		conn.Close()
 		return nil, err
@@ -698,4 +703,81 @@ func (c *ompControl) Close() error {
 		return c.conn.Close()
 	}
 	return nil
+}
+
+// hostJevonsTool is one host tool as the sidecar declares it to the model.
+type hostJevonsTool struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	InputSchema json.RawMessage `json:"input_schema,omitempty"`
+}
+
+// hostJevonsTools asks the seat's HTTP MCP servers for their tools and keeps
+// the jevons_* ones: the tools a sidecar seat executes through
+// [CallJevonsMCP]. Without them the model is never shown its host's tools,
+// so an overseer on a sidecar provider cannot message a product owner and a
+// product owner cannot start a worker (🎯T886). A host with no such server,
+// or one that does not answer, gets no host tools; the seat still starts.
+func hostJevonsTools(ctx context.Context, servers []MCPServer) json.RawMessage {
+	for _, srv := range servers {
+		if srv.URL == "" || (srv.Type != "" && srv.Type != "http") {
+			continue
+		}
+		if tools := listJevonsMCPTools(ctx, srv.URL); len(tools) > 0 {
+			raw, err := json.Marshal(tools)
+			if err != nil {
+				return nil
+			}
+			return raw
+		}
+	}
+	return nil
+}
+
+func listJevonsMCPTools(ctx context.Context, mcpURL string) []hostJevonsTool {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	body := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, mcpURL, bytes.NewReader(body))
+	if err != nil {
+		return nil
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		slog.Warn("omp: host tools/list failed; seat starts without host tools", "url", mcpURL, "err", err)
+		return nil
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return nil
+	}
+	// A streamable-HTTP server may answer as one SSE event.
+	if i := bytes.LastIndex(raw, []byte("\ndata:")); i >= 0 {
+		raw = raw[i+len("\ndata:"):]
+	} else if bytes.HasPrefix(raw, []byte("data:")) {
+		raw = raw[len("data:"):]
+	}
+	var envelope struct {
+		Result struct {
+			Tools []struct {
+				Name        string          `json:"name"`
+				Description string          `json:"description"`
+				InputSchema json.RawMessage `json:"inputSchema"`
+			} `json:"tools"`
+		} `json:"result"`
+	}
+	if json.Unmarshal(bytes.TrimSpace(raw), &envelope) != nil {
+		return nil
+	}
+	var out []hostJevonsTool
+	for _, t := range envelope.Result.Tools {
+		if !strings.HasPrefix(t.Name, "jevons_") {
+			continue
+		}
+		out = append(out, hostJevonsTool{Name: t.Name, Description: t.Description, InputSchema: t.InputSchema})
+	}
+	return out
 }
