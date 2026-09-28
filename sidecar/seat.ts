@@ -151,6 +151,9 @@ export function createSeatAgent(opts: {
           content: text,
           timestamp: Date.now(),
         });
+        // Say at once that it was accepted: a host that waits for a first
+        // streamed token would call a queued prompt undelivered.
+        sink.emit({ type: "accepted" });
         return;
       }
       const metaSession = meta?.session_id || sessionId;
@@ -160,6 +163,9 @@ export function createSeatAgent(opts: {
         meta: { ...meta, session_id: metaSession || undefined },
       });
       sessionId = turn.session_id;
+      // A turn can think for a minute before its first token. Announce it
+      // now so the host sees the prompt land (Jevons T887).
+      sink.emit({ type: "accepted" });
       let refusal = "";
       try {
         await agent.prompt(text);

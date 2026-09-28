@@ -325,6 +325,11 @@ func (c *ompControl) pump(a *Agent) {
 			}
 		}
 		switch ev.Type {
+		case "accepted":
+			// The sidecar took the prompt (a turn began, or it was queued
+			// behind the running one). Before the first token this is the
+			// only sign the prompt landed.
+			a.publishEvent(Event{Type: "progress", ProgressType: ProgressPromptAccepted})
 		case "text":
 			visible, token := omp.StripStopToken(ev.Text)
 			if visible == "" && token != "" {

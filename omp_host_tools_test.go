@@ -79,3 +79,24 @@ func TestOMPSidecarQueuesPromptWhileBusy(t *testing.T) {
 		t.Fatal("follow-ups left after the run must drain inside the turn")
 	}
 }
+
+// Jevons T887: a sidecar seat announces a prompt it took (turn begun, or
+// queued behind the running one) before any token, and Claudia publishes it
+// as prompt_accepted, so a host's delivery check does not call it lost.
+func TestOMPSidecarAnnouncesAcceptedPrompt(t *testing.T) {
+	seat, err := os.ReadFile("sidecar/seat.ts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(seat), `sink.emit({ type: "accepted" });`); n != 2 {
+		t.Fatalf("seat.ts announces acceptance %d times; want the queued path and the turn start", n)
+	}
+	src, err := os.ReadFile("omp_agent.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(src), "case \"accepted\":\n\t\t\t// The sidecar took the prompt") ||
+		!strings.Contains(string(src), `a.publishEvent(Event{Type: "progress", ProgressType: ProgressPromptAccepted})`) {
+		t.Fatal("the sidecar's accepted event must publish as prompt_accepted progress")
+	}
+}
