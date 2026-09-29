@@ -87,6 +87,9 @@ type Event struct {
 
 	// FromProvider / ToProvider / FromModel / Reason / WarningCodes are
 	// set on Type=system ProgressType=model_switch Events (🎯T55).
+	// Reason is also [ReasonContextOverflow] on an IsError assistant event
+	// whose turn the provider refused as longer than the model's window
+	// (🎯T148).
 	FromProvider Provider
 	ToProvider   Provider
 	FromModel    string

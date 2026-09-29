@@ -3,7 +3,18 @@
 
 import { Agent, type AgentTool } from "@oh-my-pi/pi-agent-core";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
+import type { Model } from "@oh-my-pi/pi-ai";
 import { codingTools } from "./coding.ts";
+import {
+  compact,
+  contextTokens,
+  ContextOverflow,
+  isOverflow,
+  providerLimit,
+  summarizeWith,
+  thresholdTokens,
+  type Summarize,
+} from "./compact.ts";
 import {
   beginTurn,
   closeTurn,
@@ -24,6 +35,8 @@ export type SeatEvent = {
   name?: string;
   // error is the provider's refusal on a turn_end that got no answer.
   error?: string;
+  // reason classifies an error: "context_overflow" is terminal (🎯T148).
+  reason?: string;
   snapshot?: unknown;
 };
 
@@ -64,13 +77,17 @@ export function createSeatAgent(opts: {
   emit: SeatEmit;
   callTool: SeatCallTool;
   tools?: HostTool[];
+  // modelOverride replaces the catalog lookup, and summarize the compaction
+  // summarizer. Tests only: a mock model with a small window (🎯T148).
+  modelOverride?: Model;
+  summarize?: Summarize;
 }): SeatAgent {
   let token = opts.token;
   let cwd = opts.cwd;
   let sessionId = "";
   let turn: OpenTurn | null = null;
   const sink = { emit: opts.emit, callTool: opts.callTool };
-  const model = resolveModel(opts.provider, opts.model);
+  const model = opts.modelOverride ?? resolveModel(opts.provider, opts.model);
   const agent = new Agent({
     initialState: {
       systemPrompt: opts.summaryOnly
@@ -111,6 +128,60 @@ export function createSeatAgent(opts: {
   // Context transfer needs a short analytical pass, not a work seat's
   // potentially expensive default reasoning setting.
   if (opts.summaryOnly) agent.setThinkingLevel("low");
+
+  // Compaction (🎯T148). anchorFrom is the first message whose provider usage
+  // still describes what is sent: usage reported before the last compaction
+  // counts messages that were folded away. limit is the window the provider
+  // itself named in an overflow refusal, when it is smaller than the catalog's.
+  let anchorFrom = 0;
+  let limit = 0;
+  const summarize = opts.summarize ?? summarizeWith(() => agent.state.model, () => token);
+  const contextWindow = () => {
+    const catalog = agent.state.model?.contextWindow ?? 0;
+    return limit > 0 && (catalog <= 0 || limit < catalog) ? limit : catalog;
+  };
+  const prefix = () => {
+    const parts = [...(agent.state.systemPrompt ?? [])];
+    for (const t of agent.state.tools ?? []) {
+      parts.push(t.name, t.description ?? "", JSON.stringify(t.parameters ?? {}));
+    }
+    return parts;
+  };
+  // compactNow folds the conversation when it is past the threshold, or
+  // whenever force is set (the provider has just refused it as too long).
+  // It reports whether the conversation shrank.
+  const compactNow = async (force: boolean): Promise<boolean> => {
+    if (opts.summaryOnly) return false;
+    const window = contextWindow();
+    if (window <= 0) return false;
+    const messages = agent.state.messages;
+    if (!force && contextTokens(messages, agent.tokenizer, anchorFrom, prefix()) <= thresholdTokens(window)) {
+      return false;
+    }
+    const done = await compact({
+      messages: [...messages],
+      tokenizer: agent.tokenizer,
+      contextWindow: window,
+      anchorFrom,
+      prefix: prefix(),
+      summarize,
+    });
+    if (!done) return false;
+    agent.replaceMessages(done.messages);
+    anchorFrom = done.messages.length;
+    sink.emit({
+      type: "compacted",
+      text: `context ${done.before} -> ${done.after} tokens of ${window}; ${done.folded} messages folded (${done.how})`,
+    });
+    return true;
+  };
+  // overflowRefusal is the last message when the provider refused the turn
+  // as longer than the window, or undefined.
+  const overflowRefusal = () => {
+    const messages = agent.state.messages;
+    const last = messages[messages.length - 1];
+    return isOverflow(last, contextWindow()) ? (last as { errorMessage?: string }) : undefined;
+  };
 
   const finish = (stop: Stop) => {
     if (!turn || turn.closed) return;
@@ -169,12 +240,31 @@ export function createSeatAgent(opts: {
     // now so the host sees the prompt land (Jevons T887).
     sink.emit({ type: "accepted" });
     let refusal = "";
+    let overflow = false;
     try {
+      // A conversation past the threshold is folded before it is sent, so
+      // the provider never sees a prompt longer than its window (🎯T148).
+      await compactNow(false);
       await run();
       // A follow-up queued after the run's own last check would wait for
       // the next prompt. Drain it inside this turn (bounded).
       for (let i = 0; i < 8 && agent.hasQueuedMessages() && !agent.state.isStreaming; i++) {
         await agent.continue();
+      }
+      // Refused as too long anyway (the window was overstated, or one turn
+      // outgrew the reserve): drop the refusal, fold the conversation, and
+      // send it once more. Once, not in a loop: a second refusal means
+      // compaction cannot help, and the turn ends as terminal.
+      const refused = overflowRefusal();
+      if (refused) {
+        limit = providerLimit(refused.errorMessage) || limit;
+        agent.popMessage();
+        if (await compactNow(true)) {
+          await agent.continue();
+        } else {
+          agent.appendMessage(refused as never);
+        }
+        overflow = overflowRefusal() !== undefined;
       }
       refusal = turnRefusal(agent.state);
       finish(refusal ? "error" : turn?.stop_token ? "stop_token" : "end_turn");
@@ -183,7 +273,7 @@ export function createSeatAgent(opts: {
       throw err;
     }
     if (refusal) {
-      sink.emit({ type: "turn_end", error: refusal, snapshot: agent.state });
+      sink.emit({ type: "turn_end", error: refusal, reason: overflow ? ContextOverflow : undefined, snapshot: agent.state });
       return;
     }
     sink.emit({ type: "turn_end", snapshot: agent.state });

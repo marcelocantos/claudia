@@ -31,6 +31,17 @@ import (
 var ErrSeatIdentityMismatch = errors.New("omp: loaded seat differs from registered provider or purpose")
 var ErrNoSubscriptionModel = errors.New("omp: no provider-local subscription session model")
 
+// ErrContextOverflow is what [Agent.WaitForResponse] wraps when the provider
+// refused the turn as longer than the model's context window and the seat's
+// own compaction could not bring it back under (🎯T148). It is terminal:
+// sending the seat the same or another prompt cannot succeed, so a caller
+// must not retry it as it would a transient failure. Jevons retried one
+// every 30s for hours, each retry growing the prompt (jevons 🎯T926).
+var ErrContextOverflow = errors.New("context overflow: the conversation is longer than the model's window")
+
+// ReasonContextOverflow is [Event.Reason] on the error event of such a turn.
+const ReasonContextOverflow = "context_overflow"
+
 // useOMP selects the sidecar. The four subscription plans and the
 // fleet ids grok / claude / codex / cursor all go through it (🎯T866.5).
 // Config.OMP is no longer required for cursor.
@@ -404,11 +415,18 @@ func (c *ompControl) pump(a *Agent) {
 			if refusal != "" {
 				text = "provider refused the turn: " + refusal
 			}
+			// The sidecar has already compacted and retried once; an
+			// overflow it still reports is terminal (🎯T148).
+			reason := ""
+			if refusal != "" && ev.Reason == ReasonContextOverflow {
+				reason = ReasonContextOverflow
+			}
 			a.publishEvent(Event{
 				Type:       "assistant",
 				Text:       text,
 				IsError:    rejected || ev.Type == "error" || refusal != "",
 				StopReason: "end_turn",
+				Reason:     reason,
 			})
 		}
 	}
