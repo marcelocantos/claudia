@@ -2141,6 +2141,10 @@ func (a *Agent) WaitForResponse(ctx context.Context) (string, error) {
 			if msg == "" {
 				msg = "agent turn failed"
 			}
+			if ev.Reason == ReasonContextOverflow {
+				emitOnce(outcome{err: fmt.Errorf("%w: %s", ErrContextOverflow, msg)})
+				return
+			}
 			emitOnce(outcome{err: errors.New(msg)})
 			return
 		}
