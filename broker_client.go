@@ -176,7 +176,15 @@ func (b *brokerClient) fail(err error) {
 // Close drops the connection. A grant's seat keeps running on the daemon
 // (detach); a task run is cancelled.
 func (b *brokerClient) Close() {
-	b.fail(errors.New("claudia: broker client closed"))
+	b.fail(errBrokerClosed)
+}
+
+// lostByPeer reports that the connection ended from the broker's side (it
+// stopped, restarted or dropped us), not by this client's own Close.
+func (b *brokerClient) lostByPeer() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.closed && b.err != nil && !errors.Is(b.err, errBrokerClosed)
 }
 
 // call sends req and waits for the response carrying its id. A TypeError

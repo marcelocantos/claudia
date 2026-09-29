@@ -278,6 +278,10 @@ type Agent struct {
 
 	mu    sync.Mutex
 	alive bool
+	// exitCause says why this handle died, when the backend knows: a
+	// broker connection lost, or a seat the broker reported gone (🎯T925).
+	// Empty when nothing said.
+	exitCause string
 	// dead is closed when alive goes false, so a WaitForResponse whose
 	// turn can no longer be answered ends at the death instead of
 	// waiting on an event nothing will publish (🎯T96). Created on

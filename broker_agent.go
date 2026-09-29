@@ -570,7 +570,11 @@ func (b *brokerAgentBackend) drain() {
 			for {
 				resp, ok := b.queue.pop()
 				if !ok {
-					a.markDead()
+					if b.client.lostByPeer() {
+						a.markDeadBecause(ExitCauseBrokerLost)
+					} else {
+						a.markDead()
+					}
 					return
 				}
 				b.deliver(a, resp)
@@ -607,7 +611,7 @@ func (b *brokerAgentBackend) deliver(a *Agent, resp *broker.Response) {
 		b.mu.Lock()
 		b.gone = true
 		b.mu.Unlock()
-		a.markDead()
+		a.markDeadBecause("claudia broker: seat gone: " + resp.AgentGone.Reason)
 		slog.Info("broker seat gone", "grant", b.named().Name, "reason", resp.AgentGone.Reason)
 	}
 }

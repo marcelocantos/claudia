@@ -308,6 +308,34 @@ func (a *Agent) markDead() {
 	a.mu.Unlock()
 }
 
+// ExitCauseBrokerLost is the exit cause of a broker-backed handle whose
+// connection the broker ended — it stopped or restarted (🎯T925).
+const ExitCauseBrokerLost = "claudia broker connection closed"
+
+// markDeadBecause is markDead with the reason the handle died. The first
+// cause recorded stands.
+func (a *Agent) markDeadBecause(cause string) {
+	a.mu.Lock()
+	if a.exitCause == "" {
+		a.exitCause = cause
+	}
+	a.markDeadLocked()
+	a.mu.Unlock()
+}
+
+// ExitCause says why a dead handle died, when its backend knew: for a
+// broker-backed seat, [ExitCauseBrokerLost] or the broker's "seat gone"
+// reason. Empty for a live handle, a deliberate Stop, or a death nothing
+// explained.
+func (a *Agent) ExitCause() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.alive {
+		return ""
+	}
+	return a.exitCause
+}
+
 // markDeadLocked is [Agent.markDead] for callers already holding a.mu.
 func (a *Agent) markDeadLocked() {
 	a.alive = false
