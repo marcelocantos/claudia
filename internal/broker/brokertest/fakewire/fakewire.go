@@ -105,14 +105,18 @@ func PromptBoxFrame() []byte {
 }
 
 // SplashFrame is a captured-pane frame showing the same box around the startup
-// ghost placeholder — drawn, but not yet accepting input.
+// ghost placeholder while /rc is still connecting — drawn, but not yet
+// accepting input. Since 🎯T891 the ghost hint alone is not a splash (Claude
+// Code v2.1.283 keeps it as a standing idle-composer hint); the not-wired
+// signal is "/rc connecting" on the status line, as in tmuxagent's own
+// startupSplashFrame fixture (🎯T142).
 func SplashFrame() []byte {
 	return []byte(strings.Join([]string{
 		"✻ Welcome to Claude Code",
 		boxRule,
 		promptGlyph + nbsp + splashHint,
 		boxRule,
-		statusLine,
+		statusLine + "  /rc connecting…",
 		"",
 	}, "\n"))
 }
