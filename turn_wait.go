@@ -308,6 +308,12 @@ func (a *Agent) markDead() {
 	a.mu.Unlock()
 }
 
+// StartedWithoutHistory reports that this handle's backend relaunched the
+// seat without its earlier conversation (jevons 🎯T929): an Oh My Pi seat
+// whose sidecar had no stored conversation to restore. Other backends resume
+// from the provider's own transcript and report false.
+func (a *Agent) StartedWithoutHistory() bool { return a.historyLost }
+
 // ExitCauseBrokerLost is the exit cause of a broker-backed handle whose
 // connection the broker ended — it stopped or restarted (🎯T925).
 const ExitCauseBrokerLost = "claudia broker connection closed"

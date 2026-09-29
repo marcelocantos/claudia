@@ -49,7 +49,7 @@ func TestHostToolsAdvertisesEveryEligibleServer(t *testing.T) {
 		dead := httptest.NewServer(http.NotFoundHandler())
 		dead.Close()
 		raw, routes := hostTools(context.Background(), []MCPServer{
-			{Name: "plugin", Command: "true"},                          // plugin-shaped: no URL, not registered
+			{Name: "plugin", Command: "true"},                           // plugin-shaped: no URL, not registered
 			{Name: "jevons-gone", Type: "http", URL: dead.URL},          // eligible but silent: contributes nothing
 			{Name: "playwright", Type: "http", URL: srv.URL + "/tools"}, // eligible: not filtered by server name any more
 		})

@@ -50,6 +50,9 @@ export type SeatAgent = {
   rebind: (emit: SeatEmit, callTool: SeatCallTool) => void;
   // setHostTools replaces the host tools offered beside the coding tools.
   setHostTools: (tools: HostTool[] | undefined) => void;
+  // restored says whether the seat resumed a stored conversation (🎯T151);
+  // the host words its restart note by it (jevons 🎯T929).
+  restored: boolean;
 };
 
 // HostTool is one tool the host offers a work seat (🎯T886): shown to the
@@ -141,7 +144,8 @@ export function createSeatAgent(opts: {
   });
   // Resume the stored conversation. An unreadable store throws, so the load
   // fails loudly instead of starting the seat on an empty conversation.
-  if (maint.restore()) {
+  const restored = maint.restore();
+  if (restored) {
     console.error(
       `sidecar: resumed ${opts.store?.path}: ${maint.history.entries.length} entries, ${agent.state.messages.length} messages in context`,
     );
@@ -345,6 +349,7 @@ export function createSeatAgent(opts: {
       sink.callTool = callTool;
     },
     setHostTools: (tools) => applyTools(tools),
+    restored,
   };
 }
 

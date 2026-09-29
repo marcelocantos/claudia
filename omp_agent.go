@@ -221,6 +221,7 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 		}
 		return nil, fmt.Errorf("omp: sidecar said %q, want ready", ev.Type)
 	}
+	historyLost := ompHistoryLost(ev, req.Config.SummaryOnly)
 	ctrl := &ompControl{
 		conn: conn, bytes: make(chan []byte, 8),
 		token: token, provider: provider,
@@ -230,8 +231,9 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 	}
 	ompSeats.Store(ctrl, struct{}{})
 	return &agentStart{
-		Control:   ctrl,
-		SessionID: sessionID,
+		Control:     ctrl,
+		SessionID:   sessionID,
+		HistoryLost: historyLost,
 		Ops: agentOps{
 			send: func(a *Agent, text string) error {
 				ctrl.inflight.Store(true)
@@ -1050,6 +1052,14 @@ func providerToolName(name string) string {
 		return ""
 	}
 	return out
+}
+
+// ompHistoryLost reads a sidecar's "ready": a launched seat whose sidecar
+// did not restore its conversation starts without it (jevons 🎯T929). An
+// adopted seat kept its conversation, and a summary-only seat never had one.
+// A sidecar too old to report restoring never restored.
+func ompHistoryLost(ev omp.Event, summaryOnly bool) bool {
+	return ev.How == "launched" && !summaryOnly && (ev.Restored == nil || !*ev.Restored)
 }
 
 // hostToolsTTL is how long a server's tool list is reused; a failed or empty

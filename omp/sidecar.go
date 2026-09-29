@@ -52,13 +52,17 @@ type Message struct {
 
 // Event is one sidecar line. Type turn_end carries a context snapshot.
 type Event struct {
-	Seat   string `json:"seat,omitempty"`
-	Type   string `json:"type"`
-	How    string `json:"how,omitempty"`
-	Reason string `json:"reason,omitempty"`
-	Text   string `json:"text,omitempty"`
-	CallID string `json:"call_id,omitempty"`
-	Name   string `json:"name,omitempty"`
+	Seat string `json:"seat,omitempty"`
+	Type string `json:"type"`
+	How  string `json:"how,omitempty"`
+	// Restored, on a "ready" for a launched seat, says whether the sidecar
+	// brought back the seat's stored conversation (claudia 🎯T151, jevons
+	// 🎯T929). Absent from a sidecar that predates the store, which never did.
+	Restored *bool  `json:"restored,omitempty"`
+	Reason   string `json:"reason,omitempty"`
+	Text     string `json:"text,omitempty"`
+	CallID   string `json:"call_id,omitempty"`
+	Name     string `json:"name,omitempty"`
 	// Error is the provider's refusal on a turn_end that got no answer
 	// (usage limit, rate limit, auth). Empty on a turn that answered.
 	Error    string          `json:"error,omitempty"`

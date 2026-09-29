@@ -73,6 +73,15 @@ const DefaultRestartNudge = "[claudia] The host restarted at %s. This session wa
 	"Review where you were and continue the task you were working on. If you were waiting on " +
 	"something (a build, a test, another agent), check its state again before assuming it completed."
 
+// LostHistoryRestartNudge is what a relaunched seat is told when its
+// backend could not bring back its earlier conversation (jevons 🎯T929):
+// claiming a resumption there sends the seat back to work it no longer
+// knows about. %s is the restart time.
+const LostHistoryRestartNudge = "[claudia] The host restarted at %s, and this seat's earlier conversation could not be restored: " +
+	"you are starting without it. Anything you were doing before the restart is not in your context. " +
+	"Before continuing, reconstruct where things stand from durable state (the repository, its commits and its targets, " +
+	"your brief) or ask whoever gave you the work. Do not assume a build, test or tool call from before the restart finished."
+
 const (
 	// NoRestartNudge as [ResumeArgs.Nudge] sends nothing.
 	NoRestartNudge = "-"
@@ -239,13 +248,19 @@ func (r *Registry) ResumeAll(ctx context.Context, args *ResumeArgs) []ResumeOutc
 	if len(names) == 0 {
 		return nil
 	}
+	now := args.Now
+	if now.IsZero() {
+		now = r.seatClock().Now()
+	}
 	nudge := args.Nudge
 	if nudge == "" {
-		now := args.Now
-		if now.IsZero() {
-			now = r.seatClock().Now()
-		}
 		nudge = fmt.Sprintf(DefaultRestartNudge, now.Format(time.RFC3339))
+	}
+	// A seat that came back without its conversation is told so, whatever
+	// the configured note says (jevons 🎯T929); NoRestartNudge still wins.
+	lostNudge := ""
+	if nudge != NoRestartNudge {
+		lostNudge = fmt.Sprintf(LostHistoryRestartNudge, now.Format(time.RFC3339))
 	}
 	conc := args.Concurrency
 	if conc <= 0 {
@@ -270,14 +285,14 @@ func (r *Registry) ResumeAll(ctx context.Context, args *ResumeArgs) []ResumeOutc
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
-			r.resumeSeat(ctx, &out[i], nudge, timeout)
+			r.resumeSeat(ctx, &out[i], nudge, lostNudge, timeout)
 		}()
 	}
 	wg.Wait()
 	return out
 }
 
-func (r *Registry) resumeSeat(ctx context.Context, out *ResumeOutcome, nudge string, timeout time.Duration) {
+func (r *Registry) resumeSeat(ctx context.Context, out *ResumeOutcome, nudge, lostNudge string, timeout time.Duration) {
 	name := out.Name
 	launch := func() (*Agent, error) {
 		lctx, cancel := context.WithTimeout(ctx, timeout)
@@ -306,6 +321,9 @@ func (r *Registry) resumeSeat(ctx context.Context, out *ResumeOutcome, nudge str
 	r.publishSeatEvent(SeatEvent{Kind: SeatResumed, Name: name, SessionID: proc.SessionID(), How: how, Agent: proc})
 	if how == ResumeAdopted || nudge == NoRestartNudge {
 		return
+	}
+	if proc.StartedWithoutHistory() && lostNudge != "" {
+		nudge = lostNudge
 	}
 	proc.SetPromptCause(PromptCause{
 		Cause:  "restart-nudge",

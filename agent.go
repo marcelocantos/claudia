@@ -276,6 +276,9 @@ type Agent struct {
 	// mcpCleanup removes process-private MCP materialisation created at Start.
 	mcpCleanup func()
 
+	// historyLost is agentStart.HistoryLost, fixed at start.
+	historyLost bool
+
 	mu    sync.Mutex
 	alive bool
 	// exitCause says why this handle died, when the backend knows: a
@@ -527,6 +530,10 @@ type agentStart struct {
 	Cleanup func()
 	// GrantName marks a broker-held seat and names it (🎯T2.10).
 	GrantName string
+	// HistoryLost reports that a relaunch started without the seat's
+	// earlier conversation (jevons 🎯T929): the backend knows it could not
+	// bring it back. A restart note must then not claim a resumption.
+	HistoryLost bool
 	// TermLogPath, when non-empty, is the daemon's terminal log for a
 	// broker-held seat: reported by TermLogPath, never written by this
 	// process.
@@ -900,6 +907,7 @@ func startWithBackendContext(ctx context.Context, cfg Config, backend agentBacke
 		a.Stop()
 		return nil, fmt.Errorf("%s agent backend returned no session and no error", provider)
 	}
+	a.historyLost = start.HistoryLost
 	if start.SessionID != "" {
 		a.sessionID = start.SessionID
 		sessionID = start.SessionID

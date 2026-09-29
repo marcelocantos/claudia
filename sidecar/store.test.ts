@@ -266,6 +266,8 @@ describe("sidecar restart (🎯T151)", () => {
       try {
         const out = await ask(sock, [load, { op: "abort", seat: "po" }], (ev) => ev.type === "turn_end");
         expect(out[0].type).toBe("ready");
+        // The host words its restart note by this (jevons 🎯T929).
+        expect(out[0].restored).toBe(true);
         const state = out.at(-1)?.snapshot as { messages: { role: string }[] };
         const text = JSON.stringify(state.messages);
         expect(state.messages[0].role).toBe("compactionSummary");
@@ -277,6 +279,24 @@ describe("sidecar restart (🎯T151)", () => {
         proc.kill();
         await proc.exited;
       }
+    }
+  });
+
+  test("a seat with nothing stored is reported as not restored (jevons 🎯T929)", async () => {
+    const dir = tempDir();
+    const sock = join(dir, "omp.sock");
+    const proc = startSidecar(sock);
+    try {
+      const out = await ask(
+        sock,
+        [{ op: "load", seat: "fresh", provider: "anthropic", model: "claude-sonnet-5", token: "t", cwd: dir, session_id: "s-new" }],
+        (ev) => ev.type === "ready" || ev.type === "error",
+      );
+      expect(out.at(-1)?.type).toBe("ready");
+      expect(out.at(-1)?.restored).toBe(false);
+    } finally {
+      proc.kill();
+      await proc.exited;
     }
   });
 

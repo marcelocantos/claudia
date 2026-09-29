@@ -218,7 +218,7 @@ async function handle(
       summaryOnly,
       agent,
     });
-    write({ seat, type: "ready", how: "launched" });
+    write({ seat, type: "ready", how: "launched", restored: agent.restored });
     return;
   }
   const loaded = seats.get(seat);
