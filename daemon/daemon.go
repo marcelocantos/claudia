@@ -334,7 +334,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 func (d *Daemon) Close() error {
 	d.cancel()
 	d.reg.UnsubscribeSeatEvents(d.seatSub)
-	err := d.srv.Close()
+	// A deliberate stop says so to every host first (jevons 🎯T944); a
+	// crash never reaches here, and its silence is what marks it.
+	err := d.srv.Shutdown(broker.ShutdownPlanned)
 	d.mu.Lock()
 	tasks := d.tasks
 	d.tasks = map[string]*brokerDaemonTask{}

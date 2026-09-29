@@ -577,9 +577,12 @@ func (b *brokerAgentBackend) drain() {
 			for {
 				resp, ok := b.queue.pop()
 				if !ok {
-					if b.client.lostByPeer() {
+					switch {
+					case b.client.lostByPeer() && b.client.plannedStop():
+						a.markDeadBecause(ExitCauseBrokerRestarted)
+					case b.client.lostByPeer():
 						a.markDeadBecause(ExitCauseBrokerLost)
-					} else {
+					default:
 						a.markDead()
 					}
 					return

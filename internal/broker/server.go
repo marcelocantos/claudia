@@ -9,6 +9,7 @@ import (
 	"net"
 	"slices"
 	"sync"
+	"time"
 )
 
 // The in-process broker (🎯T2.1): bind via Listen, accept connections, and
@@ -112,9 +113,11 @@ type Server struct {
 	requests int
 	sessions map[string]*managedSession
 	tails    []*tailSub
-	conns    map[net.Conn]struct{}
-	done     chan struct{}
-	wg       sync.WaitGroup
+	// conns holds each accepted connection's writer once it is served (nil
+	// until then), so Shutdown can say goodbye on it.
+	conns map[net.Conn]*ClientConn
+	done  chan struct{}
+	wg    sync.WaitGroup
 }
 
 type tailSub struct {
@@ -159,12 +162,36 @@ func Serve(args *ServeArgs) (*Server, error) {
 		clock:    clock,
 		handler:  args.Handler,
 		sessions: map[string]*managedSession{},
-		conns:    map[net.Conn]struct{}{},
+		conns:    map[net.Conn]*ClientConn{},
 		done:     make(chan struct{}),
 	}
 	s.wg.Add(1)
 	go s.acceptLoop()
 	return s, nil
+}
+
+// shutdownWriteBound is how long Shutdown waits on one connection's
+// goodbye: a client that is not reading must not hold the stop up.
+const shutdownWriteBound = time.Second
+
+// Shutdown tells every connection the server is stopping on purpose, with
+// reason, then closes as Close does (jevons 🎯T944). A crash never gets here,
+// so a connection that closes without this event was lost, not let go.
+func (s *Server) Shutdown(reason string) error {
+	s.mu.Lock()
+	ccs := make([]*ClientConn, 0, len(s.conns))
+	for _, cc := range s.conns {
+		if cc != nil {
+			ccs = append(ccs, cc)
+		}
+	}
+	s.mu.Unlock()
+	ev := &Response{Type: TypeEvent, Event: &EventMessage{Kind: EventShutdown, Detail: reason, At: s.clock.Now()}}
+	for _, cc := range ccs {
+		_ = cc.SetDeadline(time.Now().Add(shutdownWriteBound))
+		_ = cc.WriteResponse(ev)
+	}
+	return s.Close()
 }
 
 // Close stops accepting and closes every connection.
@@ -224,7 +251,7 @@ func (s *Server) acceptLoop() {
 			return
 		default:
 		}
-		s.conns[nc] = struct{}{}
+		s.conns[nc] = nil
 		s.mu.Unlock()
 		s.wg.Add(1)
 		go func() {
@@ -238,6 +265,9 @@ func (s *Server) handleConn(nc net.Conn) {
 	s.mu.Lock()
 	s.connSeq++
 	cc := &ClientConn{Conn: NewConn(nc), ID: s.connSeq, PeerPID: peerPID(nc)}
+	if _, ok := s.conns[nc]; ok {
+		s.conns[nc] = cc
+	}
 	s.mu.Unlock()
 	c := cc.Conn
 	owner := &connState{held: map[string]struct{}{}}

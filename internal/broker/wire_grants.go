@@ -153,7 +153,16 @@ const (
 	EventResume       EventKind = "resume"
 	EventResumeFailed EventKind = "resume_failed"
 	EventNudge        EventKind = "nudge"
+	// EventShutdown is the daemon's last word to each connection when it
+	// stops on purpose (a supervisor stop, a deploy): Detail says why. A
+	// crash sends none, so a host can tell a planned restart from a failure
+	// and alarm only on the second (jevons 🎯T944).
+	EventShutdown EventKind = "shutdown"
 )
+
+// ShutdownPlanned is EventShutdown's Detail for a stop the daemon was asked
+// to make.
+const ShutdownPlanned = "planned"
 
 // UsageRequest asks for the plan-usage snapshot.
 type UsageRequest struct {

@@ -315,8 +315,13 @@ func (a *Agent) markDead() {
 func (a *Agent) StartedWithoutHistory() bool { return a.historyLost }
 
 // ExitCauseBrokerLost is the exit cause of a broker-backed handle whose
-// connection the broker ended — it stopped or restarted (🎯T925).
+// connection the broker ended without warning — it crashed or was killed
+// (🎯T925).
 const ExitCauseBrokerLost = "claudia broker connection closed"
+
+// ExitCauseBrokerRestarted is the exit cause when the broker said it was
+// stopping on purpose first: a planned restart, not a failure (jevons 🎯T944).
+const ExitCauseBrokerRestarted = "claudia broker stopped on purpose (planned restart)"
 
 // markDeadBecause is markDead with the reason the handle died. The first
 // cause recorded stands.

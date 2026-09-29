@@ -62,6 +62,18 @@ func TestT925BrokerHandleRecordsWhyItDied(t *testing.T) {
 			t.Fatalf("exit cause %q", got)
 		}
 	})
+	t.Run("broker said it was stopping on purpose", func(t *testing.T) {
+		_, a, peer, _ := t925Seat(t)
+		if err := peer.WriteResponse(&broker.Response{Type: broker.TypeEvent,
+			Event: &broker.EventMessage{Kind: broker.EventShutdown, Detail: broker.ShutdownPlanned}}); err != nil {
+			t.Fatal(err)
+		}
+		_ = peer.Close()
+		t925WaitDead(t, a)
+		if got := a.ExitCause(); got != ExitCauseBrokerRestarted {
+			t.Fatalf("exit cause %q, want %q (jevons T944)", got, ExitCauseBrokerRestarted)
+		}
+	})
 	t.Run("this client closed it", func(t *testing.T) {
 		_, a, _, client := t925Seat(t)
 		client.Close()

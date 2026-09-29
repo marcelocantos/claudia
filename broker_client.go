@@ -56,6 +56,9 @@ type brokerClient struct {
 	// event stream, not a closed connection (🎯T73).
 	dropped  int
 	lastDrop error
+	// shutdown is the reason the daemon gave for stopping on purpose, or
+	// empty (jevons 🎯T944).
+	shutdown string
 }
 
 // usingBroker reports whether this process may talk to a lifecycle broker.
@@ -107,6 +110,14 @@ func (b *brokerClient) readLoop() {
 			return
 		}
 		if resp.ID == "" {
+			if resp.Type == broker.TypeEvent && resp.Event != nil && resp.Event.Kind == broker.EventShutdown {
+				// The daemon is stopping on purpose; the close that follows
+				// is a planned restart, not a lost broker (jevons 🎯T944).
+				b.mu.Lock()
+				b.shutdown = resp.Event.Detail
+				b.mu.Unlock()
+				continue
+			}
 			b.mu.Lock()
 			push := b.push
 			b.mu.Unlock()
@@ -177,6 +188,14 @@ func (b *brokerClient) fail(err error) {
 // (detach); a task run is cancelled.
 func (b *brokerClient) Close() {
 	b.fail(errBrokerClosed)
+}
+
+// plannedStop reports that the broker said it was stopping on purpose
+// before the connection ended (jevons 🎯T944).
+func (b *brokerClient) plannedStop() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.shutdown != ""
 }
 
 // lostByPeer reports that the connection ended from the broker's side (it
