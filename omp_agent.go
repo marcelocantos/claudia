@@ -816,20 +816,19 @@ func CallMCPTool(mcpURL, name, args string) string {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, mcpURL, bytes.NewReader(body))
-	if err != nil {
-		return fmt.Sprintf("omp: %s request: %v", name, err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json, text/event-stream")
-	resp, err := http.DefaultClient.Do(req)
+	// The call runs in a session of its own, as the listing does (🎯T147):
+	// a server that keeps sessions refuses a bare tools/call, and a stdio
+	// server drops one it has not been initialized for.
+	session, err := mcpOpenSession(ctx, mcpURL)
 	if err != nil {
 		return fmt.Sprintf("omp: %s call failed: %v", name, err)
 	}
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return fmt.Sprintf("omp: %s read: %v", name, err)
+	if session != "" {
+		defer mcpEndSession(mcpURL, session)
+	}
+	raw, _, cause, err := mcpPost(ctx, mcpURL, session, body)
+	if cause != "" {
+		return fmt.Sprintf("omp: %s call failed (%s): %v", name, cause, err)
 	}
 	var envelope struct {
 		Result struct {
@@ -1126,23 +1125,20 @@ const (
 func listMCPTools(ctx context.Context, mcpURL string) ([]hostJevonsTool, string, error) {
 	ctx, cancel := context.WithTimeout(ctx, hostToolsDeadline)
 	defer cancel()
-	initialize := []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"claudia-omp","version":"` + Version + `"}}}`)
-	raw, session, cause, err := mcpPost(ctx, mcpURL, "", initialize)
-	if cause != "" {
-		return nil, cause, fmt.Errorf("initialize: %w", err)
-	}
-	if cause, err := mcpRPCError(raw); cause != "" {
-		return nil, cause, fmt.Errorf("initialize: %w", err)
+	session, err := mcpOpenSession(ctx, mcpURL)
+	if err != nil {
+		var se *mcpSessionError
+		if errors.As(err, &se) {
+			return nil, se.cause, err
+		}
+		return nil, toolsCauseTransport, err
 	}
 	if session != "" {
 		// Close the session this listing opened; a server that keeps none
 		// ignores it.
 		defer mcpEndSession(mcpURL, session)
 	}
-	if _, _, cause, err := mcpPost(ctx, mcpURL, session, []byte(`{"jsonrpc":"2.0","method":"notifications/initialized"}`)); cause != "" {
-		return nil, cause, fmt.Errorf("notifications/initialized: %w", err)
-	}
-	raw, _, cause, err = mcpPost(ctx, mcpURL, session, []byte(`{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`))
+	raw, _, cause, err := mcpPost(ctx, mcpURL, session, []byte(`{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`))
 	if cause != "" {
 		return nil, cause, fmt.Errorf("tools/list: %w", err)
 	}
@@ -1166,6 +1162,36 @@ func listMCPTools(ctx context.Context, mcpURL string) ([]hostJevonsTool, string,
 		out = append(out, hostJevonsTool{Name: t.Name, Description: t.Description, InputSchema: t.InputSchema})
 	}
 	return out, "", nil
+}
+
+// mcpSessionError is a failed session handshake, with its cause.
+type mcpSessionError struct {
+	cause string
+	err   error
+}
+
+func (e *mcpSessionError) Error() string { return e.err.Error() }
+func (e *mcpSessionError) Unwrap() error { return e.err }
+
+// mcpOpenSession runs the MCP handshake — initialize, then
+// notifications/initialized — and returns the session id the server
+// assigned ("" for a server that keeps none).
+func mcpOpenSession(ctx context.Context, mcpURL string) (string, error) {
+	initialize := []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"claudia-omp","version":"` + Version + `"}}}`)
+	raw, session, cause, err := mcpPost(ctx, mcpURL, "", initialize)
+	if cause != "" {
+		return "", &mcpSessionError{cause, fmt.Errorf("initialize: %w", err)}
+	}
+	if cause, err := mcpRPCError(raw); cause != "" {
+		return "", &mcpSessionError{cause, fmt.Errorf("initialize: %w", err)}
+	}
+	if _, _, cause, err := mcpPost(ctx, mcpURL, session, []byte(`{"jsonrpc":"2.0","method":"notifications/initialized"}`)); cause != "" {
+		if session != "" {
+			mcpEndSession(mcpURL, session)
+		}
+		return "", &mcpSessionError{cause, fmt.Errorf("notifications/initialized: %w", err)}
+	}
+	return session, nil
 }
 
 // mcpPost sends one JSON-RPC message over streamable HTTP and returns the

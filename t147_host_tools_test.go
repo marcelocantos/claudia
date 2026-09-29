@@ -160,3 +160,36 @@ func TestT147StalledOrBrokenHostServersDoNotHoldUpALaunch(t *testing.T) {
 		t.Fatalf("next launch routes = %v, want the late server's tool", routes)
 	}
 }
+
+// 🎯T147: a seat's call to a host tool runs in a session too. A server that
+// keeps sessions refuses a bare tools/call, and a stdio server drops one it
+// has not been initialized for — listing a server's tools must not make them
+// uncallable.
+func TestT147HostToolCallsRunInASession(t *testing.T) {
+	var calls []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		switch {
+		case r.Method == http.MethodDelete:
+			calls = append(calls, "end "+r.Header.Get("Mcp-Session-Id"))
+		case strings.Contains(string(body), `"initialize"`):
+			w.Header().Set("Mcp-Session-Id", "sess-9")
+			_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-03-26"}}`)
+		case r.Header.Get("Mcp-Session-Id") != "sess-9":
+			http.Error(w, `{"jsonrpc":"2.0","error":{"code":-32600,"message":"Invalid session ID"}}`, http.StatusNotFound)
+		case strings.Contains(string(body), `"notifications/initialized"`):
+			w.WriteHeader(http.StatusAccepted)
+		case strings.Contains(string(body), `"tools/call"`):
+			calls = append(calls, "call")
+			_, _ = io.WriteString(w, "event: message\ndata: "+`{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"searched"}]}}`+"\n\n")
+		}
+	}))
+	defer srv.Close()
+
+	if got := CallMCPTool(srv.URL, "mnemo_search", `{"query":"x"}`); got != "searched" {
+		t.Fatalf("CallMCPTool = %q, want the server's answer", got)
+	}
+	if strings.Join(calls, ",") != "call,end sess-9" {
+		t.Fatalf("server saw %v, want the call and then the session closed", calls)
+	}
+}

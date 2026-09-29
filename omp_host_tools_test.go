@@ -24,8 +24,17 @@ func TestHostToolsAdvertisesEveryEligibleServer(t *testing.T) {
 	for _, sse := range []bool{false, true} {
 		asked := map[string]bool{}
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			asked[r.URL.Path] = true
 			b, _ := io.ReadAll(r.Body)
+			// The session handshake a listing opens with (🎯T147).
+			if strings.Contains(string(b), `"initialize"`) {
+				_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-03-26"}}`)
+				return
+			}
+			if strings.Contains(string(b), `"notifications/initialized"`) {
+				w.WriteHeader(http.StatusAccepted)
+				return
+			}
+			asked[r.URL.Path] = true
 			if !strings.Contains(string(b), `"tools/list"`) {
 				t.Errorf("asked %s, want tools/list", b)
 			}
@@ -92,6 +101,8 @@ func TestRunToolRoutesToDiscoveredServer(t *testing.T) {
 		b, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(b, &req)
 		switch req.Method {
+		case "initialize":
+			_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-03-26"}}`)
 		case "tools/list":
 			_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"tools":[`+
 				`{"name":"fixture_tool","description":"fixture","inputSchema":{"type":"object"}}]}}`)

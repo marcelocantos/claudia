@@ -33,6 +33,10 @@ var shortenableBounds = map[string]string{
 	"cursorPromptSilenceBound": "bounds silence before the first inbound message of a prompt and " +
 		"nothing else — the first thing the peer says disarms it, so no other wait on that path " +
 		"shares it; cursor_acp.go documents it as a var solely so hermetics can shorten it",
+	"mcpStdioRequestTimeout": "bounds one forwarded stdio request's wait for its reply and nothing " +
+		"else; the test's initialize has already been answered before the unanswered request is " +
+		"sent, and postMCP sets no client clock (jevons T928, claudia T147), so no other wait on " +
+		"that path can expire first and answer for it",
 }
 
 // TestHermeticTestsDeclareTheProductBoundsTheyShorten closes the hole 🎯T93
