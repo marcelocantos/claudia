@@ -14,8 +14,10 @@ const (
 	ProgressThought        = "thought"
 	ProgressPlan           = "plan"
 	ProgressPromptAccepted = "prompt_accepted"
-	ProgressPermission     = "permission"
-	ProgressToolUse        = "tool_use"
+	// ProgressCompaction is a sidecar seat compacting its context (🎯T150).
+	ProgressCompaction = "compaction"
+	ProgressPermission = "permission"
+	ProgressToolUse    = "tool_use"
 	// ProgressPromptSuperseded: a steered-over session/prompt returned
 	// its JSON-RPC result while the turn continued on the steer's id
 	// (🎯T72.1). Raw is that result; it is never a terminal stop.

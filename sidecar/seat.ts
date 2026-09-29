@@ -6,16 +6,7 @@ import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { codingTools } from "./coding.ts";
 import { awaitHostCall } from "./hostcalls.ts";
-import {
-  compact,
-  contextTokens,
-  ContextOverflow,
-  isOverflow,
-  providerLimit,
-  summarizeWith,
-  thresholdTokens,
-  type Summarize,
-} from "./compact.ts";
+import { ContextOverflow, isOverflow, Maintenance, seatConvertToLlm, type MaintenanceHost } from "./maintain.ts";
 import {
   beginTurn,
   closeTurn,
@@ -78,10 +69,11 @@ export function createSeatAgent(opts: {
   emit: SeatEmit;
   callTool: SeatCallTool;
   tools?: HostTool[];
-  // modelOverride replaces the catalog lookup, and summarize the compaction
-  // summarizer. Tests only: a mock model with a small window (🎯T148).
+  // modelOverride replaces the catalog lookup, and maintenance the
+  // compaction seams (🎯T150). Tests only: a mock model with a small window
+  // and a fake summary.
   modelOverride?: Model;
-  summarize?: Summarize;
+  maintenance?: Pick<MaintenanceHost, "compactImpl" | "summaryOptions" | "nativeEligible">;
 }): SeatAgent {
   let token = opts.token;
   let cwd = opts.cwd;
@@ -104,6 +96,9 @@ export function createSeatAgent(opts: {
     cwd,
     cwdResolver: () => cwd || undefined,
     getApiKey: async () => token,
+    // A compaction summary must reach the provider; the Agent's default
+    // converter drops roles it does not know (🎯T150).
+    convertToLlm: seatConvertToLlm,
     resolveFallbackTool: (name: string) => {
       if (opts.summaryOnly) return undefined;
       if (!name.startsWith("jevons_")) return undefined;
@@ -130,58 +125,34 @@ export function createSeatAgent(opts: {
   // potentially expensive default reasoning setting.
   if (opts.summaryOnly) agent.setThinkingLevel("low");
 
-  // Compaction (🎯T148). anchorFrom is the first message whose provider usage
-  // still describes what is sent: usage reported before the last compaction
-  // counts messages that were folded away. limit is the window the provider
-  // itself named in an overflow refusal, when it is smaller than the catalog's.
-  let anchorFrom = 0;
-  let limit = 0;
-  const summarize = opts.summarize ?? summarizeWith(() => agent.state.model, () => token);
-  const contextWindow = () => {
-    const catalog = agent.state.model?.contextWindow ?? 0;
-    return limit > 0 && (catalog <= 0 || limit < catalog) ? limit : catalog;
-  };
-  const prefix = () => {
-    const parts = [...(agent.state.systemPrompt ?? [])];
-    for (const t of agent.state.tools ?? []) {
-      parts.push(t.name, t.description ?? "", JSON.stringify(t.parameters ?? {}));
-    }
-    return parts;
-  };
-  // compactNow folds the conversation when it is past the threshold, or
-  // whenever force is set (the provider has just refused it as too long).
-  // It reports whether the conversation shrank.
-  const compactNow = async (force: boolean): Promise<boolean> => {
-    if (opts.summaryOnly) return false;
-    const window = contextWindow();
-    if (window <= 0) return false;
-    const messages = agent.state.messages;
-    if (!force && contextTokens(messages, agent.tokenizer, anchorFrom, prefix()) <= thresholdTokens(window)) {
-      return false;
-    }
-    const done = await compact({
-      messages: [...messages],
-      tokenizer: agent.tokenizer,
-      contextWindow: window,
-      anchorFrom,
-      prefix: prefix(),
-      summarize,
-    });
-    if (!done) return false;
-    agent.replaceMessages(done.messages);
-    anchorFrom = done.messages.length;
-    sink.emit({
-      type: "compacted",
-      text: `context ${done.before} -> ${done.after} tokens of ${window}; ${done.folded} messages folded (${done.how})`,
-    });
-    return true;
-  };
+  // Context maintenance (🎯T150): the Oh My Pi CLI's compaction triggers,
+  // on pi-agent-core's engine. A summary-only seat is a one-shot transfer
+  // and never compacts.
+  const maint = new Maintenance({
+    agent,
+    token: () => token,
+    emit: (ev) => sink.emit(ev),
+    ...opts.maintenance,
+  });
+  // Between tool calls, when the loop is about to call the model again: the
+  // CLI's mid-turn pass. The live array is the loop's own, so a compaction is
+  // spliced into it for the next request.
+  agent.setOnTurnEnd(async (messages, signal, context) => {
+    if (opts.summaryOnly || signal?.aborted || !context?.willContinue || maint.compacting) return;
+    const last = [...messages].reverse().find((m) => m.role === "assistant") as { stopReason?: string } | undefined;
+    if (!last || last.stopReason === "aborted" || last.stopReason === "error") return;
+    if (!maint.due(messages)) return;
+    await maint.run("threshold", "mid_turn", messages);
+    if (signal?.aborted) return;
+    const compacted = agent.state.messages;
+    if (compacted !== messages) messages.splice(0, messages.length, ...compacted);
+  });
   // overflowRefusal is the last message when the provider refused the turn
   // as longer than the window, or undefined.
   const overflowRefusal = () => {
     const messages = agent.state.messages;
     const last = messages[messages.length - 1];
-    return isOverflow(last, contextWindow()) ? (last as { errorMessage?: string }) : undefined;
+    return isOverflow(last, maint.window()) ? (last as { errorMessage?: string }) : undefined;
   };
 
   const finish = (stop: Stop) => {
@@ -243,9 +214,11 @@ export function createSeatAgent(opts: {
     let refusal = "";
     let overflow = false;
     try {
-      // A conversation past the threshold is folded before it is sent, so
-      // the provider never sees a prompt longer than its window (🎯T148).
-      await compactNow(false);
+      // Before the prompt, counting the prompt itself: the CLI's pre-prompt
+      // pass, so the provider never sees a request past its window.
+      if (!opts.summaryOnly && maint.due(agent.state.messages, agent.tokenizer.countTokens(text))) {
+        await maint.run("threshold", "pre_turn");
+      }
       await run();
       // A follow-up queued after the run's own last check would wait for
       // the next prompt. Drain it inside this turn (bounded).
@@ -257,15 +230,28 @@ export function createSeatAgent(opts: {
       // send it once more. Once, not in a loop: a second refusal means
       // compaction cannot help, and the turn ends as terminal.
       const refused = overflowRefusal();
-      if (refused) {
-        limit = providerLimit(refused.errorMessage) || limit;
+      if (refused && !opts.summaryOnly) {
+        maint.noteProviderLimit(refused.errorMessage);
         agent.popMessage();
-        if (await compactNow(true)) {
+        maint.history.forget(refused as never);
+        if (await maint.run("overflow", "mid_turn")) {
           await agent.continue();
         } else {
           agent.appendMessage(refused as never);
         }
         overflow = overflowRefusal() !== undefined;
+      } else if (refused) {
+        overflow = true;
+      }
+      // After the turn: the CLI's post-turn pass, so the next prompt starts
+      // under the threshold. The turn has answered; nothing is continued.
+      if (!overflow && !opts.summaryOnly && !turnRefusal(agent.state) && maint.due(agent.state.messages)) {
+        await maint.run("threshold", "post_turn");
+        // A message that arrived while it compacted was queued behind this
+        // turn: run it now, as the CLI drains its queue after a compaction.
+        for (let i = 0; i < 8 && agent.hasQueuedMessages() && !agent.state.isStreaming; i++) {
+          await agent.continue();
+        }
       }
       refusal = turnRefusal(agent.state);
       finish(refusal ? "error" : turn?.stop_token ? "stop_token" : "end_turn");
@@ -312,6 +298,7 @@ export function createSeatAgent(opts: {
       sink.emit({ type: "accepted" });
     },
     abort: () => {
+      maint.abort();
       agent.abort();
       finish("abort");
       // An interrupt is how a waiting message gets taken now (T138). The

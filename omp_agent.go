@@ -370,6 +370,12 @@ func (c *ompControl) pump(a *Agent) {
 			// The model took a message queued or steered behind the turn;
 			// an escalation for it stops here (🎯T138).
 			a.publishEvent(Event{Type: "progress", ProgressType: ProgressDeliveryAbsorbed, Text: ev.Text})
+		case "compacting", "compacted", "compaction_warning":
+			// The seat is managing its context (🎯T150): a host can show
+			// when and why a long conversation was folded, or that it could
+			// not be.
+			slog.Info("omp seat context maintenance", "seat", c.seat, "event", ev.Type, "text", ev.Text)
+			a.publishEvent(Event{Type: "progress", ProgressType: ProgressCompaction, Text: ev.Type + ": " + ev.Text})
 		case "text":
 			visible, token := omp.StripStopToken(ev.Text)
 			if visible == "" && token != "" {

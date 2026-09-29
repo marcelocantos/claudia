@@ -82,3 +82,25 @@ func TestT887AcceptanceIsVisibleWhileAHostToolRuns(t *testing.T) {
 		}
 	}
 }
+
+// 🎯T150: a sidecar seat's compaction reaches the host as progress, so a
+// host can show that a long conversation was folded (or could not be).
+func TestT150CompactionIsVisibleToTheHost(t *testing.T) {
+	var refreshes atomic.Int32
+	s := startT141Sidecar(t)
+	t141Plan(t, "live", &refreshes, "")
+	agent, conn := startT141Seat(t, s)
+	events := make(chan Event, 16)
+	tok := agent.SubscribeEvents(func(ev Event) { events <- ev })
+	defer agent.UnsubscribeEvents(tok)
+
+	t141Write(t, conn, `{"type":"compacted","text":"threshold (pre_turn): context 900000 -> 60000 tokens of 1000000; method remote"}`)
+	for ev := range events {
+		if ev.Type == "progress" && ev.ProgressType == ProgressCompaction {
+			if ev.Text != "compacted: threshold (pre_turn): context 900000 -> 60000 tokens of 1000000; method remote" {
+				t.Fatalf("compaction progress text %q", ev.Text)
+			}
+			break // blocks until seen; `go test -timeout` is the clock
+		}
+	}
+}
