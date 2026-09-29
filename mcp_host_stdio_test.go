@@ -26,11 +26,14 @@ type mcpReply struct {
 	elapsed time.Duration
 }
 
-func postMCP(t *testing.T, url, body string, wait time.Duration) mcpReply {
+// postMCP sends one request and waits for its reply. It sets no clock of
+// its own (🎯T97): the host bounds every stdio request itself
+// (mcpStdioRequestTimeout), which is what these tests judge, and `go test
+// -timeout` bounds a hang. A client deadline only added a way for a slow host
+// to fail a request that would have been answered.
+func postMCP(t *testing.T, url, body string) mcpReply {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), wait)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader([]byte(body)))
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url, bytes.NewReader([]byte(body)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,14 +77,14 @@ func errorCode(t *testing.T, r mcpReply) int {
 
 func TestMCPHostStdioPreInitializeDiscoverAnsweredByHost(t *testing.T) {
 	url := fixtureURL(t)
-	r := postMCP(t, url, `{"jsonrpc":"2.0","id":"server-discover-probe-1","method":"server/discover","params":{}}`, 5*time.Second)
+	r := postMCP(t, url, `{"jsonrpc":"2.0","id":"server-discover-probe-1","method":"server/discover","params":{}}`)
 	if r.status != http.StatusOK || errorCode(t, r) != -32601 {
 		t.Fatalf("discover: status %d body %v, want 200 with -32601", r.status, r.body)
 	}
 	if got := string(r.body["id"]); got != `"server-discover-probe-1"` {
 		t.Fatalf("discover id = %s", got)
 	}
-	init := postMCP(t, url, fixtureInit, 5*time.Second)
+	init := postMCP(t, url, fixtureInit)
 	if init.status != http.StatusOK || init.body["result"] == nil {
 		t.Fatalf("initialize after discover: status %d body %v", init.status, init.body)
 	}
@@ -92,17 +95,17 @@ func TestMCPHostStdioUnansweredRequestFailsAtItsDeadlineAndFreesTheBackend(t *te
 	mcpStdioRequestTimeout = 300 * time.Millisecond
 	t.Cleanup(func() { mcpStdioRequestTimeout = prev })
 	url := fixtureURL(t)
-	if r := postMCP(t, url, fixtureInit, 5*time.Second); r.body["result"] == nil {
+	if r := postMCP(t, url, fixtureInit); r.body["result"] == nil {
 		t.Fatalf("initialize: %v", r.body)
 	}
-	dropped := postMCP(t, url, `{"jsonrpc":"2.0","id":7,"method":"nobody/answers"}`, 5*time.Second)
+	dropped := postMCP(t, url, `{"jsonrpc":"2.0","id":7,"method":"nobody/answers"}`)
 	if dropped.status != http.StatusOK || errorCode(t, dropped) != mcpStdioTimeoutCode || string(dropped.body["id"]) != "7" {
 		t.Fatalf("unanswered: status %d body %v", dropped.status, dropped.body)
 	}
 	if dropped.elapsed > 3*time.Second {
 		t.Fatalf("unanswered request took %s, deadline was %s", dropped.elapsed, mcpStdioRequestTimeout)
 	}
-	ping := postMCP(t, url, `{"jsonrpc":"2.0","id":8,"method":"ping"}`, 5*time.Second)
+	ping := postMCP(t, url, `{"jsonrpc":"2.0","id":8,"method":"ping"}`)
 	if ping.status != http.StatusOK || ping.body["result"] == nil {
 		t.Fatalf("ping after an unanswered request: status %d body %v", ping.status, ping.body)
 	}
@@ -113,15 +116,15 @@ func TestMCPHostStdioUnansweredRequestFailsAtItsDeadlineAndFreesTheBackend(t *te
 // must get its own reply back under its own id.
 func TestMCPHostStdioConcurrentSeatsWithTheSameIDGetTheirOwnReplies(t *testing.T) {
 	url := fixtureURL(t)
-	if r := postMCP(t, url, fixtureInit, 5*time.Second); r.body["result"] == nil {
+	if r := postMCP(t, url, fixtureInit); r.body["result"] == nil {
 		t.Fatalf("initialize: %v", r.body)
 	}
 	slow := make(chan mcpReply, 1)
 	go func() {
-		slow <- postMCP(t, url, `{"jsonrpc":"2.0","id":1,"method":"sleep","params":{"ms":1500}}`, 10*time.Second)
+		slow <- postMCP(t, url, `{"jsonrpc":"2.0","id":1,"method":"sleep","params":{"ms":1500}}`)
 	}()
 	time.Sleep(100 * time.Millisecond) // let the slow request reach the process first
-	fast := postMCP(t, url, `{"jsonrpc":"2.0","id":1,"method":"ping"}`, 10*time.Second)
+	fast := postMCP(t, url, `{"jsonrpc":"2.0","id":1,"method":"ping"}`)
 	if string(fast.body["id"]) != "1" || fast.body["result"] == nil || bytes.Contains(fast.body["result"], []byte("slept")) {
 		t.Fatalf("fast seat got %v", fast.body)
 	}
@@ -138,10 +141,10 @@ func TestMCPHostStdioConcurrentSeatsWithTheSameIDGetTheirOwnReplies(t *testing.T
 // no reply; the host must not wait for one.
 func TestMCPHostStdioClientResponseIsNotAwaited(t *testing.T) {
 	url := fixtureURL(t)
-	if r := postMCP(t, url, fixtureInit, 5*time.Second); r.body["result"] == nil {
+	if r := postMCP(t, url, fixtureInit); r.body["result"] == nil {
 		t.Fatalf("initialize: %v", r.body)
 	}
-	r := postMCP(t, url, `{"jsonrpc":"2.0","id":"srv-1","result":{"roots":[]}}`, 5*time.Second)
+	r := postMCP(t, url, `{"jsonrpc":"2.0","id":"srv-1","result":{"roots":[]}}`)
 	if r.status != http.StatusOK || r.elapsed > time.Second {
 		t.Fatalf("client response: status %d after %s", r.status, r.elapsed)
 	}
