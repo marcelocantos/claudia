@@ -50,6 +50,50 @@ export const ContextOverflow = "context_overflow";
 // history are kept verbatim, and provider-native compaction is preferred.
 export const settings: CompactionSettings = { ...DEFAULT_COMPACTION_SETTINGS };
 
+// preserveRule is given to the summarizer on every compaction (🎯T152). A
+// stock summary describes the work well and drops what the seat was told
+// to keep: in the T150 live check it lost a code word it had been asked to
+// remember.
+export const preserveRule =
+  "Keep, word for word, every fact, decision or instruction the conversation was explicitly asked to remember or keep, " +
+  "and every standing direction from the owner or the host: who gave it, what it says, and any conditions. " +
+  "Never shorten or drop these for brevity.";
+
+// pinLine marks a line of a user message as a pinned fact: the sidecar
+// carries it verbatim after every compaction, whatever the summary kept.
+const pinLine = /^\s*PIN:\s*(.+?)\s*$/;
+
+// pinnedMessage carries pins into the context after a compaction.
+export function pinnedMessage(pins: readonly string[], timestamp: number): AgentMessage {
+  const lines = pins.map((p) => `- ${p}`).join("\n");
+  return {
+    role: "user",
+    content: [{ type: "text", text: `Pinned facts, kept verbatim across context compaction (🎯T152):\n${lines}` }],
+    attribution: "agent",
+    timestamp,
+  } as AgentMessage;
+}
+
+// pinsIn collects the PIN: lines of user messages.
+export function pinsIn(messages: readonly AgentMessage[]): string[] {
+  const out: string[] = [];
+  for (const m of messages) {
+    if (m.role !== "user") continue;
+    const c = (m as { content?: unknown }).content;
+    const text =
+      typeof c === "string"
+        ? c
+        : Array.isArray(c)
+          ? c.map((x) => (x && typeof x === "object" && (x as { type?: string }).type === "text" ? String((x as { text?: unknown }).text ?? "") : "")).join("\n")
+          : "";
+    for (const line of text.split("\n")) {
+      const hit = pinLine.exec(line);
+      if (hit) out.push(hit[1]);
+    }
+  }
+  return out;
+}
+
 // recoveryBand is the CLI's COMPACTION_RECOVERY_BAND: a threshold compaction
 // has made progress only when what is left is at most this share of the
 // threshold. Anything more re-trips the threshold on the next turn.
@@ -106,6 +150,12 @@ export function providerLimit(errorMessage: string | undefined): number {
 }
 
 type SeatCompactionEntry = CompactionEntry & { method?: Method; tokensAfter?: number };
+
+// entryPins are the pins a compaction entry carries (🎯T152).
+function entryPins(c: CompactionEntry | undefined): string[] {
+  const pins = (c?.details as { pins?: unknown } | undefined)?.pins;
+  return Array.isArray(pins) ? pins.filter((p): p is string => typeof p === "string") : [];
+}
 
 // History is the seat's conversation as engine entries, on one branch.
 export class History {
@@ -210,6 +260,14 @@ export class History {
     this.#byKey.delete(messageKey(message));
   }
 
+  // latestCompaction is the newest compaction entry, if any.
+  latestCompaction(): CompactionEntry | undefined {
+    for (let i = this.entries.length - 1; i >= 0; i--) {
+      if (this.entries[i].type === "compaction") return this.entries[i] as CompactionEntry;
+    }
+    return undefined;
+  }
+
   appendCompaction(result: CompactionResult, method: Method): SeatCompactionEntry {
     const entry: SeatCompactionEntry = {
       type: "compaction",
@@ -262,6 +320,11 @@ export class History {
         tokensAfter: c.tokensAfter,
       }),
     ];
+    // Pinned facts follow the summary verbatim, whatever it kept (🎯T152).
+    // A message of their own: a native payload can stand in for the summary
+    // text, never for these.
+    const pins = entryPins(c);
+    if (pins.length > 0) out.push(pinnedMessage(pins, new Date(summaryTimestamp).getTime()));
     // An OpenAI replacement history already carries the kept turns.
     if (!remote && firstKept >= 0) {
       for (let i = firstKept; i < ci; i++) out.push(...messageOf(path[i]));
@@ -307,6 +370,10 @@ export type MaintenanceHost = {
   compactImpl?: typeof engineCompact;
   summaryOptions?: Partial<SummaryOptions>;
   nativeEligible?: (model: Model, s: CompactionSettings) => boolean;
+  // preserve and pins are the host's (🎯T152): what the summary must keep
+  // beyond preserveRule, and facts kept verbatim.
+  preserve?: () => string | undefined;
+  pins?: () => readonly string[] | undefined;
 };
 
 // Maintenance runs the CLI's compaction triggers for one seat.
@@ -431,10 +498,12 @@ export class Maintenance {
         }
         this.#host.emit({ type: "compacting", text: `${reason} (${phase}): ${before} tokens of ${window}; method ${method}` });
         const codex = { operationId: crypto.randomUUID(), trigger: "auto", reason: "context_limit", phase, strategy: "memento" } as const;
+        const hostPreserve = this.#host.preserve?.()?.trim();
+        const instructions = hostPreserve ? `${preserveRule}\n${hostPreserve}` : preserveRule;
         let result: CompactionResult | undefined;
         for (let attempt = 0; ; attempt++) {
           try {
-            result = await compactImpl(prep, model, this.#host.token(), undefined, abort.signal, {
+            result = await compactImpl(prep, model, this.#host.token(), instructions, abort.signal, {
               convertToLlm: seatConvertToLlm,
               remoteSystemPrompt: agent.state.systemPrompt,
               initiatorOverride: "agent",
@@ -460,6 +529,16 @@ export class Maintenance {
         }
         // A provider-native lane that failed falls through to a local summary.
         if (!result) continue;
+        // Pins: those already carried, those the conversation marked, and
+        // the host's, in that order, each once (🎯T152).
+        const pins = [
+          ...new Set([
+            ...entryPins(this.history.latestCompaction()),
+            ...pinsIn(messages),
+            ...(this.#host.pins?.() ?? []),
+          ]),
+        ];
+        if (pins.length > 0) result = { ...result, details: { ...(result.details as object | undefined), pins } };
         this.#commit(result, method, codex);
         const after = this.storedTokens();
         const progressed =

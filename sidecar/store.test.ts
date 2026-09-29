@@ -255,7 +255,7 @@ describe("sidecar restart (🎯T151)", () => {
       msg("b", "a", 1, "assistant", "old answer"),
       msg("c", "b", 2, "user", "kept question PELICAN"),
       msg("d", "c", 3, "assistant", "kept answer"),
-      { type: "compaction", id: "e", parentId: "d", timestamp: iso(4), summary: summaryText, firstKeptEntryId: "c", tokensBefore: 5000 } as SessionEntry,
+      { type: "compaction", id: "e", parentId: "d", timestamp: iso(4), summary: summaryText, firstKeptEntryId: "c", tokensBefore: 5000, details: { pins: ["PINNED-FACT-42"] } } as SessionEntry,
       msg("f", "e", 5, "user", "after the compaction"),
       msg("g", "f", 6, "assistant", "latest answer"),
     ]);
@@ -274,6 +274,7 @@ describe("sidecar restart (🎯T151)", () => {
         expect(text).toContain(summaryText);
         expect(text).toContain("PELICAN"); // the kept tail
         expect(text).toContain("latest answer"); // after the compaction
+        expect(text).toContain("PINNED-FACT-42"); // pins survive a restart (🎯T152)
         expect(text).not.toContain("old question"); // folded away
       } finally {
         proc.kill();

@@ -176,6 +176,12 @@ type AgentDef struct {
 	// OMP persists a ProviderCursor seat onto the Oh My Pi sidecar (🎯T864).
 	// A jevonsd bounce must not drop the flag and start the vendor CLI.
 	OMP bool `json:"omp,omitempty"`
+
+	// ContextPreserve tells an Oh My Pi seat's compaction what its summary
+	// must keep, beyond the sidecar's own rule (🎯T152). ContextPins are
+	// facts carried into the seat's context verbatim after every compaction.
+	ContextPreserve string   `json:"context_preserve,omitempty"`
+	ContextPins     []string `json:"context_pins,omitempty"`
 }
 
 // Canonical Purpose values for [AgentDef.Purpose].

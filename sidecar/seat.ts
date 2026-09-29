@@ -53,6 +53,8 @@ export type SeatAgent = {
   // restored says whether the seat resumed a stored conversation (🎯T151);
   // the host words its restart note by it (jevons 🎯T929).
   restored: boolean;
+  // setContext replaces the host's compaction steer (🎯T152).
+  setContext: (preserve: string | undefined, pins: string[] | undefined) => void;
 };
 
 // HostTool is one tool the host offers a work seat (🎯T886): shown to the
@@ -81,9 +83,15 @@ export function createSeatAgent(opts: {
   // store keeps the conversation across a sidecar restart (🎯T151). A seat
   // loaded with a store that already holds its session resumes from it.
   store?: SeatStore;
+  // preserve and pins steer compaction (🎯T152): what the summary must
+  // keep, and facts carried verbatim after it. setContext replaces them.
+  preserve?: string;
+  pins?: string[];
 }): SeatAgent {
   let token = opts.token;
   let cwd = opts.cwd;
+  let preserve = opts.preserve;
+  let pins = opts.pins;
   let sessionId = "";
   let turn: OpenTurn | null = null;
   const sink = { emit: opts.emit, callTool: opts.callTool };
@@ -140,6 +148,8 @@ export function createSeatAgent(opts: {
     token: () => token,
     emit: (ev) => sink.emit(ev),
     store: opts.summaryOnly ? undefined : opts.store,
+    preserve: () => preserve,
+    pins: () => pins,
     ...opts.maintenance,
   });
   // Resume the stored conversation. An unreadable store throws, so the load
@@ -350,6 +360,10 @@ export function createSeatAgent(opts: {
     },
     setHostTools: (tools) => applyTools(tools),
     restored,
+    setContext: (nextPreserve, nextPins) => {
+      preserve = nextPreserve;
+      pins = nextPins;
+    },
   };
 }
 

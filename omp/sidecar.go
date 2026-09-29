@@ -44,6 +44,10 @@ type Message struct {
 	Cause       string `json:"cause,omitempty"`
 	CauseDetail string `json:"cause_detail,omitempty"`
 	Resume      string `json:"resume,omitempty"`
+	// Preserve and Pins steer the seat's compaction (claudia 🎯T152): what
+	// its summary must keep, and facts carried verbatim after it.
+	Preserve string   `json:"preserve,omitempty"`
+	Pins     []string `json:"pins,omitempty"`
 	// Tools is the host's own tool list (name, description, input_schema)
 	// offered to a work seat on load and adopt, so the model can choose
 	// them. Calls still come back to the host as tool_call (🎯T886).

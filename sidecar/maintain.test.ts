@@ -13,7 +13,7 @@ import {
 } from "@oh-my-pi/pi-agent-core";
 import { createMockModel, registerMockApi, type MockResponse } from "@oh-my-pi/pi-ai/providers/mock";
 import type { AssistantMessage, Context, Model } from "@oh-my-pi/pi-ai";
-import { ContextOverflow, thresholdTokens } from "./maintain.ts";
+import { ContextOverflow, preserveRule, thresholdTokens } from "./maintain.ts";
 import { createSeatAgent, type HostTool, type SeatEvent } from "./seat.ts";
 
 registerMockApi();
@@ -61,6 +61,8 @@ async function fakeSummary(model: Model): Promise<AssistantMessage> {
 }
 
 type SeatOptions = {
+  preserve?: string;
+  pins?: string[];
   tools?: HostTool[];
   callTool?: (name: string) => string;
   compactImpl?: typeof engineCompact;
@@ -79,6 +81,8 @@ function seat(handler: (context: Context) => MockResponse, o: SeatOptions = {}) 
     emit: (ev) => events.push(ev),
     callTool: async (_id, name) => o.callTool?.(name) ?? "",
     tools: o.tools,
+    preserve: o.preserve,
+    pins: o.pins,
     modelOverride: mock as never,
     maintenance: {
       compactImpl: o.compactImpl,
@@ -342,5 +346,65 @@ describe("compaction as the Oh My Pi CLI does it (🎯T150)", () => {
     const phases = compactions(events).map((e) => e.text ?? "");
     expect(phases.some((t) => t.includes("post_turn"))).toBe(true);
     expect(events.filter((e) => e.type === "absorbed").map((e) => e.text)).toContain("arrived after the answer");
+  });
+
+  // 🎯T152: every compaction tells the summarizer what it must keep — the
+  // sidecar's rule, and the host's own instruction.
+  test("every compaction is told what the summary must keep", async () => {
+    const told: (string | undefined)[] = [];
+    const { agent } = seat(() => ({ content: ["ok"], usage: { input: 1000, output: 1 } }), {
+      preserve: "Keep the owner's release policy.",
+      compactImpl: (async (prep: CompactionPreparation, model: unknown, key: unknown, instructions: string | undefined, ...rest: unknown[]) => {
+        told.push(instructions);
+        return (engineCompact as (...a: unknown[]) => unknown)(prep, model, key, instructions, ...rest);
+      }) as never,
+    });
+    for (let i = 0; i < 9; i++) await agent.prompt(`${i}: ${promptText}`);
+
+    expect(told.length).toBeGreaterThan(0);
+    for (const t of told) {
+      expect(t).toContain(preserveRule);
+      expect(t).toContain("Keep the owner's release policy.");
+    }
+  });
+
+  // 🎯T152: a fact the conversation pinned, and a pin from the host, reach
+  // the model verbatim after compactions whose summaries omit them — the
+  // Haiku summary in the T150 live check dropped a code word it was asked to
+  // remember.
+  test("pinned facts survive every compaction verbatim, whatever the summary kept", async () => {
+    let last = "";
+    const { events, agent } = seat(
+      (context) => {
+        last = JSON.stringify(context.messages);
+        return { content: ["ok"], usage: { input: 1000, output: 1 } };
+      },
+      { pins: ["the owner ships MINOR releases only"] },
+    );
+    await agent.prompt("PIN: the code word is PELICAN-7\nRemember that.");
+    for (let i = 0; i < 20; i++) await agent.prompt(`${i}: ${promptText}`);
+    expect(compactions(events).length).toBeGreaterThan(1);
+
+    await agent.prompt("what was the code word?");
+    // The fake summary never mentions either fact, and the prompt that
+    // carried the PIN: line was folded away long ago.
+    expect(last).toContain("SUMMARY OF EARLIER WORK");
+    expect(last).not.toContain("Remember that.");
+    expect(last).toContain("the code word is PELICAN-7");
+    expect(last).toContain("the owner ships MINOR releases only");
+  });
+
+  // 🎯T152: the host can change its steer on a live seat.
+  test("setContext changes what the next compaction keeps", async () => {
+    let last = "";
+    const { events, agent } = seat((context) => {
+      last = JSON.stringify(context.messages);
+      return { content: ["ok"], usage: { input: 1000, output: 1 } };
+    });
+    agent.setContext(undefined, ["a pin set later"]);
+    for (let i = 0; i < 9; i++) await agent.prompt(`${i}: ${promptText}`);
+    expect(compactions(events).length).toBeGreaterThan(0);
+    await agent.prompt("next");
+    expect(last).toContain("a pin set later");
   });
 });

@@ -68,6 +68,11 @@ type Config struct {
 	// grok, cursor, and the four subscription ids use the sidecar (🎯T866.5).
 	OMP bool
 
+	// ContextPreserve and ContextPins are [AgentDef]'s: what an Oh My Pi
+	// seat's compaction must keep, and facts kept verbatim (🎯T152).
+	ContextPreserve string
+	ContextPins     []string
+
 	// AdoptOnly attaches to a sidecar seat that is already running
 	// (🎯T869). A seat that is not loaded is not created. Launch leaves
 	// this false and creates the seat.

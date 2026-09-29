@@ -227,6 +227,8 @@ func configToGrantDef(name string, cfg Config, base *AgentDef) GrantDefinition {
 			ExtraArgs:             cfg.ExtraArgs,
 			TermLogPath:           cfg.TermLogPath,
 			OMP:                   cfg.OMP,
+			ContextPreserve:       cfg.ContextPreserve,
+			ContextPins:           cfg.ContextPins,
 			MigrationSeed:         labels.MigrationSeed,
 			MigrationFrom:         labels.MigrationFrom,
 			MigrationFromSession:  labels.MigrationFromSession,

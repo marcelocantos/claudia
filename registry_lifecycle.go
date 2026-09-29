@@ -133,6 +133,7 @@ func registryConfig(def *AgentDef, requireResume bool) Config {
 		Goal:           def.Goal,
 		PermissionMode: def.PermissionMode, MCPConfig: def.MCPConfig,
 		ExtraArgs: def.ExtraArgs, TermLogPath: def.TermLogPath,
-		OMP: def.OMP,
+		OMP:             def.OMP,
+		ContextPreserve: def.ContextPreserve, ContextPins: def.ContextPins,
 	}
 }

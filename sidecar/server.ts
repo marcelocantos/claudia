@@ -55,6 +55,8 @@ type Line = {
   cause_detail?: string;
   resume?: string;
   tools?: HostTool[];
+  preserve?: string;
+  pins?: string[];
 };
 
 type Seat = {
@@ -209,6 +211,8 @@ async function handle(
       callTool,
       tools: msg.tools,
       store,
+      preserve: msg.preserve,
+      pins: msg.pins,
     });
     if (existing) existing.agent.abort();
     seats.set(seat, {
@@ -260,6 +264,8 @@ function rebindSeat(
   existing.agent.rebind((ev) => write({ seat, ...ev }), callTool);
   if (msg.tools) existing.agent.setHostTools(msg.tools);
   if (msg.cwd) existing.agent.setCwd(msg.cwd);
+  // The host sends its current compaction steer on every load (🎯T152).
+  existing.agent.setContext(msg.preserve, msg.pins);
   if (msg.model && msg.model !== existing.model) {
     existing.agent.setModel(msg.provider ?? existing.provider, msg.model);
     existing.model = msg.model;

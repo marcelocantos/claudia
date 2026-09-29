@@ -188,6 +188,8 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 		Token:       token,
 		Cwd:         req.Config.WorkDir,
 		SessionID:   sessionID,
+		Preserve:    req.Config.ContextPreserve,
+		Pins:        req.Config.ContextPins,
 		Tools:       tools,
 	}); err != nil {
 		conn.Close()
@@ -227,6 +229,7 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 		token: token, provider: provider,
 		seat: req.Config.Name, model: req.Config.Model, cwd: req.Config.WorkDir,
 		sessionID: sessionID, summaryOnly: req.Config.SummaryOnly,
+		preserve: req.Config.ContextPreserve, pins: req.Config.ContextPins,
 		tools: tools, toolServers: toolRoutes, toolNames: toolNames,
 	}
 	ompSeats.Store(ctrl, struct{}{})
@@ -286,6 +289,9 @@ type ompControl struct {
 	cwd         string
 	sessionID   string
 	summaryOnly bool
+	// preserve and pins steer the seat's compaction (🎯T152).
+	preserve string
+	pins     []string
 	// tools is the host tool list the seat was loaded with; a reload keeps it.
 	tools json.RawMessage
 	// toolServers routes a model tool name to the AgentDef.MCPServers URL
@@ -503,6 +509,7 @@ func (c *ompControl) loadMessage() omp.Message {
 	defer c.mu.Unlock()
 	return omp.Message{
 		Op: omp.OpLoad, Seat: c.seat, Provider: c.provider, SessionID: c.sessionID,
+		Preserve: c.preserve, Pins: c.pins,
 		Model: c.model, SummaryOnly: c.summaryOnly, Token: c.token, Cwd: c.cwd,
 		Tools: c.tools,
 	}
