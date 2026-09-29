@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"testing"
 )
 
 const (
@@ -22,10 +23,27 @@ const (
 	dataFileName         = "plan-credentials.enc"
 )
 
+// testDataPath is the plan file a test binary uses (🎯T143).
+var testDataPath string
+
+// UseTestDataPath points this test binary's plan file at path. Test mains
+// call it; a test binary that does not has no plan file at all.
+func UseTestDataPath(path string) { testDataPath = path }
+
 // DefaultDataPath is the encrypted plan file for this user. It does not
 // follow XDG_STATE_HOME: the Keychain key is per user, so the file it
 // opens must not move with a process environment.
+//
+// A test binary never gets the real file (🎯T143): on 2026-09-29 a test's
+// Flush resealed the owner's plan file with a key only its fake Keychain
+// held, and every plan login was lost.
 func DefaultDataPath() (string, error) {
+	if testing.Testing() {
+		if testDataPath == "" {
+			return "", errors.New("omp: a test binary never uses the real plan data file; call omp.UseTestDataPath (🎯T143)")
+		}
+		return testDataPath, nil
+	}
 	dir, err := os.UserConfigDir()
 	if err != nil {
 		return "", fmt.Errorf("omp: locate plan data dir: %w", err)

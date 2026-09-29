@@ -5,11 +5,13 @@ package claudia
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/marcelocantos/claudia/internal/broker"
 	"github.com/marcelocantos/claudia/internal/wallclockguard"
+	"github.com/marcelocantos/claudia/omp"
 )
 
 // TestMain keeps the hermetic suite off any claudia daemon installed on the
@@ -30,6 +32,8 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 	_ = os.Setenv("CLAUDIA_PLAN_CACHE", cache)
+	// A plan Flush in a test writes here, never the owner's file (🎯T143).
+	omp.UseTestDataPath(filepath.Join(cache, "plan-credentials.enc"))
 	// Every tmux seat the suite starts goes on a server of its own, so the
 	// fleet's pane census cannot reap a test window out from under a
 	// running assertion (🎯T77). See planTestTmuxSocket.

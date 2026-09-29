@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"testing"
 	"time"
 
 	"github.com/google/uuid"
@@ -556,6 +557,14 @@ func planStore() omp.Store {
 		if runStdin == nil {
 			runStdin = omp.ExecSecurityStdin
 		}
+		if testing.Testing() {
+			// A test that did not fake the Keychain must not reach the
+			// owner's: a Flush with no key writes a new one (🎯T143).
+			run = refuseKeychainInTest
+			runStdin = func(ctx context.Context, _ []byte, name string, args ...string) ([]byte, error) {
+				return refuseKeychainInTest(ctx, name, args...)
+			}
+		}
 	}
 	path := omp.ProductBrokerPath()
 	seal := path != ""
@@ -773,6 +782,10 @@ func CallMCPTool(mcpURL, name, args string) string {
 		return strings.TrimSpace(string(raw))
 	}
 	return out
+}
+
+func refuseKeychainInTest(context.Context, string, ...string) ([]byte, error) {
+	return nil, errors.New("omp: a test binary never touches the real Keychain; set ompKeychain (🎯T143)")
 }
 
 func execKeychain(ctx context.Context, name string, args ...string) ([]byte, error) {

@@ -18,6 +18,7 @@ import (
 	"github.com/marcelocantos/claudia"
 	"github.com/marcelocantos/claudia/internal/broker"
 	"github.com/marcelocantos/claudia/internal/wallclockguard"
+	"github.com/marcelocantos/claudia/omp"
 )
 
 // Hermetic fixtures for the daemon suite (🎯T2.9 / 🎯T2.10 / 🎯T2.11 / 🎯T3).
@@ -40,6 +41,7 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 	_ = os.Setenv("CLAUDIA_PLAN_CACHE", cache)
+	omp.UseTestDataPath(filepath.Join(cache, "plan-credentials.enc")) // 🎯T143
 	code := m.Run()
 	_ = os.RemoveAll(cache)
 	os.Exit(code)
