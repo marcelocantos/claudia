@@ -1075,15 +1075,36 @@ func listMCPToolsCached(ctx context.Context, name, mcpURL string) []hostJevonsTo
 			return e.tools
 		}
 	}
+	// Launches that need the same server at once share one fetch: one
+	// request to the server, and one log line when it fails (🎯T147).
+	call := &hostToolsCall{done: make(chan struct{})}
+	if v, loaded := hostToolsInflight.LoadOrStore(mcpURL, call); loaded {
+		shared := v.(*hostToolsCall)
+		<-shared.done
+		return shared.tools
+	}
+	defer func() {
+		hostToolsInflight.Delete(mcpURL)
+		close(call.done)
+	}()
 	tools, cause, err := listMCPTools(ctx, mcpURL)
 	if cause != "" {
-		// One line per failure, naming the server and why (🎯T147).
 		slog.Warn("omp: host MCP server did not list its tools; seats start without them",
 			"server", name, "url", mcpURL, "cause", cause, "err", err)
 	}
 	hostToolsCache.Store(mcpURL, hostToolsEntry{tools: tools, at: time.Now()})
+	call.tools = tools
 	return tools
 }
+
+// hostToolsCall is one tools/list fetch in progress, which other launches
+// needing the same server wait on.
+type hostToolsCall struct {
+	done  chan struct{}
+	tools []hostJevonsTool
+}
+
+var hostToolsInflight sync.Map // MCP URL -> *hostToolsCall
 
 // Causes a host tools/list failure is logged under (🎯T147).
 const (

@@ -113,7 +113,13 @@ func TestT147StalledOrBrokenHostServersDoNotHoldUpALaunch(t *testing.T) {
 		{Name: "refused", Type: "http", URL: refused},
 	}
 	start := time.Now()
+	second := make(chan map[string]string, 1)
+	go func() {
+		_, r, _ := hostToolsNamed(context.Background(), servers)
+		second <- r
+	}()
 	_, routes, _ := hostToolsNamed(context.Background(), servers)
+	<-second
 	// 🎯T97 exemption: the elapsed launch time is the verdict here — a
 	// stalled server must not hold the launch past the budget. The margin
 	// only absorbs scheduling on a loaded host.
@@ -123,7 +129,14 @@ func TestT147StalledOrBrokenHostServersDoNotHoldUpALaunch(t *testing.T) {
 	if len(routes) != 2 || routes["healthy_tool"] != healthy || routes["strict_tool"] != strict {
 		t.Fatalf("routes = %v, want the healthy and the session-keeping servers' tools", routes)
 	}
+	// A second launch at the same moment shares the fetches in progress: no
+	// server is asked twice, and no failure is logged twice.
 	out := logs.String()
+	for _, server := range []string{"rpc", "broken", "refused"} {
+		if n := strings.Count(out, "server="+server+" "); n != 1 {
+			t.Errorf("%s logged %d times, want once:\n%s", server, n, out)
+		}
+	}
 	for _, want := range []string{
 		`server=rpc`, `cause="rpc error"`,
 		`server=broken`, `cause="http status"`,
