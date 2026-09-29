@@ -1076,15 +1076,8 @@ var hostToolsCache sync.Map // MCP URL -> hostToolsEntry
 // change, and a server that does not answer is not waited on again at every
 // seat launch (jevons 🎯T922).
 func listMCPToolsCached(ctx context.Context, name, mcpURL string) []hostJevonsTool {
-	if v, ok := hostToolsCache.Load(mcpURL); ok {
-		e := v.(hostToolsEntry)
-		ttl := hostToolsTTL
-		if e.tools == nil {
-			ttl = hostToolsFailTTL
-		}
-		if time.Since(e.at) < ttl {
-			return e.tools
-		}
+	if tools, ok := cachedHostTools(mcpURL); ok {
+		return tools
 	}
 	// Launches that need the same server at once share one fetch: one
 	// request to the server, and one log line when it fails (🎯T147).
@@ -1098,6 +1091,12 @@ func listMCPToolsCached(ctx context.Context, name, mcpURL string) []hostJevonsTo
 		hostToolsInflight.Delete(mcpURL)
 		close(call.done)
 	}()
+	// A fetch that finished between the check above and taking the slot
+	// stored its answer before it let the slot go: use that, do not ask again.
+	if tools, ok := cachedHostTools(mcpURL); ok {
+		call.tools = tools
+		return tools
+	}
 	tools, cause, err := listMCPTools(ctx, mcpURL)
 	if cause != "" {
 		slog.Warn("omp: host MCP server did not list its tools; seats start without them",
@@ -1106,6 +1105,23 @@ func listMCPToolsCached(ctx context.Context, name, mcpURL string) []hostJevonsTo
 	hostToolsCache.Store(mcpURL, hostToolsEntry{tools: tools, at: time.Now()})
 	call.tools = tools
 	return tools
+}
+
+// cachedHostTools is a server's cached tool list while it is fresh.
+func cachedHostTools(mcpURL string) ([]hostJevonsTool, bool) {
+	v, ok := hostToolsCache.Load(mcpURL)
+	if !ok {
+		return nil, false
+	}
+	e := v.(hostToolsEntry)
+	ttl := hostToolsTTL
+	if e.tools == nil {
+		ttl = hostToolsFailTTL
+	}
+	if time.Since(e.at) >= ttl {
+		return nil, false
+	}
+	return e.tools, true
 }
 
 // hostToolsCall is one tools/list fetch in progress, which other launches
