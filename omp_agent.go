@@ -893,6 +893,9 @@ func execKeychain(ctx context.Context, name string, args ...string) ([]byte, err
 // @oh-my-pi/pi-ai resolves. It is not the Keychain runner. Stderr is
 // forwarded so an interactive login URL reaches the owner (🎯T865).
 func execBunLogin(ctx context.Context, name string, args ...string) ([]byte, error) {
+	if err := omp.EnsureDeps(ctx, sidecarAuthScript()); err != nil {
+		return nil, err
+	}
 	var stdin []byte
 	if len(args) >= 4 {
 		stdin = []byte(args[len(args)-1])

@@ -26,8 +26,9 @@ func t145Env(t *testing.T) string {
 	if _, err := exec.LookPath("bun"); err != nil {
 		t.Skip("bun not installed")
 	}
-	if _, err := os.Stat(filepath.Join(filepath.Dir(ServerScript()), "node_modules")); err != nil {
-		t.Skip("sidecar dependencies not installed (bun install in sidecar/)")
+	// 🎯T156: a checkout without the install gets it, not a skip.
+	if err := EnsureDeps(t.Context(), ServerScript()); err != nil {
+		t.Fatal(err)
 	}
 	dir, err := os.MkdirTemp("/tmp", "omp-t145-")
 	if err != nil {

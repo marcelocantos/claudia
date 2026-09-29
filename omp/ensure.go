@@ -109,6 +109,9 @@ func Ensure(ctx context.Context) (string, error) {
 	if _, err := os.Stat(script); err != nil {
 		return "", fmt.Errorf("omp: sidecar script %s: %w", script, err)
 	}
+	if err := EnsureDeps(ctx, script); err != nil {
+		return "", err
+	}
 	bun, err := exec.LookPath("bun")
 	if err != nil {
 		return "", fmt.Errorf("omp: bun is required for the sidecar: %w", err)
