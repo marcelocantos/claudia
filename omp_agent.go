@@ -208,8 +208,9 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 		token: token, provider: provider,
 		seat: req.Config.Name, model: req.Config.Model, cwd: req.Config.WorkDir,
 		sessionID: sessionID, summaryOnly: req.Config.SummaryOnly,
-		toolServers: toolRoutes,
+		tools: tools, toolServers: toolRoutes,
 	}
+	ompSeats.Store(ctrl, struct{}{})
 	return &agentStart{
 		Control:   ctrl,
 		SessionID: sessionID,
@@ -226,18 +227,14 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 				return ctrl.send(omp.Message{Op: omp.OpAbort, Seat: req.Config.Name})
 			},
 			setModel: func(_ *Agent, model string) error {
-				return ctrl.send(omp.Message{
-					Op:          omp.OpLoad,
-					Seat:        req.Config.Name,
-					Provider:    provider,
-					Model:       model,
-					SummaryOnly: req.Config.SummaryOnly,
-					Token:       ctrl.token,
-					Cwd:         req.Config.WorkDir,
-				})
+				ctrl.mu.Lock()
+				ctrl.model = model
+				ctrl.mu.Unlock()
+				return ctrl.send(ctrl.loadMessage())
 			},
 			promptInFlight: func(*Agent) bool { return ctrl.inflight.Load() },
 			stop: func(*Agent) {
+				ompSeats.Delete(ctrl)
 				if req.Config.SummaryOnly {
 					_ = ctrl.send(omp.Message{Op: omp.OpDrop, Seat: req.Config.Name})
 				}
@@ -252,7 +249,10 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 				close(a.ready)
 			}
 		},
-		Cleanup: func() { conn.Close() },
+		Cleanup: func() {
+			ompSeats.Delete(ctrl)
+			conn.Close()
+		},
 	}, nil
 }
 
@@ -266,14 +266,26 @@ type ompControl struct {
 	cwd         string
 	sessionID   string
 	summaryOnly bool
+	// tools is the host tool list the seat was loaded with; a reload keeps it.
+	tools json.RawMessage
 	// toolServers routes a model tool name to the AgentDef.MCPServers URL
 	// that declared it (🎯T871.1). A name absent here (jevons_* offered via
 	// resolveFallbackTool, or a legacy caller) falls back to runOMPTool.
 	toolServers map[string]string
 	mu          sync.Mutex
 	inflight    atomic.Bool
-	refreshed   atomic.Bool
+	// lastRefresh is when this seat last refreshed a rejected token (under mu).
+	lastRefresh time.Time
 }
+
+// ompSeats holds the live sidecar seats, so a plan recovered by the owner
+// reaches the seats already running on it (🎯T141).
+var ompSeats sync.Map // *ompControl -> struct{}
+
+// ompRefreshBackoff bounds how often one seat refreshes a rejected token. It
+// replaces a once-per-lifetime guard: a seat whose refresh failed before the
+// owner repaired the plan must be able to recover afterwards (🎯T141).
+const ompRefreshBackoff = time.Minute
 
 func promptMessage(op, seat, text string, a *Agent, ctrl *ompControl) omp.Message {
 	cause, detail, resume, turnID, sessionID := "", "", "", "", ""
@@ -370,8 +382,8 @@ func (c *ompControl) pump(a *Agent) {
 		case "turn_end", "error":
 			c.inflight.Store(false)
 			rejected := oauthRejected(ev.Text, ev.Snapshot)
-			if rejected && c.refreshed.CompareAndSwap(false, true) {
-				c.refreshRejectedToken()
+			if rejected {
+				c.recoverRejectedToken()
 			}
 			// A refused turn (usage limit, rate limit, auth) ends with no
 			// text. Said as an error, WaitForResponse names the refusal
@@ -415,6 +427,73 @@ func oauthRejected(text string, snapshot json.RawMessage) bool {
 	return false
 }
 
+// recoverRejectedToken gets this seat a working token after the provider
+// rejected its own. A token already repaired in the plan store (the owner's
+// reauth, or another seat's refresh) is taken as is; otherwise the seat
+// refreshes, at most once per ompRefreshBackoff.
+func (c *ompControl) recoverRejectedToken() {
+	if tok, err := planStore().AccessToken(context.Background(), c.provider); err == nil && tok != c.currentToken() {
+		slog.Info("omp token rejected; seat takes the plan's newer token", "provider", c.provider, "seat", c.seat)
+		c.reload(tok)
+		return
+	}
+	c.mu.Lock()
+	if !c.lastRefresh.IsZero() && time.Since(c.lastRefresh) < ompRefreshBackoff {
+		c.mu.Unlock()
+		return
+	}
+	c.lastRefresh = time.Now()
+	c.mu.Unlock()
+	c.refreshRejectedToken()
+}
+
+func (c *ompControl) currentToken() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.token
+}
+
+// loadMessage is the load that (re)configures this seat with its current
+// token, model and host tools.
+func (c *ompControl) loadMessage() omp.Message {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return omp.Message{
+		Op: omp.OpLoad, Seat: c.seat, Provider: c.provider,
+		Model: c.model, SummaryOnly: c.summaryOnly, Token: c.token, Cwd: c.cwd,
+		Tools: c.tools,
+	}
+}
+
+// reload hands the seat a new token; its conversation is kept.
+func (c *ompControl) reload(token string) {
+	c.mu.Lock()
+	c.token = token
+	c.mu.Unlock()
+	if err := c.send(c.loadMessage()); err != nil {
+		slog.Warn("omp token refreshed; sidecar reload failed", "seat", c.seat, "err", err)
+	}
+}
+
+// reloadOMPSeats hands provider's stored token to every live seat still
+// holding another one, and says how many it reloaded.
+func reloadOMPSeats(ctx context.Context, provider string) int {
+	tok, err := planStore().AccessToken(ctx, provider)
+	if err != nil {
+		return 0
+	}
+	n := 0
+	ompSeats.Range(func(k, _ any) bool {
+		c := k.(*ompControl)
+		if c.provider == provider && c.currentToken() != tok {
+			c.reload(tok)
+			n++
+		}
+		return true
+	})
+	return n
+}
+
 func (c *ompControl) refreshRejectedToken() {
 	login := ompLogin
 	if login.Run == nil {
@@ -435,15 +514,7 @@ func (c *ompControl) refreshRejectedToken() {
 	if err := FlushOMPPlans(context.Background()); err != nil {
 		slog.Warn("omp token refreshed; keychain flush failed", "provider", c.provider, "err", err)
 	}
-	c.mu.Lock()
-	c.token = rec.AccessToken
-	c.mu.Unlock()
-	if err := c.send(omp.Message{
-		Op: omp.OpLoad, Seat: c.seat, Provider: c.provider,
-		Model: c.model, SummaryOnly: c.summaryOnly, Token: rec.AccessToken, Cwd: c.cwd,
-	}); err != nil {
-		slog.Warn("omp token refreshed; sidecar reload failed", "seat", c.seat, "err", err)
-	}
+	c.reload(rec.AccessToken)
 }
 
 func sidecarAuthScript() string {
@@ -577,7 +648,14 @@ func RecoverOMPPlan(ctx context.Context, provider string) error {
 	if login.Script == "" {
 		login.Script = sidecarAuthScript()
 	}
-	return omp.RecoverPlan(ctx, planStore(), login, provider)
+	if err := omp.RecoverPlan(ctx, planStore(), login, provider); err != nil {
+		return err
+	}
+	// The seats already running still hold the rejected token (🎯T141).
+	if n := reloadOMPSeats(ctx, provider); n > 0 {
+		slog.Info("omp plan recovered; live seats reloaded", "provider", provider, "seats", n)
+	}
+	return nil
 }
 
 // SetOMPToolExec installs the jevons_* callback the sidecar invokes

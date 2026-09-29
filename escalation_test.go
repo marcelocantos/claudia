@@ -120,16 +120,15 @@ func TestEscalationUnabsorbedMessageIsInterruptedAtItsDeadline(t *testing.T) {
 	if _, err := a.SendEscalating("urgent", Escalation{{Mode: DeliverySteer}, {Mode: DeliveryInterrupt, After: 60 * time.Millisecond}}); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case mode := <-escalated:
-		if mode != string(DeliveryInterrupt) {
-			t.Fatalf("escalated with %q", mode)
-		}
-		if waited := time.Since(start); waited < 60*time.Millisecond {
-			t.Fatalf("interrupted after %s, before its deadline", waited)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("the interrupt rung never fired")
+	// Blocks until the rung fires; `go test -timeout` is the clock.
+	mode := <-escalated
+	if mode != string(DeliveryInterrupt) {
+		t.Fatalf("escalated with %q", mode)
+	}
+	// 🎯T97 exemption: a lower bound. A slow host only lengthens `waited`, so
+	// it cannot fail a ladder that waits for its deadline.
+	if waited := time.Since(start); waited < 60*time.Millisecond {
+		t.Fatalf("interrupted after %s, before its deadline", waited)
 	}
 	time.Sleep(30 * time.Millisecond)
 	got := s.verbs()
