@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -55,7 +56,19 @@ func (l Login) Refresh(ctx context.Context, store Store, provider string) (Recor
 	if err := store.Put(ctx, provider, rec); err != nil {
 		return Record{}, err
 	}
+	// The refresh spent the refresh token it replaced: save the new one
+	// before anything can restart and read the old (🎯T155).
+	persist(ctx, store, provider)
 	return rec, nil
+}
+
+// persist saves the plan store after a refresh. A failure is logged, not
+// returned: the refreshed token works in this process, and the next change
+// or shutdown tries the save again.
+func persist(ctx context.Context, store Store, provider string) {
+	if err := Flush(ctx, store); err != nil {
+		slog.Warn("omp: refreshed plan login not saved yet; the next save retries", "provider", provider, "err", err)
+	}
 }
 
 // fetch asks pi-ai for one new record. It does not touch the Keychain.

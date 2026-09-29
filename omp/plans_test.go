@@ -81,8 +81,10 @@ func TestRefreshPlansWritesAllFour(t *testing.T) {
 	if strings.Join(saw, ",") != strings.Join(PlanIDs, ",") {
 		t.Fatalf("pi-ai ids = %v", saw)
 	}
-	if writes != 0 {
-		t.Fatalf("keychain writes before flush = %d, want 0", writes)
+	// Each refresh is saved before RefreshPlans moves on (🎯T155): the
+	// Keychain gets the data key once, and a later Flush has nothing new.
+	if writes != 1 {
+		t.Fatalf("keychain writes after the refreshes = %d, want 1 (the data key)", writes)
 	}
 	if err := Flush(context.Background(), s); err != nil {
 		t.Fatal(err)

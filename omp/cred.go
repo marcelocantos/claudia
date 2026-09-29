@@ -94,14 +94,17 @@ type Store struct {
 // keychainShot is the process-wide copy. Store values are copied at
 // each call site, so the startup read cannot live on Store.
 type keychainShot struct {
-	mu       sync.Mutex
-	opened   bool
-	openErr  error
-	initial  Item
-	item     Item
-	key      []byte // nil until the Keychain item holds a data key
-	flushed  bool
-	flushErr error
+	mu      sync.Mutex
+	opened  bool
+	openErr error
+	initial Item
+	item    Item
+	key     []byte // nil until the Keychain item holds a data key
+	// configErr latches a Flush that can never succeed in this process
+	// (an untrusted binary, no data path), so it refuses once rather than
+	// failing the same way at every save. An I/O failure is not latched:
+	// the next change tries again (🎯T155).
+	configErr error
 }
 
 var shot keychainShot
@@ -246,41 +249,37 @@ func Flush(ctx context.Context, store Store) error {
 	if !shot.opened || shot.openErr != nil {
 		return shot.openErr
 	}
-	if shot.flushed {
-		return shot.flushErr
+	if shot.configErr != nil {
+		return shot.configErr
 	}
+	// initial is what the store last holds. Anything newer is written now,
+	// every time: a refresh spends the refresh token it replaces, and a
+	// broker that saved only its first one left the next process reading a
+	// spent token (🎯T155, 2026-09-30 invalid_grant).
 	if sameItem(shot.initial, shot.item) {
-		shot.flushed = true
 		return nil
 	}
 	if err := rejectUntrustedBroker(store); err != nil {
-		shot.flushed = true
-		shot.flushErr = err
+		shot.configErr = err
 		return err
 	}
 	if store.BrokerPath == "" {
-		shot.flushed = true
-		shot.flushErr = fmt.Errorf("omp: broker path is required for the keychain ACL")
-		return shot.flushErr
+		shot.configErr = fmt.Errorf("omp: broker path is required for the keychain ACL")
+		return shot.configErr
 	}
 	if store.DataPath == "" {
-		shot.flushed = true
-		shot.flushErr = fmt.Errorf("omp: plan data path is required")
-		return shot.flushErr
+		shot.configErr = fmt.Errorf("omp: plan data path is required")
+		return shot.configErr
 	}
 	blob, err := json.Marshal(shot.item)
 	if err != nil {
-		shot.flushed = true
-		shot.flushErr = err
 		return err
 	}
 	key := shot.key
 	if key == nil {
 		key = make([]byte, dataKeyLen)
 		if _, err := rand.Read(key); err != nil {
-			shot.flushed = true
-			shot.flushErr = fmt.Errorf("omp: generate plan data key: %w", err)
-			return shot.flushErr
+			return fmt.Errorf("omp: generate plan data key: %w", err)
 		}
 	}
 	// The file goes first. If the Keychain write then fails, the item
@@ -296,8 +295,9 @@ func Flush(ctx context.Context, store Store) error {
 			shot.key = key
 		}
 	}
-	shot.flushed = true
-	shot.flushErr = err
+	if err == nil {
+		shot.initial = cloneItem(shot.item)
+	}
 	return err
 }
 

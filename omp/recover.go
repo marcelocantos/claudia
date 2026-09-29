@@ -61,8 +61,7 @@ func RetryOpen(ctx context.Context, store Store) error {
 	shot.initial = cloneItem(initial)
 	shot.item = cloneItem(item)
 	shot.key = key
-	shot.flushed = false
-	shot.flushErr = nil
+	shot.configErr = nil
 	return nil
 }
 
@@ -84,11 +83,6 @@ func RecoverPlan(ctx context.Context, store Store, login Login, provider string)
 	if err != nil {
 		return err
 	}
-	// Flush normally runs once at broker shutdown. Recovery is an explicit
-	// owner action: persist the new grant now, including after an earlier flush.
-	shot.mu.Lock()
-	shot.flushed = false
-	shot.flushErr = nil
-	shot.mu.Unlock()
+	// Recovery is an explicit owner action: the new grant is saved now.
 	return Flush(ctx, store)
 }

@@ -61,6 +61,7 @@ func RefreshPlans(ctx context.Context, store Store, login Login) (refreshed, ski
 			err = errors.Join(err, serr)
 			continue
 		}
+		persist(ctx, store, id)
 		clearRejected(id)
 		refreshed = append(refreshed, id)
 	}
@@ -120,6 +121,7 @@ func LoginPlans(ctx context.Context, store Store, login Login, only ...string) (
 	if err := store.Save(ctx, item); err != nil {
 		return n, err
 	}
+	persist(ctx, store, strings.Join(want, ","))
 	for _, id := range want {
 		clearRejected(id)
 	}
