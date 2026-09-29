@@ -102,7 +102,9 @@ func Ensure(ctx context.Context) (string, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return "", fmt.Errorf("omp: sidecar socket dir: %w", err)
 	}
-	_ = os.Remove(path)
+	// No unlink here (🎯T145): a sidecar that is alive but not yet
+	// listening owns this path. The sidecar removes a stale socket itself,
+	// and only while holding the socket's lock.
 	script := ServerScript()
 	if _, err := os.Stat(script); err != nil {
 		return "", fmt.Errorf("omp: sidecar script %s: %w", script, err)
@@ -126,13 +128,11 @@ func Ensure(ctx context.Context) (string, error) {
 		_ = logf.Close()
 		return "", fmt.Errorf("omp: start sidecar: %w", err)
 	}
-	if cmd.Process != nil {
-		_ = os.WriteFile(pidPath(path), []byte(itoa(cmd.Process.Pid)), 0o600)
-	}
+	// The sidecar that wins the socket's lock writes the pid file; a
+	// redundant start exits and must not touch it (🎯T145).
 	go func() {
 		_ = cmd.Wait()
 		_ = logf.Close()
-		_ = os.Remove(pidPath(path))
 	}()
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {

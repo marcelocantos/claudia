@@ -8,6 +8,7 @@ import { createServer } from "node:net";
 import { unlinkSync } from "node:fs";
 import { createSeatAgent, type HostTool, type SeatAgent } from "./seat.ts";
 import { defaultWriter } from "./spool.ts";
+import { claimSocket } from "./singleton.ts";
 
 const banned = [
   "ANTHROPIC_API_KEY",
@@ -22,6 +23,12 @@ if (!sock) {
   console.error("usage: bun server.ts <socket-path>");
   process.exit(2);
 }
+// 🎯T145: another live sidecar owns this socket; leave it alone.
+if (!claimSocket(sock)) {
+  console.error(`sidecar: ${sock} is served by another sidecar; exiting`);
+  process.exit(0);
+}
+// Holding the lock, a socket file left here is stale.
 try { unlinkSync(sock); } catch { /* absent */ }
 
 type Line = {
