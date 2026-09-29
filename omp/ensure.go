@@ -5,6 +5,7 @@ package omp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -15,14 +16,15 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"testing"
 	"time"
 )
 
 const (
 	// SocketEnv names the sidecar unix socket. Empty means the default
 	// under the claudia state directory.
-	SocketEnv = "CLAUDIA_OMP_SOCKET"
-	socketName = "omp.sock"
+	SocketEnv   = "CLAUDIA_OMP_SOCKET"
+	socketName  = "omp.sock"
 	stateSubdir = "claudia"
 )
 
@@ -30,6 +32,11 @@ const (
 func SocketPath() (string, error) {
 	if p := strings.TrimSpace(os.Getenv(SocketEnv)); p != "" {
 		return filepath.Abs(p)
+	}
+	if testing.Testing() {
+		// A test never reaches the owner's sidecar, nor starts one on its
+		// socket (🎯T145, the 🎯T143 class): set CLAUDIA_OMP_SOCKET.
+		return "", errors.New("omp: a test binary never uses the real sidecar socket; set " + SocketEnv + " (🎯T145)")
 	}
 	dir, err := stateDir()
 	if err != nil {
