@@ -154,8 +154,9 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 		op = omp.OpAdopt
 	}
 	var tools json.RawMessage
+	var toolRoutes map[string]string
 	if !req.Config.SummaryOnly {
-		tools = hostJevonsTools(req.Context, req.Config.MCPServers)
+		tools, toolRoutes = hostTools(req.Context, req.Config.MCPServers)
 	}
 	if err := conn.Send(omp.Message{
 		Op:          op,
@@ -207,6 +208,7 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 		token: token, provider: provider,
 		seat: req.Config.Name, model: req.Config.Model, cwd: req.Config.WorkDir,
 		sessionID: sessionID, summaryOnly: req.Config.SummaryOnly,
+		toolServers: toolRoutes,
 	}
 	return &agentStart{
 		Control:   ctrl,
@@ -264,6 +266,10 @@ type ompControl struct {
 	cwd         string
 	sessionID   string
 	summaryOnly bool
+	// toolServers routes a model tool name to the AgentDef.MCPServers URL
+	// that declared it (🎯T871.1). A name absent here (jevons_* offered via
+	// resolveFallbackTool, or a legacy caller) falls back to runOMPTool.
+	toolServers map[string]string
 	mu          sync.Mutex
 	inflight    atomic.Bool
 	refreshed   atomic.Bool
@@ -359,7 +365,7 @@ func (c *ompControl) pump(a *Agent) {
 				ToolTitle:    ev.Name,
 				Text:         ev.Text,
 			})
-			result := runOMPTool(ev.Name, ev.CallID, ev.Text)
+			result := c.runTool(ev.Name, ev.CallID, ev.Text)
 			_ = c.send(omp.Message{Op: omp.OpTool, CallID: ev.CallID, Result: result})
 		case "turn_end", "error":
 			c.inflight.Store(false)
@@ -581,6 +587,20 @@ func SetOMPToolExec(fn func(name, callID, args string) string) {
 	ompToolExec = fn
 }
 
+// runTool executes one model tool call for this seat. A tool whose home
+// server was discovered from AgentDef.MCPServers (🎯T871.1) is routed there
+// with a structured tools/call; anything else — in practice jevons_* —
+// still goes through runOMPTool's jevons-only runner, the same boundary
+// resolveFallbackTool enforces in the sidecar (🎯T864.3).
+func (c *ompControl) runTool(name, callID, args string) string {
+	if c != nil && c.toolServers != nil {
+		if url, ok := c.toolServers[name]; ok {
+			return CallMCPTool(url, name, args)
+		}
+	}
+	return runOMPTool(name, callID, args)
+}
+
 func runOMPTool(name, callID, args string) string {
 	if ompToolExec != nil {
 		return ompToolExec(name, callID, args)
@@ -599,11 +619,21 @@ func DefaultOMPToolExec(name, callID, args string) string {
 }
 
 // CallJevonsMCP is the production jevons_* runner: one HTTP JSON-RPC
-// tools/call against the daemon's MCP surface.
+// tools/call against the daemon's MCP surface. Anything not jevons_* is
+// refused here — that prefix boundary is resolveFallbackTool's (🎯T864.3).
+// A tool routed from AgentDef.MCPServers (🎯T871.1) calls [CallMCPTool]
+// directly and is not subject to this refusal.
 func CallJevonsMCP(mcpURL, name, args string) string {
 	if !strings.HasPrefix(name, "jevons_") {
 		return fmt.Sprintf("omp: refusing non-jevons tool %q", name)
 	}
+	return CallMCPTool(mcpURL, name, args)
+}
+
+// CallMCPTool POSTs a structured JSON-RPC tools/call to an MCP server
+// (🎯T871.1). No name prefix is required: the caller already decided this
+// tool belongs to this server, via [hostTools]'s discovered route.
+func CallMCPTool(mcpURL, name, args string) string {
 	var arguments any
 	if strings.TrimSpace(args) == "" {
 		arguments = map[string]any{}
@@ -724,31 +754,42 @@ type hostJevonsTool struct {
 	InputSchema json.RawMessage `json:"input_schema,omitempty"`
 }
 
-// hostJevonsTools asks the seat's HTTP MCP servers for their tools and keeps
-// the jevons_* ones: the tools a sidecar seat executes through
-// [CallJevonsMCP]. Without them the model is never shown its host's tools,
-// so an overseer on a sidecar provider cannot message a product owner and a
-// product owner cannot start a worker (🎯T886). A host with no such server,
-// or one that does not answer, gets no host tools; the seat still starts.
-func hostJevonsTools(ctx context.Context, servers []MCPServer) json.RawMessage {
+// hostTools asks every eligible server in AgentDef.MCPServers for its
+// tools/list and returns the model-visible tool set plus a name→server-URL
+// route for structured tools/call (🎯T871.1). A server with no http URL —
+// stdio, or a plugin-shaped entry that names only a Command — is not
+// registered: neither the sidecar nor this host speaks anything but MCP
+// over HTTP today. Without this a sidecar seat is never shown its host's
+// tools at all, so an overseer on a sidecar provider cannot message a
+// product owner and a product owner cannot start a worker (🎯T886). A
+// server that offers no tools, or does not answer, contributes nothing;
+// the seat still starts. The first server to declare a name wins ties.
+func hostTools(ctx context.Context, servers []MCPServer) (json.RawMessage, map[string]string) {
+	var tools []hostJevonsTool
+	routes := map[string]string{}
 	for _, srv := range servers {
-		// Only the host's own server carries jevons_* tools. Asking every
-		// proxied server cost a seat start up to 5 s per dead proxy.
-		if srv.URL == "" || (srv.Type != "" && srv.Type != "http") || !strings.HasPrefix(srv.Name, "jevons") {
-			continue
+		if srv.URL == "" || (srv.Type != "" && srv.Type != "http") {
+			continue // plugin-shaped / stdio: not registered
 		}
-		if tools := listJevonsMCPTools(ctx, srv.URL); len(tools) > 0 {
-			raw, err := json.Marshal(tools)
-			if err != nil {
-				return nil
+		for _, t := range listMCPTools(ctx, srv.URL) {
+			if _, dup := routes[t.Name]; dup {
+				continue
 			}
-			return raw
+			tools = append(tools, t)
+			routes[t.Name] = srv.URL
 		}
 	}
-	return nil
+	if len(tools) == 0 {
+		return nil, nil
+	}
+	raw, err := json.Marshal(tools)
+	if err != nil {
+		return nil, nil
+	}
+	return raw, routes
 }
 
-func listJevonsMCPTools(ctx context.Context, mcpURL string) []hostJevonsTool {
+func listMCPTools(ctx context.Context, mcpURL string) []hostJevonsTool {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	body := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`)
@@ -788,9 +829,6 @@ func listJevonsMCPTools(ctx context.Context, mcpURL string) []hostJevonsTool {
 	}
 	var out []hostJevonsTool
 	for _, t := range envelope.Result.Tools {
-		if !strings.HasPrefix(t.Name, "jevons_") {
-			continue
-		}
 		out = append(out, hostJevonsTool{Name: t.Name, Description: t.Description, InputSchema: t.InputSchema})
 	}
 	return out

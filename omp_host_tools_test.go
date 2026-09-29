@@ -14,17 +14,17 @@ import (
 	"testing"
 )
 
-// 🎯T886: a sidecar work seat is offered its host's jevons_* tools, with
-// their own descriptions and schemas, from the seat's HTTP MCP server.
-func TestHostJevonsToolsListsOnlyJevonsToolsWithSchemas(t *testing.T) {
+// 🎯T871.1: every eligible server in AgentDef.MCPServers is advertised as a
+// model-visible tool, not only a server named "jevons"; a plugin-shaped
+// server (stdio, or an entry with only a Command, no http URL) is skipped.
+func TestHostToolsAdvertisesEveryEligibleServer(t *testing.T) {
 	list := `{"jsonrpc":"2.0","id":1,"result":{"tools":[` +
 		`{"name":"jevons_agent_send","description":"Send to an agent","inputSchema":{"type":"object","properties":{"name":{"type":"string"}}}},` +
 		`{"name":"playwright_click","description":"not ours","inputSchema":{"type":"object"}}]}}`
 	for _, sse := range []bool{false, true} {
+		asked := map[string]bool{}
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/not-ours" {
-				t.Error("asked a server that is not the host's jevons server")
-			}
+			asked[r.URL.Path] = true
 			b, _ := io.ReadAll(r.Body)
 			if !strings.Contains(string(b), `"tools/list"`) {
 				t.Errorf("asked %s, want tools/list", b)
@@ -39,24 +39,84 @@ func TestHostJevonsToolsListsOnlyJevonsToolsWithSchemas(t *testing.T) {
 		}))
 		dead := httptest.NewServer(http.NotFoundHandler())
 		dead.Close()
-		raw := hostJevonsTools(context.Background(), []MCPServer{
-			{Name: "stdio", Command: "true"},
-			{Name: "jevons-gone", Type: "http", URL: dead.URL},
-			{Name: "playwright", Type: "http", URL: srv.URL + "/not-ours"},
-			{Name: "jevonsmcp", Type: "http", URL: srv.URL},
+		raw, routes := hostTools(context.Background(), []MCPServer{
+			{Name: "plugin", Command: "true"},                          // plugin-shaped: no URL, not registered
+			{Name: "jevons-gone", Type: "http", URL: dead.URL},          // eligible but silent: contributes nothing
+			{Name: "playwright", Type: "http", URL: srv.URL + "/tools"}, // eligible: not filtered by server name any more
 		})
 		srv.Close()
+		if !asked["/tools"] {
+			t.Fatalf("sse=%v: the non-jevons server was never asked", sse)
+		}
 		var got []hostJevonsTool
 		if err := json.Unmarshal(raw, &got); err != nil {
 			t.Fatalf("sse=%v: %v (%s)", sse, err, raw)
 		}
-		if len(got) != 1 || got[0].Name != "jevons_agent_send" || got[0].Description != "Send to an agent" ||
-			!strings.Contains(string(got[0].InputSchema), `"properties"`) {
-			t.Fatalf("sse=%v: tools = %+v", sse, got)
+		if len(got) != 2 {
+			t.Fatalf("sse=%v: tools = %+v, want both jevons_agent_send and playwright_click", sse, got)
+		}
+		names := map[string]hostJevonsTool{}
+		for _, tool := range got {
+			names[tool.Name] = tool
+		}
+		if tool, ok := names["jevons_agent_send"]; !ok || tool.Description != "Send to an agent" ||
+			!strings.Contains(string(tool.InputSchema), `"properties"`) {
+			t.Fatalf("sse=%v: jevons_agent_send = %+v", sse, tool)
+		}
+		if _, ok := names["playwright_click"]; !ok {
+			t.Fatalf("sse=%v: playwright_click missing — non-jevons tools must be advertised too", sse)
+		}
+		if routes["jevons_agent_send"] != srv.URL+"/tools" || routes["playwright_click"] != srv.URL+"/tools" {
+			t.Fatalf("sse=%v: routes = %+v, want both routed to %s", sse, routes, srv.URL+"/tools")
+		}
+		if _, ok := routes["true"]; ok {
+			t.Fatalf("sse=%v: the plugin-shaped entry must not be registered: routes = %+v", sse, routes)
 		}
 	}
-	if raw := hostJevonsTools(context.Background(), nil); raw != nil {
-		t.Fatalf("no servers should offer no tools, got %s", raw)
+	if raw, routes := hostTools(context.Background(), nil); raw != nil || routes != nil {
+		t.Fatalf("no servers should offer no tools, got %s / %+v", raw, routes)
+	}
+}
+
+// 🎯T871.1: a hermetic seat whose MCPServers includes one HTTP fixture
+// server can call a named tool on it and get the fixture result — the
+// structured tools/call, not the jevons_*-only resolveFallbackTool runner.
+func TestRunToolRoutesToDiscoveredServer(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Method string `json:"method"`
+			Params struct {
+				Name string `json:"name"`
+			} `json:"params"`
+		}
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &req)
+		switch req.Method {
+		case "tools/list":
+			_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"tools":[`+
+				`{"name":"fixture_tool","description":"fixture","inputSchema":{"type":"object"}}]}}`)
+		case "tools/call":
+			if req.Params.Name != "fixture_tool" {
+				t.Errorf("called %q, want fixture_tool", req.Params.Name)
+			}
+			_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"fixture result"}]}}`)
+		}
+	}))
+	defer srv.Close()
+
+	_, routes := hostTools(context.Background(), []MCPServer{
+		{Name: "fixture", Type: "http", URL: srv.URL},
+	})
+	ctrl := &ompControl{toolServers: routes}
+	got := ctrl.runTool("fixture_tool", "call-1", "{}")
+	if got != "fixture result" {
+		t.Fatalf("runTool = %q, want the fixture's own result", got)
+	}
+
+	// A name the discovery never routed still falls back to the jevons-only
+	// runner (🎯T864.3): it does not silently reach the fixture server.
+	if got := ctrl.runTool("jevons_never_advertised", "call-2", "{}"); strings.Contains(got, "fixture result") {
+		t.Fatalf("an unrouted name must not reach the fixture server: %q", got)
 	}
 }
 
@@ -98,5 +158,22 @@ func TestOMPSidecarAnnouncesAcceptedPrompt(t *testing.T) {
 	if !strings.Contains(string(src), "case \"accepted\":\n\t\t\t// The sidecar took the prompt") ||
 		!strings.Contains(string(src), `a.publishEvent(Event{Type: "progress", ProgressType: ProgressPromptAccepted})`) {
 		t.Fatal("the sidecar's accepted event must publish as prompt_accepted progress")
+	}
+}
+
+// 🎯T871.1: the sidecar must offer the model every host tool it is given,
+// not only jevons_* names — routing which server executes a tool is the
+// host's job (hostTools), not seat.ts's.
+func TestSeatAdvertisesEveryHostTool(t *testing.T) {
+	seat, err := os.ReadFile("sidecar/seat.ts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(seat)
+	if strings.Contains(src, `.filter((t) => t.name.startsWith("jevons_"))`) {
+		t.Fatal("seat.ts must not filter host tools to jevons_* — every discovered tool is model-visible (T871.1)")
+	}
+	if !strings.Contains(src, "const hosted = (host ?? []).map((t) => jevonsTool(") {
+		t.Fatal("seat.ts must map every host tool onto an AgentTool")
 	}
 }

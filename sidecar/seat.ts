@@ -98,9 +98,12 @@ export function createSeatAgent(opts: {
       agent.setTools([]);
       return;
     }
-    const hosted = (host ?? [])
-      .filter((t) => t.name.startsWith("jevons_"))
-      .map((t) => jevonsTool(t.name, callBack, t.description, t.input_schema));
+    // Every tool the host offers is model-visible (T871.1): the host
+    // discovered it from AgentDef.MCPServers and already decided which
+    // server executes it. resolveFallbackTool below stays jevons_*-only
+    // (T864.3) — it only fires for a jevons_* name the host did not list
+    // here, never for these explicit tools.
+    const hosted = (host ?? []).map((t) => jevonsTool(t.name, callBack, t.description, t.input_schema));
     agent.setTools([...codingTools(() => cwd), ...hosted]);
   };
   applyTools(opts.tools);
