@@ -23,6 +23,10 @@ const (
 	dataFileName         = "plan-credentials.enc"
 )
 
+// errDataFileMismatch: the plan file does not decrypt with the Keychain's
+// data key. Startup refuses it; an owner's recovery sets it aside (🎯T144).
+var errDataFileMismatch = errors.New("does not match the Keychain key")
+
 // testDataPath is the plan file a test binary uses (🎯T143).
 var testDataPath string
 
@@ -74,7 +78,7 @@ func readDataFile(path string, key []byte) (Item, error) {
 	nonce, sealed := raw[1:1+gcm.NonceSize()], raw[1+gcm.NonceSize():]
 	blob, err := gcm.Open(nil, nonce, sealed, []byte(KeychainService))
 	if err != nil {
-		return Item{}, fmt.Errorf("omp: plan data file %s does not match the Keychain key", path)
+		return Item{}, fmt.Errorf("omp: plan data file %s %w", path, errDataFileMismatch)
 	}
 	var item Item
 	if err := json.Unmarshal(blob, &item); err != nil {

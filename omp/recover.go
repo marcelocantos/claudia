@@ -7,7 +7,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
+	"time"
 )
 
 // RetryOpen retries a failed startup Keychain read when the owner is present.
@@ -36,6 +38,19 @@ func RetryOpen(ctx context.Context, store Store) error {
 		// initial copy makes the recovery Flush write even when nothing
 		// else changes.
 		item, key, err = salvageItem(bad.raw), nil, nil
+		initial = Item{Records: map[string]Record{}}
+	}
+	if errors.Is(err, errDataFileMismatch) {
+		// The owner asked for recovery, and the plan file no longer opens
+		// with the Keychain key: nothing in it can be read (🎯T144). Keep it
+		// aside and start from an empty plan; this login's Flush seals a new
+		// file under a new key.
+		aside := store.DataPath + ".unreadable-" + time.Now().UTC().Format("20060102T150405Z")
+		if rerr := os.Rename(store.DataPath, aside); rerr != nil {
+			shot.openErr = err
+			return err
+		}
+		item, key, err = Item{Records: map[string]Record{}}, nil, nil
 		initial = Item{Records: map[string]Record{}}
 	}
 	if err != nil {
