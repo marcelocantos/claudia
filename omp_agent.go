@@ -381,8 +381,15 @@ func (c *ompControl) pump(a *Agent) {
 				ToolTitle:    ev.Name,
 				Text:         ev.Text,
 			})
-			result := c.runTool(ev.Name, ev.CallID, ev.Text)
-			_ = c.send(omp.Message{Op: omp.OpTool, CallID: ev.CallID, Result: result})
+			// Off the pump (jevons 🎯T887): a host tool can take tens of
+			// seconds (a slow jevons_* call), and run inline it held back
+			// every later event from this seat — an acceptance of a new
+			// prompt among them, which a host then reported undelivered. The
+			// result goes back by call id, so order does not matter.
+			go func(name, callID, args string) {
+				result := c.runTool(name, callID, args)
+				_ = c.send(omp.Message{Op: omp.OpTool, CallID: callID, Result: result})
+			}(ev.Name, ev.CallID, ev.Text)
 		case "turn_end", "error":
 			c.inflight.Store(false)
 			rejected := oauthRejected(ev.Text, ev.Snapshot)
