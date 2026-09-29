@@ -26,6 +26,9 @@ func t145Env(t *testing.T) string {
 	if _, err := exec.LookPath("bun"); err != nil {
 		t.Skip("bun not installed")
 	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(ServerScript()), "node_modules")); err != nil {
+		t.Skip("sidecar dependencies not installed (bun install in sidecar/)")
+	}
 	dir, err := os.MkdirTemp("/tmp", "omp-t145-")
 	if err != nil {
 		t.Fatal(err)
@@ -148,6 +151,11 @@ func TestT145ConcurrentStartsLeaveOneSidecar(t *testing.T) {
 		left[<-exited] = true
 	}
 	for !Listening(ctx, socket) {
+		select {
+		case i := <-exited:
+			t.Fatalf("every sidecar exited; the last was %d", cmds[i].Process.Pid)
+		default:
+		}
 	}
 	t145Serves(ctx, t, socket)
 	owner := t145Pid(t, socket)
