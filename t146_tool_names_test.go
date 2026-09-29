@@ -31,6 +31,8 @@ func TestT146HostToolNamesAreProviderSafeAndRouteBack(t *testing.T) {
 		b, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(b, &req)
 		switch req.Method {
+		case "initialize":
+			_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-03-26"}}`)
 		case "tools/list":
 			_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"tools":[`+
 				`{"name":"self_test.list","inputSchema":{"type":"object"}},`+

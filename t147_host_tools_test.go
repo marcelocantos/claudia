@@ -79,6 +79,22 @@ func TestT147StalledOrBrokenHostServersDoNotHoldUpALaunch(t *testing.T) {
 		_, _ = io.ReadAll(r.Body)
 		http.Error(w, "upstream exploded", http.StatusInternalServerError)
 	})
+	// A server that ignores anything before initialize and wants the
+	// session it assigned, as the broker's stdio proxies and mnemo do.
+	strict := serve(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		switch {
+		case strings.Contains(string(body), `"initialize"`):
+			w.Header().Set("Mcp-Session-Id", "sess-1")
+			_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-03-26"}}`)
+		case r.Header.Get("Mcp-Session-Id") != "sess-1":
+			http.Error(w, `{"jsonrpc":"2.0","error":{"code":-32600,"message":"Invalid session ID"}}`, http.StatusNotFound)
+		case strings.Contains(string(body), `"notifications/initialized"`):
+			w.WriteHeader(http.StatusAccepted)
+		case strings.Contains(string(body), `"tools/list"`):
+			_, _ = io.WriteString(w, "event: message\ndata: "+t147Tool("strict_tool")+"\n\n")
+		}
+	})
 	// A port nothing listens on.
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -90,6 +106,7 @@ func TestT147StalledOrBrokenHostServersDoNotHoldUpALaunch(t *testing.T) {
 
 	servers := []MCPServer{
 		{Name: "healthy", Type: "http", URL: healthy},
+		{Name: "strict", Type: "http", URL: strict},
 		{Name: "stalled", Type: "http", URL: stalled},
 		{Name: "rpc", Type: "http", URL: rpc},
 		{Name: "broken", Type: "http", URL: broken},
@@ -103,8 +120,8 @@ func TestT147StalledOrBrokenHostServersDoNotHoldUpALaunch(t *testing.T) {
 	if took := time.Since(start); took > hostToolsBudget+3*time.Second {
 		t.Fatalf("launch waited %s on a stalled server (budget %s)", took, hostToolsBudget)
 	}
-	if len(routes) != 1 || routes["healthy_tool"] != healthy {
-		t.Fatalf("routes = %v, want only the healthy server's tool", routes)
+	if len(routes) != 2 || routes["healthy_tool"] != healthy || routes["strict_tool"] != strict {
+		t.Fatalf("routes = %v, want the healthy and the session-keeping servers' tools", routes)
 	}
 	out := logs.String()
 	for _, want := range []string{

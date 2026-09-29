@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -25,7 +26,13 @@ func TestT922HostToolListsAreFetchedConcurrentlyAndReused(t *testing.T) {
 	for i := range n {
 		name := []string{"alpha", "beta", "gamma"}[i]
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			_, _ = io.ReadAll(r.Body)
+			body, _ := io.ReadAll(r.Body)
+			// The session handshake is answered at once (🎯T147); only the
+			// listing itself is held until every server has been asked.
+			if !strings.Contains(string(body), `"tools/list"`) {
+				_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{}}`)
+				return
+			}
 			requests.Add(1)
 			// Each answers only once all have been asked: one server at a
 			// time would wait here for ever.

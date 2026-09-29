@@ -1095,44 +1095,38 @@ const (
 	toolsCauseTransport = "transport"
 )
 
-// listMCPTools asks one server for its tools. cause is empty on success,
-// otherwise it names why the server gave none.
+// listMCPTools asks one server for its tools, as an MCP client does: it
+// opens a session with initialize, confirms it, then lists. A bare
+// tools/list was dropped by every stdio server a seat had not initialized yet
+// (bullseye, sawmill, spyder and vellum behind the broker's host, until a
+// Claude seat happened to initialize them) and refused by HTTP servers that
+// require a session (mnemo, atlassian) — 🎯T147. cause is empty on success,
+// otherwise it names why the server gave no tools.
 func listMCPTools(ctx context.Context, mcpURL string) ([]hostJevonsTool, string, error) {
 	ctx, cancel := context.WithTimeout(ctx, hostToolsDeadline)
 	defer cancel()
-	body := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, mcpURL, bytes.NewReader(body))
-	if err != nil {
-		return nil, toolsCauseTransport, err
+	initialize := []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"claudia-omp","version":"` + Version + `"}}}`)
+	raw, session, cause, err := mcpPost(ctx, mcpURL, "", initialize)
+	if cause != "" {
+		return nil, cause, fmt.Errorf("initialize: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json, text/event-stream")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		switch {
-		case errors.Is(err, syscall.ECONNREFUSED):
-			return nil, toolsCauseRefused, err
-		case errors.Is(err, context.DeadlineExceeded) || os.IsTimeout(err):
-			return nil, toolsCauseTimeout, err
-		}
-		return nil, toolsCauseTransport, err
+	if cause, err := mcpRPCError(raw); cause != "" {
+		return nil, cause, fmt.Errorf("initialize: %w", err)
 	}
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
-	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) || os.IsTimeout(err) {
-			return nil, toolsCauseTimeout, err
-		}
-		return nil, toolsCauseTransport, err
+	if session != "" {
+		// Close the session this listing opened; a server that keeps none
+		// ignores it.
+		defer mcpEndSession(mcpURL, session)
 	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, toolsCauseHTTP, fmt.Errorf("%s: %s", resp.Status, bytes.TrimSpace(raw[:min(len(raw), 200)]))
+	if _, _, cause, err := mcpPost(ctx, mcpURL, session, []byte(`{"jsonrpc":"2.0","method":"notifications/initialized"}`)); cause != "" {
+		return nil, cause, fmt.Errorf("notifications/initialized: %w", err)
 	}
-	// A streamable-HTTP server may answer as one SSE event.
-	if i := bytes.LastIndex(raw, []byte("\ndata:")); i >= 0 {
-		raw = raw[i+len("\ndata:"):]
-	} else if bytes.HasPrefix(raw, []byte("data:")) {
-		raw = raw[len("data:"):]
+	raw, _, cause, err = mcpPost(ctx, mcpURL, session, []byte(`{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`))
+	if cause != "" {
+		return nil, cause, fmt.Errorf("tools/list: %w", err)
+	}
+	if cause, err := mcpRPCError(raw); cause != "" {
+		return nil, cause, fmt.Errorf("tools/list: %w", err)
 	}
 	var envelope struct {
 		Result struct {
@@ -1142,20 +1136,88 @@ func listMCPTools(ctx context.Context, mcpURL string) ([]hostJevonsTool, string,
 				InputSchema json.RawMessage `json:"inputSchema"`
 			} `json:"tools"`
 		} `json:"result"`
-		Error *struct {
-			Code    int    `json:"code"`
-			Message string `json:"message"`
-		} `json:"error"`
 	}
-	if err := json.Unmarshal(bytes.TrimSpace(raw), &envelope); err != nil {
-		return nil, toolsCauseReply, err
-	}
-	if envelope.Error != nil {
-		return nil, toolsCauseRPC, fmt.Errorf("%d %s", envelope.Error.Code, envelope.Error.Message)
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return nil, toolsCauseReply, fmt.Errorf("tools/list: %w", err)
 	}
 	var out []hostJevonsTool
 	for _, t := range envelope.Result.Tools {
 		out = append(out, hostJevonsTool{Name: t.Name, Description: t.Description, InputSchema: t.InputSchema})
 	}
 	return out, "", nil
+}
+
+// mcpPost sends one JSON-RPC message over streamable HTTP and returns the
+// reply's JSON (the last SSE event when the server streams), the session id
+// the server assigned, and a cause when it failed. A notification's reply
+// may be empty.
+func mcpPost(ctx context.Context, mcpURL, session string, body []byte) ([]byte, string, string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, mcpURL, bytes.NewReader(body))
+	if err != nil {
+		return nil, "", toolsCauseTransport, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	if session != "" {
+		req.Header.Set("Mcp-Session-Id", session)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		switch {
+		case errors.Is(err, syscall.ECONNREFUSED):
+			return nil, "", toolsCauseRefused, err
+		case errors.Is(err, context.DeadlineExceeded) || os.IsTimeout(err):
+			return nil, "", toolsCauseTimeout, err
+		}
+		return nil, "", toolsCauseTransport, err
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || os.IsTimeout(err) {
+			return nil, "", toolsCauseTimeout, err
+		}
+		return nil, "", toolsCauseTransport, err
+	}
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
+		return nil, "", toolsCauseHTTP, fmt.Errorf("%s: %s", resp.Status, bytes.TrimSpace(raw[:min(len(raw), 200)]))
+	}
+	// A streamable-HTTP server may answer as SSE events; the reply is the last.
+	if i := bytes.LastIndex(raw, []byte("\ndata:")); i >= 0 {
+		raw = raw[i+len("\ndata:"):]
+	} else if bytes.HasPrefix(raw, []byte("data:")) {
+		raw = raw[len("data:"):]
+	}
+	return bytes.TrimSpace(raw), resp.Header.Get("Mcp-Session-Id"), "", nil
+}
+
+// mcpRPCError reports a JSON-RPC error reply, or a reply that is not JSON.
+func mcpRPCError(raw []byte) (string, error) {
+	var reply struct {
+		Error *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(raw, &reply); err != nil {
+		return toolsCauseReply, err
+	}
+	if reply.Error != nil {
+		return toolsCauseRPC, fmt.Errorf("%d %s", reply.Error.Code, reply.Error.Message)
+	}
+	return "", nil
+}
+
+// mcpEndSession closes a streamable-HTTP session, best effort.
+func mcpEndSession(mcpURL, session string) {
+	ctx, cancel := context.WithTimeout(context.Background(), hostToolsBudget)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, mcpURL, nil)
+	if err != nil {
+		return
+	}
+	req.Header.Set("Mcp-Session-Id", session)
+	if resp, err := http.DefaultClient.Do(req); err == nil {
+		resp.Body.Close()
+	}
 }
