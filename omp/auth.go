@@ -7,9 +7,21 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 )
+
+// NoNetworkEnv, when set to any non-empty value, refuses every login/refresh
+// call against the OAuth provider. An isolated journey broker sets this so it
+// can only ever use whatever unexpired access token its store already holds
+// — it never contacts the provider, so it can never rotate (and invalidate)
+// the single shared refresh token a production broker also holds (🎯T940).
+const NoNetworkEnv = "CLAUDIA_OMP_NO_REFRESH"
+
+func noNetworkLogin() bool {
+	return os.Getenv(NoNetworkEnv) != ""
+}
 
 // Login runs one provider's existing pi-ai login or refresh.
 // The command's stdout is a Record JSON object. A non-zero exit
@@ -68,6 +80,9 @@ func (l Login) fetch(ctx context.Context, provider string, existing Record) (Rec
 	verb := "refresh"
 	if l.ForceLogin || !usableRefresh(existing) {
 		verb = "login"
+	}
+	if noNetworkLogin() {
+		return Record{}, fmt.Errorf("omp: %s %s refused: %s is set, this broker never contacts the OAuth provider", provider, verb, NoNetworkEnv)
 	}
 	out, err := l.Run(ctx, cmd, l.Script, verb, provider, string(blob))
 	if err != nil {
