@@ -547,7 +547,14 @@ func (b *brokerAgentBackend) drain() {
 	select {
 	case <-b.ready:
 	case <-b.client.done:
-		return
+		// A select with both ready picks either. A handle that exists must
+		// still be marked dead when its connection is already gone, or it
+		// reads as alive forever (found by jevons 🎯T925's test, 1 in 300).
+		select {
+		case <-b.ready:
+		default:
+			return
+		}
 	}
 	b.mu.Lock()
 	a := b.agent
