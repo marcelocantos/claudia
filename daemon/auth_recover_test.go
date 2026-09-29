@@ -8,6 +8,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/marcelocantos/claudia"
 	"github.com/marcelocantos/claudia/internal/broker"
 )
 
@@ -49,5 +50,29 @@ func TestAuthRecoverBrokerRequestKeepsErrorsAndRejectsUnknownPlans(t *testing.T)
 	}
 	if !f.owned("healthy") || f.seat(0) == nil {
 		t.Fatalf("auth recovery disturbed an unrelated live seat: owned=%v seat=%v", f.owned("healthy"), f.seat(0))
+	}
+}
+
+// 🎯T924: auth_status answers from the store reader and never starts a
+// recovery.
+func TestT924AuthStatusReportsPlanHealthWithoutRecovering(t *testing.T) {
+	f := newFixture(t)
+	f.boot(t, nil)
+	f.d.authRecover = func(context.Context, string) error {
+		t.Fatal("auth_status started a recovery")
+		return nil
+	}
+	f.d.authStatus = func(context.Context) ([]claudia.PlanLoginHealth, error) {
+		return []claudia.PlanLoginHealth{{Provider: "anthropic", State: "ok"}, {Provider: "cursor", State: "missing"}}, nil
+	}
+	c, err := broker.Dial(f.sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	response := rawCall(t, c, &broker.Request{ID: "status", Type: broker.TypeAuthStatus, AuthStatus: &broker.AuthStatusRequest{}})
+	if response.Type != broker.TypeAuthStatusResult || len(response.AuthStatus.Plans) != 2 ||
+		response.AuthStatus.Plans[1] != (broker.PlanAuth{Provider: "cursor", State: "missing"}) {
+		t.Fatalf("auth_status response=%+v", response)
 	}
 }

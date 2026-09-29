@@ -1,0 +1,1 @@
+{"v":1,"type":"auth_status_result","id":"g18","body":{"plans":[{"provider":"anthropic","state":"ok"},{"provider":"openai-codex","state":"rejected","detail":"invalid_grant","since":"2026-06-10T14:30:00Z"},{"provider":"cursor","state":"missing"}]}}

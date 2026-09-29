@@ -410,7 +410,11 @@ func (s Store) Put(ctx context.Context, provider string, rec Record) error {
 		return err
 	}
 	item.Records[provider] = rec
-	return s.Save(ctx, item)
+	if err := s.Save(ctx, item); err != nil {
+		return err
+	}
+	clearRejected(provider)
+	return nil
 }
 
 // AccessToken returns the stored access token when it is still valid.

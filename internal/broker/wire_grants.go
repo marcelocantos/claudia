@@ -67,6 +67,9 @@ const (
 	TypeJudge MessageType = "judge"
 	// TypeAuthRecover asks the credential-owning broker to repair one plan.
 	TypeAuthRecover MessageType = "auth_recover"
+	// TypeAuthStatus asks for every plan's login health (🎯T924). It
+	// never starts a login.
+	TypeAuthStatus MessageType = "auth_status"
 )
 
 // Response types (broker → client) added by the grant protocol.
@@ -102,6 +105,8 @@ const (
 	// TypeJudged answers a judge request: the result, or the refusal.
 	TypeJudged        MessageType = "judged"
 	TypeAuthRecovered MessageType = "auth_recovered"
+	// TypeAuthStatusResult answers auth_status.
+	TypeAuthStatusResult MessageType = "auth_status_result"
 )
 
 // Error codes added by the grant protocol.
@@ -705,4 +710,21 @@ type GrantStatus struct {
 // GrantsResponse lists every grant.
 type GrantsResponse struct {
 	Grants []GrantStatus `json:"grants"`
+}
+
+// AuthStatusRequest asks for plan login health. No fields.
+type AuthStatusRequest struct{}
+
+// PlanAuth is one subscription plan's login health (🎯T924). State is
+// ok, missing, expired or rejected.
+type PlanAuth struct {
+	Provider string    `json:"provider"`
+	State    string    `json:"state"`
+	Detail   string    `json:"detail,omitempty"`
+	Since    time.Time `json:"since,omitzero"`
+}
+
+// AuthStatusResponse lists every plan's login health.
+type AuthStatusResponse struct {
+	Plans []PlanAuth `json:"plans"`
 }

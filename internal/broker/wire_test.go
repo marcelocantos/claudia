@@ -172,6 +172,7 @@ var requestVectors = map[string]requestVector{
 	"goal_verdict": {msg: &Request{ID: "g16", Type: TypeGoalVerdict,
 		GoalVerdict: &GoalVerdictRequest{Name: "jv-worker-1", CheckID: "c-1", Complete: true, Answered: true}}},
 	"auth_recover": {msg: &Request{ID: "g17", Type: TypeAuthRecover, AuthRecover: &NamedRequest{Name: "anthropic"}}},
+	"auth_status":  {msg: &Request{ID: "g18", Type: TypeAuthStatus, AuthStatus: &AuthStatusRequest{}}},
 }
 
 // responseVectors is every broker → client message, in canonical form.
@@ -358,9 +359,14 @@ var responseVectors = map[string]*Response{
 	},
 	"goal_closed":    {ID: "g14", Type: TypeGoalClosed, GoalClosed: &NamedResponse{Name: "jv-worker-1"}},
 	"auth_recovered": {ID: "g17", Type: TypeAuthRecovered, AuthRecovered: &NamedResponse{Name: "anthropic"}},
-	"event_grant":    {Type: TypeEvent, Event: &EventMessage{Kind: EventGrant, Name: "jv-worker-1", At: goldenAt}},
-	"event_detach":   {Type: TypeEvent, Event: &EventMessage{Kind: EventDetach, Name: "jv-worker-1", At: goldenAt}},
-	"event_usage":    {Type: TypeEvent, Event: &EventMessage{Kind: EventUsageUpdate, Detail: "claude", At: goldenAt}},
+	"auth_status_result": {ID: "g18", Type: TypeAuthStatusResult, AuthStatus: &AuthStatusResponse{Plans: []PlanAuth{
+		{Provider: "anthropic", State: "ok"},
+		{Provider: "openai-codex", State: "rejected", Detail: "invalid_grant", Since: goldenAt},
+		{Provider: "cursor", State: "missing"},
+	}}},
+	"event_grant":  {Type: TypeEvent, Event: &EventMessage{Kind: EventGrant, Name: "jv-worker-1", At: goldenAt}},
+	"event_detach": {Type: TypeEvent, Event: &EventMessage{Kind: EventDetach, Name: "jv-worker-1", At: goldenAt}},
+	"event_usage":  {Type: TypeEvent, Event: &EventMessage{Kind: EventUsageUpdate, Detail: "claude", At: goldenAt}},
 	"error_grant_held": {
 		ID: "g5", Type: TypeError,
 		Error: &ErrorMessage{Code: CodeGrantHeld, Message: "grant jv-worker-1 is owned by another connection", Field: "name", Value: "jv-worker-1"},

@@ -276,8 +276,8 @@ type ompControl struct {
 	// toolNames maps an advertised tool name to the server's own name for
 	// it, where the provider needed it renamed (🎯T146).
 	toolNames map[string]string
-	mu          sync.Mutex
-	inflight    atomic.Bool
+	mu        sync.Mutex
+	inflight  atomic.Bool
 	// lastRefresh is when this seat last refreshed a rejected token (under mu).
 	lastRefresh time.Time
 }
@@ -520,6 +520,8 @@ func (c *ompControl) refreshRejectedToken() {
 	rec, err := login.Refresh(context.Background(), planStore(), c.provider)
 	if err != nil {
 		slog.Warn("omp token rejected; refresh failed", "provider", c.provider, "seat", c.seat, "err", err)
+		// 🎯T924: the cockpit offers the owner a Reauth for this plan.
+		omp.MarkRejected(c.provider, err.Error())
 		return
 	}
 	if err := FlushOMPPlans(context.Background()); err != nil {
@@ -648,6 +650,36 @@ func RecoverOMPAuth(ctx context.Context, provider Provider) error {
 		return fmt.Errorf("omp: unexpected reauthentication response %q", resp.Type)
 	}
 	return nil
+}
+
+// PlanLoginHealth is one subscription plan's login state (🎯T924).
+type PlanLoginHealth = omp.PlanHealth
+
+// OMPPlanHealth reads every plan's login health from this process's plan
+// store (🎯T924). It runs inside the broker and never starts a login.
+func OMPPlanHealth(ctx context.Context) ([]PlanLoginHealth, error) {
+	return omp.Health(ctx, planStore())
+}
+
+// OMPAuthStatus asks the running broker for every plan's login health.
+func OMPAuthStatus(ctx context.Context) ([]PlanLoginHealth, error) {
+	client, err := dialBroker()
+	if err != nil {
+		return nil, fmt.Errorf("omp: broker is required for plan login status: %w", err)
+	}
+	defer client.Close()
+	resp, err := client.call(ctx, &broker.Request{Type: broker.TypeAuthStatus, AuthStatus: &broker.AuthStatusRequest{}})
+	if err != nil {
+		return nil, err
+	}
+	if resp.Type != broker.TypeAuthStatusResult || resp.AuthStatus == nil {
+		return nil, fmt.Errorf("omp: unexpected plan login status response %q", resp.Type)
+	}
+	out := make([]omp.PlanHealth, 0, len(resp.AuthStatus.Plans))
+	for _, p := range resp.AuthStatus.Plans {
+		out = append(out, omp.PlanHealth{Provider: p.Provider, State: p.State, Detail: p.Detail, Since: p.Since})
+	}
+	return out, nil
 }
 
 // IsOMPPlan reports whether the broker can reauthenticate a plan id.

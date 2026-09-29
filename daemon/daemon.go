@@ -122,13 +122,15 @@ type Daemon struct {
 	reauthMu sync.Mutex
 	// Tests replace the credential operation; production leaves it nil.
 	authRecover func(context.Context, string) error
-	opts        Options
-	log         *slog.Logger
-	clock       broker.Clock
-	reg         *claudia.Registry
-	srv         *broker.Server
-	usage       *claudia.PlanUsageMonitor
-	path        string
+	// authStatus reads plan login health (🎯T924). Tests replace it.
+	authStatus func(context.Context) ([]claudia.PlanLoginHealth, error)
+	opts       Options
+	log        *slog.Logger
+	clock      broker.Clock
+	reg        *claudia.Registry
+	srv        *broker.Server
+	usage      *claudia.PlanUsageMonitor
+	path       string
 	// stateDir is the resolved state directory. opts.StateDir is empty on a
 	// default serve and must not be read after construction.
 	stateDir string
@@ -417,6 +419,8 @@ func (d *Daemon) HandleRequest(c *broker.ClientConn, req *broker.Request) bool {
 			Grants: &broker.GrantsResponse{Grants: d.grantList()}})
 	case broker.TypeAuthRecover:
 		go d.handleReauth(c, req)
+	case broker.TypeAuthStatus:
+		d.handleAuthStatus(c, req)
 	case broker.TypeSpawn:
 		_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeUnsupportedValue, Field: "type", Value: string(req.Type),
 			Msg: "the daemon grants seats by name; use grant (Session) or task_run (Task)"})
@@ -450,6 +454,26 @@ func (d *Daemon) handleReauth(c *broker.ClientConn, req *broker.Request) {
 	}
 	_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeAuthRecovered,
 		AuthRecovered: &broker.NamedResponse{Name: provider}})
+}
+
+// handleAuthStatus reports every plan's login health from the broker's own
+// store. It never starts a login: only the owner's Reauth does (🎯T924).
+func (d *Daemon) handleAuthStatus(c *broker.ClientConn, req *broker.Request) {
+	read := d.authStatus
+	if read == nil {
+		read = claudia.OMPPlanHealth
+	}
+	plans, err := read(d.ctx)
+	if err != nil {
+		_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeAgentFailed, Msg: err.Error()})
+		return
+	}
+	out := make([]broker.PlanAuth, 0, len(plans))
+	for _, p := range plans {
+		out = append(out, broker.PlanAuth{Provider: p.Provider, State: p.State, Detail: p.Detail, Since: p.Since})
+	}
+	_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeAuthStatusResult,
+		AuthStatus: &broker.AuthStatusResponse{Plans: out}})
 }
 
 // ConnClosed implements broker.Handler: seats stay running, unowned. A

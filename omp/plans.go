@@ -50,6 +50,9 @@ func RefreshPlans(ctx context.Context, store Store, login Login) (refreshed, ski
 		}
 		next, ferr := login.fetch(ctx, id, rec)
 		if ferr != nil {
+			if strings.Contains(strings.ToLower(ferr.Error()), "invalid_grant") {
+				MarkRejected(id, ferr.Error())
+			}
 			err = errors.Join(err, fmt.Errorf("omp: %s: %w", id, ferr))
 			continue
 		}
@@ -58,6 +61,7 @@ func RefreshPlans(ctx context.Context, store Store, login Login) (refreshed, ski
 			err = errors.Join(err, serr)
 			continue
 		}
+		clearRejected(id)
 		refreshed = append(refreshed, id)
 	}
 	return refreshed, skipped, err
@@ -115,6 +119,9 @@ func LoginPlans(ctx context.Context, store Store, login Login, only ...string) (
 	}
 	if err := store.Save(ctx, item); err != nil {
 		return n, err
+	}
+	for _, id := range want {
+		clearRejected(id)
 	}
 	return n, nil
 }

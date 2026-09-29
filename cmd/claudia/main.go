@@ -10,6 +10,7 @@
 //	claudia broker usage [--refresh] the plan-usage snapshot
 //	claudia broker release NAME [--detach | --force]
 //	claudia broker auth-recover PROVIDER  repair subscription authentication
+//	claudia broker auth-status [--json]   plan login health; never logs in
 //	claudia broker install|uninstall  launchd user agent (macOS)
 //	claudia broker socket           print the socket path
 //	claudia models intel …          purpose-quality series (🎯T71)
@@ -71,7 +72,7 @@ func run(args []string) int {
 }
 
 func usageText() string {
-	return `usage: claudia broker <serve|status|grants|tail|usage|release|auth-recover|install|uninstall|socket> [flags]
+	return `usage: claudia broker <serve|status|grants|tail|usage|release|auth-recover|auth-status|install|uninstall|socket> [flags]
        claudia models intel <refresh|latest|history|drift> [flags]
        claudia version | --version | -v
        claudia --help | -h
@@ -111,6 +112,20 @@ func brokerCmd(args []string) error {
 			return err
 		}
 		fmt.Printf("authentication recovered for %s\n", args[1])
+		return nil
+	case "auth-status":
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		plans, err := claudia.OMPAuthStatus(ctx)
+		if err != nil {
+			return err
+		}
+		if len(args) > 1 && args[1] == "--json" {
+			return json.NewEncoder(os.Stdout).Encode(map[string]any{"plans": plans})
+		}
+		for _, p := range plans {
+			fmt.Printf("%-14s %s %s\n", p.Provider, p.State, p.Detail)
+		}
 		return nil
 	case "install":
 		return install(args[1:])
