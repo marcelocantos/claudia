@@ -137,3 +137,26 @@ func TestEscalationUnabsorbedMessageIsInterruptedAtItsDeadline(t *testing.T) {
 		t.Fatalf("verbs = %v, want [steer:urgent interrupt]", got)
 	}
 }
+
+// A newer escalating send supersedes the pending ladder: the seat is pressed
+// by the latest message only, never interrupted by a stale timer.
+func TestEscalationNewerSendSupersedesPendingLadder(t *testing.T) {
+	a, s := newEscalationSeat(TurnInTurn)
+	if _, err := a.SendEscalating("first", Escalation{{Mode: DeliverySteer}, {Mode: DeliveryInterrupt, After: 60 * time.Millisecond}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.SendEscalating("second", Escalation{{Mode: DeliverySteer}, {Mode: DeliveryInterrupt, After: 400 * time.Millisecond}}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	for _, v := range s.verbs() {
+		if v == "interrupt" {
+			t.Fatalf("the superseded ladder still interrupted: %v", s.verbs())
+		}
+	}
+	time.Sleep(400 * time.Millisecond)
+	got := s.verbs()
+	if len(got) != 3 || got[0] != "steer:first" || got[1] != "steer:second" || got[2] != "interrupt" {
+		t.Fatalf("verbs = %v, want the second ladder's interrupt only", got)
+	}
+}

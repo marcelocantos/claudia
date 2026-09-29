@@ -40,6 +40,20 @@ type EscalationStep struct {
 // not decrease from rung to rung.
 type Escalation []EscalationStep
 
+// ladders holds each seat's pending ladder, so a newer escalating send
+// supersedes it: the seat is pressed by the latest message's urgency, never
+// by two timers at once.
+var ladders sync.Map // *Agent -> chan struct{} (closed to cancel)
+
+// supersedeLadder cancels a's pending ladder and registers a new one.
+func supersedeLadder(a *Agent) chan struct{} {
+	cancel := make(chan struct{})
+	if prev, loaded := ladders.Swap(a, cancel); loaded {
+		close(prev.(chan struct{}))
+	}
+	return cancel
+}
+
 // maxEscalationSteps bounds a ladder; a longer one is a caller bug.
 const maxEscalationSteps = 4
 
@@ -90,6 +104,8 @@ func (a *Agent) SendEscalating(text string, esc Escalation) (DeliveryOutcome, er
 	if len(esc) == 0 || a.TurnPhase() != TurnInTurn {
 		return a.SendMode(text, DeliverySubmit)
 	}
+	// Any escalating send, laddered or not, supersedes a pending ladder.
+	cancel := supersedeLadder(a)
 	if len(esc) == 1 {
 		return a.SendMode(text, esc[0].Mode)
 	}
@@ -110,18 +126,22 @@ func (a *Agent) SendEscalating(text string, esc Escalation) (DeliveryOutcome, er
 	}
 	go func() {
 		defer a.UnsubscribeEvents(token)
-		a.climb(esc[1:], start, absorbed)
+		defer ladders.CompareAndDelete(a, cancel)
+		a.climb(esc[1:], start, absorbed, cancel)
 	}()
 	return out, nil
 }
 
 // climb fires each remaining rung at its deadline unless the message was
 // absorbed first, or the seat stopped.
-func (a *Agent) climb(rungs Escalation, start time.Time, absorbed <-chan struct{}) {
+func (a *Agent) climb(rungs Escalation, start time.Time, absorbed, superseded <-chan struct{}) {
 	for _, r := range rungs {
 		timer := time.NewTimer(time.Until(start.Add(r.After)))
 		select {
 		case <-absorbed:
+			timer.Stop()
+			return
+		case <-superseded:
 			timer.Stop()
 			return
 		case <-a.deadSignal():
