@@ -984,6 +984,18 @@ wait:
 	}
 	mu.Lock()
 	defer mu.Unlock()
+	// What the seat is offered, per server (🎯T147): the evidence that a
+	// launch got every server's tools, or which it went without.
+	var offered []string
+	for i, srv := range servers {
+		if srv.URL == "" || (srv.Type != "" && srv.Type != "http") {
+			continue
+		}
+		offered = append(offered, fmt.Sprintf("%s=%d", srv.Name, len(lists[i])))
+	}
+	if len(offered) > 0 {
+		slog.Info("omp: host tools offered to seat", "servers", strings.Join(offered, ","))
+	}
 	for i, srv := range servers {
 		for _, t := range lists[i] {
 			name := providerToolName(t.Name)
