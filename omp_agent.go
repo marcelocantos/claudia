@@ -879,11 +879,24 @@ func hostToolsNamed(ctx context.Context, servers []MCPServer) (json.RawMessage, 
 	var tools []hostJevonsTool
 	routes := map[string]string{}
 	originals := map[string]string{}
-	for _, srv := range servers {
+	// Every server at once (jevons 🎯T922): asked one after another, each
+	// silent server cost its full 5 s timeout, and a seat with four of them
+	// took ~25 s to launch — past the caller's 30 s tool deadline.
+	lists := make([][]hostJevonsTool, len(servers))
+	var wg sync.WaitGroup
+	for i, srv := range servers {
 		if srv.URL == "" || (srv.Type != "" && srv.Type != "http") {
 			continue // plugin-shaped / stdio: not registered
 		}
-		for _, t := range listMCPTools(ctx, srv.URL) {
+		wg.Add(1)
+		go func(i int, url string) {
+			defer wg.Done()
+			lists[i] = listMCPToolsCached(ctx, url)
+		}(i, srv.URL)
+	}
+	wg.Wait()
+	for i, srv := range servers {
+		for _, t := range lists[i] {
 			name := providerToolName(t.Name)
 			if name == "" {
 				continue
@@ -936,6 +949,39 @@ func providerToolName(name string) string {
 		return ""
 	}
 	return out
+}
+
+// hostToolsTTL is how long a server's tool list is reused; a failed or empty
+// answer is retried sooner (jevons 🎯T922).
+const (
+	hostToolsTTL     = 10 * time.Minute
+	hostToolsFailTTL = time.Minute
+)
+
+type hostToolsEntry struct {
+	tools []hostJevonsTool
+	at    time.Time
+}
+
+var hostToolsCache sync.Map // MCP URL -> hostToolsEntry
+
+// listMCPToolsCached is listMCPTools, reused per server: tool lists rarely
+// change, and a server that does not answer is not waited on again at every
+// seat launch (jevons 🎯T922).
+func listMCPToolsCached(ctx context.Context, mcpURL string) []hostJevonsTool {
+	if v, ok := hostToolsCache.Load(mcpURL); ok {
+		e := v.(hostToolsEntry)
+		ttl := hostToolsTTL
+		if e.tools == nil {
+			ttl = hostToolsFailTTL
+		}
+		if time.Since(e.at) < ttl {
+			return e.tools
+		}
+	}
+	tools := listMCPTools(ctx, mcpURL)
+	hostToolsCache.Store(mcpURL, hostToolsEntry{tools: tools, at: time.Now()})
+	return tools
 }
 
 func listMCPTools(ctx context.Context, mcpURL string) []hostJevonsTool {
