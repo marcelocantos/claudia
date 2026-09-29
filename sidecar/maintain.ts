@@ -111,6 +111,10 @@ type SeatCompactionEntry = CompactionEntry & { method?: Method; tokensAfter?: nu
 export class History {
   entries: SessionEntry[] = [];
   #ids = new WeakMap<object, string>();
+  // byKey finds a message's entry by content. The Agent's state and the
+  // run loop's live array hold different copies of one assistant message,
+  // so identity alone recorded it twice.
+  #byKey = new Map<string, string>();
   // store keeps the entries on disk (🎯T151). entries[0, persisted) are
   // there already; dirty means the file no longer matches a prefix of
   // entries (one was taken back) and must be rewritten whole.
@@ -127,12 +131,22 @@ export class History {
   restore(): boolean {
     const loaded = this.store?.load();
     if (!loaded) return false;
-    this.entries = loaded;
+    // A store written before messages were keyed by content can hold one
+    // message twice; keep the first and rewrite the file clean.
+    const kept: SessionEntry[] = [];
     for (const e of loaded) {
-      if (e.type === "message") this.#ids.set((e as SessionMessageEntry).message, e.id);
+      if (e.type === "message") {
+        const m = (e as SessionMessageEntry).message;
+        const k = messageKey(m);
+        if (this.#byKey.has(k)) continue;
+        this.#byKey.set(k, e.id);
+        this.#ids.set(m, e.id);
+      }
+      kept.push(e);
     }
-    this.#persisted = loaded.length;
-    this.#dirty = false;
+    this.entries = kept;
+    this.#persisted = kept.length;
+    this.#dirty = kept.length !== loaded.length;
     return true;
   }
 
@@ -164,6 +178,12 @@ export class History {
   sync(messages: readonly AgentMessage[]): void {
     for (const m of messages) {
       if (m.role === "compactionSummary" || this.#ids.has(m)) continue;
+      const k = messageKey(m);
+      const known = this.#byKey.get(k);
+      if (known) {
+        this.#ids.set(m, known);
+        continue;
+      }
       const entry: SessionMessageEntry = {
         type: "message",
         id: crypto.randomUUID(),
@@ -173,6 +193,7 @@ export class History {
       };
       this.entries.push(entry);
       this.#ids.set(m, entry.id);
+      this.#byKey.set(k, entry.id);
     }
   }
 
@@ -186,6 +207,7 @@ export class History {
     this.entries = this.entries.filter((e) => e.id !== id);
     this.#persisted = Math.min(this.#persisted, this.entries.length);
     this.#ids.delete(message);
+    this.#byKey.delete(messageKey(message));
   }
 
   appendCompaction(result: CompactionResult, method: Method): SeatCompactionEntry {
@@ -251,6 +273,12 @@ export class History {
   #last(): string | null {
     return this.entries.length > 0 ? this.entries[this.entries.length - 1].id : null;
   }
+}
+
+// messageKey identifies a message by content: its role, time and a hash of
+// the whole message. Two copies of one message share it.
+function messageKey(m: AgentMessage): string {
+  return `${m.role}|${typeof m.timestamp === "number" ? m.timestamp : ""}|${Bun.hash(JSON.stringify(m))}`;
 }
 
 // openAiRemotePayload reads a validated OpenAI Responses replacement history

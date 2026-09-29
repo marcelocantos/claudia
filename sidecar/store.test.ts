@@ -93,6 +93,40 @@ describe("durable seat conversations (🎯T151)", () => {
     expect(second.summaries()).toBe(0); // nothing was recomputed
   });
 
+  test("each message is stored once, however many arrays hold a copy of it", async () => {
+    const root = tempDir();
+    const first = seat(new SeatStore(root, "po", "s1"), ok);
+    await first.agent.prompt("one");
+    await first.agent.prompt("two");
+    const entries = new SeatStore(root, "po", "s1").load() as SessionEntry[];
+    const roles = entries.filter((e) => e.type === "message").map((e) => (e as { message: { role: string } }).message.role);
+    expect(roles).toEqual(["user", "assistant", "user", "assistant"]);
+  });
+
+  test("a store that already holds a message twice resumes it once, and is rewritten clean", async () => {
+    const root = tempDir();
+    const store = new SeatStore(root, "po", "s1");
+    const t = Date.now();
+    const answer = { role: "assistant", content: [{ type: "text", text: "ack" }], api: "mock", provider: "mock", model: "mock-model", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: t + 1 };
+    store.rewrite([
+      { type: "message", id: "u", parentId: null, timestamp: new Date(t).toISOString(), message: { role: "user", content: "hi PELICAN", timestamp: t } },
+      { type: "message", id: "a1", parentId: "u", timestamp: new Date(t + 1).toISOString(), message: answer },
+      { type: "message", id: "a2", parentId: "a1", timestamp: new Date(t + 1).toISOString(), message: { ...answer } },
+    ] as SessionEntry[]);
+
+    let assistants = -1;
+    const second = seat(store, (context) => {
+      assistants = context.messages.filter((m) => m.role === "assistant").length;
+      return ok();
+    });
+    await second.agent.prompt("next");
+
+    expect(assistants).toBe(1);
+    const ids = (store.load() as SessionEntry[]).map((e) => e.id);
+    expect(ids.slice(0, 2)).toEqual(["u", "a1"]);
+    expect(ids).not.toContain("a2");
+  });
+
   test("a new session starts fresh", async () => {
     const root = tempDir();
     const first = seat(new SeatStore(root, "po", "s1"), ok);
