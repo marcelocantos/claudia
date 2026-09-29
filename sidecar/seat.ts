@@ -7,6 +7,7 @@ import type { Model } from "@oh-my-pi/pi-ai";
 import { codingTools } from "./coding.ts";
 import { awaitHostCall } from "./hostcalls.ts";
 import { ContextOverflow, isOverflow, Maintenance, seatConvertToLlm, type MaintenanceHost } from "./maintain.ts";
+import type { SeatStore } from "./store.ts";
 import {
   beginTurn,
   closeTurn,
@@ -74,6 +75,9 @@ export function createSeatAgent(opts: {
   // and a fake summary.
   modelOverride?: Model;
   maintenance?: Pick<MaintenanceHost, "compactImpl" | "summaryOptions" | "nativeEligible">;
+  // store keeps the conversation across a sidecar restart (🎯T151). A seat
+  // loaded with a store that already holds its session resumes from it.
+  store?: SeatStore;
 }): SeatAgent {
   let token = opts.token;
   let cwd = opts.cwd;
@@ -132,12 +136,18 @@ export function createSeatAgent(opts: {
     agent,
     token: () => token,
     emit: (ev) => sink.emit(ev),
+    store: opts.summaryOnly ? undefined : opts.store,
     ...opts.maintenance,
   });
+  // Resume the stored conversation. An unreadable store throws, so the load
+  // fails loudly instead of starting the seat on an empty conversation.
+  maint.restore();
   // Between tool calls, when the loop is about to call the model again: the
   // CLI's mid-turn pass. The live array is the loop's own, so a compaction is
   // spliced into it for the next request.
   agent.setOnTurnEnd(async (messages, signal, context) => {
+    // Every finished model call is durable before the next one (🎯T151).
+    maint.persist(messages);
     if (opts.summaryOnly || signal?.aborted || !context?.willContinue || maint.compacting) return;
     const last = [...messages].reverse().find((m) => m.role === "assistant") as { stopReason?: string } | undefined;
     if (!last || last.stopReason === "aborted" || last.stopReason === "error") return;
@@ -258,6 +268,9 @@ export function createSeatAgent(opts: {
     } catch (err) {
       finish("error");
       throw err;
+    } finally {
+      // The turn's messages are durable before the host hears it ended.
+      maint.persist();
     }
     if (refusal) {
       sink.emit({ type: "turn_end", error: refusal, reason: overflow ? ContextOverflow : undefined, snapshot: agent.state });

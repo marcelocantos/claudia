@@ -6,10 +6,12 @@
 
 import { createServer } from "node:net";
 import { unlinkSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { createSeatAgent, type HostTool, type SeatAgent } from "./seat.ts";
 import { defaultWriter } from "./spool.ts";
 import { claimSocket } from "./singleton.ts";
 import { HOST_CONNECTION_LOST, HostCalls } from "./hostcalls.ts";
+import { SeatStore } from "./store.ts";
 
 const banned = [
   "ANTHROPIC_API_KEY",
@@ -31,6 +33,10 @@ if (!claimSocket(sock)) {
 }
 // Holding the lock, a socket file left here is stale.
 try { unlinkSync(sock); } catch { /* absent */ }
+
+// storeRoot holds each seat's conversation beside the socket (🎯T151), so a
+// sidecar restart resumes a seat the host reloads with the same session.
+const storeRoot = join(dirname(sock), "omp-seats");
 
 type Line = {
   op?: string;
@@ -190,6 +196,9 @@ async function handle(
       write({ seat, type: "ready", how: "adopted" });
       return;
     }
+    // A host that names the seat's session gets a durable conversation; one
+    // that does not (an older host) gets the old in-memory seat.
+    const store = !summaryOnly && msg.session_id ? new SeatStore(storeRoot, seat, msg.session_id) : undefined;
     const agent = createSeatAgent({
       provider: msg.provider ?? "",
       model: msg.model ?? "",
@@ -199,6 +208,7 @@ async function handle(
       emit: (ev) => write({ seat, ...ev }),
       callTool,
       tools: msg.tools,
+      store,
     });
     if (existing) existing.agent.abort();
     seats.set(seat, {

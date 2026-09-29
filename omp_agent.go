@@ -170,6 +170,13 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 	if !req.Config.SummaryOnly {
 		tools, toolRoutes, toolNames = hostToolsNamed(req.Context, req.Config.MCPServers)
 	}
+	// The session names the seat's conversation. The sidecar keeps it on
+	// disk under this id, so a sidecar restart resumes it and a new session
+	// starts fresh (🎯T151).
+	sessionID := req.Config.SessionID
+	if sessionID == "" {
+		sessionID = uuid.NewString()
+	}
 	if err := conn.Send(omp.Message{
 		Op:          op,
 		Seat:        req.Config.Name,
@@ -178,6 +185,7 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 		SummaryOnly: req.Config.SummaryOnly,
 		Token:       token,
 		Cwd:         req.Config.WorkDir,
+		SessionID:   sessionID,
 		Tools:       tools,
 	}); err != nil {
 		conn.Close()
@@ -210,10 +218,6 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 			return nil, fmt.Errorf("omp: sidecar said %q, want ready: %s", ev.Type, ev.Text)
 		}
 		return nil, fmt.Errorf("omp: sidecar said %q, want ready", ev.Type)
-	}
-	sessionID := req.Config.SessionID
-	if sessionID == "" {
-		sessionID = uuid.NewString()
 	}
 	ctrl := &ompControl{
 		conn: conn, bytes: make(chan []byte, 8),
@@ -494,7 +498,7 @@ func (c *ompControl) loadMessage() omp.Message {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return omp.Message{
-		Op: omp.OpLoad, Seat: c.seat, Provider: c.provider,
+		Op: omp.OpLoad, Seat: c.seat, Provider: c.provider, SessionID: c.sessionID,
 		Model: c.model, SummaryOnly: c.summaryOnly, Token: c.token, Cwd: c.cwd,
 		Tools: c.tools,
 	}

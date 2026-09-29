@@ -38,6 +38,7 @@ import {
 import type { AssistantMessage, Message, Model } from "@oh-my-pi/pi-ai";
 import { classify, Flag, is as hasFlag, isContextOverflow } from "@oh-my-pi/pi-ai/error";
 import { resetOpenAICodexHistoryAfterCompaction } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
+import type { SeatStore } from "./store.ts";
 
 // ContextOverflow is the reason a turn_end carries when the provider refused
 // the turn as too long and compaction could not bring it back under the
@@ -110,6 +111,52 @@ type SeatCompactionEntry = CompactionEntry & { method?: Method; tokensAfter?: nu
 export class History {
   entries: SessionEntry[] = [];
   #ids = new WeakMap<object, string>();
+  // store keeps the entries on disk (🎯T151). entries[0, persisted) are
+  // there already; dirty means the file no longer matches a prefix of
+  // entries (one was taken back) and must be rewritten whole.
+  store: SeatStore | undefined;
+  #persisted = 0;
+  #dirty = false;
+
+  constructor(store?: SeatStore) {
+    this.store = store;
+  }
+
+  // restore loads the stored conversation, if this seat and session have
+  // one, and reports whether it did. It throws when the store is unreadable.
+  restore(): boolean {
+    const loaded = this.store?.load();
+    if (!loaded) return false;
+    this.entries = loaded;
+    for (const e of loaded) {
+      if (e.type === "message") this.#ids.set((e as SessionMessageEntry).message, e.id);
+    }
+    this.#persisted = loaded.length;
+    this.#dirty = false;
+    return true;
+  }
+
+  // persist writes what the store does not have yet: the new tail, or the
+  // whole list when an entry was taken back.
+  persist(messages?: readonly AgentMessage[]): void {
+    if (messages) this.sync(messages);
+    if (!this.store) return;
+    if (this.#dirty) {
+      this.store.rewrite(this.entries);
+      this.#dirty = false;
+    } else {
+      this.store.append(this.entries.slice(this.#persisted));
+    }
+    this.#persisted = this.entries.length;
+  }
+
+  // latestCompactionAt is when the newest compaction entry was committed.
+  latestCompactionAt(): number {
+    for (let i = this.entries.length - 1; i >= 0; i--) {
+      if (this.entries[i].type === "compaction") return new Date(this.entries[i].timestamp).getTime();
+    }
+    return 0;
+  }
 
   // sync records every message the Agent holds that has no entry yet. New
   // messages only ever arrive at the tail, so order is kept. A compaction
@@ -134,7 +181,10 @@ export class History {
   forget(message: AgentMessage): void {
     const id = this.#ids.get(message);
     if (!id) return;
+    const at = this.entries.findIndex((e) => e.id === id);
+    if (at < this.#persisted) this.#dirty = true;
     this.entries = this.entries.filter((e) => e.id !== id);
+    this.#persisted = Math.min(this.#persisted, this.entries.length);
     this.#ids.delete(message);
   }
 
@@ -220,6 +270,8 @@ export type MaintenanceEvent = { type: "compacting" | "compacted" | "compaction_
 
 export type MaintenanceHost = {
   agent: Agent;
+  // store keeps the conversation durable across a sidecar restart (🎯T151).
+  store?: SeatStore;
   token: () => string;
   emit: (ev: MaintenanceEvent) => void;
   // Tests only: the engine call, extra summary options (a fake completion),
@@ -231,7 +283,7 @@ export type MaintenanceHost = {
 
 // Maintenance runs the CLI's compaction triggers for one seat.
 export class Maintenance {
-  readonly history = new History();
+  readonly history: History;
   #host: MaintenanceHost;
   // limit is the window the provider itself named in an overflow refusal,
   // when it is smaller than the catalog's.
@@ -246,6 +298,21 @@ export class Maintenance {
 
   constructor(host: MaintenanceHost) {
     this.#host = host;
+    this.history = new History(host.store);
+  }
+
+  // restore rebuilds the Agent's conversation from the store, when this seat
+  // and session were stored before. It throws when the store is unreadable.
+  restore(): boolean {
+    if (!this.history.restore()) return false;
+    this.#host.agent.replaceMessages(this.history.rebuild());
+    this.#compactedAt = this.history.latestCompactionAt();
+    return true;
+  }
+
+  // persist records the conversation so far in the store.
+  persist(messages: readonly AgentMessage[] = this.#host.agent.state.messages): void {
+    this.history.persist(messages);
   }
 
   get compacting(): boolean {
@@ -396,6 +463,7 @@ export class Maintenance {
     agent.replaceMessages(this.history.rebuild());
     this.#compactedAt = Date.now();
     entry.tokensAfter = this.storedTokens();
+    this.history.persist();
     // A Codex seat's server-side history no longer matches what is sent.
     resetOpenAICodexHistoryAfterCompaction({
       providerSessionState: agent.providerSessionState,
