@@ -141,7 +141,11 @@ export function createSeatAgent(opts: {
   });
   // Resume the stored conversation. An unreadable store throws, so the load
   // fails loudly instead of starting the seat on an empty conversation.
-  maint.restore();
+  if (maint.restore()) {
+    console.error(
+      `sidecar: resumed ${opts.store?.path}: ${maint.history.entries.length} entries, ${agent.state.messages.length} messages in context`,
+    );
+  }
   // Between tool calls, when the loop is about to call the model again: the
   // CLI's mid-turn pass. The live array is the loop's own, so a compaction is
   // spliced into it for the next request.
