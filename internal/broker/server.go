@@ -188,7 +188,7 @@ func (s *Server) Shutdown(reason string) error {
 	s.mu.Unlock()
 	ev := &Response{Type: TypeEvent, Event: &EventMessage{Kind: EventShutdown, Detail: reason, At: s.clock.Now()}}
 	for _, cc := range ccs {
-		_ = cc.SetDeadline(time.Now().Add(shutdownWriteBound))
+		_ = cc.SetDeadline(ioDeadline(shutdownWriteBound))
 		_ = cc.WriteResponse(ev)
 	}
 	return s.Close()

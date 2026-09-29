@@ -118,3 +118,8 @@ var (
 	_ Clock = SystemClock{}
 	_ Clock = (*ManualClock)(nil)
 )
+
+// ioDeadline is a socket deadline d from now. A deadline is the kernel's
+// wall time by nature, never policy time, so it lives beside the Clock seam
+// rather than reading an injected clock a test may have frozen in the past.
+func ioDeadline(d time.Duration) time.Time { return time.Now().Add(d) }
