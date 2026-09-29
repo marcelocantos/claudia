@@ -16,9 +16,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -942,19 +944,47 @@ func hostToolsNamed(ctx context.Context, servers []MCPServer) (json.RawMessage, 
 	// Every server at once (jevons 🎯T922): asked one after another, each
 	// silent server cost its full 5 s timeout, and a seat with four of them
 	// took ~25 s to launch — past the caller's 30 s tool deadline.
+	// The launch waits at most hostToolsBudget (🎯T147): a stalled server
+	// does not hold up the seat. Its fetch carries on in the background and
+	// fills the cache, so the next launch has its tools.
 	lists := make([][]hostJevonsTool, len(servers))
-	var wg sync.WaitGroup
+	var mu sync.Mutex
+	done := make(chan int, len(servers))
+	pending := map[int]string{}
+	fetchCtx := context.WithoutCancel(ctx)
 	for i, srv := range servers {
 		if srv.URL == "" || (srv.Type != "" && srv.Type != "http") {
 			continue // plugin-shaped / stdio: not registered
 		}
-		wg.Add(1)
-		go func(i int, url string) {
-			defer wg.Done()
-			lists[i] = listMCPToolsCached(ctx, url)
-		}(i, srv.URL)
+		pending[i] = srv.Name
+		go func(i int, name, url string) {
+			l := listMCPToolsCached(fetchCtx, name, url)
+			mu.Lock()
+			lists[i] = l
+			mu.Unlock()
+			done <- i
+		}(i, srv.Name, srv.URL)
 	}
-	wg.Wait()
+	budget := time.NewTimer(hostToolsBudget)
+	defer budget.Stop()
+wait:
+	for len(pending) > 0 {
+		select {
+		case i := <-done:
+			delete(pending, i)
+		case <-budget.C:
+			var late []string
+			for _, name := range pending {
+				late = append(late, name)
+			}
+			sort.Strings(late)
+			slog.Warn("omp: host MCP servers did not list their tools in time; seat starts without them, and the next launch will have them if they answer",
+				"servers", strings.Join(late, ","), "budget", hostToolsBudget)
+			break wait
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
 	for i, srv := range servers {
 		for _, t := range lists[i] {
 			name := providerToolName(t.Name)
@@ -1016,6 +1046,12 @@ func providerToolName(name string) string {
 const (
 	hostToolsTTL     = 10 * time.Minute
 	hostToolsFailTTL = time.Minute
+	// hostToolsBudget is the longest a seat launch waits for host tool
+	// lists; a healthy server answers well inside it (🎯T147).
+	hostToolsBudget = 2 * time.Second
+	// hostToolsDeadline bounds one tools/list, which may outlive the launch
+	// that asked for it.
+	hostToolsDeadline = 10 * time.Second
 )
 
 type hostToolsEntry struct {
@@ -1028,7 +1064,7 @@ var hostToolsCache sync.Map // MCP URL -> hostToolsEntry
 // listMCPToolsCached is listMCPTools, reused per server: tool lists rarely
 // change, and a server that does not answer is not waited on again at every
 // seat launch (jevons 🎯T922).
-func listMCPToolsCached(ctx context.Context, mcpURL string) []hostJevonsTool {
+func listMCPToolsCached(ctx context.Context, name, mcpURL string) []hostJevonsTool {
 	if v, ok := hostToolsCache.Load(mcpURL); ok {
 		e := v.(hostToolsEntry)
 		ttl := hostToolsTTL
@@ -1039,30 +1075,58 @@ func listMCPToolsCached(ctx context.Context, mcpURL string) []hostJevonsTool {
 			return e.tools
 		}
 	}
-	tools := listMCPTools(ctx, mcpURL)
+	tools, cause, err := listMCPTools(ctx, mcpURL)
+	if cause != "" {
+		// One line per failure, naming the server and why (🎯T147).
+		slog.Warn("omp: host MCP server did not list its tools; seats start without them",
+			"server", name, "url", mcpURL, "cause", cause, "err", err)
+	}
 	hostToolsCache.Store(mcpURL, hostToolsEntry{tools: tools, at: time.Now()})
 	return tools
 }
 
-func listMCPTools(ctx context.Context, mcpURL string) []hostJevonsTool {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+// Causes a host tools/list failure is logged under (🎯T147).
+const (
+	toolsCauseRefused   = "connect refused"
+	toolsCauseTimeout   = "timeout"
+	toolsCauseHTTP      = "http status"
+	toolsCauseRPC       = "rpc error"
+	toolsCauseReply     = "unreadable reply"
+	toolsCauseTransport = "transport"
+)
+
+// listMCPTools asks one server for its tools. cause is empty on success,
+// otherwise it names why the server gave none.
+func listMCPTools(ctx context.Context, mcpURL string) ([]hostJevonsTool, string, error) {
+	ctx, cancel := context.WithTimeout(ctx, hostToolsDeadline)
 	defer cancel()
 	body := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, mcpURL, bytes.NewReader(body))
 	if err != nil {
-		return nil
+		return nil, toolsCauseTransport, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		slog.Warn("omp: host tools/list failed; seat starts without host tools", "url", mcpURL, "err", err)
-		return nil
+		switch {
+		case errors.Is(err, syscall.ECONNREFUSED):
+			return nil, toolsCauseRefused, err
+		case errors.Is(err, context.DeadlineExceeded) || os.IsTimeout(err):
+			return nil, toolsCauseTimeout, err
+		}
+		return nil, toolsCauseTransport, err
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
-		return nil
+		if errors.Is(err, context.DeadlineExceeded) || os.IsTimeout(err) {
+			return nil, toolsCauseTimeout, err
+		}
+		return nil, toolsCauseTransport, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, toolsCauseHTTP, fmt.Errorf("%s: %s", resp.Status, bytes.TrimSpace(raw[:min(len(raw), 200)]))
 	}
 	// A streamable-HTTP server may answer as one SSE event.
 	if i := bytes.LastIndex(raw, []byte("\ndata:")); i >= 0 {
@@ -1078,13 +1142,20 @@ func listMCPTools(ctx context.Context, mcpURL string) []hostJevonsTool {
 				InputSchema json.RawMessage `json:"inputSchema"`
 			} `json:"tools"`
 		} `json:"result"`
+		Error *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
 	}
-	if json.Unmarshal(bytes.TrimSpace(raw), &envelope) != nil {
-		return nil
+	if err := json.Unmarshal(bytes.TrimSpace(raw), &envelope); err != nil {
+		return nil, toolsCauseReply, err
+	}
+	if envelope.Error != nil {
+		return nil, toolsCauseRPC, fmt.Errorf("%d %s", envelope.Error.Code, envelope.Error.Message)
 	}
 	var out []hostJevonsTool
 	for _, t := range envelope.Result.Tools {
 		out = append(out, hostJevonsTool{Name: t.Name, Description: t.Description, InputSchema: t.InputSchema})
 	}
-	return out
+	return out, "", nil
 }
