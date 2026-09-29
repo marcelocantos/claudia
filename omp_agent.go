@@ -155,9 +155,9 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 		op = omp.OpAdopt
 	}
 	var tools json.RawMessage
-	var toolRoutes map[string]string
+	var toolRoutes, toolNames map[string]string
 	if !req.Config.SummaryOnly {
-		tools, toolRoutes = hostTools(req.Context, req.Config.MCPServers)
+		tools, toolRoutes, toolNames = hostToolsNamed(req.Context, req.Config.MCPServers)
 	}
 	if err := conn.Send(omp.Message{
 		Op:          op,
@@ -209,7 +209,7 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 		token: token, provider: provider,
 		seat: req.Config.Name, model: req.Config.Model, cwd: req.Config.WorkDir,
 		sessionID: sessionID, summaryOnly: req.Config.SummaryOnly,
-		tools: tools, toolServers: toolRoutes,
+		tools: tools, toolServers: toolRoutes, toolNames: toolNames,
 	}
 	ompSeats.Store(ctrl, struct{}{})
 	return &agentStart{
@@ -273,6 +273,9 @@ type ompControl struct {
 	// that declared it (🎯T871.1). A name absent here (jevons_* offered via
 	// resolveFallbackTool, or a legacy caller) falls back to runOMPTool.
 	toolServers map[string]string
+	// toolNames maps an advertised tool name to the server's own name for
+	// it, where the provider needed it renamed (🎯T146).
+	toolNames map[string]string
 	mu          sync.Mutex
 	inflight    atomic.Bool
 	// lastRefresh is when this seat last refreshed a rejected token (under mu).
@@ -682,6 +685,9 @@ func SetOMPToolExec(fn func(name, callID, args string) string) {
 func (c *ompControl) runTool(name, callID, args string) string {
 	if c != nil && c.toolServers != nil {
 		if url, ok := c.toolServers[name]; ok {
+			if orig, renamed := c.toolNames[name]; renamed {
+				name = orig
+			}
 			return CallMCPTool(url, name, args)
 		}
 	}
@@ -856,28 +862,73 @@ type hostJevonsTool struct {
 // server that offers no tools, or does not answer, contributes nothing;
 // the seat still starts. The first server to declare a name wins ties.
 func hostTools(ctx context.Context, servers []MCPServer) (json.RawMessage, map[string]string) {
+	raw, routes, _ := hostToolsNamed(ctx, servers)
+	return raw, routes
+}
+
+// hostToolsNamed is hostTools plus, for each advertised name that differs
+// from the server's own, the server's name to call it by (🎯T146).
+func hostToolsNamed(ctx context.Context, servers []MCPServer) (json.RawMessage, map[string]string, map[string]string) {
 	var tools []hostJevonsTool
 	routes := map[string]string{}
+	originals := map[string]string{}
 	for _, srv := range servers {
 		if srv.URL == "" || (srv.Type != "" && srv.Type != "http") {
 			continue // plugin-shaped / stdio: not registered
 		}
 		for _, t := range listMCPTools(ctx, srv.URL) {
-			if _, dup := routes[t.Name]; dup {
+			name := providerToolName(t.Name)
+			if name == "" {
 				continue
 			}
+			if _, dup := routes[name]; dup {
+				continue
+			}
+			if name != t.Name {
+				originals[name] = t.Name
+				t.Name = name
+			}
 			tools = append(tools, t)
-			routes[t.Name] = srv.URL
+			routes[name] = srv.URL
 		}
 	}
 	if len(tools) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	raw, err := json.Marshal(tools)
 	if err != nil {
-		return nil, nil
+		return nil, nil, nil
 	}
-	return raw, routes
+	return raw, routes, originals
+}
+
+// maxProviderToolName is the longest tool name every sidecar provider takes
+// (OpenAI's limit; Anthropic allows 128).
+const maxProviderToolName = 64
+
+// providerToolName is name as the providers accept it (🎯T146): Anthropic
+// refuses the whole request when one tool name falls outside
+// ^[a-zA-Z0-9_-]{1,128}$, so jevons' `self_test.list` took down every turn
+// of every sidecar seat. Other characters become '_'; a name with nothing
+// left is not advertised.
+func providerToolName(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	out := b.String()
+	if len(out) > maxProviderToolName {
+		out = out[:maxProviderToolName]
+	}
+	if strings.Trim(out, "_") == "" {
+		return ""
+	}
+	return out
 }
 
 func listMCPTools(ctx context.Context, mcpURL string) []hostJevonsTool {
