@@ -5,6 +5,7 @@ import { Agent, type AgentTool } from "@oh-my-pi/pi-agent-core";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { codingTools } from "./coding.ts";
+import { awaitHostCall } from "./hostcalls.ts";
 import {
   compact,
   contextTokens,
@@ -374,8 +375,10 @@ function jevonsTool(
     label: name,
     description: description || "Jevons host tool; execute calls back into Go",
     parameters: schema && typeof schema === "object" ? schema : { type: "object" },
-    execute: async (toolCallId: string, params: unknown) => {
-      const result = await callTool(toolCallId, name, JSON.stringify(params ?? {}));
+    // The signal is the turn's: an aborted turn stops waiting for a host
+    // that may never answer (jevons 🎯T927).
+    execute: async (toolCallId: string, params: unknown, signal?: AbortSignal) => {
+      const result = await awaitHostCall(callTool(toolCallId, name, JSON.stringify(params ?? {})), signal);
       return { content: [{ type: "text", text: result }], details: {} };
     },
   } as AgentTool;

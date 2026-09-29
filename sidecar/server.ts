@@ -9,6 +9,7 @@ import { unlinkSync } from "node:fs";
 import { createSeatAgent, type HostTool, type SeatAgent } from "./seat.ts";
 import { defaultWriter } from "./spool.ts";
 import { claimSocket } from "./singleton.ts";
+import { HOST_CONNECTION_LOST, HostCalls } from "./hostcalls.ts";
 
 const banned = [
   "ANTHROPIC_API_KEY",
@@ -67,8 +68,14 @@ process.on("uncaughtException", (err: NodeJS.ErrnoException) => {
 
 const server = createServer((socket) => {
   let buf = "";
-  const pending = new Map<string, (result: string) => void>();
+  const calls = new HostCalls();
   socket.on("error", () => {});
+  // A tool call this connection was answering can no longer be answered.
+  // Fail it so the turn ends instead of waiting forever (jevons 🎯T927).
+  socket.on("close", () => {
+    const n = calls.failAll(HOST_CONNECTION_LOST);
+    if (n > 0) console.error(`sidecar: host connection closed with ${n} tool call(s) unanswered; failed them`);
+  });
 
   const write = (ev: Record<string, unknown>) => {
     const seat = typeof ev.seat === "string" ? ev.seat : "";
@@ -115,10 +122,9 @@ const server = createServer((socket) => {
   };
 
   const callTool = (callId: string, name: string, args: string) => {
+    const answer = calls.open(callId);
     write({ type: "tool_call", call_id: callId, name, text: args });
-    return new Promise<string>((resolve) => {
-      pending.set(callId, resolve);
-    });
+    return answer;
   };
 
   socket.on("data", (chunk) => {
@@ -130,7 +136,7 @@ const server = createServer((socket) => {
       let msg: Line;
       try { msg = JSON.parse(raw); } catch { continue; }
       const seat = msg.seat ?? "";
-      void handle(msg, seat, write, callTool, pending).catch((err: unknown) => {
+      void handle(msg, seat, write, callTool, calls).catch((err: unknown) => {
         write({ seat, type: "error", text: err instanceof Error ? err.message : String(err) });
       });
     }
@@ -142,14 +148,10 @@ async function handle(
   seat: string,
   write: (ev: Record<string, unknown>) => void,
   callTool: (callId: string, name: string, args: string) => Promise<string>,
-  pending: Map<string, (result: string) => void>,
+  calls: HostCalls,
 ): Promise<void> {
   if (msg.op === "tool_result") {
-    const done = pending.get(msg.call_id ?? "");
-    if (done) {
-      pending.delete(msg.call_id ?? "");
-      done(msg.result ?? "");
-    }
+    calls.settle(msg.call_id ?? "", msg.result ?? "");
     return;
   }
   if (msg.op === "adopt") {
