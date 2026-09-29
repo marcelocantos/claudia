@@ -16,22 +16,49 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
+	"sync/atomic"
 	"time"
 )
 
 // mcpStdioBackend is one long-lived stdio MCP process exposed as
 // streamable-HTTP JSON-RPC (🎯T2.16). Seats POST; this process writes
-// newline-delimited (or Content-Length) frames to stdin and returns the
-// matching id.
+// newline-delimited frames to stdin, and one reader routes each reply back
+// to the request waiting on it.
+//
+// Every seat that names the recipe shares the process, and seats number
+// their requests from the same small integers, so each request goes to the
+// process under an id of the backend's own and gets its caller's id back on
+// the reply. The lock covers the stdin write only: a request the process
+// never answers fails at its own deadline and holds up nothing else
+// (jevons 🎯T928 — one unanswered pre-initialize server/discover used to
+// hold the lock on a read with no deadline and leave the server dead for
+// every seat until the broker restarted).
 type mcpStdioBackend struct {
-	srv MCPServer
+	srv  MCPServer
+	next atomic.Int64
 
-	mu     sync.Mutex
-	cmd    *exec.Cmd
-	stdin  io.WriteCloser
-	stdout *bufio.Reader
+	mu   sync.Mutex // guards proc; serialises stdin writes
+	proc *mcpStdioProc
 }
+
+// mcpStdioProc is one run of the backend's process.
+type mcpStdioProc struct {
+	cmd   *exec.Cmd
+	stdin io.WriteCloser
+	done  chan struct{} // closed when the reader stops: the process is gone
+	stop  sync.Once
+
+	mu          sync.Mutex
+	waiters     map[string]chan []byte // backend id -> the request waiting on it
+	initialized bool
+}
+
+// mcpStdioRequestTimeout bounds a request whose caller set no deadline.
+var mcpStdioRequestTimeout = 20 * time.Second
+
+// mcpStdioTimeoutCode is the JSON-RPC error a request gets when the process
+// has not answered it by its deadline.
+const mcpStdioTimeoutCode = -32001
 
 func newMCPStdioBackend(s MCPServer) *mcpStdioBackend {
 	return &mcpStdioBackend{srv: s}
@@ -44,16 +71,10 @@ func (b *mcpStdioBackend) close() {
 }
 
 func (b *mcpStdioBackend) killLocked() {
-	if b.cmd != nil && b.cmd.Process != nil {
-		_ = b.cmd.Process.Kill()
-		_, _ = b.cmd.Process.Wait()
+	if b.proc != nil {
+		b.proc.kill()
 	}
-	if b.stdin != nil {
-		_ = b.stdin.Close()
-	}
-	b.cmd = nil
-	b.stdin = nil
-	b.stdout = nil
+	b.proc = nil
 }
 
 func (b *mcpStdioBackend) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -72,13 +93,18 @@ func (b *mcpStdioBackend) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "empty body", http.StatusBadRequest)
 		return
 	}
+	var msg map[string]json.RawMessage
+	if err := json.Unmarshal(body, &msg); err != nil {
+		http.Error(w, fmt.Sprintf("mcp stdio: request: %v", err), http.StatusBadRequest)
+		return
+	}
 	ctx := r.Context()
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, 20*time.Second)
+		ctx, cancel = context.WithTimeout(ctx, mcpStdioRequestTimeout)
 		defer cancel()
 	}
-	resp, err := b.roundTrip(ctx, body)
+	resp, err := b.roundTrip(ctx, body, msg)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
@@ -88,65 +114,106 @@ func (b *mcpStdioBackend) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(resp)
 }
 
-func (b *mcpStdioBackend) roundTrip(ctx context.Context, raw []byte) ([]byte, error) {
-	var req struct {
-		ID json.RawMessage `json:"id"`
+func (b *mcpStdioBackend) roundTrip(ctx context.Context, raw []byte, msg map[string]json.RawMessage) ([]byte, error) {
+	id := bytes.TrimSpace(msg["id"])
+	var method string
+	if m, ok := msg["method"]; ok {
+		if err := json.Unmarshal(m, &method); err != nil {
+			return nil, fmt.Errorf("mcp stdio: request method: %w", err)
+		}
 	}
-	if err := json.Unmarshal(raw, &req); err != nil {
-		return nil, fmt.Errorf("mcp stdio: request: %w", err)
-	}
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if err := b.ensureLocked(); err != nil {
-		return nil, err
-	}
-	if _, err := b.stdin.Write(append(raw, '\n')); err != nil {
-		b.killLocked()
-		if err := b.ensureLocked(); err != nil {
+	// A notification, or a seat's answer to a server-to-client request:
+	// nothing comes back for either.
+	if len(id) == 0 || string(id) == "null" || method == "" {
+		if _, err := b.send(raw, "", nil); err != nil {
 			return nil, err
 		}
-		if _, err := b.stdin.Write(append(raw, '\n')); err != nil {
-			return nil, fmt.Errorf("mcp stdio: write: %w", err)
-		}
-	}
-	if len(bytes.TrimSpace(req.ID)) == 0 || string(req.ID) == "null" {
 		return []byte(`{"jsonrpc":"2.0"}`), nil
 	}
-	deadline := time.Now().Add(20 * time.Second)
-	if d, ok := ctx.Deadline(); ok {
-		deadline = d
+	// Claude Code opens with server/discover before initialize. A stdio
+	// server drops anything that arrives before initialize, so the seat
+	// would wait out its probe timeout for nothing; answer for the process
+	// until it has been initialized.
+	if method == "server/discover" && !b.initialized() {
+		return mcpJSONRPCError(id, -32601, "method not found: server/discover"), nil
 	}
-	for time.Now().Before(deadline) {
-		remain := time.Until(deadline)
-		if remain <= 0 {
-			break
-		}
-		_ = setReadDeadline(b.cmd, remain)
-		frame, err := readMCPFrame(b.stdout)
-		if err != nil {
-			b.killLocked()
-			return nil, fmt.Errorf("mcp stdio: read: %w", err)
-		}
-		var got struct {
-			ID json.RawMessage `json:"id"`
-		}
-		if err := json.Unmarshal(frame, &got); err != nil {
-			continue
-		}
-		if len(bytes.TrimSpace(got.ID)) == 0 {
-			continue
-		}
-		if bytes.Equal(bytes.TrimSpace(got.ID), bytes.TrimSpace(req.ID)) {
-			return frame, nil
-		}
+
+	backendID := strconv.FormatInt(b.next.Add(1), 10)
+	msg["id"] = json.RawMessage(backendID)
+	line, err := json.Marshal(msg)
+	if err != nil {
+		return nil, fmt.Errorf("mcp stdio: request: %w", err)
 	}
-	return nil, fmt.Errorf("mcp stdio: no reply for id %s", string(req.ID))
+	reply := make(chan []byte, 1)
+	proc, err := b.send(line, backendID, reply)
+	if err != nil {
+		return nil, err
+	}
+	var frame []byte
+	select {
+	case frame = <-reply:
+	case <-proc.done:
+		select {
+		case frame = <-reply:
+		default:
+			return nil, fmt.Errorf("mcp stdio %s: process exited before answering %s", b.srv.Name, method)
+		}
+	case <-ctx.Done():
+		proc.forget(backendID)
+		return mcpJSONRPCError(id, mcpStdioTimeoutCode,
+			fmt.Sprintf("mcp stdio %s: no reply to %s before the deadline", b.srv.Name, method)), nil
+	}
+	if method == "initialize" && mcpFrameIsResult(frame) {
+		proc.markInitialized()
+	}
+	return mcpWithID(frame, id)
 }
 
-func (b *mcpStdioBackend) ensureLocked() error {
-	if b.cmd != nil && b.cmd.Process != nil {
-		if err := b.cmd.Process.Signal(syscall.Signal(0)); err == nil {
-			return nil
+// send writes one frame, registering reply under backendID first so a fast
+// answer cannot beat the registration. A write that fails restarts the
+// process and tries once more.
+func (b *mcpStdioBackend) send(line []byte, backendID string, reply chan []byte) (*mcpStdioProc, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	line = append(line, '\n')
+	for attempt := 0; ; attempt++ {
+		proc, err := b.ensureLocked()
+		if err != nil {
+			return nil, err
+		}
+		if reply != nil {
+			proc.register(backendID, reply)
+		}
+		_, err = proc.stdin.Write(line)
+		if err == nil {
+			return proc, nil
+		}
+		proc.forget(backendID)
+		b.killLocked()
+		if attempt > 0 {
+			return nil, fmt.Errorf("mcp stdio %s: write: %w", b.srv.Name, err)
+		}
+	}
+}
+
+func (b *mcpStdioBackend) initialized() bool {
+	b.mu.Lock()
+	proc := b.proc
+	b.mu.Unlock()
+	if proc == nil {
+		return false
+	}
+	proc.mu.Lock()
+	defer proc.mu.Unlock()
+	return proc.initialized
+}
+
+func (b *mcpStdioBackend) ensureLocked() (*mcpStdioProc, error) {
+	if b.proc != nil {
+		select {
+		case <-b.proc.done:
+		default:
+			return b.proc, nil
 		}
 	}
 	b.killLocked()
@@ -158,29 +225,113 @@ func (b *mcpStdioBackend) ensureLocked() error {
 	cmd.Env = env
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		return fmt.Errorf("mcp stdio %s: stdin: %w", b.srv.Name, err)
+		return nil, fmt.Errorf("mcp stdio %s: stdin: %w", b.srv.Name, err)
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		_ = stdin.Close()
-		return fmt.Errorf("mcp stdio %s: stdout: %w", b.srv.Name, err)
+		return nil, fmt.Errorf("mcp stdio %s: stdout: %w", b.srv.Name, err)
 	}
-	cmd.Stderr = io.Discard
+	// Stderr stays nil (the null device): a copying goroutine would make
+	// Wait hang on any grandchild that inherited the pipe.
 	if err := cmd.Start(); err != nil {
 		_ = stdin.Close()
-		return fmt.Errorf("mcp stdio %s: start: %w", b.srv.Name, err)
+		return nil, fmt.Errorf("mcp stdio %s: start: %w", b.srv.Name, err)
 	}
-	b.cmd = cmd
-	b.stdin = stdin
-	b.stdout = bufio.NewReader(stdout)
-	return nil
+	proc := &mcpStdioProc{
+		cmd:     cmd,
+		stdin:   stdin,
+		done:    make(chan struct{}),
+		waiters: map[string]chan []byte{},
+	}
+	go proc.read(bufio.NewReader(stdout))
+	b.proc = proc
+	return proc, nil
 }
 
-func setReadDeadline(cmd *exec.Cmd, _ time.Duration) error {
-	// Process pipes do not expose a deadline on every OS; the context
-	// timeout in ServeHTTP is the bound. Kept as a hook for tests.
-	_ = cmd
-	return nil
+// read routes every reply the process writes to the request waiting on its
+// id. Frames carrying a method are the server's own requests and
+// notifications; no seat is listening for them here, so they are dropped.
+func (p *mcpStdioProc) read(r *bufio.Reader) {
+	defer p.kill()
+	defer close(p.done)
+	for {
+		frame, err := readMCPFrame(r)
+		if err != nil {
+			return
+		}
+		var got struct {
+			ID     json.RawMessage `json:"id"`
+			Method json.RawMessage `json:"method"`
+		}
+		if json.Unmarshal(frame, &got) != nil || len(got.Method) != 0 {
+			continue
+		}
+		key := string(bytes.TrimSpace(got.ID))
+		p.mu.Lock()
+		reply := p.waiters[key]
+		delete(p.waiters, key)
+		p.mu.Unlock()
+		if reply != nil {
+			reply <- frame
+		}
+	}
+}
+
+// kill ends the process and reaps it. Wait also closes stdout, which ends
+// the reader.
+func (p *mcpStdioProc) kill() {
+	p.stop.Do(func() {
+		if p.cmd.Process != nil {
+			_ = p.cmd.Process.Kill()
+		}
+		_ = p.stdin.Close()
+		_ = p.cmd.Wait()
+	})
+}
+
+func (p *mcpStdioProc) register(backendID string, reply chan []byte) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.waiters[backendID] = reply
+}
+
+func (p *mcpStdioProc) forget(backendID string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.waiters, backendID)
+}
+
+func (p *mcpStdioProc) markInitialized() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.initialized = true
+}
+
+func mcpFrameIsResult(frame []byte) bool {
+	var got struct {
+		Result json.RawMessage `json:"result"`
+	}
+	return json.Unmarshal(frame, &got) == nil && len(got.Result) != 0
+}
+
+// mcpWithID puts the caller's own id back on a reply.
+func mcpWithID(frame, id []byte) ([]byte, error) {
+	var msg map[string]json.RawMessage
+	if err := json.Unmarshal(frame, &msg); err != nil {
+		return nil, fmt.Errorf("mcp stdio: reply: %w", err)
+	}
+	msg["id"] = json.RawMessage(id)
+	return json.Marshal(msg)
+}
+
+func mcpJSONRPCError(id []byte, code int, message string) []byte {
+	out, _ := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      json.RawMessage(id),
+		"error":   map[string]any{"code": code, "message": message},
+	})
+	return out
 }
 
 func readMCPFrame(r *bufio.Reader) ([]byte, error) {
