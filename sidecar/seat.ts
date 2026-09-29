@@ -117,10 +117,25 @@ export function createSeatAgent(opts: {
     sink.emit(digest);
   };
 
+  // Messages queued or steered behind a running turn that the model has
+  // not yet taken. pi-agent-core emits message_start for each one as its run
+  // loop takes it; the host is told, so an escalation stops there (T138).
+  const pending: string[] = [];
+
   agent.subscribe((event: {
     type?: string;
     assistantMessageEvent?: { type?: string; delta?: string };
+    message?: { role?: string; content?: unknown };
   }) => {
+    if (event.type === "message_start" && event.message?.role === "user") {
+      const text = userText(event.message.content);
+      const i = pending.indexOf(text);
+      if (i >= 0) {
+        pending.splice(i, 1);
+        sink.emit({ type: "absorbed", text });
+      }
+      return;
+    }
     if (event.type === "tool_execution_start" && turn && !turn.closed) {
       noteTool(turn);
       return;
@@ -137,6 +152,40 @@ export function createSeatAgent(opts: {
     }
   });
 
+  // runTurn brackets one turn: digest, acceptance, the run itself, any
+  // follow-ups left after it, and turn_end.
+  const runTurn = async (text: string, meta: PromptMeta | undefined, run: () => Promise<void>) => {
+    const metaSession = meta?.session_id || sessionId;
+    turn = beginTurn({
+      seat: "",
+      text,
+      meta: { ...meta, session_id: metaSession || undefined },
+    });
+    sessionId = turn.session_id;
+    // A turn can think for a minute before its first token. Announce it
+    // now so the host sees the prompt land (Jevons T887).
+    sink.emit({ type: "accepted" });
+    let refusal = "";
+    try {
+      await run();
+      // A follow-up queued after the run's own last check would wait for
+      // the next prompt. Drain it inside this turn (bounded).
+      for (let i = 0; i < 8 && agent.hasQueuedMessages() && !agent.state.isStreaming; i++) {
+        await agent.continue();
+      }
+      refusal = turnRefusal(agent.state);
+      finish(refusal ? "error" : turn?.stop_token ? "stop_token" : "end_turn");
+    } catch (err) {
+      finish("error");
+      throw err;
+    }
+    if (refusal) {
+      sink.emit({ type: "turn_end", error: refusal, snapshot: agent.state });
+      return;
+    }
+    sink.emit({ type: "turn_end", snapshot: agent.state });
+  };
+
   return {
     prompt: async (text: string, meta?: PromptMeta) => {
       // A prompt that arrives mid-turn is queued, not refused. The running
@@ -151,40 +200,13 @@ export function createSeatAgent(opts: {
           content: text,
           timestamp: Date.now(),
         });
+        pending.push(text);
         // Say at once that it was accepted: a host that waits for a first
         // streamed token would call a queued prompt undelivered.
         sink.emit({ type: "accepted" });
         return;
       }
-      const metaSession = meta?.session_id || sessionId;
-      turn = beginTurn({
-        seat: "",
-        text,
-        meta: { ...meta, session_id: metaSession || undefined },
-      });
-      sessionId = turn.session_id;
-      // A turn can think for a minute before its first token. Announce it
-      // now so the host sees the prompt land (Jevons T887).
-      sink.emit({ type: "accepted" });
-      let refusal = "";
-      try {
-        await agent.prompt(text);
-        // A follow-up queued after the run's own last check would wait for
-        // the next prompt. Drain it inside this turn (bounded).
-        for (let i = 0; i < 8 && agent.hasQueuedMessages() && !agent.state.isStreaming; i++) {
-          await agent.continue();
-        }
-        refusal = turnRefusal(agent.state);
-        finish(refusal ? "error" : turn?.stop_token ? "stop_token" : "end_turn");
-      } catch (err) {
-        finish("error");
-        throw err;
-      }
-      if (refusal) {
-        sink.emit({ type: "turn_end", error: refusal, snapshot: agent.state });
-        return;
-      }
-      sink.emit({ type: "turn_end", snapshot: agent.state });
+      await runTurn(text, meta, () => agent.prompt(text));
     },
     steer: (text: string, _meta?: PromptMeta) => {
       agent.steer({
@@ -192,10 +214,23 @@ export function createSeatAgent(opts: {
         content: text,
         timestamp: Date.now(),
       });
+      pending.push(text);
+      sink.emit({ type: "accepted" });
     },
     abort: () => {
       agent.abort();
       finish("abort");
+      // An interrupt is how a waiting message gets taken now (T138). The
+      // queues survive abort; once the aborted run has unwound, run what is
+      // queued as its own turn instead of leaving it for a later prompt.
+      void agent.waitForIdle().then(async () => {
+        if (!agent.hasQueuedMessages() || agent.state.isStreaming || (turn && !turn.closed)) return;
+        try {
+          await runTurn("", { cause: "interrupt-deliver" }, () => agent.continue());
+        } catch (err) {
+          sink.emit({ type: "error", text: err instanceof Error ? err.message : String(err) });
+        }
+      });
     },
     setModel: (provider: string, modelId: string) => {
       agent.setModel(resolveModel(provider, modelId));
@@ -213,6 +248,15 @@ export function createSeatAgent(opts: {
     },
     setHostTools: (tools) => applyTools(tools),
   };
+}
+
+// userText flattens a user message's content to its text.
+function userText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((c) => (c && typeof c === "object" && (c as { type?: string }).type === "text" ? String((c as { text?: unknown }).text ?? "") : ""))
+    .join("");
 }
 
 function resolveModel(provider: string, model: string) {

@@ -426,7 +426,22 @@ type SendRequest struct {
 	Text string `json:"text"`
 	// Mode is the delivery intent. Empty normalises to SendModeSubmit.
 	Mode SendMode `json:"mode,omitempty"`
+	// Escalation, when set, replaces Mode with a ladder the daemon runs
+	// beside the seat (🎯T138): the first rung (submit or steer) now, then
+	// each later rung (interrupt) at AfterMS unless the seat absorbed the
+	// message first. Additive: a daemon that predates it rejects the field.
+	Escalation []EscalationStep `json:"escalation,omitempty"`
 }
+
+// EscalationStep is one rung of a send's escalation ladder.
+type EscalationStep struct {
+	Mode SendMode `json:"mode"`
+	// AfterMS is when the rung fires, in milliseconds after the send.
+	AfterMS int64 `json:"after_ms,omitempty"`
+}
+
+// maxEscalationSteps mirrors claudia's bound on a ladder.
+const maxEscalationSteps = 4
 
 // Validate checks the name and normalises the mode.
 func (r *SendRequest) Validate() error {
@@ -441,6 +456,27 @@ func (r *SendRequest) Validate() error {
 		return &ProtocolError{Code: CodeUnsupportedValue, Field: "mode", Value: string(r.Mode),
 			Msg: fmt.Sprintf("mode %q is not one of %q, %q, %q, %q", r.Mode,
 				SendModeSubmit, SendModeSteer, SendModeInterrupt, SendModeQueue)}
+	}
+	if len(r.Escalation) > maxEscalationSteps {
+		return &ProtocolError{Code: CodeUnsupportedValue, Field: "escalation", Value: fmt.Sprint(len(r.Escalation)),
+			Msg: fmt.Sprintf("an escalation has at most %d rungs", maxEscalationSteps)}
+	}
+	var prev int64
+	for i, step := range r.Escalation {
+		field := fmt.Sprintf("escalation[%d]", i)
+		if step.AfterMS < prev {
+			return &ProtocolError{Code: CodeUnsupportedValue, Field: field + ".after_ms", Value: fmt.Sprint(step.AfterMS),
+				Msg: "rungs fire in order: after_ms must not decrease"}
+		}
+		prev = step.AfterMS
+		if i == 0 && step.Mode != SendModeSubmit && step.Mode != SendModeSteer {
+			return &ProtocolError{Code: CodeUnsupportedValue, Field: field + ".mode", Value: string(step.Mode),
+				Msg: "the first rung is submit or steer"}
+		}
+		if i > 0 && step.Mode != SendModeInterrupt {
+			return &ProtocolError{Code: CodeUnsupportedValue, Field: field + ".mode", Value: string(step.Mode),
+				Msg: "only interrupt escalates a message already with the seat"}
+		}
 	}
 	return nil
 }

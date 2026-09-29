@@ -1069,6 +1069,23 @@ func (d *Daemon) handleRelease(c *broker.ClientConn, req *broker.Request) {
 func deliverSend(proc *claudia.Agent, req *broker.SendRequest) (*broker.SentResponse, error) {
 	var out claudia.DeliveryOutcome
 	var err error
+	if len(req.Escalation) > 0 {
+		// 🎯T138: the ladder runs here, beside the seat, so it outlives
+		// the host's connection.
+		esc := make(claudia.Escalation, len(req.Escalation))
+		for i, step := range req.Escalation {
+			esc[i] = claudia.EscalationStep{Mode: claudia.DeliveryMode(step.Mode), After: time.Duration(step.AfterMS) * time.Millisecond}
+		}
+		if out, err = proc.SendEscalating(req.Text, esc); err != nil {
+			return nil, err
+		}
+		return &broker.SentResponse{
+			Mode:             broker.SendMode(out.Mode),
+			Mechanism:        out.Mechanism,
+			PhaseBefore:      string(out.PhaseBefore),
+			SupersededTurnID: out.SupersededTurnID,
+		}, nil
+	}
 	switch req.Mode {
 	case broker.SendModeSubmit:
 		out, err = proc.SendMode(req.Text, claudia.DeliverySubmit)

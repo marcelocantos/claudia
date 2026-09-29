@@ -283,6 +283,27 @@ func (b *brokerAgentBackend) ops() agentOps {
 		// provider's mechanism and the outcome comes back on the sent
 		// response. A daemon that predates send.mode answers the bare
 		// name, which reads as a submit that was not steered.
+		// sendEscalating hands the whole ladder to the daemon (🎯T138).
+		sendEscalating: func(_ *Agent, text string, esc Escalation) (DeliveryOutcome, error) {
+			steps := make([]broker.EscalationStep, len(esc))
+			for i, st := range esc {
+				steps[i] = broker.EscalationStep{Mode: broker.SendMode(st.Mode), AfterMS: st.After.Milliseconds()}
+			}
+			resp, err := b.opCall(&broker.Request{Type: broker.TypeSend,
+				Send: &broker.SendRequest{Name: b.named().Name, Text: text, Escalation: steps}})
+			if err != nil {
+				return DeliveryOutcome{}, err
+			}
+			if resp.Sent == nil {
+				return DeliveryOutcome{}, fmt.Errorf("broker: send answered with %s", resp.Type)
+			}
+			return DeliveryOutcome{
+				Mode:             DeliveryMode(resp.Sent.Mode),
+				PhaseBefore:      TurnPhase(resp.Sent.PhaseBefore),
+				Mechanism:        resp.Sent.Mechanism,
+				SupersededTurnID: resp.Sent.SupersededTurnID,
+			}, nil
+		},
 		steer: func(_ *Agent, text string) (DeliveryOutcome, error) {
 			resp, err := b.opCall(&broker.Request{Type: broker.TypeSend,
 				Send: &broker.SendRequest{Name: b.named().Name, Text: text, Mode: broker.SendModeSteer}})

@@ -290,6 +290,44 @@ func TestDeliverSendOnStubAgent(t *testing.T) {
 	}
 }
 
+// 🎯T138: a send that carries an escalation runs the ladder here, beside the
+// seat: on a busy seat the first rung delivers now and the answer says so.
+func TestDeliverSendRunsEscalation(t *testing.T) {
+	var ran []string
+	stub := claudia.NewStubAgentOps(&claudia.StubAgentOps{
+		Provider: claudia.ProviderCursor,
+		Send:     func(text string) error { ran = append(ran, "send:"+text); return nil },
+		Steer: func(text string) (claudia.DeliveryOutcome, error) {
+			ran = append(ran, "steer:"+text)
+			return claudia.DeliveryOutcome{Mechanism: "stub_steer"}, nil
+		},
+		Interrupt: func() error { ran = append(ran, "interrupt"); return nil },
+		TurnPhase: func() claudia.TurnPhase { return claudia.TurnInTurn },
+	})
+	got, err := deliverSend(stub, &broker.SendRequest{Name: "stub", Text: "status?", Escalation: []broker.EscalationStep{
+		{Mode: broker.SendModeSteer}, {Mode: broker.SendModeInterrupt, AfterMS: 60_000},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Mechanism != "stub_steer" || got.PhaseBefore != "in_turn" {
+		t.Fatalf("sent = %+v", got)
+	}
+	if !reflect.DeepEqual(ran, []string{"steer:status?"}) {
+		t.Fatalf("verbs ran = %v", ran)
+	}
+	bad := &broker.SendRequest{Name: "stub", Text: "x", Escalation: []broker.EscalationStep{{Mode: broker.SendModeInterrupt}}}
+	if err := bad.Validate(); err == nil {
+		t.Fatal("an escalation that opens with interrupt was accepted on the wire")
+	}
+	back := &broker.SendRequest{Name: "stub", Text: "x", Escalation: []broker.EscalationStep{
+		{Mode: broker.SendModeSteer, AfterMS: 5000}, {Mode: broker.SendModeInterrupt, AfterMS: 10},
+	}}
+	if err := back.Validate(); err == nil {
+		t.Fatal("rungs out of order were accepted on the wire")
+	}
+}
+
 // TestTurnCapsMirrorIsComplete keeps broker.TurnCaps field for field with
 // claudia.TurnCaps, the way the other wire mirrors are held (🎯T24: a field
 // added to one side without the other would vanish on the socket).

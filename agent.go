@@ -473,6 +473,10 @@ type agentOps struct {
 	// backends set it with steerOp(client); the broker handle forwards
 	// mode=steer over the wire and fills the outcome from the response.
 	steer func(*Agent, string) (DeliveryOutcome, error)
+	// sendEscalating hands a whole escalation ladder to whoever holds the
+	// seat (🎯T138). Nil → [Agent.SendEscalating] runs the ladder here; the
+	// broker handle sets it so the daemon runs it beside the seat.
+	sendEscalating func(*Agent, string, Escalation) (DeliveryOutcome, error)
 	// turnCaps refines the provider contract for this handle (a Codex CLI
 	// without turn/steer; the daemon's answer for a broker seat). Nil →
 	// ProviderTurnCaps.

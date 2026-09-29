@@ -328,8 +328,15 @@ func (c *ompControl) pump(a *Agent) {
 		case "accepted":
 			// The sidecar took the prompt (a turn began, or it was queued
 			// behind the running one). Before the first token this is the
-			// only sign the prompt landed.
+			// only sign the prompt landed. A turn is open from here: that
+			// includes the turn a hard-stop starts to deliver what was
+			// queued (🎯T138), which no send of ours opened.
+			c.inflight.Store(true)
 			a.publishEvent(Event{Type: "progress", ProgressType: ProgressPromptAccepted})
+		case "absorbed":
+			// The model took a message queued or steered behind the turn;
+			// an escalation for it stops here (🎯T138).
+			a.publishEvent(Event{Type: "progress", ProgressType: ProgressDeliveryAbsorbed, Text: ev.Text})
 		case "text":
 			visible, token := omp.StripStopToken(ev.Text)
 			if visible == "" && token != "" {

@@ -88,8 +88,8 @@ func TestOMPSidecarAnnouncesAcceptedPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n := strings.Count(string(seat), `sink.emit({ type: "accepted" });`); n != 2 {
-		t.Fatalf("seat.ts announces acceptance %d times; want the queued path and the turn start", n)
+	if n := strings.Count(string(seat), `sink.emit({ type: "accepted" });`); n != 3 {
+		t.Fatalf("seat.ts announces acceptance %d times; want the turn start, the queued follow-up and the steer (T138)", n)
 	}
 	src, err := os.ReadFile("omp_agent.go")
 	if err != nil {
