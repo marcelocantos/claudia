@@ -174,6 +174,8 @@ var sessionFieldFates = map[Provider]map[string]fieldDecl{
 		"OMP":                  {fateLocal, "selects the Oh My Pi sidecar; never sent to a vendor CLI"},
 		"AdoptOnly":            {fateLocal, "sidecar-only adoption gate; never sent to a vendor CLI"},
 		"SummaryOnly":          {fateLocal, "subscription-sidecar transfer mode; never sent to a vendor CLI"},
+		"ContextPreserve":      {fateLocal, "subscription-sidecar compaction steer (🎯T152); a vendor CLI manages its own context"},
+		"ContextPins":          {fateLocal, "subscription-sidecar pinned facts (🎯T152); a vendor CLI manages its own context"},
 	},
 	ProviderGrok: {
 		"Provider":             {fateLocal, "selects this path"},
@@ -204,6 +206,8 @@ var sessionFieldFates = map[Provider]map[string]fieldDecl{
 		"OMP":                  {fateLocal, "selects the Oh My Pi sidecar; never sent to a vendor CLI"},
 		"AdoptOnly":            {fateLocal, "sidecar-only adoption gate; never sent to a vendor CLI"},
 		"SummaryOnly":          {fateLocal, "subscription-sidecar transfer mode; never sent to a vendor CLI"},
+		"ContextPreserve":      {fateLocal, "subscription-sidecar compaction steer (🎯T152); a vendor CLI manages its own context"},
+		"ContextPins":          {fateLocal, "subscription-sidecar pinned facts (🎯T152); a vendor CLI manages its own context"},
 	},
 	ProviderCodex: {
 		"Provider":             {fateLocal, "selects this path"},
@@ -234,6 +238,8 @@ var sessionFieldFates = map[Provider]map[string]fieldDecl{
 		"OMP":                  {fateLocal, "selects the Oh My Pi sidecar; never sent to a vendor CLI"},
 		"AdoptOnly":            {fateLocal, "sidecar-only adoption gate; never sent to a vendor CLI"},
 		"SummaryOnly":          {fateLocal, "subscription-sidecar transfer mode; never sent to a vendor CLI"},
+		"ContextPreserve":      {fateLocal, "subscription-sidecar compaction steer (🎯T152); a vendor CLI manages its own context"},
+		"ContextPins":          {fateLocal, "subscription-sidecar pinned facts (🎯T152); a vendor CLI manages its own context"},
 	},
 	ProviderCursor: {
 		"Provider":             {fateLocal, "selects this path"},
@@ -264,6 +270,8 @@ var sessionFieldFates = map[Provider]map[string]fieldDecl{
 		"OMP":                  {fateLocal, "selects the Oh My Pi sidecar; never sent to a vendor CLI"},
 		"AdoptOnly":            {fateLocal, "sidecar-only adoption gate; never sent to a vendor CLI"},
 		"SummaryOnly":          {fateLocal, "subscription-sidecar transfer mode; never sent to a vendor CLI"},
+		"ContextPreserve":      {fateLocal, "subscription-sidecar compaction steer (🎯T152); a vendor CLI manages its own context"},
+		"ContextPins":          {fateLocal, "subscription-sidecar pinned facts (🎯T152); a vendor CLI manages its own context"},
 	},
 }
 
