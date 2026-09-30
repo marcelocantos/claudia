@@ -481,7 +481,18 @@ func oauthRejected(text string, snapshot json.RawMessage) bool {
 // reauth, or another seat's refresh) is taken as is; otherwise the seat
 // refreshes, at most once per ompRefreshBackoff.
 func (c *ompControl) recoverRejectedToken() {
-	if tok, err := planStore().AccessToken(context.Background(), c.provider); err == nil && tok != c.currentToken() {
+	// One refresh at a time per plan (🎯T158). A refresh spends the refresh
+	// token it presents, so two seats refused together that both refresh
+	// present the same one: the second gets invalid_grant, and that marks a
+	// healthy plan rejected and asks the owner to sign in again. The seat
+	// that waited finds the first one's token below and takes it.
+	// Compare with the token that was refused, not the seat's current one:
+	// the refresh this seat waited behind has already reloaded it.
+	refused := c.currentToken()
+	mu := ompRefreshLock(c.provider)
+	mu.Lock()
+	defer mu.Unlock()
+	if tok, err := planStore().AccessToken(context.Background(), c.provider); err == nil && tok != refused {
 		slog.Info("omp token rejected; seat takes the plan's newer token", "provider", c.provider, "seat", c.seat)
 		c.reload(tok)
 		return
@@ -567,6 +578,17 @@ func (c *ompControl) refreshRejectedToken() {
 		slog.Warn("omp token refreshed; keychain flush failed", "provider", c.provider, "err", err)
 	}
 	c.reload(rec.AccessToken)
+	// Every other seat on the plan gets the new token now, rather than on
+	// its next refusal (🎯T158).
+	reloadOMPSeats(context.Background(), c.provider)
+}
+
+// ompRefreshLocks serialises rejected-token refreshes per plan (🎯T158).
+var ompRefreshLocks sync.Map // provider -> *sync.Mutex
+
+func ompRefreshLock(provider string) *sync.Mutex {
+	mu, _ := ompRefreshLocks.LoadOrStore(provider, &sync.Mutex{})
+	return mu.(*sync.Mutex)
 }
 
 func sidecarAuthScript() string {
