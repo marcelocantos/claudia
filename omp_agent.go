@@ -448,7 +448,19 @@ func (c *ompControl) pump(a *Agent) {
 			}(ev.Name, ev.CallID, ev.Text)
 		case "turn_end", "error":
 			c.inflight.Store(false)
-			rejected := oauthRejected(ev.Text, ev.Snapshot)
+			// Only this turn's own error says whether the token was refused
+			// (🎯T165). The snapshot is the whole conversation and a turn
+			// end's text is the reply: a seat whose history holds an old 401,
+			// or whose answer discusses one, matched on every turn and renewed
+			// the plan's token under the whole fleet (2026-10-01).
+			why := ""
+			switch ev.Type {
+			case "error":
+				why = ev.Text
+			case "turn_end":
+				why = ev.Refusal()
+			}
+			rejected := oauthRejected(why)
 			if rejected {
 				c.recoverRejectedToken()
 			}
@@ -480,11 +492,7 @@ func (c *ompControl) pump(a *Agent) {
 // oauthRejected reports a provider refusal of the access token, on the
 // error event or inside the turn snapshot. A bad refresh token for a
 // different plan is not this signal (🎯T868).
-func oauthRejected(text string, snapshot json.RawMessage) bool {
-	blob := text
-	if len(snapshot) > 0 {
-		blob += "\n" + string(snapshot)
-	}
+func oauthRejected(blob string) bool {
 	if blob == "" {
 		return false
 	}

@@ -665,16 +665,16 @@ func TestOMPLoginRunsBunFromSidecar(t *testing.T) {
 	if !strings.Contains(body, "io.MultiWriter(os.Stderr, &stderr)") {
 		t.Fatal("bun login must forward the auth URL on stderr")
 	}
-	if !oauthRejected("", json.RawMessage(`{"errorMessage":"403 The OAuth2 access token could not be validated."}`)) {
+	if !oauthRejected("403 The OAuth2 access token could not be validated.") {
 		t.Fatal("a rejected OAuth token must be noticed")
 	}
-	if !oauthRejected("401 invalid_token", nil) {
+	if !oauthRejected("401 invalid_token") {
 		t.Fatal("an error event that names invalid_token must refresh that plan")
 	}
-	if oauthRejected("", nil) || oauthRejected("", json.RawMessage(`{"stopReason":"stop"}`)) {
+	if oauthRejected("") {
 		t.Fatal("a normal turn must not look like a rejected token")
 	}
-	if oauthRejected("Agent is already processing", nil) {
+	if oauthRejected("Agent is already processing") {
 		t.Fatal("a busy seat is not a rejected access token")
 	}
 	script := sidecarAuthScript()
