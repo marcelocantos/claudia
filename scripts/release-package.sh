@@ -10,6 +10,18 @@ BUILD="$DIST/build"
 rm -rf "$DIST"
 mkdir -p "$BUILD"
 
+# 🎯T157: the broker runs its plan seats in a Bun sidecar, so a release that
+# ships only the binary cannot start one. The sidecar's sources, manifest and
+# lockfile ride along; its dependencies are installed on first start (T156),
+# because pi-natives' native addon is ~170 MB per platform.
+stage_sidecar() {
+	mkdir -p "$BUILD/sidecar"
+	git -C "$ROOT" ls-files sidecar | grep -v '\.test\.ts$' | while read -r f; do
+		cp "$ROOT/$f" "$BUILD/sidecar/"
+	done
+}
+stage_sidecar
+
 build_one() {
 	local goos=$1 goarch=$2 cgo=$3 asset_os=$4 asset_arch=$5
 	local out asset
@@ -19,7 +31,7 @@ build_one() {
 
 	CGO_ENABLED="$cgo" GOOS="$goos" GOARCH="$goarch" \
 		go build -trimpath -ldflags="-s -w" -o "$out" ./cmd/claudia
-	tar -czf "$DIST/$asset" -C "$BUILD" claudia -C "$ROOT" LICENSE README.md THIRD_PARTY_NOTICES
+	tar -czf "$DIST/$asset" -C "$BUILD" claudia sidecar -C "$ROOT" LICENSE README.md THIRD_PARTY_NOTICES
 	rm -f "$out"
 	echo "wrote dist/$asset"
 }

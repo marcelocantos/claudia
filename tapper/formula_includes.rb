@@ -12,6 +12,7 @@ service do
     "#{Dir.home}/go/bin",
     "#{Dir.home}/.local/bin",
     "#{Dir.home}/.grok/bin",
+    "#{Dir.home}/.bun/bin",
   ].join(":"), TERM: "xterm-256color", LANG: "en_US.UTF-8"
   keep_alive true
   log_path var/"log/claudia/broker.log"

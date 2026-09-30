@@ -626,6 +626,9 @@ func sidecarAuthScript() string {
 	if p := os.Getenv("CLAUDIA_OMP_AUTH"); p != "" {
 		return p
 	}
+	if dir := omp.PackagedSidecarDir(); dir != "" {
+		return filepath.Join(dir, "auth.ts") // 🎯T157
+	}
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {
 		return "sidecar/auth.ts"

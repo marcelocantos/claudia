@@ -61,6 +61,9 @@ func ServerScript() string {
 	if p := os.Getenv("CLAUDIA_OMP_SERVER"); p != "" {
 		return p
 	}
+	if dir := PackagedSidecarDir(); dir != "" {
+		return filepath.Join(dir, "server.ts")
+	}
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {
 		return "sidecar/server.ts"
@@ -176,4 +179,26 @@ func StopSidecar(socket string) error {
 	_ = os.Remove(socket)
 	_ = os.Remove(pidPath(socket))
 	return nil
+}
+
+// PackagedSidecarDir is the sidecar a release installs beside the binary
+// (<prefix>/share/claudia/sidecar for <prefix>/bin/claudia), or "" when this
+// binary has none, as in a source checkout (🎯T157).
+func PackagedSidecarDir() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	return packagedSidecarDir(exe)
+}
+
+func packagedSidecarDir(exe string) string {
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = resolved
+	}
+	dir := filepath.Join(filepath.Dir(exe), "..", "share", "claudia", "sidecar")
+	if _, err := os.Stat(filepath.Join(dir, "server.ts")); err != nil {
+		return ""
+	}
+	return filepath.Clean(dir)
 }
