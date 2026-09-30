@@ -5,15 +5,16 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
+import { capToolText, toolResultBound } from "./truncate.ts";
 
 const maxOut = 200_000;
 const bashTimeoutMs = 60_000;
 
-export function codingTools(cwdOf: () => string): AgentTool[] {
-  return [bashTool(cwdOf), readTool(cwdOf), writeTool(cwdOf), globTool(cwdOf), grepTool(cwdOf)];
+export function codingTools(cwdOf: () => string, boundOf: () => number = () => toolResultBound(0)): AgentTool[] {
+  return [bashTool(cwdOf, boundOf), readTool(cwdOf, boundOf), writeTool(cwdOf, boundOf), globTool(cwdOf, boundOf), grepTool(cwdOf, boundOf)];
 }
 
-function bashTool(cwdOf: () => string): AgentTool {
+function bashTool(cwdOf: () => string, boundOf: () => number): AgentTool {
   return {
     name: "Bash",
     label: "Bash",
@@ -25,7 +26,7 @@ function bashTool(cwdOf: () => string): AgentTool {
     },
     execute: async (_id: string, params: unknown) => {
       const command = String((params as { command?: string })?.command || "");
-      if (!command) return textResult("missing command");
+      if (!command) return textResult("missing command", boundOf(), "Bash");
       const cwd = cwdOf() || process.cwd();
       const r = spawnSync("/bin/bash", ["-lc", command], {
         cwd,
@@ -36,12 +37,12 @@ function bashTool(cwdOf: () => string): AgentTool {
       });
       const out = `${r.stdout || ""}${r.stderr || ""}`.slice(0, maxOut);
       const status = r.status ?? (r.error ? 1 : 0);
-      return textResult(status === 0 ? out || "(no output)" : `exit ${status}\n${out || r.error?.message || ""}`);
+      return textResult(status === 0 ? out || "(no output)" : `exit ${status}\n${out || r.error?.message || ""}`, boundOf(), "Bash");
     },
   } as AgentTool;
 }
 
-function readTool(cwdOf: () => string): AgentTool {
+function readTool(cwdOf: () => string, boundOf: () => number): AgentTool {
   return {
     name: "Read",
     label: "Read",
@@ -56,15 +57,15 @@ function readTool(cwdOf: () => string): AgentTool {
       try {
         const abs = under(cwdOf(), p);
         const body = fs.readFileSync(abs, "utf8");
-        return textResult(body.length > maxOut ? body.slice(0, maxOut) + "\n…truncated" : body);
+        return textResult(body, boundOf(), "Read");
       } catch (err) {
-        return textResult(String(err));
+        return textResult(String(err), boundOf(), "Read");
       }
     },
   } as AgentTool;
 }
 
-function writeTool(cwdOf: () => string): AgentTool {
+function writeTool(cwdOf: () => string, boundOf: () => number): AgentTool {
   return {
     name: "Write",
     label: "Write",
@@ -83,15 +84,15 @@ function writeTool(cwdOf: () => string): AgentTool {
         const abs = under(cwdOf(), String(p?.path || ""));
         fs.mkdirSync(path.dirname(abs), { recursive: true });
         fs.writeFileSync(abs, String(p?.content ?? ""), "utf8");
-        return textResult("wrote " + abs);
+        return textResult("wrote " + abs, boundOf(), "Write");
       } catch (err) {
-        return textResult(String(err));
+        return textResult(String(err), boundOf(), "Write");
       }
     },
   } as AgentTool;
 }
 
-function globTool(cwdOf: () => string): AgentTool {
+function globTool(cwdOf: () => string, boundOf: () => number): AgentTool {
   return {
     name: "Glob",
     label: "Glob",
@@ -110,12 +111,12 @@ function globTool(cwdOf: () => string): AgentTool {
         maxBuffer: maxOut,
       });
       const lines = (r.stdout || "").split("\n").filter(Boolean).slice(0, 500);
-      return textResult(lines.join("\n") || "(no matches)");
+      return textResult(lines.join("\n") || "(no matches)", boundOf(), "Glob");
     },
   } as AgentTool;
 }
 
-function grepTool(cwdOf: () => string): AgentTool {
+function grepTool(cwdOf: () => string, boundOf: () => number): AgentTool {
   return {
     name: "Grep",
     label: "Grep",
@@ -143,9 +144,9 @@ function grepTool(cwdOf: () => string): AgentTool {
           timeout: 15_000,
           maxBuffer: maxOut,
         });
-        return textResult((g.stdout || g.stderr || "").slice(0, maxOut) || "(no matches)");
+        return textResult((g.stdout || g.stderr || "").slice(0, maxOut) || "(no matches)", boundOf(), "Grep");
       }
-      return textResult((rg.stdout || rg.stderr || "").slice(0, maxOut) || "(no matches)");
+      return textResult((rg.stdout || rg.stderr || "").slice(0, maxOut) || "(no matches)", boundOf(), "Grep");
     },
   } as AgentTool;
 }
@@ -160,6 +161,6 @@ function under(cwd: string, rel: string): string {
   return abs;
 }
 
-function textResult(text: string) {
-  return { content: [{ type: "text" as const, text }], details: {} };
+function textResult(text: string, bound: number, tool: string) {
+  return { content: [{ type: "text" as const, text: capToolText(text, bound, tool) }], details: {} };
 }

@@ -5,6 +5,7 @@ import { Agent, type AgentTool } from "@oh-my-pi/pi-agent-core";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { codingTools } from "./coding.ts";
+import { capToolText, toolResultBound } from "./truncate.ts";
 import { awaitHostCall } from "./hostcalls.ts";
 import { ContextOverflow, isOverflow, Maintenance, seatConvertToLlm, type MaintenanceHost } from "./maintain.ts";
 import type { SeatStore } from "./store.ts";
@@ -117,9 +118,16 @@ export function createSeatAgent(opts: {
     resolveFallbackTool: (name: string) => {
       if (opts.summaryOnly) return undefined;
       if (!name.startsWith("jevons_")) return undefined;
-      return jevonsTool(name, (id, toolName, args) => sink.callTool(id, toolName, args));
+      return jevonsTool(
+        name,
+        (id, toolName, args) => sink.callTool(id, toolName, args),
+        undefined,
+        undefined,
+        () => toolResultBound(agent.state.model?.contextWindow ?? 0),
+      );
     },
   });
+  const boundOf = () => toolResultBound(agent.state.model?.contextWindow ?? 0);
   const callBack = (id: string, toolName: string, args: string) => sink.callTool(id, toolName, args);
   const applyTools = (host: HostTool[] | undefined) => {
     if (opts.summaryOnly) {
@@ -131,8 +139,8 @@ export function createSeatAgent(opts: {
     // server executes it. resolveFallbackTool below stays jevons_*-only
     // (T864.3) — it only fires for a jevons_* name the host did not list
     // here, never for these explicit tools.
-    const hosted = (host ?? []).map((t) => jevonsTool(t.name, callBack, t.description, t.input_schema));
-    agent.setTools([...codingTools(() => cwd), ...hosted]);
+    const hosted = (host ?? []).map((t) => jevonsTool(t.name, callBack, t.description, t.input_schema, boundOf));
+    agent.setTools([...codingTools(() => cwd, boundOf), ...hosted]);
   };
   applyTools(opts.tools);
 
@@ -392,6 +400,7 @@ function jevonsTool(
   callTool: (callId: string, name: string, args: string) => Promise<string>,
   description?: string,
   schema?: Record<string, unknown>,
+  bound: () => number = () => toolResultBound(0),
 ): AgentTool {
   return {
     name,
@@ -402,7 +411,9 @@ function jevonsTool(
     // that may never answer (jevons 🎯T927).
     execute: async (toolCallId: string, params: unknown, signal?: AbortSignal) => {
       const result = await awaitHostCall(callTool(toolCallId, name, JSON.stringify(params ?? {})), signal);
-      return { content: [{ type: "text", text: result }], details: {} };
+      // Truncate only the conversation copy (🎯T154). The host already has
+      // the full result; this does not rewrite what it logged.
+      return { content: [{ type: "text", text: capToolText(result, bound(), name) }], details: {} };
     },
   } as AgentTool;
 }
