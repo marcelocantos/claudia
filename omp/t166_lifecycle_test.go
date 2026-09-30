@@ -31,16 +31,11 @@ func TestT166Helper(t *testing.T) {
 	select {}
 }
 
-// t166Gone waits until pid has exited, for at most limit.
-func t166Gone(pid int, limit time.Duration) bool {
-	deadline := time.Now().Add(limit)
-	for time.Now().Before(deadline) {
-		if syscall.Kill(pid, 0) != nil {
-			return true
-		}
+// t166Gone waits until pid has exited; `go test -timeout` is the clock.
+func t166Gone(pid int) {
+	for syscall.Kill(pid, 0) == nil {
 		time.Sleep(20 * time.Millisecond)
 	}
-	return false
 }
 
 func t166Parent(t *testing.T, pid int) int {
@@ -93,9 +88,8 @@ func TestT166SidecarDiesWithTheProcessThatStartedIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = helper.Wait()
-	if !t166Gone(sidecar, 10*time.Second) {
-		t.Fatalf("sidecar %d outlived the process that started it", sidecar)
-	}
+	// A sidecar that outlived its starter hangs here until the test times out.
+	t166Gone(sidecar)
 	if Listening(ctx, socket) {
 		t.Fatal("something still serves the socket")
 	}
@@ -132,11 +126,7 @@ func TestT166StopUnownedReplacesALeftoverSidecar(t *testing.T) {
 	if pid != left.Process.Pid {
 		t.Fatalf("StopUnowned stopped %d, want the leftover %d", pid, left.Process.Pid)
 	}
-	select {
-	case <-waited:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the leftover sidecar is still running")
-	}
+	<-waited // a leftover that survived hangs here until the test times out
 
 	if _, err := Ensure(ctx); err != nil {
 		t.Fatal(err)
