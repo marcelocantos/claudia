@@ -37,6 +37,9 @@ var shortenableBounds = map[string]string{
 		"else; the test's initialize has already been answered before the unanswered request is " +
 		"sent, and postMCP sets no client clock (jevons T928, claudia T147), so no other wait on " +
 		"that path can expire first and answer for it",
+	"mcpStdioWedgeGrace": "is not a wait: it is the age below which a process that missed " +
+		"initialize is still starting rather than wedged (jevons T934); the tests set it to 0 so " +
+		"the fixture's first miss counts, and nothing else reads it",
 }
 
 // TestHermeticTestsDeclareTheProductBoundsTheyShorten closes the hole 🎯T93
