@@ -144,6 +144,7 @@ type taskConfigWire struct {
 	ToolPolicy      *TaskToolPolicy `json:"tool_policy,omitempty"`
 	ClaudeID        string          `json:"claude_id,omitempty"`
 	LastResult      string          `json:"last_result,omitempty"`
+	PickByRemaining bool            `json:"pick_by_remaining,omitempty"`
 }
 
 // EncodeTaskConfigWire is a TaskConfig in its daemon-protocol form (task_run).

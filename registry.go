@@ -184,7 +184,9 @@ type AgentDef struct {
 	ContextPins     []string `json:"context_pins,omitempty"`
 }
 
-// Canonical Purpose values for [AgentDef.Purpose].
+// Canonical Purpose values for [AgentDef.Purpose]. Ephemeral plumbing
+// seats use these same values; smoke and handoff are name prefixes, not
+// purposes. See [EphemeralSeatDef].
 const (
 	PurposeWork     = "work"
 	PurposeAside    = "aside"

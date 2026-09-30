@@ -956,6 +956,160 @@ lifecycles for every claudia consumer on the host (🎯T2). Nothing in
 the API above changes when it runs; what changes is who owns the
 process.
 
+### Supported path
+
+The supported path, when a daemon is up, is the Go library holding one
+`*Agent`. The default socket is `~/.local/state/claudia/broker.sock`
+(`$XDG_STATE_HOME/claudia/broker.sock` when that variable is absolute;
+`CLAUDIA_BROKER_SOCKET` overrides; `claudia broker socket` prints it).
+`BrokerAvailable` reports whether a daemon is behind that socket.
+
+Leave `CLAUDIA_NO_BROKER`, `Registry.SetDirect`, `Task.SetDirect`, and
+`StartDirect` unset. Those select the in-process path. The handle's
+connection stays open for the life of the `*Agent`: that connection
+owns the grant and is where events arrive. `Send`, `Steer`,
+`Interrupt`, `WaitForResponse`, `Stop`, and `Detach` run on it.
+`WaitForResponse` is a client-side fold over that stream (assistant
+text through a terminal stop, then a short settle). The wire has no
+`wait` message. `Stop` releases the seat and tears it down. `Detach`
+releases ownership and leaves the seat running; a later `Start` or
+`Launch` of the same name reclaims it.
+
+`Config.Name` is the grant key:
+
+```go
+agent, err := claudia.Start(claudia.Config{
+    Name:     "pimp-smoke-1",
+    Provider: claudia.ProviderGrok,
+    WorkDir:  workDir,
+})
+if err != nil { /* ... */ }
+defer agent.Stop()
+if err := agent.Send("Reply with exactly the word pong."); err != nil { /* ... */ }
+text, err := agent.WaitForResponse(ctx)
+```
+
+Parent and Purpose are fleet labels on `AgentDef`, not fields of
+`Config`. Empty Purpose means `work`. They ride the grant when a
+consumer Registry launches the seat. An ephemeral plumbing seat is a
+name prefixed `pimp-smoke-` or `pimp-handoff-` (the suffix is required;
+`pimp-smoke` alone is not one). Purpose stays `work`, `aside`, or
+`overseer`. Parent is `pimp`. `EphemeralSeatDef` sets those fields and
+a workdir under the system temp directory:
+
+```go
+def, err := claudia.EphemeralSeatDef(claudia.EphemeralSmoke, "1", claudia.PurposeWork)
+if err != nil { /* ... */ }
+def.Provider = claudia.ProviderGrok
+err = reg.Register(def)
+agent, err = reg.Launch(def.Name)
+// Send, Steer, Interrupt, WaitForResponse, Stop, and Detach, same as Start.
+```
+
+The registry file is the consumer's. The daemon keeps its own grants.
+`Launch` sends the definition over the socket.
+
+A daemon installed as brew 0.44.0 already speaks this grant. Library
+callers smoke it against `~/.local/state/claudia/broker.sock` today.
+The `grant` / `send` / `interrupt` / `events` CLI subcommands are on
+HEAD; that brew `claudia` binary does not have them yet, so smoke the
+CLI with a HEAD build against the same socket until the formula
+catches up. The orphan TTL is daemon-side too: `broker serve` has to
+be this commit. A brew 0.44.0 daemon accepts the grant and leaves it
+running. `claudia broker grant -h` lists the flags. One shell
+smoke, which holds one connection the way the `*Agent` does:
+
+```bash
+claudia broker grant \
+  --name "pimp-smoke-$RANDOM" --provider grok \
+  --parent pimp --purpose work \
+  --send 'Reply with exactly the word pong.' --wait --release stop
+```
+
+Stdout is the assistant text. The daemon runs that seat in
+`$TMPDIR/claudia-pimp/<name>` unless `--workdir` is already under the
+temp directory or a `_scratchpad` directory; a repo path is not used.
+`--release stop` tears the seat down. Exit without it, or a crashed
+client, detaches: the same name reconnects to the running seat
+(`grant`, `send`, `interrupt`, or `events`) and keeps the daemon's
+session id. Two minutes later (`EphemeralGrantTTL`), if nobody has
+reclaimed it, the daemon stops the process and drops the grant. A
+jevons seat — any other name — is not on that clock. Detach leaves it
+running for a later reclaim, including across a daemon restart.
+A seat that also carries MCP servers or a sandbox policy stays on
+the library, which re-grants the definition it first sent.
+
+### Task one-shot over the broker
+
+A Task one-shot that must run on the daemon uses `task_run`, not an
+in-process `NewTask`. `NewTask` / `Task.Run` still consult the daemon
+when one is listening, and spawn in this process when it is not. That
+fallback is the embedding path. `RunBrokerTask` and `claudia broker task`
+do not fall back.
+
+The daemon admits the run before it spawns anything. Admission reads
+the plan-usage snapshot (refreshing it when the TTL has elapsed). A
+provider row that `HasAvailableTokens` rejects is `plan_exhausted`
+(`ErrPlanExhausted`) and no provider process starts. A provider with
+no row is admitted: an unpublished reading is not a veto. `claudia
+broker usage` prints that snapshot. The `ADMIT` column is the same
+predicate, so a `no` on the provider you are about to use is the
+refusal the next `task_run` returns.
+
+```bash
+claudia broker usage
+claudia broker usage -json
+claudia broker task --provider grok --model grok-4 --workdir "$PWD" \
+  'Reply with the single word pong.'
+claudia broker task --pick remaining --workdir "$PWD" \
+  'Reply with the single word pong.'
+```
+
+`-json` on `usage` prints a stable roster of four providers — cursor,
+grok (SuperGrok), claude, codex — in that order. Each row has
+`remaining_percent` (null when the provider published none) and
+`admit`. `admit` is `HasAvailableTokens`, the same predicate as the
+`ADMIT` column. `--pick remaining` on `task` or `grant` asks the
+daemon to spawn the fullest admitted of those four (highest primary
+remaining percent; equal percents break in roster order). A provider
+the snapshot rejects is skipped. If none admits with a number, the
+answer is `plan_exhausted` and nothing is spawned. The choice is
+`picked <provider> remaining=<n>%` on stderr, `provider` and
+`remaining_percent` on `task_started`, and `provider=` on the grant
+line. A later grant of the same name keeps that seat's provider.
+`--provider` and `--pick remaining` are alternatives. The daemon and
+the CLI both have to be this commit: `pick` is a request field an
+older daemon rejects.
+
+`--json` prints the wire: one `task_started`, then `task_event` lines,
+then `task_done`. The socket is the one `claudia broker socket` prints
+(default `~/.local/state/claudia/broker.sock`).
+
+```go
+events, err := claudia.RunBrokerTask(ctx, "Reply with the single word pong.", claudia.TaskConfig{
+    Provider: claudia.ProviderGrok,
+    Model:    "grok-4",
+    WorkDir:  workDir,
+})
+```
+
+`ErrNoBroker` means nothing is listening. Cancel the context to drop
+the connection; the daemon cancels the run.
+
+The messages are the existing grant protocol (🎯T2.10), one connection:
+
+1. client → `task_run` with a TaskConfig (`EncodeTaskConfigWire`) and the prompt
+2. broker → `task_started` with `run_id`
+3. broker → `task_event` (`EncodeTaskEventWire`) until
+4. broker → `task_done`
+
+A brew `claudia` from 0.44.0 already accepts `task_run` from the
+library. It does not refuse an exhausted plan. The `task` subcommand,
+the `ADMIT` column, and `plan_exhausted` admission are on HEAD, so
+smoke them with a HEAD build (the `task` client against the live
+socket; admission itself once this daemon is the one listening) until
+the formula catches up.
+
 - **Sessions are grants.** `Start` / `Registry.Launch` send the
   Config (as an `AgentDef` plus `Config.Name`) over the Unix socket;
   the daemon starts the provider process as its parent and streams
@@ -977,9 +1131,13 @@ process.
   so a consumer's existing "not alive → relaunch" path is the
   reconnect.
 - **Tasks run on the daemon.** `Task.Run` streams the run over its
-  own connection; `Cancel` reaches it; a dropped connection cancels
-  the run. `Task.SetRawLog` receives the provider's raw lines from the
-  daemon, in order; without it they stay on the daemon.
+  own connection when a daemon answers, and spawns in-process when
+  one does not. `RunBrokerTask` and `claudia broker task` are the
+  one-shot that always uses `task_run` (see the task one-shot section). The daemon admits
+  each run against the usage snapshot first. `Cancel` reaches a
+  library run; a dropped connection cancels it. `Task.SetRawLog`
+  receives the provider's raw lines from the daemon, in order; without
+  it they stay on the daemon.
 - **Judge runs on the daemon.** `Judge.Ask` sends the request over its
   own connection and the daemon calls TypeSafe with its key; a caller
   that set its own key, endpoint or HTTP client stays direct.
@@ -1003,9 +1161,11 @@ process.
   model-intel refresher (`RunModelIntelRefresher`). What only a daemon
   gives is a seat that outlives its consumer (`Agent.Detach` lets go of
   one for a later reclaim), one seat owner at a time, one usage evaluator
-  for the host, and the socket. Auto-actuating policy (rebind 🎯T2.12,
-  reaping, preemption) will be opt-in library code, off in direct mode
-  unless enabled; none is built yet.
+  for the host, and the socket. Ephemeral plumbing seats are the one
+  grant the daemon releases on its own, after `EphemeralGrantTTL` unowned
+  (see above). Auto-actuating policy (rebind 🎯T2.12, idle reaping,
+  preemption) will be opt-in library code, off in direct mode unless
+  enabled; none of that is built yet.
 
 **Test suites must opt out.** A running daemon is reachable from
 `go test` like from any process, so a consumer's hermetic suite that
@@ -1027,9 +1187,15 @@ brew/launchd, and starts `claudia broker serve` under supervisord —
 same shape as bullseye/mnemo/jevonsd. Elsewhere, operate it with
 `brew services start claudia` (Homebrew launchd plist, 🎯T2.7) or
 `claudia broker install` (owner-installed launchd user agent on
-macOS). Then `status`, `grants`, `usage [--refresh]`,
+macOS). Operator commands: `status`, `grants`, `usage [--refresh] [-json]`
+(`ADMIT` is the task_run gate; `-json` is the four-provider roster),
+`task` (one `task_run`; `--pick remaining` selects the fullest admitted
+of cursor, grok, claude, codex), `grant` (the same `--pick`),
 `tail` (NDJSON lifecycle events), `release NAME [--detach]`, `socket`.
-`claudia --help-agent` prints this guide after the CLI usage text.
+Seat driving from the shell is the HEAD CLI in the supported-path
+section above. `claudia --help-agent` prints this guide after the CLI
+usage text.
+
 `Acquire` draws from a pool the daemon runs: every consumer on the
 host shares its warm windows, `Agent.Release` returns or drops the seat
 on the daemon, and a consumer that goes away returns what it held.
@@ -1067,7 +1233,22 @@ Design record: [docs/metaharness.md](docs/metaharness.md).
    or auth falls through to API-key mode, the spawn fails closed with a
    loud warning so the no-per-token path is verified, not assumed.
    Grok Build CLI resolver checks `GROK_BIN`, then `grok` on `$PATH`,
-   then known locations including `~/.grok/bin/grok`. Ollama needs a
+   then known locations including `~/.grok/bin/grok`. Broker `Start`
+   runs that CLI inside the daemon. A brew service `PATH` lists system
+   directories first and `~/.grok/bin` last. Claudia moves existing
+   user tool directories to the front of the Grok and Cursor child's
+   `PATH` and, when the host has no `setsid` binary, inserts a perl
+   shim (`~/.local/state/claudia/bin/setsid`) after those directories.
+   Claude and Codex do not
+   use that helper. A handshake status other than `ready`
+   (`omp: sidecar said "error", want ready`) fails the Grok or Cursor
+   grant immediately, with the helper name, that status, and
+   `~/.local/state/claudia/omp-sidecar.log`. When that log contains
+   `command not found: setsid`, restart the daemon on this build so the
+   shim is on the child PATH; `brew install util-linux` is the native
+   binary. The following `write EPIPE` lines are the Node helper
+   writing to a closed pipe.
+   Ollama needs a
    reachable daemon (`CLAUDIA_OLLAMA_ENDPOINT`, default
    `http://127.0.0.1:11434`) and a model (`TaskConfig.Model` or
    `CLAUDIA_OLLAMA_MODEL`). Bedrock uses the AWS SDK default chain.

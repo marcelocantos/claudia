@@ -26,10 +26,13 @@ import (
 // identity is what the daemon uses for ownership, so a client never shares a
 // connection between two seats.
 
-// errNoBroker means no daemon is reachable: the socket is absent, the
-// process is the daemon, or CLAUDIA_NO_BROKER is set. Callers take the
-// direct path.
-var errNoBroker = errors.New("claudia: no broker")
+// ErrNoBroker means no daemon is reachable: the socket is absent, the
+// process is the daemon, or CLAUDIA_NO_BROKER is set. Start and Task.Run
+// take the in-process path. RunBrokerTask returns it and does not.
+var ErrNoBroker = errors.New("claudia: no broker")
+
+// errNoBroker is the in-package name of [ErrNoBroker].
+var errNoBroker = ErrNoBroker
 
 // errBrokerNotAvailable means a bare protocol server answered but has no
 // daemon runtime behind it. Callers take the direct path.

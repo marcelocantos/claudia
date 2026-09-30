@@ -124,7 +124,9 @@ const (
 	CodeAgentFailed ErrorCode = "agent_failed"
 	// CodeUnknownRun means the task run id is not one the daemon is running.
 	CodeUnknownRun ErrorCode = "unknown_run"
-	// CodePlanExhausted refuses a background task before a provider starts.
+	// CodePlanExhausted means task_run was refused before spawn: the daemon's
+	// plan-usage snapshot shows this provider has no usable capacity.
+	// `claudia broker usage` prints that snapshot.
 	CodePlanExhausted ErrorCode = "plan_exhausted"
 )
 
@@ -241,6 +243,11 @@ type TaskRunRequest struct {
 	// against published plan usage and background pacing before spawning.
 	// Older daemons reject this unknown field, so callers fail closed.
 	RequireBackgroundCapacity bool `json:"require_background_capacity,omitempty"`
+	// Pick, when "remaining", chooses the fullest admitted fleet provider
+	// (cursor, grok, claude, codex). The task's provider must be empty.
+	// It is also carried on the task config; this field is what an older
+	// daemon rejects instead of spawning a default provider.
+	Pick string `json:"pick,omitempty"`
 }
 
 // Validate checks the required fields.
@@ -254,6 +261,12 @@ func (r *TaskRunRequest) Validate() error {
 // TaskStartedResponse names the run so it can be cancelled.
 type TaskStartedResponse struct {
 	RunID string `json:"run_id"`
+	// Provider is the runtime the daemon admitted. Set when the caller
+	// named one, and when the daemon picked by remaining.
+	Provider Provider `json:"provider,omitempty"`
+	// RemainingPercent is the primary-window remaining of a
+	// pick-by-remaining choice. Absent when the caller named the provider.
+	RemainingPercent *float64 `json:"remaining_percent,omitempty"`
 }
 
 // TaskEventMessage is one claudia.TaskEvent on a task_run connection.
@@ -313,6 +326,11 @@ type GrantRequest struct {
 	// persisted and is returned to the pool, not stopped, when released
 	// with reuse or when its owner's connection closes (🎯T64).
 	Pool *PoolGrant `json:"pool,omitempty"`
+	// Pick, when "remaining", chooses the fullest admitted fleet provider
+	// (cursor, grok, claude, codex) for a name the daemon does not already
+	// hold. The definition's provider must be empty. A reclaim keeps the
+	// provider the seat was granted with.
+	Pick string `json:"pick,omitempty"`
 }
 
 // PoolGrant carries claudia.Config's pool policy for an acquire.
@@ -360,6 +378,10 @@ type GrantResponse struct {
 	// TurnCaps is what the seat's provider can do with a busy turn
 	// (🎯T72.3). Absent from a daemon that predates it.
 	TurnCaps *TurnCaps `json:"turn_caps,omitempty"`
+	// RemainingPercent is the primary-window remaining when this grant
+	// was chosen by pick remaining. Absent on a named provider and on a
+	// reclaim.
+	RemainingPercent *float64 `json:"remaining_percent,omitempty"`
 }
 
 // AgentEventMessage is one claudia.Event on a grant connection.

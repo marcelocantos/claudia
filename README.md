@@ -133,7 +133,11 @@ SuperGrok weekly usage / Extra Credits and console prepaid balance are
 `QueryAllPlanUsage` expose subscription session + weekly % remaining and
 rollover times when a backend publishes them. Grok and Cursor unofficial
 billing surfaces are always fetched; a break is unavailable-with-reason
-(never invented numbers). Bedrock has no subscription window. See
+(never invented numbers). Bedrock has no subscription window. `claudia
+broker usage -json` lists Cursor, Grok (SuperGrok), Claude, and Codex
+with remaining percent and the ADMIT flag. `claudia broker task --pick
+remaining` and `claudia broker grant --pick remaining` select the
+fullest admitted of those four. See
 [docs/plan-usage.md](docs/plan-usage.md).
 
 Bedrock Task mode is available by selecting `ProviderBedrock`. It calls
@@ -340,8 +344,13 @@ owns every consumer's agent processes: Sessions become named grants that survive
 restart, Tasks run on the daemon, plan usage is fetched once per host,
 and after a reboot the daemon resumes the seats it held and tells them
 so. The library API is unchanged; with no socket (or
-`CLAUDIA_NO_BROKER=1`) everything runs in-process as before. See the
-[agents guide](agents-guide.md#daemon-claudia-broker-optional-host-wide).
+`CLAUDIA_NO_BROKER=1`) everything runs in-process as before.
+
+A one-shot that must use the broker, with no in-process fallback, is
+`claudia broker task` or `claudia.RunBrokerTask`. The daemon admits the
+run against the plan-usage snapshot first; `claudia broker usage` prints
+that snapshot and an `ADMIT` column for the same decision. See
+[Task one-shot over the broker](agents-guide.md#task-one-shot-over-the-broker).
 
 Unattended callers can set `TaskConfig.RequireBroker` to refuse the
 direct fallback and `TaskConfig.ToolPolicy` to restrict Claude or Grok

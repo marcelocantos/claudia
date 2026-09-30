@@ -239,6 +239,14 @@ type TaskConfig struct {
 	// LastResult seeds Task.LastResult() before the first run — useful
 	// when re-hydrating a task from persisted state.
 	LastResult string
+
+	// PickByRemaining asks the broker to choose the fullest admitted
+	// fleet provider (cursor, grok, claude, codex) before spawning.
+	// Provider must be empty. The choice uses the daemon's plan-usage
+	// snapshot and [HasAvailableTokens]; none admitted is
+	// [ErrPlanExhausted]. It has no direct-path meaning: a run with no
+	// broker returns [ErrNoBroker] rather than guessing a provider.
+	PickByRemaining bool
 }
 
 // TaskToolPolicy is a provider-native allowlist for one headless turn.
@@ -317,6 +325,7 @@ type Task struct {
 	approval      string
 	disallow      []string
 	toolPolicy    *TaskToolPolicy
+	pickRemaining bool
 
 	mu            sync.Mutex
 	run           *taskRun
@@ -431,6 +440,7 @@ func newTaskWithBackend(cfg TaskConfig, backend taskBackend) *Task {
 		approval:      cfg.ApprovalPolicy,
 		disallow:      cfg.DisallowTools,
 		toolPolicy:    cfg.ToolPolicy,
+		pickRemaining: cfg.PickByRemaining,
 		status:        TaskStatusIdle,
 		claudeID:      cfg.ClaudeID,
 		lastResult:    cfg.LastResult,
@@ -550,20 +560,27 @@ func (t *Task) Run(ctx context.Context, prompt string) (<-chan TaskEvent, error)
 	direct := t.direct
 	t.mu.Unlock()
 	if !direct {
-		bb = taskBackendConsideringBroker(TaskConfig{ID: t.id, Name: t.name, Provider: t.provider})
+		bb = taskBackendConsideringBroker(TaskConfig{
+			ID: t.id, Name: t.name, Provider: t.provider, PickByRemaining: t.pickRemaining,
+		})
 	}
 	if bb != nil {
 		run, err = bb.RunTask(cmdCtx, req)
 		if err != nil && brokerFellThrough(err) {
 			bb.client.Close()
-			if t.requireBroker {
+			switch {
+			case t.requireBroker:
 				err = fmt.Errorf("%w: %v", ErrBrokerRequired, err)
-			} else {
+			case t.pickRemaining:
+				err = fmt.Errorf("pick by remaining requires the broker: %w", err)
+			default:
 				run, err = t.backend.RunTask(cmdCtx, req)
 			}
 		} else if err != nil {
 			bb.client.Close()
 		}
+	} else if t.pickRemaining {
+		err = fmt.Errorf("pick by remaining requires the broker: %w", ErrNoBroker)
 	} else {
 		if t.requireBroker {
 			if direct {

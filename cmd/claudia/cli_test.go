@@ -32,7 +32,7 @@ func TestCLIHelp(t *testing.T) {
 			}
 			return nil
 		})
-		for _, want := range []string{"usage: claudia broker", "--version", "--help-agent"} {
+		for _, want := range []string{"usage: claudia broker", "usage|task|release", "grant|send|interrupt|events", "--version", "--help-agent"} {
 			if !strings.Contains(errOut, want) {
 				t.Fatalf("%s missing %q:\n%s", flag, want, errOut)
 			}
@@ -52,6 +52,13 @@ func TestCLIHelpAgent(t *testing.T) {
 		"claudia models intel",
 		"Daemon: `claudia broker`",
 		"CLAUDIA_NO_BROKER=1",
+		"client-side fold",
+		"pimp-smoke",
+		"~/.local/state/claudia/broker.sock",
+		"0.44.0",
+		"Task one-shot over the broker",
+		"RunBrokerTask",
+		"ADMIT",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("--help-agent missing %q:\n%s", want, out)

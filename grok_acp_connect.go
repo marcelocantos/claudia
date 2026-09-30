@@ -88,17 +88,20 @@ func startGrokACPConnect(bin string, workDir, model, sessionID string, requireRe
 	c, err := dialGrokServe(serve.URL, serve.PID, true, onEvent, onClose)
 	if err != nil {
 		_ = killPID(serve.PID)
-		return nil, fmt.Errorf("grok connect dial after spawn: %w", err)
+		return nil, explainGrokSidecarHandshake(
+			fmt.Errorf("grok connect dial after spawn: %w", err),
+			readFileTail(serve.Log, grokStderrCaptureMax),
+		)
 	}
 	// Hold cmd nil; we own via connectPID.
 	c.cmd = nil
 	if err := c.initialize(); err != nil {
 		c.Close()
-		return nil, err
+		return nil, explainGrokSidecarHandshake(err, readFileTail(serve.Log, grokStderrCaptureMax))
 	}
 	if err := c.openSession(workDir, sessionID, requireResume, mcpServers); err != nil {
 		c.Close()
-		return nil, err
+		return nil, explainGrokSidecarHandshake(err, readFileTail(serve.Log, grokStderrCaptureMax))
 	}
 	return c, nil
 }
@@ -107,6 +110,8 @@ func startGrokACPConnect(bin string, workDir, model, sessionID string, requireRe
 type grokServeEndpoint struct {
 	URL string
 	PID int
+	// Log is the file the detached serve writes stdout and stderr to.
+	Log string
 }
 
 // spawnDetachedGrokServe starts `grok agent serve` in a new session so it
@@ -125,8 +130,8 @@ func spawnDetachedGrokServe(bin, model string, extraEnv []string) (*grokServeEnd
 	args := append(grokACPArgs(model, true), "--bind", bind, "--secret", secret)
 
 	cmd := exec.Command(bin, args...)
+	cmd.Env = grokChildEnv(extraEnv)
 	if len(extraEnv) > 0 {
-		cmd.Env = appendEnv(nil, extraEnv)
 		slog.Info("grok serve exclusive env", "env", extraEnv)
 	}
 	// Detach: new session so SIGHUP on consumer death does not kill serve.
@@ -150,10 +155,13 @@ func spawnDetachedGrokServe(bin, model string, extraEnv []string) (*grokServeEnd
 	url := fmt.Sprintf("ws://127.0.0.1:%d/ws?server-key=%s", port, secret)
 	if err := waitTCP(bind, 15*time.Second); err != nil {
 		_ = killPID(pid)
-		return nil, fmt.Errorf("grok serve not ready on %s (pid %d): %w", bind, pid, err)
+		return nil, explainGrokSidecarHandshake(
+			fmt.Errorf("grok serve not ready on %s (pid %d): %w", bind, pid, err),
+			readFileTail(logPath, grokStderrCaptureMax),
+		)
 	}
 	slog.Info("grok serve started (connect-mode)", "pid", pid, "bind", bind, "log", logPath)
-	return &grokServeEndpoint{URL: url, PID: pid}, nil
+	return &grokServeEndpoint{URL: url, PID: pid, Log: logPath}, nil
 }
 
 func serveLogPath(port int) string {

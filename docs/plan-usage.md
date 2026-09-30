@@ -141,6 +141,28 @@ series and also returns `Effort`. A purpose with no catalog-overlapping
 observations is interpreted as `general` (`purpose_fallback_from` on the
 pick). See [model-intel.md](model-intel.md).
 
+## Fleet roster and pick by remaining
+
+The operator roster is exactly four providers, in this order: Cursor,
+Grok (SuperGrok), Claude, Codex. `claudia broker usage -json` prints
+that roster from the daemon's snapshot. Each row has `remaining_percent`
+(the primary allowance: weekly, or the billing-cycle window mapped onto
+weekly; the session window only when no longer one was published) and
+`admit`, which is `HasAvailableTokens`. A missing reading is still a
+row, with `remaining_percent` null. Numbers are never invented.
+
+`claudia broker task --pick remaining` and `claudia broker grant --pick
+remaining` ask the daemon to spawn the fullest admitted row: the
+greatest primary remaining percent among rows `admit` would mark yes.
+A known exhaustion (`plan_exhausted`) is skipped. A row with no
+remaining percent cannot win. Equal percents break by roster order.
+If none of the four admits with a number, the daemon returns
+`plan_exhausted` and starts nothing. A grant of a name the daemon
+already holds keeps that seat's provider.
+
+The accounts are the ones already signed in on the host. This path
+does not log in.
+
 ## Residual / honesty
 
 - Endpoints used by Claude and Codex are **product backends** the
@@ -157,7 +179,7 @@ pick). See [model-intel.md](model-intel.md).
 ## Oracles
 
 ```bash
-go test ./... -count=1 -run 'TestParseClaude|TestParseCodex|TestQueryPlanUsage|TestQueryAllPlanUsage|TestClassifyCodex|TestRemainingFromUsed|TestClassifyWindow|TestHasAvailable|TestLoadPlanUsage|TestResolve'
+go test ./... -count=1 -run 'TestParseClaude|TestParseCodex|TestQueryPlanUsage|TestQueryAllPlanUsage|TestClassifyCodex|TestRemainingFromUsed|TestClassifyWindow|TestHasAvailable|TestLoadPlanUsage|TestResolve|TestFleetUsage|TestPickByRemaining'
 ```
 
 ## Related

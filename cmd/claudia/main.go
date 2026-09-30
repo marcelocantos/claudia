@@ -7,7 +7,12 @@
 //	claudia broker status           what it holds
 //	claudia broker grants           every seat, owner and liveness
 //	claudia broker tail             lifecycle events as NDJSON
-//	claudia broker usage [--refresh] the plan-usage snapshot
+//	claudia broker usage [--refresh] [-json]  fleet plan-usage roster (ADMIT is the task_run gate)
+//	claudia broker task             one task_run over the socket
+//	claudia broker grant            start or reclaim a named seat
+//	claudia broker send             deliver a turn (submit, steer, or interrupt-then-submit)
+//	claudia broker interrupt        cancel the seat's current turn
+//	claudia broker events           follow one seat's event stream
 //	claudia broker release NAME [--detach | --force]
 //	claudia broker auth-recover PROVIDER  repair subscription authentication
 //	claudia broker auth-status [--json]   plan login health; never logs in
@@ -72,7 +77,7 @@ func run(args []string) int {
 }
 
 func usageText() string {
-	return `usage: claudia broker <serve|status|grants|tail|usage|release|auth-recover|auth-status|install|uninstall|socket> [flags]
+	return `usage: claudia broker <serve|status|grants|tail|usage|task|release|grant|send|interrupt|events|auth-recover|auth-status|install|uninstall|socket> [flags]
        claudia models intel <refresh|latest|history|drift> [flags]
        claudia version | --version | -v
        claudia --help | -h
@@ -100,6 +105,8 @@ func brokerCmd(args []string) error {
 		return tail()
 	case "usage":
 		return usageCmd(args[1:])
+	case "task":
+		return taskCmd(args[1:])
 	case "release":
 		return release(args[1:])
 	case "auth-recover":
@@ -126,6 +133,17 @@ func brokerCmd(args []string) error {
 		for _, p := range plans {
 			fmt.Printf("%-14s %s %s\n", p.Provider, p.State, p.Detail)
 		}
+		return nil
+	case "grant":
+		return grantCmd(args[1:])
+	case "send":
+		return sendCmd(args[1:])
+	case "interrupt":
+		return interruptCmd(args[1:])
+	case "events":
+		return eventsCmd(args[1:])
+	case "-h", "--help", "help":
+		usage()
 		return nil
 	case "install":
 		return install(args[1:])
@@ -208,8 +226,15 @@ func serve(args []string) error {
 	return err
 }
 
-// dial connects to the daemon or explains why it cannot.
-func dial() (*broker.Conn, error) {
+// cliRPCTimeout bounds one status-style round trip. A seat command keeps
+// the connection open and applies its own --timeout; grant startup can
+// outlast this.
+const cliRPCTimeout = 30 * time.Second
+
+// dialConn connects to the daemon or explains why it cannot. The caller
+// sets any deadline: a one-shot round trip wants one, a seat command
+// that then waits on events does not.
+func dialConn() (*broker.Conn, error) {
 	path, err := broker.SocketPath()
 	if err != nil {
 		return nil, err
@@ -218,7 +243,16 @@ func dial() (*broker.Conn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("no daemon at %s (start one with `claudia broker serve` or `claudia broker install`): %w", path, err)
 	}
-	_ = c.SetDeadline(time.Now().Add(30 * time.Second))
+	return c, nil
+}
+
+// dial connects to the daemon for one short round trip.
+func dial() (*broker.Conn, error) {
+	c, err := dialConn()
+	if err != nil {
+		return nil, err
+	}
+	_ = c.SetDeadline(time.Now().Add(cliRPCTimeout))
 	return c, nil
 }
 
@@ -340,7 +374,7 @@ func tail() error {
 func usageCmd(args []string) error {
 	fs := flag.NewFlagSet("usage", flag.ContinueOnError)
 	refresh := fs.Bool("refresh", false, "fetch before answering")
-	asJSON := fs.Bool("json", false, "print the snapshot as JSON")
+	asJSON := fs.Bool("json", false, "print cursor, grok, claude, and codex with remaining percent as JSON")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -349,14 +383,20 @@ func usageCmd(args []string) error {
 		return err
 	}
 	u := resp.Usage
-	if *asJSON {
-		os.Stdout.Write(u.Backends)
-		fmt.Println()
-		return nil
-	}
 	var backends []claudia.PlanUsage
-	if err := json.Unmarshal(u.Backends, &backends); err != nil {
-		return err
+	if len(u.Backends) > 0 {
+		if err := json.Unmarshal(u.Backends, &backends); err != nil {
+			return err
+		}
+	}
+	if *asJSON {
+		snap := claudia.ProjectFleetUsage(backends, u.FetchedAt, time.Now(), nil)
+		raw, err := json.MarshalIndent(snap, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Printf("%s\n", raw)
+		return nil
 	}
 	if u.FetchedAt.IsZero() {
 		fmt.Printf("not fetched yet")
@@ -368,8 +408,8 @@ func usageCmd(args []string) error {
 	}
 	fmt.Printf("fetched %s ago\n", time.Since(u.FetchedAt).Round(time.Second))
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "PROVIDER\tSTATUS\tBAND\tWINDOWS")
-	for _, b := range backends {
+	fmt.Fprintln(w, "PROVIDER\tSTATUS\tBAND\tADMIT\tWINDOWS")
+	for _, b := range usageDisplayRows(backends) {
 		band := claudia.ClassifyPlan(b, time.Now(), nil)
 		var wins []string
 		for _, win := range b.Windows {
@@ -383,9 +423,52 @@ func usageCmd(args []string) error {
 		if b.Reason != "" && b.Status != claudia.PlanUsageAvailable {
 			st += " (" + clip(b.Reason, reasonWidth) + ")"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", b.Provider, st, band.Weekly, strings.Join(wins, " "))
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", b.Provider, st, band.Weekly, admitLabel(b), strings.Join(wins, " "))
 	}
-	return w.Flush()
+	if err := w.Flush(); err != nil {
+		return err
+	}
+	fmt.Println("ADMIT is the task_run gate for that row. A provider absent from this table is admitted.")
+	return nil
+}
+
+// usageDisplayRows lists the fleet roster first, in stable order, then
+// any other provider the snapshot carried (Bedrock). A fleet provider
+// with no reading is still a row: absent is not the same as hidden.
+func usageDisplayRows(backends []claudia.PlanUsage) []claudia.PlanUsage {
+	by := map[claudia.Provider]claudia.PlanUsage{}
+	for _, b := range backends {
+		by[b.Provider] = b
+	}
+	var rows []claudia.PlanUsage
+	seen := map[claudia.Provider]bool{}
+	for _, row := range claudia.ProjectFleetUsage(backends, time.Time{}, time.Now(), nil).Providers {
+		seen[row.Provider] = true
+		if b, ok := by[row.Provider]; ok {
+			rows = append(rows, b)
+			continue
+		}
+		rows = append(rows, claudia.PlanUsage{
+			Provider: row.Provider,
+			Status:   claudia.PlanUsageUnavailable,
+			Reason:   row.Reason,
+		})
+	}
+	for _, b := range backends {
+		if !seen[b.Provider] {
+			rows = append(rows, b)
+		}
+	}
+	return rows
+}
+
+// admitLabel is HasAvailableTokens, the predicate the daemon applies before
+// task_run spawns. yes admits; no is plan_exhausted.
+func admitLabel(b claudia.PlanUsage) string {
+	if claudia.HasAvailableTokens(b, time.Now(), nil) {
+		return "yes"
+	}
+	return "no"
 }
 
 // reasonWidth bounds an unavailable reason in the usage table; the full
