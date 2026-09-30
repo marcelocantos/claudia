@@ -682,9 +682,21 @@ func forwardTaskStream(
 	parse func([]byte) []TaskEvent,
 	rawLog RawLogFunc,
 	ch chan<- TaskEvent,
-) {
+) error {
+	// 🎯T133: a single NDJSON line can carry an embedded large tool
+	// payload (e.g. an image read back through Read) that exceeds a
+	// small fixed scanner buffer. bufio.Scanner reports that as
+	// bufio.ErrTooLong and stops silently unless the caller checks
+	// scanner.Err() — the caller previously did not, so a Claude Task
+	// run whose final result line happened to be oversized vanished
+	// with no TaskEventResult and no error ("claudia task: no final
+	// result", undiagnosable). Grow the buffer well past the prior 1
+	// MiB cap so ordinary large-but-sane lines scan cleanly, and
+	// surface any remaining scan failure (still-too-long or read
+	// error) to the caller instead of discarding it.
+	const maxTaskLine = 64 * 1024 * 1024 // 64 MiB
 	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+	scanner.Buffer(make([]byte, 1024*1024), maxTaskLine)
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if len(line) == 0 {
@@ -697,10 +709,14 @@ func forwardTaskStream(
 			select {
 			case ch <- ev:
 			case <-ctx.Done():
-				return
+				return nil
 			}
 		}
 	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("scanning task stream: %w", err)
+	}
+	return nil
 }
 
 // claudeTaskPrecheck refuses a request carrying a field the Claude Task
@@ -809,9 +825,22 @@ func (claudeTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*task
 	ch := make(chan TaskEvent, 16)
 	go func() {
 		defer close(ch)
-		forwardTaskStream(ctx, stdout, ParseTaskLine, req.RawLog, ch)
+		streamErr := forwardTaskStream(ctx, stdout, ParseTaskLine, req.RawLog, ch)
 		waitErr := cmd.Wait()
 		<-stderrDone
+		if streamErr != nil {
+			// 🎯T133: the process can exit 0 while the stdout scanner
+			// stopped early on an oversized line, so this must be
+			// checked even when waitErr is nil — the process exiting
+			// cleanly is exactly the deceptive case that made the lost
+			// result undiagnosable.
+			slog.Warn("claude task stream scan failed", "error", streamErr)
+			select {
+			case ch <- TaskEvent{Type: TaskEventError, IsError: true, ErrorMsg: streamErr.Error()}:
+			case <-ctx.Done():
+			}
+			return
+		}
 		if waitErr != nil {
 			msg := strings.TrimSpace(stderrBuf.String())
 			if msg == "" {
@@ -930,7 +959,13 @@ func (codexTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*taskR
 		}()
 
 		parser := codexTaskParser{}
-		forwardTaskStream(ctx, stdout, parser.Parse, req.RawLog, ch)
+		if streamErr := forwardTaskStream(ctx, stdout, parser.Parse, req.RawLog, ch); streamErr != nil {
+			slog.Warn("codex task stream scan failed", "error", streamErr)
+			select {
+			case ch <- TaskEvent{Type: TaskEventError, IsError: true, ErrorMsg: streamErr.Error()}:
+			case <-ctx.Done():
+			}
+		}
 	}()
 
 	return &taskRun{
@@ -1061,7 +1096,13 @@ func (grokTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*taskRu
 		}()
 
 		parser := grokTaskParser{}
-		forwardTaskStream(ctx, stdout, parser.Parse, req.RawLog, ch)
+		if streamErr := forwardTaskStream(ctx, stdout, parser.Parse, req.RawLog, ch); streamErr != nil {
+			slog.Warn("grok task stream scan failed", "error", streamErr)
+			select {
+			case ch <- TaskEvent{Type: TaskEventError, IsError: true, ErrorMsg: streamErr.Error()}:
+			case <-ctx.Done():
+			}
+		}
 	}()
 
 	return &taskRun{

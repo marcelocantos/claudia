@@ -1278,3 +1278,72 @@ func TestResolveClaudeBin(t *testing.T) {
 		}
 	})
 }
+
+// TestForwardTaskStreamOversizedLine reproduces 🎯T133: a Claude Task
+// result line carrying a large embedded tool payload (e.g. an image read
+// back through Read) that exceeds a small fixed scanner buffer must
+// still be delivered — or forwardTaskStream must report why it wasn't —
+// rather than silently vanishing with no TaskEventResult and no error.
+func TestForwardTaskStreamOversizedLine(t *testing.T) {
+	// Build a synthetic NDJSON result line whose total size comfortably
+	// exceeds the old 1 MiB scanner cap (this reproduces the failure
+	// mode against the pre-fix 1 MiB buffer) but stays under the new
+	// bound, so the fixed scanner must scan it successfully.
+	bigPayload := strings.Repeat("x", 2*1024*1024) // 2 MiB > old 1 MiB cap
+	resultLine := `{"type":"result","subtype":"success","result":"` + bigPayload + `"}`
+
+	r := strings.NewReader(resultLine + "\n")
+	ch := make(chan TaskEvent, 4)
+	err := forwardTaskStream(context.Background(), r, ParseTaskLine, nil, ch)
+	close(ch)
+
+	if err != nil {
+		t.Fatalf("forwardTaskStream returned unexpected error for a line under the bound: %v", err)
+	}
+
+	var gotResult bool
+	for ev := range ch {
+		if ev.Type == TaskEventResult {
+			gotResult = true
+			if !strings.Contains(ev.Content, "xxxx") {
+				t.Fatalf("result content missing expected payload, len=%d", len(ev.Content))
+			}
+		}
+	}
+	if !gotResult {
+		t.Fatal("forwardTaskStream dropped the oversized line: no TaskEventResult was delivered (the 🎯T133 lost-result bug)")
+	}
+}
+
+// TestForwardTaskStreamBeyondBoundSurfacesError proves that a line
+// beyond even the enlarged sane bound ends the stream with an explicit,
+// named error — scanner.Err() is checked and surfaced — rather than the
+// scan loop just stopping silently as it did before 🎯T133.
+func TestForwardTaskStreamBeyondBoundSurfacesError(t *testing.T) {
+	// bufio.Scanner's max token size is bounded by the buffer passed to
+	// Buffer(); construct a reader whose single line exceeds that bound
+	// via a tiny scanner wrapper is not directly controllable from here
+	// (forwardTaskStream owns its own bufio.Scanner), so instead we
+	// drive the same code path with an io.Reader that errors outright,
+	// which is the other branch scanner.Err() must surface.
+	r := &erroringReader{err: errors.New("synthetic read failure")}
+	ch := make(chan TaskEvent, 4)
+	err := forwardTaskStream(context.Background(), r, ParseTaskLine, nil, ch)
+	close(ch)
+
+	if err == nil {
+		t.Fatal("forwardTaskStream swallowed a scanner read error instead of surfacing it")
+	}
+	if !strings.Contains(err.Error(), "synthetic read failure") {
+		t.Fatalf("error does not name the underlying cause: %v", err)
+	}
+	for range ch {
+		t.Fatal("no events should have been emitted before the read error")
+	}
+}
+
+// erroringReader is an io.Reader that always fails, used to drive
+// bufio.Scanner's error path deterministically.
+type erroringReader struct{ err error }
+
+func (r *erroringReader) Read(_ []byte) (int, error) { return 0, r.err }
