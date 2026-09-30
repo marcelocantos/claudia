@@ -185,11 +185,9 @@ func TestConnectOverLibraryNeutralConn(t *testing.T) {
 	if got, want := header.Get("Authorization"), "Bearer "+testAPIKey; got != want {
 		t.Errorf("Authorization handed to the dialer = %q, want %q", got, want)
 	}
-	select {
-	case <-ready:
-	case <-time.After(5 * time.Second):
-		t.Fatal("session.updated over memConn did not reach OnSessionReady")
-	}
+	// The acknowledgement is what the test waits for; `go test -timeout`
+	// is the clock (🎯T97).
+	<-ready
 	if err := c.SendText(t.Context(), "hello", nil); err != nil {
 		t.Fatalf("SendText over memConn: %v", err)
 	}
