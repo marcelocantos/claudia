@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sync/atomic"
 	"time"
 )
 
@@ -295,15 +294,24 @@ func writePlanSnapshot(path string, doc planCacheSnapshot) error {
 type planLeaseHold struct {
 	flock *os.File
 	path  string
-	alive *int32
+	// stop/done make the heartbeat goroutine's shutdown synchronous
+	// (🎯T65): release() must not unlock and remove the lease file until
+	// the goroutine has actually returned, or a heartbeat tick that was
+	// already in flight can write a fresh lease.json back onto disk after
+	// this holder considers itself done, resurrecting a released lease
+	// and fooling the next acquirer's quiet/exists check into backing
+	// off forever.
+	stop chan struct{}
+	done chan struct{}
 }
 
 func (h *planLeaseHold) release() {
 	if h == nil {
 		return
 	}
-	if h.alive != nil {
-		atomic.StoreInt32(h.alive, 0)
+	if h.stop != nil {
+		close(h.stop)
+		<-h.done
 	}
 	if h.flock != nil {
 		_ = flockUnlock(h.flock)
@@ -344,20 +352,31 @@ func tryHoldPlanLease(leasePath, flockPath string, stale time.Duration, now time
 		_ = ff.Close()
 		return nil, err
 	}
-	hold := &planLeaseHold{flock: ff, path: leasePath, alive: new(int32)}
-	atomic.StoreInt32(hold.alive, 1)
-	go heartbeatPlanLease(leasePath, hold.alive)
+	hold := &planLeaseHold{
+		flock: ff,
+		path:  leasePath,
+		stop:  make(chan struct{}),
+		done:  make(chan struct{}),
+	}
+	go heartbeatPlanLease(leasePath, hold.stop, hold.done)
 	return hold, nil
 }
 
-func heartbeatPlanLease(path string, alive *int32) {
+// heartbeatPlanLease renews the lease heartbeat until stop is closed, then
+// closes done and returns. release() blocks on done, so no heartbeat write
+// can land after the holder has unlocked and removed the lease file
+// (🎯T65).
+func heartbeatPlanLease(path string, stop <-chan struct{}, done chan<- struct{}) {
+	defer close(done)
 	ticker := time.NewTicker(DefaultPlanCacheLockStale / 4)
 	defer ticker.Stop()
-	for range ticker.C {
-		if atomic.LoadInt32(alive) == 0 {
+	for {
+		select {
+		case <-stop:
 			return
+		case <-ticker.C:
+			writePlanLeaseHeartbeat(path, time.Now())
 		}
-		writePlanLeaseHeartbeat(path, time.Now())
 	}
 }
 
