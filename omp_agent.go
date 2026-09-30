@@ -229,7 +229,7 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 	historyLost := ompHistoryLost(ev, req.Config.SummaryOnly)
 	ctrl := &ompControl{
 		conn: conn, bytes: make(chan []byte, 8),
-		token: token, provider: provider,
+		token: token, provider: provider, planTokens: ev.PlanTokens,
 		seat: req.Config.Name, model: req.Config.Model, cwd: req.Config.WorkDir,
 		sessionID: sessionID, summaryOnly: req.Config.SummaryOnly,
 		preserve: req.Config.ContextPreserve, pins: req.Config.ContextPins,
@@ -308,6 +308,9 @@ type ompControl struct {
 	inflight  atomic.Bool
 	// lastRefresh is when this seat last refreshed a rejected token (under mu).
 	lastRefresh time.Time
+	// planTokens is set when this seat's sidecar holds one token per plan
+	// (🎯T159): a token change is one OpToken, not a load per seat.
+	planTokens bool
 }
 
 // ompSeats holds the live sidecar seats, so a plan recovered by the owner
@@ -540,22 +543,46 @@ func (c *ompControl) reload(token string) {
 }
 
 // reloadOMPSeats hands provider's stored token to every live seat still
-// holding another one, and says how many it reloaded.
+// holding another one, and says how many it moved. A sidecar that holds one
+// token per plan gets it once, as OpToken, and all its seats take it
+// (🎯T159); a seat on an older sidecar is reloaded on its own.
 func reloadOMPSeats(ctx context.Context, provider string) int {
 	tok, err := planStore().AccessToken(ctx, provider)
 	if err != nil {
 		return 0
 	}
-	n := 0
+	var shared, legacy []*ompControl
 	ompSeats.Range(func(k, _ any) bool {
 		c := k.(*ompControl)
 		if c.provider == provider && c.currentToken() != tok {
-			c.reload(tok)
-			n++
+			if c.planTokens {
+				shared = append(shared, c)
+			} else {
+				legacy = append(legacy, c)
+			}
 		}
 		return true
 	})
-	return n
+	sent := false
+	for _, c := range shared {
+		// Every seat's connection reaches the one sidecar; the first that
+		// takes the message is enough.
+		if !sent {
+			if err := c.send(omp.Message{Op: omp.OpToken, Provider: provider, Token: tok}); err != nil {
+				slog.Warn("omp token refreshed; sidecar token update failed", "seat", c.seat, "err", err)
+				legacy = append(legacy, c)
+				continue
+			}
+			sent = true
+		}
+		c.mu.Lock()
+		c.token = tok
+		c.mu.Unlock()
+	}
+	for _, c := range legacy {
+		c.reload(tok)
+	}
+	return len(shared) + len(legacy)
 }
 
 func (c *ompControl) refreshRejectedToken() {
@@ -580,10 +607,11 @@ func (c *ompControl) refreshRejectedToken() {
 	if err := FlushOMPPlans(context.Background()); err != nil {
 		slog.Warn("omp token refreshed; keychain flush failed", "provider", c.provider, "err", err)
 	}
-	c.reload(rec.AccessToken)
-	// Every other seat on the plan gets the new token now, rather than on
-	// its next refusal (🎯T158).
-	reloadOMPSeats(context.Background(), c.provider)
+	// Every seat on the plan, this one included, gets the new token now,
+	// rather than each on its next refusal (🎯T158, 🎯T159).
+	if reloadOMPSeats(context.Background(), c.provider) == 0 && c.currentToken() != rec.AccessToken {
+		c.reload(rec.AccessToken)
+	}
 }
 
 // ompRefreshLocks serialises rejected-token refreshes per plan (🎯T158).

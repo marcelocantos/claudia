@@ -1,6 +1,11 @@
 // One long-lived Bun process. Claudia dials it over a unix socket.
-// The access token arrives on the load message. It is not read from
+// The access token arrives on a load or token message. It is not read from
 // the environment, and the pay-as-you-go key variables are ignored.
+//
+// A token belongs to a plan, not a seat (🎯T159): every seat on a plan uses
+// the plan's current token, so one "token" message from the host moves them
+// all. A per-seat copy went stale whenever the plan refreshed, and each
+// stale seat found out only by being refused.
 //
 // The turn loop is @oh-my-pi/pi-agent-core (pinned in package.json).
 
@@ -10,6 +15,7 @@ import { dirname, join } from "node:path";
 import { createSeatAgent, type HostTool, type SeatAgent } from "./seat.ts";
 import { defaultWriter } from "./spool.ts";
 import { claimSocket } from "./singleton.ts";
+import { PlanTokens } from "./plantokens.ts";
 import { HOST_CONNECTION_LOST, HostCalls } from "./hostcalls.ts";
 import { SeatStore } from "./store.ts";
 
@@ -58,6 +64,14 @@ type Line = {
   preserve?: string;
   pins?: string[];
 };
+
+// planTokens is each plan's current access token, keyed by provider.
+const planTokens = new PlanTokens();
+
+// setPlanToken makes token the plan's, for every seat on it.
+function setPlanToken(provider: string, token: string) {
+  planTokens.set(provider, token, seats.values());
+}
 
 type Seat = {
   provider: string;
@@ -165,6 +179,11 @@ async function handle(
     calls.settle(msg.call_id ?? "", msg.result ?? "");
     return;
   }
+  if (msg.op === "token") {
+    // 🎯T159: the plan's token changed; every seat on it takes it.
+    setPlanToken(msg.provider ?? "", msg.token ?? "");
+    return;
+  }
   if (msg.op === "adopt") {
     // A seat that is not already running is not created (🎯T869). ResumeAll
     // treats that as a miss and launches, and only the launch is nudged.
@@ -183,7 +202,7 @@ async function handle(
       return;
     }
     rebindSeat(existing, msg, seat, write, callTool, calls);
-    write({ seat, type: "ready", how: "adopted" });
+    write({ seat, type: "ready", how: "adopted", plan_tokens: true });
     return;
   }
   if (msg.op === "load") {
@@ -198,16 +217,18 @@ async function handle(
     // would bypass the bounded transfer brief.
     if (existing && existing.provider === msg.provider && existing.summaryOnly === summaryOnly) {
       rebindSeat(existing, msg, seat, write, callTool, calls);
-      write({ seat, type: "ready", how: "adopted" });
+      write({ seat, type: "ready", how: "adopted", plan_tokens: true });
       return;
     }
     // A host that names the seat's session gets a durable conversation; one
     // that does not (an older host) gets the old in-memory seat.
     const store = !summaryOnly && msg.session_id ? new SeatStore(storeRoot, seat, msg.session_id) : undefined;
+    // A seat joining a plan runs on the plan's newest token.
+    setPlanToken(msg.provider ?? "", msg.token);
     const agent = createSeatAgent({
       provider: msg.provider ?? "",
       model: msg.model ?? "",
-      token: msg.token,
+      token: planTokens.get(msg.provider ?? "") ?? msg.token,
       cwd: msg.cwd ?? "",
       summaryOnly,
       emit: (ev) => write({ seat, ...ev }),
@@ -224,12 +245,12 @@ async function handle(
     seats.set(seat, {
       provider: msg.provider ?? "",
       model: msg.model ?? "",
-      token: msg.token,
+      token: planTokens.get(msg.provider ?? "") ?? msg.token,
       summaryOnly,
       agent,
       calls,
     });
-    write({ seat, type: "ready", how: "launched", restored: agent.restored });
+    write({ seat, type: "ready", how: "launched", restored: agent.restored, plan_tokens: true });
     return;
   }
   const loaded = seats.get(seat);
@@ -273,10 +294,8 @@ function rebindSeat(
     if (n > 0) console.error(`sidecar: rebound ${seat} with ${n} unanswered tool call(s); failed them`);
     existing.calls = calls;
   }
-  if (msg.token) {
-    existing.token = msg.token;
-    existing.agent.setToken(msg.token);
-  }
+  if (msg.provider) existing.provider = msg.provider;
+  if (msg.token) setPlanToken(existing.provider, msg.token);
   existing.agent.rebind((ev) => write({ seat, ...ev }), callTool);
   if (msg.tools) existing.agent.setHostTools(msg.tools);
   if (msg.cwd) existing.agent.setCwd(msg.cwd);
