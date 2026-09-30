@@ -127,6 +127,7 @@ func t141Plan(t *testing.T, token string, refreshes *atomic.Int32, refreshed str
 			return []byte(`{"refresh_token":"r2","access_token":"` + refreshed + `","expiry":"` + exp + `"}`), nil
 		},
 	}
+	omp.ResetKeychainShot() // no renewal from an earlier test holds this one quiet
 	t.Cleanup(func() { ompKeychain = nil; ompLogin = omp.Login{}; omp.ResetKeychainShot() })
 	if err := OpenOMPPlans(context.Background()); err != nil {
 		t.Fatal(err)

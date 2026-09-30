@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -46,6 +47,20 @@ type Login struct {
 	// one fails with ErrNeedsSignIn instead (🎯T165). Every path that runs
 	// without a person at the keyboard sets it.
 	NoLogin bool
+}
+
+var (
+	renewedMu sync.Mutex
+	renewed   = map[string]time.Time{}
+)
+
+// LastRenewal is when this process last renewed provider's login, or zero.
+// A refusal that arrives soon after it is almost always of the token that
+// renewal replaced (🎯T165).
+func LastRenewal(provider string) time.Time {
+	renewedMu.Lock()
+	defer renewedMu.Unlock()
+	return renewed[provider]
 }
 
 // ErrNeedsSignIn means a plan can only be repaired by an interactive
@@ -135,6 +150,9 @@ func (l Login) fetch(ctx context.Context, provider string, existing Record) (Rec
 	// 🎯T167: every rotation of a plan's token names itself. A refresh spends
 	// the refresh token and revokes the access token every seat holds.
 	slog.Info("omp plan login renewed", "provider", provider, "verb", verb, "caller", caller, "pid", os.Getpid())
+	renewedMu.Lock()
+	renewed[provider] = time.Now()
+	renewedMu.Unlock()
 	if rec.Expiry.Before(time.Now().Add(-time.Minute)) {
 		return Record{}, fmt.Errorf("omp: %s %s returned an already-expired token", provider, verb)
 	}

@@ -333,6 +333,14 @@ var ompSeats sync.Map // *ompControl -> struct{}
 // owner repaired the plan must be able to recover afterwards (🎯T141).
 const ompRefreshBackoff = time.Minute
 
+// ompPlanRenewQuiet is how long after a plan's login was renewed a refusal is
+// taken as one of the token that renewal replaced (🎯T165). A request already
+// in flight on the old token fails after the seat has been moved to the new
+// one, so the seat's current token is not the token that was refused. On
+// 2026-10-01 each such refusal refreshed again, revoking the token under
+// every other seat: 34 rotations in 25 minutes, every one a seat's.
+const ompPlanRenewQuiet = 2 * time.Minute
+
 func promptMessage(op, seat, text string, a *Agent, ctrl *ompControl) omp.Message {
 	cause, detail, resume, turnID, sessionID := "", "", "", "", ""
 	if c, ok := a.armedPromptCause(); ok {
@@ -509,9 +517,15 @@ func (c *ompControl) recoverRejectedToken() {
 	mu := ompRefreshLock(c.provider)
 	mu.Lock()
 	defer mu.Unlock()
-	if tok, err := planStore().AccessToken(context.Background(), c.provider); err == nil && tok != refused {
+	tok, err := planStore().AccessToken(context.Background(), c.provider)
+	if err == nil && tok != refused {
 		slog.Info("omp token rejected; seat takes the plan's newer token", "provider", c.provider, "seat", c.seat)
 		c.reload(tok)
+		return
+	}
+	if at := omp.LastRenewal(c.provider); err == nil && !at.IsZero() && time.Since(at) < ompPlanRenewQuiet {
+		slog.Info("omp token rejected; plan renewed moments ago, not rotating it again",
+			"provider", c.provider, "seat", c.seat, "renewed_ago", time.Since(at).Round(time.Second))
 		return
 	}
 	c.mu.Lock()

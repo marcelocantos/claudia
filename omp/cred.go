@@ -115,7 +115,13 @@ func resetKeychainShot() {
 
 // ResetKeychainShot drops the process read and write. Tests call it so
 // one case does not spend the run's shot. Production does not.
-func ResetKeychainShot() { resetKeychainShot() }
+func ResetKeychainShot() {
+	resetKeychainShot()
+	// A fresh plan store has no renewal history either (🎯T165).
+	renewedMu.Lock()
+	clear(renewed)
+	renewedMu.Unlock()
+}
 
 func cloneItem(item Item) Item {
 	out := Item{Records: map[string]Record{}}

@@ -51,6 +51,7 @@ func TestT158SeatsRefusedTogetherRefreshThePlanOnce(t *testing.T) {
 			return []byte(`{"refresh_token":"r2","access_token":"fresh","expiry":"` + exp + `"}`), nil
 		},
 	}
+	omp.ResetKeychainShot() // no renewal from an earlier test holds this one quiet
 	t.Cleanup(func() { ompKeychain = nil; ompLogin = omp.Login{}; omp.ResetKeychainShot() })
 	if err := OpenOMPPlans(context.Background()); err != nil {
 		t.Fatal(err)
