@@ -149,8 +149,14 @@ func (b *stubAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error
 		ops.turnCaps = func(*Agent) TurnCaps { return o.TurnCaps() }
 	}
 	return &agentStart{
-		Control:     ctrl,
-		Ops:         ops,
+		Control: ctrl,
+		Ops:     ops,
+		// The stub stands in for a Claude-shaped provider (transcript
+		// path meaningful to callers testing rewind/tail machinery), so
+		// it must not be read as a codex/grok-style deliberate "no
+		// transcript" claim (🎯T36) — that reading is reserved for real
+		// backends that explicitly decline both JSONLPath and tailing.
+		TailJSONL:   true,
 		DetectReady: func(a *Agent) { close(a.ready) },
 	}, nil
 }

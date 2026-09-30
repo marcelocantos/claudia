@@ -525,6 +525,9 @@ type agentStart struct {
 	// (used when the provider allocates the id, e.g. Grok ACP session/new).
 	SessionID string
 	// JSONLPath, when non-empty, replaces the Claude-shaped transcript path.
+	// Empty together with TailJSONL false is a deliberate claim that the
+	// backend keeps no transcript at all, and Start honours it by
+	// reporting Agent.JSONLPath() == "" (🎯T36).
 	JSONLPath string
 	// ConnectURL / ConnectPID for Grok connect-mode (durable serve).
 	ConnectURL string
@@ -920,6 +923,16 @@ func startWithBackendContext(ctx context.Context, cfg Config, backend agentBacke
 	if start.JSONLPath != "" {
 		a.jsonlPath = start.JSONLPath
 		jsonlPath = start.JSONLPath
+	} else if !start.TailJSONL {
+		// The backend left JSONLPath empty AND declined to tail it: a
+		// deliberate claim that no ~/.claude/projects transcript exists
+		// for this session (codex app-server, grok/cursor ACP), not "no
+		// override was given". Honour it instead of falling back to the
+		// precomputed Claude-shaped default computed before dispatch
+		// (🎯T36) — a non-empty JSONLPath here made jevons' turn-begin
+		// oracle wait 45s on a transcript codex/grok never write.
+		a.jsonlPath = ""
+		jsonlPath = ""
 	}
 	windowID := start.WindowID
 	a.tmuxWindowID = windowID
@@ -1596,7 +1609,12 @@ func (a *Agent) SessionID() string { return a.sessionID }
 // session, or "" when this agent is not tmux-backed.
 func (a *Agent) WindowID() string { return a.tmuxWindowID }
 
-// JSONLPath returns the path to the session JSONL file.
+// JSONLPath returns the path to the session JSONL transcript, or "" for
+// a backend that keeps no ~/.claude/projects transcript (codex
+// app-server, grok and cursor ACP). Empty is the backend's claim that no
+// such file will ever exist, so consumers gating durable-vs-live evidence
+// on this path can trust it instead of switching on the provider name
+// (🎯T36).
 func (a *Agent) JSONLPath() string { return a.jsonlPath }
 
 // SessionJSONLPath returns the path Claude Code would use for the
