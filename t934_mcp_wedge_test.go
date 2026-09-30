@@ -32,6 +32,10 @@ func TestT934WedgedStdioServerIsRestartedAndAnswersNext(t *testing.T) {
 	if n := mcpStdioWedgeRestarts.Load() - before; n != 1 {
 		t.Fatalf("restarts = %d, want 1", n)
 	}
+	// The fresh process gets the ordinary deadline: the short one only had
+	// to catch the wedge, and a loaded host can take longer than it to start
+	// a process at all.
+	mcpStdioRequestTimeout = prevTimeout
 	if r := postMCP(t, url, fixtureInit); r.body["result"] == nil {
 		t.Fatalf("initialize after the restart: %v", r.body)
 	}
