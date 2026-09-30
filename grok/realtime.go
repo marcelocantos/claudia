@@ -24,8 +24,6 @@ import (
 	"net/http"
 	"sync"
 	"time"
-
-	"github.com/coder/websocket"
 )
 
 // realtimeURL is the xAI Grok Realtime WebSocket endpoint.
@@ -99,7 +97,7 @@ type Config struct {
 	// is the VAD.
 	ManualCommit bool
 
-	// Dial customises the endpoint and WebSocket dialer (tests).
+	// Dial customises the endpoint and the dialer (tests).
 	// Nil is valid (defaults).
 	Dial *DialArgs
 }
@@ -111,15 +109,33 @@ type DialArgs struct {
 	// URL overrides the Realtime endpoint. Empty uses [realtimeURL].
 	URL string
 
-	// Dial overrides websocket.Dial. Nil uses websocket.Dial.
-	Dial func(ctx context.Context, url string, opts *websocket.DialOptions) (*websocket.Conn, *http.Response, error)
+	// Dial overrides the WebSocket dialer. Nil uses the package's own.
+	// header carries the Authorization the endpoint expects; a dialer
+	// that drops it is refused at the upgrade. It returns a [Conn], not
+	// a library type, so the WebSocket library behind [Connect] is not
+	// part of this package's API (🎯T47.9).
+	Dial func(ctx context.Context, url string, header http.Header) (Conn, error)
+}
+
+// Conn is a message-oriented connection to the Realtime endpoint: one
+// Read is one whole server message, one Write is one whole client
+// message. It is the seam behind [DialArgs.Dial]; the package's own
+// dialer satisfies it with a WebSocket, and a test may satisfy it with
+// anything that frames messages.
+type Conn interface {
+	// Read returns the next whole message from the endpoint.
+	Read(ctx context.Context) ([]byte, error)
+	// Write sends msg to the endpoint as one whole text message.
+	Write(ctx context.Context, msg []byte) error
+	// Close ends the session, gracefully where the transport allows it.
+	Close() error
 }
 
 // Client manages a Grok Realtime WebSocket session. Obtain one via [Connect].
 // Call [Client.Close] when the session is no longer needed.
 type Client struct {
 	cfg  Config
-	conn *websocket.Conn
+	conn Conn
 
 	mu     sync.Mutex
 	closed bool
@@ -139,7 +155,7 @@ func Connect(ctx context.Context, cfg Config) (*Client, error) {
 	}
 
 	url := realtimeURL
-	dial := websocket.Dial
+	dial := dialWebSocket
 	if cfg.Dial != nil {
 		if cfg.Dial.URL != "" {
 			url = cfg.Dial.URL
@@ -149,31 +165,27 @@ func Connect(ctx context.Context, cfg Config) (*Client, error) {
 		}
 	}
 
-	conn, _, err := dial(ctx, url, &websocket.DialOptions{
-		HTTPHeader: map[string][]string{
-			"Authorization": {"Bearer " + cfg.APIKey},
-		},
+	conn, err := dial(ctx, url, http.Header{
+		"Authorization": {"Bearer " + cfg.APIKey},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("grok: dial failed: %w", err)
 	}
-
-	conn.SetReadLimit(4 << 20) // 4 MB
 
 	c := &Client{cfg: cfg, conn: conn}
 
 	slog.Info("grok: WebSocket connected, sending session config")
 
 	if err := c.configureSession(ctx); err != nil {
-		conn.CloseNow()
+		_ = conn.Close()
 		return nil, fmt.Errorf("grok: session config failed: %w", err)
 	}
 
 	slog.Info("grok: session config sent, waiting for response")
 
-	_, firstMsg, err := conn.Read(ctx)
+	firstMsg, err := conn.Read(ctx)
 	if err != nil {
-		conn.CloseNow()
+		_ = conn.Close()
 		return nil, fmt.Errorf("grok: first read failed: %w", err)
 	}
 	slog.Info("grok: first message", "data", string(firstMsg))
@@ -181,7 +193,7 @@ func Connect(ctx context.Context, cfg Config) (*Client, error) {
 	var firstEvent map[string]any
 	if err := json.Unmarshal(firstMsg, &firstEvent); err == nil {
 		if firstEvent["type"] == "error" {
-			conn.CloseNow()
+			_ = conn.Close()
 			if errObj, ok := firstEvent["error"].(map[string]any); ok {
 				return nil, fmt.Errorf("grok: server rejected session: %v", errObj["message"])
 			}
@@ -405,7 +417,7 @@ func (c *Client) Close() error {
 		return nil
 	}
 	c.closed = true
-	return c.conn.Close(websocket.StatusNormalClosure, "bye")
+	return c.conn.Close()
 }
 
 func (c *Client) configureSession(ctx context.Context) error {
@@ -460,13 +472,13 @@ func (c *Client) configureSession(ctx context.Context) error {
 
 func (c *Client) readLoop(ctx context.Context) {
 	for {
-		_, data, err := c.conn.Read(ctx)
+		data, err := c.conn.Read(ctx)
 		if err != nil {
 			c.mu.Lock()
 			closed := c.closed
 			c.mu.Unlock()
 			if !closed {
-				status := websocket.CloseStatus(err)
+				status := closeStatus(err)
 				slog.Error("grok: read error", "err", err, "close_status", status)
 				if c.cfg.OnError != nil {
 					c.cfg.OnError(err)
@@ -606,5 +618,5 @@ func (c *Client) send(ctx context.Context, v any) error {
 	writeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	return c.conn.Write(writeCtx, websocket.MessageText, data)
+	return c.conn.Write(writeCtx, data)
 }

@@ -559,6 +559,12 @@ yet export Agent.Migrate, MigrateArgs, or CapabilityMigrate — those are
 HEAD. agents-guide.md is the consumer contract until the next snapshot
 retarget. SetModel (🎯T54) is likewise HEAD-only.
 
+`grok.Conn` (🎯T47.9) is HEAD-only: an interface with `Read(ctx)
+([]byte, error)`, `Write(ctx, msg []byte) error` and `Close() error`,
+assessed **Fluid**. `grok.DialArgs.Dial` at HEAD returns it instead of
+the WebSocket library's connection type; the `DialArgs` row above is
+the v0.28.0 shape.
+
 Turn delivery (🎯T72.2, docs/design/steer-interrupt-turn-api.md) is
 HEAD-only: the surface checker derives the tables above from the
 snapshot tag, so these items are listed here, all assessed **Fluid**,
@@ -613,6 +619,11 @@ Raised by this snapshot; none are resolved.
   signature.** `DialArgs.Dial` names `*websocket.DialOptions` and
   `*websocket.Conn`, so the module cannot change WebSocket library
   without a breaking change, for the sake of a test seam.
+  *HEAD (🎯T47.9):* closed. `DialArgs.Dial` is now
+  `func(ctx, url string, header http.Header) (grok.Conn, error)`, where
+  `grok.Conn` is the package's own message-oriented interface; the
+  library appears only in `grok/wsconn.go`. The table above still
+  describes v0.28.0.
 - **The plan-usage API is shaped by private endpoints.** `PlanUsageArgs`
   and `AllPlanUsageArgs` carry per-provider credential and URL overrides
   (nine string fields plus `GrokBillingRaw`), and the Grok path reads an

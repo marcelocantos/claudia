@@ -5,6 +5,7 @@ package grok
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"reflect"
@@ -19,9 +20,9 @@ func TestConnectRequiresAPIKey(t *testing.T) {
 	dialed := false
 	_, err := Connect(context.Background(), Config{
 		Dial: &DialArgs{
-			Dial: func(context.Context, string, *websocket.DialOptions) (*websocket.Conn, *http.Response, error) {
+			Dial: func(context.Context, string, http.Header) (Conn, error) {
 				dialed = true
-				return nil, nil, errors.New("should not be reached")
+				return nil, errors.New("should not be reached")
 			},
 		},
 	})
@@ -41,8 +42,8 @@ func TestConnectDialFailure(t *testing.T) {
 	_, err := Connect(context.Background(), Config{
 		APIKey: testAPIKey,
 		Dial: &DialArgs{
-			Dial: func(context.Context, string, *websocket.DialOptions) (*websocket.Conn, *http.Response, error) {
-				return nil, nil, sentinel
+			Dial: func(context.Context, string, http.Header) (Conn, error) {
+				return nil, sentinel
 			},
 		},
 	})
@@ -61,9 +62,9 @@ func TestConnectDefaultEndpoint(t *testing.T) {
 	_, err := Connect(context.Background(), Config{
 		APIKey: testAPIKey,
 		Dial: &DialArgs{
-			Dial: func(_ context.Context, url string, opts *websocket.DialOptions) (*websocket.Conn, *http.Response, error) {
+			Dial: func(_ context.Context, url string, _ http.Header) (Conn, error) {
 				got = url
-				return nil, nil, errors.New("stop here")
+				return nil, errors.New("stop here")
 			},
 		},
 	})
@@ -72,6 +73,132 @@ func TestConnectDefaultEndpoint(t *testing.T) {
 	}
 	if got != "wss://api.x.ai/v1/realtime" {
 		t.Errorf("dialled %q, want the xAI Realtime endpoint", got)
+	}
+}
+
+// TestDialArgsNamesNoWebSocketTypes is the 🎯T47.9 ratchet: the dial seam
+// is expressed in this package's own [Conn], so the WebSocket library
+// can change without a breaking API change. It walks every type the
+// seam names, transitively, and refuses any from a websocket package.
+func TestDialArgsNamesNoWebSocketTypes(t *testing.T) {
+	seen := map[reflect.Type]bool{}
+	var walk func(rt reflect.Type)
+	walk = func(rt reflect.Type) {
+		if rt == nil || seen[rt] {
+			return
+		}
+		seen[rt] = true
+		if strings.Contains(rt.PkgPath(), "websocket") || strings.Contains(rt.String(), "websocket.") {
+			t.Errorf("DialArgs names %v (package %q); the seam must be library-neutral", rt, rt.PkgPath())
+		}
+		switch rt.Kind() {
+		case reflect.Struct:
+			for i := range rt.NumField() {
+				walk(rt.Field(i).Type)
+			}
+		case reflect.Func:
+			for i := range rt.NumIn() {
+				walk(rt.In(i))
+			}
+			for i := range rt.NumOut() {
+				walk(rt.Out(i))
+			}
+		case reflect.Interface:
+			for i := range rt.NumMethod() {
+				walk(rt.Method(i).Type)
+			}
+		case reflect.Pointer, reflect.Slice, reflect.Array, reflect.Chan, reflect.Map:
+			walk(rt.Elem())
+			if rt.Kind() == reflect.Map {
+				walk(rt.Key())
+			}
+		}
+	}
+	walk(reflect.TypeOf(DialArgs{}))
+	walk(reflect.TypeOf((*Conn)(nil)).Elem())
+}
+
+// memConn is a [Conn] with no WebSocket behind it: an in-memory server
+// that acknowledges the opening session.update. It proves the seam is
+// complete — a Connect can run start to finish over a transport that
+// never imports the library.
+type memConn struct {
+	fromServer chan []byte
+	toServer   chan []byte
+	closed     chan struct{}
+}
+
+func newMemConn() *memConn {
+	return &memConn{
+		fromServer: make(chan []byte, 8),
+		toServer:   make(chan []byte, 8),
+		closed:     make(chan struct{}),
+	}
+}
+
+func (m *memConn) Read(ctx context.Context) ([]byte, error) {
+	select {
+	case msg := <-m.fromServer:
+		return msg, nil
+	case <-m.closed:
+		return nil, errors.New("memConn: closed")
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (m *memConn) Write(ctx context.Context, msg []byte) error {
+	select {
+	case m.toServer <- msg:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	var v map[string]any
+	if err := json.Unmarshal(msg, &v); err == nil && v["type"] == "session.update" {
+		m.fromServer <- []byte(`{"type":"session.updated"}`)
+	}
+	return nil
+}
+
+func (m *memConn) Close() error {
+	close(m.closed)
+	return nil
+}
+
+func TestConnectOverLibraryNeutralConn(t *testing.T) {
+	mem := newMemConn()
+	var header http.Header
+	ready := make(chan struct{}, 1)
+	c, err := Connect(t.Context(), Config{
+		APIKey:         testAPIKey,
+		OnSessionReady: func() { ready <- struct{}{} },
+		Dial: &DialArgs{
+			Dial: func(_ context.Context, _ string, h http.Header) (Conn, error) {
+				header = h
+				return mem, nil
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Connect over memConn: %v", err)
+	}
+	if got, want := header.Get("Authorization"), "Bearer "+testAPIKey; got != want {
+		t.Errorf("Authorization handed to the dialer = %q, want %q", got, want)
+	}
+	select {
+	case <-ready:
+	case <-time.After(5 * time.Second):
+		t.Fatal("session.updated over memConn did not reach OnSessionReady")
+	}
+	if err := c.SendText(t.Context(), "hello", nil); err != nil {
+		t.Fatalf("SendText over memConn: %v", err)
+	}
+	<-mem.toServer // the session.update
+	if msg := string(<-mem.toServer); !strings.Contains(msg, "hello") {
+		t.Errorf("server received %q, want the text turn", msg)
+	}
+	if err := c.Close(); err != nil {
+		t.Errorf("Close over memConn: %v", err)
 	}
 }
 

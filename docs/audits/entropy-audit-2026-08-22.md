@@ -110,7 +110,8 @@ Everything above this heading — executive summary, dimension vector, command
 table — is the 2026-08-22 snapshot and is left as observed. Findings, by
 contrast, are tracked: a finding that has since been closed says so on its
 **Status** line and carries a **Closure** bullet with the evidence that
-retired it. Closed so far: **ENT-001** (2026-09-21, 🎯T47.1), **ENT-010**
+retired it. Closed so far: **ENT-001** (2026-09-21, 🎯T47.1), **ENT-002**
+(2026-09-30, 🎯T47.2), **ENT-009** (2026-09-30, 🎯T47.9), **ENT-010**
 (2026-09-30, 🎯T47.10).
 
 ### ENT-001: MCPProxy concurrent-401 path races on `entry.probe`
@@ -284,14 +285,30 @@ retired it. Closed so far: **ENT-001** (2026-09-21, 🎯T47.1), **ENT-010**
 
 - **Priority:** P3
 - **Dimensions:** Architecture topology; Documentation / governance
-- **Status:** observed fact
-- **Evidence:** `STABILITY.md:483-486` (names `nhooyr.io/websocket`); actual type `grok/realtime.go:110-116` uses `github.com/coder/websocket` (`go.mod:6`). Import path changed; the leak remains.
+- **Status:** **closed 2026-09-30** (🎯T47.9). Was: observed fact. The evidence below no longer reproduces on the shipped path — see **Closure**.
+- **Evidence (2026-08-22):** `STABILITY.md:483-486` (names `nhooyr.io/websocket`); actual type `grok/realtime.go:110-116` uses `github.com/coder/websocket` (`go.mod:6`). Import path changed; the leak remains.
 - **Mechanism:** swapping the WS library is a breaking API change for a test seam.
 - **Blast radius:** `claudia/grok` Realtime consumers only (orthogonal to `ProviderGrok`).
 - **Counterevidence checked:** package is documented as standalone (`README.md:304-311`); Dial is a test seam; Fluid.
 - **Smallest coherent remediation:** wrap Dial behind an interface that returns `io.ReadWriteCloser` (or unexport `DialArgs` and inject via `internal` in tests).
 - **Verification:** `go doc` of `claudia/grok.DialArgs` has no `websocket.` identifiers.
 - **Ratchet candidate:** `check-stability-surface.py` already lists the field; 1.0 Gaps item.
+- **Closure (2026-09-30, 🎯T47.9):** `DialArgs.Dial` is now
+  `func(ctx context.Context, url string, header http.Header) (Conn, error)`,
+  where `grok.Conn` is the package's own message-oriented interface
+  (`Read`, `Write`, `Close`). The library is confined to `grok/wsconn.go`,
+  which adapts it to `Conn` and is the only non-test file in the package
+  that imports it. `go doc ./grok DialArgs` names no `websocket.`
+  identifier. Behavioural change on the Connect failure paths: a
+  graceful `Close` replaces `CloseNow`, since abrupt close is not a
+  transport-neutral notion.
+- **Closure evidence:** `TestDialArgsNamesNoWebSocketTypes` walks every
+  type the seam names, transitively, and goes red on any from a
+  websocket package (mutation-checked: a `*websocket.Conn` field added
+  to `DialArgs` failed it). `TestConnectOverLibraryNeutralConn` runs a
+  full Connect, text turn and Close over an in-memory `Conn` that never
+  imports the library. `STABILITY.md` tables stay scoped to v0.28.0; the
+  HEAD section names `grok.Conn` and the Gaps bullet carries the closure.
 
 ### ENT-010: `TaskConfig.ClaudeID` is the resume handle for every provider
 
