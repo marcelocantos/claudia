@@ -863,6 +863,7 @@ func (d *Daemon) handleGrant(c *broker.ClientConn, req *broker.Request) {
 		Replayed:         len(ring),
 		Lagged:           lagged,
 		TurnCaps:         turnCapsWire(proc),
+		MCPUnavailable:   proc.HostMCPUnavailable(),
 		RemainingPercent: pickedRemaining,
 	}
 	_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeGranted, Granted: resp})
@@ -909,15 +910,16 @@ func (d *Daemon) handleAcquire(c *broker.ClientConn, req *broker.Request, def cl
 	go func() { defer d.wg.Done(); d.runPump(g, c, pump) }()
 
 	_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeGranted, Granted: &broker.GrantResponse{
-		Name:          name,
-		SessionID:     proc.SessionID(),
-		Provider:      broker.Provider(procProvider(proc)),
-		Model:         proc.Model(),
-		WindowID:      proc.WindowID(),
-		JSONLPath:     proc.JSONLPath(),
-		TermLogPath:   proc.TermLogPath(),
-		AttachCommand: proc.AttachCommand(),
-		TurnCaps:      turnCapsWire(proc),
+		Name:           name,
+		SessionID:      proc.SessionID(),
+		Provider:       broker.Provider(procProvider(proc)),
+		Model:          proc.Model(),
+		WindowID:       proc.WindowID(),
+		JSONLPath:      proc.JSONLPath(),
+		TermLogPath:    proc.TermLogPath(),
+		AttachCommand:  proc.AttachCommand(),
+		TurnCaps:       turnCapsWire(proc),
+		MCPUnavailable: proc.HostMCPUnavailable(),
 	}})
 	d.emit(broker.EventMessage{Kind: broker.EventGrant, Name: name, SessionID: proc.SessionID(), Detail: "acquired"})
 }

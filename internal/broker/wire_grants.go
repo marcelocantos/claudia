@@ -382,6 +382,9 @@ type GrantResponse struct {
 	// was chosen by pick remaining. Absent on a named provider and on a
 	// reclaim.
 	RemainingPercent *float64 `json:"remaining_percent,omitempty"`
+	// MCPUnavailable names the seat's MCP servers that listed no tools
+	// when it launched (jevons 🎯T934). Absent from an older daemon.
+	MCPUnavailable []string `json:"mcp_unavailable,omitempty"`
 }
 
 // AgentEventMessage is one claudia.Event on a grant connection.

@@ -20,6 +20,22 @@ import (
 
 func main() {
 	sc := bufio.NewScanner(os.Stdin)
+	// Wedged: alive, reading, never answering (jevons 🎯T934). WEDGE_ONCE
+	// names a marker file: the first run creates it and wedges, later runs
+	// answer normally. WEDGE_ALWAYS wedges every run.
+	if marker := os.Getenv("MCPSTDIO_WEDGE_ONCE"); marker != "" {
+		if _, err := os.Stat(marker); err != nil {
+			_ = os.WriteFile(marker, nil, 0o644)
+			for sc.Scan() {
+			}
+			return
+		}
+	}
+	if os.Getenv("MCPSTDIO_WEDGE_ALWAYS") != "" {
+		for sc.Scan() {
+		}
+		return
+	}
 	var mu sync.Mutex
 	enc := json.NewEncoder(os.Stdout)
 	reply := func(id any, result map[string]any) {

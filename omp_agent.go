@@ -172,8 +172,9 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 	}
 	var tools json.RawMessage
 	var toolRoutes, toolNames map[string]string
+	var mcpUnavailable []string
 	if !req.Config.SummaryOnly {
-		tools, toolRoutes, toolNames = hostToolsNamed(req.Context, req.Config.MCPServers)
+		tools, toolRoutes, toolNames, mcpUnavailable = hostToolsReport(req.Context, req.Config.MCPServers)
 	}
 	// The session names the seat's conversation. The sidecar keeps it on
 	// disk under this id, so a sidecar restart resumes it and a new session
@@ -237,9 +238,10 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 	}
 	ompSeats.Store(ctrl, struct{}{})
 	return &agentStart{
-		Control:     ctrl,
-		SessionID:   sessionID,
-		HistoryLost: historyLost,
+		Control:            ctrl,
+		SessionID:          sessionID,
+		HistoryLost:        historyLost,
+		HostMCPUnavailable: mcpUnavailable,
 		Ops: agentOps{
 			send: func(a *Agent, text string) error {
 				ctrl.inflight.Store(true)
@@ -1005,6 +1007,14 @@ func hostTools(ctx context.Context, servers []MCPServer) (json.RawMessage, map[s
 // hostToolsNamed is hostTools plus, for each advertised name that differs
 // from the server's own, the server's name to call it by (🎯T146).
 func hostToolsNamed(ctx context.Context, servers []MCPServer) (json.RawMessage, map[string]string, map[string]string) {
+	raw, routes, names, _ := hostToolsReport(ctx, servers)
+	return raw, routes, names
+}
+
+// hostToolsReport is hostToolsNamed plus the servers that listed no tools
+// within the launch's budget (jevons 🎯T934): the seat starts without them,
+// and the caller is told so rather than finding out minutes into its work.
+func hostToolsReport(ctx context.Context, servers []MCPServer) (json.RawMessage, map[string]string, map[string]string, []string) {
 	var tools []hostJevonsTool
 	routes := map[string]string{}
 	originals := map[string]string{}
@@ -1054,12 +1064,15 @@ wait:
 	defer mu.Unlock()
 	// What the seat is offered, per server (🎯T147): the evidence that a
 	// launch got every server's tools, or which it went without.
-	var offered []string
+	var offered, unavailable []string
 	for i, srv := range servers {
 		if srv.URL == "" || (srv.Type != "" && srv.Type != "http") {
 			continue
 		}
 		offered = append(offered, fmt.Sprintf("%s=%d", srv.Name, len(lists[i])))
+		if len(lists[i]) == 0 {
+			unavailable = append(unavailable, srv.Name)
+		}
 	}
 	if len(offered) > 0 {
 		slog.Info("omp: host tools offered to seat", "servers", strings.Join(offered, ","))
@@ -1082,13 +1095,13 @@ wait:
 		}
 	}
 	if len(tools) == 0 {
-		return nil, nil, nil
+		return nil, nil, nil, unavailable
 	}
 	raw, err := json.Marshal(tools)
 	if err != nil {
-		return nil, nil, nil
+		return nil, nil, nil, unavailable
 	}
-	return raw, routes, originals
+	return raw, routes, originals, unavailable
 }
 
 // maxProviderToolName is the longest tool name every sidecar provider takes

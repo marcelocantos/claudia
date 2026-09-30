@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
@@ -37,16 +38,19 @@ type mcpStdioBackend struct {
 	srv  MCPServer
 	next atomic.Int64
 
-	mu   sync.Mutex // guards proc; serialises stdin writes
+	mu   sync.Mutex // guards proc and restarts; serialises stdin writes
 	proc *mcpStdioProc
+	// restarts are the recent wedged-process restarts (🎯T934).
+	restarts []time.Time
 }
 
 // mcpStdioProc is one run of the backend's process.
 type mcpStdioProc struct {
-	cmd   *exec.Cmd
-	stdin io.WriteCloser
-	done  chan struct{} // closed when the reader stops: the process is gone
-	stop  sync.Once
+	cmd     *exec.Cmd
+	started time.Time
+	stdin   io.WriteCloser
+	done    chan struct{} // closed when the reader stops: the process is gone
+	stop    sync.Once
 
 	mu          sync.Mutex
 	waiters     map[string]chan []byte // backend id -> the request waiting on it
@@ -55,6 +59,24 @@ type mcpStdioProc struct {
 
 // mcpStdioRequestTimeout bounds a request whose caller set no deadline.
 var mcpStdioRequestTimeout = 20 * time.Second
+
+// A process that has not answered initialize by the request's deadline is
+// wedged (jevons 🎯T934): alive and reading, answering nothing, so every
+// seat that names it starts without it until something restarts it. The
+// host kills it and the next request starts a fresh one. A process younger
+// than mcpStdioWedgeGrace is still starting, not wedged, and a backend is
+// restarted at most mcpStdioMaxWedgeRestarts times per
+// mcpStdioWedgeRestartWindow: a server that is simply broken is not
+// restarted forever.
+var mcpStdioWedgeGrace = 30 * time.Second
+
+const (
+	mcpStdioMaxWedgeRestarts   = 3
+	mcpStdioWedgeRestartWindow = 10 * time.Minute
+)
+
+// mcpStdioWedgeRestarts counts wedged-process restarts (test seam).
+var mcpStdioWedgeRestarts atomic.Int64
 
 // mcpStdioTimeoutCode is the JSON-RPC error a request gets when the process
 // has not answered it by its deadline.
@@ -160,6 +182,9 @@ func (b *mcpStdioBackend) roundTrip(ctx context.Context, raw []byte, msg map[str
 		}
 	case <-ctx.Done():
 		proc.forget(backendID)
+		if method == "initialize" {
+			b.restartWedged(proc)
+		}
 		return mcpJSONRPCError(id, mcpStdioTimeoutCode,
 			fmt.Sprintf("mcp stdio %s: no reply to %s before the deadline", b.srv.Name, method)), nil
 	}
@@ -240,6 +265,7 @@ func (b *mcpStdioBackend) ensureLocked() (*mcpStdioProc, error) {
 	}
 	proc := &mcpStdioProc{
 		cmd:     cmd,
+		started: time.Now(),
 		stdin:   stdin,
 		done:    make(chan struct{}),
 		waiters: map[string]chan []byte{},
@@ -377,4 +403,32 @@ func readMCPContentLength(r *bufio.Reader) ([]byte, error) {
 		return nil, err
 	}
 	return buf, nil
+}
+
+// restartWedged kills proc when it never answered initialize (🎯T934), so
+// the next request starts the server again, within the restart bound.
+func (b *mcpStdioBackend) restartWedged(proc *mcpStdioProc) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.proc != proc || time.Since(proc.started) < mcpStdioWedgeGrace {
+		return
+	}
+	now := time.Now()
+	recent := b.restarts[:0]
+	for _, at := range b.restarts {
+		if now.Sub(at) < mcpStdioWedgeRestartWindow {
+			recent = append(recent, at)
+		}
+	}
+	b.restarts = recent
+	if len(b.restarts) >= mcpStdioMaxWedgeRestarts {
+		slog.Warn("mcp stdio: server still not answering initialize; restart limit reached, leaving it",
+			"server", b.srv.Name, "restarts", len(b.restarts), "window", mcpStdioWedgeRestartWindow)
+		return
+	}
+	b.restarts = append(b.restarts, now)
+	mcpStdioWedgeRestarts.Add(1)
+	slog.Warn("mcp stdio: server did not answer initialize; restarting it", "server", b.srv.Name,
+		"restart", len(b.restarts), "of", mcpStdioMaxWedgeRestarts)
+	b.killLocked()
 }

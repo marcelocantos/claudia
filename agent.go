@@ -283,6 +283,8 @@ type Agent struct {
 
 	// historyLost is agentStart.HistoryLost, fixed at start.
 	historyLost bool
+	// hostMCPUnavailable is agentStart.HostMCPUnavailable, fixed at start.
+	hostMCPUnavailable []string
 
 	mu    sync.Mutex
 	alive bool
@@ -542,6 +544,9 @@ type agentStart struct {
 	// earlier conversation (jevons 🎯T929): the backend knows it could not
 	// bring it back. A restart note must then not claim a resumption.
 	HistoryLost bool
+	// HostMCPUnavailable names the host MCP servers that listed no tools
+	// when the seat launched (jevons 🎯T934): it started without them.
+	HostMCPUnavailable []string
 	// TermLogPath, when non-empty, is the daemon's terminal log for a
 	// broker-held seat: reported by TermLogPath, never written by this
 	// process.
@@ -926,6 +931,7 @@ func startWithBackendContext(ctx context.Context, cfg Config, backend agentBacke
 		return nil, fmt.Errorf("%s agent backend returned no session and no error", provider)
 	}
 	a.historyLost = start.HistoryLost
+	a.hostMCPUnavailable = append([]string(nil), start.HostMCPUnavailable...)
 	if start.SessionID != "" {
 		a.sessionID = start.SessionID
 		sessionID = start.SessionID
@@ -2685,4 +2691,18 @@ func escapeWorkDir(workDir string) string {
 		}
 	}
 	return b.String()
+}
+
+// HostMCPUnavailable names the MCP servers this seat was configured with
+// that listed no tools when it launched (jevons 🎯T934). The seat started
+// without them; a caller that needs one can say so before briefing it,
+// rather than learn it from a failed tool call minutes in. Empty when every
+// server answered, and for providers whose MCP the host does not list.
+func (a *Agent) HostMCPUnavailable() []string {
+	if a == nil {
+		return nil
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]string(nil), a.hostMCPUnavailable...)
 }

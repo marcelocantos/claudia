@@ -163,14 +163,15 @@ func (b *brokerAgentBackend) StartAgent(req agentStartRequest) (*agentStart, err
 			"grant", name, "replayed", g.Replayed)
 	}
 	return &agentStart{
-		WindowID:    g.WindowID,
-		Ops:         b.ops(),
-		SessionID:   g.SessionID,
-		JSONLPath:   g.JSONLPath,
-		TermLogPath: g.TermLogPath,
-		ConnectURL:  g.ConnectURL,
-		ConnectPID:  g.ConnectPID,
-		GrantName:   name,
+		WindowID:           g.WindowID,
+		HostMCPUnavailable: g.MCPUnavailable,
+		Ops:                b.ops(),
+		SessionID:          g.SessionID,
+		JSONLPath:          g.JSONLPath,
+		TermLogPath:        g.TermLogPath,
+		ConnectURL:         g.ConnectURL,
+		ConnectPID:         g.ConnectPID,
+		GrantName:          name,
 		// DetectReady only records the handle: readiness is the daemon's
 		// (its Send blocks on it), so this handle is ready at once.
 		DetectReady: func(a *Agent) {
