@@ -1,7 +1,7 @@
 // Host coding tools for OMP seats. These are ours, not pi-natives (🎯T864.3).
 // Names follow the Claude CLI set so workers can actually edit a repo.
 
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
@@ -9,6 +9,79 @@ import { capToolText, toolResultBound } from "./truncate.ts";
 
 const maxOut = 200_000;
 const bashTimeoutMs = 60_000;
+const searchTimeoutMs = 15_000;
+
+// RunResult is what runCommand saw, shaped like a synchronous spawn's result
+// so the tools read it the way they always did.
+export type RunResult = {
+  stdout: string;
+  stderr: string;
+  status: number | null;
+  error?: NodeJS.ErrnoException;
+};
+
+// runCommand runs a child without blocking the event loop (🎯T161).
+//
+// The tools ran their children synchronously, and the sidecar is one Bun
+// process serving every seat: one seat's 60 s build froze every other seat's
+// prompt, load and adopt until it returned. Across a broker restart that was
+// minutes of nothing — the spool went silent for 60-124 s at a time while
+// loads queued behind Bash, and resumes that waited 2 s for an adopt reply
+// gave up and relaunched. The bounds are unchanged: past timeoutMs, or past
+// maxBuffer bytes on either stream, the child is killed and the result
+// carries an error.
+export function runCommand(
+  command: string,
+  args: string[],
+  opts: { cwd?: string; timeoutMs: number; maxBuffer: number; env?: NodeJS.ProcessEnv },
+): Promise<RunResult> {
+  return new Promise((resolve) => {
+    const out: Buffer[] = [];
+    const errOut: Buffer[] = [];
+    let outBytes = 0;
+    let errBytes = 0;
+    let error: NodeJS.ErrnoException | undefined;
+    let settled = false;
+    const finish = (status: number | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({
+        stdout: Buffer.concat(out).toString("utf8"),
+        stderr: Buffer.concat(errOut).toString("utf8"),
+        status,
+        error,
+      });
+    };
+    const fail = (code: string, message: string) => {
+      if (!error) {
+        error = Object.assign(new Error(message), { code }) as NodeJS.ErrnoException;
+      }
+      child.kill("SIGTERM");
+      // A grandchild holding the pipes open must not hold the seat.
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      finish(null);
+    };
+    const child = spawn(command, args, { cwd: opts.cwd, env: opts.env, stdio: ["ignore", "pipe", "pipe"] });
+    const timer = setTimeout(() => fail("ETIMEDOUT", `${command} timed out after ${opts.timeoutMs}ms`), opts.timeoutMs);
+    const collect = (into: Buffer[], add: (n: number) => number) => (chunk: Buffer) => {
+      if (settled) return;
+      if (add(chunk.length) > opts.maxBuffer) {
+        fail("ENOBUFS", `${command} output exceeded ${opts.maxBuffer} bytes`);
+        return;
+      }
+      into.push(chunk);
+    };
+    child.stdout?.on("data", collect(out, (n) => (outBytes += n)));
+    child.stderr?.on("data", collect(errOut, (n) => (errBytes += n)));
+    child.on("error", (err: NodeJS.ErrnoException) => {
+      error = err;
+      finish(null);
+    });
+    child.on("close", (code) => finish(code));
+  });
+}
 
 export function codingTools(cwdOf: () => string, boundOf: () => number = () => toolResultBound(0)): AgentTool[] {
   return [bashTool(cwdOf, boundOf), readTool(cwdOf, boundOf), writeTool(cwdOf, boundOf), globTool(cwdOf, boundOf), grepTool(cwdOf, boundOf)];
@@ -28,10 +101,9 @@ function bashTool(cwdOf: () => string, boundOf: () => number): AgentTool {
       const command = String((params as { command?: string })?.command || "");
       if (!command) return textResult("missing command", boundOf(), "Bash");
       const cwd = cwdOf() || process.cwd();
-      const r = spawnSync("/bin/bash", ["-lc", command], {
+      const r = await runCommand("/bin/bash", ["-lc", command], {
         cwd,
-        encoding: "utf8",
-        timeout: bashTimeoutMs,
+        timeoutMs: bashTimeoutMs,
         maxBuffer: maxOut,
         env: process.env,
       });
@@ -105,9 +177,8 @@ function globTool(cwdOf: () => string, boundOf: () => number): AgentTool {
     execute: async (_id: string, params: unknown) => {
       const pattern = String((params as { pattern?: string })?.pattern || "*");
       const cwd = cwdOf() || process.cwd();
-      const r = spawnSync("/usr/bin/find", [cwd, "-name", pattern], {
-        encoding: "utf8",
-        timeout: 15_000,
+      const r = await runCommand("/usr/bin/find", [cwd, "-name", pattern], {
+        timeoutMs: searchTimeoutMs,
         maxBuffer: maxOut,
       });
       const lines = (r.stdout || "").split("\n").filter(Boolean).slice(0, 500);
@@ -133,15 +204,13 @@ function grepTool(cwdOf: () => string, boundOf: () => number): AgentTool {
       const p = params as { pattern?: string; path?: string };
       const cwd = cwdOf() || process.cwd();
       const target = p?.path ? under(cwd, p.path) : cwd;
-      const rg = spawnSync("rg", ["-n", "--max-count", "50", String(p?.pattern || ""), target], {
-        encoding: "utf8",
-        timeout: 15_000,
+      const rg = await runCommand("rg", ["-n", "--max-count", "50", String(p?.pattern || ""), target], {
+        timeoutMs: searchTimeoutMs,
         maxBuffer: maxOut,
       });
-      if (rg.error && (rg.error as NodeJS.ErrnoException).code === "ENOENT") {
-        const g = spawnSync("/usr/bin/grep", ["-R", "-n", String(p?.pattern || ""), target], {
-          encoding: "utf8",
-          timeout: 15_000,
+      if (rg.error && rg.error.code === "ENOENT") {
+        const g = await runCommand("/usr/bin/grep", ["-R", "-n", String(p?.pattern || ""), target], {
+          timeoutMs: searchTimeoutMs,
           maxBuffer: maxOut,
         });
         return textResult((g.stdout || g.stderr || "").slice(0, maxOut) || "(no matches)", boundOf(), "Grep");
