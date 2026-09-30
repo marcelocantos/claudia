@@ -211,6 +211,12 @@ type ResumeArgs struct {
 	StartTimeout time.Duration
 	// Now stamps the default nudge. Zero uses the current time.
 	Now time.Time
+	// NudgeSpacing is the least time between two restart nudges across the
+	// whole resume (jevons 🎯T977). Every nudge opens a turn; sent together
+	// they arrive at the provider as one burst, and on 2026-10-01 each broker
+	// restart met a wave of rate-limit refusals. Zero sends them as soon as
+	// each seat is ready.
+	NudgeSpacing time.Duration
 	// Select, when set, decides which AutoStart seats come back and in what
 	// order (🎯T161). It is given their names in name order and returns the
 	// ones to resume, most wanted first; a seat it leaves out is not resumed
@@ -287,6 +293,7 @@ func (r *Registry) ResumeAll(ctx context.Context, args *ResumeArgs) []ResumeOutc
 	if nudge != NoRestartNudge {
 		lostNudge = fmt.Sprintf(LostHistoryRestartNudge, now.Format(time.RFC3339))
 	}
+	pace := nudgePacer(args.NudgeSpacing)
 	conc := args.Concurrency
 	if conc <= 0 {
 		conc = defaultResumeConcurrency
@@ -312,7 +319,7 @@ func (r *Registry) ResumeAll(ctx context.Context, args *ResumeArgs) []ResumeOutc
 			var once sync.Once
 			release := func() { once.Do(func() { <-sem }) }
 			defer release()
-			r.resumeSeat(ctx, &out[i], nudge, lostNudge, timeout, release)
+			r.resumeSeat(ctx, &out[i], nudge, lostNudge, timeout, release, pace)
 		}()
 	}
 	wg.Wait()
@@ -321,7 +328,7 @@ func (r *Registry) ResumeAll(ctx context.Context, args *ResumeArgs) []ResumeOutc
 
 // resumeSeat brings one seat back. started is called once the seat is
 // running or has failed to start, before anything else is asked of it.
-func (r *Registry) resumeSeat(ctx context.Context, out *ResumeOutcome, nudge, lostNudge string, timeout time.Duration, started func()) {
+func (r *Registry) resumeSeat(ctx context.Context, out *ResumeOutcome, nudge, lostNudge string, timeout time.Duration, started func(), pace func(context.Context) error) {
 	name := out.Name
 	launch := func() (*Agent, error) {
 		lctx, cancel := context.WithTimeout(ctx, timeout)
@@ -355,6 +362,10 @@ func (r *Registry) resumeSeat(ctx context.Context, out *ResumeOutcome, nudge, lo
 	if proc.StartedWithoutHistory() && lostNudge != "" {
 		nudge = lostNudge
 	}
+	if err := pace(ctx); err != nil {
+		out.NudgeErr = err
+		return
+	}
 	proc.SetPromptCause(PromptCause{
 		Cause:  "restart-nudge",
 		Detail: oneLineCauseDetail(nudge),
@@ -384,4 +395,35 @@ func (r *Registry) remintSeat(name string) (oldSession string, err error) {
 		return def.SessionID, err
 	}
 	return def.SessionID, nil
+}
+
+// nudgePacer returns a wait that hands out nudge slots at least spacing
+// apart, in the order callers ask. Zero spacing never waits.
+func nudgePacer(spacing time.Duration) func(context.Context) error {
+	if spacing <= 0 {
+		return func(context.Context) error { return nil }
+	}
+	var mu sync.Mutex
+	var next time.Time
+	return func(ctx context.Context) error {
+		mu.Lock()
+		at := time.Now()
+		if next.After(at) {
+			at = next
+		}
+		next = at.Add(spacing)
+		mu.Unlock()
+		wait := time.Until(at)
+		if wait <= 0 {
+			return nil
+		}
+		t := time.NewTimer(wait)
+		defer t.Stop()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-t.C:
+			return nil
+		}
+	}
 }

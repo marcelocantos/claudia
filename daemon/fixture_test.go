@@ -227,6 +227,8 @@ func (f *fixture) options(usage []claudia.PlanUsage) Options {
 		StateDir:     f.state,
 		DisableIntel: true,
 		RestartNudge: "restart-nudge",
+		// Hermetic resumes nudge at once; TestT977 spaces them on purpose.
+		RestartNudgeSpacing: -1,
 		UsageFetch: func(context.Context) ([]claudia.PlanUsage, error) {
 			f.mu.Lock()
 			f.fetches++

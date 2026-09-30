@@ -62,6 +62,12 @@ type Options struct {
 	// from its transcript on boot. Empty uses DefaultRestartNudge;
 	// NoRestartNudge ("-") sends nothing.
 	RestartNudge string
+	// RestartNudgeSpacing is the least time between two restart nudges
+	// (jevons 🎯T977): every resumed seat opening a turn at once met a wave of
+	// provider rate limits on each broker restart. Zero means
+	// DefaultRestartNudgeSpacing; negative sends them as soon as each seat is
+	// ready.
+	RestartNudgeSpacing time.Duration
 	// ResumeConcurrency bounds how many seats resume at once. Zero means 2.
 	ResumeConcurrency int
 	// ResumeUnclaimedAfter is how long a grant may go without a consumer
@@ -1818,9 +1824,10 @@ func (d *Daemon) resumeSeats() {
 		unclaimedAfter = DefaultResumeUnclaimedAfter
 	}
 	outcomes := d.reg.ResumeAll(d.ctx, &claudia.ResumeArgs{
-		Concurrency: d.opts.ResumeConcurrency,
-		Nudge:       d.opts.RestartNudge,
-		Now:         now,
+		Concurrency:  d.opts.ResumeConcurrency,
+		Nudge:        d.opts.RestartNudge,
+		NudgeSpacing: restartNudgeSpacing(d.opts.RestartNudgeSpacing),
+		Now:          now,
 		// Most recently held first; long-unclaimed grants wait for a
 		// consumer to ask for them (🎯T161).
 		Select: func(names []string) []string {
@@ -1929,4 +1936,18 @@ func newRunID() string {
 		return "r0"
 	}
 	return hex.EncodeToString(b[:])
+}
+
+// DefaultRestartNudgeSpacing spaces the turns a broker restart opens, so a
+// resumed fleet does not reach its provider as one burst (jevons 🎯T977).
+const DefaultRestartNudgeSpacing = 5 * time.Second
+
+func restartNudgeSpacing(d time.Duration) time.Duration {
+	switch {
+	case d < 0:
+		return 0
+	case d == 0:
+		return DefaultRestartNudgeSpacing
+	}
+	return d
 }
