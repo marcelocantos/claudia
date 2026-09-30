@@ -47,6 +47,13 @@ type Event struct {
 	// the message carries a stop_reason, earlier ones have it unset.
 	// Terminal values are "end_turn", "stop_sequence", and "max_tokens";
 	// "tool_use" means the model paused for tool results and will continue.
+	//
+	// A Claude record whose content is only thinking blocks never carries a
+	// terminal value here, even when the transcript line says end_turn
+	// (🎯T162): Claude Code writes the message's final stop_reason on its
+	// thinking record as well as on the text or tool_use record that follows
+	// it, so taking the thinking record as the turn's end ends it one record
+	// early. The line's own stop_reason is still in Raw.
 	StopReason string `json:"-"`
 
 	// Usage is populated for type == "assistant" with the token usage
@@ -129,6 +136,41 @@ func (e Event) IsTerminalStop() bool {
 	return false
 }
 
+// isThinkingOnly reports whether a Claude message's content is one or more
+// thinking blocks and nothing else (🎯T162).
+//
+// Such a record is never the end of a turn. Claude Code writes each content
+// block of an assistant message as its own transcript record, and on a
+// resumed or long turn it stamps the message's final stop_reason on every
+// one of them — so a thinking record can say end_turn while the text or
+// tool_use record that is the turn's actual output is still to come. A scan
+// of 3,000 local transcripts on 2026-09-30 found 1,801 thinking-only records
+// marked terminal; every one was followed by a sibling record of the same
+// message.id. None ended a message.
+//
+// Empty content is deliberately not thinking-only. A terminal record with no
+// blocks at all has nothing that a later sibling would complete, so it keeps
+// its terminal stop: suppressing it would leave a turn that did end waiting
+// for a record that is never written, and a wait that never ends is worse
+// than one that ends on an empty reply. (The same scan found none.)
+func isThinkingOnly(content []any) bool {
+	if len(content) == 0 {
+		return false
+	}
+	for _, c := range content {
+		cm, ok := c.(map[string]any)
+		if !ok {
+			return false
+		}
+		switch cm["type"] {
+		case "thinking", "redacted_thinking":
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // EventFunc receives events from the session transcript.
 type EventFunc func(Event)
 
@@ -168,6 +210,9 @@ func parseEvent(line string) Event {
 					}
 				}
 				ev.Text = strings.Join(texts, "\n")
+				if isThinkingOnly(content) && ev.IsTerminalStop() {
+					ev.StopReason = ""
+				}
 			}
 		}
 		// Live shape (Claude Code ≥2.1.x): invalid --model is echoed on
