@@ -19,6 +19,54 @@ release-prep PR. Inbound PRs from others stay. After clone:
 `make hooks` (or `git config core.hooksPath scripts/hooks`).
 Flow: [docs/gate.md](docs/gate.md).
 
+## Shared checkout: stage through the index only, never write the working tree
+
+This repo's checkout is shared: several seats routinely hold
+uncommitted work in it at once. When you need to commit only *some* of
+a path's content — a subset of a file's lines, or your own entries in
+a file others are also appending to — stage that content through the
+git **index**, and never run a command that overwrites the **working
+tree** on a path you do not own.
+
+Safe pattern (content-scoped staging, working tree untouched):
+
+```bash
+# build the exact bytes you want committed for the path, e.g. into /tmp/content
+git hash-object -w /tmp/content                 # -> blob SHA
+git update-index --cacheinfo 100644 <blob-sha> path/to/file
+git commit -m "..."                              # working tree never touched
+```
+
+If a first attempt at this goes wrong, back it out by re-staging
+(`git update-index --cacheinfo` again, or `git reset` the index entry),
+**not** by restoring the file from disk or from the index.
+
+**Never run these on a path you do not own**, in a checkout other
+seats are working in:
+
+- `git checkout-index` (with or without `-f`)
+- `git restore`
+- `git checkout -- <path>`
+- `git stash` (touches every unstaged path, not just yours)
+
+Each of these overwrites the **working tree**, not just the index.
+`git checkout-index -f -- <path>` in particular writes the index's
+version of a file over whatever is sitting in the working tree —
+it is not an "unstage", and if the working-tree content was never
+committed, there is no reflog and no built-in way to get it back.
+
+This bit for real (🎯T102, 2026-09-21): a seat committing its own three
+entries in a shared JSON file, while another seat's two uncommitted
+entries sat in the same file, used the index trick correctly to select
+only its own content — then, backing out a first attempt that had
+reformatted the file, ran `git checkout-index -f -- <path>`. That
+overwrote the working tree and destroyed the other seat's uncommitted
+entries. They were recovered only because a scratch copy happened to
+exist elsewhere on disk (`/private/tmp/...`) and matched an earlier
+`git diff` capture — luck, not a property of the process. See 🎯T102's
+ledger context for the full incident writeup, including a subsequent
+correction of who the destroyed work actually belonged to.
+
 ## Live tests (backend changes)
 
 Hermetic `go test` cannot decide spawn, submit, auth, or turn-loop
