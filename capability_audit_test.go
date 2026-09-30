@@ -766,6 +766,18 @@ func cloneTaskFates() map[Provider]map[string]fieldDecl {
 	return out
 }
 
+func cloneSessionFates() map[Provider]map[string]fieldDecl {
+	out := make(map[Provider]map[string]fieldDecl, len(sessionFieldFates))
+	for p, m := range sessionFieldFates {
+		cp := make(map[string]fieldDecl, len(m))
+		for k, v := range m {
+			cp[k] = v
+		}
+		out[p] = cp
+	}
+	return out
+}
+
 // TestProviderPathsHonourOrRefuseEveryRequestField is the 🎯T24 census.
 // Reflection over TaskConfig and Config, not a hand-maintained field list.
 func TestProviderPathsHonourOrRefuseEveryRequestField(t *testing.T) {
@@ -799,6 +811,22 @@ func TestReintroducingASilentDropGoesRed(t *testing.T) {
 	issues := requestFieldAudit(task, sessionFieldFates)
 	if !containsIssue(issues, "grok Task DisallowTools") {
 		t.Fatalf("declaring Grok Task DisallowTools consumed did not fail the audit: %v", issues)
+	}
+}
+
+// TestOmittingASessionFieldDispositionGoesRed is mutation (c): a Config
+// field with no row at all in a Session map must fail the audit as a
+// silent drop. This is the ENT-002 shape (🎯T47.2): Config.GoalCompleteCheck
+// shipped without a disposition and the census went red for it, which is
+// the oracle working. The row exists now; this pins that deleting it
+// again would still bite, so the census cannot decay into a table that
+// tolerates a missing row.
+func TestOmittingASessionFieldDispositionGoesRed(t *testing.T) {
+	session := cloneSessionFates()
+	delete(session[ProviderClaude], "GoalCompleteCheck")
+	issues := requestFieldAudit(taskFieldFates, session)
+	if !containsIssue(issues, "claude Session GoalCompleteCheck: no disposition") {
+		t.Fatalf("deleting the Claude Session GoalCompleteCheck row did not fail the audit: %v", issues)
 	}
 }
 

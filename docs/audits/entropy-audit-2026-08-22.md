@@ -9,6 +9,7 @@
 - **Headline mechanism:** a single public `claudia` package is a multi-provider runtime (Task + Session) with a published capability matrix and fail-closed field-fate audit — while a second public Codex Task package, a freeze-framed `STABILITY.md` snapshot four minors behind `Version`, and a half-wired lifecycle broker compete as sources of truth. At this HEAD the shipped hermetic path is red.
 - **Highest-consequence findings:** ENT-001 (`MCPProxy` data race on concurrent 401), ENT-002 (T24 field-fate table missing `Config.GoalCompleteCheck`), ENT-003 (two public Codex Task implementations), ENT-004 (`STABILITY.md` snapshot stuck at v0.21.0 vs `Version` 0.25.0).
   - *Later annotation (2026-09-21):* ENT-001 is **closed** — see its Closure bullet under Findings. The rest of this summary is the 2026-08-22 observation and is not restated.
+  - *Later annotation (2026-09-30):* ENT-002 is **closed** — see its Closure bullet under Findings.
 - **Unverified residue:** live provider gates (`CLAUDIA_*_LIVE`) not set; `make verify-mutation-evidence` and `make verify-specs` not re-run here; `staticcheck` cannot compile a go1.26 module (tool built with go1.25); no `govulncheck` / clone detector installed; Windows build not exercised.
 
 ## Scope and exclusions
@@ -156,14 +157,32 @@ retired it. Closed so far: **ENT-001** (2026-09-21, 🎯T47.1).
 
 - **Priority:** P1
 - **Dimensions:** Correctness / verification; Change amplification
-- **Status:** observed fact
-- **Evidence:** same shipped `go test -race` run: `--- FAIL: TestProviderPathsHonourOrRefuseEveryRequestField` (`capability_audit_test.go:576-579`) with `claude Session GoalCompleteCheck: no disposition — silent drop` (and the same for Codex and Grok). Field added on `Config` at `agent.go:99-104` and copied onto the Agent at `agent.go:461`. `sessionFieldFates` lists `Goal` as `fateLocal` (`capability_audit_test.go:137`, `:158`, `:179`) but has no `GoalCompleteCheck` row. `SetGoalCompleteCheck` / `TestGoalCompleteCheckEndsLoopWithoutStatus` show the hook is real (`goal.go:49-58`, `goal_test.go:136`).
+- **Status:** **closed 2026-09-30** (🎯T47.2). Was: observed fact at `715e175`. The evidence below no longer reproduces on the shipped path — see **Closure**.
+- **Evidence (2026-08-22, at `715e175`):** same shipped `go test -race` run: `--- FAIL: TestProviderPathsHonourOrRefuseEveryRequestField` (`capability_audit_test.go:576-579`) with `claude Session GoalCompleteCheck: no disposition — silent drop` (and the same for Codex and Grok). Field added on `Config` at `agent.go:99-104` and copied onto the Agent at `agent.go:461`. `sessionFieldFates` lists `Goal` as `fateLocal` (`capability_audit_test.go:137`, `:158`, `:179`) but has no `GoalCompleteCheck` row. `SetGoalCompleteCheck` / `TestGoalCompleteCheckEndsLoopWithoutStatus` show the hook is real (`goal.go:49-58`, `goal_test.go:136`).
 - **Mechanism:** T24 reflects over exported `Config` fields and requires a disposition per Session provider. Adding a host-local func field without updating the table trips the oracle — which is the oracle working. HEAD still ships with the suite red.
 - **Blast radius:** `make bullseye` / CI `test` job; anyone adding the next `Config` field cannot tell whether a new silent-drop is real or this leftover.
 - **Counterevidence checked:** the field is host-owned (not sent to a provider); behaviour is tested in `goal_test.go`. This is not a silent drop of a provider flag. The failure is census lag, not a Goal-loop logic bug.
 - **Smallest coherent remediation:** add `GoalCompleteCheck: {fateLocal, "host completeness hook; never sent to the provider"}` for Claude/Grok/Codex Session maps (Bedrock/Ollama Session already fail closed as a whole).
 - **Verification:** `go test -count=1 -run TestProviderPathsHonourOrRefuseEveryRequestField .` green; deleting that row must fail the census.
 - **Ratchet candidate:** already T24; keep it. Do not weaken the test to ignore func fields.
+- **Closure (2026-09-30, 🎯T47.2):** the audit's own remediation is in the shipped
+  path. `sessionFieldFates` carries
+  `"GoalCompleteCheck": {fateLocal, "host completeness hook; never sent to the provider"}`
+  for Claude, Grok, Codex and Cursor (`capability_audit_test.go:173`, `:205`,
+  `:237`, `:269`). The rows landed in `70a9a1c` (2026-08-31), nine days after this
+  audit, as an unremarked part of the Codex T598 sandbox commit — the same shape
+  as ENT-001: the P1 was fixed without the finding being closed, and this entry
+  carried a stale red for a month. Bedrock and Ollama Session still fail closed
+  as a whole and need no row.
+- **Closure evidence:** `go test -count=1 -run TestProviderPathsHonourOrRefuseEveryRequestField .`
+  is `ok`. The census still has teeth: deleting the Claude row by hand at
+  `311d4ba` gives `--- FAIL: TestProviderPathsHonourOrRefuseEveryRequestField`
+  with `claude Session GoalCompleteCheck: no disposition — silent drop`, and
+  restoring it goes green. That hand check is now pinned as mutation (c),
+  `TestOmittingASessionFieldDispositionGoesRed`, beside the census's existing
+  mutations (a) and (b): it clones the Session table, deletes the row, and
+  asserts the audit reports the silent drop. The test was not weakened to
+  ignore func fields.
 
 ### ENT-003: Two public Codex Task implementations that cannot share a bugfix
 
@@ -378,6 +397,7 @@ Entropy findings suitable as later hygiene items: ENT-001/002 as `correctness.he
 
 1. **Repair the shipped hermetic oracle (ENT-001, ENT-002).** Fix the `MCPProxy` probe race; add the T24 `GoalCompleteCheck` disposition. `go test -race -count=1 ./...` must be green. This unblocks every other claim about HEAD.
    - *2026-09-21:* the ENT-001 half is **done** (🎯T47.1) — probe read and write are paired under `p.mu`, proven by mutation, and the finding is closed. ENT-002 is a separate entry and is not closed here.
+   - *2026-09-30:* the ENT-002 half is **done** (🎯T47.2) — the `GoalCompleteCheck` rows are in `sessionFieldFates`, the census is green, and deleting a row is pinned red by `TestOmittingASessionFieldDispositionGoesRed`. Item 1 is closed.
 2. **Refresh `STABILITY.md` to the latest tag (ENT-004)** so 1.0 Gaps describe the API that actually shipped (MCP, Goal, Ollama, capability extras). Keep `verify-stability` as the enumerator.
 3. **Converge Codex Task (ENT-003)** onto one implementation; delete or unexport the other; share fixtures. Do this before any further Codex exec parser work.
 4. **Docs table/package comment (ENT-008)** once Session transports are described as they are.
