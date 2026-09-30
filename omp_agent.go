@@ -129,8 +129,18 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 	// RequireResume counts conversation records, not sidecar handshake
 	// lines (🎯T153): bookkeeping-only spool with no omp-seats store must
 	// refuse rather than resume onto an empty conversation.
+	// The check is bounded by the launch (🎯T161): it once read the whole
+	// spool for minutes while a broker restart waited on it.
 	if req.Config.RequireResume && !req.Config.AdoptOnly {
-		if !omp.SeatHasHistory(omp.SpoolDir(), req.Config.Name) {
+		ctx := req.Context
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		found, err := omp.SeatHasHistoryContext(ctx, omp.SpoolDir(), req.Config.Name)
+		if err != nil && ctx.Err() != nil {
+			return nil, fmt.Errorf("session %s: checking spool records for seat %q: %w", req.Config.SessionID, req.Config.Name, err)
+		}
+		if !found {
 			return nil, fmt.Errorf("session %s: existing conversation required but no spool records for seat %q under %s — refusing to mint a replacement session",
 				req.Config.SessionID, req.Config.Name, omp.SpoolDir())
 		}
