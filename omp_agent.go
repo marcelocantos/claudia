@@ -168,6 +168,7 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 	if login.Script == "" {
 		login.Script = sidecarAuthScript()
 	}
+	login.Caller = "launch " + req.Config.Name
 	token, err := store.Ensure(req.Context, provider, login)
 	if err != nil {
 		return nil, err
@@ -516,6 +517,8 @@ func (c *ompControl) recoverRejectedToken() {
 	c.mu.Lock()
 	if !c.lastRefresh.IsZero() && time.Since(c.lastRefresh) < ompRefreshBackoff {
 		c.mu.Unlock()
+		// 🎯T167: a refusal the backoff swallows used to leave no trace.
+		slog.Info("omp token rejected; refresh held by backoff", "provider", c.provider, "seat", c.seat)
 		return
 	}
 	c.lastRefresh = time.Now()
@@ -602,6 +605,7 @@ func (c *ompControl) refreshRejectedToken() {
 		login.Script = sidecarAuthScript()
 	}
 	login.ForceRefresh = true
+	login.Caller = "seat " + c.seat + " refused"
 	// A seat's refusal is never a person at the keyboard (🎯T165).
 	login.NoLogin = true
 	rec, err := login.Refresh(context.Background(), planStore(), c.provider)
@@ -710,6 +714,7 @@ func RefreshOMPPlans(ctx context.Context) (refreshed, skipped []string, err erro
 	if os.Getenv("OMP_FORCE_REFRESH") != "" {
 		login.ForceRefresh = true
 	}
+	login.Caller = "broker boot"
 	return omp.RefreshPlans(ctx, store, login)
 }
 
@@ -727,6 +732,7 @@ func LoginOMPPlans(ctx context.Context, ids ...string) (int, error) {
 	if login.Script == "" {
 		login.Script = sidecarAuthScript()
 	}
+	login.Caller = "login command"
 	return omp.LoginPlans(ctx, store, login, ids...)
 }
 
@@ -818,6 +824,10 @@ func RecoverOMPPlan(ctx context.Context, r *OMPPlanRecovery) error {
 		login.Script = sidecarAuthScript()
 	}
 	login.NoLogin = !r.Login
+	login.Caller = "recover (unattended)"
+	if r.Login {
+		login.Caller = "recover (owner)"
+	}
 	mu := ompRefreshLock(provider)
 	mu.Lock()
 	err := omp.RecoverPlan(ctx, planStore(), login, provider)

@@ -38,6 +38,10 @@ type Login struct {
 	ForceLogin bool
 	// ForceRefresh runs pi-ai refresh even when the access token is still live.
 	ForceRefresh bool
+	// Caller names who is renewing the plan (a seat's refusal, a launch,
+	// broker boot, a recovery), logged with every renewal (🎯T167) so a lost
+	// login's last rotation is attributable from claudia.log alone.
+	Caller string
 	// NoLogin never opens an interactive sign-in: a fetch that would need
 	// one fails with ErrNeedsSignIn instead (🎯T165). Every path that runs
 	// without a person at the keyboard sets it.
@@ -112,8 +116,13 @@ func (l Login) fetch(ctx context.Context, provider string, existing Record) (Rec
 	if noNetworkLogin() {
 		return Record{}, fmt.Errorf("omp: %s %s refused: %s is set, this broker never contacts the OAuth provider", provider, verb, NoNetworkEnv)
 	}
+	caller := l.Caller
+	if caller == "" {
+		caller = "unattributed"
+	}
 	out, err := l.Run(ctx, cmd, l.Script, verb, provider, string(blob))
 	if err != nil {
+		slog.Warn("omp plan login renewal failed", "provider", provider, "verb", verb, "caller", caller, "pid", os.Getpid(), "err", err)
 		return Record{}, fmt.Errorf("omp: %s %s failed: %w", provider, verb, err)
 	}
 	var rec Record
@@ -123,6 +132,9 @@ func (l Login) fetch(ctx context.Context, provider string, existing Record) (Rec
 	if rec.AccessToken == "" || rec.RefreshToken == "" || rec.Expiry.IsZero() {
 		return Record{}, fmt.Errorf("omp: %s %s omitted access token, refresh token, or expiry", provider, verb)
 	}
+	// 🎯T167: every rotation of a plan's token names itself. A refresh spends
+	// the refresh token and revokes the access token every seat holds.
+	slog.Info("omp plan login renewed", "provider", provider, "verb", verb, "caller", caller, "pid", os.Getpid())
 	if rec.Expiry.Before(time.Now().Add(-time.Minute)) {
 		return Record{}, fmt.Errorf("omp: %s %s returned an already-expired token", provider, verb)
 	}
