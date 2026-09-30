@@ -31,6 +31,36 @@ func TestSeatHasHistoryReadsDatedSpool(t *testing.T) {
 	}
 }
 
+func TestSeatHasHistoryIgnoresSidecarBookkeeping(t *testing.T) {
+	dir := t.TempDir()
+	// The T935 isolated-broker specimen: after the spool was cleared, adopt
+	// wrote "seat is not loaded" and the launch wrote ready. Those are not
+	// a conversation (🎯T153).
+	bookkeeping := "" +
+		`{"ts":"2026-09-30T15:55:01.000Z","seat":"t935-broker-lost","type":"error","text":"seat is not loaded"}` + "\n" +
+		`{"ts":"2026-09-30T15:55:07.000Z","seat":"t935-broker-lost","type":"ready"}` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "events-2026-09-30.log"), []byte(bookkeeping), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if SeatHasHistory(dir, "t935-broker-lost") {
+		t.Fatal("bookkeeping-only spool must not look like a conversation")
+	}
+	dropped := filepath.Join(dir, "events-2026-09-29.log")
+	if err := os.WriteFile(dropped, []byte(`{"ts":"2026-09-29T00:00:00.000Z","seat":"t935-broker-lost","type":"dropped"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if SeatHasHistory(dir, "t935-broker-lost") {
+		t.Fatal("dropped is handshake, not history")
+	}
+	live := filepath.Join(dir, "events-2026-09-30.log")
+	if err := os.WriteFile(live, []byte(bookkeeping+`{"ts":"2026-09-30T16:00:00.000Z","seat":"t935-broker-lost","type":"text","text":"hi"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !SeatHasHistory(dir, "t935-broker-lost") {
+		t.Fatal("a text record among bookkeeping is history")
+	}
+}
+
 func TestReadSeatOlderDatesFirst(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "events-2026-09-26.log"), []byte(`{"ts":"2026-09-26T00:00:00.000Z","seat":"s","type":"text","text":"new"}`+"\n"), 0o644); err != nil {

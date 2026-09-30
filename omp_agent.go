@@ -126,6 +126,9 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 	}
 	// Adopting a seat that is already running must not mint one, and must
 	// not start a sidecar in order to discover that it is not there (🎯T869).
+	// RequireResume counts conversation records, not sidecar handshake
+	// lines (🎯T153): bookkeeping-only spool with no omp-seats store must
+	// refuse rather than resume onto an empty conversation.
 	if req.Config.RequireResume && !req.Config.AdoptOnly {
 		if !omp.SeatHasHistory(omp.SpoolDir(), req.Config.Name) {
 			return nil, fmt.Errorf("session %s: existing conversation required but no spool records for seat %q under %s — refusing to mint a replacement session",

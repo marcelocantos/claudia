@@ -36,11 +36,34 @@ type SpoolRecord struct {
 	Snapshot json.RawMessage `json:"snapshot,omitempty"`
 }
 
-// SeatHasHistory reports whether the dated spool holds any record for seat.
-// Fail-closed resume reads this, not a vendor JSONL the sidecar does not write.
+// SeatHasHistory reports whether the dated spool holds conversation
+// records for seat. Sidecar handshake lines are not history (🎯T153):
+// an adopt-miss ("seat is not loaded") plus a later ready used to pass
+// RequireResume and resume onto an empty conversation. Fail-closed
+// resume reads this, not a vendor JSONL the sidecar does not write.
 func SeatHasHistory(dir, seat string) bool {
 	recs, err := ReadSeat(dir, seat)
-	return err == nil && len(recs) > 0
+	if err != nil {
+		return false
+	}
+	for _, rec := range recs {
+		if !sidecarBookkeeping(rec) {
+			return true
+		}
+	}
+	return false
+}
+
+// sidecarBookkeeping is a handshake or protocol event, not conversation
+// content. "error" covers both "seat is not loaded" and turn failures:
+// a real conversation also writes accepted/text/turn.
+func sidecarBookkeeping(rec SpoolRecord) bool {
+	switch rec.Type {
+	case "ready", "dropped", "error":
+		return true
+	default:
+		return false
+	}
 }
 
 // ReadSeat returns every record for seat, older dates first.

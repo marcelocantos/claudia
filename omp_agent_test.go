@@ -40,6 +40,50 @@ func TestT869AdoptOnlyDoesNotStartASidecar(t *testing.T) {
 	}
 }
 
+// 🎯T153: a RequireResume launch whose spool is only sidecar bookkeeping,
+// with no omp-seats store beside the socket, must refuse rather than
+// resume onto an empty conversation under the old session id.
+func TestT153RequireResumeRefusesBookkeepingOnlySpool(t *testing.T) {
+	root := t.TempDir()
+	spool := filepath.Join(root, "spool")
+	if err := os.MkdirAll(spool, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "" +
+		`{"ts":"2026-09-30T15:55:01.000Z","seat":"t935-broker-lost","type":"error","text":"seat is not loaded"}` + "\n" +
+		`{"ts":"2026-09-30T15:55:07.000Z","seat":"t935-broker-lost","type":"ready"}` + "\n"
+	if err := os.WriteFile(filepath.Join(spool, "events-2026-09-30.log"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("JEVONS_SPOOL_DIR", spool)
+	// No sidecar, and no omp-seats store file on disk. If the gate passed,
+	// StartAgent would try to dial this missing socket.
+	t.Setenv(omp.SocketEnv, filepath.Join(root, "missing.sock"))
+	_, err := (ompAgentBackend{}).StartAgent(agentStartRequest{
+		Context: context.Background(),
+		Config: Config{
+			Provider:      ProviderGrok,
+			Name:          "t935-broker-lost",
+			SessionID:     "old-session",
+			RequireResume: true,
+			WorkDir:       t.TempDir(),
+			TermLogPath:   "-",
+		},
+	})
+	if err == nil {
+		t.Fatal("RequireResume with bookkeeping-only spool and no store must refuse")
+	}
+	if !strings.Contains(err.Error(), "refusing to mint a replacement session") {
+		t.Fatalf("err = %v, want refuse-to-mint (not a sidecar dial)", err)
+	}
+	if !strings.Contains(err.Error(), "no spool records") {
+		t.Fatalf("err = %v, want no-spool-records wording", err)
+	}
+	if strings.Contains(err.Error(), "missing.sock") || strings.Contains(err.Error(), "connection refused") {
+		t.Fatalf("gate reached the sidecar: %v", err)
+	}
+}
+
 func TestOMPStartRefusesVendorCLI(t *testing.T) {
 	t.Setenv("CLAUDIA_OMP_SOCKET", filepath.Join(t.TempDir(), "missing.sock"))
 	ompKeychain = func(context.Context, string, ...string) ([]byte, error) {
