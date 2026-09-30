@@ -336,6 +336,19 @@ func TestEphemeralResumeReapsOrphanAndKeepsJevons(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(hand) })
 
+	// A seat can be seen starting before the resume that attaches its grant
+	// arms the orphan TTL; an Advance in that gap fires nothing and the reap
+	// never comes. Wait for both timers, then advance.
+	waitFor(t, "orphan TTLs armed", func() bool {
+		f.d.mu.Lock()
+		defer f.d.mu.Unlock()
+		for _, name := range []string{"pimp-smoke-boot", "pimp-handoff-boot"} {
+			if g := f.d.grants[name]; g == nil || g.orphanGen == 0 {
+				return false
+			}
+		}
+		return true
+	})
 	f.clock.Advance(claudia.EphemeralGrantTTL)
 	waitFor(t, "resumed smoke reaped", func() bool { return f.d.reg.Def("pimp-smoke-boot") == nil })
 	waitFor(t, "resumed handoff reaped", func() bool { return f.d.reg.Def("pimp-handoff-boot") == nil })
