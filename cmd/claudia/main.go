@@ -185,11 +185,6 @@ func serve(args []string) error {
 	// send their claudia consumers around it.
 	broker.MarkSelfHosted()
 
-	if sock, err := omp.Ensure(context.Background()); err != nil {
-		log.Warn("omp sidecar not ready; subscription seats will retry on Launch", "err", err)
-	} else {
-		log.Info("omp sidecar listening", "socket", sock)
-	}
 	claudia.SetOMPToolExec(claudia.DefaultOMPToolExec)
 	refreshCtx, refreshCancel := context.WithTimeout(context.Background(), 8*time.Second)
 	if err := claudia.OpenOMPPlans(refreshCtx); err != nil {
@@ -215,6 +210,22 @@ func serve(args []string) error {
 		DisableResume: *noResume,
 		RestartNudge:  *nudge,
 		Logger:        log,
+		// The sidecar is this broker's child and exits with it (🎯T166).
+		// One an earlier broker left serving the socket is stopped first,
+		// never adopted: it may be an older build.
+		StartSidecar: func(ctx context.Context) error {
+			if pid, err := omp.StopUnowned(ctx); err != nil {
+				return err
+			} else if pid != 0 {
+				log.Info("stopped a sidecar this broker did not start", "pid", pid)
+			}
+			if sock, err := omp.Ensure(ctx); err != nil {
+				log.Warn("omp sidecar not ready; subscription seats will retry on Launch", "err", err)
+			} else {
+				log.Info("omp sidecar listening", "socket", sock)
+			}
+			return nil
+		},
 	})
 	if err != nil {
 		return err

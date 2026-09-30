@@ -213,11 +213,18 @@ func TestT141RecoverReloadsLiveSeats(t *testing.T) {
 	if err := RecoverOMPPlan(context.Background(), omp.Anthropic); err != nil {
 		t.Fatal(err)
 	}
-	m := s.nextLoad()
-	if m.Token != "recovered" {
-		t.Fatalf("recovery did not reload the live seat: %+v", m)
-	}
-	if m.Model != "claude-opus" {
-		t.Fatalf("the reload reverted the seat's model to %q", m.Model)
+	// The sidecar holds one token per plan (🎯T159) and is always the
+	// broker's own build (🎯T166): recovery moves the live seat with one
+	// token message, and a reload that could revert its model never happens.
+	for m := range s.got {
+		if m.Op == omp.OpLoad {
+			t.Fatalf("recovery reloaded the seat instead of moving the plan's token: %+v", m)
+		}
+		if m.Op == omp.OpToken {
+			if m.Token != "recovered" || m.Provider != omp.Anthropic {
+				t.Fatalf("recovery token message = %+v", m)
+			}
+			break
+		}
 	}
 }

@@ -210,7 +210,7 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 		return nil, err
 	}
 	if req.Config.AdoptOnly {
-		// An older sidecar does not answer "adopt". Do not hold the resume.
+		// A wedged sidecar must not hold the resume.
 		_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
 	}
 	ev, err := conn.Recv()
@@ -241,7 +241,7 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 	historyLost := ompHistoryLost(ev, req.Config.SummaryOnly)
 	ctrl := &ompControl{
 		conn: conn, bytes: make(chan []byte, 8),
-		token: token, provider: provider, planTokens: ev.PlanTokens,
+		token: token, provider: provider,
 		seat: req.Config.Name, model: req.Config.Model, cwd: req.Config.WorkDir,
 		sessionID: sessionID, summaryOnly: req.Config.SummaryOnly,
 		preserve: req.Config.ContextPreserve, pins: req.Config.ContextPins,
@@ -321,9 +321,6 @@ type ompControl struct {
 	inflight  atomic.Bool
 	// lastRefresh is when this seat last refreshed a rejected token (under mu).
 	lastRefresh time.Time
-	// planTokens is set when this seat's sidecar holds one token per plan
-	// (🎯T159): a token change is one OpToken, not a load per seat.
-	planTokens bool
 }
 
 // ompSeats holds the live sidecar seats, so a plan recovered by the owner
@@ -564,26 +561,24 @@ func reloadOMPSeats(ctx context.Context, provider string) int {
 	if err != nil {
 		return 0
 	}
-	var shared, legacy []*ompControl
+	var stale []*ompControl
 	ompSeats.Range(func(k, _ any) bool {
 		c := k.(*ompControl)
 		if c.provider == provider && c.currentToken() != tok {
-			if c.planTokens {
-				shared = append(shared, c)
-			} else {
-				legacy = append(legacy, c)
-			}
+			stale = append(stale, c)
 		}
 		return true
 	})
+	// The sidecar holds one token per plan (🎯T159), and it is always this
+	// broker's own build (🎯T166), so one OpToken moves every seat. Every
+	// seat's connection reaches that one sidecar; the first that takes the
+	// message is enough. A seat whose connection refuses it is reloaded.
 	sent := false
-	for _, c := range shared {
-		// Every seat's connection reaches the one sidecar; the first that
-		// takes the message is enough.
+	for _, c := range stale {
 		if !sent {
 			if err := c.send(omp.Message{Op: omp.OpToken, Provider: provider, Token: tok}); err != nil {
 				slog.Warn("omp token refreshed; sidecar token update failed", "seat", c.seat, "err", err)
-				legacy = append(legacy, c)
+				c.reload(tok)
 				continue
 			}
 			sent = true
@@ -592,10 +587,7 @@ func reloadOMPSeats(ctx context.Context, provider string) int {
 		c.token = tok
 		c.mu.Unlock()
 	}
-	for _, c := range legacy {
-		c.reload(tok)
-	}
-	return len(shared) + len(legacy)
+	return len(stale)
 }
 
 func (c *ompControl) refreshRejectedToken() {
@@ -652,8 +644,8 @@ func sidecarAuthScript() string {
 // ompToolExec is the Go callback for jevons_* tool calls. Tests replace it.
 var ompToolExec func(name, callID, args string) string
 
-// EnsureOMPSidecar starts the detached Bun sidecar if it is not already
-// listening. A jevonsd or broker bounce must not call StopSidecar.
+// EnsureOMPSidecar starts the Bun sidecar if it is not already listening.
+// The sidecar is this process's child and exits with it (🎯T166).
 func EnsureOMPSidecar(ctx context.Context) (string, error) {
 	return omp.Ensure(ctx)
 }

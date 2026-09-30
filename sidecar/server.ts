@@ -40,6 +40,23 @@ if (!claimSocket(sock)) {
 // Holding the lock, a socket file left here is stale.
 try { unlinkSync(sock); } catch { /* absent */ }
 
+// 🎯T166: started with a lifeline, the sidecar lives only as long as the
+// process that started it. Only that process holds the pipe's write end;
+// when it exits, however it exits, stdin reaches EOF and the sidecar goes
+// too, instead of lingering as an orphan a later broker would adopt.
+// Seat conversations are written synchronously, so nothing is lost.
+if (process.argv.includes("--lifeline=stdin")) {
+  const gone = () => {
+    console.error("sidecar: the process that started it is gone; exiting");
+    process.exit(0);
+  };
+  process.stdin.on("end", gone);
+  process.stdin.on("close", gone);
+  process.stdin.on("error", gone);
+  process.stdin.on("data", () => {});
+  process.stdin.resume();
+}
+
 // storeRoot holds each seat's conversation beside the socket (🎯T151), so a
 // sidecar restart resumes a seat the host reloads with the same session.
 const storeRoot = join(dirname(sock), "omp-seats");
@@ -202,7 +219,7 @@ async function handle(
       return;
     }
     rebindSeat(existing, msg, seat, write, callTool, calls);
-    write({ seat, type: "ready", how: "adopted", plan_tokens: true });
+    write({ seat, type: "ready", how: "adopted" });
     return;
   }
   if (msg.op === "load") {
@@ -217,7 +234,7 @@ async function handle(
     // would bypass the bounded transfer brief.
     if (existing && existing.provider === msg.provider && existing.summaryOnly === summaryOnly) {
       rebindSeat(existing, msg, seat, write, callTool, calls);
-      write({ seat, type: "ready", how: "adopted", plan_tokens: true });
+      write({ seat, type: "ready", how: "adopted" });
       return;
     }
     // A host that names the seat's session gets a durable conversation; one
@@ -250,7 +267,7 @@ async function handle(
       agent,
       calls,
     });
-    write({ seat, type: "ready", how: "launched", restored: agent.restored, plan_tokens: true });
+    write({ seat, type: "ready", how: "launched", restored: agent.restored });
     return;
   }
   const loaded = seats.get(seat);

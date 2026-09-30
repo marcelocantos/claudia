@@ -19,7 +19,7 @@ func TestT865LiveSidecarAcceptsLaunchSteerAbort(t *testing.T) {
 	testEnsureSidecarVerbs(t)
 }
 
-func TestEnsureStartsDetachedSidecar(t *testing.T) {
+func TestEnsureStartsSidecar(t *testing.T) {
 	testEnsureSidecarVerbs(t)
 }
 
@@ -80,7 +80,9 @@ func testEnsureSidecarVerbs(t *testing.T) {
 	}
 }
 
-func TestEnsureSurvivesParentExit(t *testing.T) {
+// The sidecar outlives the Ensure call that started it; it dies only with
+// the process (🎯T166, TestT166SidecarDiesWithTheProcessThatStartedIt).
+func TestEnsureSidecarOutlivesTheCall(t *testing.T) {
 	if _, err := os.Stat(ServerScript()); err != nil {
 		t.Skip("sidecar/server.ts missing")
 	}

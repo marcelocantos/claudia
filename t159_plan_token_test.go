@@ -18,9 +18,9 @@ import (
 	"github.com/marcelocantos/claudia/omp"
 )
 
-// 🎯T159: a token change reaches a sidecar that holds one token per plan as
-// a single OpToken naming the plan, not a load per seat; a seat on an older
-// sidecar is still reloaded on its own.
+// 🎯T159: a token change reaches the sidecar as a single OpToken naming the
+// plan, not a load per seat. There is no older sidecar to fall back for: a
+// broker only ever serves seats through its own (🎯T166).
 func TestT159PlanTokenIsOneMessageNotALoadPerSeat(t *testing.T) {
 	exp := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
 	ompKeychain = func(context.Context, string, ...string) ([]byte, error) {
@@ -62,23 +62,23 @@ func TestT159PlanTokenIsOneMessageNotALoadPerSeat(t *testing.T) {
 			}()
 		}
 	}()
-	seat := func(name string, shared bool) *ompControl {
+	seat := func(name string) *ompControl {
 		conn, err := omp.Dial(context.Background(), socket)
 		if err != nil {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = conn.Close() })
-		c := &ompControl{conn: conn, token: "old", provider: omp.Anthropic, seat: name, planTokens: shared}
+		c := &ompControl{conn: conn, token: "old", provider: omp.Anthropic, seat: name}
 		ompSeats.Store(c, struct{}{})
 		t.Cleanup(func() { ompSeats.Delete(c) })
 		return c
 	}
-	a, b, legacy := seat("po", true), seat("worker", true), seat("old-sidecar-seat", false)
+	a, b, c := seat("po"), seat("worker"), seat("reviewer")
 
 	if n := reloadOMPSeats(context.Background(), omp.Anthropic); n != 3 {
 		t.Fatalf("seats moved = %d, want 3", n)
 	}
-	for _, c := range []*ompControl{a, b, legacy} {
+	for _, c := range []*ompControl{a, b, c} {
 		if c.currentToken() != "fresh" {
 			t.Fatalf("%s holds %q", c.seat, c.currentToken())
 		}
@@ -94,20 +94,18 @@ func TestT159PlanTokenIsOneMessageNotALoadPerSeat(t *testing.T) {
 				}
 				tokens++
 			case omp.OpLoad:
-				if m.Seat != "old-sidecar-seat" {
-					t.Fatalf("a shared-token seat was reloaded: %+v", m)
-				}
+				t.Errorf("a seat was reloaded: %+v", m)
 				loads++
 			}
 		}
 		return
 	}
-	// The sidecar reads asynchronously; wait for both messages to land.
+	// The sidecar reads asynchronously; wait for the message to land.
 	for {
-		if tokens, loads := want(); tokens == 1 && loads == 1 {
+		if tokens, loads := want(); tokens == 1 && loads == 0 {
 			break
-		} else if tokens > 1 || loads > 1 {
-			t.Fatalf("tokens=%d loads=%d, want one of each", tokens, loads)
+		} else if tokens > 1 || loads > 0 {
+			t.Fatalf("tokens=%d loads=%d, want one token and no loads", tokens, loads)
 		}
 		time.Sleep(5 * time.Millisecond)
 	}

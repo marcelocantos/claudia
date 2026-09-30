@@ -70,6 +70,13 @@ type Options struct {
 	ResumeUnclaimedAfter time.Duration
 	// Logger receives daemon logs. Nil uses slog.Default.
 	Logger *slog.Logger
+	// StartSidecar, when set, runs once this daemon holds the broker
+	// socket and before any seat resumes (🎯T166). serve uses it to stop a
+	// plan sidecar an earlier broker left behind and start its own, so
+	// every resumed seat lands on this broker's build. Only the one daemon
+	// on the socket may do that, hence after the socket is claimed. An
+	// error stops New.
+	StartSidecar func(context.Context) error
 
 	clock broker.Clock
 	// resumeGate, when set, holds the boot resume until closed (tests
@@ -259,6 +266,12 @@ func New(opts Options) (*Daemon, error) {
 	ln, err := broker.Listen(path)
 	if err != nil {
 		return nil, err
+	}
+	if opts.StartSidecar != nil {
+		if err := opts.StartSidecar(context.Background()); err != nil {
+			ln.Close()
+			return nil, fmt.Errorf("broker daemon: sidecar: %w", err)
+		}
 	}
 	d := &Daemon{
 		opts:     opts,
