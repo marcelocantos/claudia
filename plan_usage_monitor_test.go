@@ -5,6 +5,7 @@ package claudia
 
 import (
 	"context"
+	"runtime"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -97,5 +98,73 @@ func TestRunningMonitorIsTheInProcessEvaluator(t *testing.T) {
 	<-done
 	if runningPlanUsageMonitor() == m {
 		t.Fatal("a stopped monitor is still the evaluator")
+	}
+}
+
+// TestForcedReadUsesForceFetch: a forced Read (a cockpit hard reload,
+// `claudia usage --refresh`) reaches the forced producer, whose request
+// floor is PlanThrottleForcedInterval. The unforced producer runs under the
+// five-minute floor the TTL loop has always just reset, so answering a
+// forced read with it re-served held readings to an owner who had just
+// seen the vendor's dashboard move.
+func TestForcedReadUsesForceFetch(t *testing.T) {
+	clock := NewManualClock(time.Date(2026, 9, 30, 12, 40, 0, 0, time.UTC))
+	var soft, forced atomic.Int32
+	m := NewPlanUsageMonitor(&PlanUsageMonitorArgs{
+		Clock: clock,
+		Fetch: func(context.Context) ([]PlanUsage, error) {
+			soft.Add(1)
+			return []PlanUsage{{Provider: ProviderClaude}}, nil
+		},
+		ForceFetch: func(context.Context) ([]PlanUsage, error) {
+			forced.Add(1)
+			return []PlanUsage{{Provider: ProviderClaude}}, nil
+		},
+	})
+	m.Read(context.Background(), false)
+	if soft.Load() != 1 || forced.Load() != 0 {
+		t.Fatalf("unforced first read: soft=%d forced=%d", soft.Load(), forced.Load())
+	}
+	clock.Advance(2 * time.Minute)
+	m.Read(context.Background(), true)
+	if soft.Load() != 1 || forced.Load() != 1 {
+		t.Fatalf("forced read inside the TTL: soft=%d forced=%d, want 1/1", soft.Load(), forced.Load())
+	}
+}
+
+// TestForcedReadDoesNotJoinAnUnforcedFetch: a forced Read that lands while
+// the TTL loop's unforced fetch is in flight waits it out and then makes
+// its own forced fetch, rather than taking an answer made under the full
+// floor.
+func TestForcedReadDoesNotJoinAnUnforcedFetch(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var forced atomic.Int32
+	m := NewPlanUsageMonitor(&PlanUsageMonitorArgs{
+		Clock: NewManualClock(time.Date(2026, 9, 30, 12, 40, 0, 0, time.UTC)),
+		Fetch: func(context.Context) ([]PlanUsage, error) {
+			entered <- struct{}{}
+			<-release
+			return []PlanUsage{{Provider: ProviderClaude}}, nil
+		},
+		ForceFetch: func(context.Context) ([]PlanUsage, error) {
+			forced.Add(1)
+			return []PlanUsage{{Provider: ProviderClaude}}, nil
+		},
+	})
+	go m.Read(context.Background(), false)
+	<-entered
+	done := make(chan struct{})
+	go func() { m.Read(context.Background(), true); close(done) }()
+	for waiting := false; !waiting; {
+		m.mu.Lock()
+		waiting = len(m.waiters) > 0
+		m.mu.Unlock()
+		runtime.Gosched()
+	}
+	close(release)
+	<-done
+	if forced.Load() != 1 {
+		t.Fatalf("forced read joined the unforced fetch: forced=%d, want 1", forced.Load())
 	}
 }
