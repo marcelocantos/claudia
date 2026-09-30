@@ -211,6 +211,12 @@ type ResumeArgs struct {
 	StartTimeout time.Duration
 	// Now stamps the default nudge. Zero uses the current time.
 	Now time.Time
+	// Select, when set, decides which AutoStart seats come back and in what
+	// order (🎯T161). It is given their names in name order and returns the
+	// ones to resume, most wanted first; a seat it leaves out is not resumed
+	// now, and a name that is not an AutoStart seat is ignored. Nil resumes
+	// every AutoStart seat in name order.
+	Select func(names []string) []string
 }
 
 // ResumeOutcome is what happened to one seat in [Registry.ResumeAll].
@@ -232,19 +238,38 @@ type ResumeOutcome struct {
 // them stopped: adopt what is still running, relaunch the rest on their
 // saved conversations, remint a seat whose conversation the provider
 // refuses to load, and tell each relaunched seat what happened so it picks
-// its work back up. Outcomes are returned in name order and published as
-// seat events as they happen. Cancelling ctx stops starting further seats.
+// its work back up. Seats are started in name order, or in the order
+// [ResumeArgs.Select] chose, and outcomes are returned in that order and
+// published as seat events as they happen. Cancelling ctx stops starting
+// further seats.
+//
+// Concurrency bounds starts, not nudges: a seat holds its slot until it is
+// running, then gives it up before it is told about the restart. A Claude
+// seat's nudge waits for its composer, and holding a start slot through
+// that wait left the seats behind it queued (🎯T161).
 func (r *Registry) ResumeAll(ctx context.Context, args *ResumeArgs) []ResumeOutcome {
 	if args == nil {
 		args = &ResumeArgs{}
 	}
 	var names []string
+	autoStart := map[string]bool{}
 	for _, def := range r.List() {
 		if def.AutoStart {
 			names = append(names, def.Name)
+			autoStart[def.Name] = true
 		}
 	}
 	sort.Strings(names)
+	if args.Select != nil && len(names) > 0 {
+		chosen := args.Select(append([]string(nil), names...))
+		names = names[:0]
+		for _, name := range chosen {
+			if autoStart[name] {
+				names = append(names, name)
+				delete(autoStart, name) // a name returned twice resumes once
+			}
+		}
+	}
 	if len(names) == 0 {
 		return nil
 	}
@@ -284,15 +309,19 @@ func (r *Registry) ResumeAll(ctx context.Context, args *ResumeArgs) []ResumeOutc
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			defer func() { <-sem }()
-			r.resumeSeat(ctx, &out[i], nudge, lostNudge, timeout)
+			var once sync.Once
+			release := func() { once.Do(func() { <-sem }) }
+			defer release()
+			r.resumeSeat(ctx, &out[i], nudge, lostNudge, timeout, release)
 		}()
 	}
 	wg.Wait()
 	return out
 }
 
-func (r *Registry) resumeSeat(ctx context.Context, out *ResumeOutcome, nudge, lostNudge string, timeout time.Duration) {
+// resumeSeat brings one seat back. started is called once the seat is
+// running or has failed to start, before anything else is asked of it.
+func (r *Registry) resumeSeat(ctx context.Context, out *ResumeOutcome, nudge, lostNudge string, timeout time.Duration, started func()) {
 	name := out.Name
 	launch := func() (*Agent, error) {
 		lctx, cancel := context.WithTimeout(ctx, timeout)
@@ -312,6 +341,7 @@ func (r *Registry) resumeSeat(ctx context.Context, out *ResumeOutcome, nudge, lo
 			how = ResumeReminted
 		}
 	}
+	started()
 	if err != nil {
 		out.Err = err
 		r.publishSeatEvent(SeatEvent{Kind: SeatResumeFailed, Name: name, Err: err})

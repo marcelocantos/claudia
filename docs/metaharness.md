@@ -207,6 +207,16 @@ its tool calls did not finish. Consumers reconnect by granting the same
 names; Jevons's boot path (`ReattachFleet`) already does that, and with
 the daemon present it no longer stops or reaps seats on its own exit.
 
+Order and scope (🎯T161): the daemon keeps `claims.json` beside
+`grants.json`, stamping a grant whenever a consumer connection takes it,
+lets go of it, or still holds it at a ten-minute refresh. Boot resumes
+the most recently held grants first, then grants never seen held, and
+leaves out any grant nobody has held for `ResumeUnclaimedAfter` (24h by
+default; negative resumes everything). A left-out grant stays
+registered: a consumer that asks for it by name is granted it, started
+on demand. Two resume slots bound starts, not nudges — a seat gives up
+its slot once it is running.
+
 ## Residue
 
 - Upgrading the daemon itself still bounces the fleet unless the daemon

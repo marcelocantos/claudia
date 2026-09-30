@@ -64,6 +64,10 @@ type Options struct {
 	RestartNudge string
 	// ResumeConcurrency bounds how many seats resume at once. Zero means 2.
 	ResumeConcurrency int
+	// ResumeUnclaimedAfter is how long a grant may go without a consumer
+	// holding it before a restart stops resuming it (🎯T161). Zero means
+	// DefaultResumeUnclaimedAfter; negative resumes every AutoStart grant.
+	ResumeUnclaimedAfter time.Duration
 	// Logger receives daemon logs. Nil uses slog.Default.
 	Logger *slog.Logger
 
@@ -141,6 +145,8 @@ type Daemon struct {
 	mcp      *claudia.MCPHost
 	// seatSub is the daemon's subscription to its Registry's seat events.
 	seatSub int64
+	// claims records when each grant last had a consumer (🎯T161).
+	claims *seatClaims
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -245,6 +251,10 @@ func New(opts Options) (*Daemon, error) {
 	if len(pruned) > 0 {
 		log.Info("pruned stranded migration transfer seats", "count", len(pruned))
 	}
+	claims, err := loadSeatClaims(filepath.Join(stateDir, claimsFile))
+	if err != nil {
+		return nil, fmt.Errorf("broker daemon: claims: %w", err)
+	}
 
 	ln, err := broker.Listen(path)
 	if err != nil {
@@ -260,6 +270,7 @@ func New(opts Options) (*Daemon, error) {
 		grants:   map[string]*brokerGrant{},
 		tasks:    map[string]*brokerDaemonTask{},
 		checks:   map[string]pendingGoalCheck{},
+		claims:   claims,
 	}
 	d.ctx, d.cancel = context.WithCancel(context.Background())
 	d.resumeDone = make(chan struct{})
@@ -305,6 +316,11 @@ func New(opts Options) (*Daemon, error) {
 	}
 	reg.SetClock(clock)
 	d.seatSub = reg.SubscribeSeatEvents(d.onSeatEvent)
+	// Armed here, not in the goroutine, so a test's clock sees the timer as
+	// soon as New returns.
+	firstRefresh := clock.After(claimRefreshInterval)
+	d.wg.Add(1)
+	go func() { defer d.wg.Done(); d.refreshClaims(firstRefresh) }()
 	d.wg.Add(1)
 	go func() { defer d.wg.Done(); d.usage.Run(d.ctx) }()
 	if !opts.DisableIntel {
@@ -537,6 +553,7 @@ func (d *Daemon) ConnClosed(c *broker.ClientConn) {
 		}
 	}
 	d.mu.Unlock()
+	d.noteHeld(append(append([]string(nil), detached...), ephemeral...)...)
 	for _, name := range detached {
 		d.log.Info("consumer connection closed; seat kept running", "grant", name)
 		d.emit(broker.EventMessage{Kind: broker.EventDetach, Name: name})
@@ -842,6 +859,7 @@ func (d *Daemon) handleGrant(c *broker.ClientConn, req *broker.Request) {
 	if !alreadyOwned {
 		ownedBy(c, name)
 	}
+	d.noteHeld(name)
 
 	// Replay what the seat said while unowned, then confirm the grant so
 	// the consumer sees history before live traffic.
@@ -1216,14 +1234,19 @@ func (d *Daemon) handleRelease(c *broker.ClientConn, req *broker.Request) {
 	switch req.Release.Disposition {
 	case broker.DispositionDetach:
 		var displaced *broker.ClientConn
+		wasHeld := false
 		if g != nil {
 			if g.owner != c {
 				displaced = g.owner
 			}
+			wasHeld = g.owner != nil
 			d.detachLocked(g)
 			d.noteUnownedLocked(name)
 		}
 		d.mu.Unlock()
+		if wasHeld {
+			d.noteHeld(name)
+		}
 		// An operator's forced detach must not leave the old owner sending
 		// on a grant it no longer holds without knowing why (🎯T124).
 		d.notifyDetached(displaced, name, "released by an operator on another connection")
@@ -1762,20 +1785,41 @@ func (d *Daemon) resumeSeats() {
 		}
 	}
 	d.prepareStoredEphemeral()
+	now := d.clock.Now()
+	var registered []string
 	held := 0
 	for _, def := range d.reg.List() {
+		registered = append(registered, def.Name)
 		if def.AutoStart {
 			held++
 		}
 	}
+	if err := d.claims.reconcile(now, registered); err != nil {
+		d.log.Warn("claim ledger not saved", "err", err)
+	}
 	if held == 0 {
 		return
 	}
-	d.log.Info("resuming seats held before the last stop", "count", held)
+	unclaimedAfter := d.opts.ResumeUnclaimedAfter
+	if unclaimedAfter == 0 {
+		unclaimedAfter = DefaultResumeUnclaimedAfter
+	}
 	outcomes := d.reg.ResumeAll(d.ctx, &claudia.ResumeArgs{
 		Concurrency: d.opts.ResumeConcurrency,
 		Nudge:       d.opts.RestartNudge,
-		Now:         d.clock.Now(),
+		Now:         now,
+		// Most recently held first; long-unclaimed grants wait for a
+		// consumer to ask for them (🎯T161).
+		Select: func(names []string) []string {
+			resume, left := d.claims.resumeOrder(now, unclaimedAfter, names)
+			if len(left) > 0 {
+				d.log.Info("not resuming seats no consumer has held recently; a grant request still starts them",
+					"count", len(left), "unclaimed_for", unclaimedAfter, "grants", strings.Join(left, ","))
+			}
+			d.log.Info("resuming seats held before the last stop", "count", len(resume), "held", held,
+				"order", strings.Join(resume, ","))
+			return resume
+		},
 	})
 	for _, o := range outcomes {
 		if o.How == claudia.ResumeReminted {
@@ -1785,6 +1829,37 @@ func (d *Daemon) resumeSeats() {
 		if o.NudgeErr != nil {
 			d.log.Warn("restart nudge failed", "grant", o.Name, "err", o.NudgeErr)
 		}
+	}
+}
+
+// noteHeld stamps names as held by a consumer now. The ledger orders the
+// next restart's resume; a write that fails costs that order, not the grant.
+func (d *Daemon) noteHeld(names ...string) {
+	if err := d.claims.held(d.clock.Now(), names...); err != nil {
+		d.log.Warn("claim ledger not saved", "err", err)
+	}
+}
+
+// refreshClaims stamps the grants consumers still hold every
+// claimRefreshInterval, so a seat held across a crash is not judged by the
+// grant that first gave it out.
+func (d *Daemon) refreshClaims(next <-chan time.Time) {
+	for {
+		select {
+		case <-d.ctx.Done():
+			return
+		case <-next:
+		}
+		d.mu.Lock()
+		var names []string
+		for name, g := range d.grants {
+			if g.owner != nil && !g.pool {
+				names = append(names, name)
+			}
+		}
+		d.mu.Unlock()
+		d.noteHeld(names...)
+		next = d.clock.After(claimRefreshInterval)
 	}
 }
 
