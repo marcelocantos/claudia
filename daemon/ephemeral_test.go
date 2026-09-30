@@ -265,7 +265,8 @@ func TestEphemeralWorkDirIsolated(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := startedSeat(f, kept.Name).start().Config.WorkDir; got != filepath.Clean(abs) {
+	// The registry resolves a workdir's symlinks, so compare resolved paths.
+	if got := startedSeat(f, kept.Name).start().Config.WorkDir; resolvedTestPath(got) != resolvedTestPath(abs) {
 		t.Fatalf("explicit temp workdir = %s, want %s", got, filepath.Clean(abs))
 	}
 }
@@ -316,8 +317,11 @@ func TestEphemeralResumeReapsOrphanAndKeepsJevons(t *testing.T) {
 	})
 	f.bootWith(t, f.options(nil))
 
+	// An adopted seat is not restart-nudged on this line (only a relaunched
+	// one is), so resumption is the seat starting under its grant.
 	waitFor(t, "jevons and plumbing seats resumed", func() bool {
-		return nudged(f, "pimp-smoke-boot") && nudged(f, "pimp-handoff-boot") && nudged(f, "jevons-po")
+		return startedSeat(f, "pimp-smoke-boot") != nil && startedSeat(f, "pimp-handoff-boot") != nil &&
+			startedSeat(f, "jevons-po") != nil
 	})
 	if startedSeat(f, "pimp-smoke-foreign") != nil || f.d.reg.Def("pimp-smoke-foreign") != nil {
 		t.Fatal("a plumbing name with a jevons parent was resumed")
@@ -343,15 +347,6 @@ func TestEphemeralResumeReapsOrphanAndKeepsJevons(t *testing.T) {
 	}
 }
 
-func nudged(f *fixture, name string) bool {
-	s := startedSeat(f, name)
-	if s == nil {
-		return false
-	}
-	sends := s.sent()
-	return len(sends) == 1 && sends[0] == "restart-nudge"
-}
-
 func launchExpectErr(t *testing.T, def claudia.AgentDef) (*claudia.Agent, error) {
 	t.Helper()
 	reg, err := claudia.NewRegistry(filepath.Join(t.TempDir(), "agents.json"))
@@ -363,4 +358,11 @@ func launchExpectErr(t *testing.T, def claudia.AgentDef) (*claudia.Agent, error)
 		t.Fatal(err)
 	}
 	return reg.Launch(def.Name)
+}
+
+func resolvedTestPath(p string) string {
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		return r
+	}
+	return filepath.Clean(p)
 }

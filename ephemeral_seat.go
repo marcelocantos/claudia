@@ -182,10 +182,20 @@ func defaultEphemeralWorkDir(name string) (string, error) {
 
 func ephemeralWorkDirOK(abs string) bool {
 	tmp, err := filepath.Abs(os.TempDir())
-	if err == nil && underDir(abs, filepath.Clean(tmp)) {
+	if err == nil && (underDir(abs, filepath.Clean(tmp)) || underDir(resolvedPath(abs), resolvedPath(tmp))) {
 		return true
 	}
 	return hasPathElem(abs, "_scratchpad")
+}
+
+// resolvedPath follows symlinks where it can. macOS's temp directory is
+// /var/folders/…, a symlink to /private/var/folders/…, and a workdir that
+// arrives resolved must still count as under it.
+func resolvedPath(p string) string {
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		return filepath.Clean(r)
+	}
+	return filepath.Clean(p)
 }
 
 func underDir(path, root string) bool {
