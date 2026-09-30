@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { HOST_CALL_ABORTED, HOST_CONNECTION_LOST, HostCalls, awaitHostCall } from "./hostcalls.ts";
 
-// jevons 🎯T927: jevons-po's turn awaited a host tool result on a connection
-// that closed; the seat was re-attached on a new one and the turn never ended.
+// 🎯T149 / jevons 🎯T927: jevons-po's turn awaited a host tool result on a
+// connection that closed; the seat was re-attached on a new one and the
+// turn never ended.
 
 describe("HostCalls", () => {
   test("a call answered on its connection resolves", async () => {
@@ -26,6 +27,27 @@ describe("HostCalls", () => {
 
   test("closing with nothing outstanding fails nothing", () => {
     expect(new HostCalls().failAll(HOST_CONNECTION_LOST)).toBe(0);
+  });
+
+  test("rebinding one seat fails only that seat's calls", async () => {
+    const calls = new HostCalls();
+    const po = calls.open("c1", "po");
+    const other = calls.open("c2", "worker");
+    const untagged = calls.open("c3");
+    expect(calls.failSeat("po", HOST_CONNECTION_LOST)).toBe(1);
+    await expect(po).rejects.toThrow(HOST_CONNECTION_LOST);
+    expect(calls.size).toBe(2);
+    expect(calls.settle("c2", "still here")).toBe(true);
+    expect(await other).toBe("still here");
+    expect(calls.settle("c3", "untagged lives")).toBe(true);
+    expect(await untagged).toBe("untagged lives");
+  });
+
+  test("failSeat on a seat with nothing outstanding fails nothing", () => {
+    const calls = new HostCalls();
+    calls.open("c1", "worker");
+    expect(calls.failSeat("po", HOST_CONNECTION_LOST)).toBe(0);
+    expect(calls.size).toBe(1);
   });
 });
 

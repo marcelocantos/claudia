@@ -1,4 +1,4 @@
-// Host tool calls in flight on one connection (jevons 🎯T927).
+// Host tool calls in flight on one connection (jevons 🎯T927, 🎯T149).
 //
 // A host tool (jevons_*, a seat's MCP servers) runs in the Go process that
 // holds this seat's connection, and its result comes back on that connection.
@@ -8,8 +8,9 @@
 // behind a turn that could not end, and the seat went mute while it kept
 // saying "accepted" (jevons-po, 2026-09-29, for more than two hours).
 //
-// So a connection's outstanding calls fail when it closes, and a call honours
-// the turn's abort signal. The model sees a failed tool, not a hung one, and
+// So a connection's outstanding calls fail when it closes, a seat's calls
+// fail when it rebinds to a different connection, and a call honours the
+// turn's abort signal. The model sees a failed tool, not a hung one, and
 // the turn ends like any other.
 
 export const HOST_CONNECTION_LOST =
@@ -18,16 +19,17 @@ export const HOST_CONNECTION_LOST =
 
 export const HOST_CALL_ABORTED = "host tool call aborted with its turn; any result it produces is discarded";
 
-type Waiter = { resolve: (result: string) => void; reject: (err: Error) => void };
+type Waiter = { resolve: (result: string) => void; reject: (err: Error) => void; seat?: string };
 
 export class HostCalls {
   private pending = new Map<string, Waiter>();
 
   // open registers a call before it is sent, so an answer can never arrive
-  // ahead of its waiter.
-  open(callId: string): Promise<string> {
+  // ahead of its waiter. seat tags the call so a rebind of one seat does
+  // not fail another seat's in-flight tools on the same connection.
+  open(callId: string, seat?: string): Promise<string> {
     return new Promise<string>((resolve, reject) => {
-      this.pending.set(callId, { resolve, reject });
+      this.pending.set(callId, { resolve, reject, seat });
     });
   }
 
@@ -46,6 +48,18 @@ export class HostCalls {
     this.pending.clear();
     for (const w of waiters) w.reject(new Error(reason));
     return waiters.length;
+  }
+
+  // failSeat rejects the outstanding calls of one seat, leaving the rest.
+  failSeat(seat: string, reason: string): number {
+    let n = 0;
+    for (const [id, w] of [...this.pending.entries()]) {
+      if (w.seat !== seat) continue;
+      this.pending.delete(id);
+      w.reject(new Error(reason));
+      n++;
+    }
+    return n;
   }
 
   get size(): number {

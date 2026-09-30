@@ -65,6 +65,10 @@ type Seat = {
   token: string;
   summaryOnly: boolean;
   agent: SeatAgent;
+  // calls is the HostCalls of the connection this seat is bound to, so a
+  // rebind can fail this seat's in-flight tools without touching others
+  // on the old connection (🎯T149).
+  calls: HostCalls;
 };
 
 const seats = new Map<string, Seat>();
@@ -129,12 +133,6 @@ const server = createServer((socket) => {
     }
   };
 
-  const callTool = (callId: string, name: string, args: string) => {
-    const answer = calls.open(callId);
-    write({ type: "tool_call", call_id: callId, name, text: args });
-    return answer;
-  };
-
   socket.on("data", (chunk) => {
     buf += chunk.toString("utf8");
     let nl: number;
@@ -144,6 +142,11 @@ const server = createServer((socket) => {
       let msg: Line;
       try { msg = JSON.parse(raw); } catch { continue; }
       const seat = msg.seat ?? "";
+      const callTool = (callId: string, name: string, args: string) => {
+        const answer = calls.open(callId, seat);
+        write({ type: "tool_call", call_id: callId, name, text: args });
+        return answer;
+      };
       void handle(msg, seat, write, callTool, calls).catch((err: unknown) => {
         write({ seat, type: "error", text: err instanceof Error ? err.message : String(err) });
       });
@@ -179,7 +182,7 @@ async function handle(
         text: `loaded seat is ${existing.provider}; registry asked for ${msg.provider ?? ""}` });
       return;
     }
-    rebindSeat(existing, msg, seat, write, callTool);
+    rebindSeat(existing, msg, seat, write, callTool, calls);
     write({ seat, type: "ready", how: "adopted" });
     return;
   }
@@ -194,7 +197,7 @@ async function handle(
     // work agent: handing the old in-memory transcript to the new provider
     // would bypass the bounded transfer brief.
     if (existing && existing.provider === msg.provider && existing.summaryOnly === summaryOnly) {
-      rebindSeat(existing, msg, seat, write, callTool);
+      rebindSeat(existing, msg, seat, write, callTool, calls);
       write({ seat, type: "ready", how: "adopted" });
       return;
     }
@@ -214,13 +217,17 @@ async function handle(
       preserve: msg.preserve,
       pins: msg.pins,
     });
-    if (existing) existing.agent.abort();
+    if (existing) {
+      existing.calls.failSeat(seat, HOST_CONNECTION_LOST);
+      existing.agent.abort();
+    }
     seats.set(seat, {
       provider: msg.provider ?? "",
       model: msg.model ?? "",
       token: msg.token,
       summaryOnly,
       agent,
+      calls,
     });
     write({ seat, type: "ready", how: "launched", restored: agent.restored });
     return;
@@ -256,7 +263,16 @@ function rebindSeat(
   seat: string,
   write: (ev: Record<string, unknown>) => void,
   callTool: (callId: string, name: string, args: string) => Promise<string>,
+  calls: HostCalls,
 ) {
+  // A rebind onto a different connection: nothing on the old one will
+  // answer this seat's in-flight tools (🎯T149). Same-connection load/adopt
+  // keeps them — the host is still there and can still tool_result.
+  if (existing.calls !== calls) {
+    const n = existing.calls.failSeat(seat, HOST_CONNECTION_LOST);
+    if (n > 0) console.error(`sidecar: rebound ${seat} with ${n} unanswered tool call(s); failed them`);
+    existing.calls = calls;
+  }
   if (msg.token) {
     existing.token = msg.token;
     existing.agent.setToken(msg.token);
