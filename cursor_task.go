@@ -24,7 +24,7 @@ func (cursorTaskBackend) Capabilities() providerCapabilities {
 
 // cursorTaskArgs builds argv for `agent --print --output-format stream-json`.
 // Root flags precede the prompt. Resume uses --resume <chatId> when
-// TaskConfig.ClaudeID / req.SessionID is set.
+// TaskConfig.SessionID / req.SessionID is set.
 func cursorTaskArgs(req taskRunRequest) []string {
 	args := []string{"--print", "--output-format", "stream-json", "--force", "--trust"}
 	if req.Model != "" {
