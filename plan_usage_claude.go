@@ -13,6 +13,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/marcelocantos/claudia/omp"
 )
 
 const (
@@ -62,6 +64,16 @@ func queryClaudePlanUsage(ctx context.Context, client *http.Client, args *PlanUs
 	token := strings.TrimSpace(args.ClaudeAccessToken)
 	if token == "" {
 		token = strings.TrimSpace(os.Getenv(claudeOAuthTokenEnv))
+	}
+	if token == "" {
+		// The broker's own Anthropic plan login is the fleet's account, and it
+		// keeps working when Claude Code keeps its login somewhere this cannot
+		// read: on 2026-10-01 the "Claude Code-credentials" item had no
+		// claudeAiOauth token and the Claude bar went blank. Reading it never
+		// refreshes; outside the broker it is simply absent.
+		if t, err := planStore().AccessToken(ctx, omp.Anthropic); err == nil {
+			token = t
+		}
 	}
 	if token == "" {
 		t, err := loadClaudeOAuthAccessToken()
