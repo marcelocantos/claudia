@@ -27,7 +27,7 @@ based on the shape of the work. Judge is a separate typed-question mode.
 | Output              | Structured events (JSONL / stream-json / HTTP chunks) | Events via JSONL tail (Claude) or in-process RPC (Grok ACP, Codex app-server). Claude also captures a raw PTY log. |
 | Use case            | One-shot generation / analysis       | Multi-turn conversations                |
 | Cost accounting     | Yes when the provider reports it (`TaskEvent`) | Cumulative via `Agent.Usage()` when the transcript carries tokens |
-| Resume across runs  | Via `TaskConfig.ClaudeID` (the name is reused for every provider's session id) | Via `Config.SessionID` |
+| Resume across runs  | Via `TaskConfig.SessionID` (one field for every provider's session id; `ClaudeID` is its deprecated alias) | Via `Config.SessionID` |
 
 **Default to Task mode.** It's simpler, gives you structured events,
 and exposes cost and token accounting. Only use Session mode if the
@@ -51,8 +51,8 @@ task := claudia.NewTask(claudia.TaskConfig{
 })
 ```
 
-For Codex, `Task.Run` shells out to `codex exec --json`; `TaskConfig.ClaudeID`
-still names the resumable provider session id. Do not assume Codex and
+For Codex, `Task.Run` shells out to `codex exec --json`; `TaskConfig.SessionID`
+names the resumable provider session id (the Codex thread id). Do not assume Codex and
 Claude flags are semantically identical: `SandboxMode` and
 `ApprovalPolicy` are passed as Codex flags, while Claude Session mode
 continues to use `PermissionMode` and `DisallowTools`.
@@ -152,7 +152,7 @@ For Grok Build CLI, `Task.Run` shells out to
 `--permission-mode bypassPermissions` for unattended runs). Binary
 discovery: `GROK_BIN`, then `grok` on `$PATH`, then known installs
 including `~/.grok/bin/grok`. Auth is whatever the installed CLI uses
-(`grok login` or `XAI_API_KEY`). Resume uses `TaskConfig.ClaudeID`
+(`grok login` or `XAI_API_KEY`). Resume uses `TaskConfig.SessionID`
 as the Grok session id with `--resume`. Plan-usage fetches rotate an
 expired login token themselves — a billing 401 runs one headless grok
 turn, which rewrites `auth.json`, then retries (🎯T74; see
@@ -552,9 +552,10 @@ for ev := range events {
 }
 ```
 
-**Resuming**: set `TaskConfig.ClaudeID` to the session ID captured
-from a prior `TaskEventInit`. claudia passes `--resume <id>` to
-`claude`.
+**Resuming**: set `TaskConfig.SessionID` to the session ID captured
+from a prior `TaskEventInit` (or `Task.SessionID()`). claudia passes
+`--resume <id>` to `claude`. `TaskConfig.ClaudeID` is the deprecated
+pre-1.0 spelling of the same field and still resumes.
 
 **Raw logging**: `Task.SetRawLog(func(line []byte))` gets every NDJSON
 line from `claude` before parsing — useful for debugging or custom

@@ -93,7 +93,7 @@ should not assume CLI semantics on this provider.
 | Streamed assistant text | yes | **yes** | — |
 | Tool use events | yes | **no** | Deferred; fail-closed if needed later |
 | Session (tmux / persistent) | yes | **no** | Unsupported |
-| Resume (`ClaudeID` / `--resume`) | yes | **no** | Stateless single-turn |
+| Resume (`SessionID`, alias `ClaudeID` / `--resume`) | yes | **no** | Stateless single-turn |
 | Rewind | yes | **no** | Unsupported |
 | Cost USD | yes (Task) | **no** | Tokens optional via Usage only |
 | Permissions / disallow tools | yes | **n/a** | No tools in v1 |

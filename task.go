@@ -158,6 +158,12 @@ func disallowedToolList(extra []string) string {
 }
 
 // TaskConfig holds the configuration for creating a Task.
+//
+// SessionID is the provider-neutral resume handle: it names the session
+// Run continues on every provider that can resume (Claude, Codex, Grok,
+// Cursor), and Task.SessionID reports the handle a first run established.
+// ClaudeID is the same handle under its pre-1.0 name and is deprecated
+// (🎯T47.10).
 type TaskConfig struct {
 	// ID is the caller-assigned unique identifier for this task.
 	ID string
@@ -231,9 +237,23 @@ type TaskConfig struct {
 	// CLI spelling. The zero value keeps the provider's usual behavior.
 	ToolPolicy *TaskToolPolicy
 
-	// ClaudeID is the claude session ID to resume with --resume. If
-	// empty, each Run starts a fresh session. After the first run,
-	// Task.ClaudeID() returns the session ID for subsequent calls.
+	// SessionID is the provider session to resume, on whichever provider
+	// this task runs: Claude, Codex, Grok and Cursor each pass it as their
+	// own --resume argument, and Bedrock and Ollama refuse it because
+	// their APIs carry no conversation state. Empty means each Run starts
+	// a fresh session. After the first run, Task.SessionID() returns the
+	// id the provider established, so a caller can persist it and set it
+	// here to continue later. It is not a Claude JSONL path or any other
+	// provider-specific layout; it is whatever id the provider's init
+	// event reported.
+	SessionID string
+
+	// ClaudeID is the pre-1.0 name of SessionID. It was never Claude-only:
+	// every provider's resume handle went through it. When both are set,
+	// SessionID wins; when only ClaudeID is set, it is honoured unchanged.
+	//
+	// Deprecated: use SessionID. The field stays until the 1.0 breaking
+	// cut (🎯T1) so existing callers keep working.
 	ClaudeID string
 
 	// LastResult seeds Task.LastResult() before the first run — useful
@@ -247,6 +267,16 @@ type TaskConfig struct {
 	// [ErrPlanExhausted]. It has no direct-path meaning: a run with no
 	// broker returns [ErrNoBroker] rather than guessing a provider.
 	PickByRemaining bool
+}
+
+// resumeID is the session Run continues: SessionID when set, else the
+// deprecated ClaudeID. Every consumer of the handle reads it through here
+// so the two spellings cannot disagree.
+func (cfg TaskConfig) resumeID() string {
+	if cfg.SessionID != "" {
+		return cfg.SessionID
+	}
+	return cfg.ClaudeID
 }
 
 // TaskToolPolicy is a provider-native allowlist for one headless turn.
@@ -442,7 +472,7 @@ func newTaskWithBackend(cfg TaskConfig, backend taskBackend) *Task {
 		toolPolicy:    cfg.ToolPolicy,
 		pickRemaining: cfg.PickByRemaining,
 		status:        TaskStatusIdle,
-		claudeID:      cfg.ClaudeID,
+		claudeID:      cfg.resumeID(),
 		lastResult:    cfg.LastResult,
 		backend:       backend,
 	}
@@ -471,12 +501,23 @@ func (t *Task) LastResult() string {
 	return t.lastResult
 }
 
-// ClaudeID returns the Claude session ID used with --resume on subsequent
-// runs. It is empty until the first TaskEventInit event is received.
-func (t *Task) ClaudeID() string {
+// SessionID returns the provider session id Run resumes on subsequent
+// runs: the TaskConfig.SessionID the task was created with, or the id the
+// provider reported in its first TaskEventInit. It is empty until one of
+// those has happened. The same value is returned for every provider.
+func (t *Task) SessionID() string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.claudeID
+}
+
+// ClaudeID returns the same session id as SessionID. The name predates
+// multi-provider Task support; the id is Claude's only when the provider is.
+//
+// Deprecated: use SessionID. The method stays until the 1.0 breaking cut
+// (🎯T1) so existing callers keep working.
+func (t *Task) ClaudeID() string {
+	return t.SessionID()
 }
 
 // Model returns the model the backend resolved for this task, captured from

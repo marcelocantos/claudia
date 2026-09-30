@@ -62,6 +62,7 @@ var taskFieldFates = map[Provider]map[string]fieldDecl{
 		"ApprovalPolicy":  {fateRefused, "claudeTaskArgs emits no approval flag"},
 		"DisallowTools":   {fateConsumed, ""},
 		"ToolPolicy":      {fateConsumed, ""},
+		"SessionID":       {fateConsumed, ""},
 		"ClaudeID":        {fateConsumed, ""},
 		"LastResult":      {fateLocal, "rehydration seed for Task.LastResult; never sent to the process"},
 	},
@@ -78,6 +79,7 @@ var taskFieldFates = map[Provider]map[string]fieldDecl{
 		"ApprovalPolicy":  {fateConsumed, ""},
 		"DisallowTools":   {fateRefused, "codex exec has no per-tool disallow flag"},
 		"ToolPolicy":      {fateRefused, "Codex uses SandboxMode rather than this provider-native policy"},
+		"SessionID":       {fateConsumed, ""},
 		"ClaudeID":        {fateConsumed, ""},
 		"LastResult":      {fateLocal, "rehydration seed for Task.LastResult; never sent to the process"},
 	},
@@ -94,6 +96,7 @@ var taskFieldFates = map[Provider]map[string]fieldDecl{
 		"ApprovalPolicy":  {fateRefused, "grokTaskArgs emits no approval flag"},
 		"DisallowTools":   {fateRefused, "DisallowTools is not translated onto --deny / --disallowed-tools"},
 		"ToolPolicy":      {fateConsumed, ""},
+		"SessionID":       {fateConsumed, ""},
 		"ClaudeID":        {fateConsumed, ""},
 		"LastResult":      {fateLocal, "rehydration seed for Task.LastResult; never sent to the process"},
 	},
@@ -110,6 +113,7 @@ var taskFieldFates = map[Provider]map[string]fieldDecl{
 		"ApprovalPolicy":  {fateRefused, "ConverseStream has no approval setting"},
 		"DisallowTools":   {fateRefused, "claudia sends no Bedrock toolConfig"},
 		"ToolPolicy":      {fateRefused, "ConverseStream has no headless CLI tool policy"},
+		"SessionID":       {fateRefused, "ConverseStream is stateless; a session id would start cold"},
 		"ClaudeID":        {fateRefused, "ConverseStream is stateless; a session id would start cold"},
 		"LastResult":      {fateLocal, "rehydration seed for Task.LastResult; never sent to the API"},
 	},
@@ -126,6 +130,7 @@ var taskFieldFates = map[Provider]map[string]fieldDecl{
 		"ApprovalPolicy":  {fateRefused, "/api/generate has no approval setting"},
 		"DisallowTools":   {fateRefused, "/api/generate runs no tools"},
 		"ToolPolicy":      {fateRefused, "/api/generate has no headless CLI tool policy"},
+		"SessionID":       {fateRefused, "/api/generate carries no conversation state"},
 		"ClaudeID":        {fateRefused, "/api/generate carries no conversation state"},
 		"LastResult":      {fateLocal, "rehydration seed for Task.LastResult; never sent to the API"},
 	},
@@ -142,6 +147,7 @@ var taskFieldFates = map[Provider]map[string]fieldDecl{
 		"ApprovalPolicy":  {fateRefused, "Cursor Task has no ApprovalPolicy flag"},
 		"DisallowTools":   {fateRefused, "Cursor Task has no per-tool disallow flag"},
 		"ToolPolicy":      {fateRefused, "Cursor Task has no provider-native tool allowlist"},
+		"SessionID":       {fateConsumed, ""},
 		"ClaudeID":        {fateConsumed, ""},
 		"LastResult":      {fateLocal, "rehydration seed for Task.LastResult; never sent to the process"},
 	},
@@ -338,7 +344,7 @@ func setTaskField(req *taskRunRequest, field string) func() {
 		}
 		req.ToolPolicy = &TaskToolPolicy{Builtins: []string{"Read", "read_file"}, MaxTurns: 1, HomeDir: home}
 		return func() { _ = os.RemoveAll(home) }
-	case "ClaudeID":
+	case "SessionID", "ClaudeID":
 		req.SessionID = "t24-session"
 	}
 	return func() {}
@@ -399,7 +405,7 @@ func taskNeedle(field string, req taskRunRequest) string {
 		return "WebFetch"
 	case "ToolPolicy":
 		return "read_file"
-	case "ClaudeID":
+	case "SessionID", "ClaudeID":
 		return req.SessionID
 	default:
 		return ""
@@ -772,6 +778,18 @@ func cloneTaskFates() map[Provider]map[string]fieldDecl {
 	return out
 }
 
+func cloneSessionFates() map[Provider]map[string]fieldDecl {
+	out := make(map[Provider]map[string]fieldDecl, len(sessionFieldFates))
+	for p, m := range sessionFieldFates {
+		cp := make(map[string]fieldDecl, len(m))
+		for k, v := range m {
+			cp[k] = v
+		}
+		out[p] = cp
+	}
+	return out
+}
+
 // TestProviderPathsHonourOrRefuseEveryRequestField is the 🎯T24 census.
 // Reflection over TaskConfig and Config, not a hand-maintained field list.
 func TestProviderPathsHonourOrRefuseEveryRequestField(t *testing.T) {
@@ -805,6 +823,22 @@ func TestReintroducingASilentDropGoesRed(t *testing.T) {
 	issues := requestFieldAudit(task, sessionFieldFates)
 	if !containsIssue(issues, "grok Task DisallowTools") {
 		t.Fatalf("declaring Grok Task DisallowTools consumed did not fail the audit: %v", issues)
+	}
+}
+
+// TestOmittingASessionFieldDispositionGoesRed is mutation (c): a Config
+// field with no row at all in a Session map must fail the audit as a
+// silent drop. This is the ENT-002 shape (🎯T47.2): Config.GoalCompleteCheck
+// shipped without a disposition and the census went red for it, which is
+// the oracle working. The row exists now; this pins that deleting it
+// again would still bite, so the census cannot decay into a table that
+// tolerates a missing row.
+func TestOmittingASessionFieldDispositionGoesRed(t *testing.T) {
+	session := cloneSessionFates()
+	delete(session[ProviderClaude], "GoalCompleteCheck")
+	issues := requestFieldAudit(taskFieldFates, session)
+	if !containsIssue(issues, "claude Session GoalCompleteCheck: no disposition") {
+		t.Fatalf("deleting the Claude Session GoalCompleteCheck row did not fail the audit: %v", issues)
 	}
 }
 

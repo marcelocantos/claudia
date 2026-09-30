@@ -77,7 +77,7 @@ release it claims to describe.
 | `Registry` | opaque struct; methods listed below | Needs review |
 | `RewindResult` | struct with `SessionID, JSONLPath, BackupPath string`, `TurnsRemoved, LinesRemoved int`, `BytesRemoved int64` | Needs review |
 | `Task` | opaque struct; methods listed below | Needs review |
-| `TaskConfig` | struct with `Provider Provider`, `ID, Name, WorkDir, Model, ClaudeID, LastResult, SandboxMode, ApprovalPolicy string`, `DisallowTools []string` | Needs review |
+| `TaskConfig` | struct with `Provider Provider`, `ID, Name, WorkDir, Model, ClaudeID, LastResult, SandboxMode, ApprovalPolicy string`, `DisallowTools []string`. HEAD also carries SessionID, the provider-neutral resume handle; ClaudeID is its deprecated alias and stays until 1.0 (🎯T47.10; snapshot tag predates that field) | Needs review |
 | `TaskEvent` | struct with `Type TaskEventType`, `Content, ToolName, ToolInput, ToolID, SessionID string`, `DurationMs, CostUSD float64`, `Usage Usage`, `IsError bool`, `ErrorMsg string`, `Model string`. HEAD also carries Truncated, set when a payload too large for one broker frame was elided before relay (🎯T73; snapshot tag predates that field) | Needs review |
 | `TaskEventType` | string type | Stable |
 | `TaskStatus` | string type | Stable |
@@ -194,7 +194,7 @@ release it claims to describe.
 | Item | Signature | Status |
 |---|---|---|
 | `Cancel` | `() error` | Stable |
-| `ClaudeID` | `() string` | Stable |
+| `ClaudeID` | `() string` | Stable — deprecated at HEAD in favour of the additive `SessionID() string`, which returns the same id (🎯T47.10; snapshot tag predates that method) |
 | `ID` | `() string` | Stable |
 | `LastResult` | `() string` | Stable |
 | `Model` | `() string` | Needs review |
@@ -628,12 +628,12 @@ Raised by this snapshot; none are resolved.
   string constants**, unlike every other constant group in the package.
   `AgentDef.Purpose` is a bare `string`, so the constants do not
   constrain it. A `Purpose` named type would make it checkable.
-- **`TaskConfig.ClaudeID` is the resume handle for every provider.**
-  The field docs still say "claude session ID"; Codex and Grok Task
-  resume reuse it. A caller skipping the guide will not set it for
-  Codex, or will assume Claude JSONL layout. The `codex` subpackage
-  already uses `SessionID`. Renaming (or aliasing) before 1.0 is the
-  window; after 1.0 it is a breaking cut.
+- ~~**`TaskConfig.ClaudeID` is the resume handle for every provider.**~~
+  Aliased at HEAD (🎯T47.10): `TaskConfig.SessionID` and
+  `Task.SessionID()` are the provider-neutral names, `ClaudeID` (field
+  and method) is documented `Deprecated: use SessionID` and keeps
+  working. What remains is the removal of `ClaudeID` in the 1.0
+  breaking cut (🎯T1).
 
 ### ~~API design fixes (breaking)~~
 

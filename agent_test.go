@@ -175,12 +175,26 @@ func (b *fakeAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error
 	if b.omitStartIDs {
 		startSID = ""
 	}
+	tail := b.tailJSONL
+	if !tail {
+		// Claude-shaped fixtures (the common "fake-claude" case, and any
+		// caller that left Provider unset) tail a Claude JSONL transcript
+		// by default; a fixture explicitly speaking for grok/codex opts
+		// out by setting Config.Provider, matching what those real
+		// backends declare (🎯T36) — the zero-value tailJSONL:false on
+		// this struct is "not yet asked", not "this backend is
+		// grok/codex-shaped".
+		switch req.Config.Provider {
+		case "", ProviderClaude:
+			tail = true
+		}
+	}
 	return &agentStart{
 		WindowID:   b.name + "-window",
 		SessionID:  startSID,
 		Control:    b.control,
 		Ops:        b.ops(),
-		TailJSONL:  b.tailJSONL,
+		TailJSONL:  tail,
 		ConnectURL: b.connectURL,
 		ConnectPID: b.connectPID,
 		DetectReady: func(a *Agent) {

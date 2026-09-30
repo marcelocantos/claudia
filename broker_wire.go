@@ -142,13 +142,19 @@ type taskConfigWire struct {
 	ApprovalPolicy  string          `json:"approval_policy,omitempty"`
 	DisallowTools   []string        `json:"disallow_tools,omitempty"`
 	ToolPolicy      *TaskToolPolicy `json:"tool_policy,omitempty"`
+	SessionID       string          `json:"session_id,omitempty"`
 	ClaudeID        string          `json:"claude_id,omitempty"`
 	LastResult      string          `json:"last_result,omitempty"`
 	PickByRemaining bool            `json:"pick_by_remaining,omitempty"`
 }
 
 // EncodeTaskConfigWire is a TaskConfig in its daemon-protocol form (task_run).
+// The resume handle goes out under both keys, session_id and claude_id, so
+// a daemon built before SessionID existed still resumes the right session
+// from claude_id, and a current one reads session_id (🎯T47.10).
 func EncodeTaskConfigWire(cfg TaskConfig) (json.RawMessage, error) {
+	cfg.SessionID = cfg.resumeID()
+	cfg.ClaudeID = cfg.SessionID
 	return json.Marshal(taskConfigWire(cfg))
 }
 
