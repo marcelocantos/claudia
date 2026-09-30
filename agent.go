@@ -2535,12 +2535,17 @@ func tailStartOffset(size, want int64) int64 {
 // if it were this one's (🎯T78).
 func (a *Agent) tailJSONLFrom(offset int64) {
 	gen := a.backendGen.Load()
+	// A migration rewrites jsonlPath under a.mu while this generation's tail
+	// may still be starting; read it once, under the same lock.
+	a.mu.Lock()
+	path := a.jsonlPath
+	a.mu.Unlock()
 	// Wait for file to be created.
 	for {
 		if a.backendGen.Load() != gen {
 			return
 		}
-		if _, err := os.Stat(a.jsonlPath); err == nil {
+		if _, err := os.Stat(path); err == nil {
 			break
 		}
 		if !a.Alive() {
@@ -2549,7 +2554,7 @@ func (a *Agent) tailJSONLFrom(offset int64) {
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	f, err := os.Open(a.jsonlPath)
+	f, err := os.Open(path)
 	if err != nil {
 		slog.Error("open JSONL failed", "session", a.sessionID, "err", err)
 		return
