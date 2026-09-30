@@ -17,11 +17,13 @@ func TestAuthRecoverBrokerRequestKeepsErrorsAndRejectsUnknownPlans(t *testing.T)
 	f.boot(t, nil)
 	_ = rawSeat(t, f.sock, "healthy")
 	called := 0
-	f.d.authRecover = func(_ context.Context, provider string) error {
+	var logins []bool
+	f.d.authRecover = func(_ context.Context, r *claudia.OMPPlanRecovery) error {
 		called++
-		if provider != "anthropic" {
-			t.Fatalf("provider = %q", provider)
+		if r.Plan != "anthropic" {
+			t.Fatalf("plan = %q", r.Plan)
 		}
+		logins = append(logins, r.Login)
 		if called == 1 {
 			return errors.New("sign-in was cancelled")
 		}
@@ -33,20 +35,25 @@ func TestAuthRecoverBrokerRequestKeepsErrorsAndRejectsUnknownPlans(t *testing.T)
 	}
 	defer c.Close()
 	response := rawCall(t, c, &broker.Request{ID: "recover", Type: broker.TypeAuthRecover,
-		AuthRecover: &broker.NamedRequest{Name: "anthropic"}})
+		AuthRecover: &broker.AuthRecoverRequest{Name: "anthropic"}})
 	if response.Type != broker.TypeError || response.Error.Code != broker.CodeAgentFailed ||
 		response.Error.Message != "sign-in was cancelled" || called != 1 {
 		t.Fatalf("recovery response=%+v called=%d", response, called)
 	}
 	response = rawCall(t, c, &broker.Request{ID: "unknown", Type: broker.TypeAuthRecover,
-		AuthRecover: &broker.NamedRequest{Name: "not-a-plan"}})
+		AuthRecover: &broker.AuthRecoverRequest{Name: "not-a-plan"}})
 	if response.Type != broker.TypeError || response.Error.Code != broker.CodeUnsupportedValue || called != 1 {
 		t.Fatalf("unsupported provider response=%+v called=%d", response, called)
 	}
 	response = rawCall(t, c, &broker.Request{ID: "retry", Type: broker.TypeAuthRecover,
-		AuthRecover: &broker.NamedRequest{Name: "anthropic"}})
+		AuthRecover: &broker.AuthRecoverRequest{Name: "anthropic", Login: true}})
 	if response.Type != broker.TypeAuthRecovered || response.AuthRecovered.Name != "anthropic" || called != 2 {
 		t.Fatalf("retry response=%+v called=%d", response, called)
+	}
+	// 🎯T165: a request that does not say a person is at the keyboard may
+	// not open a sign-in; one that does passes that through.
+	if len(logins) != 2 || logins[0] || !logins[1] {
+		t.Fatalf("login permission reaching the recovery = %v, want [false true]", logins)
 	}
 	if !f.owned("healthy") || f.seat(0) == nil {
 		t.Fatalf("auth recovery disturbed an unrelated live seat: owned=%v seat=%v", f.owned("healthy"), f.seat(0))
@@ -58,7 +65,7 @@ func TestAuthRecoverBrokerRequestKeepsErrorsAndRejectsUnknownPlans(t *testing.T)
 func TestT924AuthStatusReportsPlanHealthWithoutRecovering(t *testing.T) {
 	f := newFixture(t)
 	f.boot(t, nil)
-	f.d.authRecover = func(context.Context, string) error {
+	f.d.authRecover = func(context.Context, *claudia.OMPPlanRecovery) error {
 		t.Fatal("auth_status started a recovery")
 		return nil
 	}

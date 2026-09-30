@@ -429,6 +429,24 @@ func (r *NamedRequest) Validate() error {
 	return nil
 }
 
+// AuthRecoverRequest asks the credential-owning broker to repair one plan's
+// login. Login lets a refused refresh fall back to an interactive sign-in;
+// without it the broker reports that the plan needs one instead (🎯T165).
+// Only a request a person made at the keyboard sets it: an unattended one
+// opened a sign-in tab nobody had asked for (jevons 🎯T971).
+type AuthRecoverRequest struct {
+	Name  string `json:"name"`
+	Login bool   `json:"login,omitempty"`
+}
+
+// Validate checks the name.
+func (r *AuthRecoverRequest) Validate() error {
+	if strings.TrimSpace(r.Name) == "" {
+		return &ProtocolError{Code: CodeMissingField, Field: "name", Msg: "plan name is required"}
+	}
+	return nil
+}
+
 // NamedResponse acknowledges a NamedRequest.
 type NamedResponse struct {
 	Name string `json:"name"`

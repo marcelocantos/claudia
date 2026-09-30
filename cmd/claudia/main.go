@@ -14,7 +14,7 @@
 //	claudia broker interrupt        cancel the seat's current turn
 //	claudia broker events           follow one seat's event stream
 //	claudia broker release NAME [--detach | --force]
-//	claudia broker auth-recover PROVIDER  repair subscription authentication
+//	claudia broker auth-recover [--no-login] PROVIDER  repair subscription authentication (--no-login: never open a sign-in)
 //	claudia broker auth-status [--json]   plan login health; never logs in
 //	claudia broker install|uninstall  launchd user agent (macOS)
 //	claudia broker socket           print the socket path
@@ -110,15 +110,23 @@ func brokerCmd(args []string) error {
 	case "release":
 		return release(args[1:])
 	case "auth-recover":
-		if len(args) != 2 {
-			return errors.New("auth-recover requires one subscription provider")
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
-		defer cancel()
-		if err := claudia.RecoverOMPAuth(ctx, claudia.Provider(args[1])); err != nil {
+		// Run by hand, a person is at the keyboard, so a refused refresh may
+		// open a sign-in. --no-login is for anything unattended (🎯T165).
+		fs := flag.NewFlagSet("auth-recover", flag.ContinueOnError)
+		noLogin := fs.Bool("no-login", false, "never open an interactive sign-in; report that the plan needs one instead")
+		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
-		fmt.Printf("authentication recovered for %s\n", args[1])
+		if fs.NArg() != 1 {
+			return errors.New("auth-recover requires one subscription provider")
+		}
+		plan := fs.Arg(0)
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+		defer cancel()
+		if err := claudia.RecoverOMPAuth(ctx, &claudia.OMPPlanRecovery{Plan: plan, Login: !*noLogin}); err != nil {
+			return err
+		}
+		fmt.Printf("authentication recovered for %s\n", plan)
 		return nil
 	case "auth-status":
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

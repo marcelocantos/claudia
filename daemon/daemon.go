@@ -136,7 +136,7 @@ type Daemon struct {
 	// several browser/device-code prompts for the same owner.
 	reauthMu sync.Mutex
 	// Tests replace the credential operation; production leaves it nil.
-	authRecover func(context.Context, string) error
+	authRecover func(context.Context, *claudia.OMPPlanRecovery) error
 	// authStatus reads plan login health (🎯T924). Tests replace it.
 	authStatus func(context.Context) ([]claudia.PlanLoginHealth, error)
 	opts       Options
@@ -494,7 +494,7 @@ func (d *Daemon) handleReauth(c *broker.ClientConn, req *broker.Request) {
 	if recoverAuth == nil {
 		recoverAuth = claudia.RecoverOMPPlan
 	}
-	if err := recoverAuth(ctx, provider); err != nil {
+	if err := recoverAuth(ctx, &claudia.OMPPlanRecovery{Plan: provider, Login: req.AuthRecover.Login}); err != nil {
 		_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeAgentFailed, Msg: err.Error()})
 		return
 	}

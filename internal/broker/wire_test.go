@@ -185,7 +185,7 @@ var requestVectors = map[string]requestVector{
 	"rewind":         {msg: &Request{ID: "g15", Type: TypeRewind, Rewind: &RewindRequest{Name: "jv-worker-1", Turns: 2}}},
 	"goal_verdict": {msg: &Request{ID: "g16", Type: TypeGoalVerdict,
 		GoalVerdict: &GoalVerdictRequest{Name: "jv-worker-1", CheckID: "c-1", Complete: true, Answered: true}}},
-	"auth_recover": {msg: &Request{ID: "g17", Type: TypeAuthRecover, AuthRecover: &NamedRequest{Name: "anthropic"}}},
+	"auth_recover": {msg: &Request{ID: "g17", Type: TypeAuthRecover, AuthRecover: &AuthRecoverRequest{Name: "anthropic"}}},
 	"auth_status":  {msg: &Request{ID: "g18", Type: TypeAuthStatus, AuthStatus: &AuthStatusRequest{}}},
 }
 

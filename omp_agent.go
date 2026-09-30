@@ -602,6 +602,8 @@ func (c *ompControl) refreshRejectedToken() {
 		login.Script = sidecarAuthScript()
 	}
 	login.ForceRefresh = true
+	// A seat's refusal is never a person at the keyboard (🎯T165).
+	login.NoLogin = true
 	rec, err := login.Refresh(context.Background(), planStore(), c.provider)
 	if err != nil {
 		slog.Warn("omp token rejected; refresh failed", "provider", c.provider, "seat", c.seat, "err", err)
@@ -728,13 +730,25 @@ func LoginOMPPlans(ctx context.Context, ids ...string) (int, error) {
 	return omp.LoginPlans(ctx, store, login, ids...)
 }
 
+// OMPPlanRecovery names one plan to repair (🎯T165).
+type OMPPlanRecovery struct {
+	// Plan is a subscription plan id (anthropic, openai-codex, cursor,
+	// xai-oauth) or a provider that maps to one.
+	Plan string
+	// Login lets a refused refresh fall back to an interactive sign-in.
+	// Only a person at the keyboard sets it; an unattended repair that
+	// needs a sign-in fails with omp.ErrNeedsSignIn and marks the plan
+	// rejected, so the owner's Reauth can do it.
+	Login bool
+}
+
 // RecoverOMPAuth asks the running broker to repair a plan's authentication.
 // The broker owns the in-memory Keychain copy; a separate client process must
 // never attempt to update that copy itself.
-func RecoverOMPAuth(ctx context.Context, provider Provider) error {
-	id := ompProviderID(provider)
+func RecoverOMPAuth(ctx context.Context, r *OMPPlanRecovery) error {
+	id := ompProviderID(Provider(r.Plan))
 	if id == "" {
-		return fmt.Errorf("omp: %s is not a subscription provider", provider)
+		return fmt.Errorf("omp: %s is not a subscription provider", r.Plan)
 	}
 	client, err := dialBroker()
 	if err != nil {
@@ -742,7 +756,7 @@ func RecoverOMPAuth(ctx context.Context, provider Provider) error {
 	}
 	defer client.Close()
 	resp, err := client.call(ctx, &broker.Request{Type: broker.TypeAuthRecover,
-		AuthRecover: &broker.NamedRequest{Name: id}})
+		AuthRecover: &broker.AuthRecoverRequest{Name: id, Login: r.Login}})
 	if err != nil {
 		return err
 	}
@@ -786,9 +800,13 @@ func OMPAuthStatus(ctx context.Context) ([]PlanLoginHealth, error) {
 func IsOMPPlan(provider string) bool { return omp.Subscription(provider) }
 
 // RecoverOMPPlan runs inside the broker, which owns the plan Keychain copy.
-// It retries a failed read, refreshes the named plan, and falls back to
-// interactive login only for an invalid refresh grant.
-func RecoverOMPPlan(ctx context.Context, provider string) error {
+// It retries a failed read and repairs the named plan (omp.RecoverPlan): a
+// plan already healthy is left alone, and a sign-in opens only when r.Login
+// allows it. It holds the plan's refresh lock, the one a refused seat's own
+// refresh takes (🎯T158), so the two never present the same refresh token:
+// the loser of that race got invalid_grant and fell into a sign-in (🎯T165).
+func RecoverOMPPlan(ctx context.Context, r *OMPPlanRecovery) error {
+	provider := r.Plan
 	login := ompLogin
 	if login.Run == nil {
 		login.Run = execBunLogin
@@ -799,10 +817,15 @@ func RecoverOMPPlan(ctx context.Context, provider string) error {
 	if login.Script == "" {
 		login.Script = sidecarAuthScript()
 	}
-	if err := omp.RecoverPlan(ctx, planStore(), login, provider); err != nil {
+	login.NoLogin = !r.Login
+	mu := ompRefreshLock(provider)
+	mu.Lock()
+	err := omp.RecoverPlan(ctx, planStore(), login, provider)
+	mu.Unlock()
+	if err != nil {
 		return err
 	}
-	// The seats already running still hold the rejected token (🎯T141).
+	// Seats still holding an older token take the plan's (🎯T141).
 	if n := reloadOMPSeats(ctx, provider); n > 0 {
 		slog.Info("omp plan recovered; live seats reloaded", "provider", provider, "seats", n)
 	}

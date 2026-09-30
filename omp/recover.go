@@ -65,9 +65,13 @@ func RetryOpen(ctx context.Context, store Store) error {
 	return nil
 }
 
-// RecoverPlan first repairs a missed Keychain read, then asks pi-ai to
-// refresh this provider. Only a rejected or absent refresh grant opens the
-// provider's interactive login. No other provider's credential is changed.
+// RecoverPlan repairs one plan's login. A plan the broker holds as healthy,
+// with a live access token, has nothing to repair: another refresh already
+// replaced the token that was refused, and refreshing again would rotate it
+// under every seat on the plan (🎯T165). Otherwise it refreshes, and on an
+// invalid refresh grant falls back to an interactive sign-in, unless
+// login.NoLogin says nobody is at the keyboard: then it marks the plan
+// rejected and returns ErrNeedsSignIn.
 func RecoverPlan(ctx context.Context, store Store, login Login, provider string) error {
 	if !known(provider) {
 		return fmt.Errorf("omp: %q is not a subscription provider", provider)
@@ -75,14 +79,40 @@ func RecoverPlan(ctx context.Context, store Store, login Login, provider string)
 	if err := RetryOpen(ctx, store); err != nil {
 		return err
 	}
+	if healthy, err := planHealthy(ctx, store, provider); err != nil {
+		return err
+	} else if healthy {
+		return nil
+	}
 	_, err := login.Refresh(ctx, store, provider)
 	if err != nil && ctx.Err() == nil && strings.Contains(strings.ToLower(err.Error()), "invalid_grant") {
+		if login.NoLogin {
+			MarkRejected(provider, err.Error())
+			return fmt.Errorf("omp: %s: %w (the refresh was refused: %v)", provider, ErrNeedsSignIn, err)
+		}
 		login.ForceLogin = true
 		_, err = login.Refresh(ctx, store, provider)
 	}
 	if err != nil {
 		return err
 	}
+	clearRejected(provider)
 	// Recovery is an explicit owner action: the new grant is saved now.
 	return Flush(ctx, store)
+}
+
+// planHealthy reports whether the plan's login is neither marked rejected
+// nor past its access token's expiry.
+func planHealthy(ctx context.Context, store Store, provider string) (bool, error) {
+	rejectedMu.Lock()
+	_, marked := rejected[provider]
+	rejectedMu.Unlock()
+	if marked {
+		return false, nil
+	}
+	item, err := store.Load(ctx)
+	if err != nil {
+		return false, err
+	}
+	return accessLive(store, item.Records[provider]), nil
 }

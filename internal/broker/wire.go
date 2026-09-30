@@ -519,7 +519,7 @@ type Request struct {
 	Rewind        *RewindRequest
 	GoalVerdict   *GoalVerdictRequest
 	Judge         *JudgeRequest
-	AuthRecover   *NamedRequest
+	AuthRecover   *AuthRecoverRequest
 	AuthStatus    *AuthStatusRequest
 }
 
@@ -625,7 +625,7 @@ var requestSpecs = map[MessageType]bodySpec[Request]{
 	TypeRewind:            spec("rewind body", func(r *Request) **RewindRequest { return &r.Rewind }, false),
 	TypeGoalVerdict:       spec("goal_verdict body", func(r *Request) **GoalVerdictRequest { return &r.GoalVerdict }, false),
 	TypeJudge:             spec("judge body", func(r *Request) **JudgeRequest { return &r.Judge }, false),
-	TypeAuthRecover:       spec("auth_recover body", func(r *Request) **NamedRequest { return &r.AuthRecover }, false),
+	TypeAuthRecover:       spec("auth_recover body", func(r *Request) **AuthRecoverRequest { return &r.AuthRecover }, false),
 	TypeAuthStatus:        spec("auth_status body", func(r *Request) **AuthStatusRequest { return &r.AuthStatus }, true),
 }
 

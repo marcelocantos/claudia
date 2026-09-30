@@ -6,6 +6,7 @@ package omp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -37,7 +38,15 @@ type Login struct {
 	ForceLogin bool
 	// ForceRefresh runs pi-ai refresh even when the access token is still live.
 	ForceRefresh bool
+	// NoLogin never opens an interactive sign-in: a fetch that would need
+	// one fails with ErrNeedsSignIn instead (🎯T165). Every path that runs
+	// without a person at the keyboard sets it.
+	NoLogin bool
 }
+
+// ErrNeedsSignIn means a plan can only be repaired by an interactive
+// sign-in, which this caller may not open.
+var ErrNeedsSignIn = errors.New("the plan needs an interactive sign-in")
 
 // Refresh renews one provider and writes that record back. A resync of
 // several providers uses fetch and a single Save instead.
@@ -56,6 +65,9 @@ func (l Login) Refresh(ctx context.Context, store Store, provider string) (Recor
 	if err := store.Put(ctx, provider, rec); err != nil {
 		return Record{}, err
 	}
+	// A renewed login is a healthy one: a rejection it answers must not send
+	// the next recovery to rotate it again (🎯T165).
+	clearRejected(provider)
 	// The refresh spent the refresh token it replaced: save the new one
 	// before anything can restart and read the old (🎯T155).
 	persist(ctx, store, provider)
@@ -93,6 +105,9 @@ func (l Login) fetch(ctx context.Context, provider string, existing Record) (Rec
 	verb := "refresh"
 	if l.ForceLogin || !usableRefresh(existing) {
 		verb = "login"
+	}
+	if verb == "login" && l.NoLogin {
+		return Record{}, fmt.Errorf("omp: %s: %w", provider, ErrNeedsSignIn)
 	}
 	if noNetworkLogin() {
 		return Record{}, fmt.Errorf("omp: %s %s refused: %s is set, this broker never contacts the OAuth provider", provider, verb, NoNetworkEnv)

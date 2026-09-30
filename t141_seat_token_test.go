@@ -210,7 +210,10 @@ func TestT141RecoverReloadsLiveSeats(t *testing.T) {
 	if m := s.nextLoad(); m.Model != "claude-opus" {
 		t.Fatalf("setModel load = %+v", m)
 	}
-	if err := RecoverOMPPlan(context.Background(), omp.Anthropic); err != nil {
+	// The refused seat's own refresh failed, so the plan reads rejected: the
+	// owner's recovery has something to repair (🎯T165).
+	omp.MarkRejected(omp.Anthropic, "OAuth access token has been revoked")
+	if err := RecoverOMPPlan(context.Background(), &OMPPlanRecovery{Plan: omp.Anthropic}); err != nil {
 		t.Fatal(err)
 	}
 	// The sidecar holds one token per plan (🎯T159) and is always the
