@@ -222,10 +222,11 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 		if req.Config.AdoptOnly {
 			return nil, fmt.Errorf("%w: %s", ErrNoSessionWindow, req.Config.Name)
 		}
+		refused := fmt.Errorf("omp: sidecar said %q, want ready", ev.Type)
 		if ev.Text != "" {
-			return nil, fmt.Errorf("omp: sidecar said %q, want ready: %s", ev.Type, ev.Text)
+			refused = fmt.Errorf("omp: sidecar said %q, want ready: %s", ev.Type, ev.Text)
 		}
-		return nil, fmt.Errorf("omp: sidecar said %q, want ready", ev.Type)
+		return nil, explainOMPSidecarRefusal(refused, req.Config.Provider, socket)
 	}
 	historyLost := ompHistoryLost(ev, req.Config.SummaryOnly)
 	ctrl := &ompControl{

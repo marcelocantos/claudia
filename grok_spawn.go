@@ -399,7 +399,12 @@ func ompSidecarLogPath() string {
 // when this machine has them. Colossus 2026-09-26: one `command not found:
 // setsid`, then repeated Node `write EPIPE`.
 func ompSidecarLogExcerpt() string {
-	body := readFileTail(ompSidecarLogPath(), grokStderrCaptureMax)
+	return ompSidecarLogExcerptAt(ompSidecarLogPath())
+}
+
+// ompSidecarLogExcerptAt is [ompSidecarLogExcerpt] for the log at path.
+func ompSidecarLogExcerptAt(path string) string {
+	body := readFileTail(path, grokStderrCaptureMax)
 	if body == "" {
 		return ""
 	}
