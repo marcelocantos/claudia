@@ -47,7 +47,7 @@ func TestT158SeatsRefusedTogetherRefreshThePlanOnce(t *testing.T) {
 			}
 			spent[rec.RefreshToken] = true
 			// Slow enough that an unserialised second refresh overlaps it.
-			time.Sleep(50 * time.Millisecond) // 🎯T97 exemption: widens the race window; it decides no verdict.
+			time.Sleep(50 * time.Millisecond)
 			return []byte(`{"refresh_token":"r2","access_token":"fresh","expiry":"` + exp + `"}`), nil
 		},
 	}
