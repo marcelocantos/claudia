@@ -110,7 +110,8 @@ Everything above this heading — executive summary, dimension vector, command
 table — is the 2026-08-22 snapshot and is left as observed. Findings, by
 contrast, are tracked: a finding that has since been closed says so on its
 **Status** line and carries a **Closure** bullet with the evidence that
-retired it. Closed so far: **ENT-001** (2026-09-21, 🎯T47.1).
+retired it. Closed so far: **ENT-001** (2026-09-21, 🎯T47.1), **ENT-010**
+(2026-09-30, 🎯T47.10).
 
 ### ENT-001: MCPProxy concurrent-401 path races on `entry.probe`
 
@@ -296,14 +297,32 @@ retired it. Closed so far: **ENT-001** (2026-09-21, 🎯T47.1).
 
 - **Priority:** P3
 - **Dimensions:** Local code quality; Documentation / governance
-- **Status:** observed fact
-- **Evidence:** field docs `task.go:188-191` say “claude session ID”; Codex/Grok hermetic tests assert `task.ClaudeID()` after spawn (`task_spawn_test.go:189-190`, `:237-238`). `agents-guide.md:48-49` already warns the name is reused.
+- **Status:** **closed 2026-09-30** (🎯T47.10). Was: observed fact. The evidence below no longer reproduces on the shipped path — see **Closure**.
+- **Evidence (2026-08-22):** field docs `task.go:188-191` say “claude session ID”; Codex/Grok hermetic tests assert `task.ClaudeID()` after spawn (`task_spawn_test.go:189-190`, `:237-238`). `agents-guide.md:48-49` already warns the name is reused.
 - **Mechanism:** a caller skipping the guide will not set `ClaudeID` for Codex resume, or will assume Claude JSONL layout.
 - **Blast radius:** Task resume across providers.
 - **Counterevidence checked:** renaming is a 1.0 breaking change; documented. Pre-1.0 is the window to rename to `SessionID` (Codex subpackage already uses `SessionID`).
 - **Smallest coherent remediation:** alias `SessionID` on `TaskConfig` and deprecate `ClaudeID` before 1.0, or rename in the T1 breaking cut.
 - **Verification:** `go doc TaskConfig` leads with a provider-neutral name.
 - **Ratchet candidate:** STABILITY Gaps item (alongside Purpose typing).
+- **Closure (2026-09-30, 🎯T47.10):** the first named remediation, the additive
+  alias, is in the shipped path. `TaskConfig.SessionID` is the resume handle,
+  documented as the field every resumable provider passes to its own `--resume`
+  and as no provider's on-disk layout; `TaskConfig.ClaudeID` stays as a
+  `Deprecated: use SessionID` alias, `SessionID` winning when both are set
+  (`TaskConfig.resumeID`). `Task.SessionID()` joins `Task.ClaudeID()` the same
+  way. The daemon protocol sends the handle under both `session_id` and
+  `claude_id`, so a daemon built before the alias still resumes. `go doc
+  TaskConfig` now opens its description with SessionID. No caller changed:
+  the existing `ClaudeID` tests (`task_spawn_test.go`, `seams_test.go`,
+  `example_test.go`, `daemon/daemon_test.go`) pass unmodified.
+- **Closure evidence:** `TestT4710GoDocTaskConfigLeadsWithSessionID` parses
+  `task.go` and fails if the struct comment names ClaudeID before SessionID,
+  if SessionID is declared after ClaudeID, or if either ClaudeID (field or
+  method) loses its Deprecated paragraph; `TestT4710SessionIDAndClaudeIDAreOneHandle`
+  and `TestT4710TaskConfigWireCarriesBothSessionKeys` pin precedence and the
+  two-key wire. The removal of `ClaudeID` is the 1.0 breaking cut (🎯T1), not
+  this finding.
 
 ### ENT-011: No vulnerability, secret, or dependency-update gate in CI
 
@@ -403,5 +422,5 @@ Entropy findings suitable as later hygiene items: ENT-001/002 as `correctness.he
 4. **Docs table/package comment (ENT-008)** once Session transports are described as they are.
 5. **Capability wiring test (ENT-007)** as a small ratchet on the existing matrix.
 6. **Broker (ENT-006)** only as T3 — do not grow a second pool. Consider skipping the status probe until spawn RPC exists.
-7. **Optional 1.0 polish:** DialArgs (ENT-009), ClaudeID rename (ENT-010), `govulncheck` (ENT-011), extract backends (ENT-005) after Codex is single-homed.
+7. **Optional 1.0 polish:** DialArgs (ENT-009), ClaudeID rename (ENT-010 — *2026-09-30:* the alias half is **done** (🎯T47.10); the rename is the 🎯T1 cut), `govulncheck` (ENT-011), extract backends (ENT-005) after Codex is single-homed.
 8. Re-run this audit on the same definitions. Do not initialize `hygiene.yaml` unless asked; if onboarded, set floors to held reality (correctness currently cannot claim a green hermetic floor until step 1).

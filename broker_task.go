@@ -41,7 +41,8 @@ func (b *brokerTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*t
 	cfg.ApprovalPolicy = req.ApprovalPolicy
 	cfg.DisallowTools = req.DisallowTools
 	cfg.ToolPolicy = req.ToolPolicy
-	cfg.ClaudeID = req.SessionID
+	cfg.SessionID = req.SessionID
+	cfg.ClaudeID = ""
 	raw, err := EncodeTaskConfigWire(cfg)
 	if err != nil {
 		return nil, err

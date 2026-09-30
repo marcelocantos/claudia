@@ -85,12 +85,15 @@ for ev := range events {
 }
 ```
 
-Resume a prior task session by setting `TaskConfig.ClaudeID` to the
-session ID captured from a previous `TaskEventInit`.
+Resume a prior task session by setting `TaskConfig.SessionID` to the
+session ID captured from a previous `TaskEventInit` (or from
+`Task.SessionID()`). The same field resumes every provider that can
+resume; `TaskConfig.ClaudeID` is its deprecated pre-1.0 name and still
+works.
 
 Codex Task mode is available by selecting `ProviderCodex`. It runs
 `codex exec --json`, captures the Codex thread id as the task session
-id, and can resume with the same `TaskConfig.ClaudeID` field:
+id, and can resume with the same `TaskConfig.SessionID` field:
 
 For constraint-based selection, `Resolve` maps Codex frontier, standard,
 and economy quality to GPT-6 Astra, Sol, and Luna respectively.
@@ -112,7 +115,7 @@ and may contact OpenAI. Run them with `CLAUDIA_CODEX_LIVE=1`.
 Grok Task mode is available by selecting `ProviderGrok`. It runs
 `grok -p … --output-format streaming-json`, captures the session id
 from the terminal `end` event, and can resume with the same
-`TaskConfig.ClaudeID` field:
+`TaskConfig.SessionID` field:
 
 ```go
 task := claudia.NewTask(claudia.TaskConfig{
