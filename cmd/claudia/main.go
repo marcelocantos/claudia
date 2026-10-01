@@ -195,9 +195,11 @@ func serve(args []string) error {
 
 	claudia.SetOMPToolExec(claudia.DefaultOMPToolExec)
 	refreshCtx, refreshCancel := context.WithTimeout(context.Background(), 8*time.Second)
+	plansOpen := false
 	if err := claudia.OpenOMPPlans(refreshCtx); err != nil {
 		log.Warn("plan keychain was not read; Launch will not prompt again", "err", err)
 	} else {
+		plansOpen = true
 		defer func() {
 			if err := claudia.FlushOMPPlans(context.Background()); err != nil {
 				log.Warn("plan keychain flush failed", "err", err)
@@ -240,6 +242,10 @@ func serve(args []string) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	if plansOpen {
+		// Nothing else renews a plan's token before it lapses (🎯T168).
+		go claudia.RunOMPPlanRenewal(ctx, claudia.OMPRenewInterval, claudia.OMPRenewMargin)
+	}
 	err = d.Run(ctx)
 	log.Info("claudia broker stopped")
 	return err

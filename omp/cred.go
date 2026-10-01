@@ -121,6 +121,10 @@ func ResetKeychainShot() {
 	renewedMu.Lock()
 	clear(renewed)
 	renewedMu.Unlock()
+	// Nor any rejection a previous case marked (🎯T168).
+	rejectedMu.Lock()
+	clear(rejected)
+	rejectedMu.Unlock()
 }
 
 func cloneItem(item Item) Item {
