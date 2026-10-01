@@ -125,7 +125,7 @@ Full map: [bedrock-provider-oracle-map.md](./bedrock-provider-oracle-map.md).
 ## Work-account setup (summary)
 
 See [bedrock-work-account.md](./bedrock-work-account.md) for IAM model
-access, profile/region, and example model IDs. Hermetic CI needs no AWS.
+access, profile/region, and example model IDs. Hermetic tests need no AWS.
 
 ## Non-goals (v1)
 

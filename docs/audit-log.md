@@ -252,3 +252,14 @@ maintenance activities. Append-only — newest entries at the bottom.
   only bare `Start`). Persists SessionID when the provider allocates a
   new id. Empty Provider remains Claude.
 - **Deferred**: same as v0.16.0.
+
+## 2026-09-26 — remove GitHub Actions
+
+- **Outcome**: Owner policy: Claudia does not use GitHub Actions. Colossus
+  (macOS + keychain) is the runtime for all development and testing.
+  GitHub stores the code as backup. Deleted `.github/workflows/test.yml`
+  and `.github/workflows/specs.yml`. Hermetic checks stay on `make gate`
+  (pre-push on Colossus). `make verify-specs` stays on `make gate-full`,
+  run on Colossus before a release. Docs and `hygiene.yaml` no longer
+  describe an ubuntu/macos Actions matrix.
+- **Deferred**: none from this change. Live tests remain opt-in on Colossus.
