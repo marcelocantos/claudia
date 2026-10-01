@@ -17,7 +17,7 @@ import (
 // host can only widen them.
 func TestT977NudgesLeaveSpacedApart(t *testing.T) {
 	const spacing = 40 * time.Millisecond
-	pace := nudgePacer(spacing)
+	pace := nudgePacer(SystemClock{}, spacing)
 	var mu sync.Mutex
 	var at []time.Time
 	var wg sync.WaitGroup
@@ -43,10 +43,10 @@ func TestT977NudgesLeaveSpacedApart(t *testing.T) {
 	}
 
 	// Zero spacing never waits; a cancelled resume stops waiting.
-	if err := nudgePacer(0)(context.Background()); err != nil {
+	if err := nudgePacer(SystemClock{}, 0)(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	slow := nudgePacer(time.Hour)
+	slow := nudgePacer(SystemClock{}, time.Hour)
 	_ = slow(context.Background())
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

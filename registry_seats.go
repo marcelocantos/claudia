@@ -293,7 +293,7 @@ func (r *Registry) ResumeAll(ctx context.Context, args *ResumeArgs) []ResumeOutc
 	if nudge != NoRestartNudge {
 		lostNudge = fmt.Sprintf(LostHistoryRestartNudge, now.Format(time.RFC3339))
 	}
-	pace := nudgePacer(args.NudgeSpacing)
+	pace := nudgePacer(r.seatClock(), args.NudgeSpacing)
 	conc := args.Concurrency
 	if conc <= 0 {
 		conc = defaultResumeConcurrency
@@ -398,8 +398,9 @@ func (r *Registry) remintSeat(name string) (oldSession string, err error) {
 }
 
 // nudgePacer returns a wait that hands out nudge slots at least spacing
-// apart, in the order callers ask. Zero spacing never waits.
-func nudgePacer(spacing time.Duration) func(context.Context) error {
+// apart, in the order callers ask. Zero spacing never waits. Time is read
+// through clock (🎯T2.8).
+func nudgePacer(clock Clock, spacing time.Duration) func(context.Context) error {
 	if spacing <= 0 {
 		return func(context.Context) error { return nil }
 	}
@@ -407,22 +408,21 @@ func nudgePacer(spacing time.Duration) func(context.Context) error {
 	var next time.Time
 	return func(ctx context.Context) error {
 		mu.Lock()
-		at := time.Now()
+		now := clock.Now()
+		at := now
 		if next.After(at) {
 			at = next
 		}
 		next = at.Add(spacing)
 		mu.Unlock()
-		wait := time.Until(at)
+		wait := at.Sub(now)
 		if wait <= 0 {
 			return nil
 		}
-		t := time.NewTimer(wait)
-		defer t.Stop()
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-t.C:
+		case <-clock.After(wait):
 			return nil
 		}
 	}
