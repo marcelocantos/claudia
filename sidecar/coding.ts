@@ -5,6 +5,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
+import { guardBranchCheckout } from "./branchguard.ts";
 import { capToolText, toolResultBound } from "./truncate.ts";
 
 const maxOut = 200_000;
@@ -101,6 +102,13 @@ function bashTool(cwdOf: () => string, boundOf: () => number): AgentTool {
       const command = String((params as { command?: string })?.command || "");
       if (!command) return textResult("missing command", boundOf(), "Bash");
       const cwd = cwdOf() || process.cwd();
+      // 🎯T164: a switch of the shared clone's branch is refused before the
+      // shell starts. The refusal is a failed tool call, not an exit status:
+      // the command never ran, and the next command is judged on its own.
+      const refusal = await guardBranchCheckout(cwd, command);
+      if (refusal && refusal.verdict === "deny") {
+        return { ...textResult(refusal.message, boundOf(), "Bash"), isError: true };
+      }
       const r = await runCommand("/bin/bash", ["-lc", command], {
         cwd,
         timeoutMs: bashTimeoutMs,
