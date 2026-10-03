@@ -107,19 +107,10 @@ func runLiveCommand(ctx context.Context, bin string, args ...string) ([]byte, er
 	return out, nil
 }
 
-func (h liveHarness) command(t *testing.T, args ...string) []byte {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
-	defer cancel()
-	out, err := runLiveCommand(ctx, h.BrokerBinary, args...)
-	if err != nil {
-		t.Fatalf("broker %s: %v", args[1], err)
-	}
-	return out
-}
-
 func (h liveHarness) preflight(t *testing.T) {
 	t.Helper()
+	// 🎯T97 exemption: installed-runtime preflight bounds external ps/lsof and
+	// socket probes. Expiry fails preflight; it cannot attest process identity.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	for _, p := range []struct {
@@ -207,6 +198,8 @@ func bounceCommands(getenv func(string) string) (restart, ready []string, err er
 
 func waitLiveReady(ctx context.Context, ready func(context.Context) bool) error {
 	for {
+		// 🎯T97 exemption: bound one external readiness command; its timeout
+		// means not ready, never success. The parent bounds the overall wait.
 		probe, cancel := context.WithTimeout(ctx, 3*time.Second)
 		ok := ready(probe)
 		cancel()
@@ -216,6 +209,8 @@ func waitLiveReady(ctx context.Context, ready func(context.Context) bool) error 
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		// 🎯T97 exemption: expiry only paces another probe; it cannot report
+		// readiness. Parent cancellation still returns the parent's error.
 		case <-time.After(250 * time.Millisecond):
 		}
 	}

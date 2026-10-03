@@ -143,7 +143,9 @@ func TestT171BounceRequiresAuthorizationAndReadiness(t *testing.T) {
 	if _, _, err := bounceCommands(get); err == nil {
 		t.Fatal("missing readiness accepted")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+	// 🎯T97 exemption: zero expires synchronously before the readiness probe;
+	// DeadlineExceeded is already fixed, so host speed cannot decide the result.
+	ctx, cancel := context.WithTimeout(context.Background(), 0)
 	defer cancel()
 	if err := waitLiveReady(ctx, func(context.Context) bool { return false }); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("unbounded readiness: %v", err)
