@@ -127,9 +127,9 @@ func TestT865LiveBrokerRefreshPlans(t *testing.T) {
 		t.Skip("CLAUDIA_OMP_LIVE not set")
 	}
 	h := newLiveHarness(t)
-	plan := os.Getenv("CLAUDIA_OMP_LIVE_PLAN")
+	plan := os.Getenv("CLAUDIA_OMP_TEST_PLAN")
 	if !known(plan) {
-		t.Fatal("set CLAUDIA_OMP_LIVE_PLAN to one subscription plan")
+		t.Fatal("set CLAUDIA_OMP_TEST_PLAN to one subscription plan")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
@@ -205,7 +205,7 @@ func TestT865LiveBrokerSmokeLaunchVerbs(t *testing.T) {
 	}
 	// Refuse before touching the selected runtime: supported CLI acknowledgements
 	// cannot satisfy this test's behavioral oracle. Do not substitute fleet aliases.
-	if err := liveSmokePrerequisite(os.Getenv("CLAUDIA_OMP_LIVE_PROVIDER")); err != nil {
+	if err := liveSmokePrerequisite(os.Getenv("CLAUDIA_OMP_TEST_PROVIDER")); err != nil {
 		t.Fatal(err)
 	}
 

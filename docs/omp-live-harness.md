@@ -19,9 +19,9 @@ checkout binary or start a sidecar implicitly.
 - `CLAUDIA_BROKER_SOCKET` and `CLAUDIA_OMP_SOCKET`: distinct absolute sockets of
   an already running, reviewed broker and sidecar.
 - `CLAUDIA_OMP_ACTIVATION_RECEIPT`: absolute JSON file with the schema below.
-- `CLAUDIA_OMP_LIVE_PLAN`: exactly one of `anthropic`, `openai-codex`, `cursor`,
+- `CLAUDIA_OMP_TEST_PLAN`: exactly one of `anthropic`, `openai-codex`, `cursor`,
   `xai-oauth`.
-- `CLAUDIA_OMP_LIVE_PROVIDER`: a literal subscription ID: `anthropic`,
+- `CLAUDIA_OMP_TEST_PROVIDER`: a literal subscription ID: `anthropic`,
   `openai-codex`, `xai-oauth`, or `cursor`. Never substitute `claude`, `codex` or
   `grok`. The CLI currently rejects the first three; cursor passes provider
   validation but lacks the required behavioral observations. Smoke fails
