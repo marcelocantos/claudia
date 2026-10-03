@@ -43,7 +43,7 @@ func t169ProtocolJourney(t *testing.T, scenario string) {
 	t.Helper()
 	bun, err := exec.LookPath("bun")
 	if err != nil {
-		t.Fatal("fixture integration requires bun")
+		t.Skip("fixture integration requires bun; no protocol evidence without it")
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -121,6 +121,9 @@ func t169ProtocolJourney(t *testing.T, scenario string) {
 	defer os.RemoveAll(socketDir)
 	sock := filepath.Join(socketDir, "s.sock")
 	script, _ := filepath.Abs("sidecar/server.ts")
+	if err := omp.EnsureDeps(ctx, script); err != nil {
+		t.Fatal(err)
+	}
 	preload, _ := filepath.Abs("sidecar/testdata/t169-provider-preload.ts")
 	cmd := exec.CommandContext(ctx, bun, "--preload", preload, script, sock, "--lifeline=stdin")
 	cmd.Env = append(omp.ScrubEnv(os.Environ()), "T169_PROVIDER_URL="+server.URL, "JEVONS_SPOOL_DIR="+filepath.Join(dir, "spool"))
