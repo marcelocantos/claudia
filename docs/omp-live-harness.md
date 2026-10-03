@@ -5,8 +5,8 @@ is owner-visible. Hermetic green is not an activation or a live pass.
 
 The old `jevons-broker refresh-plans` and `smoke` commands no longer exist in the
 current CLI. These tests use an explicitly selected installed `claudia` binary,
-its `broker auth-status --json`, `broker auth-recover --no-login PROVIDER`, and
-`broker grant/send/interrupt/release` commands. They never discover a sibling
+its `broker auth-status --json` and `broker auth-recover --no-login PROVIDER`
+commands. Smoke refuses until the CLI and behavioral evidence gaps are closed. They never discover a sibling
 checkout binary or start a sidecar implicitly.
 
 ## Operator inputs before an authorized run
@@ -21,9 +21,11 @@ checkout binary or start a sidecar implicitly.
 - `CLAUDIA_OMP_ACTIVATION_RECEIPT`: absolute JSON file with the schema below.
 - `CLAUDIA_OMP_LIVE_PLAN`: exactly one of `anthropic`, `openai-codex`, `cursor`,
   `xai-oauth`.
-- `CLAUDIA_OMP_LIVE_PROVIDER`: `cursor` or `grok` for smoke; these CLI provider
-  IDs select subscription sessions. Smoke spends turns in a uniquely named
-  temporary work seat and releases that seat at cleanup.
+- `CLAUDIA_OMP_LIVE_PROVIDER`: a literal subscription ID: `anthropic`,
+  `openai-codex`, `xai-oauth`, or `cursor`. Never substitute `claude`, `codex` or
+  `grok`. The CLI currently rejects the first three; cursor passes provider
+  validation but lacks the required behavioral observations. Smoke fails
+  preflight before any runtime contact or turn spend.
 
 Receipt example (placeholders must be replaced with observations):
 
@@ -53,25 +55,37 @@ this receipt to claim it. No activation or restart is performed by preflight.
 
 ## Recovery and smoke evidence limits
 
-`TestT865LiveBrokerRefreshPlans` performs supported no-login recovery, checks
-health before and after, then explicitly skips the renewal claim. Healthy
-no-op, auth health and allowance/usage refresh never prove renewal. The current
-RPC exposes no refreshed/no-op outcome; a stronger live renewal oracle remains
-outstanding. Do not expire, reject or overwrite shared tokens to force it.
+`TestT865LiveBrokerRefreshPlans` performs supported no-login recovery and checks
+health before and after. It fails with `OMP_RENEWAL_EVIDENCE_UNAVAILABLE` even
+when health is OK. Healthy no-op, auth health and allowance/usage refresh never
+prove renewal. The current RPC exposes no refreshed/no-op outcome. Do not
+expire, reject or overwrite shared tokens to force it.
 `TestT171RecoveryRenewsExpiredPlan` pins expired-token renewal, persistence and
 subsequent healthy no-op hermetically. T165 pins refused renewal without login.
 
-Smoke proves a grant and sentinel response, a steer-mode acknowledgement and
-an interrupt acknowledgement. OMP currently returns no steer mechanism, so
-model uptake of steer and observed abort termination remain stronger live
-oracles to obtain. It does not claim `jevons_*` host-tool arming: those tools
-belong to the host, and the standalone CLI cannot attest them. There is no
-fabricated `smoke` success string standing in for those oracles.
+Smoke cannot pass partial coverage. Its named prerequisite failures are:
+
+- `OMP_LITERAL_PROVIDER_REQUIRED`: missing or alias provider selection.
+- `OMP_LITERAL_PROVIDER_UNSUPPORTED`: CLI rejects the selected literal ID.
+- `OMP_STEER_EVIDENCE_UNAVAILABLE`: no correlated model uptake of a steer.
+- `OMP_ABORT_EVIDENCE_UNAVAILABLE`: no correlated terminal abort observation.
+- `OMP_HOST_TOOLS_EVIDENCE_UNAVAILABLE`: standalone CLI does not attest the
+  intended `jevons_*` host-tool arming.
+
+The latter three are returned together for cursor. The actual CLI validation
+boundary is pinned by `cmd/claudia.TestT171LiteralSubscriptionProviderBoundary`.
+The required product/API follow-ups are literal subscription grant support,
+observable renewed-versus-no-op recovery outcome, a correlated steer uptake
+oracle, correlated abort terminal evidence, and host-context tool-arming
+observation. Protocol acknowledgements cannot substitute for those results.
 
 ## Coordinated jevonsd bounce only
 
 `CLAUDIA_OMP_BOUNCE_AUTHORIZED=restart-jevonsd` is an explicit authorization
-receipt from the coordinator, not a value to set merely to unskip a test.
+receipt from the coordinator, not a value to invent to satisfy a test. With
+`CLAUDIA_OMP_LIVE` enabled, an absent permit fails
+`OMP_BOUNCE_AUTHORIZATION_REQUIRED` before any restart. Only an unset live
+opt-in skips the test.
 Also supply `CLAUDIA_OMP_BOUNCE_ARGV` and `CLAUDIA_OMP_READY_ARGV` as JSON argv
 arrays with absolute executable paths. The coordinator must ensure the first
 restarts only the named jevonsd service and the second checks that service's

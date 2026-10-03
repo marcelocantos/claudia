@@ -7,7 +7,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -137,11 +136,11 @@ func TestT865LiveBrokerRefreshPlans(t *testing.T) {
 	before, after, err := recoverLivePlan(ctx, func(ctx context.Context, args ...string) ([]byte, error) {
 		return runLiveCommand(ctx, h.BrokerBinary, args...)
 	}, plan)
+	t.Logf("supported no-login recovery: %s -> %s; health does not prove token renewal", before, after)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("supported no-login recovery: %s -> %s; health does not prove token renewal", before, after)
-	t.Skip("renewal residue: the recovery RPC exposes no refreshed/no-op outcome; real renewal branch is pinned hermetically by TestT171RecoveryRenewsExpiredPlan")
+	t.Fatal(errLiveRenewalEvidence)
 }
 
 func TestT865LiveRebuiltBrokerRefused(t *testing.T) {
@@ -204,22 +203,12 @@ func TestT865LiveBrokerSmokeLaunchVerbs(t *testing.T) {
 	if os.Getenv("CLAUDIA_OMP_LIVE") == "" {
 		t.Skip("CLAUDIA_OMP_LIVE not set")
 	}
-	h := newLiveHarness(t)
-	provider := os.Getenv("CLAUDIA_OMP_LIVE_PROVIDER")
-	if provider != "cursor" && provider != "grok" {
-		t.Fatal("CLAUDIA_OMP_LIVE_PROVIDER must be cursor or grok (CLI subscription sessions)")
-	}
-	name := fmt.Sprintf("t171-smoke-%d-%d", os.Getpid(), time.Now().UnixNano())
-	dir := t.TempDir()
-	t.Cleanup(func() { h.command(t, "broker", "release", name) })
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-	defer cancel()
-	if err := smokeLiveSeat(ctx, func(ctx context.Context, args ...string) ([]byte, error) {
-		return runLiveCommand(ctx, h.BrokerBinary, args...)
-	}, name, provider, dir); err != nil {
+	// Refuse before touching the selected runtime: supported CLI acknowledgements
+	// cannot satisfy this test's behavioral oracle. Do not substitute fleet aliases.
+	if err := liveSmokePrerequisite(os.Getenv("CLAUDIA_OMP_LIVE_PROVIDER")); err != nil {
 		t.Fatal(err)
 	}
-	t.Log("grant/send response, steer acknowledgement and interrupt acknowledgement observed; jevons host-tool arming is outside this CLI harness")
+
 }
 
 func TestT865LiveSidecarSurvivesJevonsdBounce(t *testing.T) {
@@ -227,7 +216,7 @@ func TestT865LiveSidecarSurvivesJevonsdBounce(t *testing.T) {
 		t.Skip("CLAUDIA_OMP_LIVE not set")
 	}
 	if os.Getenv("CLAUDIA_OMP_BOUNCE_AUTHORIZED") != "restart-jevonsd" {
-		t.Skip("coordinated restart authorization absent: CLAUDIA_OMP_BOUNCE_AUTHORIZED=restart-jevonsd")
+		t.Fatal(errLiveBouncePermit)
 	}
 	h := newLiveHarness(t)
 	restart, ready, err := bounceCommands(os.Getenv)

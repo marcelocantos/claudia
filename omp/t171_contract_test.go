@@ -76,7 +76,7 @@ func TestT171SupportedRecoveryCommandContract(t *testing.T) {
 				}
 				return []byte(fmt.Sprintf(`{"plans":[{"provider":"anthropic","state":%q}]}`, state)), nil
 			}, Anthropic)
-			if err != nil || before != initial || after != HealthOK {
+			if !errors.Is(err, errLiveRenewalEvidence) || before != initial || after != HealthOK {
 				t.Fatalf("%s -> %s: %v", before, after, err)
 			}
 			want := [][]string{{"broker", "auth-status", "--json"}, {"broker", "auth-recover", "--no-login", Anthropic}, {"broker", "auth-status", "--json"}}
@@ -129,8 +129,8 @@ func TestT171RecoveryRenewsExpiredPlan(t *testing.T) {
 func TestT171BounceRequiresAuthorizationAndReadiness(t *testing.T) {
 	env := map[string]string{"CLAUDIA_OMP_BOUNCE_ARGV": `["/bin/restart","jevonsd"]`, "CLAUDIA_OMP_READY_ARGV": `["/bin/ready","jevonsd"]`}
 	get := func(k string) string { return env[k] }
-	if _, _, err := bounceCommands(get); err == nil {
-		t.Fatal("unauthorized bounce accepted")
+	if _, _, err := bounceCommands(get); !errors.Is(err, errLiveBouncePermit) {
+		t.Fatal("missing named authorization prerequisite", err)
 	}
 	env["CLAUDIA_OMP_BOUNCE_AUTHORIZED"] = "restart-jevonsd"
 	restart, ready, err := bounceCommands(get)
@@ -148,40 +148,21 @@ func TestT171BounceRequiresAuthorizationAndReadiness(t *testing.T) {
 	}
 }
 
-func TestT171SmokeCommandContract(t *testing.T) {
-	for _, mode := range []string{"steer", "submit", ""} {
-		t.Run("mode="+mode, func(t *testing.T) {
-			var verbs []string
-			err := smokeLiveSeat(context.Background(), func(_ context.Context, args ...string) ([]byte, error) {
-				if len(args) < 2 || args[0] != "broker" {
-					t.Fatal("unsupported command", args)
-				}
-				verbs = append(verbs, args[1])
-				switch len(verbs) {
-				case 1:
-					return []byte(`{"grant":{"name":"test-seat"},"text":"T171_SMOKE_OK"}`), nil
-				case 2:
-					return nil, nil
-				case 3:
-					if !reflect.DeepEqual(args[:4], []string{"broker", "send", "--mode", "steer"}) {
-						t.Fatal("wrong steer command")
-					}
-					return []byte(fmt.Sprintf(`{"sent":{"mode":%q}}`, mode)), nil
-				case 4:
-					if !reflect.DeepEqual(args, []string{"broker", "interrupt", "--timeout", "30s", "test-seat"}) {
-						t.Fatal("wrong interrupt command")
-					}
-					return nil, nil
-				}
-				return nil, errors.New("unexpected command")
-			}, "test-seat", "cursor", "/tmp/test-work")
-			if mode == "steer" {
-				if err != nil || !reflect.DeepEqual(verbs, []string{"grant", "send", "send", "interrupt"}) {
-					t.Fatalf("smoke: %v; %v", err, verbs)
-				}
-			} else if err == nil {
-				t.Fatal("wrong send mode accepted")
-			}
-		})
+func TestT171SmokeRefusesMissingBehavioralEvidence(t *testing.T) {
+	for _, provider := range []string{Anthropic, OpenAICodex, XAIOAuth} {
+		if err := liveSmokePrerequisite(provider); !errors.Is(err, errLiveProviderUnsupported) {
+			t.Fatalf("literal %s: %v", provider, err)
+		}
+	}
+	for _, alias := range []string{"", "claude", "codex", "grok"} {
+		if err := liveSmokePrerequisite(alias); err == nil {
+			t.Fatalf("alias %q substituted for literal subscription ID", alias)
+		}
+	}
+	err := liveSmokePrerequisite(Cursor)
+	for _, missing := range []error{errLiveSteerEvidence, errLiveAbortEvidence, errLiveHostToolsEvidence} {
+		if !errors.Is(err, missing) {
+			t.Fatalf("smoke omitted blocker %v: %v", missing, err)
+		}
 	}
 }

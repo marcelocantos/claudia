@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -191,15 +192,19 @@ func recoverLivePlan(ctx context.Context, run liveCommand, plan string) (before,
 		return
 	}
 	after, err = health()
-	if err == nil && after != HealthOK {
-		err = fmt.Errorf("no-login recovery left plan %s", after)
+	if err == nil {
+		if after != HealthOK {
+			err = fmt.Errorf("no-login recovery left plan %s", after)
+		} else {
+			err = errLiveRenewalEvidence
+		}
 	}
 	return
 }
 
 func bounceCommands(getenv func(string) string) (restart, ready []string, err error) {
 	if getenv("CLAUDIA_OMP_BOUNCE_AUTHORIZED") != "restart-jevonsd" {
-		return nil, nil, fmt.Errorf("explicit coordinated bounce authorization absent")
+		return nil, nil, errLiveBouncePermit
 	}
 	for name, dst := range map[string]*[]string{"CLAUDIA_OMP_BOUNCE_ARGV": &restart, "CLAUDIA_OMP_READY_ARGV": &ready} {
 		if err := json.Unmarshal([]byte(getenv(name)), dst); err != nil || len(*dst) == 0 || !filepath.IsAbs((*dst)[0]) {
@@ -225,43 +230,25 @@ func waitLiveReady(ctx context.Context, ready func(context.Context) bool) error 
 	}
 }
 
-// smokeLiveSeat checks supported CLI commands and their acknowledgements.
-// OMP currently returns no steer mechanism; model uptake remains live residue.
-func smokeLiveSeat(ctx context.Context, run liveCommand, name, provider, dir string) error {
-	out, err := run(ctx, "broker", "grant", "--name", name, "--provider", provider,
-		"--workdir", dir, "--purpose", "work", "--timeout", "90s", "--json",
-		"--send", "Reply with exactly T171_SMOKE_OK", "--wait")
-	if err != nil {
-		return err
+// The installed CLI currently accepts cursor but rejects the other literal
+// subscription IDs. Even cursor has no correlated steer/abort/tool oracle in
+// this harness. Keep enabled smoke red before any command, rather than award
+// partial coverage for protocol acknowledgements.
+var (
+	errLiveRenewalEvidence     = errors.New("OMP_RENEWAL_EVIDENCE_UNAVAILABLE: auth recovery exposes no refreshed/no-op outcome; health is not renewal proof")
+	errLiveBouncePermit        = errors.New("OMP_BOUNCE_AUTHORIZATION_REQUIRED: coordinated CLAUDIA_OMP_BOUNCE_AUTHORIZED=restart-jevonsd prerequisite missing")
+	errLiveProviderUnsupported = errors.New("OMP_LITERAL_PROVIDER_UNSUPPORTED: broker grant CLI rejects this literal subscription provider; no alias substitution allowed")
+	errLiveSteerEvidence       = errors.New("OMP_STEER_EVIDENCE_UNAVAILABLE: correlated model uptake of a steer is not observable through this harness")
+	errLiveAbortEvidence       = errors.New("OMP_ABORT_EVIDENCE_UNAVAILABLE: interrupt acknowledgement does not prove correlated terminal abort")
+	errLiveHostToolsEvidence   = errors.New("OMP_HOST_TOOLS_EVIDENCE_UNAVAILABLE: standalone CLI does not attest intended jevons host-tool arming")
+)
+
+func liveSmokePrerequisite(provider string) error {
+	if !known(provider) {
+		return fmt.Errorf("OMP_LITERAL_PROVIDER_REQUIRED: choose anthropic, openai-codex, xai-oauth or cursor")
 	}
-	var response struct {
-		Text  string `json:"text"`
-		Grant struct {
-			Name string `json:"name"`
-		} `json:"grant"`
+	if provider != Cursor {
+		return fmt.Errorf("%w: %s", errLiveProviderUnsupported, provider)
 	}
-	if err := json.Unmarshal(out, &response); err != nil {
-		return fmt.Errorf("invalid grant JSON")
-	}
-	if response.Grant.Name != name || !strings.Contains(response.Text, "T171_SMOKE_OK") {
-		return fmt.Errorf("grant/send did not produce the smoke sentinel")
-	}
-	if _, err := run(ctx, "broker", "send", "--timeout", "30s", name, "Count slowly from 1 to 10000, one number per line."); err != nil {
-		return err
-	}
-	out, err = run(ctx, "broker", "send", "--mode", "steer", "--timeout", "30s", "--json", name, "Continue counting in words.")
-	if err != nil {
-		return err
-	}
-	var sent struct {
-		Sent struct {
-			Mode      string `json:"mode"`
-			Mechanism string `json:"mechanism"`
-		} `json:"sent"`
-	}
-	if err := json.Unmarshal(out, &sent); err != nil || sent.Sent.Mode != "steer" {
-		return fmt.Errorf("steer was not delivered as steer")
-	}
-	_, err = run(ctx, "broker", "interrupt", "--timeout", "30s", name)
-	return err
+	return errors.Join(errLiveSteerEvidence, errLiveAbortEvidence, errLiveHostToolsEvidence)
 }
