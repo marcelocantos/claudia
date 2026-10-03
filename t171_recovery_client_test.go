@@ -56,9 +56,7 @@ func TestT171RecoveryClientNeverFallsBack(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { srv.Close() })
-			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-			defer cancel()
-			result, err := RecoverOMPAuthDetailed(ctx, "anthropic")
+			result, err := RecoverOMPAuthDetailed(t.Context(), "anthropic")
 			if unsupported {
 				var pe *broker.ProtocolError
 				if !errors.As(err, &pe) || pe.Code != broker.CodeUnknownType {

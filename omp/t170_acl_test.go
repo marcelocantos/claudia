@@ -43,6 +43,8 @@ func t170BuildACLProbe(t *testing.T) string {
 	if runtime.GOOS != "darwin" {
 		t.Skip("Security.framework requires macOS")
 	}
+	// 🎯T97 exemption: this bounds the external clang process, not an ACL
+	// assertion. Expiry fails compilation; it can never count as read refusal.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	probe := filepath.Join(t.TempDir(), "untrusted-acl-probe")
