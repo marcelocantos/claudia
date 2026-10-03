@@ -107,21 +107,6 @@ func TestT865AuthScriptOpensLoginURL(t *testing.T) {
 	}
 }
 
-func TestT865LiveNonBrokerCannotRead(t *testing.T) {
-	resetKeychainShot()
-	if os.Getenv("CLAUDIA_OMP_LIVE") == "" {
-		t.Skip("CLAUDIA_OMP_LIVE not set")
-	}
-	store := Store{BrokerPath: liveBrokerBin(t), Run: execSecurity, SealPath: true}
-	err := Open(context.Background(), store)
-	if err == nil {
-		t.Fatal("test binary must be refused by the live ACL")
-	}
-	if !strings.Contains(err.Error(), "44") && !strings.Contains(err.Error(), "errSecAuthFailed") {
-		t.Fatalf("want ACL refusal, got %v", err)
-	}
-}
-
 func TestT865LiveBrokerRefreshPlans(t *testing.T) {
 	if os.Getenv("CLAUDIA_OMP_LIVE") == "" {
 		t.Skip("CLAUDIA_OMP_LIVE not set")
@@ -136,35 +121,6 @@ func TestT865LiveBrokerRefreshPlans(t *testing.T) {
 		if !strings.Contains(body, id) {
 			t.Fatalf("refresh-plans omitted %s: %s", id, body)
 		}
-	}
-}
-
-func TestT865LiveRebuiltBrokerRefused(t *testing.T) {
-	if os.Getenv("CLAUDIA_OMP_LIVE") == "" {
-		t.Skip("CLAUDIA_OMP_LIVE not set")
-	}
-	broker := liveBrokerBin(t)
-	other := filepath.Join(t.TempDir(), "rebuilt-jevons-broker")
-	self, err := os.ReadFile(broker)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(other, self, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if other == broker {
-		t.Fatal("rebuilt path collided with the trusted broker")
-	}
-	cmd := exec.Command(other, "refresh-plans")
-	cmd.Env = append(os.Environ(), "JEVONS_BROKER_BIN="+broker)
-	out, err := cmd.CombinedOutput()
-	if err == nil {
-		t.Fatalf("rebuilt broker was accepted by the Keychain ACL: %s", out)
-	}
-	body := strings.ToLower(string(out) + err.Error())
-	if !strings.Contains(body, "44") && !strings.Contains(body, "errsecauthfailed") &&
-		!strings.Contains(body, "acl") && !strings.Contains(body, "keychain") {
-		t.Fatalf("want ACL refusal, got %s: %v", out, err)
 	}
 }
 

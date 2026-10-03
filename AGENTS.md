@@ -103,7 +103,7 @@ un-skips. If you touched the surface, the row is what you must run.
 | `CLAUDIA_OLLAMA_LIVE=1` | Ollama Task | `TestOllamaTaskLiveSmoke` |
 | `CLAUDIA_JEV_LIVE=1` | Judge (TypeSafe Jev) | `TestJudgeLiveSmoke` |
 | `CLAUDIA_CURSOR_LIVE=1` | Cursor Task + Session | `TestCursorTaskLiveSmoke`, `TestCursorSessionLiveSmoke`, `TestCursorSessionLiveSmokeSteer`, `TestCursorSavedSessionResumeLive`, `TestGoalJourneyLiveBackends/cursor`, `TestMCPLiveLoadAndSessionSeesMnemo/cursor`, `TestMCPHostLiveSeatsSeeMnemo/cursor`, `TestMCPExclusiveCursorSessionRoundTrip` |
-| `CLAUDIA_OMP_LIVE=1` | Subscription sidecar + broker | `TestT865LiveNonBrokerCannotRead`, `TestT865LiveBrokerRefreshPlans`, `TestT865LiveRebuiltBrokerRefused`, `TestT865LiveBrokerSmokeLaunchVerbs`, `TestT865LiveSidecarSurvivesJevonsdBounce` |
+| `CLAUDIA_OMP_LIVE=1` | Subscription sidecar + broker | `TestT865LiveNonBrokerCannotRead`, `TestT170LiveDirectKeychainACL`, `TestT865LiveBrokerRefreshPlans`, `TestT865LiveRebuiltBrokerRefused`, `TestT865LiveBrokerSmokeLaunchVerbs`, `TestT865LiveSidecarSurvivesJevonsdBounce` |
 | `CLAUDIA_RECOVERY_KEYCHAIN_LIVE=1` | Disposable Keychain recovery | `TestRecoverPlanDisposableKeychainAfterMissedRead` |
 
 **Shared surfaces.** Some wires are not a backend — they are one

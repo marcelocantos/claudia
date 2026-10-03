@@ -79,8 +79,8 @@ type Store struct {
 	RunStdin   StdinRunner
 	Now        func() time.Time
 	// SealPath refuses Open/Flush unless this process is BrokerPath.
-	// A rebuilt copy at another path cannot read or write the item
-	// (🎯T865). Tests that mock Run leave this false.
+	// This is an application guard, not evidence of OS ACL enforcement.
+	// Tests that mock Run leave this false.
 	SealPath bool
 	// Keychain, if set, is the keychain file. Empty is the default
 	// keychain. Disposable-keychain tests set this.
@@ -472,6 +472,17 @@ func known(provider string) bool {
 	}
 }
 
+// BrokerPathError reports an application path-seal refusal before Keychain I/O.
+// It does not report a decision by the operating system's Keychain ACL.
+type BrokerPathError struct {
+	Path string
+	Want string
+}
+
+func (e *BrokerPathError) Error() string {
+	return fmt.Sprintf("omp: broker path seal did not approve this binary (path %s, want %s)", e.Path, e.Want)
+}
+
 func rejectUntrustedBroker(store Store) error {
 	if !store.SealPath {
 		return nil
@@ -485,7 +496,7 @@ func rejectUntrustedBroker(store Store) error {
 	}
 	self, want := resolvePath(self), resolvePath(store.BrokerPath)
 	if self == "" || self != want {
-		return fmt.Errorf("omp: keychain ACL did not approve this binary (path %s, want %s)", self, want)
+		return &BrokerPathError{Path: self, Want: want}
 	}
 	return nil
 }
