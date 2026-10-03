@@ -6,11 +6,9 @@ package claudia
 import (
 	"errors"
 	"strings"
-	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
-
-	"github.com/marcelocantos/claudia/internal/wallclockguard"
 )
 
 // cursorHermeticPeerBound is the silence bound to give a fake peer that
@@ -231,25 +229,40 @@ func TestCursorSecondPromptIsNotWatched(t *testing.T) {
 
 // A dead transport must end the wait, not sit out the full bound.
 func TestCursorStuckPromptWaitEndsWhenTransportDies(t *testing.T) {
-	shortenCursorSilenceBound(t, time.Hour)
-	c := &cursorACPClient{peerWoke: make(chan struct{}, 1)}
-	var done atomic.Bool
-	go func() {
-		c.awaitPeerActivity(0, cursorPromptSilenceBound)
-		done.Store(true)
-	}()
-	time.Sleep(50 * time.Millisecond)
-	c.mu.Lock()
-	c.closed = true
-	c.mu.Unlock()
-	c.wakePromptWaiters()
+	synctest.Test(t, func(t *testing.T) {
+		c := &cursorACPClient{peerWoke: make(chan struct{}, 1)}
+		done := make(chan struct{})
+		go func() {
+			c.awaitPeerActivity(0, time.Hour)
+			close(done)
+		}()
+		// Release and join even a mutant that ignores transport closure,
+		// including when an assertion below terminates the test goroutine.
+		defer func() {
+			c.notePeerActivity()
+			<-done
+		}()
 
-	backstop := wallclockguard.UntilTestTimeout(t)
-	for backstop.Err() == nil {
-		if done.Load() {
-			return
+		began := time.Now()
+		synctest.Wait()
+		select {
+		case <-done:
+			t.Fatal("awaitPeerActivity returned before the transport closed")
+		default:
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatal("awaitPeerActivity did not return when the transport closed")
+
+		c.mu.Lock()
+		c.closed = true
+		c.mu.Unlock()
+		c.wakePromptWaiters()
+		synctest.Wait()
+		select {
+		case <-done:
+		default:
+			t.Fatal("awaitPeerActivity did not return when the transport closed")
+		}
+		if elapsed := time.Since(began); elapsed != 0 {
+			t.Fatalf("transport closure advanced virtual time by %v", elapsed)
+		}
+	})
 }
