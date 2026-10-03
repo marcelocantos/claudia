@@ -370,7 +370,7 @@ export function createSeatAgent(opts: {
       // (2026-09-28, owner messages to a busy product owner). Checking the
       // agent too covers the gap after this turn closes while pi-agent-core
       // is still finishing, where prompt() throws AgentBusyError.
-      if (retrying || (turn && !turn.closed) || agent.state.isStreaming) {
+      if (retrying || (turn && !turn.closed) || agent.state.isStreaming || agent.hasQueuedMessages()) {
         const enqueue = retrying ? (m: Parameters<typeof agent.followUp>[0]) => heldFollowUps.push(m) : (m: Parameters<typeof agent.followUp>[0]) => agent.followUp(m);
         enqueue({
           role: "user",
@@ -381,6 +381,11 @@ export function createSeatAgent(opts: {
         // Say at once that it was accepted: a host that waits for a first
         // streamed token would call a queued prompt undelivered.
         sink.emit({ type: "accepted" });
+        // A terminal refusal leaves accepted inputs queued. A later prompt
+        // joins behind them rather than jumping ahead via agent.prompt().
+        if (!retrying && !agent.state.isStreaming && (!turn || turn.closed)) {
+          await runTurn("", meta, () => agent.continue());
+        }
         return;
       }
       await runTurn(text, meta, () => agent.prompt(text));

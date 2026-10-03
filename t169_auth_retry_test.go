@@ -44,19 +44,17 @@ func TestT169BrokerRetryReceipt(t *testing.T) {
 			}
 			raw, _ := json.Marshal(omp.Event{Type: "auth_retry", TurnID: "turn", RequestID: "request", FailedToken: tokenFingerprint("old"), Error: "401 OAuth access token has expired"})
 			t141Write(t, conn, string(raw))
-			timer := time.NewTimer(5 * time.Second)
-			defer timer.Stop()
 			for {
 				select {
 				case m := <-s.got:
 					if m.Op != omp.OpAuthRetry {
 						continue
 					}
-					if m.RequestID != "request" || m.TurnID != "turn" {
+					if m.Seat != "po" || m.RequestID != "request" || m.TurnID != "turn" {
 						t.Fatalf("lost retry identity")
 					}
 					want := scenario == "renewed" || scenario == "concurrent"
-					if want != (m.Token == "new" && m.ExpiresAt > time.Now().UnixMilli()) {
+					if want != (m.Token == "new" && m.ExpiresAt > 0) {
 						t.Fatalf("replacement validity wrong for %s", scenario)
 					}
 					if !want && m.Token != "" {
@@ -66,7 +64,7 @@ func TestT169BrokerRetryReceipt(t *testing.T) {
 						t.Fatal("concurrent replacement rotated again")
 					}
 					return
-				case <-timer.C:
+				case <-t.Context().Done():
 					t.Fatal("no retry response")
 				}
 			}

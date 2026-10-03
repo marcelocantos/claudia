@@ -118,3 +118,20 @@ test("T169 historical auth and non-auth refusals do not trigger recovery", async
     expect(events.filter(e => e.type === "auth_retry")).toEqual([]);
   }
 });
+
+test("T169 a later prompt cannot overtake input queued behind terminal refusal", async () => {
+  const requests: string[] = [];
+  let reject = true;
+  const mock = createMockModel({ handler: context => {
+    requests.push(JSON.stringify(context.messages.filter(m => m.role === "user")));
+    return reject ? { stopReason: "error", errorMessage: refusal } : { content: ["ok"] };
+  } });
+  const agent = createSeatAgent({ provider: "mock", model: "mock", token: "failed", cwd: process.cwd(), modelOverride: mock,
+    emit: e => { if (e.type === "auth_retry") { void agent.prompt("queued-first"); agent.authRetry({ ...e }); } }, callTool: async () => "" });
+  await agent.prompt("original");
+  reject = false;
+  await agent.prompt("later");
+  expect(requests[1]).toContain("queued-first");
+  expect(requests[1]).not.toContain("later");
+  expect(requests[2]).toContain("later");
+});

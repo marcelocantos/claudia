@@ -565,7 +565,7 @@ func (c *ompControl) recoverFailedToken(failed string) {
 // travels on the private command wire, never on the event/spool path.
 func (c *ompControl) answerAuthRetry(ev omp.Event) {
 	c.recoverFailedToken(ev.FailedToken)
-	reply := omp.Message{Op: omp.OpAuthRetry, RequestID: ev.RequestID, TurnID: ev.TurnID}
+	reply := omp.Message{Op: omp.OpAuthRetry, Seat: c.seat, RequestID: ev.RequestID, TurnID: ev.TurnID}
 	item, err := planStore().Load(context.Background())
 	if err == nil {
 		rec := item.Records[c.provider]
