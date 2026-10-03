@@ -111,39 +111,30 @@ func TestT865LiveBrokerRefreshPlans(t *testing.T) {
 	if os.Getenv("CLAUDIA_OMP_LIVE") == "" {
 		t.Skip("CLAUDIA_OMP_LIVE not set")
 	}
-	broker := liveBrokerBin(t)
-	out, err := exec.Command(broker, "refresh-plans").CombinedOutput()
+	h := newLiveHarness(t)
+	plan := os.Getenv("CLAUDIA_OMP_TEST_PLAN")
+	if !known(plan) {
+		t.Fatal("set CLAUDIA_OMP_TEST_PLAN to one subscription plan")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	before, after, err := recoverLivePlan(ctx, func(ctx context.Context, args ...string) ([]byte, error) {
+		return runLiveCommand(ctx, h.BrokerBinary, args...)
+	}, plan)
+	t.Logf("supported no-login recovery: %s -> %s; health does not prove token renewal", before, after)
 	if err != nil {
-		t.Fatalf("jevons-broker refresh-plans: %s: %v", out, err)
+		t.Fatal(err)
 	}
-	body := string(out)
-	for _, id := range []string{Anthropic, OpenAICodex, Cursor, XAIOAuth} {
-		if !strings.Contains(body, id) {
-			t.Fatalf("refresh-plans omitted %s: %s", id, body)
-		}
-	}
+	t.Fatal(errLiveRenewalEvidence)
 }
 
 func liveBrokerBin(t *testing.T) string {
 	t.Helper()
-	if p := os.Getenv("JEVONS_BROKER_BIN"); p != "" {
-		return p
+	p, err := explicitLiveBinary(os.Getenv("JEVONS_BROKER_BIN"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	candidates := []string{
-		filepath.Join("..", "..", "jevons", "bin", "jevons-broker"),
-		filepath.Join("..", "jevons", "bin", "jevons-broker"),
-	}
-	for _, p := range candidates {
-		if st, err := os.Stat(p); err == nil && !st.IsDir() {
-			abs, err := filepath.Abs(p)
-			if err != nil {
-				t.Fatal(err)
-			}
-			return abs
-		}
-	}
-	t.Fatal("jevons-broker not found; set JEVONS_BROKER_BIN")
-	return ""
+	return p
 }
 
 func execSecurity(ctx context.Context, name string, args ...string) ([]byte, error) {
@@ -168,61 +159,38 @@ func TestT865LiveBrokerSmokeLaunchVerbs(t *testing.T) {
 	if os.Getenv("CLAUDIA_OMP_LIVE") == "" {
 		t.Skip("CLAUDIA_OMP_LIVE not set")
 	}
-	broker := liveBrokerBin(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, broker, "smoke")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("jevons-broker smoke: %s: %v", out, err)
+	// Refuse before touching the selected runtime: supported CLI acknowledgements
+	// cannot satisfy this test's behavioral oracle. Do not substitute fleet aliases.
+	if err := liveSmokePrerequisite(os.Getenv("CLAUDIA_OMP_TEST_PROVIDER")); err != nil {
+		t.Fatal(err)
 	}
-	body := string(out)
-	if !strings.Contains(body, "launch send steer abort") {
-		t.Fatalf("smoke did not land Launch/Send/steer/abort: %s", body)
-	}
-	if !strings.Contains(body, "jevons_*") {
-		t.Fatalf("smoke did not arm jevons_*: %s", body)
-	}
+
 }
 
 func TestT865LiveSidecarSurvivesJevonsdBounce(t *testing.T) {
 	if os.Getenv("CLAUDIA_OMP_LIVE") == "" {
 		t.Skip("CLAUDIA_OMP_LIVE not set")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	if os.Getenv("CLAUDIA_OMP_BOUNCE_AUTHORIZED") != "restart-jevonsd" {
+		t.Fatal(errLiveBouncePermit)
+	}
+	h := newLiveHarness(t)
+	restart, ready, err := bounceCommands(os.Getenv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
-	socket, err := SocketPath()
-	if err != nil {
-		t.Fatal(err)
+	if _, err := runLiveCommand(ctx, restart[0], restart[1:]...); err != nil {
+		t.Fatalf("authorized jevonsd restart: %v", err)
 	}
-	if !Listening(ctx, socket) {
-		if _, err := Ensure(ctx); err != nil {
-			t.Fatal(err)
-		}
+	if err := waitLiveReady(ctx, func(ctx context.Context) bool {
+		_, err := runLiveCommand(ctx, ready[0], ready[1:]...)
+		return err == nil
+	}); err != nil {
+		t.Fatalf("jevonsd readiness: %v", err)
 	}
-	raw, err := os.ReadFile(pidPath(socket))
-	if err != nil {
-		t.Fatal(err)
-	}
-	before := strings.TrimSpace(string(raw))
-	if before == "" {
-		t.Fatal("sidecar pid file empty")
-	}
-	bounce := exec.Command("supervisorctl", "restart", "jevonsd")
-	if out, err := bounce.CombinedOutput(); err != nil {
-		t.Fatalf("jevonsd bounce: %s: %v", out, err)
-	}
-	time.Sleep(2 * time.Second)
-	if !Listening(context.Background(), socket) {
-		t.Fatal("sidecar stopped listening after a jevonsd bounce")
-	}
-	after, err := os.ReadFile(pidPath(socket))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := strings.TrimSpace(string(after)); got != before {
-		t.Fatalf("sidecar pid %s → %s; a jevonsd bounce must leave it running", before, got)
-	}
+	h.preflight(t) // same serving PIDs and start times, both sockets still listening
 }
 
 func TestT865LiveKeychainItemExists(t *testing.T) {

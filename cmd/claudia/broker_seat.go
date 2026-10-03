@@ -57,7 +57,7 @@ func grantCmd(args []string) error {
 		fs.PrintDefaults()
 	}
 	name := fs.String("name", "", "grant name (required; a single positional name is also accepted)")
-	provider := fs.String("provider", "", "provider: claude, codex, grok, cursor, bedrock, ollama")
+	provider := fs.String("provider", "", "provider: literal subscription plan ID, or claude, codex, grok, cursor, bedrock, ollama")
 	pick := fs.String("pick", "", "remaining: fullest admitted of cursor, grok, claude, codex")
 	workdir := fs.String("workdir", ".", "working directory the seat runs in")
 	purpose := fs.String("purpose", "", "work, aside, or overseer (default work)")
@@ -311,12 +311,16 @@ func seatDefinition(name, provider, workdir, purpose, parent, model, session str
 }
 
 func checkProvider(p string) error {
+	// Literal subscription IDs select OMP without rewriting the provider.
+	if claudia.IsOMPPlan(p) {
+		return nil
+	}
 	switch claudia.Provider(p) {
 	case claudia.ProviderClaude, claudia.ProviderCodex, claudia.ProviderGrok,
 		claudia.ProviderCursor, claudia.ProviderBedrock, claudia.ProviderOllama:
 		return nil
 	default:
-		return fmt.Errorf("provider %q is not one of claude, codex, grok, cursor, bedrock, ollama", p)
+		return fmt.Errorf("provider %q is neither a subscription plan nor one of claude, codex, grok, cursor, bedrock, ollama", p)
 	}
 }
 
