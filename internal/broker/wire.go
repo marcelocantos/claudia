@@ -520,6 +520,7 @@ type Request struct {
 	GoalVerdict   *GoalVerdictRequest
 	Judge         *JudgeRequest
 	AuthRecover   *AuthRecoverRequest
+	AuthDetail    *NamedRequest
 	AuthStatus    *AuthStatusRequest
 }
 
@@ -563,6 +564,7 @@ type Response struct {
 	GoalVerdictNoted *NamedResponse
 	Judged           *JudgedResponse
 	AuthRecovered    *NamedResponse
+	AuthDetail       *AuthRecoveryDetailResponse
 	AuthStatus       *AuthStatusResponse
 }
 
@@ -625,45 +627,47 @@ var requestSpecs = map[MessageType]bodySpec[Request]{
 	TypeRewind:            spec("rewind body", func(r *Request) **RewindRequest { return &r.Rewind }, false),
 	TypeGoalVerdict:       spec("goal_verdict body", func(r *Request) **GoalVerdictRequest { return &r.GoalVerdict }, false),
 	TypeJudge:             spec("judge body", func(r *Request) **JudgeRequest { return &r.Judge }, false),
+	TypeAuthRecoverDetail: spec("auth_recover_detail body", func(r *Request) **NamedRequest { return &r.AuthDetail }, false),
 	TypeAuthRecover:       spec("auth_recover body", func(r *Request) **AuthRecoverRequest { return &r.AuthRecover }, false),
 	TypeAuthStatus:        spec("auth_status body", func(r *Request) **AuthStatusRequest { return &r.AuthStatus }, true),
 }
 
 // responseSpecs is the broker → client namespace.
 var responseSpecs = map[MessageType]bodySpec[Response]{
-	TypeSpawned:          spec("spawned body", func(r *Response) **SpawnResponse { return &r.Spawned }, false),
-	TypeReleased:         spec("released body", func(r *Response) **ReleaseResponse { return &r.Released }, false),
-	TypeStatusResult:     spec("status_result body", func(r *Response) **StatusResponse { return &r.Status }, false),
-	TypeTailing:          spec("tailing body", func(r *Response) **TailResponse { return &r.Tailing }, true),
-	TypeEvent:            spec("event body", func(r *Response) **EventMessage { return &r.Event }, false),
-	TypeError:            spec("error body", func(r *Response) **ErrorMessage { return &r.Error }, false),
-	TypeUsageResult:      spec("usage_result body", func(r *Response) **UsageResponse { return &r.Usage }, false),
-	TypeResolved:         spec("resolved body", func(r *Response) **ResolveResponse { return &r.Resolved }, false),
-	TypeTaskStarted:      spec("task_started body", func(r *Response) **TaskStartedResponse { return &r.TaskStarted }, false),
-	TypeTaskEvent:        spec("task_event body", func(r *Response) **TaskEventMessage { return &r.TaskEvent }, false),
-	TypeTaskDone:         spec("task_done body", func(r *Response) **TaskDoneMessage { return &r.TaskDone }, false),
-	TypeTaskRaw:          spec("task_raw body", func(r *Response) **TaskRawMessage { return &r.TaskRaw }, false),
-	TypeTaskCancelled:    spec("task_cancelled body", func(r *Response) **TaskCancelledResponse { return &r.TaskCancelled }, false),
-	TypeGranted:          spec("granted body", func(r *Response) **GrantResponse { return &r.Granted }, false),
-	TypeAgentEvent:       spec("agent_event body", func(r *Response) **AgentEventMessage { return &r.AgentEvent }, false),
-	TypeAgentTerm:        spec("agent_term body", func(r *Response) **AgentTermMessage { return &r.AgentTerm }, false),
-	TypeAgentGone:        spec("agent_gone body", func(r *Response) **AgentGoneMessage { return &r.AgentGone }, false),
-	TypeAgentDetached:    spec("agent_detached body", func(r *Response) **AgentDetachedMessage { return &r.AgentDetached }, false),
-	TypeSent:             spec("sent body", func(r *Response) **SentResponse { return &r.Sent }, false),
-	TypeInterrupted:      spec("interrupted body", func(r *Response) **NamedResponse { return &r.Interrupted }, false),
-	TypeModelSet:         spec("model_set body", func(r *Response) **NamedResponse { return &r.ModelSet }, false),
-	TypeMigrated:         spec("migrated body", func(r *Response) **MigrateResponse { return &r.Migrated }, false),
-	TypeAgentInfoResult:  spec("agent_info_result body", func(r *Response) **AgentInfoResponse { return &r.AgentInfo }, false),
-	TypeTermSubscribed:   spec("term_subscribed body", func(r *Response) **TermSubscribedResponse { return &r.TermSubscribed }, false),
-	TypeResized:          spec("resized body", func(r *Response) **NamedResponse { return &r.Resized }, false),
-	TypeGrantsResult:     spec("grants_result body", func(r *Response) **GrantsResponse { return &r.Grants }, false),
-	TypeGoalClosed:       spec("goal_closed body", func(r *Response) **NamedResponse { return &r.GoalClosed }, false),
-	TypeRewound:          spec("rewound body", func(r *Response) **RewindResponse { return &r.Rewound }, false),
-	TypeGoalCheck:        spec("goal_check body", func(r *Response) **GoalCheckMessage { return &r.GoalCheck }, false),
-	TypeGoalVerdictNoted: spec("goal_verdict_noted body", func(r *Response) **NamedResponse { return &r.GoalVerdictNoted }, false),
-	TypeJudged:           spec("judged body", func(r *Response) **JudgedResponse { return &r.Judged }, false),
-	TypeAuthRecovered:    spec("auth_recovered body", func(r *Response) **NamedResponse { return &r.AuthRecovered }, false),
-	TypeAuthStatusResult: spec("auth_status_result body", func(r *Response) **AuthStatusResponse { return &r.AuthStatus }, false),
+	TypeSpawned:            spec("spawned body", func(r *Response) **SpawnResponse { return &r.Spawned }, false),
+	TypeReleased:           spec("released body", func(r *Response) **ReleaseResponse { return &r.Released }, false),
+	TypeStatusResult:       spec("status_result body", func(r *Response) **StatusResponse { return &r.Status }, false),
+	TypeTailing:            spec("tailing body", func(r *Response) **TailResponse { return &r.Tailing }, true),
+	TypeEvent:              spec("event body", func(r *Response) **EventMessage { return &r.Event }, false),
+	TypeError:              spec("error body", func(r *Response) **ErrorMessage { return &r.Error }, false),
+	TypeUsageResult:        spec("usage_result body", func(r *Response) **UsageResponse { return &r.Usage }, false),
+	TypeResolved:           spec("resolved body", func(r *Response) **ResolveResponse { return &r.Resolved }, false),
+	TypeTaskStarted:        spec("task_started body", func(r *Response) **TaskStartedResponse { return &r.TaskStarted }, false),
+	TypeTaskEvent:          spec("task_event body", func(r *Response) **TaskEventMessage { return &r.TaskEvent }, false),
+	TypeTaskDone:           spec("task_done body", func(r *Response) **TaskDoneMessage { return &r.TaskDone }, false),
+	TypeTaskRaw:            spec("task_raw body", func(r *Response) **TaskRawMessage { return &r.TaskRaw }, false),
+	TypeTaskCancelled:      spec("task_cancelled body", func(r *Response) **TaskCancelledResponse { return &r.TaskCancelled }, false),
+	TypeGranted:            spec("granted body", func(r *Response) **GrantResponse { return &r.Granted }, false),
+	TypeAgentEvent:         spec("agent_event body", func(r *Response) **AgentEventMessage { return &r.AgentEvent }, false),
+	TypeAgentTerm:          spec("agent_term body", func(r *Response) **AgentTermMessage { return &r.AgentTerm }, false),
+	TypeAgentGone:          spec("agent_gone body", func(r *Response) **AgentGoneMessage { return &r.AgentGone }, false),
+	TypeAgentDetached:      spec("agent_detached body", func(r *Response) **AgentDetachedMessage { return &r.AgentDetached }, false),
+	TypeSent:               spec("sent body", func(r *Response) **SentResponse { return &r.Sent }, false),
+	TypeInterrupted:        spec("interrupted body", func(r *Response) **NamedResponse { return &r.Interrupted }, false),
+	TypeModelSet:           spec("model_set body", func(r *Response) **NamedResponse { return &r.ModelSet }, false),
+	TypeMigrated:           spec("migrated body", func(r *Response) **MigrateResponse { return &r.Migrated }, false),
+	TypeAgentInfoResult:    spec("agent_info_result body", func(r *Response) **AgentInfoResponse { return &r.AgentInfo }, false),
+	TypeTermSubscribed:     spec("term_subscribed body", func(r *Response) **TermSubscribedResponse { return &r.TermSubscribed }, false),
+	TypeResized:            spec("resized body", func(r *Response) **NamedResponse { return &r.Resized }, false),
+	TypeGrantsResult:       spec("grants_result body", func(r *Response) **GrantsResponse { return &r.Grants }, false),
+	TypeGoalClosed:         spec("goal_closed body", func(r *Response) **NamedResponse { return &r.GoalClosed }, false),
+	TypeRewound:            spec("rewound body", func(r *Response) **RewindResponse { return &r.Rewound }, false),
+	TypeGoalCheck:          spec("goal_check body", func(r *Response) **GoalCheckMessage { return &r.GoalCheck }, false),
+	TypeGoalVerdictNoted:   spec("goal_verdict_noted body", func(r *Response) **NamedResponse { return &r.GoalVerdictNoted }, false),
+	TypeJudged:             spec("judged body", func(r *Response) **JudgedResponse { return &r.Judged }, false),
+	TypeAuthRecoveryDetail: spec("auth_recovery_detail body", func(r *Response) **AuthRecoveryDetailResponse { return &r.AuthDetail }, false),
+	TypeAuthRecovered:      spec("auth_recovered body", func(r *Response) **NamedResponse { return &r.AuthRecovered }, false),
+	TypeAuthStatusResult:   spec("auth_status_result body", func(r *Response) **AuthStatusResponse { return &r.AuthStatus }, false),
 }
 
 // RequestTypes lists every client → broker type in this wire version.

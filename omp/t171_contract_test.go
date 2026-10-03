@@ -62,39 +62,41 @@ func TestT171ExplicitBinaryAndActivation(t *testing.T) {
 }
 
 func TestT171SupportedRecoveryCommandContract(t *testing.T) {
-	for _, initial := range []string{HealthOK, HealthRejected, HealthExpired} {
-		t.Run(initial, func(t *testing.T) {
-			var calls [][]string
-			before, after, err := recoverLivePlan(context.Background(), func(ctx context.Context, args ...string) ([]byte, error) {
-				if ctx == nil {
-					t.Fatal("missing bound context")
+	for _, outcome := range []string{RecoveryHealthyNoOp, RecoveryRefreshed, RecoveryFailure} {
+		t.Run(outcome, func(t *testing.T) {
+			calls := 0
+			_, err := recoverLivePlan(context.Background(), func(_ context.Context, args ...string) ([]byte, error) {
+				calls++
+				if !reflect.DeepEqual(args, []string{"broker", "auth-recover-detail", Anthropic}) {
+					t.Fatalf("command %v", args)
 				}
-				calls = append(calls, args)
-				state := initial
-				if len(calls) == 3 {
-					state = HealthOK
+				class := "none"
+				if outcome == RecoveryFailure {
+					class = "needs_sign_in"
 				}
-				return []byte(fmt.Sprintf(`{"plans":[{"provider":"anthropic","state":%q}]}`, state)), nil
+				return []byte(fmt.Sprintf(`{"provider":"anthropic","outcome":%q,"classification":%q}`, outcome, class)), nil
 			}, Anthropic)
-			if !errors.Is(err, errLiveRenewalEvidence) || before != initial || after != HealthOK {
-				t.Fatalf("%s -> %s: %v", before, after, err)
+			if calls != 1 {
+				t.Fatal("recovery retried")
 			}
-			want := [][]string{{"broker", "auth-status", "--json"}, {"broker", "auth-recover", "--no-login", Anthropic}, {"broker", "auth-status", "--json"}}
-			if !reflect.DeepEqual(calls, want) {
-				t.Fatalf("commands: %v", calls)
+			if outcome == RecoveryRefreshed && err != nil {
+				t.Fatal(err)
+			}
+			if outcome == RecoveryHealthyNoOp && !errors.Is(err, errLiveRenewalEvidence) {
+				t.Fatal("healthy no-op counted as renewal")
+			}
+			if outcome == RecoveryFailure && err == nil {
+				t.Fatal("failed recovery counted as renewal")
 			}
 		})
 	}
 	calls := 0
-	_, _, err := recoverLivePlan(context.Background(), func(context.Context, ...string) ([]byte, error) {
+	_, err := recoverLivePlan(context.Background(), func(context.Context, ...string) ([]byte, error) {
 		calls++
-		if calls == 1 {
-			return []byte(`{"plans":[{"provider":"anthropic","state":"rejected"}]}`), nil
-		}
-		return nil, errors.New("needs sign-in")
+		return nil, errors.New("unsupported operation")
 	}, Anthropic)
-	if err == nil || calls != 2 {
-		t.Fatal("refusal must not retry or sign in")
+	if err == nil || calls != 1 {
+		t.Fatal("unsupported detailed recovery fell back to old acknowledgement")
 	}
 }
 

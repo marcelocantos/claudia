@@ -72,33 +72,72 @@ func RetryOpen(ctx context.Context, store Store) error {
 // invalid refresh grant falls back to an interactive sign-in, unless
 // login.NoLogin says nobody is at the keyboard: then it marks the plan
 // rejected and returns ErrNeedsSignIn.
+// RecoveryResult is deliberately non-secret: classifications are fixed codes,
+// never provider stderr, credential material, or token fingerprints.
+type RecoveryResult struct {
+	Provider       string `json:"provider"`
+	Outcome        string `json:"outcome"`
+	Classification string `json:"classification"`
+}
+
+const (
+	RecoveryHealthyNoOp = "healthy_no_op"
+	RecoveryRefreshed   = "refreshed"
+	RecoveryFailure     = "failure"
+)
+
 func RecoverPlan(ctx context.Context, store Store, login Login, provider string) error {
+	_, err := recoverPlan(ctx, store, login, provider)
+	return err
+}
+
+// RecoverPlanNoLogin reports this invocation's branch, not inferred health or
+// renewal timestamps. The caller must hold the plan's existing refresh lock.
+func RecoverPlanNoLogin(ctx context.Context, store Store, login Login, provider string) RecoveryResult {
+	login.NoLogin = true
+	login.ForceLogin = false
+	result, _ := recoverPlan(ctx, store, login, provider)
+	return result
+}
+
+func recoverPlan(ctx context.Context, store Store, login Login, provider string) (RecoveryResult, error) {
+	fail := func(class string, err error) (RecoveryResult, error) {
+		if ctx.Err() != nil {
+			class = "cancelled"
+		}
+		return RecoveryResult{Provider: provider, Outcome: RecoveryFailure, Classification: class}, err
+	}
 	if !known(provider) {
-		return fmt.Errorf("omp: %q is not a subscription provider", provider)
+		return fail("unsupported_provider", fmt.Errorf("omp: %q is not a subscription provider", provider))
 	}
 	if err := RetryOpen(ctx, store); err != nil {
-		return err
+		return fail("store_unavailable", err)
 	}
 	if healthy, err := planHealthy(ctx, store, provider); err != nil {
-		return err
+		return fail("store_unavailable", err)
 	} else if healthy {
-		return nil
+		return RecoveryResult{Provider: provider, Outcome: RecoveryHealthyNoOp, Classification: "none"}, nil
 	}
 	_, err := login.Refresh(ctx, store, provider)
 	if err != nil && ctx.Err() == nil && strings.Contains(strings.ToLower(err.Error()), "invalid_grant") {
 		if login.NoLogin {
 			MarkRejected(provider, err.Error())
-			return fmt.Errorf("omp: %s: %w (the refresh was refused: %v)", provider, ErrNeedsSignIn, err)
+			return fail("needs_sign_in", fmt.Errorf("omp: %s: %w (the refresh was refused: %v)", provider, ErrNeedsSignIn, err))
 		}
 		login.ForceLogin = true
 		_, err = login.Refresh(ctx, store, provider)
 	}
 	if err != nil {
-		return err
+		if errors.Is(err, ErrNeedsSignIn) {
+			return fail("needs_sign_in", err)
+		}
+		return fail("refresh_failed", err)
 	}
 	clearRejected(provider)
-	// Recovery is an explicit owner action: the new grant is saved now.
-	return Flush(ctx, store)
+	if err := Flush(ctx, store); err != nil {
+		return fail("persistence_failed", err)
+	}
+	return RecoveryResult{Provider: provider, Outcome: RecoveryRefreshed, Classification: "none"}, nil
 }
 
 // planHealthy reports whether the plan's login is neither marked rejected

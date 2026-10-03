@@ -142,7 +142,8 @@ type Daemon struct {
 	// several browser/device-code prompts for the same owner.
 	reauthMu sync.Mutex
 	// Tests replace the credential operation; production leaves it nil.
-	authRecover func(context.Context, *claudia.OMPPlanRecovery) error
+	authRecover       func(context.Context, *claudia.OMPPlanRecovery) error
+	authRecoverDetail func(context.Context, string) claudia.OMPRecoveryResult
 	// authStatus reads plan login health (🎯T924). Tests replace it.
 	authStatus func(context.Context) ([]claudia.PlanLoginHealth, error)
 	opts       Options
@@ -469,6 +470,8 @@ func (d *Daemon) HandleRequest(c *broker.ClientConn, req *broker.Request) bool {
 	case broker.TypeGrants:
 		_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeGrantsResult,
 			Grants: &broker.GrantsResponse{Grants: d.grantList()}})
+	case broker.TypeAuthRecoverDetail:
+		go d.handleRecoveryDetail(c, req)
 	case broker.TypeAuthRecover:
 		go d.handleReauth(c, req)
 	case broker.TypeAuthStatus:

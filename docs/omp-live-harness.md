@@ -5,8 +5,8 @@ is owner-visible. Hermetic green is not an activation or a live pass.
 
 The old `jevons-broker refresh-plans` and `smoke` commands no longer exist in the
 current CLI. These tests use an explicitly selected installed `claudia` binary,
-its `broker auth-status --json` and `broker auth-recover --no-login PROVIDER`
-commands. Smoke refuses until the CLI and behavioral evidence gaps are closed. They never discover a sibling
+its distinct `broker auth-recover-detail PROVIDER` command, which cannot
+request login. The legacy auth-status and auth-recover commands are unchanged. Smoke refuses until the CLI and behavioral evidence gaps are closed. They never discover a sibling
 checkout binary or start a sidecar implicitly.
 
 ## Operator inputs before an authorized run
@@ -55,11 +55,15 @@ this receipt to claim it. No activation or restart is performed by preflight.
 
 ## Recovery and smoke evidence limits
 
-`TestT865LiveBrokerRefreshPlans` performs supported no-login recovery and checks
-health before and after. It fails with `OMP_RENEWAL_EVIDENCE_UNAVAILABLE` even
-when health is OK. Healthy no-op, auth health and allowance/usage refresh never
-prove renewal. The current RPC exposes no refreshed/no-op outcome. Do not
-expire, reject or overwrite shared tokens to force it.
+`TestT865LiveBrokerRefreshPlans` calls detailed no-login recovery. The distinct
+RPC reports only provider, outcome (`refreshed`, `healthy_no_op`, `failure`) and
+a fixed classification code. `refreshed` is reported only after the actual
+recovery branch succeeds and persists; helper errors and credentials are never
+included. Failure returns a nonzero CLI status. An older daemon's unsupported
+operation is an error, without fallback to the legacy acknowledgement.
+A healthy no-op still fails `OMP_RENEWAL_EVIDENCE_UNAVAILABLE`: the operation
+succeeded, but no renewal happened. Never expire, reject or overwrite shared
+tokens to force a test case. Auth health and allowance refresh are not renewal.
 `TestT171RecoveryRenewsExpiredPlan` pins expired-token renewal, persistence and
 subsequent healthy no-op hermetically. T165 pins refused renewal without login.
 
@@ -73,8 +77,7 @@ Smoke cannot pass partial coverage. Its named prerequisite failures are:
 
 The three behavioral blockers are returned together for every literal provider. The actual CLI validation
 boundary is pinned by `cmd/claudia.TestT171LiteralSubscriptionProviderBoundary`.
-The remaining product/API follow-ups are observable renewed-versus-no-op recovery outcome, a correlated steer uptake
-oracle, correlated abort terminal evidence, and host-context tool-arming
+The remaining product/API follow-ups are a correlated steer uptake oracle, correlated abort terminal evidence, and host-context tool-arming
 observation. Protocol acknowledgements cannot substitute for those results.
 
 ## Coordinated jevonsd bounce only

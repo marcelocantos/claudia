@@ -835,21 +835,7 @@ func IsOMPPlan(provider string) bool { return omp.Subscription(provider) }
 // the loser of that race got invalid_grant and fell into a sign-in (🎯T165).
 func RecoverOMPPlan(ctx context.Context, r *OMPPlanRecovery) error {
 	provider := r.Plan
-	login := ompLogin
-	if login.Run == nil {
-		login.Run = execBunLogin
-	}
-	if login.Command == "" {
-		login.Command = "bun"
-	}
-	if login.Script == "" {
-		login.Script = sidecarAuthScript()
-	}
-	login.NoLogin = !r.Login
-	login.Caller = "recover (unattended)"
-	if r.Login {
-		login.Caller = "recover (owner)"
-	}
+	login := ompRecoveryLogin(r.Login)
 	mu := ompRefreshLock(provider)
 	mu.Lock()
 	err := omp.RecoverPlan(ctx, planStore(), login, provider)
@@ -862,6 +848,25 @@ func RecoverOMPPlan(ctx context.Context, r *OMPPlanRecovery) error {
 		slog.Info("omp plan recovered; live seats reloaded", "provider", provider, "seats", n)
 	}
 	return nil
+}
+
+func ompRecoveryLogin(interactive bool) omp.Login {
+	login := ompLogin
+	if login.Run == nil {
+		login.Run = execBunLogin
+	}
+	if login.Command == "" {
+		login.Command = "bun"
+	}
+	if login.Script == "" {
+		login.Script = sidecarAuthScript()
+	}
+	login.NoLogin = !interactive
+	login.Caller = "recover (unattended)"
+	if interactive {
+		login.Caller = "recover (owner)"
+	}
+	return login
 }
 
 // SetOMPToolExec installs the jevons_* callback the sidecar invokes
