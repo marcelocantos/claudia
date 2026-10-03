@@ -77,7 +77,7 @@ func run(args []string) int {
 }
 
 func usageText() string {
-	return `usage: claudia broker <serve|status|grants|tail|usage|task|release|grant|send|interrupt|events|auth-recover|auth-status|install|uninstall|socket> [flags]
+	return `usage: claudia broker <serve|status|grants|tail|usage|task|release|grant|send|interrupt|events|auth-recover|auth-recover-detail|auth-status|install|uninstall|socket> [flags]
        claudia models intel <refresh|latest|history|drift> [flags]
        claudia version | --version | -v
        claudia --help | -h
@@ -127,6 +127,23 @@ func brokerCmd(args []string) error {
 			return err
 		}
 		fmt.Printf("authentication recovered for %s\n", plan)
+		return nil
+	case "auth-recover-detail":
+		if len(args) != 2 {
+			return errors.New("auth-recover-detail requires exactly one literal subscription provider; never logs in")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+		defer cancel()
+		result, err := claudia.RecoverOMPAuthDetailed(ctx, args[1])
+		if err != nil {
+			return err
+		}
+		if err := json.NewEncoder(os.Stdout).Encode(result); err != nil {
+			return err
+		}
+		if result.Outcome == "failure" {
+			return errors.New("no-login recovery failed: " + result.Classification)
+		}
 		return nil
 	case "auth-status":
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

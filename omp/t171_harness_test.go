@@ -102,7 +102,7 @@ func runLiveCommand(ctx context.Context, bin string, args ...string) ([]byte, er
 	// deliberately not echoed into test logs. argv never contains credentials.
 	out, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("%s failed: %w", filepath.Base(bin), err)
+		return out, fmt.Errorf("%s failed: %w", filepath.Base(bin), err)
 	}
 	return out, nil
 }
@@ -162,44 +162,35 @@ func hasLiveSocket(out []byte, socket string) bool {
 
 type liveCommand func(context.Context, ...string) ([]byte, error)
 
-func recoverLivePlan(ctx context.Context, run liveCommand, plan string) (before, after string, err error) {
+func recoverLivePlan(ctx context.Context, run liveCommand, plan string) (RecoveryResult, error) {
 	if !known(plan) {
-		return "", "", fmt.Errorf("unknown subscription plan")
+		return RecoveryResult{}, fmt.Errorf("unknown subscription plan")
 	}
-	health := func() (string, error) {
-		out, err := run(ctx, "broker", "auth-status", "--json")
-		if err != nil {
-			return "", err
+	out, runErr := run(ctx, "broker", "auth-recover-detail", plan)
+	var result RecoveryResult
+	if err := json.Unmarshal(out, &result); err != nil {
+		if runErr != nil {
+			return RecoveryResult{}, runErr
 		}
-		var status struct {
-			Plans []PlanHealth `json:"plans"`
-		}
-		if err := json.Unmarshal(out, &status); err != nil {
-			return "", fmt.Errorf("invalid auth-status JSON")
-		}
-		for _, p := range status.Plans {
-			if p.Provider == plan {
-				return p.State, nil
-			}
-		}
-		return "", fmt.Errorf("auth-status omitted selected plan")
+		return RecoveryResult{}, fmt.Errorf("invalid detailed recovery JSON")
 	}
-	before, err = health()
-	if err != nil {
-		return
+	if result.Provider != plan {
+		return RecoveryResult{}, fmt.Errorf("recovery provider mismatch")
 	}
-	if _, err = run(ctx, "broker", "auth-recover", "--no-login", plan); err != nil {
-		return
-	}
-	after, err = health()
-	if err == nil {
-		if after != HealthOK {
-			err = fmt.Errorf("no-login recovery left plan %s", after)
-		} else {
-			err = errLiveRenewalEvidence
+	switch result.Outcome {
+	case RecoveryHealthyNoOp:
+		if runErr == nil && result.Classification == "none" {
+			return result, errLiveRenewalEvidence
 		}
+	case RecoveryRefreshed:
+		if runErr == nil && result.Classification == "none" {
+			return result, nil
+		}
+	case RecoveryFailure:
+		// Do not echo arbitrary response fields into test logs.
+		return result, fmt.Errorf("OMP_RECOVERY_FAILED: detailed no-login recovery did not succeed")
 	}
-	return
+	return RecoveryResult{}, fmt.Errorf("invalid detailed recovery outcome")
 }
 
 func bounceCommands(getenv func(string) string) (restart, ready []string, err error) {
@@ -234,7 +225,7 @@ func waitLiveReady(ctx context.Context, ready func(context.Context) bool) error 
 // steer/abort/tool oracles remain held pending the event slice. Keep enabled smoke red before any command, rather than award
 // partial coverage for protocol acknowledgements.
 var (
-	errLiveRenewalEvidence   = errors.New("OMP_RENEWAL_EVIDENCE_UNAVAILABLE: auth recovery exposes no refreshed/no-op outcome; health is not renewal proof")
+	errLiveRenewalEvidence   = errors.New("OMP_RENEWAL_EVIDENCE_UNAVAILABLE: recovery was a healthy no-op; no renewal occurred in this invocation")
 	errLiveBouncePermit      = errors.New("OMP_BOUNCE_AUTHORIZATION_REQUIRED: coordinated CLAUDIA_OMP_BOUNCE_AUTHORIZED=restart-jevonsd prerequisite missing")
 	errLiveSteerEvidence     = errors.New("OMP_STEER_EVIDENCE_UNAVAILABLE: correlated model uptake of a steer is not observable through this harness")
 	errLiveAbortEvidence     = errors.New("OMP_ABORT_EVIDENCE_UNAVAILABLE: interrupt acknowledgement does not prove correlated terminal abort")

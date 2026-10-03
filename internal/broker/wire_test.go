@@ -185,8 +185,9 @@ var requestVectors = map[string]requestVector{
 	"rewind":         {msg: &Request{ID: "g15", Type: TypeRewind, Rewind: &RewindRequest{Name: "jv-worker-1", Turns: 2}}},
 	"goal_verdict": {msg: &Request{ID: "g16", Type: TypeGoalVerdict,
 		GoalVerdict: &GoalVerdictRequest{Name: "jv-worker-1", CheckID: "c-1", Complete: true, Answered: true}}},
-	"auth_recover": {msg: &Request{ID: "g17", Type: TypeAuthRecover, AuthRecover: &AuthRecoverRequest{Name: "anthropic"}}},
-	"auth_status":  {msg: &Request{ID: "g18", Type: TypeAuthStatus, AuthStatus: &AuthStatusRequest{}}},
+	"auth_recover_detail": {msg: &Request{ID: "g19", Type: TypeAuthRecoverDetail, AuthDetail: &NamedRequest{Name: "anthropic"}}},
+	"auth_recover":        {msg: &Request{ID: "g17", Type: TypeAuthRecover, AuthRecover: &AuthRecoverRequest{Name: "anthropic"}}},
+	"auth_status":         {msg: &Request{ID: "g18", Type: TypeAuthStatus, AuthStatus: &AuthStatusRequest{}}},
 }
 
 // responseVectors is every broker → client message, in canonical form.
@@ -372,8 +373,9 @@ var responseVectors = map[string]*Response{
 		ID: "g6", Type: TypeError,
 		Error: &ErrorMessage{Code: CodeUnsupportedValue, Message: `mode "nudge" is not one of "submit", "steer", "interrupt", "queue"`, Field: "mode", Value: "nudge"},
 	},
-	"goal_closed":    {ID: "g14", Type: TypeGoalClosed, GoalClosed: &NamedResponse{Name: "jv-worker-1"}},
-	"auth_recovered": {ID: "g17", Type: TypeAuthRecovered, AuthRecovered: &NamedResponse{Name: "anthropic"}},
+	"goal_closed":          {ID: "g14", Type: TypeGoalClosed, GoalClosed: &NamedResponse{Name: "jv-worker-1"}},
+	"auth_recovery_detail": {ID: "g19", Type: TypeAuthRecoveryDetail, AuthDetail: &AuthRecoveryDetailResponse{Provider: "anthropic", Outcome: "refreshed", Classification: "none"}},
+	"auth_recovered":       {ID: "g17", Type: TypeAuthRecovered, AuthRecovered: &NamedResponse{Name: "anthropic"}},
 	"auth_status_result": {ID: "g18", Type: TypeAuthStatusResult, AuthStatus: &AuthStatusResponse{Plans: []PlanAuth{
 		{Provider: "anthropic", State: "ok"},
 		{Provider: "openai-codex", State: "rejected", Detail: "invalid_grant", Since: goldenAt},
