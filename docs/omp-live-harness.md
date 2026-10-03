@@ -23,8 +23,8 @@ checkout binary or start a sidecar implicitly.
   `xai-oauth`.
 - `CLAUDIA_OMP_TEST_PROVIDER`: a literal subscription ID: `anthropic`,
   `openai-codex`, `xai-oauth`, or `cursor`. Never substitute `claude`, `codex` or
-  `grok`. The CLI currently rejects the first three; cursor passes provider
-  validation but lacks the required behavioral observations. Smoke fails
+  `grok`. The CLI preserves all four literal IDs. Each still lacks the required
+  behavioral observations. Smoke fails
   preflight before any runtime contact or turn spend.
 
 Receipt example (placeholders must be replaced with observations):
@@ -66,16 +66,14 @@ subsequent healthy no-op hermetically. T165 pins refused renewal without login.
 Smoke cannot pass partial coverage. Its named prerequisite failures are:
 
 - `OMP_LITERAL_PROVIDER_REQUIRED`: missing or alias provider selection.
-- `OMP_LITERAL_PROVIDER_UNSUPPORTED`: CLI rejects the selected literal ID.
 - `OMP_STEER_EVIDENCE_UNAVAILABLE`: no correlated model uptake of a steer.
 - `OMP_ABORT_EVIDENCE_UNAVAILABLE`: no correlated terminal abort observation.
 - `OMP_HOST_TOOLS_EVIDENCE_UNAVAILABLE`: standalone CLI does not attest the
   intended `jevons_*` host-tool arming.
 
-The latter three are returned together for cursor. The actual CLI validation
+The three behavioral blockers are returned together for every literal provider. The actual CLI validation
 boundary is pinned by `cmd/claudia.TestT171LiteralSubscriptionProviderBoundary`.
-The required product/API follow-ups are literal subscription grant support,
-observable renewed-versus-no-op recovery outcome, a correlated steer uptake
+The remaining product/API follow-ups are observable renewed-versus-no-op recovery outcome, a correlated steer uptake
 oracle, correlated abort terminal evidence, and host-context tool-arming
 observation. Protocol acknowledgements cannot substitute for those results.
 

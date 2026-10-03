@@ -230,25 +230,20 @@ func waitLiveReady(ctx context.Context, ready func(context.Context) bool) error 
 	}
 }
 
-// The installed CLI currently accepts cursor but rejects the other literal
-// subscription IDs. Even cursor has no correlated steer/abort/tool oracle in
-// this harness. Keep enabled smoke red before any command, rather than award
+// The CLI accepts literal subscription IDs, but the correlated
+// steer/abort/tool oracles remain held pending the event slice. Keep enabled smoke red before any command, rather than award
 // partial coverage for protocol acknowledgements.
 var (
-	errLiveRenewalEvidence     = errors.New("OMP_RENEWAL_EVIDENCE_UNAVAILABLE: auth recovery exposes no refreshed/no-op outcome; health is not renewal proof")
-	errLiveBouncePermit        = errors.New("OMP_BOUNCE_AUTHORIZATION_REQUIRED: coordinated CLAUDIA_OMP_BOUNCE_AUTHORIZED=restart-jevonsd prerequisite missing")
-	errLiveProviderUnsupported = errors.New("OMP_LITERAL_PROVIDER_UNSUPPORTED: broker grant CLI rejects this literal subscription provider; no alias substitution allowed")
-	errLiveSteerEvidence       = errors.New("OMP_STEER_EVIDENCE_UNAVAILABLE: correlated model uptake of a steer is not observable through this harness")
-	errLiveAbortEvidence       = errors.New("OMP_ABORT_EVIDENCE_UNAVAILABLE: interrupt acknowledgement does not prove correlated terminal abort")
-	errLiveHostToolsEvidence   = errors.New("OMP_HOST_TOOLS_EVIDENCE_UNAVAILABLE: standalone CLI does not attest intended jevons host-tool arming")
+	errLiveRenewalEvidence   = errors.New("OMP_RENEWAL_EVIDENCE_UNAVAILABLE: auth recovery exposes no refreshed/no-op outcome; health is not renewal proof")
+	errLiveBouncePermit      = errors.New("OMP_BOUNCE_AUTHORIZATION_REQUIRED: coordinated CLAUDIA_OMP_BOUNCE_AUTHORIZED=restart-jevonsd prerequisite missing")
+	errLiveSteerEvidence     = errors.New("OMP_STEER_EVIDENCE_UNAVAILABLE: correlated model uptake of a steer is not observable through this harness")
+	errLiveAbortEvidence     = errors.New("OMP_ABORT_EVIDENCE_UNAVAILABLE: interrupt acknowledgement does not prove correlated terminal abort")
+	errLiveHostToolsEvidence = errors.New("OMP_HOST_TOOLS_EVIDENCE_UNAVAILABLE: standalone CLI does not attest intended jevons host-tool arming")
 )
 
 func liveSmokePrerequisite(provider string) error {
 	if !known(provider) {
 		return fmt.Errorf("OMP_LITERAL_PROVIDER_REQUIRED: choose anthropic, openai-codex, xai-oauth or cursor")
-	}
-	if provider != Cursor {
-		return fmt.Errorf("%w: %s", errLiveProviderUnsupported, provider)
 	}
 	return errors.Join(errLiveSteerEvidence, errLiveAbortEvidence, errLiveHostToolsEvidence)
 }

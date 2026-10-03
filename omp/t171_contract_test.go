@@ -149,20 +149,17 @@ func TestT171BounceRequiresAuthorizationAndReadiness(t *testing.T) {
 }
 
 func TestT171SmokeRefusesMissingBehavioralEvidence(t *testing.T) {
-	for _, provider := range []string{Anthropic, OpenAICodex, XAIOAuth} {
-		if err := liveSmokePrerequisite(provider); !errors.Is(err, errLiveProviderUnsupported) {
-			t.Fatalf("literal %s: %v", provider, err)
-		}
-	}
 	for _, alias := range []string{"", "claude", "codex", "grok"} {
 		if err := liveSmokePrerequisite(alias); err == nil {
 			t.Fatalf("alias %q substituted for literal subscription ID", alias)
 		}
 	}
-	err := liveSmokePrerequisite(Cursor)
-	for _, missing := range []error{errLiveSteerEvidence, errLiveAbortEvidence, errLiveHostToolsEvidence} {
-		if !errors.Is(err, missing) {
-			t.Fatalf("smoke omitted blocker %v: %v", missing, err)
+	for _, provider := range PlanIDs {
+		err := liveSmokePrerequisite(provider)
+		for _, missing := range []error{errLiveSteerEvidence, errLiveAbortEvidence, errLiveHostToolsEvidence} {
+			if !errors.Is(err, missing) {
+				t.Fatalf("smoke omitted blocker %v: %v", missing, err)
+			}
 		}
 	}
 }
