@@ -1,6 +1,7 @@
 // Seat factory for the Oh My Pi sidecar (🎯T864.3).
 // A prompt must call Agent.prompt on the pinned @oh-my-pi/pi-agent-core.
 
+import { AuthRetry, authRefusal, type RetryReply } from "./authretry.ts";
 import { Agent, type AgentTool } from "@oh-my-pi/pi-agent-core";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import type { Model } from "@oh-my-pi/pi-ai";
@@ -24,6 +25,9 @@ import {
 
 export type SeatEvent = {
   type: string;
+  request_id?: string;
+  turn_id?: string;
+  failed_token?: string;
   text?: string;
   call_id?: string;
   name?: string;
@@ -38,6 +42,7 @@ export type SeatEmit = (ev: SeatEvent) => void;
 export type SeatCallTool = (callId: string, name: string, args: string) => Promise<string>;
 
 export type SeatAgent = {
+  authRetry: (reply: RetryReply) => void;
   prompt: (text: string, meta?: PromptMeta) => Promise<void>;
   steer: (text: string, meta?: PromptMeta) => void;
   abort: () => void;
@@ -96,6 +101,14 @@ export function createSeatAgent(opts: {
   let sessionId = "";
   let turn: OpenTurn | null = null;
   const sink = { emit: opts.emit, callTool: opts.callTool };
+  const recovery = new AuthRetry((ev) => sink.emit(ev));
+  let attemptToken = "";
+  let replayToken = "";
+  let requestCount = 0;
+  let retrying = false;
+  let retryDone = Promise.resolve();
+  let cancelled = false;
+  let unsafe = false;
   const model = opts.modelOverride ?? resolveModel(opts.provider, opts.model);
   const agent = new Agent({
     initialState: {
@@ -111,7 +124,7 @@ export function createSeatAgent(opts: {
     },
     cwd,
     cwdResolver: () => cwd || undefined,
-    getApiKey: async () => token,
+    getApiKey: async () => { attemptToken = replayToken || token; replayToken = ""; requestCount++; return attemptToken; },
     // A compaction summary must reach the provider; the Agent's default
     // converter drops roles it does not know (🎯T150).
     convertToLlm: seatConvertToLlm,
@@ -203,6 +216,8 @@ export function createSeatAgent(opts: {
   // not yet taken. pi-agent-core emits message_start for each one as its run
   // loop takes it; the host is told, so an escalation stops there (T138).
   const pending: string[] = [];
+  const heldSteering: Parameters<typeof agent.steer>[0][] = [];
+  const heldFollowUps: Parameters<typeof agent.followUp>[0][] = [];
 
   agent.subscribe((event: {
     type?: string;
@@ -218,6 +233,13 @@ export function createSeatAgent(opts: {
       }
       return;
     }
+    if (event.type === "message_end" && event.message?.role === "assistant" && Array.isArray(event.message.content)) {
+      if (event.message.content.some((part: any) => part?.type === "toolCall" || (part?.type === "text" && part.text))) unsafe = true;
+    }
+    // Tool declarations (including provider-executed tools) and any text
+    // make replay unsafe, even if no visible digest delta was emitted.
+    if (event.assistantMessageEvent?.type === "toolcall_start" ||
+        event.assistantMessageEvent?.type === "text_delta" || event.type === "tool_execution_start") unsafe = true;
     if (event.type === "tool_execution_start" && turn && !turn.closed) {
       noteTool(turn);
       return;
@@ -244,6 +266,11 @@ export function createSeatAgent(opts: {
       meta: { ...meta, session_id: metaSession || undefined },
     });
     sessionId = turn.session_id;
+    attemptToken = "";
+    replayToken = "";
+    requestCount = 0;
+    cancelled = false;
+    unsafe = false;
     // A turn can think for a minute before its first token. Announce it
     // now so the host sees the prompt land (Jevons T887).
     sink.emit({ type: "accepted" });
@@ -255,10 +282,38 @@ export function createSeatAgent(opts: {
       if (!opts.summaryOnly && maint.due(agent.state.messages, agent.tokenizer.countTokens(text))) {
         await maint.run("threshold", "pre_turn");
       }
+      const before = new Set(agent.state.messages);
       await run();
+      const failed = agent.state.messages.at(-1);
+      const authError = turnRefusal(agent.state);
+      if (failed && !before.has(failed) && authRefusal(authError) && requestCount === 1 &&
+          attemptToken && !unsafe && !cancelled && !turn.closed && turn.tool_calls === 0 && turn.chars === 0) {
+        // Keep the retry's conversation identical to the failed attempt.
+        // continue() otherwise consumes queued steering before making a request.
+        retrying = true;
+        let releaseRetry!: () => void;
+        retryDone = new Promise<void>(resolve => { releaseRetry = resolve; });
+        const steering = [...agent.peekSteeringQueue()];
+        const followUps = [...agent.peekFollowUpQueue()];
+        agent.replaceQueues([], []);
+        try {
+          const replacement = await recovery.recover(turn.turn_id, attemptToken, authError);
+          if (replacement && !cancelled && !turn.closed && agent.state.messages.at(-1) === failed) {
+            token = replacement;
+            replayToken = replacement;
+            agent.popMessage();
+            maint.history.forget(failed as never);
+            await agent.continue();
+          }
+        } finally {
+          agent.replaceQueues([...steering, ...agent.peekSteeringQueue(), ...heldSteering.splice(0)], [...followUps, ...agent.peekFollowUpQueue(), ...heldFollowUps.splice(0)]);
+          retrying = false;
+          releaseRetry();
+        }
+      }
       // A follow-up queued after the run's own last check would wait for
       // the next prompt. Drain it inside this turn (bounded).
-      for (let i = 0; i < 8 && agent.hasQueuedMessages() && !agent.state.isStreaming; i++) {
+      for (let i = 0; i < 8 && !cancelled && !turnRefusal(agent.state) && agent.hasQueuedMessages() && !agent.state.isStreaming; i++) {
         await agent.continue();
       }
       // Refused as too long anyway (the window was overstated, or one turn
@@ -285,7 +340,7 @@ export function createSeatAgent(opts: {
         await maint.run("threshold", "post_turn");
         // A message that arrived while it compacted was queued behind this
         // turn: run it now, as the CLI drains its queue after a compaction.
-        for (let i = 0; i < 8 && agent.hasQueuedMessages() && !agent.state.isStreaming; i++) {
+        for (let i = 0; i < 8 && !cancelled && !turnRefusal(agent.state) && agent.hasQueuedMessages() && !agent.state.isStreaming; i++) {
           await agent.continue();
         }
       }
@@ -298,6 +353,7 @@ export function createSeatAgent(opts: {
       // The turn's messages are durable before the host hears it ended.
       maint.persist();
     }
+    if (cancelled) return;
     if (refusal) {
       sink.emit({ type: "turn_end", error: refusal, reason: overflow ? ContextOverflow : undefined, snapshot: agent.state });
       return;
@@ -306,6 +362,7 @@ export function createSeatAgent(opts: {
   };
 
   return {
+    authRetry: (reply) => recovery.receive(reply),
     prompt: async (text: string, meta?: PromptMeta) => {
       // A prompt that arrives mid-turn is queued, not refused. The running
       // turn answers it before it ends. Refusing lost the message: the
@@ -313,8 +370,9 @@ export function createSeatAgent(opts: {
       // (2026-09-28, owner messages to a busy product owner). Checking the
       // agent too covers the gap after this turn closes while pi-agent-core
       // is still finishing, where prompt() throws AgentBusyError.
-      if ((turn && !turn.closed) || agent.state.isStreaming) {
-        agent.followUp({
+      if (retrying || (turn && !turn.closed) || agent.state.isStreaming || agent.hasQueuedMessages()) {
+        const enqueue = retrying ? (m: Parameters<typeof agent.followUp>[0]) => heldFollowUps.push(m) : (m: Parameters<typeof agent.followUp>[0]) => agent.followUp(m);
+        enqueue({
           role: "user",
           content: text,
           timestamp: Date.now(),
@@ -323,12 +381,18 @@ export function createSeatAgent(opts: {
         // Say at once that it was accepted: a host that waits for a first
         // streamed token would call a queued prompt undelivered.
         sink.emit({ type: "accepted" });
+        // A terminal refusal leaves accepted inputs queued. A later prompt
+        // joins behind them rather than jumping ahead via agent.prompt().
+        if (!retrying && !agent.state.isStreaming && (!turn || turn.closed)) {
+          await runTurn("", meta, () => agent.continue());
+        }
         return;
       }
       await runTurn(text, meta, () => agent.prompt(text));
     },
     steer: (text: string, _meta?: PromptMeta) => {
-      agent.steer({
+      const enqueue = retrying ? (m: Parameters<typeof agent.steer>[0]) => heldSteering.push(m) : (m: Parameters<typeof agent.steer>[0]) => agent.steer(m);
+      enqueue({
         role: "user",
         content: text,
         timestamp: Date.now(),
@@ -337,6 +401,8 @@ export function createSeatAgent(opts: {
       sink.emit({ type: "accepted" });
     },
     abort: () => {
+      cancelled = true;
+      recovery.cancel();
       maint.abort();
       agent.abort();
       finish("abort");
@@ -344,6 +410,7 @@ export function createSeatAgent(opts: {
       // queues survive abort; once the aborted run has unwound, run what is
       // queued as its own turn instead of leaving it for a later prompt.
       void agent.waitForIdle().then(async () => {
+        await retryDone;
         if (!agent.hasQueuedMessages() || agent.state.isStreaming || (turn && !turn.closed)) return;
         try {
           await runTurn("", { cause: "interrupt-deliver" }, () => agent.continue());

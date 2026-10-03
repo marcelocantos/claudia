@@ -24,13 +24,16 @@ const (
 	OpTool   = "tool_result"
 	// OpToken sets a plan's access token for every seat on it (🎯T159).
 	// It carries Provider and Token and names no seat.
-	OpToken = "token"
+	OpToken     = "token"
+	OpAuthRetry = "auth_retry"
 )
 
 // Message is one IPC line. Token is set only on load, and only with the
 // access token the broker just read from the Keychain item.
 type Message struct {
 	Op          string `json:"op"`
+	RequestID   string `json:"request_id,omitempty"`
+	ExpiresAt   int64  `json:"expires_at,omitempty"`
 	Seat        string `json:"seat,omitempty"`
 	Provider    string `json:"provider,omitempty"`
 	Model       string `json:"model,omitempty"`
@@ -59,9 +62,12 @@ type Message struct {
 
 // Event is one sidecar line. Type turn_end carries a context snapshot.
 type Event struct {
-	Seat string `json:"seat,omitempty"`
-	Type string `json:"type"`
-	How  string `json:"how,omitempty"`
+	RequestID   string `json:"request_id,omitempty"`
+	TurnID      string `json:"turn_id,omitempty"`
+	FailedToken string `json:"failed_token,omitempty"`
+	Seat        string `json:"seat,omitempty"`
+	Type        string `json:"type"`
+	How         string `json:"how,omitempty"`
 	// Restored, on a "ready" for a launched seat, says whether the sidecar
 	// brought back the seat's stored conversation (claudia 🎯T151, jevons
 	// 🎯T929). Absent from a sidecar that predates the store, which never did.
