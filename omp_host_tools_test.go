@@ -143,7 +143,10 @@ func TestOMPSidecarQueuesPromptWhileBusy(t *testing.T) {
 	if strings.Contains(src, "seat is already processing") {
 		t.Fatal("a busy seat must not refuse a prompt")
 	}
-	if !strings.Contains(src, "if ((turn && !turn.closed) || agent.state.isStreaming) {\n        agent.followUp({") {
+	// T169 holds inputs during auth recovery before handing them to the same
+	// follow-up queue. Execution/order is covered by the protocol journey;
+	// this census must not depend on adjacency or an inline object literal.
+	if !strings.Contains(src, "(turn && !turn.closed) || agent.state.isStreaming") || !strings.Contains(src, "agent.followUp(") {
 		t.Fatal("a prompt that arrives mid-turn must be queued with agent.followUp")
 	}
 	if !strings.Contains(src, "agent.hasQueuedMessages() && !agent.state.isStreaming") || !strings.Contains(src, "await agent.continue()") {
