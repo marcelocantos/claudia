@@ -6,6 +6,7 @@ package claudia
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -397,6 +398,10 @@ func (c *ompControl) pump(a *Agent) {
 			}
 		}
 		switch ev.Type {
+		case "auth_retry":
+			if ev.RequestID != "" && ev.TurnID != "" && len(ev.FailedToken) == 64 && oauthRejected(ev.Error) {
+				go c.answerAuthRetry(ev)
+			}
 		case "accepted":
 			// The sidecar took the prompt (a turn began, or it was queued
 			// behind the running one). Before the first token this is the
@@ -493,6 +498,7 @@ func (c *ompControl) pump(a *Agent) {
 // error event or inside the turn snapshot. A bad refresh token for a
 // different plan is not this signal (🎯T868).
 func oauthRejected(blob string) bool {
+	blob = strings.ToLower(blob)
 	if blob == "" {
 		return false
 	}
@@ -501,6 +507,7 @@ func oauthRejected(blob string) bool {
 		"unauthenticated:bad-credentials",
 		"invalid_token",
 		"authentication_error",
+		"401 oauth access token has expired",
 	} {
 		if strings.Contains(blob, n) {
 			return true
@@ -514,6 +521,13 @@ func oauthRejected(blob string) bool {
 // reauth, or another seat's refresh) is taken as is; otherwise the seat
 // refreshes, at most once per ompRefreshBackoff.
 func (c *ompControl) recoverRejectedToken() {
+	c.recoverFailedToken(tokenFingerprint(c.currentToken()))
+}
+
+func tokenFingerprint(token string) string { return fmt.Sprintf("%x", sha256.Sum256([]byte(token))) }
+
+// The sidecar identifies the credential actually used, even if renewal raced the request.
+func (c *ompControl) recoverFailedToken(failed string) {
 	// One refresh at a time per plan (🎯T158). A refresh spends the refresh
 	// token it presents, so two seats refused together that both refresh
 	// present the same one: the second gets invalid_grant, and that marks a
@@ -521,12 +535,11 @@ func (c *ompControl) recoverRejectedToken() {
 	// that waited finds the first one's token below and takes it.
 	// Compare with the token that was refused, not the seat's current one:
 	// the refresh this seat waited behind has already reloaded it.
-	refused := c.currentToken()
 	mu := ompRefreshLock(c.provider)
 	mu.Lock()
 	defer mu.Unlock()
 	tok, err := planStore().AccessToken(context.Background(), c.provider)
-	if err == nil && tok != refused {
+	if err == nil && tokenFingerprint(tok) != failed {
 		slog.Info("omp token rejected; seat takes the plan's newer token", "provider", c.provider, "seat", c.seat)
 		c.reload(tok)
 		return
@@ -546,6 +559,22 @@ func (c *ompControl) recoverRejectedToken() {
 	c.lastRefresh = time.Now()
 	c.mu.Unlock()
 	c.refreshRejectedToken()
+}
+
+// A response is useful only to the matching pending sidecar turn. The token
+// travels on the private command wire, never on the event/spool path.
+func (c *ompControl) answerAuthRetry(ev omp.Event) {
+	c.recoverFailedToken(ev.FailedToken)
+	reply := omp.Message{Op: omp.OpAuthRetry, RequestID: ev.RequestID, TurnID: ev.TurnID}
+	item, err := planStore().Load(context.Background())
+	if err == nil {
+		rec := item.Records[c.provider]
+		if rec.AccessToken != "" && tokenFingerprint(rec.AccessToken) != ev.FailedToken && rec.Expiry.After(time.Now()) {
+			reply.Token = rec.AccessToken
+			reply.ExpiresAt = rec.Expiry.UnixMilli()
+		}
+	}
+	_ = c.send(reply) // Missing delivery times out closed at the sidecar.
 }
 
 func (c *ompControl) currentToken() string {

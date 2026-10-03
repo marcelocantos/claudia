@@ -68,6 +68,8 @@ type Line = {
   model?: string;
   summary_only?: boolean;
   token?: string;
+  request_id?: string;
+  expires_at?: number;
   cwd?: string;
   text?: string;
   call_id?: string;
@@ -273,6 +275,10 @@ async function handle(
   const loaded = seats.get(seat);
   if (!loaded) {
     write({ seat, type: "error", text: "seat is not loaded" });
+    return;
+  }
+  if (msg.op === "auth_retry") {
+    loaded.agent.authRetry(msg);
     return;
   }
   if (msg.op === "abort") {
