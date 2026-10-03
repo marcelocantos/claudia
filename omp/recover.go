@@ -65,13 +65,6 @@ func RetryOpen(ctx context.Context, store Store) error {
 	return nil
 }
 
-// RecoverPlan repairs one plan's login. A plan the broker holds as healthy,
-// with a live access token, has nothing to repair: another refresh already
-// replaced the token that was refused, and refreshing again would rotate it
-// under every seat on the plan (🎯T165). Otherwise it refreshes, and on an
-// invalid refresh grant falls back to an interactive sign-in, unless
-// login.NoLogin says nobody is at the keyboard: then it marks the plan
-// rejected and returns ErrNeedsSignIn.
 // RecoveryResult is deliberately non-secret: classifications are fixed codes,
 // never provider stderr, credential material, or token fingerprints.
 type RecoveryResult struct {
@@ -86,6 +79,13 @@ const (
 	RecoveryFailure     = "failure"
 )
 
+// RecoverPlan repairs one plan's login. A plan the broker holds as healthy,
+// with a live access token, has nothing to repair: another refresh already
+// replaced the token that was refused, and refreshing again would rotate it
+// under every seat on the plan (🎯T165). Otherwise it refreshes, and on an
+// invalid refresh grant falls back to an interactive sign-in, unless
+// login.NoLogin says nobody is at the keyboard: then it marks the plan
+// rejected and returns ErrNeedsSignIn.
 func RecoverPlan(ctx context.Context, store Store, login Login, provider string) error {
 	_, err := recoverPlan(ctx, store, login, provider)
 	return err

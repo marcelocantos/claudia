@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/marcelocantos/claudia/internal/broker"
+	"github.com/marcelocantos/claudia/omp"
 )
 
 type t171RecoveryHandler struct {
@@ -70,5 +71,29 @@ func TestT171RecoveryClientNeverFallsBack(t *testing.T) {
 				t.Fatal("client retried/fell back")
 			}
 		})
+	}
+}
+
+func TestT171DetailedRecoveryHoldsPlanLock(t *testing.T) {
+	oldKeychain, oldLogin := ompKeychain, ompLogin
+	omp.ResetKeychainShot()
+	t.Cleanup(func() { ompKeychain = oldKeychain; ompLogin = oldLogin; omp.ResetKeychainShot() })
+	reads := 0
+	ompKeychain = func(context.Context, string, ...string) ([]byte, error) {
+		reads++
+		mu := ompRefreshLock(omp.Anthropic)
+		if mu.TryLock() {
+			mu.Unlock()
+			t.Error("store read/outcome decision outside shared plan refresh lock")
+		}
+		return []byte(`{"records":{"anthropic":{"refresh_token":"fake","access_token":"fake","expiry":"` + time.Now().Add(time.Hour).UTC().Format(time.RFC3339) + `"}}}`), nil
+	}
+	ompLogin = omp.Login{Script: "unused", Run: func(context.Context, string, ...string) ([]byte, error) {
+		t.Error("healthy no-op invoked auth helper")
+		return nil, errors.New("unexpected helper")
+	}}
+	result := RecoverOMPPlanDetailed(context.Background(), omp.Anthropic)
+	if result.Outcome != omp.RecoveryHealthyNoOp || reads != 1 {
+		t.Fatalf("result=%+v reads=%d", result, reads)
 	}
 }
