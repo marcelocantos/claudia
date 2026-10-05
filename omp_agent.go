@@ -256,6 +256,21 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 		HistoryLost:        historyLost,
 		HostMCPUnavailable: mcpUnavailable,
 		Ops: agentOps{
+			// A sidecar seat runs under its seat id (xai-oauth, anthropic,
+			// openai-codex), which the provider turn-caps table does not
+			// name, so it reported no steer at all although steer and abort
+			// are wired below: a host escalating an owner message to a busy
+			// seat held it behind the turn instead (jevons J35, 2026-10-05).
+			// The sidecar hands steer text to the agent, which reads it at
+			// its next breakpoint between steps.
+			turnCaps: func(*Agent) TurnCaps {
+				return TurnCaps{
+					CanInterrupt:       true,
+					CanSteer:           true,
+					SteerPolicy:        SteerBreakpoint,
+					BusyOnSecondSubmit: BusySubmitReject,
+				}
+			},
 			send: func(a *Agent, text string) error {
 				ctrl.inflight.Store(true)
 				return ctrl.send(promptMessage(omp.OpPrompt, req.Config.Name, text, a, ctrl))
