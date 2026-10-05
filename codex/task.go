@@ -9,8 +9,11 @@ import (
 	"fmt"
 	"log/slog"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/marcelocantos/claudia/internal/codexgit"
 )
 
 // Status is the lifecycle state of a [Task].
@@ -45,6 +48,10 @@ type Config struct {
 	Model string
 	// SandboxMode is passed as --sandbox (e.g. "read-only").
 	SandboxMode string
+	// SandboxGitWrite opts a workspace-write task into writing its Git metadata.
+	// This includes hooks and config, which execute outside Codex's sandbox on
+	// later Git commands. Leave unset unless the task must commit.
+	SandboxGitWrite bool
 	// ApprovalPolicy is passed as --ask-for-approval (e.g. "never").
 	ApprovalPolicy string
 	// SessionID resumes a prior Codex thread via `codex exec resume`.
@@ -63,6 +70,7 @@ type Task struct {
 	model    string
 	sandbox  string
 	approval string
+	gitWrite bool
 	resolve  *ResolveArgs
 	rawLog   func(line []byte)
 
@@ -82,6 +90,7 @@ func NewTask(cfg Config) *Task {
 		model:     cfg.Model,
 		sandbox:   cfg.SandboxMode,
 		approval:  cfg.ApprovalPolicy,
+		gitWrite:  cfg.SandboxGitWrite,
 		resolve:   cfg.Resolve,
 		rawLog:    cfg.RawLog,
 		status:    StatusIdle,
@@ -167,13 +176,20 @@ func (t *Task) Run(ctx context.Context, prompt string) (<-chan Event, error) {
 		return nil, err
 	}
 
+	gitRoots, err := t.gitWriteRoots()
+	if err != nil {
+		t.finish(StatusError)
+		return nil, err
+	}
 	args := execArgs(execArgInput{
-		WorkDir:        t.workDir,
-		Model:          t.model,
-		SandboxMode:    t.sandbox,
-		ApprovalPolicy: t.approval,
-		SessionID:      sessionID,
-		Prompt:         prompt,
+		WorkDir:         t.workDir,
+		GitRoots:        gitRoots,
+		SandboxGitWrite: t.gitWrite,
+		Model:           t.model,
+		SandboxMode:     t.sandbox,
+		ApprovalPolicy:  t.approval,
+		SessionID:       sessionID,
+		Prompt:          prompt,
 	})
 	slog.Debug("codex task spawn", "bin", bin, "args", args)
 
@@ -340,13 +356,37 @@ func (t *Task) finish(st Status) {
 	t.cancel = nil
 }
 
+// gitWriteRoots resolves the optional grant before spawning the CLI.
+func (t *Task) gitWriteRoots() ([]string, error) {
+	if t.gitWrite && t.sandbox != "workspace-write" && t.sandbox != "danger-full-access" {
+		return nil, fmt.Errorf("codex: SandboxGitWrite requires workspace-write (or danger-full-access) sandbox")
+	}
+	if t.sandbox != "workspace-write" {
+		return nil, nil
+	}
+	roots, err := codexgit.WritableRoots(t.workDir)
+	if err != nil && t.gitWrite {
+		return nil, fmt.Errorf("codex: SandboxGitWrite cannot resolve Git directory: %w", err)
+	}
+	if !t.gitWrite {
+		if err != nil {
+			slog.Warn("codex workspace-write: .git stays read-only (SandboxGitWrite unset); cannot resolve Git directory", "workdir", t.workDir, "err", err)
+		} else if len(roots) > 0 {
+			slog.Warn("codex workspace-write: .git stays read-only; set SandboxGitWrite to allow git commit", "workdir", t.workDir, "read_only", roots)
+		}
+	}
+	return roots, nil
+}
+
 type execArgInput struct {
-	WorkDir        string
-	Model          string
-	SandboxMode    string
-	ApprovalPolicy string
-	SessionID      string
-	Prompt         string
+	GitRoots        []string
+	SandboxGitWrite bool
+	WorkDir         string
+	Model           string
+	SandboxMode     string
+	ApprovalPolicy  string
+	SessionID       string
+	Prompt          string
 }
 
 // execArgs builds argv for codex. Global flags belong before `exec`
@@ -361,6 +401,13 @@ func execArgs(in execArgInput) []string {
 	}
 	if in.SandboxMode != "" {
 		args = append(args, "--sandbox", in.SandboxMode)
+	}
+	if in.SandboxMode == "workspace-write" && in.SandboxGitWrite && len(in.GitRoots) > 0 {
+		var quoted []string
+		for _, root := range in.GitRoots {
+			quoted = append(quoted, strconv.Quote(root))
+		}
+		args = append(args, "-c", "sandbox_workspace_write.writable_roots=["+strings.Join(quoted, ", ")+"]")
 	}
 	if in.Model != "" {
 		args = append(args, "--model", in.Model)
