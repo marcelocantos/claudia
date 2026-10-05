@@ -142,6 +142,15 @@ CLAUDIA_LIVE=1 CLAUDIA_GROK_LIVE=1 CLAUDIA_CODEX_LIVE=1 CLAUDIA_CURSOR_LIVE=1 ma
 
 Unset gates skip. CI never sets them. **You are the gate.**
 
+`make live` is exclusive across checkouts on this host (🎯T88). Before
+starting any backend tests it locks `$XDG_STATE_HOME/claudia/live.lock`
+(or `~/.local/state/claudia/live.lock`). A concurrent invocation refuses
+with `live gate busy` and a nonzero exit; it does not report a live RED.
+The winner prints `wait 0s`, then holds the lock through the entire
+`go test ./...` run. Do not remove the lockfile: an unlocked file is
+normal, and deleting it while held defeats the lock. Direct env-gated
+`go test` does not participate; use `make live` for the gate.
+
 **Host load is a first-class variable for the Claude row.** The Claude
 gate drives a real TUI through tmux, so it is the one row whose result
 depends on how busy this machine is. Measured on the live path at load
