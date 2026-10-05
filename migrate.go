@@ -525,6 +525,11 @@ func migrateDestConfig(src Config, args *MigrateArgs) Config {
 	cfg.Provider = args.Provider
 	cfg.SessionID = ""
 	cfg.RequireResume = false
+	// The destination is a new seat. A source found by an adopt-only probe
+	// (a stopped-seat migration whose predecessor was still running) carries
+	// AdoptOnly, and copying it sent the destination as an adopt: the sidecar
+	// refused it as a seat loaded on the old provider (jevons J16).
+	cfg.AdoptOnly = false
 	cfg.ConnectURL = ""
 	cfg.ConnectPID = 0
 	cfg.GrokConnect = false
