@@ -4,17 +4,12 @@
 package claudia
 
 import (
-	"bytes"
-	"context"
-	"errors"
 	"fmt"
 	"log/slog"
-	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
-	"strings"
-	"time"
+
+	"github.com/marcelocantos/claudia/internal/codexgit"
 )
 
 // Codex's workspace-write sandbox makes the working directory writable
@@ -61,66 +56,9 @@ import (
 // carries the `.git` carve-out.
 const codexSandboxWorkspaceWrite = "workspace-write"
 
-// codexGitResolveTimeout bounds the one `git rev-parse` Start runs. It is
-// generous because Start already waits tens of seconds on a loaded host,
-// and a timeout here refuses the seat.
-const codexGitResolveTimeout = 30 * time.Second
-
-// gitNotARepoMarker is what git says (under LC_ALL=C) when the directory
-// is simply not in a repository — the one failure that means "nothing to
-// grant" rather than "could not find out".
-const gitNotARepoMarker = "not a git repository"
-
-// codexGitWritableRoots returns the git directories a seat working in
-// workDir writes when it commits or adds a worktree: the common dir
-// (objects, refs, worktrees/) and, should it live elsewhere, the
-// worktree's own git dir. Paths are absolute and symlink-free, which is
-// the form the sandbox compares. A workDir outside any repository has
-// nothing to grant and returns nil.
+// codexGitWritableRoots resolves the common and per-worktree Git directories.
 func codexGitWritableRoots(workDir string) ([]string, error) {
-	gitBin, err := exec.LookPath("git")
-	if err != nil {
-		// No git for claudia means no git for the seat it spawns with the
-		// same PATH; there is no commit for the sandbox to block.
-		slog.Warn("codex workspace-write: git not found, .git is left read-only", "workdir", workDir, "err", err)
-		return nil, nil
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), codexGitResolveTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, gitBin, "rev-parse", "--path-format=absolute", "--git-common-dir", "--git-dir")
-	cmd.Dir = workDir
-	cmd.Env = append(os.Environ(), "LC_ALL=C")
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
-	if err != nil {
-		var exit *exec.ExitError
-		if errors.As(err, &exit) && strings.Contains(stderr.String(), gitNotARepoMarker) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("git rev-parse in %s: %w: %s", workDir, err, strings.TrimSpace(stderr.String()))
-	}
-
-	var roots []string
-	for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
-		dir := canonicalPath(strings.TrimSpace(line))
-		if dir == "" || !filepath.IsAbs(dir) {
-			return nil, fmt.Errorf("git rev-parse in %s: unexpected git dir %q", workDir, line)
-		}
-		// The common dir comes first and normally contains the worktree's
-		// own git dir (<common>/worktrees/<name>); one grant covers both.
-		covered := false
-		for _, r := range roots {
-			if rel, rerr := filepath.Rel(r, dir); rerr == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-				covered = true
-				break
-			}
-		}
-		if !covered {
-			roots = append(roots, dir)
-		}
-	}
-	return roots, nil
+	return codexgit.WritableRoots(workDir)
 }
 
 // codexSandboxConfigKey is the config path of the workspace-write
