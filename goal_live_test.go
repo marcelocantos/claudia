@@ -5,8 +5,10 @@ package claudia
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -99,21 +101,23 @@ func TestGoalJourneyLiveBackends(t *testing.T) {
 				t.Skipf("%s not set (this test spends API credit)", tc.gate)
 			}
 			tc.skip(t)
-			runLiveGoalJourney(t, tc.cfg)
+			if err := runLiveGoalJourney(t, tc.cfg, Start, 180*time.Second); err != nil {
+				t.Fatal(err)
+			}
 		})
 	}
 }
 
-func runLiveGoalJourney(t *testing.T, cfg Config) {
+func runLiveGoalJourney(t *testing.T, cfg Config, start func(Config) (*Agent, error), timeout time.Duration) error {
 	t.Helper()
 	cfg.WorkDir = t.TempDir()
-	agent, err := Start(cfg)
+	agent, err := start(cfg)
 	if err != nil {
-		t.Fatalf("Start: %v", err)
+		return fmt.Errorf("Start: %w", err)
 	}
 	defer agent.Stop()
 	if !agent.GoalActive() {
-		t.Fatal("Goal must be active after Start")
+		return fmt.Errorf("Goal must be active after Start")
 	}
 
 	// secondTurnWatcher decides what a second turn is; see its comment for
@@ -123,8 +127,20 @@ func runLiveGoalJourney(t *testing.T, cfg Config) {
 		watcher    secondTurnWatcher
 		firstTurn  = make(chan string, 1)
 		secondTurn = make(chan turnMark, 1)
+		turnError  = make(chan string, 1)
 	)
 	tok := agent.SubscribeEvents(func(ev Event) {
+		if ev.IsError {
+			msg := strings.TrimSpace(ev.Text)
+			if msg == "" {
+				msg = "agent turn failed"
+			}
+			select {
+			case turnError <- msg:
+			default:
+			}
+			return
+		}
 		mu.Lock()
 		defer mu.Unlock()
 		hadFirst := watcher.terminals > 0
@@ -145,38 +161,43 @@ func runLiveGoalJourney(t *testing.T, cfg Config) {
 	defer agent.UnsubscribeEvents(tok)
 
 	if err := agent.WaitReady(t.Context()); err != nil {
-		t.Fatalf("WaitReady: %v", err)
+		return fmt.Errorf("WaitReady: %w", err)
 	}
 	// First user turn is a one-shot that must not complete the Goal.
 	if err := agent.Send("Reply with exactly: ping. Do not emit any GOAL_STATUS line."); err != nil {
-		t.Fatalf("Send: %v", err)
+		return fmt.Errorf("Send: %w", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), timeout)
 	defer cancel()
 
 	var first string
 	select {
 	case first = <-firstTurn:
+	case msg := <-turnError:
+		return fmt.Errorf("first turn failed: %s", msg)
 	case <-ctx.Done():
-		t.Fatal("first turn never completed")
+		return fmt.Errorf("first turn never completed: %w", ctx.Err())
 	}
 	if !agent.GoalActive() {
-		t.Fatal("Goal closed after the first turn — host treated ping as a done-report")
+		return fmt.Errorf("Goal closed after the first turn — host treated ping as a done-report")
 	}
 
 	var second turnMark
 	select {
 	case second = <-secondTurn:
+	case msg := <-turnError:
+		return fmt.Errorf("continuation turn failed: %s", msg)
 	case <-ctx.Done():
-		t.Fatal("no turn after the first — host did not continue the Goal")
+		return fmt.Errorf("no turn after the first — host did not continue the Goal: %w", ctx.Err())
 	}
 	mu.Lock()
 	rule := watcher.Rule
 	mu.Unlock()
 	agent.Stop()
 	if agent.GoalActive() {
-		t.Fatal("Stop must close the Goal")
+		return fmt.Errorf("Stop must close the Goal")
 	}
 	t.Logf("live goal journey: first turn %q, second turn %+v decided by %s", first, second, rule)
+	return nil
 }
