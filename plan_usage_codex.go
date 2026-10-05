@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -27,6 +28,18 @@ const (
 type codexWhamUsage struct {
 	PlanType  string          `json:"plan_type"`
 	RateLimit *codexRateLimit `json:"rate_limit"`
+	// Credits carries the supplementary balance wham/usage already
+	// publishes alongside rate_limit — previously fetched and discarded
+	// unparsed. See [PlanCredits].
+	Credits *codexCredits `json:"credits"`
+}
+
+// codexCredits mirrors wham/usage's "credits" object. balance arrives as
+// a JSON string (e.g. "50794.5836695000"), hence stringOrFloat.
+type codexCredits struct {
+	HasCredits bool          `json:"has_credits"`
+	Unlimited  bool          `json:"unlimited"`
+	Balance    stringOrFloat `json:"balance"`
 }
 
 type codexRateLimit struct {
@@ -41,6 +54,35 @@ type codexLimitWindow struct {
 	LimitWindowSeconds int      `json:"limit_window_seconds"`
 	ResetAfterSeconds  int      `json:"reset_after_seconds"`
 	ResetAt            *int64   `json:"reset_at"`
+}
+
+// stringOrFloat unmarshals a JSON number or numeric string into a float64.
+// wham/usage publishes credits.balance as a string (e.g.
+// "50794.5836695000") while every other numeric field in the same
+// response is a bare number — tolerate both rather than assume.
+type stringOrFloat float64
+
+func (s *stringOrFloat) UnmarshalJSON(b []byte) error {
+	var f float64
+	if err := json.Unmarshal(b, &f); err == nil {
+		*s = stringOrFloat(f)
+		return nil
+	}
+	var str string
+	if err := json.Unmarshal(b, &str); err != nil {
+		return fmt.Errorf("stringOrFloat: %w", err)
+	}
+	str = strings.TrimSpace(str)
+	if str == "" {
+		*s = 0
+		return nil
+	}
+	f, err := strconv.ParseFloat(str, 64)
+	if err != nil {
+		return fmt.Errorf("stringOrFloat: %q: %w", str, err)
+	}
+	*s = stringOrFloat(f)
+	return nil
 }
 
 type codexAuthFile struct {
@@ -164,6 +206,14 @@ func parseCodexWhamUsage(body []byte, now time.Time) (PlanUsage, error) {
 	}
 	add(raw.RateLimit.PrimaryWindow)
 	add(raw.RateLimit.SecondaryWindow)
+
+	if raw.Credits != nil && raw.Credits.HasCredits {
+		pu.Credits = &PlanCredits{
+			HasCredits: raw.Credits.HasCredits,
+			Unlimited:  raw.Credits.Unlimited,
+			Balance:    float64(raw.Credits.Balance),
+		}
+	}
 
 	if len(pu.Windows) > 0 {
 		pu.Status = PlanUsageAvailable

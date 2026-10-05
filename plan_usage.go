@@ -87,6 +87,30 @@ type PlanUsage struct {
 	// a question about what the server actually said never costs a fresh
 	// request (🎯T84). Fields this package does not map survive here.
 	RawBody string `json:"raw_body,omitempty"`
+	// Credits is a supplementary balance some providers publish alongside
+	// (not instead of) the subscription rate-limit windows — e.g. Codex's
+	// wham/usage response carries a "credits" object even while the
+	// weekly window itself is exhausted. Nil means the provider's
+	// response carried no such balance. Reported as a raw number for now
+	// (🎯 owner: "just report the raw number"); banding/thresholds are
+	// deliberately not implemented yet.
+	Credits *PlanCredits `json:"credits,omitempty"`
+}
+
+// PlanCredits is a provider-published supplementary credit balance,
+// independent of the subscription window's used/remaining percent.
+// Field names mirror the vendor's own vocabulary rather than inventing a
+// cross-provider abstraction prematurely — only Codex populates this today.
+type PlanCredits struct {
+	// HasCredits is the provider's own flag for "a balance exists".
+	HasCredits bool `json:"has_credits"`
+	// Unlimited is true when the provider reports no bound on this credit.
+	Unlimited bool `json:"unlimited,omitempty"`
+	// Balance is the raw provider-reported balance, parsed from a numeric
+	// or string JSON value. Units are whatever the provider's own "credits"
+	// vocabulary means (not normalized to USD or tokens) — display as a
+	// rounded raw number (🎯 e.g. "+56k") rather than inferring meaning.
+	Balance float64 `json:"balance"`
 }
 
 // PlanUsageArgs configures [QueryPlanUsage].
