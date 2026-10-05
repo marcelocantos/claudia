@@ -6,6 +6,7 @@ package claudia
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -112,29 +113,47 @@ func Resolve(ctx context.Context, pred ModelPredicates) (ModelPick, error) {
 		exclude[p] = true
 	}
 
+	// rejected records, per catalog row, why it did not become a
+	// candidate. Previously this loop silently continued past every
+	// rejection and, on total failure, returned the bare error
+	// "resolve: no catalog model matches predicates" with no trace of
+	// which rows were tried or why each was dropped — the exact gap
+	// that made a real ge-po resolve failure undiagnosable after the
+	// fact. This trace is logged (slog) unconditionally and folded
+	// into the returned error so a caller/log reader does not need a
+	// separate debug build to see it.
 	var candidates []catalogCand
+	var rejected []string
 	for _, row := range ModelCatalog() {
+		id := string(row.Provider) + "/" + row.Model
 		if exclude[row.Provider] {
+			rejected = append(rejected, id+": excluded provider")
 			continue
 		}
 		if pred.Mode == CapabilityTask && !row.Task {
+			rejected = append(rejected, id+": mode=task not supported")
 			continue
 		}
 		if pred.Mode == CapabilitySession && !row.Session {
+			rejected = append(rejected, id+": mode=session not supported")
 			continue
 		}
 		if pred.PreferPlan && row.Access != ModelAccessPlan {
+			rejected = append(rejected, id+fmt.Sprintf(": require_plan but access=%s", row.Access))
 			continue
 		}
 		if row.Quality != wantQ {
+			rejected = append(rejected, id+fmt.Sprintf(": quality=%s wants %s", row.Quality, wantQ))
 			continue
 		}
 		u, has := byProv[row.Provider]
 		if skipForUsage(pred, u, has, now) {
+			rejected = append(rejected, id+": usage/band ineligible (exhausted, hot, or no usage data under RequireUsage)")
 			continue
 		}
 		// 🎯T86: the plan can have headroom while this model has none.
 		if has && !ModelHasAvailableTokens(u, row.Model, now, pred.Thresholds) {
+			rejected = append(rejected, id+": no available tokens on this model")
 			continue
 		}
 		band := PlanBandUnpublished
@@ -145,8 +164,14 @@ func Resolve(ctx context.Context, pred ModelPredicates) (ModelPick, error) {
 		}
 		candidates = append(candidates, catalogCand{row: row, band: band, pressure: pressure})
 	}
+	if len(rejected) > 0 {
+		slog.Debug("resolve: catalog rejections", "rejected", rejected, "kept", len(candidates))
+	}
 	best, err := pickCatalog(candidates, pred.PreferProvider)
 	if err != nil {
+		if len(rejected) > 0 {
+			return ModelPick{}, fmt.Errorf("%w (tried %d catalog rows: %s)", err, len(rejected), strings.Join(rejected, "; "))
+		}
 		return ModelPick{}, err
 	}
 	reason := fmt.Sprintf("quality=%s access=%s band=%s", best.row.Quality, best.row.Access, best.band)

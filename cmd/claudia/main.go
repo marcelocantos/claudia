@@ -27,6 +27,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -202,7 +203,34 @@ func serve(args []string) error {
 	if err := lvl.UnmarshalText([]byte(*logLevel)); err != nil {
 		return fmt.Errorf("--log: %w", err)
 	}
-	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: lvl}))
+	// 🎯 the broker's own stdout/stderr are only captured when whatever
+	// launched it (launchd, a dev terminal, etc.) happens to redirect
+	// them somewhere persistent — which, for the dev-checkout binary run
+	// directly from a terminal, it typically does not. That left a real
+	// gap: a resolve failure investigated after the fact had nothing to
+	// read because the broker's own log output went to a terminal no one
+	// was looking at. Always tee to a durable file under the state dir
+	// in addition to stderr, so `claudia broker serve` output survives
+	// the launching terminal regardless of how it was started.
+	logWriter := io.Writer(os.Stderr)
+	logDir := *stateDir
+	if logDir == "" {
+		if sd, err := broker.StateDir(); err == nil {
+			logDir = sd
+		}
+	}
+	if logDir != "" {
+		logPath := filepath.Join(logDir, "logs", "broker.log")
+		if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+			fmt.Fprintf(os.Stderr, "warn: cannot create broker log dir %s: %v\n", filepath.Dir(logPath), err)
+		} else if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); err != nil {
+			fmt.Fprintf(os.Stderr, "warn: cannot open broker log %s: %v\n", logPath, err)
+		} else {
+			logWriter = io.MultiWriter(os.Stderr, f)
+			fmt.Fprintf(os.Stderr, "broker log also writing to %s\n", logPath)
+		}
+	}
+	log := slog.New(slog.NewTextHandler(logWriter, &slog.HandlerOptions{Level: lvl}))
 	slog.SetDefault(log)
 
 	// This process IS the daemon: its own Start/Task/usage calls take the
