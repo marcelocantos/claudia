@@ -65,6 +65,16 @@ const (
 	// actually starts can be sources and destinations; Task-only
 	// providers cannot.
 	CapabilityMigrate Capability = "migrate"
+	// CapabilityMCPTools is a live Session actually surfacing the MCP
+	// tools claudia attaches ([Config.MCPServers]) to the provider's
+	// model — steerability, in the jevons sense: can this seat receive
+	// jevons_* tool bindings at all. This is a claim about claudia's own
+	// wiring and the provider's known behaviour, not about the generic
+	// MCP transport: a provider can speak MCP (tools/list succeeds) and
+	// still fail this capability if the tools never reach the model
+	// (claudia T118's cumulative tool-budget defect) or if the seat
+	// rejects every call outright (claudia T119 before 5fa7f35/v0.42.0).
+	CapabilityMCPTools Capability = "mcp_tools"
 )
 
 // CapabilityStatus classifies how far claudia supports one [Capability]
@@ -144,6 +154,7 @@ func reportedCapabilities() []Capability {
 		CapabilityExtraArgs,
 		CapabilityModelSwitch,
 		CapabilityMigrate,
+		CapabilityMCPTools,
 	}
 }
 
@@ -210,6 +221,10 @@ var providerCapabilityClaims = map[Provider]map[Capability]capabilityClaim{
 			status: CapabilityUnsupported,
 			reason: migrateNeedsSessionReason,
 		},
+		CapabilityMCPTools: {
+			status: CapabilityUnsupported,
+			reason: "Ollama Task mode is one-shot generate with no tool-calling wired; there is no session for an MCP tool to reach",
+		},
 	},
 	ProviderClaude: {
 		CapabilityTask:             {status: CapabilitySupported},
@@ -233,6 +248,7 @@ var providerCapabilityClaims = map[Provider]map[Capability]capabilityClaim{
 		CapabilityExtraArgs:   {status: CapabilitySupported},
 		CapabilityModelSwitch: {status: CapabilitySupported},
 		CapabilityMigrate:     {status: CapabilitySupported},
+		CapabilityMCPTools:    {status: CapabilitySupported},
 	},
 	ProviderCodex: {
 		CapabilityTask:    {status: CapabilitySupported},
@@ -271,6 +287,12 @@ var providerCapabilityClaims = map[Provider]map[Capability]capabilityClaim{
 		},
 		CapabilityModelSwitch: {status: CapabilitySupported},
 		CapabilityMigrate:     {status: CapabilitySupported},
+		// 5fa7f35 ("fix(codex): seat MCP servers need no tool approval",
+		// released v0.42.0) sets default_tools_approval_mode = approve
+		// on every Codex seat's MCP block; before it every MCP call was
+		// rejected with "MCP tool call requires approval, but approval
+		// policy is never" (claudia T119, jevons 🎯T791/🎯T841).
+		CapabilityMCPTools: {status: CapabilitySupported},
 	},
 	ProviderGrok: {
 		CapabilityTask:    {status: CapabilitySupported},
@@ -312,6 +334,7 @@ var providerCapabilityClaims = map[Provider]map[Capability]capabilityClaim{
 		},
 		CapabilityModelSwitch: {status: CapabilitySupported},
 		CapabilityMigrate:     {status: CapabilitySupported},
+		CapabilityMCPTools:    {status: CapabilitySupported},
 	},
 	ProviderCursor: {
 		CapabilityTask:    {status: CapabilitySupported},
@@ -353,6 +376,18 @@ var providerCapabilityClaims = map[Provider]map[Capability]capabilityClaim{
 		},
 		CapabilityModelSwitch: {status: CapabilitySupported},
 		CapabilityMigrate:     {status: CapabilitySupported},
+		// claudia T118 (open, set_aside as of 2026-09-22, no fix landed):
+		// cursor-agent 2026.09.18 over ACP surfaces session/new's
+		// mcpServers and lists them in tools/list, but the model sees
+		// only the first ~seven global servers (~121 tools) — leading
+		// hypothesis is a cumulative tool budget, not a wiring bug
+		// claudia can fix by itself. jevons 🎯T791 excluded cursor as a
+		// mint destination on exactly this evidence; this claim is the
+		// claudia-side form of the same fact.
+		CapabilityMCPTools: {
+			status: CapabilityUnsupported,
+			reason: "cursor-agent's ACP session surfaces only a subset of the MCP servers claudia attaches (observed ~7 of many, cumulative tool-budget hypothesis, claudia T118 — unresolved); a seat minted on Cursor cannot be relied on to receive every attached MCP tool",
+		},
 	},
 	ProviderBedrock: {
 		CapabilityTask:    {status: CapabilitySupported},
@@ -405,6 +440,10 @@ var providerCapabilityClaims = map[Provider]map[Capability]capabilityClaim{
 		CapabilityMigrate: {
 			status: CapabilityUnsupported,
 			reason: migrateNeedsSessionReason,
+		},
+		CapabilityMCPTools: {
+			status: CapabilityUnsupported,
+			reason: "Bedrock v1 is one-shot ConverseStream with no claudia-bound tool-calling; there is no session for an MCP tool to reach",
 		},
 	},
 }
@@ -537,6 +576,27 @@ func CheckCapability(provider Provider, capability Capability) error {
 		Status:     claim.status,
 		Reason:     claim.reason,
 	}
+}
+
+// Steerable reports whether provider's seats can receive the MCP tools
+// claudia attaches to a session — the capability a host checks before
+// treating a seat as a steering/fleet-control destination (jevons'
+// sense of "steerable"). ok is true, with an empty reason, when
+// [CapabilityMCPTools] is supported; otherwise ok is false and reason
+// names why, taken verbatim from the capability claim so a caller never
+// has to maintain a second copy of the same fact.
+//
+// This is a build-time claim about claudia's own wiring and the
+// provider's currently-known behaviour (e.g. claudia T118's open Cursor
+// tool-budget defect), not a live probe of one running seat — a seat
+// exhibiting different behaviour than its provider's claim is evidence
+// against the claim, to be fixed here, not papered over by the caller.
+func Steerable(provider Provider) (ok bool, reason string) {
+	claim := providerCapabilityClaim(provider, CapabilityMCPTools)
+	if claim.status == CapabilitySupported {
+		return true, ""
+	}
+	return false, claim.reason
 }
 
 // capabilityGaps lists the capabilities provider does not support
