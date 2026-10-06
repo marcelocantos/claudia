@@ -33,6 +33,7 @@ func TestGrokCapabilityMatrixIsExplicit(t *testing.T) {
 		CapabilityExtraArgs:        CapabilityUnsupported,
 		CapabilityModelSwitch:      CapabilitySupported,
 		CapabilityMigrate:          CapabilitySupported,
+		CapabilityMCPTools:         CapabilitySupported,
 	}
 	got := ProviderCapabilityMatrix(ProviderGrok)
 	if len(got) != len(want) {

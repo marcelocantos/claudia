@@ -339,6 +339,56 @@ func TestProviderCapabilityMatrixIsTotal(t *testing.T) {
 	}
 }
 
+// TestSteerableIsGenuinelyComputed: Steerable's verdict changes when the
+// underlying capability claim changes (and only when it changes) — it is
+// not a jevons-supplied answer being echoed back. Mutate the claim table
+// directly, the way TestProviderCapabilityMatrixIsTotal and friends
+// already do for other capabilities, to prove the computation lives here.
+func TestSteerableIsGenuinelyComputed(t *testing.T) {
+	ok, reason := Steerable(ProviderClaude)
+	if !ok || reason != "" {
+		t.Fatalf("Steerable(claude) = (%v, %q), want (true, \"\")", ok, reason)
+	}
+
+	ok, reason = Steerable(ProviderCursor)
+	if ok || reason == "" {
+		t.Fatalf("Steerable(cursor) = (%v, %q), want (false, non-empty) — claudia T118 is open", ok, reason)
+	}
+	if !strings.Contains(reason, "T118") {
+		t.Errorf("Steerable(cursor) reason %q does not cite claudia T118", reason)
+	}
+
+	// Mutate the claim table (restored after) and confirm the verdict
+	// tracks it — the function reads the table, it does not hardcode an
+	// answer per provider name.
+	orig := providerCapabilityClaims[ProviderCursor][CapabilityMCPTools]
+	defer func() { providerCapabilityClaims[ProviderCursor][CapabilityMCPTools] = orig }()
+
+	providerCapabilityClaims[ProviderCursor][CapabilityMCPTools] = capabilityClaim{status: CapabilitySupported}
+	ok, reason = Steerable(ProviderCursor)
+	if !ok || reason != "" {
+		t.Fatalf("after flipping the claim, Steerable(cursor) = (%v, %q), want (true, \"\")", ok, reason)
+	}
+
+	providerCapabilityClaims[ProviderCursor][CapabilityMCPTools] = capabilityClaim{status: CapabilityUnsupported, reason: "mutated for test"}
+	ok, reason = Steerable(ProviderCursor)
+	if ok || reason != "mutated for test" {
+		t.Fatalf("after mutating the claim, Steerable(cursor) = (%v, %q), want (false, %q)", ok, reason, "mutated for test")
+	}
+}
+
+// TestSteerableCoversEveryProvider: every provider the public Provider
+// constants name gets a verdict, not a panic or a silent empty string
+// masquerading as "ok".
+func TestSteerableCoversEveryProvider(t *testing.T) {
+	for _, p := range []Provider{ProviderClaude, ProviderCodex, ProviderGrok, ProviderBedrock, ProviderOllama, ProviderCursor} {
+		ok, reason := Steerable(p)
+		if !ok && reason == "" {
+			t.Errorf("Steerable(%q) = (false, \"\"); an unsupported verdict must carry a reason", p)
+		}
+	}
+}
+
 // TestCheckCapabilityFailsClosed: an unknown provider or an unclaimed
 // capability must report unsupported, never inherit Claude's answer.
 func TestCheckCapabilityFailsClosed(t *testing.T) {

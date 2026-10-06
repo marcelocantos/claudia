@@ -28,6 +28,7 @@ func TestCursorCapabilityMatrixIsExplicit(t *testing.T) {
 		CapabilityExtraArgs:        CapabilityUnsupported,
 		CapabilityModelSwitch:      CapabilitySupported,
 		CapabilityMigrate:          CapabilitySupported,
+		CapabilityMCPTools:         CapabilityUnsupported,
 	}
 	got := ProviderCapabilityMatrix(ProviderCursor)
 	if len(got) != len(want) {
