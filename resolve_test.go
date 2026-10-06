@@ -483,3 +483,92 @@ func TestResolveFableSpentDoesNotVetoClaude(t *testing.T) {
 		t.Fatalf("landed on spent Fable: %+v", got)
 	}
 }
+
+// 🎯T1013.1: an owner override is an input to Resolve itself, not a
+// caller-side filter. A keep-off band (exhausted) must structurally
+// remove the provider from the catalog ranking — not merely be filtered
+// by a wrapper around Resolve, which is the seam that let a bare start
+// land on an override-exhausted provider on 2026-10-02.
+func TestResolveOwnerOverrideExhaustedIsStructurallyUnselectable(t *testing.T) {
+	now := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+	week := now.Add(3*24*time.Hour + 12*time.Hour)
+	// Grok reads perfectly healthy — if the override were a mere filter
+	// bolted on somewhere else, a caller that forgot to apply it would
+	// still land here. Resolve itself must refuse it.
+	healthyGrok := PlanUsage{
+		Provider: ProviderGrok,
+		Status:   PlanUsageAvailable,
+		Windows: []PlanWindow{{
+			Name: PlanWindowWeekly, RemainingPercent: floatPtr(95), UsedPercent: floatPtr(5),
+			ResetsAt: &week, LimitWindow: defaultWeeklyWindow,
+		}},
+	}
+	healthyClaude := PlanUsage{
+		Provider: ProviderClaude,
+		Status:   PlanUsageAvailable,
+		Windows: []PlanWindow{{
+			Name: PlanWindowWeekly, RemainingPercent: floatPtr(90), UsedPercent: floatPtr(10),
+			ResetsAt: &week, LimitWindow: defaultWeeklyWindow,
+		}},
+	}
+	got, err := Resolve(context.Background(), ModelPredicates{
+		Mode: CapabilitySession, PreferPlan: true, RequireUsage: true,
+		Now:   now,
+		Usage: []PlanUsage{healthyGrok, healthyClaude},
+		OwnerOverride: map[Provider]OwnerOverride{
+			ProviderGrok: {Band: PlanBandExhausted, Reason: "quota is dangerously low"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Provider == ProviderGrok {
+		t.Fatalf("owner-override-exhausted Grok must be structurally unselectable; got %+v", got)
+	}
+	if got.Provider != ProviderClaude {
+		t.Fatalf("expected Claude as the only non-excluded healthy dest; got %+v", got)
+	}
+}
+
+// 🎯T1013.1: a dest-band owner override pins its provider as the pick
+// even when another provider's own readings would otherwise outrank it.
+func TestResolveOwnerOverrideDestBandPinsTheProvider(t *testing.T) {
+	now := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+	week := now.Add(3*24*time.Hour + 12*time.Hour)
+	// Codex reads hot/exhausted naturally — the override says the owner
+	// has a reset available and wants it spent first regardless.
+	hotCodex := PlanUsage{
+		Provider: ProviderCodex,
+		Status:   PlanUsageAvailable,
+		Windows: []PlanWindow{{
+			Name: PlanWindowWeekly, RemainingPercent: floatPtr(2), UsedPercent: floatPtr(98),
+			ResetsAt: &week, LimitWindow: defaultWeeklyWindow,
+		}},
+	}
+	// Grok has genuine slack and would win an un-overridden Resolve.
+	slackGrok := PlanUsage{
+		Provider: ProviderGrok,
+		Status:   PlanUsageAvailable,
+		Windows: []PlanWindow{{
+			Name: PlanWindowWeekly, RemainingPercent: floatPtr(95), UsedPercent: floatPtr(5),
+			ResetsAt: &week, LimitWindow: defaultWeeklyWindow,
+		}},
+	}
+	got, err := Resolve(context.Background(), ModelPredicates{
+		Mode: CapabilitySession, PreferPlan: true, RequireUsage: true,
+		Now:   now,
+		Usage: []PlanUsage{hotCodex, slackGrok},
+		OwnerOverride: map[Provider]OwnerOverride{
+			ProviderCodex: {Band: PlanBandOK, Reason: "owner has a reset available; spend it first"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Provider != ProviderCodex {
+		t.Fatalf("owner-override-ok Codex must be pinned as the pick over Grok's slack; got %+v", got)
+	}
+	if !strings.Contains(got.Reason, "owner_override") {
+		t.Fatalf("pick reason should name the owner override; got %q", got.Reason)
+	}
+}

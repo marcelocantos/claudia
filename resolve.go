@@ -60,6 +60,27 @@ type ModelPredicates struct {
 	Now time.Time
 	// Thresholds overrides DefaultPlanThresholds.
 	Thresholds *PlanThresholds
+	// OwnerOverride is the owner's verdict on a provider's band (🎯T948 /
+	// 🎯T987 / 🎯T1013.1), keyed by Provider. A dest-band override (ok /
+	// under / locked) pins that provider as the pick when it is otherwise
+	// a viable catalog row (mode/quality/access match), whatever its own
+	// usage reading says. A keep-off override (any non-dest band, e.g.
+	// exhausted) excludes the provider structurally — the same exclusion
+	// a hot/exhausted reading would produce, not a caller-side filter. A
+	// caller used to pre-filter ExcludeProviders or inject an explicit
+	// pick instead of asking Resolve for this; that seam let a bare start
+	// bypass the override and land on an exhausted provider (2026-10-02).
+	OwnerOverride map[Provider]OwnerOverride
+}
+
+// OwnerOverride is the owner's band verdict on one provider for
+// OwnerOverride predicates. Band ok/under/locked is a dest-band pin;
+// any other band (e.g. exhausted) is a keep-off exclusion. Reason is
+// carried through to the pick's Reason / the rejection trace so a
+// caller can show the owner's own words, not a re-derived summary.
+type OwnerOverride struct {
+	Band   PlanBand
+	Reason string
 }
 
 // DecisionAuthor is the name Resolve stamps on a pick. A host that
@@ -112,6 +133,23 @@ func Resolve(ctx context.Context, pred ModelPredicates) (ModelPick, error) {
 	for _, p := range pred.ExcludeProviders {
 		exclude[p] = true
 	}
+	// 🎯T1013.1: an owner override is applied here, not pre-filtered by a
+	// caller. A keep-off band (anything not a dest band) excludes the
+	// provider the same way a hot/exhausted reading would; a dest-band
+	// override (ok/under/locked) is not an exclusion — it is a pin,
+	// applied after candidates are built below.
+	ownerPin := map[Provider]OwnerOverride{}
+	for p, ov := range pred.OwnerOverride {
+		np := PlanProvider(p)
+		if np == "" {
+			continue
+		}
+		if IsDestBand(ov.Band) {
+			ownerPin[np] = ov
+			continue
+		}
+		exclude[np] = true
+	}
 
 	// rejected records, per catalog row, why it did not become a
 	// candidate. Previously this loop silently continued past every
@@ -147,22 +185,33 @@ func Resolve(ctx context.Context, pred ModelPredicates) (ModelPick, error) {
 			continue
 		}
 		u, has := byProv[row.Provider]
-		if skipForUsage(pred, u, has, now) {
-			rejected = append(rejected, id+": usage/band ineligible (exhausted, hot, or no usage data under RequireUsage)")
-			continue
-		}
-		// 🎯T86: the plan can have headroom while this model has none.
-		if has && !ModelHasAvailableTokens(u, row.Model, now, pred.Thresholds) {
-			rejected = append(rejected, id+": no available tokens on this model")
-			continue
+		pin, pinned := ownerPin[row.Provider]
+		// 🎯T1013.1: a dest-band override pins this provider's candidacy
+		// whatever its own usage says — the owner has already judged it
+		// is where seats belong, the same standing the readings would
+		// give a naturally-ok plan.
+		if !pinned {
+			if skipForUsage(pred, u, has, now) {
+				rejected = append(rejected, id+": usage/band ineligible (exhausted, hot, or no usage data under RequireUsage)")
+				continue
+			}
+			// 🎯T86: the plan can have headroom while this model has none.
+			if has && !ModelHasAvailableTokens(u, row.Model, now, pred.Thresholds) {
+				rejected = append(rejected, id+": no available tokens on this model")
+				continue
+			}
 		}
 		band := PlanBandUnpublished
 		var pressure float64
 		if has {
-			band = ClassifyPlan(u, now, pred.Thresholds).Weekly
 			pressure = weeklyPressure(u, now, pred.Thresholds)
 		}
-		candidates = append(candidates, catalogCand{row: row, band: band, pressure: pressure})
+		if pinned {
+			band = pin.Band
+		} else if has {
+			band = ClassifyPlan(u, now, pred.Thresholds).Weekly
+		}
+		candidates = append(candidates, catalogCand{row: row, band: band, pressure: pressure, pinned: pinned, pinReason: pin.Reason})
 	}
 	if len(rejected) > 0 {
 		slog.Debug("resolve: catalog rejections", "rejected", rejected, "kept", len(candidates))
@@ -177,6 +226,12 @@ func Resolve(ctx context.Context, pred ModelPredicates) (ModelPick, error) {
 	reason := fmt.Sprintf("quality=%s access=%s band=%s", best.row.Quality, best.row.Access, best.band)
 	if pred.PreferProvider != "" && best.row.Provider == pred.PreferProvider {
 		reason += " prefer_provider"
+	}
+	if best.pinned {
+		reason += " owner_override"
+		if r := strings.TrimSpace(best.pinReason); r != "" {
+			reason += ": " + r
+		}
 	}
 	return ModelPick{
 		Provider: best.row.Provider,
@@ -193,20 +248,44 @@ type catalogCand struct {
 	row      CatalogModel
 	band     PlanBand
 	pressure float64
+	// pinned is 🎯T1013.1: an owner dest-band override on this provider.
+	// A pinned candidate wins pickCatalog outright, before the normal
+	// dest-band ranking is even consulted.
+	pinned    bool
+	pinReason string
 }
 
 func pickCatalog(cands []catalogCand, prefer Provider) (catalogCand, error) {
 	if len(cands) == 0 {
 		return catalogCand{}, fmt.Errorf("resolve: no catalog model matches predicates")
 	}
+	// 🎯T1013.1: an owner dest-band override pins its provider as the
+	// pick outright, ahead of the normal dest-band ranking below — the
+	// owner has already judged it, Resolve does not re-adjudicate it
+	// against providers it did not override. A pinned candidate's band
+	// is already a dest band by construction (Resolve only pins dest-band
+	// overrides), so it would qualify for the dests pool below anyway;
+	// restricting the pool to pinned candidates when any exist is what
+	// keeps a naturally-better-banded, un-overridden provider from
+	// outranking the owner's explicit pick.
+	var pinned []catalogCand
+	for _, c := range cands {
+		if c.pinned {
+			pinned = append(pinned, c)
+		}
+	}
 	// Dest bands first (🎯T693 / jevons T693): locked, then under, then
 	// ok. hot and ahead are never destinations. If nothing dest-eligible
 	// is published, PreferProvider among unpublished catalog rows — not
 	// among hot/ahead.
 	var dests []catalogCand
-	for _, c := range cands {
-		if _, ok := destBandRank(c.band); ok {
-			dests = append(dests, c)
+	if len(pinned) > 0 {
+		dests = pinned
+	} else {
+		for _, c := range cands {
+			if _, ok := destBandRank(c.band); ok {
+				dests = append(dests, c)
+			}
 		}
 	}
 	pool := dests
@@ -421,6 +500,23 @@ func resolveFromIntel(pred ModelPredicates, byProv map[Provider]PlanUsage, now t
 	exclude := map[Provider]bool{}
 	for _, p := range pred.ExcludeProviders {
 		exclude[p] = true
+	}
+	// 🎯T1013.1: an owner override is applied here, not pre-filtered by a
+	// caller. A keep-off band (anything not a dest band) excludes the
+	// provider the same way a hot/exhausted reading would; a dest-band
+	// override (ok/under/locked) is not an exclusion — it is a pin,
+	// applied after candidates are built below.
+	ownerPin := map[Provider]OwnerOverride{}
+	for p, ov := range pred.OwnerOverride {
+		np := PlanProvider(p)
+		if np == "" {
+			continue
+		}
+		if IsDestBand(ov.Band) {
+			ownerPin[np] = ov
+			continue
+		}
+		exclude[np] = true
 	}
 	var scores []float64
 	for _, o := range obs {

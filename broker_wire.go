@@ -283,6 +283,11 @@ type predicatesWire struct {
 	ExcludeProviders []Provider      `json:"exclude_providers,omitempty"`
 	RequireUsage     bool            `json:"require_usage,omitempty"`
 	Thresholds       *PlanThresholds `json:"thresholds,omitempty"`
+	// OwnerOverride (🎯T1013.1): a per-provider owner band verdict that
+	// pins or excludes a destination. A caller-supplied input, same as
+	// PreferProvider/ExcludeProviders — the daemon does not have its own
+	// copy of the owner's overrides.
+	OwnerOverride map[Provider]OwnerOverride `json:"owner_override,omitempty"`
 }
 
 // predicatesNotOnWire lists the ModelPredicates fields the daemon supplies
@@ -303,6 +308,7 @@ func EncodePredicatesWire(p ModelPredicates) (json.RawMessage, error) {
 		Model: p.Model, Effort: p.Effort, PreferPlan: p.PreferPlan, Background: p.Background,
 		PreferProvider: p.PreferProvider, ExcludeProviders: p.ExcludeProviders,
 		RequireUsage: p.RequireUsage, Thresholds: p.Thresholds,
+		OwnerOverride: p.OwnerOverride,
 	})
 }
 
@@ -322,6 +328,7 @@ func DecodePredicatesWire(raw json.RawMessage) (ModelPredicates, error) {
 		Model: w.Model, Effort: w.Effort, PreferPlan: w.PreferPlan, Background: w.Background,
 		PreferProvider: w.PreferProvider, ExcludeProviders: w.ExcludeProviders,
 		RequireUsage: w.RequireUsage, Thresholds: w.Thresholds,
+		OwnerOverride: w.OwnerOverride,
 	}, nil
 }
 
