@@ -142,6 +142,9 @@ export function createSeatAgent(opts: {
   });
   const boundOf = () => toolResultBound(agent.state.model?.contextWindow ?? 0);
   const callBack = (id: string, toolName: string, args: string) => sink.callTool(id, toolName, args);
+  // The sidecar's own tools (Bash, Read, Write, Glob, Grep). A host tool
+  // reaches the host as tool_call; these ran unseen (claudia 🎯T171).
+  let ownToolNames = new Set<string>();
   const applyTools = (host: HostTool[] | undefined) => {
     if (opts.summaryOnly) {
       agent.setTools([]);
@@ -153,7 +156,9 @@ export function createSeatAgent(opts: {
     // (T864.3) — it only fires for a jevons_* name the host did not list
     // here, never for these explicit tools.
     const hosted = (host ?? []).map((t) => jevonsTool(t.name, callBack, t.description, t.input_schema, boundOf));
-    agent.setTools([...codingTools(() => cwd, boundOf), ...hosted]);
+    const own = codingTools(() => cwd, boundOf);
+    ownToolNames = new Set(own.map((t) => t.name));
+    agent.setTools([...own, ...hosted]);
   };
   applyTools(opts.tools);
 
@@ -223,7 +228,15 @@ export function createSeatAgent(opts: {
     type?: string;
     assistantMessageEvent?: { type?: string; delta?: string };
     message?: { role?: string; content?: unknown };
+    toolCallId?: string;
+    toolName?: string;
+    args?: unknown;
   }) => {
+    // 🎯T171: tell the host a sidecar tool started, so a seat running Bash
+    // is not silent. Host tools are already announced by their tool_call.
+    if (event.type === "tool_execution_start" && event.toolName && ownToolNames.has(event.toolName)) {
+      sink.emit({ type: "tool_start", call_id: event.toolCallId ?? "", name: event.toolName, text: JSON.stringify(event.args ?? {}) });
+    }
     if (event.type === "message_start" && event.message?.role === "user") {
       const text = userText(event.message.content);
       const i = pending.indexOf(text);

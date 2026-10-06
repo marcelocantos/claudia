@@ -466,6 +466,17 @@ func (c *ompControl) pump(a *Agent) {
 				result := c.runTool(name, callID, args)
 				_ = c.send(omp.Message{Op: omp.OpTool, CallID: callID, Result: result})
 			}(ev.Name, ev.CallID, ev.Text)
+		case "tool_start":
+			// 🎯T171: one of the sidecar's own tools (Bash, Read, …) started.
+			// Nothing for the host to run; it is published so a seat working
+			// in a shell is visible, in the shape a host tool's call has.
+			a.publishEvent(Event{
+				Type:         "progress",
+				ProgressType: "tool_use",
+				ToolCallID:   ev.CallID,
+				ToolTitle:    ev.Name,
+				Text:         ev.Text,
+			})
 		case "turn_end", "error":
 			c.inflight.Store(false)
 			// Only this turn's own error says whether the token was refused
