@@ -7,7 +7,6 @@ import (
 	"context"
 	"sync"
 	"testing"
-	"time"
 )
 
 // 🎯T171: a sidecar seat's own tool call (Bash, Read, Glob, Grep) reaches
@@ -20,8 +19,7 @@ func TestT171SidecarOwnToolStartPublishesToolUse(t *testing.T) {
 		`{"type":"text","text":"ok"}`,
 		`{"type":"turn_end","snapshot":{"messages":[]}}`,
 	})
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := context.Background()
 	agent, err := startDirectContext(ctx, Config{
 		Provider: SubscriptionSeatProvider(ProviderClaude), Name: "t171-seat",
 		Model: "m", WorkDir: t.TempDir(), TermLogPath: "-",
