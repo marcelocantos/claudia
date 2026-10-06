@@ -47,6 +47,38 @@ type SeatPlacement struct {
 	Author string
 }
 
+// ResolveSeatPlacementForSeat is [ResolveSeatPlacement] with the seat's
+// AllowedProviders/ExcludeProviders/PreferProvider read directly from
+// Claudia's own seat-policy store (🎯T1013.2) rather than handed in by the
+// caller. args carries everything else (current provider, plan usage,
+// quality, clock); any of its AllowedProviders/ExcludeProviders/
+// PreferProvider fields that are already non-empty are left alone — a
+// caller with a one-off override still wins — and the stored policy fills
+// in only what args left unset. A nil store or empty name reads as no
+// stored policy (every provider eligible, no preference), identical to
+// calling ResolveSeatPlacement directly.
+func ResolveSeatPlacementForSeat(ctx context.Context, name string, store *SeatPolicyStore, args *SeatPlacementArgs) (SeatPlacement, error) {
+	if args == nil {
+		return SeatPlacement{}, fmt.Errorf("seat placement: args is required")
+	}
+	merged := *args
+	if store != nil && strings.TrimSpace(name) != "" {
+		policy := store.Get(name)
+		if merged.PreferProvider == "" {
+			merged.PreferProvider = policy.PreferProvider
+		}
+		if merged.AllowedProviders == nil {
+			if providers, restricted := policy.Allowed(); restricted {
+				merged.AllowedProviders = providers
+			}
+		}
+		if merged.ExcludeProviders == nil && len(policy.ExcludeProviders) > 0 {
+			merged.ExcludeProviders = policy.ExcludeProviders
+		}
+	}
+	return ResolveSeatPlacement(ctx, &merged)
+}
+
 // ResolveSeatPlacement applies the same classification and model ranking as
 // Resolve to an existing seat. A missing or stale source reading cannot
 // trigger a move; a confirmed hot source with no eligible destination parks.
