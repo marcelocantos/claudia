@@ -40,6 +40,9 @@ var shortenableBounds = map[string]string{
 	"mcpStdioWedgeGrace": "is not a wait: it is the age below which a process that missed " +
 		"initialize is still starting rather than wedged (jevons T934); the tests set it to 0 so " +
 		"the fixture's first miss counts, and nothing else reads it",
+	"migrateInterruptSettle": "bounds the single pause between interrupting a seat's in-flight " +
+		"turn and retrying a forced migrate (registry_migrate_seat.go, 🎯T1013.5); nothing else " +
+		"on that path waits, so no earlier step can expire first and answer for it",
 }
 
 // TestHermeticTestsDeclareTheProductBoundsTheyShorten closes the hole 🎯T93
