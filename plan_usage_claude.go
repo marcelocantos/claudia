@@ -32,6 +32,42 @@ type claudeOAuthUsage struct {
 	// Limits carries the server's own list, including the per-model
 	// weekly windows that have no top-level key (🎯T86).
 	Limits []claudeOAuthLimit `json:"limits"`
+	// Spend is the extra/overage-usage money block (🎯T967.1), live-probed
+	// 2026-09-30: used/limit money + percent + enabled, balance nil.
+	Spend *claudeOAuthSpend `json:"spend"`
+	// ExtraUsage carries the account-level overage flags — the monthly
+	// credit limit/used and whether the spend limit itself has been hit.
+	ExtraUsage *claudeOAuthExtraUsage `json:"extra_usage"`
+}
+
+// claudeOAuthMoney mirrors Anthropic's money shape: a minor-unit integer
+// amount, the exponent to divide by, and the currency it is denominated in.
+// Never assume cents/2 — read the provider's own exponent.
+type claudeOAuthMoney struct {
+	AmountMinor *int64 `json:"amount_minor"`
+	Exponent    *int   `json:"exponent"`
+	Currency    string `json:"currency"`
+}
+
+// claudeOAuthSpend is the live-probed (2026-09-30) `spend` block: used and
+// limit money, a 0-100 percent, and whether extra spend is enabled.
+// `balance` came back null in the live probe and is parsed anyway for the
+// day it isn't.
+type claudeOAuthSpend struct {
+	Used    *claudeOAuthMoney `json:"used"`
+	Limit   *claudeOAuthMoney `json:"limit"`
+	Percent *float64          `json:"percent"`
+	Enabled *bool             `json:"enabled"`
+	Balance *claudeOAuthMoney `json:"balance"`
+}
+
+// claudeOAuthExtraUsage is the live-probed `extra_usage` block: the
+// account's monthly overage credit limit/used and whether that limit has
+// been hit. `spend_limit_reached` is the provider's own flag — never
+// re-derived from percent, which can round to appear reached before the
+// provider itself says so.
+type claudeOAuthExtraUsage struct {
+	SpendLimitReached *bool `json:"spend_limit_reached"`
 }
 
 // claudeOAuthLimit is one entry of the response's limits[] array. The
@@ -147,7 +183,47 @@ func parseClaudeOAuthUsage(body []byte, now time.Time) (PlanUsage, error) {
 		pu.Status = PlanUsageAvailable
 		pu.Reason = ""
 	}
+	pu.Spend = mapClaudeSpend(raw.Spend, raw.ExtraUsage)
 	return pu, nil
+}
+
+// mapClaudeSpend maps the live-probed (2026-09-30) `spend` + `extra_usage`
+// blocks into PlanSpend. Returns nil when the account published neither —
+// a provider that has never enabled extra usage carries no spend block at
+// all, which must read as "nothing to show", not as a zero-dollar spend.
+func mapClaudeSpend(spend *claudeOAuthSpend, extra *claudeOAuthExtraUsage) *PlanSpend {
+	if spend == nil {
+		return nil
+	}
+	out := &PlanSpend{}
+	if spend.Enabled != nil {
+		out.Enabled = *spend.Enabled
+	}
+	out.Used = mapClaudeMoney(spend.Used)
+	out.Limit = mapClaudeMoney(spend.Limit)
+	out.Balance = mapClaudeMoney(spend.Balance)
+	if spend.Percent != nil {
+		p := *spend.Percent
+		out.Percent = &p
+	}
+	if extra != nil && extra.SpendLimitReached != nil {
+		out.LimitReached = *extra.SpendLimitReached
+	}
+	return out
+}
+
+// mapClaudeMoney maps one money sub-object. nil in, nil out — a half-filled
+// block (used without limit, or vice versa) is carried as a nil half rather
+// than a fabricated zero.
+func mapClaudeMoney(m *claudeOAuthMoney) *PlanMoney {
+	if m == nil || m.AmountMinor == nil {
+		return nil
+	}
+	exp := 2
+	if m.Exponent != nil {
+		exp = *m.Exponent
+	}
+	return &PlanMoney{AmountMinor: *m.AmountMinor, Exponent: exp, Currency: m.Currency}
 }
 
 // claudeModelWindows lifts the per-model weekly allowances out of

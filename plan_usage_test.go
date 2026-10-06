@@ -480,3 +480,73 @@ func TestRemainingFromUsedClamped(t *testing.T) {
 		t.Fatal()
 	}
 }
+
+// TestParseClaudeOAuthUsageSpendBlock exercises the live-probed 2026-09-30
+// payload shape (🎯T967.1): five_hour at 100 (spending), a spend block with
+// money in AUD minor units, and extra_usage.spend_limit_reached.
+func TestParseClaudeOAuthUsageSpendBlock(t *testing.T) {
+	body := []byte(`{
+		"five_hour": {
+			"utilization": 100.0,
+			"resets_at": "2026-08-09T11:00:00.203429+00:00"
+		},
+		"seven_day": {
+			"utilization": 8.0,
+			"resets_at": "2026-08-10T02:00:00.203449+00:00"
+		},
+		"spend": {
+			"used": {"amount_minor": 7284, "exponent": 2, "currency": "AUD"},
+			"limit": {"amount_minor": 10000, "exponent": 2, "currency": "AUD"},
+			"percent": 73,
+			"enabled": true,
+			"balance": null
+		},
+		"extra_usage": {
+			"spend_limit_reached": false
+		}
+	}`)
+	now := time.Date(2026, 9, 30, 10, 0, 0, 0, time.UTC)
+	pu, err := parseClaudeOAuthUsage(body, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pu.Spend == nil {
+		t.Fatal("expected Spend to be populated")
+	}
+	if !pu.Spend.Enabled {
+		t.Error("expected Spend.Enabled=true")
+	}
+	if pu.Spend.LimitReached {
+		t.Error("expected Spend.LimitReached=false")
+	}
+	if pu.Spend.Used == nil || pu.Spend.Used.AmountMinor != 7284 || pu.Spend.Used.Exponent != 2 || pu.Spend.Used.Currency != "AUD" {
+		t.Errorf("Used=%+v", pu.Spend.Used)
+	}
+	if pu.Spend.Limit == nil || pu.Spend.Limit.AmountMinor != 10000 || pu.Spend.Limit.Currency != "AUD" {
+		t.Errorf("Limit=%+v", pu.Spend.Limit)
+	}
+	if pu.Spend.Percent == nil || *pu.Spend.Percent != 73 {
+		t.Errorf("Percent=%v", pu.Spend.Percent)
+	}
+	if pu.Spend.Balance != nil {
+		t.Errorf("expected nil Balance (live probe published null), got %+v", pu.Spend.Balance)
+	}
+}
+
+// TestParseClaudeOAuthUsageNoSpendBlock exercises a payload with no
+// spend/extra_usage (overage never enabled): Spend must stay nil, never a
+// fabricated disabled block.
+func TestParseClaudeOAuthUsageNoSpendBlock(t *testing.T) {
+	body := []byte(`{
+		"five_hour": {"utilization": 56.0, "resets_at": "2026-08-09T11:00:00.203429+00:00"},
+		"seven_day": {"utilization": 73.0, "resets_at": "2026-08-10T02:00:00.203449+00:00"}
+	}`)
+	now := time.Date(2026, 8, 9, 10, 0, 0, 0, time.UTC)
+	pu, err := parseClaudeOAuthUsage(body, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pu.Spend != nil {
+		t.Errorf("expected nil Spend, got %+v", pu.Spend)
+	}
+}

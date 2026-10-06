@@ -95,6 +95,12 @@ type PlanUsage struct {
 	// (🎯 owner: "just report the raw number"); banding/thresholds are
 	// deliberately not implemented yet.
 	Credits *PlanCredits `json:"credits,omitempty"`
+	// Spend is a provider's extra/overage-usage spend figure — real money
+	// spent past the subscription allowance — published alongside (not
+	// instead of) the rate-limit windows (🎯T967.1). Nil means the
+	// provider's response carried no such block. Distinct from Credits,
+	// which is a supplementary token/credit balance, not money spent.
+	Spend *PlanSpend `json:"spend,omitempty"`
 }
 
 // PlanCredits is a provider-published supplementary credit balance,
@@ -111,6 +117,44 @@ type PlanCredits struct {
 	// vocabulary means (not normalized to USD or tokens) — display as a
 	// rounded raw number (🎯 e.g. "+56k") rather than inferring meaning.
 	Balance float64 `json:"balance"`
+}
+
+// PlanMoney is a money amount in the provider's own minor units
+// (e.g. cents) and currency (🎯T967.1). AmountMinor / 10^Exponent is the
+// major-unit amount; Exponent is the provider's own published exponent
+// (usually 2), never assumed.
+type PlanMoney struct {
+	AmountMinor int64  `json:"amount_minor"`
+	Exponent    int    `json:"exponent"`
+	Currency    string `json:"currency"`
+}
+
+// PlanSpend is a provider's extra/overage-usage spend block (🎯T967.1):
+// real money spent past the subscription allowance, distinct from
+// PlanCredits (a supplementary token/credit balance). Field names mirror
+// the vendor's own vocabulary (Claude's GET /api/oauth/usage `spend` +
+// `extra_usage` blocks) rather than inventing a cross-provider shape
+// prematurely — only Claude populates this today.
+type PlanSpend struct {
+	// Enabled is the provider's own flag that extra/overage spend is
+	// turned on for this account, independent of whether anything is
+	// currently being spent.
+	Enabled bool `json:"enabled"`
+	// Used and Limit are money, never converted here. Nil means the
+	// provider did not publish that half of the block.
+	Used  *PlanMoney `json:"used,omitempty"`
+	Limit *PlanMoney `json:"limit,omitempty"`
+	// Percent is the provider's own 0-100 reading of Used against Limit,
+	// when published.
+	Percent *float64 `json:"percent,omitempty"`
+	// LimitReached is the provider's own flag that the spend limit itself
+	// has been hit (Claude's extra_usage.spend_limit_reached).
+	LimitReached bool `json:"limit_reached,omitempty"`
+	// Balance is a purchased-credit balance the provider publishes
+	// alongside spend, when known. Nil when the provider's response left
+	// this unpopulated (Claude's `spend.balance` came back null at the
+	// 2026-09-30 live probe) — residue, never guessed.
+	Balance *PlanMoney `json:"balance,omitempty"`
 }
 
 // PlanUsageArgs configures [QueryPlanUsage].
