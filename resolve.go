@@ -44,6 +44,9 @@ type ModelPredicates struct {
 	// with headroom beats a greener Grok. Hot/exhausted preferred dests
 	// still yield.
 	PreferProvider Provider
+	// TieBreak is ordered provider preference only for an undecided catalog
+	// slack tie. Unlike PreferProvider, it cannot bypass band or pressure.
+	TieBreak []Provider
 	// ExcludeProviders drops those backends (ladder walk).
 	ExcludeProviders []Provider
 	// RequireUsage drops catalog rows with no snapshot or an unpublished
@@ -216,7 +219,7 @@ func Resolve(ctx context.Context, pred ModelPredicates) (ModelPick, error) {
 	if len(rejected) > 0 {
 		slog.Debug("resolve: catalog rejections", "rejected", rejected, "kept", len(candidates))
 	}
-	best, err := pickCatalog(candidates, pred.PreferProvider)
+	best, err := pickCatalog(candidates, pred.PreferProvider, pred.TieBreak)
 	if err != nil {
 		if len(rejected) > 0 {
 			return ModelPick{}, fmt.Errorf("%w (tried %d catalog rows: %s)", err, len(rejected), strings.Join(rejected, "; "))
@@ -255,7 +258,17 @@ type catalogCand struct {
 	pinReason string
 }
 
-func pickCatalog(cands []catalogCand, prefer Provider) (catalogCand, error) {
+// ErrTokenTied reports the catalog candidates left undecided by band and
+// pressure. IDs are sorted provider/model identifiers, not catalog order.
+type ErrTokenTied struct {
+	IDs []string
+}
+
+func (e *ErrTokenTied) Error() string {
+	return fmt.Sprintf("resolve: token-tied models %s; set TieBreak", strings.Join(e.IDs, " "))
+}
+
+func pickCatalog(cands []catalogCand, prefer Provider, tieBreak []Provider) (catalogCand, error) {
 	if len(cands) == 0 {
 		return catalogCand{}, fmt.Errorf("resolve: no catalog model matches predicates")
 	}
@@ -327,12 +340,21 @@ func pickCatalog(cands []catalogCand, prefer Provider) (catalogCand, error) {
 	if len(slack) == 1 {
 		return slack[0], nil
 	}
+	// Only the undecided set can be broken: a named provider outside
+	// slack must not outrank a better band or decided pressure.
+	for _, p := range tieBreak {
+		for _, c := range slack {
+			if c.row.Provider == p {
+				return c, nil
+			}
+		}
+	}
 	ids := make([]string, len(slack))
 	for i, c := range slack {
 		ids[i] = string(c.row.Provider) + "/" + c.row.Model
 	}
 	sort.Strings(ids)
-	return catalogCand{}, fmt.Errorf("resolve: token-tied models %s; set PreferProvider", strings.Join(ids, " "))
+	return catalogCand{}, &ErrTokenTied{IDs: ids}
 }
 
 // IsDestBand reports a published band that may receive new work.

@@ -5,6 +5,7 @@ package claudia
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -329,8 +330,65 @@ func TestResolveStandardFailsClosedWhenSlackTied(t *testing.T) {
 	if err == nil {
 		t.Fatal("equal slack must not pick by catalog order")
 	}
-	if !strings.Contains(err.Error(), "token-tied") {
-		t.Fatalf("got %v", err)
+	var tied *ErrTokenTied
+	if !errors.As(err, &tied) || len(tied.IDs) < 2 {
+		t.Fatalf("want typed tie with candidates, got %v", err)
+	}
+}
+
+// 🎯T172: TieBreak is only a last-mile decision among band/pressure ties.
+func TestResolveCatalogTieBreak(t *testing.T) {
+	now := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
+	reset := now.Add(3*24*time.Hour + 12*time.Hour)
+	weekly := func(p Provider, used float64) PlanUsage {
+		return PlanUsage{Provider: p, Status: PlanUsageAvailable, Windows: []PlanWindow{{Name: PlanWindowWeekly, UsedPercent: floatPtr(used), RemainingPercent: floatPtr(100 - used), ResetsAt: &reset, LimitWindow: defaultWeeklyWindow}}}
+	}
+	pred := ModelPredicates{Mode: CapabilityTask, Quality: ModelQualityStandard, PreferPlan: true, Now: now, ExcludeProviders: []Provider{ProviderCodex, ProviderCursor}, Usage: []PlanUsage{weekly(ProviderClaude, 50), weekly(ProviderGrok, 50.1)}}
+	if a, b := weeklyPressure(pred.Usage[0], now, nil), weeklyPressure(pred.Usage[1], now, nil); a == b || a-b >= 0.05 || b-a >= 0.05 {
+		t.Fatalf("fixture needs distinct pressure within 0.05: %v %v", a, b)
+	}
+	checkTie := func() {
+		t.Helper()
+		_, err := Resolve(context.Background(), pred)
+		var tied *ErrTokenTied
+		if !errors.As(err, &tied) {
+			t.Fatalf("want typed tie, got %v", err)
+		}
+		want := []string{"claude/claude-sonnet-5", "grok/grok-4.5"}
+		if len(tied.IDs) != len(want) || tied.IDs[0] != want[0] || tied.IDs[1] != want[1] {
+			t.Fatalf("tied IDs = %v, want %v", tied.IDs, want)
+		}
+	}
+	checkTie()
+	pred.TieBreak = []Provider{ProviderGrok}
+	got, err := Resolve(context.Background(), pred)
+	if err != nil || got.Provider != ProviderGrok {
+		t.Fatalf("Grok tie break: %+v (%v)", got, err)
+	}
+	pred.TieBreak = []Provider{ProviderCursor}
+	checkTie() // Cursor exists in catalog but is not in the tie.
+	pred.TieBreak = []Provider{ProviderCursor, ProviderGrok, ProviderClaude}
+	got, err = Resolve(context.Background(), pred)
+	if err != nil || got.Provider != ProviderGrok {
+		t.Fatalf("first matching tie break: %+v (%v)", got, err)
+	}
+	pred.TieBreak = []Provider{ProviderGrok}
+	pred.Usage[1] = weekly(ProviderGrok, 80) // hot; cannot beat eligible Claude.
+	got, err = Resolve(context.Background(), pred)
+	if err != nil || got.Provider != ProviderClaude {
+		t.Fatalf("tie break must not beat band: %+v (%v)", got, err)
+	}
+}
+
+func TestPickCatalogTieBreakCannotBeatPressure(t *testing.T) {
+	cands := []catalogCand{
+		{row: CatalogModel{Provider: ProviderClaude, Model: "claude-sonnet-5"}, band: PlanBandOK, pressure: 0},
+		{row: CatalogModel{Provider: ProviderGrok, Model: "grok-4.5"}, band: PlanBandOK, pressure: 0.2},
+		{row: CatalogModel{Provider: ProviderCodex, Model: "gpt-6-sol"}, band: PlanBandOK, pressure: 0.01},
+	}
+	got, err := pickCatalog(cands, "", []Provider{ProviderGrok, ProviderCodex})
+	if err != nil || got.row.Provider != ProviderCodex {
+		t.Fatalf("tie break outside slack beat pressure: %+v (%v)", got, err)
 	}
 }
 

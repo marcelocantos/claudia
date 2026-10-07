@@ -30,8 +30,13 @@ Among the rest, lower plan pressure (blue/purple slack) ranks first —
 on the catalog path too, not only when a purpose series is present.
 A published band beats unpublished (pressure 0 is unknown, not blue).
 Catalog rows that match the quality shelf stay eligible even when AA
-has no score for them. `PreferProvider` only breaks a slack tie. A
-remaining tie fails closed (the catalog is a set, not a ranking).
+has no score for them. On the catalog path, `TieBreak` is an ordered
+provider list consulted only when band and pressure leave multiple
+candidates within the slack epsilon.
+The first matching tied provider wins; with no match, the tie fails closed
+(the catalog is a set, not a ranking). `PreferProvider` is different: it
+filters token-eligible rows before band/pressure selection, so it can beat
+a greener provider and is not a tie-break-only setting.
 Research cost is the next key on the intel path only.
 
 ## Store
