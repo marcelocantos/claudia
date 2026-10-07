@@ -192,6 +192,22 @@ describe("durable seat conversations (🎯T151)", () => {
 // A real sidecar process: restart it under a stored seat and read back what
 // it rebuilt. `abort` answers with the seat's full state, so no provider
 // call is needed.
+describe("post-bind tool attestation (🎯T173)", () => {
+  test("names come from the model-bound state, including after rebind", () => {
+    const agent = createSeatAgent({
+      provider: "mock", model: "mock-model", token: "t", cwd: process.cwd(),
+      emit: () => {}, callTool: async () => "",
+      modelOverride: createMockModel({ contextWindow: window, handler: ok }) as never,
+      tools: [{ name: "jevons_agent_send", input_schema: { type: "object" } }],
+    });
+    expect(agent.boundToolNames()).toContain("Bash");
+    expect(agent.boundToolNames()).toContain("jevons_agent_send");
+    agent.setHostTools([{ name: "jevons_agent_list", input_schema: { type: "object" } }]);
+    expect(agent.boundToolNames()).toContain("jevons_agent_list");
+    expect(agent.boundToolNames()).not.toContain("jevons_agent_send");
+  });
+});
+
 describe("sidecar restart (🎯T151)", () => {
   function startSidecar(sock: string) {
     return Bun.spawn(["bun", join(import.meta.dir, "server.ts"), sock], {
@@ -280,6 +296,27 @@ describe("sidecar restart (🎯T151)", () => {
         proc.kill();
         await proc.exited;
       }
+    }
+  });
+
+  test("ready attests the tools bound on load and rebind (🎯T173)", async () => {
+    const dir = tempDir();
+    const sock = join(dir, "omp.sock");
+    const proc = startSidecar(sock);
+    try {
+      const base = { seat: "tool-seat", provider: "anthropic", model: "claude-sonnet-5", token: "t", cwd: dir };
+      const out = await ask(sock, [
+        { ...base, op: "load", tools: [{ name: "jevons_agent_send", input_schema: { type: "object" } }] },
+        { ...base, op: "adopt", tools: [{ name: "jevons_agent_list", input_schema: { type: "object" } }] },
+      ], (ev) => ev.type === "ready" && ev.how === "adopted");
+      expect(out.map((ev) => ev.how)).toEqual(["launched", "adopted"]);
+      expect(out[0].bound_tools).toContain("Bash");
+      expect(out[0].bound_tools).toContain("jevons_agent_send");
+      expect(out[1].bound_tools).toContain("jevons_agent_list");
+      expect(out[1].bound_tools).not.toContain("jevons_agent_send");
+    } finally {
+      proc.kill();
+      await proc.exited;
     }
   });
 

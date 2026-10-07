@@ -50,6 +50,8 @@ export type SeatAgent = {
   setToken: (token: string) => void;
   setCwd: (cwd: string) => void;
   snapshot: () => unknown;
+  // Read the model-visible list after setTools, not the host offer.
+  boundToolNames: () => string[];
   // rebind points events and tool calls at the connection that just
   // loaded the seat. A broker restart dials a new socket; the Agent
   // stays, and the new socket has to hear it (🎯T868).
@@ -442,6 +444,7 @@ export function createSeatAgent(opts: {
       if (next) cwd = next;
     },
     snapshot: () => agent.state,
+    boundToolNames: () => (agent.state.tools ?? []).map((tool) => tool.name),
     rebind: (emit, callTool) => {
       sink.emit = emit;
       sink.callTool = callTool;

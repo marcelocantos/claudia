@@ -221,7 +221,7 @@ async function handle(
       return;
     }
     rebindSeat(existing, msg, seat, write, callTool, calls);
-    write({ seat, type: "ready", how: "adopted" });
+    write({ seat, type: "ready", how: "adopted", bound_tools: existing.agent.boundToolNames() });
     return;
   }
   if (msg.op === "load") {
@@ -236,7 +236,7 @@ async function handle(
     // would bypass the bounded transfer brief.
     if (existing && existing.provider === msg.provider && existing.summaryOnly === summaryOnly) {
       rebindSeat(existing, msg, seat, write, callTool, calls);
-      write({ seat, type: "ready", how: "adopted" });
+      write({ seat, type: "ready", how: "adopted", bound_tools: existing.agent.boundToolNames() });
       return;
     }
     // A host that names the seat's session gets a durable conversation; one
@@ -269,7 +269,7 @@ async function handle(
       agent,
       calls,
     });
-    write({ seat, type: "ready", how: "launched", restored: agent.restored });
+    write({ seat, type: "ready", how: "launched", restored: agent.restored, bound_tools: agent.boundToolNames() });
     return;
   }
   const loaded = seats.get(seat);

@@ -240,6 +240,25 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 		}
 		return nil, explainOMPSidecarRefusal(refused, req.Config.Provider, socket)
 	}
+	// A ready response is not proof that the tools in the load reached the
+	// model. Refuse rather than silently launching a seat missing host tools.
+	if len(toolRoutes) > 0 {
+		bound := make(map[string]bool, len(ev.BoundTools))
+		for _, name := range ev.BoundTools {
+			bound[name] = true
+		}
+		var missing []string
+		for name := range toolRoutes {
+			if !bound[name] {
+				missing = append(missing, name)
+			}
+		}
+		if len(missing) > 0 {
+			sort.Strings(missing)
+			conn.Close()
+			return nil, fmt.Errorf("omp: seat %q sidecar ready but host tools not bound to model: %s", req.Config.Name, strings.Join(missing, ", "))
+		}
+	}
 	historyLost := ompHistoryLost(ev, req.Config.SummaryOnly)
 	ctrl := &ompControl{
 		conn: conn, bytes: make(chan []byte, 8),
