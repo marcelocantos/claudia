@@ -288,6 +288,10 @@ type predicatesWire struct {
 	// PreferProvider/ExcludeProviders — the daemon does not have its own
 	// copy of the owner's overrides.
 	OwnerOverride map[Provider]OwnerOverride `json:"owner_override,omitempty"`
+	// TieBreak (🎯T172): the caller's ordered provider preference for an
+	// undecided catalog slack tie. A caller input like PreferProvider; a
+	// brokered Resolve without it reports a tie the caller already settled.
+	TieBreak []Provider `json:"tie_break,omitempty"`
 }
 
 // predicatesNotOnWire lists the ModelPredicates fields the daemon supplies
@@ -308,7 +312,7 @@ func EncodePredicatesWire(p ModelPredicates) (json.RawMessage, error) {
 		Model: p.Model, Effort: p.Effort, PreferPlan: p.PreferPlan, Background: p.Background,
 		PreferProvider: p.PreferProvider, ExcludeProviders: p.ExcludeProviders,
 		RequireUsage: p.RequireUsage, Thresholds: p.Thresholds,
-		OwnerOverride: p.OwnerOverride,
+		OwnerOverride: p.OwnerOverride, TieBreak: p.TieBreak,
 	})
 }
 
@@ -328,7 +332,7 @@ func DecodePredicatesWire(raw json.RawMessage) (ModelPredicates, error) {
 		Model: w.Model, Effort: w.Effort, PreferPlan: w.PreferPlan, Background: w.Background,
 		PreferProvider: w.PreferProvider, ExcludeProviders: w.ExcludeProviders,
 		RequireUsage: w.RequireUsage, Thresholds: w.Thresholds,
-		OwnerOverride: w.OwnerOverride,
+		OwnerOverride: w.OwnerOverride, TieBreak: w.TieBreak,
 	}, nil
 }
 

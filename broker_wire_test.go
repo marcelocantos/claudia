@@ -145,3 +145,20 @@ func TestPredicatesWireBackgroundRoundTrip(t *testing.T) {
 		t.Fatalf("background lost on wire: %+v (%v)", got, err)
 	}
 }
+
+// 🎯T172: a brokered Resolve keeps the caller's tie-break order, so the
+// daemon does not report a tie the caller already settled.
+func TestPredicatesWireTieBreakRoundTrip(t *testing.T) {
+	order := []Provider{ProviderGrok, ProviderClaude}
+	raw, err := EncodePredicatesWire(ModelPredicates{TieBreak: order})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := DecodePredicatesWire(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.TieBreak) != 2 || got.TieBreak[0] != ProviderGrok || got.TieBreak[1] != ProviderClaude {
+		t.Fatalf("tie_break lost on wire: %+v from %s", got.TieBreak, raw)
+	}
+}
