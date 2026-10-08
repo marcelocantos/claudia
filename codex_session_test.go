@@ -330,6 +330,10 @@ func liveCodexTurn(t *testing.T, agent *Agent, prompt string) error {
 func TestHermeticCodexInterrupt(t *testing.T) {
 	bin := writeFakeCodexAppServer(t)
 	t.Setenv("CODEX_BIN", bin)
+	// The turn stays in flight until interrupted. A fake that answered at
+	// once could finish the turn before Interrupt under load, leaving
+	// nothing to interrupt.
+	t.Setenv("FAKE_CODEX_HOLD_TURN", "1")
 	writeFakeCodexSubscriptionAuth(t)
 
 	agent, err := Start(Config{
@@ -342,12 +346,11 @@ func TestHermeticCodexInterrupt(t *testing.T) {
 	}
 	defer agent.Stop()
 
-	// Seed a turn id by starting a turn, then interrupt. The fake
-	// answers the turn immediately; interrupt still speaks the method.
 	waitForEventSubscribers(t, agent, 0)
 	if err := agent.Send("go"); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
+	waitForTurnPhase(t, agent, TurnInTurn)
 	if err := agent.Interrupt(); err != nil {
 		t.Fatalf("Interrupt: %v", err)
 	}
