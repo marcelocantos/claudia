@@ -730,6 +730,19 @@ func pasteViaNamedBuffer(windowID, msg, bufName string, betweenLoadAndPaste func
 	return nil
 }
 
+// sendNamedKey presses one tmux key by name (e.g. "Down"), without -l,
+// so tmux sends the key's escape sequence rather than its letters.
+func sendNamedKey(windowID, key string) error {
+	sock := SocketPath()
+	if out, err := exec.Command(
+		"tmux", "-S", sock,
+		"send-keys", "-t", windowID, key,
+	).CombinedOutput(); err != nil {
+		return fmt.Errorf("tmux send-keys %s: %w: %s", key, err, out)
+	}
+	return nil
+}
+
 // SendEscape sends the Escape key (0x1b) to the target window.
 // Matches Agent.Interrupt's semantics of cancelling the current turn.
 // Uses send-keys without -l so "Escape" is interpreted as the key

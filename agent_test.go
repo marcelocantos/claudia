@@ -529,6 +529,53 @@ func TestAgentReadinessSmoke(t *testing.T) {
 	t.Logf("WaitReady end-to-end: %s", latency.Round(time.Millisecond))
 }
 
+// TestAgentReadinessUntrustedGitWorkdirLive: a fresh git repo is a
+// workdir Claude Code has never trusted, so it opens on the
+// workspace-trust dialog. Since v2.1.288 that dialog lists "No, exit"
+// first and focuses it; the bare Enter WaitReady used to send answered
+// No and Claude exited (pimp-den-harness, 2026-10-08). TestAgentReadinessSmoke
+// cannot see this: its plain t.TempDir() is not a git repo, so Claude's
+// trust walk climbs to any trusted ancestor (on Colossus, "/") and never
+// asks. The oracle is a live composer in the untrusted repo.
+func TestAgentReadinessUntrustedGitWorkdirLive(t *testing.T) {
+	if os.Getenv("CLAUDIA_LIVE") == "" {
+		t.Skip("CLAUDIA_LIVE not set (this test starts a real Claude Session)")
+	}
+	if _, err := exec.LookPath("claude"); err != nil {
+		t.Skip("claude binary not on PATH")
+	}
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not on PATH (required for claudia Session mode)")
+	}
+
+	workDir := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-q"},
+		{"-c", "user.name=claudia-live", "-c", "user.email=live@claudia.invalid", "commit", "-q", "--allow-empty", "-m", "init"},
+	} {
+		if out, err := exec.Command("git", append([]string{"-C", workDir}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+
+	agent, err := Start(Config{WorkDir: workDir})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer agent.Stop()
+
+	ctx, cancel := context.WithTimeout(context.Background(), readyOverallTimeout+5*time.Second)
+	defer cancel()
+	waitStart := time.Now()
+	if err := agent.WaitReady(ctx); err != nil {
+		t.Fatalf("WaitReady in a fresh untrusted git repo: %v", err)
+	}
+	if !agent.Alive() {
+		t.Fatal("Alive = false after WaitReady: the trust dialog was answered \"No, exit\"")
+	}
+	t.Logf("WaitReady through the trust dialog: %s", time.Since(waitStart).Round(time.Millisecond))
+}
+
 // TestAgentSendAndWaitForResponse is the end-to-end smoke test that
 // should have existed since v0.4.0. It spawns a real claude session,
 // sends a trivial prompt, and waits for a response. This exercises

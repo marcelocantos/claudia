@@ -100,17 +100,97 @@ var resumePrompt = regexp.MustCompile(`(?i)resume (from summary|full session)|re
 
 // trustFolderQuestion and trustFolderAccept are the two independent
 // facts of Claude Code's first-open workspace-trust dialog (🎯T87).
-// Current chrome is "Quick safety check: Is this a project you created
-// or one you trust?" with default "Yes, I trust this folder". The
-// highlighted option is often inverse-video or an unnumbered ❯, so
-// startupMenuCursor (`❯ N.`) misses it the same way a missing glyph
-// misses a resume menu — and capture-pane -p drops the highlight.
-// Both facts are required so transcript prose that merely mentions
-// the dialog (the T565 class of wedge) is not a menu.
+// Chrome is "Quick safety check: Is this a project you created or one
+// you trust?" with a "Yes, I trust this folder" option. Both facts are
+// required so transcript prose that merely mentions the dialog (the
+// T565 class of wedge) is not a menu.
+//
+// The option ORDER and DEFAULT are not stable. v2.1.226 listed
+// "1. Yes, I trust this folder" first and focused it, so a bare Enter
+// accepted. By v2.1.288 Claude Code lists "❯ No, exit" first and
+// focuses it (cancelFirst, focus "cancel"), so the same bare Enter
+// EXITS Claude: the window closes and the launch reports a wedged
+// startup menu (testdata/frame_trust_folder_cancel_focused.txt). The
+// loop therefore reads which option the ❯ cursor is on and moves it
+// onto the accept option before pressing Enter — never Enter on a
+// decline option (see trustFolderStep).
 var (
 	trustFolderQuestion = regexp.MustCompile(`(?i)quick safety check|is this a project you created or one you trust`)
 	trustFolderAccept   = regexp.MustCompile(`(?i)yes,\s*i trust this folder`)
+	// trustFolderOption matches one option row of the dialog: optional
+	// ❯ cursor, optional "N." index (hidden in current chrome), label.
+	trustFolderOption = regexp.MustCompile(`^\s*(❯)?\s*(?:\d+[.)]\s*)?(\S.*)$`)
+	// trustFolderDecline matches the decline labels Claude Code has
+	// shipped: "No, exit" and "No, continue without these permissions".
+	trustFolderDecline = regexp.MustCompile(`(?i)^no,\s*(exit|continue without)`)
 )
+
+// trustFolderMove is what the launch handshake should do with a frame
+// showing the workspace-trust dialog.
+type trustFolderMove int
+
+const (
+	// trustUnknown: the frame does not say where the cursor is relative
+	// to the accept option. Press nothing; a bare Enter may be "No, exit".
+	trustUnknown trustFolderMove = iota
+	// trustConfirm: the accept option is focused (cursor on it, or no
+	// cursor drawn and accept is the first option, the v2.1.226 default).
+	trustConfirm
+	// trustDown / trustUp: the cursor is on another option; move it
+	// toward the accept option.
+	trustDown
+	trustUp
+)
+
+// trustFolderStep reads the trust dialog's option rows and decides the
+// next key. It only ever confirms when the accept option is the one
+// Enter would select, so a dialog whose default is "No, exit" is walked
+// to "Yes, I trust this folder" instead of answered with exit.
+//
+// The dialog is always about Claude's own working directory — the
+// workdir Claudia spawned the window in — so accepting it trusts only a
+// directory Claudia was asked to run in. Claude Code itself records the
+// acceptance (projects[<realpath>].hasTrustDialogAccepted in
+// ~/.claude.json); Claudia never writes that file.
+func trustFolderStep(frame []byte) trustFolderMove {
+	lines := strings.Split(string(trimTrailingSpace(frame)), "\n")
+	cursor, accept, first := -1, -1, -1
+	for i, line := range lines {
+		m := trustFolderOption.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		label := strings.TrimSpace(m[2])
+		isAccept := trustFolderAccept.MatchString(label) && strings.HasPrefix(strings.ToLower(label), "yes")
+		isDecline := trustFolderDecline.MatchString(label)
+		if !isAccept && !isDecline {
+			continue
+		}
+		if first < 0 {
+			first = i
+		}
+		if isAccept {
+			accept = i
+		}
+		if m[1] != "" {
+			cursor = i
+		}
+	}
+	switch {
+	case accept < 0:
+		return trustUnknown
+	case cursor == accept:
+		return trustConfirm
+	case cursor < 0 && first == accept:
+		return trustConfirm
+	case cursor < 0:
+		return trustUnknown
+	case cursor < accept:
+		return trustDown
+	default:
+		return trustUp
+	}
+}
 
 // settingsWarning matches the line Claude Code prints, before its TUI
 // mounts, for a permission rule that names no tool. It is not the ready
@@ -269,6 +349,11 @@ const (
 	// before the next capture, so we don't re-detect the same menu and
 	// burn a dismissal on a frame that's mid-repaint.
 	menuSettleDelay = 400 * time.Millisecond
+	// maxTrustMoves bounds the arrow presses spent walking the trust
+	// dialog's cursor onto its accept option. One is enough for the
+	// two-option dialog; the slack covers a keypress Claude Code drops
+	// while the dialog is still refusing input just after it opens.
+	maxTrustMoves = 4
 )
 
 // readyDriver abstracts the two side-effecting primitives WaitReady
@@ -277,6 +362,9 @@ const (
 type readyDriver struct {
 	capture   func() ([]byte, error)
 	sendEnter func() error
+	// sendKey presses a named tmux key ("Down", "Up"). Used only to move
+	// the workspace-trust dialog's cursor onto its accept option.
+	sendKey func(key string) error
 	// quiet overrides drawingQuietWindow; zero means the production value.
 	// It exists so a hermetic wait of milliseconds can outlast the window.
 	quiet time.Duration
@@ -301,6 +389,7 @@ func WaitReady(windowID string, poll, timeout time.Duration) (time.Duration, err
 	return waitReadyLoop(readyDriver{
 		capture:   func() ([]byte, error) { return CapturePane(windowID) },
 		sendEnter: func() error { return SendKeys(windowID, "") }, // empty msg → bare Enter (select default)
+		sendKey:   func(key string) error { return sendNamedKey(windowID, key) },
 	}, poll, timeout, menuSettleDelay)
 }
 
@@ -315,6 +404,7 @@ func waitReadyLoop(d readyDriver, poll, timeout, menuSettle time.Duration) (time
 	var lastFrame []byte
 	var lastErr error
 	dismissals := 0
+	trustMoves := 0
 	menuSeen := false
 	obs := readyObservation{firstInk: -1, composerAt: -1, quiet: d.quiet}
 	if obs.quiet == 0 {
@@ -355,6 +445,38 @@ func waitReadyLoop(d readyDriver, poll, timeout, menuSettle time.Duration) (time
 
 		if MatchReady(frame) {
 			return now().Sub(start), nil
+		}
+
+		if MatchTrustFolder(frame) {
+			menuSeen = true
+			switch step := trustFolderStep(frame); step {
+			case trustConfirm:
+				if dismissals < maxMenuDismissals {
+					dismissals++
+					if serr := d.sendEnter(); serr != nil {
+						lastErr = serr
+					}
+					time.Sleep(menuSettle)
+					continue
+				}
+			case trustDown, trustUp:
+				if trustMoves < maxTrustMoves && d.sendKey != nil {
+					trustMoves++
+					key := "Down"
+					if step == trustUp {
+						key = "Up"
+					}
+					if serr := d.sendKey(key); serr != nil {
+						lastErr = serr
+					}
+					time.Sleep(menuSettle)
+					continue
+				}
+			}
+			// trustUnknown, or a bound spent: press nothing. Enter here
+			// may be "No, exit", which kills the seat.
+			time.Sleep(poll)
+			continue
 		}
 
 		if MatchStartupMenu(frame) && dismissals < maxMenuDismissals {
