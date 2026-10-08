@@ -162,9 +162,9 @@ func (h *MCPHost) Close() error {
 
 // Attach returns servers with each one this host can serve rewritten to its
 // loopback URL, starting the stdio process or registering the HTTP remote
-// on first use. Consumer-owned servers, and a server whose name the host
-// already serves with a different recipe, are returned unchanged. The input
-// is not modified.
+// on first use. A changed HTTP upstream replaces the previous route and
+// remembered URL; incompatible stdio recipes are returned unchanged.
+// Consumer-owned servers are left alone. The input is not modified.
 func (h *MCPHost) Attach(servers []MCPServer) []MCPServer {
 	if h == nil || len(servers) == 0 {
 		return servers
@@ -200,7 +200,13 @@ func (h *MCPHost) ensure(s MCPServer) (string, bool) {
 		if existing.equal(recipe) || h.isOurURLLocked(s.URL) {
 			return h.publicURLLocked(s.Name), true
 		}
-		return "", false
+		// HTTP origins can change between seat mints (for example when a
+		// previous proxy's loopback port has died). Keeping the old route
+		// makes a valid grant appear to have zero tools. Stdio recipes have
+		// a running process and still cannot be stolen by another recipe.
+		if existing.kind != "http" || recipe.kind != "http" {
+			return "", false
+		}
 	}
 	if recipe.kind == "http" {
 		backend := s

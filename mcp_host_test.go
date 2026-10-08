@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -116,6 +117,98 @@ func TestMCPHostDoesNotStealDifferentRecipe(t *testing.T) {
 	again := h.Attach([]MCPServer{{Name: "fixture", Command: bin, Args: []string{"a"}}})
 	if again[0].URL != first[0].URL {
 		t.Fatalf("same recipe did not reuse %q vs %q", again[0].URL, first[0].URL)
+	}
+}
+
+// A changed HTTP origin must not leave a freshly minted seat on an old
+// route, or silently return an unhosted server with no tools.
+func TestMCPHostEnsureReplacesChangedHTTPOrigin(t *testing.T) {
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("old"))
+	}))
+	defer first.Close()
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("fresh"))
+	}))
+	defer second.Close()
+	h := testMCPHost(t)
+	urlA, ok := h.ensure(MCPServer{Name: "fixture", Type: "http", URL: first.URL})
+	if !ok || urlA == "" {
+		t.Fatalf("first ensure = %q, %v", urlA, ok)
+	}
+	urlB, ok := h.ensure(MCPServer{Name: "fixture", Type: "http", URL: second.URL})
+	if !ok || urlB != urlA {
+		t.Fatalf("changed upstream ensure = %q, %v; want hosted %q", urlB, ok, urlA)
+	}
+	assertMCPHostResponse(t, urlB, "fresh")
+	if got := h.upstreams.Get("fixture"); got != second.URL {
+		t.Fatalf("remembered %q, want %q", got, second.URL)
+	}
+}
+
+// A stale nested proxy remembered by an earlier host must not outrank the
+// fresh direct URL presented by current configuration, even after the stale
+// loopback was used to establish the in-memory route.
+func TestMCPHostEnsureFreshDirectURLReplacesPersistedStaleLoopback(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, mcpUpstreamsFile)
+	stale := "http://127.0.0.1:52322/upstream/bullseye"
+	b, err := json.Marshal(map[string]string{"bullseye": stale})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fresh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("fresh upstream"))
+	}))
+	defer fresh.Close()
+	h, err := NewMCPHost(&MCPHostArgs{StateDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = h.Close() })
+	// Simulate a previously minted seat whose loopback recipe was resolved
+	// from the persisted stale store before config supplied the direct URL.
+	if _, ok := h.ensure(MCPServer{Name: "bullseye", Type: "http", URL: stale}); !ok {
+		t.Fatal("stale recipe did not register")
+	}
+	hosted, ok := h.ensure(MCPServer{Name: "bullseye", Type: "http", URL: fresh.URL})
+	if !ok || hosted == "" {
+		t.Fatalf("fresh ensure = %q, %v", hosted, ok)
+	}
+	assertMCPHostResponse(t, hosted, "fresh upstream")
+	persisted, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]string
+	if err := json.Unmarshal(persisted, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc["bullseye"] != fresh.URL {
+		t.Fatalf("persisted %q, want %q", doc["bullseye"], fresh.URL)
+	}
+}
+
+func assertMCPHostResponse(t *testing.T, endpoint, want string) {
+	t.Helper()
+	req, err := http.NewRequestWithContext(wallclockguard.UntilTestTimeout(t), http.MethodGet, endpoint, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var body bytes.Buffer
+	if _, err := body.ReadFrom(resp.Body); err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK || body.String() != want {
+		t.Fatalf("GET %s: status %d, body %q; want 200 %q", endpoint, resp.StatusCode, body.String(), want)
 	}
 }
 
