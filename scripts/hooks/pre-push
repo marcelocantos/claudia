@@ -12,8 +12,49 @@
 # behind it are not checked. The attestation stays in .git/, never
 # committed. Agents must not pass --no-verify. Owner emergency bypass is
 # git push --no-verify.
+#
+# WIP backups are exempt: a ref pushed to a remote ref under refs/backup/
+# (~/bin/backup-branches.sh mirrors every local branch to
+# refs/backup/<host>/<branch>) is not a release and no consumer builds it,
+# so it needs neither build + vet nor an attestation. Every other remote
+# ref is checked exactly as before, including in a push that mixes the two.
+# internal/prepush pins this behaviour.
 set -eu
 cd "$(git rev-parse --show-toplevel)"
+
+zero=0000000000000000000000000000000000000000
+
+# git hands the hook one line per ref: <local ref> <local sha> <remote ref>
+# <remote sha>. A delete has an all-zero local sha. Read them all first:
+# whether to build and check at all depends on every line.
+refs=$(cat)
+checked=""   # local shas whose tree must match the attestation
+strict=0     # any non-backup ref in this push (or no refs at all)
+[ -z "$refs" ] && strict=1
+nl='
+'
+oldifs=$IFS
+IFS=$nl
+for line in $refs; do
+    IFS=$oldifs
+    # shellcheck disable=SC2086
+    set -- $line
+    IFS=$nl
+    local_sha=${2:-}
+    remote_ref=${3:-}
+    case "$remote_ref" in
+        refs/backup/*) continue ;;
+    esac
+    strict=1
+    [ "$local_sha" = "$zero" ] && continue # a branch delete pushes nothing
+    checked="$checked $local_sha"
+done
+IFS=$oldifs
+
+if [ "$strict" = 0 ]; then
+    echo "✓ refs/backup/* only — WIP backup, build + vet and gate attestation skipped"
+    exit 0
+fi
 
 go build ./... && go vet ./... && echo "✓ build + vet"
 
@@ -30,9 +71,7 @@ if [ "${dirty:-1}" != "0" ]; then
     exit 1
 fi
 
-zero=0000000000000000000000000000000000000000
-while read -r _local_ref local_sha _remote_ref _remote_sha; do
-    [ "$local_sha" = "$zero" ] && continue # a branch delete pushes nothing
+for local_sha in $checked; do
     pushed_tree=$(git rev-parse "$local_sha^{tree}")
     if [ "$pushed_tree" != "$tree" ]; then
         echo "pre-push: make gate last attested tree $tree at $at; you are pushing $(git rev-parse --short "$local_sha") whose tree is $pushed_tree — run make gate on this commit, then push" >&2
