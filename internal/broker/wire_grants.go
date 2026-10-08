@@ -182,6 +182,10 @@ type UsageResponse struct {
 	// Error is the last fetch failure, when the snapshot is stale because
 	// of it. Empty on a clean snapshot.
 	Error string `json:"error,omitempty"`
+	// Unlaunchable maps a fleet provider whose CLI the daemon cannot
+	// resolve to the resolver's error. Those providers are not admitted
+	// and pick-by-remaining skips them. Absent when every CLI resolves.
+	Unlaunchable map[string]string `json:"unlaunchable,omitempty"`
 }
 
 // ResolveRequest carries claudia.ModelPredicates in wire form.

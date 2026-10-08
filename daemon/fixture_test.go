@@ -237,6 +237,9 @@ func (f *fixture) options(usage []claudia.PlanUsage) Options {
 		},
 		clock:     f.clock,
 		launchers: f.launchers(),
+		// Hermetic: every fleet CLI "resolves", so a pick never depends on
+		// what this host has installed. Tests of the binary gate override it.
+		resolveBinary: func(claudia.Provider, bool) error { return nil },
 	}
 }
 

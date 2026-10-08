@@ -33,6 +33,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"text/tabwriter"
@@ -459,8 +460,9 @@ func usageCmd(args []string) error {
 			return err
 		}
 	}
+	missing := unlaunchableByProvider(u.Unlaunchable)
 	if *asJSON {
-		snap := claudia.ProjectFleetUsage(backends, u.FetchedAt, time.Now(), nil)
+		snap := claudia.ExcludeUnlaunchable(claudia.ProjectFleetUsage(backends, u.FetchedAt, time.Now(), nil), missing)
 		raw, err := json.MarshalIndent(snap, "", "  ")
 		if err != nil {
 			return err
@@ -493,13 +495,42 @@ func usageCmd(args []string) error {
 		if b.Reason != "" && b.Status != claudia.PlanUsageAvailable {
 			st += " (" + clip(b.Reason, reasonWidth) + ")"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", b.Provider, st, band.Weekly, admitLabel(b), strings.Join(wins, " "))
+		admit := admitLabel(b)
+		if _, gone := missing[b.Provider]; gone {
+			admit = "no (" + claudia.FleetReasonBinaryNotFound + ")"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", b.Provider, st, band.Weekly, admit, strings.Join(wins, " "))
 	}
 	if err := w.Flush(); err != nil {
 		return err
 	}
 	fmt.Println("ADMIT is the task_run gate for that row. A provider absent from this table is admitted.")
+	for _, p := range sortedProviders(missing) {
+		fmt.Printf("%s: %s (pick remaining skips it): %s\n", p, claudia.FleetReasonBinaryNotFound, missing[p])
+	}
 	return nil
+}
+
+// unlaunchableByProvider types the daemon's Unlaunchable map. The daemon
+// decides it: this CLI runs with another PATH than the broker that spawns.
+func unlaunchableByProvider(m map[string]string) map[claudia.Provider]string {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[claudia.Provider]string, len(m))
+	for k, v := range m {
+		out[claudia.Provider(k)] = v
+	}
+	return out
+}
+
+func sortedProviders(m map[claudia.Provider]string) []claudia.Provider {
+	out := make([]claudia.Provider, 0, len(m))
+	for p := range m {
+		out = append(out, p)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
 }
 
 // usageDisplayRows lists the fleet roster first, in stable order, then

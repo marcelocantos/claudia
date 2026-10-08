@@ -85,6 +85,9 @@ type Options struct {
 	StartSidecar func(context.Context) error
 
 	clock broker.Clock
+	// resolveBinary replaces claudia.ProviderBinaryError (tests): whether a
+	// fleet provider's CLI resolves on this host, per surface.
+	resolveBinary func(provider claudia.Provider, session bool) error
 	// resumeGate, when set, holds the boot resume until closed (tests
 	// subscribe to the tail first).
 	resumeGate chan struct{}
@@ -455,8 +458,16 @@ func (d *Daemon) HandleRequest(c *broker.ClientConn, req *broker.Request) bool {
 	case broker.TypeUsage:
 		snap := d.usage.Read(d.ctx, req.Usage.Refresh)
 		raw, _ := json.Marshal(snap.Backends)
+		var unlaunchable map[string]string
+		// ADMIT is the task_run gate, so the roster reports the Task surface.
+		for p, reason := range d.unlaunchable(false) {
+			if unlaunchable == nil {
+				unlaunchable = map[string]string{}
+			}
+			unlaunchable[string(p)] = reason
+		}
 		_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeUsageResult,
-			Usage: &broker.UsageResponse{FetchedAt: snap.FetchedAt, Backends: raw, Error: snap.Err}})
+			Usage: &broker.UsageResponse{FetchedAt: snap.FetchedAt, Backends: raw, Error: snap.Err, Unlaunchable: unlaunchable}})
 	case broker.TypeResolve:
 		d.handleResolve(c, req)
 	case broker.TypeJudge:
@@ -1531,7 +1542,7 @@ func (d *Daemon) handleTaskRun(c *broker.ClientConn, req *broker.Request) {
 				Msg: "pick remaining chooses the provider; do not also set one"})
 			return
 		}
-		choice, err := d.pickByRemaining()
+		choice, err := d.pickByRemaining(false)
 		if err != nil {
 			_ = c.Fail(req.ID, err)
 			return
@@ -1646,7 +1657,7 @@ func (d *Daemon) resolveGrantPick(name string, provider claudia.Provider, pick s
 	if existing := d.reg.Def(name); existing != nil {
 		return grantPick{provider: existing.Provider}, nil
 	}
-	choice, err := d.pickByRemaining()
+	choice, err := d.pickByRemaining(true)
 	if err != nil {
 		return grantPick{}, err
 	}
@@ -1655,18 +1666,61 @@ func (d *Daemon) resolveGrantPick(name string, provider claudia.Provider, pick s
 }
 
 // pickByRemaining reads the daemon's plan-usage snapshot and selects
-// the fullest admitted fleet provider. The error is plan_exhausted.
-func (d *Daemon) pickByRemaining() (claudia.FleetPick, error) {
+// the fullest admitted fleet provider whose CLI this host can resolve
+// for the surface (session: a grant's seat; otherwise a task_run). A
+// provider that cannot start is dropped before the pick, not chosen and
+// left to fail at spawn. The error is plan_exhausted, naming any
+// provider dropped for a missing binary.
+func (d *Daemon) pickByRemaining(session bool) (claudia.FleetPick, error) {
 	snap := d.usage.Read(d.ctx, false)
-	choice, err := claudia.PickByRemaining(snap.Backends, d.clock.Now(), nil)
+	missing := d.unlaunchable(session)
+	usable := make([]claudia.PlanUsage, 0, len(snap.Backends))
+	for _, u := range snap.Backends {
+		if _, gone := missing[u.Provider]; gone {
+			continue
+		}
+		usable = append(usable, u)
+	}
+	for p, reason := range missing {
+		d.log.Warn("pick remaining skipped provider", "provider", p, "reason", claudia.FleetReasonBinaryNotFound, "detail", reason)
+	}
+	choice, err := claudia.PickByRemaining(usable, d.clock.Now(), nil)
 	if err != nil {
+		msg := err.Error()
+		if len(missing) > 0 {
+			var names []string
+			for p := range missing {
+				names = append(names, string(p))
+			}
+			sort.Strings(names)
+			msg += "; excluded (" + claudia.FleetReasonBinaryNotFound + "): " + strings.Join(names, ", ")
+		}
 		return claudia.FleetPick{}, &broker.ProtocolError{
 			Code:  broker.CodePlanExhausted,
 			Field: "provider",
-			Msg:   err.Error(),
+			Msg:   msg,
 		}
 	}
 	return choice, nil
+}
+
+// unlaunchable is the fleet providers whose CLI this host cannot resolve
+// for the surface, with the resolver's error.
+func (d *Daemon) unlaunchable(session bool) map[claudia.Provider]string {
+	resolve := d.opts.resolveBinary
+	if resolve == nil {
+		resolve = claudia.ProviderBinaryError
+	}
+	var missing map[claudia.Provider]string
+	for _, p := range []claudia.Provider{claudia.ProviderCursor, claudia.ProviderGrok, claudia.ProviderClaude, claudia.ProviderCodex} {
+		if err := resolve(p, session); err != nil {
+			if missing == nil {
+				missing = map[claudia.Provider]string{}
+			}
+			missing[p] = err.Error()
+		}
+	}
+	return missing
 }
 
 // admitTask refuses task_run when the daemon's plan-usage snapshot shows

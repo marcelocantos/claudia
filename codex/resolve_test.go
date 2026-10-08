@@ -44,3 +44,22 @@ func TestResolveBinRefusesShimAsOnlyCandidate(t *testing.T) {
 		t.Fatal("shim accepted as the codex binary")
 	}
 }
+
+// ChatGPT 26.930 moved the bundled CLI to codex-cli/CodexCLI.app; the
+// codex package must resolve it as the seat path does.
+func TestResolveBinFindsChatGPTCodexCLIBundle(t *testing.T) {
+	const want = "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex"
+	got, err := resolveBin(&ResolveArgs{
+		Getenv:   func(string) string { return "" },
+		LookPath: func(string) (string, error) { return "", errors.New("absent") },
+		Stat: func(p string) (os.FileInfo, error) {
+			if p == want {
+				return nil, nil
+			}
+			return nil, errors.New("absent")
+		},
+	})
+	if err != nil || got != want {
+		t.Fatalf("resolveBin = %q, %v; want %q", got, err, want)
+	}
+}

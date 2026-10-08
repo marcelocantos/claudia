@@ -169,12 +169,20 @@ func TestEnsureCodexSubscriptionAuth(t *testing.T) {
 func TestCodexBinCandidatesResolveOnThisHost(t *testing.T) {
 	// Integration-ish: when ChatGPT.app is installed (owner fleet), resolveCodexBin
 	// must find it without CODEX_BIN. Skip if neither app bundle exists.
+	// ChatGPT 26.930 moved the CLI to codex-cli/CodexCLI.app; while this
+	// test knew only the old bare Resources/codex it skipped on exactly the
+	// host where resolution had broken.
+	bundled := chatGPTBundledCodex
 	chatgpt := "/Applications/ChatGPT.app/Contents/Resources/codex"
 	legacy := "/Applications/Codex.app/Contents/Resources/codex"
-	if _, err := os.Stat(chatgpt); err != nil {
-		if _, err2 := os.Stat(legacy); err2 != nil {
-			t.Skip("neither ChatGPT.app nor Codex.app codex binary present")
+	present := false
+	for _, p := range []string{bundled, chatgpt, legacy} {
+		if _, err := os.Stat(p); err == nil {
+			present = true
 		}
+	}
+	if !present {
+		t.Skip("no ChatGPT.app or Codex.app codex binary present")
 	}
 	t.Setenv("CODEX_BIN", "")
 	// Clear PATH codex if any so we exercise candidates.
@@ -183,7 +191,7 @@ func TestCodexBinCandidatesResolveOnThisHost(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveCodexBin: %v", err)
 	}
-	if got != chatgpt && got != legacy {
+	if got != bundled && got != chatgpt && got != legacy {
 		// Still OK if LookPath found something else first; only fail when
 		// candidates should have won (PATH has no codex).
 		if _, err := os.Stat(got); err != nil {

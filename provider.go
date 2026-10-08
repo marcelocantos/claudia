@@ -130,14 +130,33 @@ func isCmuxCLIShim(p string) bool {
 	return strings.Contains(filepath.ToSlash(p), "/cmux-cli-shims/")
 }
 
+// chatGPTBundledCodex is where ChatGPT.app ships its Codex CLI since
+// ChatGPT 26.930 (installed on Colossus 2026-10-04): a nested helper app,
+// Resources/codex-cli/CodexCLI.app. The bare Resources/codex this list
+// used to name stopped existing with that update, every --pick remaining
+// that chose codex then failed at seat start with "codex executable not
+// found", and the live test that would have said so skipped instead.
+const chatGPTBundledCodex = "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex"
+
+// codexBinCandidates are the install locations a launchd or supervisord
+// daemon cannot find through its own PATH: user-local bin dirs (pipx/npm
+// prefix style, npm-global, bun, volta), Homebrew, and the CLI bundled in
+// the desktop app. codex/resolve.go keeps the same list for the codex
+// package; each package pins the ChatGPT bundle path in its own tests.
 func codexBinCandidates() []string {
 	home, _ := os.UserHomeDir()
 	return []string{
 		filepath.Join(home, ".local", "bin", codexBinName),
 		"/opt/homebrew/bin/codex",
 		"/usr/local/bin/codex",
+		filepath.Join(home, ".npm-global", "bin", codexBinName),
+		filepath.Join(home, ".bun", "bin", codexBinName),
+		filepath.Join(home, ".volta", "bin", codexBinName),
 		// Post 2026-07-09 Codex app → ChatGPT desktop merger: the CLI ships
-		// inside ChatGPT.app. Keep the legacy Codex.app path as a fallback.
+		// inside ChatGPT.app — now as a nested helper app, earlier as a bare
+		// Resources/codex. Keep the legacy Codex.app path as a fallback.
+		chatGPTBundledCodex,
+		filepath.Join(home, "Applications", "ChatGPT.app", "Contents", "Resources", "codex-cli", "CodexCLI.app", "Contents", "MacOS", codexBinName),
 		"/Applications/ChatGPT.app/Contents/Resources/codex",
 		"/Applications/Codex.app/Contents/Resources/codex",
 	}

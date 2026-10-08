@@ -91,12 +91,20 @@ func isCmuxCLIShim(p string) bool {
 	return strings.Contains(filepath.ToSlash(p), "/cmux-cli-shims/")
 }
 
+// binCandidates mirrors the root package's codexBinCandidates (the seat
+// path). ChatGPT 26.930
+// moved the bundled CLI into Resources/codex-cli/CodexCLI.app.
 func binCandidates() []string {
 	home, _ := os.UserHomeDir()
 	return []string{
 		filepath.Join(home, ".local", "bin", binName),
 		"/opt/homebrew/bin/codex",
 		"/usr/local/bin/codex",
+		filepath.Join(home, ".npm-global", "bin", binName),
+		filepath.Join(home, ".bun", "bin", binName),
+		filepath.Join(home, ".volta", "bin", binName),
+		"/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
+		filepath.Join(home, "Applications", "ChatGPT.app", "Contents", "Resources", "codex-cli", "CodexCLI.app", "Contents", "MacOS", binName),
 		"/Applications/ChatGPT.app/Contents/Resources/codex",
 		"/Applications/Codex.app/Contents/Resources/codex",
 	}

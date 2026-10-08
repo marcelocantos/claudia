@@ -5,6 +5,7 @@ package claudia
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -18,6 +19,56 @@ const PickRemaining = "remaining"
 // remaining percents are equal.
 func fleetProviders() []Provider {
 	return []Provider{ProviderCursor, ProviderGrok, ProviderClaude, ProviderCodex}
+}
+
+// FleetReasonBinaryNotFound is [FleetUsageRow.Reason]'s prefix for a
+// fleet provider whose CLI this host cannot resolve. Such a provider is
+// not admitted and pick-by-remaining never chooses it: a plan with room
+// is no use when the seat would fail at start with "executable not
+// found" (Colossus, 2026-10-07: codex at 97% won every pick and every
+// seat died).
+const FleetReasonBinaryNotFound = "binary_not_found"
+
+// ProviderBinaryError reports whether provider can start on this host.
+// It is nil when the provider's backend on that surface runs no local
+// CLI — session seats for Cursor and Grok run in the plan sidecar, and
+// Bedrock and Ollama are API backends — or when the CLI resolves the way
+// the backend itself will resolve it (env override, known install dirs,
+// PATH). Otherwise it is the resolver's own "executable not found" error.
+// session selects the Session (seat) surface; false is the Task surface.
+func ProviderBinaryError(provider Provider, session bool) error {
+	if session && useOMP(Config{Provider: provider}) {
+		return nil
+	}
+	var err error
+	switch provider {
+	case "", ProviderClaude:
+		_, err = resolveClaudeBin()
+	case ProviderCodex:
+		_, err = resolveCodexBin()
+	case ProviderGrok:
+		_, err = resolveGrokBin()
+	case ProviderCursor:
+		_, err = resolveCursorBin()
+	}
+	return err
+}
+
+// ExcludeUnlaunchable marks each row of snap whose provider is a key of
+// missing as not admitted, with Reason "binary_not_found: <detail>". The
+// map is what the daemon found it cannot launch (see
+// [ProviderBinaryError]); the CLI that prints the roster runs in another
+// process with another PATH, so it must not decide this itself.
+func ExcludeUnlaunchable(snap FleetUsageSnapshot, missing map[Provider]string) FleetUsageSnapshot {
+	for i, row := range snap.Providers {
+		detail, ok := missing[row.Provider]
+		if !ok {
+			continue
+		}
+		snap.Providers[i].Admit = false
+		snap.Providers[i].Reason = FleetReasonBinaryNotFound + ": " + strings.TrimSpace(detail)
+	}
+	return snap
 }
 
 // FleetUsageRow is one provider in the stable usage roster. The four
