@@ -10,8 +10,10 @@ git push origin master
 ```
 
 `scripts/hooks/pre-push` runs `make gate` and refuses a non-zero exit.
-Agents must not pass `--no-verify`. Inbound contributor PRs stay; CI
-on `pull_request` is courtesy for those.
+Agents must not pass `--no-verify`. Inbound contributor PRs stay.
+Colossus (macOS + keychain) is the runtime for all development and
+testing. GitHub stores the code as backup. There is no GitHub Actions
+workflow: push and pull request do not run a CI job.
 
 `make gate` is `go vet`, `go test -race -count=1 ./...`,
 `verify-stability`, and `verify-mutation-evidence`. Live backends are

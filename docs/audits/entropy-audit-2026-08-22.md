@@ -1,5 +1,7 @@
 # Entropy audit — claudia — 2026-08-22
 
+> Later annotation (2026-09-26): GitHub Actions workflows (`test.yml`, `specs.yml`) were removed. Colossus (macOS + keychain) is the runtime; GitHub stores the code as backup. Observations below that name a CI job describe the tree on 2026-08-22 and are not current policy.
+
 ## Executive summary
 
 - **Snapshot:** `/Users/marcelo/work/github.com/marcelocantos/claudia`, branch `master`, commit `715e175cee29a2e754d29eb912651709d73130f2` (`715e175 fix(mcp): one Authorize per 401 burst (jevons T531)`). Date 2026-08-22.
