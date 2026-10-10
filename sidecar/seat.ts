@@ -214,7 +214,7 @@ export function createSeatAgent(opts: {
   const finish = (stop: Stop) => {
     if (!turn || turn.closed) return;
     const tail = flushHold(turn);
-    if (tail) sink.emit({ type: "text", text: tail });
+    if (tail) sink.emit({ type: "text", text: tail, turn_id: turn.turn_id });
     const digest = closeTurn(turn, stop);
     sink.emit(digest);
   };
@@ -263,11 +263,11 @@ export function createSeatAgent(opts: {
       const delta = event.assistantMessageEvent.delta ?? "";
       if (turn && !turn.closed) {
         const visible = noteDelta(turn, delta);
-        if (visible) sink.emit({ type: "text", text: visible });
+        if (visible) sink.emit({ type: "text", text: visible, turn_id: turn.turn_id });
         return;
       }
       const stripped = stripStopTokens(delta);
-      if (stripped.visible) sink.emit({ type: "text", text: stripped.visible });
+      if (stripped.visible) sink.emit({ type: "text", text: stripped.visible, turn_id: turn?.turn_id });
     }
   });
 
@@ -370,10 +370,10 @@ export function createSeatAgent(opts: {
     }
     if (cancelled) return;
     if (refusal) {
-      sink.emit({ type: "turn_end", error: refusal, reason: overflow ? ContextOverflow : undefined, snapshot: agent.state });
+      sink.emit({ type: "turn_end", turn_id: turn.turn_id, error: refusal, reason: overflow ? ContextOverflow : undefined, snapshot: agent.state });
       return;
     }
-    sink.emit({ type: "turn_end", snapshot: agent.state });
+    sink.emit({ type: "turn_end", turn_id: turn.turn_id, snapshot: agent.state });
   };
 
   return {
