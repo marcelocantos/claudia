@@ -253,6 +253,10 @@ func (b *brokerAgentBackend) ops() agentOps {
 			_, err := b.opCall(&broker.Request{Type: broker.TypeSend, Send: &broker.SendRequest{Name: b.named().Name, Text: msg}})
 			return err
 		},
+		sendWithRequestID: func(_ *Agent, msg, requestID string) error {
+			_, err := b.opCall(&broker.Request{Type: broker.TypeSend, Send: &broker.SendRequest{Name: b.named().Name, Text: msg, RequestID: requestID}})
+			return err
+		},
 		interrupt: func(*Agent) error {
 			_, err := b.opCall(&broker.Request{Type: broker.TypeInterrupt, Interrupt: b.named()})
 			return err
@@ -286,40 +290,16 @@ func (b *brokerAgentBackend) ops() agentOps {
 		// name, which reads as a submit that was not steered.
 		// sendEscalating hands the whole ladder to the daemon (🎯T138).
 		sendEscalating: func(_ *Agent, text string, esc Escalation) (DeliveryOutcome, error) {
-			steps := make([]broker.EscalationStep, len(esc))
-			for i, st := range esc {
-				steps[i] = broker.EscalationStep{Mode: broker.SendMode(st.Mode), AfterMS: st.After.Milliseconds()}
-			}
-			resp, err := b.opCall(&broker.Request{Type: broker.TypeSend,
-				Send: &broker.SendRequest{Name: b.named().Name, Text: text, Escalation: steps}})
-			if err != nil {
-				return DeliveryOutcome{}, err
-			}
-			if resp.Sent == nil {
-				return DeliveryOutcome{}, fmt.Errorf("broker: send answered with %s", resp.Type)
-			}
-			return DeliveryOutcome{
-				Mode:             DeliveryMode(resp.Sent.Mode),
-				PhaseBefore:      TurnPhase(resp.Sent.PhaseBefore),
-				Mechanism:        resp.Sent.Mechanism,
-				SupersededTurnID: resp.Sent.SupersededTurnID,
-			}, nil
+			return b.sendEscalatingWithRequestID(text, esc, "")
+		},
+		sendEscalatingWithRequestID: func(_ *Agent, text string, esc Escalation, requestID string) (DeliveryOutcome, error) {
+			return b.sendEscalatingWithRequestID(text, esc, requestID)
 		},
 		steer: func(_ *Agent, text string) (DeliveryOutcome, error) {
-			resp, err := b.opCall(&broker.Request{Type: broker.TypeSend,
-				Send: &broker.SendRequest{Name: b.named().Name, Text: text, Mode: broker.SendModeSteer}})
-			if err != nil {
-				return DeliveryOutcome{}, err
-			}
-			if resp.Sent == nil {
-				return DeliveryOutcome{}, fmt.Errorf("broker: send answered with %s", resp.Type)
-			}
-			return DeliveryOutcome{
-				Mode:             DeliveryMode(resp.Sent.Mode),
-				PhaseBefore:      TurnPhase(resp.Sent.PhaseBefore),
-				Mechanism:        resp.Sent.Mechanism,
-				SupersededTurnID: resp.Sent.SupersededTurnID,
-			}, nil
+			return b.steerWithRequestID(text, "")
+		},
+		steerWithRequestID: func(_ *Agent, text, requestID string) (DeliveryOutcome, error) {
+			return b.steerWithRequestID(text, requestID)
 		},
 		// turnCaps is the daemon's answer for the seat it actually runs;
 		// a daemon that predates turn_caps falls back to the provider
@@ -702,4 +682,43 @@ func brokerUsage(ctx context.Context, refresh bool) ([]PlanUsage, time.Time, err
 		return nil, time.Time{}, fmt.Errorf("broker usage: %s", resp.Usage.Error)
 	}
 	return out, resp.Usage.FetchedAt, nil
+}
+
+// broker escalation and steer carry request identity as part of this one send,
+// never via mutable next-prompt state on the broker handle.
+func (b *brokerAgentBackend) sendEscalatingWithRequestID(text string, esc Escalation, requestID string) (DeliveryOutcome, error) {
+	steps := make([]broker.EscalationStep, len(esc))
+	for i, st := range esc {
+		steps[i] = broker.EscalationStep{Mode: broker.SendMode(st.Mode), AfterMS: st.After.Milliseconds()}
+	}
+	resp, err := b.opCall(&broker.Request{Type: broker.TypeSend,
+		Send: &broker.SendRequest{Name: b.named().Name, Text: text, Escalation: steps, RequestID: requestID}})
+	if err != nil {
+		return DeliveryOutcome{}, err
+	}
+	if resp.Sent == nil {
+		return DeliveryOutcome{}, fmt.Errorf("broker: send answered with %s", resp.Type)
+	}
+	return DeliveryOutcome{
+		Mode:             DeliveryMode(resp.Sent.Mode),
+		PhaseBefore:      TurnPhase(resp.Sent.PhaseBefore),
+		Mechanism:        resp.Sent.Mechanism,
+		SupersededTurnID: resp.Sent.SupersededTurnID,
+	}, nil
+}
+func (b *brokerAgentBackend) steerWithRequestID(text, requestID string) (DeliveryOutcome, error) {
+	resp, err := b.opCall(&broker.Request{Type: broker.TypeSend,
+		Send: &broker.SendRequest{Name: b.named().Name, Text: text, Mode: broker.SendModeSteer, RequestID: requestID}})
+	if err != nil {
+		return DeliveryOutcome{}, err
+	}
+	if resp.Sent == nil {
+		return DeliveryOutcome{}, fmt.Errorf("broker: send answered with %s", resp.Type)
+	}
+	return DeliveryOutcome{
+		Mode:             DeliveryMode(resp.Sent.Mode),
+		PhaseBefore:      TurnPhase(resp.Sent.PhaseBefore),
+		Mechanism:        resp.Sent.Mechanism,
+		SupersededTurnID: resp.Sent.SupersededTurnID,
+	}, nil
 }

@@ -141,6 +141,10 @@ func (a *Agent) TurnCaps() TurnCaps {
 // The returned outcome is also carried in its Err field, so a caller can
 // log the whole outcome and still use the error idiomatically.
 func (a *Agent) SendMode(text string, mode DeliveryMode) (DeliveryOutcome, error) {
+	return a.SendModeWithRequestID(text, mode, "")
+}
+
+func (a *Agent) SendModeWithRequestID(text string, mode DeliveryMode, requestID string) (DeliveryOutcome, error) {
 	if mode == "" {
 		mode = DeliverySubmit
 	}
@@ -148,14 +152,14 @@ func (a *Agent) SendMode(text string, mode DeliveryMode) (DeliveryOutcome, error
 	switch mode {
 	case DeliverySubmit:
 		out.Mechanism = MechanismSubmit
-		out.Err = a.Send(text)
+		out.Err = a.SendWithRequestID(text, requestID)
 	case DeliverySteer:
 		if out.PhaseBefore != TurnInTurn {
 			out.Mechanism = MechanismSubmit
-			out.Err = a.Send(text)
+			out.Err = a.SendWithRequestID(text, requestID)
 			break
 		}
-		steered, err := a.steer(text, out.PhaseBefore)
+		steered, err := a.steerWithRequestID(text, out.PhaseBefore, requestID)
 		out.Mechanism, out.SupersededTurnID, out.Err = steered.Mechanism, steered.SupersededTurnID, err
 	case DeliveryInterrupt:
 		out.Mechanism = MechanismSubmit
@@ -168,7 +172,7 @@ func (a *Agent) SendMode(text string, mode DeliveryMode) (DeliveryOutcome, error
 			a.awaitIdle(interruptSettleTimeout)
 		}
 		if text != "" {
-			out.Err = a.Send(text)
+			out.Err = a.SendWithRequestID(text, requestID)
 		}
 	case DeliveryQueue:
 		out.Mechanism = MechanismClientQueue
@@ -207,10 +211,14 @@ func (a *Agent) awaitIdle(timeout time.Duration) {
 // seat wants [Agent.Send]. [Agent.SendMode] with [DeliverySteer] makes
 // that idle case a submit automatically.
 func (a *Agent) Steer(text string) (DeliveryOutcome, error) {
-	return a.steer(text, a.TurnPhase())
+	return a.steerWithRequestID(text, a.TurnPhase(), "")
 }
 
 func (a *Agent) steer(text string, phase TurnPhase) (DeliveryOutcome, error) {
+	return a.steerWithRequestID(text, phase, "")
+}
+
+func (a *Agent) steerWithRequestID(text string, phase TurnPhase, requestID string) (DeliveryOutcome, error) {
 	out := DeliveryOutcome{Mode: DeliverySteer, PhaseBefore: phase}
 	if a.ops.steer == nil {
 		a.dropPromptCause()
@@ -236,11 +244,28 @@ func (a *Agent) steer(text string, phase TurnPhase) (DeliveryOutcome, error) {
 	}
 	cause, ok := a.takePromptCause()
 	a.noteArmed(cause, ok)
-	steered, err := a.ops.steer(a, text)
+	if a.brokerGrant == "" {
+		a.queueRequestID(requestID)
+	}
+	var steered DeliveryOutcome
+	var err error
+	if a.ops.steerWithRequestID != nil {
+		steered, err = a.ops.steerWithRequestID(a, text, requestID)
+	} else {
+		steered, err = a.ops.steer(a, text)
+	}
+	if err != nil {
+		if a.brokerGrant == "" {
+			a.discardPendingRequestID(requestID)
+		}
+	}
 	out.Mechanism, out.SupersededTurnID = steered.Mechanism, steered.SupersededTurnID
 	if err != nil {
 		out.Err = err
 		return out, out.Err
+	}
+	if a.brokerGrant == "" && steered.Mechanism == MechanismCodexTurnSteer {
+		a.bindSameTurnSteer(requestID)
 	}
 	a.recordInert(inertTurn{Role: "user", Text: strings.TrimSpace(text)})
 	return out, nil

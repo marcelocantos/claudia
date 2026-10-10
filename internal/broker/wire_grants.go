@@ -483,8 +483,9 @@ func SendModes() []SendMode {
 
 // SendRequest writes a user turn.
 type SendRequest struct {
-	Name string `json:"name"`
-	Text string `json:"text"`
+	Name      string `json:"name"`
+	Text      string `json:"text"`
+	RequestID string `json:"request_id,omitempty"`
 	// Mode is the delivery intent. Empty normalises to SendModeSubmit.
 	Mode SendMode `json:"mode,omitempty"`
 	// Escalation, when set, replaces Mode with a ladder the daemon runs
