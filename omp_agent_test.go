@@ -232,8 +232,8 @@ func TestOMPStartLoadsTokenFromKeychain(t *testing.T) {
 				_, _ = c.Write([]byte("{\"type\":\"ready\"}\n"))
 			}
 			if msg.Op == omp.OpPrompt {
-				_, _ = c.Write([]byte("{\"type\":\"text\",\"text\":\"hi\"}\n"))
-				_, _ = c.Write([]byte("{\"type\":\"turn_end\",\"snapshot\":{\"messages\":[]}}\n"))
+				_, _ = fmt.Fprintf(c, "{\"type\":\"text\",\"turn_id\":%q,\"text\":\"hi\"}\n", msg.TurnID)
+				_, _ = fmt.Fprintf(c, "{\"type\":\"turn_end\",\"turn_id\":%q,\"snapshot\":{\"messages\":[]}}\n", msg.TurnID)
 			}
 		}
 	}()
