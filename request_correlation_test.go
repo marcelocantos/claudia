@@ -160,3 +160,75 @@ func TestRequestIDCodexSteerSameProviderTurn(t *testing.T) {
 		t.Fatalf("same-turn steer lost host request: %+v", got)
 	}
 }
+
+// The ACP clients construct tool events and provisional chunks on different
+// branches of handleSessionUpdate. Exercise those branches through the real
+// client routing into Agent.publishEvent, rather than fabricating Events that
+// would only test the final map lookup.
+func TestRequestIDACPToolAndProvisionalEvents(t *testing.T) {
+	for _, backend := range []struct {
+		name     string
+		provider Provider
+		updates  func(onEvent func(Event)) (send func(), update func(json.RawMessage))
+	}{
+		{"cursor", ProviderCursor, func(onEvent func(Event)) (func(), func(json.RawMessage)) {
+			c := &cursorACPClient{sessionID: "session", onEvent: onEvent}
+			return func() {
+				c.mu.Lock()
+				c.prompts.push(17)
+				c.mu.Unlock()
+				publishEvent(c.onEvent, acpPromptAcceptedEvent("session", 17))
+			}, c.handleSessionUpdate
+		}},
+		{"grok", ProviderGrok, func(onEvent func(Event)) (func(), func(json.RawMessage)) {
+			c := &grokACPClient{sessionID: "session", onEvent: onEvent}
+			return func() {
+				c.mu.Lock()
+				c.prompts.push(17)
+				c.mu.Unlock()
+				publishEvent(c.onEvent, acpPromptAcceptedEvent("session", 17))
+			}, c.handleSessionUpdate
+		}},
+	} {
+		t.Run(backend.name, func(t *testing.T) {
+			a := &Agent{provider: backend.provider, alive: true, ready: closedReady(), eventSubs: map[int64]EventFunc{}}
+			var got []Event
+			a.eventSubs[1] = func(ev Event) { got = append(got, ev) }
+			send, update := backend.updates(a.publishEvent)
+			a.ops.send = func(*Agent, string) error { send(); return nil }
+			if err := a.SendWithRequestID("use a tool", "host-tool-request"); err != nil {
+				t.Fatal(err)
+			}
+			for _, tc := range []struct{ name, body, progress, preview string }{
+				{"tool_call", `{"sessionId":"session","update":{"sessionUpdate":"tool_call","toolCallId":"tool-1","title":"Bash","status":"pending"}}`, ProgressToolUse, ""},
+				{"tool_call_update", `{"sessionId":"session","update":{"sessionUpdate":"tool_call_update","toolCallId":"tool-1","title":"Bash","status":"completed"}}`, ProgressToolUse, ""},
+				{"provisional", `{"sessionId":"session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"streamed"}}}`, "", PreviewUpdateAppend},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					update(json.RawMessage(tc.body))
+					ev := got[len(got)-1]
+					if ev.RequestID != "host-tool-request" || ev.TurnID != "17" || ev.ProgressType != tc.progress || ev.PreviewUpdate != tc.preview {
+						t.Fatalf("event lost request correlation or kind: %+v", ev)
+					}
+					if tc.progress == ProgressToolUse && (ev.ToolCallID != "tool-1" || ev.ToolTitle != "Bash") {
+						t.Fatalf("tool identity lost: %+v", ev)
+					}
+					if tc.preview != "" && (ev.Type != "assistant" || ev.Text != "streamed") {
+						t.Fatalf("provisional text lost: %+v", ev)
+					}
+					wire, err := EncodeEventWire(ev)
+					if err != nil {
+						t.Fatal(err)
+					}
+					decoded, err := DecodeEventWire(wire)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if decoded.RequestID != "host-tool-request" {
+						t.Fatalf("broker stream lost request on %s: %+v", tc.name, decoded)
+					}
+				})
+			}
+		})
+	}
+}
