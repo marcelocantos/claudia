@@ -369,7 +369,12 @@ type Agent struct {
 	promptCause    PromptCause
 	promptCauseSet bool
 	armedPrompt    PromptCause
-	armedOK        bool
+	// requestPending binds the next provider turn to a host request.
+	// requestByTurn retains bindings across ACP reissues until terminal.
+	requestPending    []string
+	requestByTurn     map[string]string
+	requestActiveTurn string
+	armedOK           bool
 
 	// Terminal output streaming. termMu also guards termLog writes,
 	// termLog close, and termLogLive so Stop cannot close the file
@@ -445,11 +450,12 @@ type agentControl interface {
 }
 
 type agentOps struct {
-	attachCommand func(*Agent) string
-	interrupt     func(*Agent) error
-	send          func(*Agent, string) error
-	resize        func(*Agent, uint16, uint16) error
-	stop          func(*Agent)
+	attachCommand     func(*Agent) string
+	interrupt         func(*Agent) error
+	send              func(*Agent, string) error
+	sendWithRequestID func(*Agent, string, string) error
+	resize            func(*Agent, uint16, uint16) error
+	stop              func(*Agent)
 	// reclaim is set only by the broker backend: it makes sure this
 	// handle's connection owns the seat's grant on the daemon (🎯T124).
 	reclaim func() error
@@ -486,11 +492,13 @@ type agentOps struct {
 	// ErrSteerUnsupported and TurnCaps withdraws the steer claim. Direct
 	// backends set it with steerOp(client); the broker handle forwards
 	// mode=steer over the wire and fills the outcome from the response.
-	steer func(*Agent, string) (DeliveryOutcome, error)
+	steer              func(*Agent, string) (DeliveryOutcome, error)
+	steerWithRequestID func(*Agent, string, string) (DeliveryOutcome, error)
 	// sendEscalating hands a whole escalation ladder to whoever holds the
 	// seat (🎯T138). Nil → [Agent.SendEscalating] runs the ladder here; the
 	// broker handle sets it so the daemon runs it beside the seat.
-	sendEscalating func(*Agent, string, Escalation) (DeliveryOutcome, error)
+	sendEscalating              func(*Agent, string, Escalation) (DeliveryOutcome, error)
+	sendEscalatingWithRequestID func(*Agent, string, Escalation, string) (DeliveryOutcome, error)
 	// turnCaps refines the provider contract for this handle (a Codex CLI
 	// without turn/steer; the daemon's answer for a broker seat). Nil →
 	// ProviderTurnCaps.
@@ -1849,7 +1857,10 @@ func (a *Agent) PromptInFlight() bool {
 //
 // Send is [Agent.SendMode] with [DeliverySubmit]; the steer and
 // interrupt intents live there and on [Agent.Steer] (🎯T72.2).
-func (a *Agent) Send(msg string) error {
+func (a *Agent) Send(msg string) error { return a.SendWithRequestID(msg, "") }
+
+// SendWithRequestID binds a host logical request to the provider turn.
+func (a *Agent) SendWithRequestID(msg, requestID string) error {
 	if err := a.deliverable(); err != nil {
 		a.dropPromptCause()
 		return err
@@ -1864,7 +1875,19 @@ func (a *Agent) Send(msg string) error {
 	a.beginTurn()
 	cause, ok := a.takePromptCause()
 	a.noteArmed(cause, ok)
-	if err := a.ops.send(a, msg); err != nil {
+	if a.brokerGrant == "" {
+		a.queueRequestID(requestID)
+	}
+	var err error
+	if a.ops.sendWithRequestID != nil {
+		err = a.ops.sendWithRequestID(a, msg, requestID)
+	} else {
+		err = a.ops.send(a, msg)
+	}
+	if err != nil {
+		if a.brokerGrant == "" {
+			a.discardPendingRequestID(requestID)
+		}
 		return err
 	}
 	a.recordInert(inertTurn{Role: "user", Text: strings.TrimSpace(msg)})
@@ -1995,6 +2018,7 @@ func (a *Agent) publishEvent(ev Event) {
 	if t, ok := noteInertFromEvent(ev); ok {
 		a.recordInertLocked(t)
 	}
+	a.correlateRequestLocked(&ev)
 	a.noteGoalEvent(ev)
 	a.recordTurnEventLocked(ev)
 	subs := make([]EventFunc, 0, len(a.eventSubs))

@@ -92,9 +92,16 @@ func (e Escalation) Validate() error {
 // ended. The returned outcome is the first rung's; rungs that fire later
 // are published as [ProgressDeliveryEscalated] events.
 func (a *Agent) SendEscalating(text string, esc Escalation) (DeliveryOutcome, error) {
+	return a.SendEscalatingWithRequestID(text, esc, "")
+}
+
+func (a *Agent) SendEscalatingWithRequestID(text string, esc Escalation, requestID string) (DeliveryOutcome, error) {
 	if err := esc.Validate(); err != nil {
 		out := DeliveryOutcome{Mode: DeliverySubmit, Mechanism: MechanismNone, Err: err}
 		return out, err
+	}
+	if a.ops.sendEscalatingWithRequestID != nil {
+		return a.ops.sendEscalatingWithRequestID(a, text, esc, requestID)
 	}
 	if a.ops.sendEscalating != nil {
 		// A broker handle: the daemon holding the seat runs the ladder, so
@@ -102,12 +109,12 @@ func (a *Agent) SendEscalating(text string, esc Escalation) (DeliveryOutcome, er
 		return a.ops.sendEscalating(a, text, esc)
 	}
 	if len(esc) == 0 || a.TurnPhase() != TurnInTurn {
-		return a.SendMode(text, DeliverySubmit)
+		return a.SendModeWithRequestID(text, DeliverySubmit, requestID)
 	}
 	// Any escalating send, laddered or not, supersedes a pending ladder.
 	cancel := supersedeLadder(a)
 	if len(esc) == 1 {
-		return a.SendMode(text, esc[0].Mode)
+		return a.SendModeWithRequestID(text, esc[0].Mode, requestID)
 	}
 	// Subscribe before delivering, so an absorb that follows at once is not
 	// missed.
@@ -119,7 +126,7 @@ func (a *Agent) SendEscalating(text string, esc Escalation) (DeliveryOutcome, er
 		}
 	})
 	start := time.Now()
-	out, err := a.SendMode(text, esc[0].Mode)
+	out, err := a.SendModeWithRequestID(text, esc[0].Mode, requestID)
 	if err != nil {
 		a.UnsubscribeEvents(token)
 		return out, err
