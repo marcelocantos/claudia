@@ -79,7 +79,8 @@ func TestBrokerWireMirrorsAreComplete(t *testing.T) {
 	}
 	// Wire codecs round-trip.
 	ev := Event{Type: "assistant", Text: "x", Raw: []byte(`{"a":1}`), Usage: Usage{InputTokens: 1},
-		WarningCodes: []string{"w"}, StuckClass: StuckClassQuota, FromProvider: ProviderGrok}
+		WarningCodes: []string{"w"}, StuckClass: StuckClassQuota, FromProvider: ProviderGrok,
+		TurnID: "turn-one", Final: true, FragmentSeq: 4}
 	raw, err := EncodeEventWire(ev)
 	if err != nil {
 		t.Fatal(err)
@@ -88,8 +89,8 @@ func TestBrokerWireMirrorsAreComplete(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(back, ev) {
 		t.Fatalf("event round trip: %+v vs %+v (%v)", back, ev, err)
 	}
-	if strings.Contains(string(raw), `"turn_id"`) {
-		t.Fatalf("empty fields must be omitted on the wire: %s", raw)
+	if !strings.Contains(string(raw), `"final":true`) || !strings.Contains(string(raw), `"fragment_seq":4`) {
+		t.Fatalf("fragment metadata missing on the wire: %s", raw)
 	}
 }
 
