@@ -25,6 +25,7 @@ type eventWire struct {
 	Type          string   `json:"type"`
 	SessionID     string   `json:"session_id,omitempty"`
 	TurnID        string   `json:"turn_id,omitempty"`
+	RequestID     string   `json:"request_id,omitempty"`
 	Final         bool     `json:"final,omitempty"`
 	FragmentSeq   int      `json:"fragment_seq,omitempty"`
 	MessageID     string   `json:"message_id,omitempty"`

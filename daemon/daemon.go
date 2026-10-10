@@ -1323,7 +1323,7 @@ func deliverSend(proc *claudia.Agent, req *broker.SendRequest) (*broker.SentResp
 		for i, step := range req.Escalation {
 			esc[i] = claudia.EscalationStep{Mode: claudia.DeliveryMode(step.Mode), After: time.Duration(step.AfterMS) * time.Millisecond}
 		}
-		if out, err = proc.SendEscalating(req.Text, esc); err != nil {
+		if out, err = proc.SendEscalatingWithRequestID(req.Text, esc, req.RequestID); err != nil {
 			return nil, err
 		}
 		return &broker.SentResponse{
@@ -1335,11 +1335,11 @@ func deliverSend(proc *claudia.Agent, req *broker.SendRequest) (*broker.SentResp
 	}
 	switch req.Mode {
 	case broker.SendModeSubmit:
-		out, err = proc.SendMode(req.Text, claudia.DeliverySubmit)
+		out, err = proc.SendModeWithRequestID(req.Text, claudia.DeliverySubmit, req.RequestID)
 	case broker.SendModeSteer:
-		out, err = proc.SendMode(req.Text, claudia.DeliverySteer)
+		out, err = proc.SendModeWithRequestID(req.Text, claudia.DeliverySteer, req.RequestID)
 	case broker.SendModeInterrupt:
-		out, err = proc.SendMode(req.Text, claudia.DeliveryInterrupt)
+		out, err = proc.SendModeWithRequestID(req.Text, claudia.DeliveryInterrupt, req.RequestID)
 	case broker.SendModeQueue:
 		out = claudia.DeliveryOutcome{Mode: claudia.DeliveryQueue, PhaseBefore: proc.TurnPhase(), Mechanism: claudia.MechanismClientQueue}
 	default:
