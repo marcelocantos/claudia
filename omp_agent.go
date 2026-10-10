@@ -34,6 +34,9 @@ import (
 var ErrSeatIdentityMismatch = errors.New("omp: loaded seat differs from registered provider or purpose")
 var ErrNoSubscriptionModel = errors.New("omp: no provider-local subscription session model")
 
+// ErrOMPMissingTurnID refuses sidecar answer payloads that cannot be tied to a turn.
+var ErrOMPMissingTurnID = errors.New("omp: answer payload missing turn_id")
+
 // ErrContextOverflow is what [Agent.WaitForResponse] wraps when the provider
 // refused the turn as longer than the model's context window and the seat's
 // own compaction could not bring it back under (🎯T148). It is terminal:
@@ -459,11 +462,13 @@ func (c *ompControl) pump(a *Agent) {
 			if visible == "" && token != "" {
 				break
 			}
-			a.publishEvent(Event{
+			if err := publishOMPAnswer(a, ev, Event{
 				Type:          "assistant",
 				Text:          visible,
 				PreviewUpdate: PreviewUpdateAppend,
-			})
+			}); err != nil {
+				slog.Error("omp refused sidecar answer", "seat", c.seat, "error", err)
+			}
 		case "tool_call":
 			if c.summaryOnly {
 				_ = c.send(omp.Message{Op: omp.OpTool, CallID: ev.CallID, Result: "tools are unavailable to a migration summarizer"})
@@ -528,15 +533,31 @@ func (c *ompControl) pump(a *Agent) {
 			if refusal != "" && ev.Reason == ReasonContextOverflow {
 				reason = ReasonContextOverflow
 			}
-			a.publishEvent(Event{
+			if err := publishOMPAnswer(a, ev, Event{
 				Type:       "assistant",
 				Text:       text,
 				IsError:    rejected || ev.Type == "error" || refusal != "",
 				StopReason: "end_turn",
 				Reason:     reason,
-			})
+			}); err != nil {
+				slog.Error("omp refused sidecar answer", "seat", c.seat, "error", err)
+			}
 		}
 	}
+}
+
+// publishOMPAnswer validates the sidecar identity before any subscriber or
+// broker sees its text or terminal payload. A distinct error event lets
+// WaitForResponse fail rather than waiting forever for a discarded terminal.
+func publishOMPAnswer(a *Agent, wire omp.Event, answer Event) error {
+	if strings.TrimSpace(wire.TurnID) == "" {
+		err := fmt.Errorf("%w: %s", ErrOMPMissingTurnID, wire.Type)
+		a.publishEvent(Event{Type: "assistant", IsError: true, StopReason: "end_turn", Text: err.Error()})
+		return err
+	}
+	answer.TurnID = wire.TurnID
+	a.publishEvent(answer)
+	return nil
 }
 
 // oauthRejected reports a provider refusal of the access token, on the
