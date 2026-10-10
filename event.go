@@ -23,6 +23,15 @@ type Event struct {
 	// backend did not associate the event with an in-flight turn.
 	TurnID string `json:"-"`
 
+	// Final is set by the daemon on the last answer fragment of a turn.
+	// Consumers must not infer finality from the fragment's text.
+	Final bool `json:"-"`
+
+	// FragmentSeq is the daemon-authored, one-based order of answer fragments
+	// within TurnID. It resets for a new turn; consumers must not infer the
+	// order from the fragment's text. Zero means no sequence was assigned.
+	FragmentSeq int `json:"-"`
+
 	// MessageID is the backend's identity for a logical message or item when
 	// one exists (Claude message.id, Codex itemId). It is empty for backends
 	// and event kinds that expose only turn-level correlation.

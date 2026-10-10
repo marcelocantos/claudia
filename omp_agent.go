@@ -423,6 +423,9 @@ func (c *ompControl) send(msg omp.Message) error {
 
 func (c *ompControl) pump(a *Agent) {
 	defer close(c.bytes)
+	// Recv and publication run in this one goroutine, so the sequence belongs
+	// to the pump rather than the control's concurrently accessed send state.
+	var fragments ompFragmentSequence
 	for {
 		ev, err := c.conn.Recv()
 		if err != nil {
@@ -466,7 +469,7 @@ func (c *ompControl) pump(a *Agent) {
 				Type:          "assistant",
 				Text:          visible,
 				PreviewUpdate: PreviewUpdateAppend,
-			}); err != nil {
+			}, &fragments); err != nil {
 				slog.Error("omp refused sidecar answer", "seat", c.seat, "error", err)
 			}
 		case "tool_call":
@@ -539,22 +542,37 @@ func (c *ompControl) pump(a *Agent) {
 				IsError:    rejected || ev.Type == "error" || refusal != "",
 				StopReason: "end_turn",
 				Reason:     reason,
-			}); err != nil {
+			}, &fragments); err != nil {
 				slog.Error("omp refused sidecar answer", "seat", c.seat, "error", err)
 			}
 		}
 	}
 }
 
+// ompFragmentSequence belongs to one pump. A changed TurnID starts a new
+// one-based fragment stream, including a terminal event even if it is the
+// only event of that turn.
+type ompFragmentSequence struct {
+	turnID string
+	last   int
+}
+
 // publishOMPAnswer validates the sidecar identity before any subscriber or
 // broker sees its text or terminal payload. A distinct error event lets
 // WaitForResponse fail rather than waiting forever for a discarded terminal.
-func publishOMPAnswer(a *Agent, wire omp.Event, answer Event) error {
+func publishOMPAnswer(a *Agent, wire omp.Event, answer Event, fragments *ompFragmentSequence) error {
 	if strings.TrimSpace(wire.TurnID) == "" {
 		err := fmt.Errorf("%w: %s", ErrOMPMissingTurnID, wire.Type)
 		a.publishEvent(Event{Type: "assistant", IsError: true, StopReason: "end_turn", Text: err.Error()})
 		return err
 	}
+	if fragments.turnID != wire.TurnID {
+		fragments.turnID = wire.TurnID
+		fragments.last = 0
+	}
+	fragments.last++
+	answer.Final = wire.Type == "turn_end" || wire.Type == "error"
+	answer.FragmentSeq = fragments.last
 	answer.TurnID = wire.TurnID
 	a.publishEvent(answer)
 	return nil
