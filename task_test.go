@@ -543,7 +543,6 @@ func TestRemovedCLITaskRunReturnsPromptly(t *testing.T) {
 	for _, provider := range []Provider{ProviderClaude, ProviderCodex, ProviderGrok, ProviderCursor} {
 		t.Run(string(provider), func(t *testing.T) {
 			task := NewTask(TaskConfig{Provider: provider, WorkDir: t.TempDir()})
-			task.SetDirect(true)
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 			defer cancel()
 			events, err := task.Run(ctx, "hello")

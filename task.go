@@ -548,6 +548,16 @@ func (t *Task) Run(ctx context.Context, prompt string) (<-chan TaskEvent, error)
 		return nil, err
 	}
 
+	// A broker must not resurrect a removed CLI Task transport. Refuse before
+	// attempting daemon dispatch so NewTask callers (including jwork) see the
+	// same named error whether or not a broker happens to be listening.
+	if removed, ok := t.backend.(errorTaskBackend); ok && errors.Is(removed.err, ErrTaskCLIRemoved) {
+		t.mu.Lock()
+		t.status = TaskStatusError
+		t.mu.Unlock()
+		return nil, ErrTaskCLIRemoved
+	}
+
 	cmdCtx, cancel := context.WithCancel(ctx)
 
 	t.mu.Lock()
