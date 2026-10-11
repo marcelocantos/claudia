@@ -123,7 +123,8 @@ type AgentDef struct {
 	// SandboxMode is the Codex app-server sandbox for ProviderCodex
 	// Session (e.g. "workspace-write"). Empty keeps claudia's safe
 	// default of read-only (🎯T37).
-	SandboxMode string `json:"sandbox_mode,omitempty"`
+	SandboxMode    string `json:"sandbox_mode,omitempty"`
+	ApprovalPolicy string `json:"approval_policy,omitempty"`
 
 	// SandboxWritableRoots and SandboxNetworkAccess widen that sandbox
 	// beyond the working directory (🎯T598). They reach Codex through

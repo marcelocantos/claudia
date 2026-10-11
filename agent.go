@@ -56,16 +56,15 @@ import (
 // Config configures a session agent.
 type Config struct {
 	// Provider selects the runtime backing this agent. Empty means
-	// ProviderClaude. ProviderGrok and ProviderCursor use the subscription
-	// sidecar.
-	// ProviderCodex Session mode uses `codex app-server` JSON-RPC.
+	// ProviderClaude. Claude, Codex, Grok and Cursor Session seats use
+	// the subscription sidecar (including their bare provider IDs).
 	Provider Provider
 	// SummaryOnly creates a tool-free, disposable Oh My Pi seat for one
 	// context-transfer turn. It is not a normal work-seat setting.
 	SummaryOnly bool
 
 	// OMP is retained on persisted grants. Launch no longer needs it:
-	// grok, cursor, and the four subscription ids use the sidecar (🎯T866.5).
+	// bare grok/cursor/claude/codex and subscription ids use the sidecar.
 	OMP bool
 
 	// ContextPreserve and ContextPins are [AgentDef]'s: what an Oh My Pi
@@ -108,8 +107,8 @@ type Config struct {
 	// Defaults to "bypassPermissions".
 	PermissionMode string
 
-	// SandboxMode selects the Codex app-server sandbox for
-	// ProviderCodex Session (e.g. "read-only", "workspace-write").
+	// SandboxMode selects the legacy Codex app-server sandbox (e.g.
+	// "read-only", "workspace-write"). OMP Codex seats refuse it.
 	// Empty keeps the safe default of read-only (🎯T37). Other
 	// providers refuse a non-empty value rather than drop it.
 	//
@@ -118,6 +117,10 @@ type Config struct {
 	// its `.git` read-only: the seat can edit its repo and cannot commit
 	// to it. Start logs that when it applies. SandboxGitWrite lifts it.
 	SandboxMode string
+
+	// ApprovalPolicy is a Codex-native approval control. OMP seats refuse it
+	// until the sidecar can honour it rather than silently dropping it.
+	ApprovalPolicy string
 
 	// SandboxGitWrite lets a workspace-write Codex seat write its repo's
 	// git directories (the shared one, for a linked worktree), so it can

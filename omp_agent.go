@@ -34,6 +34,10 @@ import (
 var ErrSeatIdentityMismatch = errors.New("omp: loaded seat differs from registered provider or purpose")
 var ErrNoSubscriptionModel = errors.New("omp: no provider-local subscription session model")
 
+// ErrOMPCodexSandboxUnsupported refuses requested Codex sandbox/approval controls
+// that the OMP seat protocol cannot carry.
+var ErrOMPCodexSandboxUnsupported = errors.New("omp: codex sandbox and approval controls are unsupported")
+
 // ErrOMPMissingTurnID refuses sidecar answer payloads that cannot be tied to a turn.
 var ErrOMPMissingTurnID = errors.New("omp: answer payload missing turn_id")
 
@@ -58,9 +62,9 @@ func useOMP(cfg Config) bool {
 
 func ompProviderID(p Provider) string {
 	switch p {
-	case Provider(omp.Anthropic):
+	case Provider(omp.Anthropic), ProviderClaude:
 		return omp.Anthropic
-	case Provider(omp.OpenAICodex):
+	case Provider(omp.OpenAICodex), ProviderCodex:
 		return omp.OpenAICodex
 	case ProviderCursor:
 		return omp.Cursor
@@ -78,10 +82,26 @@ func agentBackendFor(cfg Config) agentBackend {
 	return agentBackendForProvider(cfg.Provider)
 }
 
+// checkOMPCodexSandbox refuses controls before broker grants or sidecar loads.
+// Check again at the backend boundary for callers that bypass StartContext.
+func checkOMPCodexSandbox(cfg Config) error {
+	if ompProviderID(cfg.Provider) != omp.OpenAICodex {
+		return nil
+	}
+	if cfg.SandboxMode != "" || cfg.ApprovalPolicy != "" || cfg.SandboxGitWrite {
+		return fmt.Errorf("%w: SandboxMode=%q ApprovalPolicy=%q SandboxGitWrite=%t",
+			ErrOMPCodexSandboxUnsupported, cfg.SandboxMode, cfg.ApprovalPolicy, cfg.SandboxGitWrite)
+	}
+	return nil
+}
+
 // withDefaultOMPModel resolves an omitted model before either a broker grant
 // or a direct start records the seat. An adopt reports the broker's persisted
 // model instead of choosing a potentially different current default.
 func withDefaultOMPModel(ctx context.Context, cfg Config) (Config, error) {
+	if err := checkOMPCodexSandbox(cfg); err != nil {
+		return cfg, err
+	}
 	if !useOMP(cfg) || cfg.Model != "" || cfg.AdoptOnly {
 		return cfg, nil
 	}
@@ -127,6 +147,9 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 	provider := ompProviderID(req.Config.Provider)
 	if provider == "" {
 		return nil, fmt.Errorf("omp: %s is not a sidecar provider", req.Config.Provider)
+	}
+	if err := checkOMPCodexSandbox(req.Config); err != nil {
+		return nil, err
 	}
 	// Adopting a seat that is already running must not mint one, and must
 	// not start a sidecar in order to discover that it is not there (🎯T869).

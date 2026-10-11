@@ -226,6 +226,7 @@ func configToGrantDef(name string, cfg Config, base *AgentDef) GrantDefinition {
 			ConnectPID:            cfg.ConnectPID,
 			GrokConnect:           cfg.GrokConnect,
 			SandboxMode:           cfg.SandboxMode,
+			ApprovalPolicy:        cfg.ApprovalPolicy,
 			SandboxWritableRoots:  cfg.SandboxWritableRoots,
 			SandboxNetworkAccess:  cfg.SandboxNetworkAccess,
 			SandboxGitWrite:       cfg.SandboxGitWrite,
