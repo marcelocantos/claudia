@@ -12,11 +12,24 @@ import (
 	"testing"
 )
 
-func TestPruneObsoleteLegacyGrantsExactScoutInventory(t *testing.T) {
-	if len(obsoleteLegacyGrants) != 16 {
-		t.Fatalf("scout inventory = %d, want 16", len(obsoleteLegacyGrants))
+func TestPruneObsoleteLegacyGrantsExactLiveInventory(t *testing.T) {
+	if len(obsoleteLegacyGrants) != 13 {
+		t.Fatalf("approved live inventory = %d, want 13", len(obsoleteLegacyGrants))
 	}
 	path := filepath.Join(t.TempDir(), "grants.json")
+	// These names were in the older scout snapshot, but the owner reserved
+	// them for personal work. They must survive even with the exact original
+	// claude + auto_start fields (and without relying on the one-shot marker).
+	personal := []AgentDef{
+		{Name: "pimp-arrai-779-native", Provider: ProviderClaude, AutoStart: true, SessionID: "personal-arrai"},
+		{Name: "pimp-vellum-housekeeping-katex", Provider: ProviderClaude, AutoStart: true, SessionID: "personal-vellum"},
+		{Name: "pimp-xbnf-phase0", Provider: ProviderClaude, AutoStart: true, SessionID: "personal-xbnf"},
+	}
+	for _, def := range personal {
+		if _, exists := obsoleteLegacyGrants[def.Name]; exists {
+			t.Fatalf("personal-work seat %q must never be allowlisted", def.Name)
+		}
+	}
 	defs := make([]AgentDef, 0, 20)
 	for name, provider := range obsoleteLegacyGrants {
 		defs = append(defs, AgentDef{Name: name, Provider: provider, AutoStart: true, SessionID: "legacy-" + name})
@@ -30,6 +43,7 @@ func TestPruneObsoleteLegacyGrantsExactScoutInventory(t *testing.T) {
 	// The same name cannot coexist as two registry keys: replace the legacy
 	// row in this fixture's second pass to test provider guard separately.
 	defs = append(defs, keep[:3]...)
+	defs = append(defs, personal...)
 	body, err := json.Marshal(defs)
 	if err != nil {
 		t.Fatal(err)
@@ -45,22 +59,22 @@ func TestPruneObsoleteLegacyGrantsExactScoutInventory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(removed) != 16 || !slices.IsSorted(removed) {
+	if len(removed) != 13 || !slices.IsSorted(removed) {
 		t.Fatalf("removed = %v", removed)
 	}
-	for _, def := range keep[:3] {
+	for _, def := range append(keep[:3], personal...) {
 		if got := r.Def(def.Name); got == nil || !reflect.DeepEqual(*got, def) {
 			t.Fatalf("legitimate %q changed: %+v", def.Name, got)
 		}
 	}
-	if len(r.List()) != 3 {
+	if len(r.List()) != 6 {
 		t.Fatalf("registry still contains %d rows", len(r.List()))
 	}
 	reloaded, err := NewRegistry(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(reloaded.List()) != 3 {
+	if len(reloaded.List()) != 6 {
 		t.Fatalf("persisted rows = %d", len(reloaded.List()))
 	}
 	if again, err := reloaded.PruneObsoleteLegacyGrants(); err != nil || len(again) != 0 {

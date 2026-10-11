@@ -5,9 +5,10 @@ package claudia
 
 import "slices"
 
-// obsoleteLegacyGrants is the fixed 2026-10-10 scout inventory (T177), not
+// obsoleteLegacyGrants is the 13-row live inventory approved for T191, not
 // a rule that all Claude/Grok grants are disposable. In particular, the
-// non-auto-start Grok row and any newly minted legacy grant are NOT in scope.
+// three owner personal-work seats from the older T177 scout snapshot, the
+// non-auto-start Grok row, and any newly minted legacy grant are NOT in scope.
 // The broker runs this migration only once per state directory.
 var obsoleteLegacyGrants = map[string]Provider{
 	"jv-t254.2-merge-reconcile":       ProviderClaude,
@@ -19,19 +20,17 @@ var obsoleteLegacyGrants = map[string]Provider{
 	"jv-t928-probe-2":                 ProviderClaude,
 	"jv-t928-probe-3":                 ProviderClaude,
 	"mnemo-release-v0107":             ProviderClaude,
-	"pimp-arrai-779-native":           ProviderClaude,
 	"pimp-sysinfo-backlog":            ProviderClaude,
 	"pimp-vellum-convert-delay-steer": ProviderClaude,
-	"pimp-vellum-housekeeping-katex":  ProviderClaude,
-	"pimp-xbnf-phase0":                ProviderClaude,
 	"pimp-den-harness":                ProviderGrok,
 	"spyder-release-0.97.0":           ProviderGrok,
 }
 
 // PruneObsoleteLegacyGrants removes only matching named, auto-start grants
-// with no in-process owner. The caller must arrange one-shot execution. The owner authorized this
-// exact scout inventory after verifying no external processes held the rows. A failed save restores
-// the definitions in memory so the migration can be retried safely.
+// with no in-process owner. The caller must arrange one-shot execution. The
+// owner authorized this exact 13-row inventory; do not widen it to every
+// Claude/Grok auto-start grant. A failed save restores the definitions in
+// memory so the migration can be retried safely.
 func (r *Registry) PruneObsoleteLegacyGrants() ([]string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
