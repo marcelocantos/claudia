@@ -66,7 +66,7 @@ func TestPruneObsoleteLegacyGrantsExactScoutInventory(t *testing.T) {
 	if again, err := reloaded.PruneObsoleteLegacyGrants(); err != nil || len(again) != 0 {
 		t.Fatalf("repeat = %v, %v", again, err)
 	}
-	for _, def := range []AgentDef{keep[3], {Name: "pimp-den-harness", Provider: ProviderGrok, SessionID: "new-grok"}} {
+	for _, def := range []AgentDef{keep[3], {Name: "pimp-den-harness", Provider: ProviderGrok, SessionID: "new-grok"}, {Name: "spyder-release-0.97.0", Provider: ProviderGrok, SessionID: "stopped-grok", AutoStart: false}} {
 		if err := reloaded.Register(def); err != nil {
 			t.Fatal(err)
 		}
