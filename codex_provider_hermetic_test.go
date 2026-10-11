@@ -14,24 +14,6 @@ import (
 // 🎯T4.8 residual hermetics: capability claim + fixture inventory ratchet.
 // Live residual stays under CLAUDIA_CODEX_LIVE=1 (TestCodexTaskRunSmoke).
 
-func TestCodexProviderCapabilitiesClaimed(t *testing.T) {
-	taskWant := providerCapabilities{Task: true, Resume: true}
-	if got := (codexTaskBackend{}).Capabilities(); got != taskWant {
-		t.Errorf("codexTaskBackend capabilities = %+v, want %+v", got, taskWant)
-	}
-	agentWant := providerCapabilities{Task: true, Resume: true, Session: true}
-	if got := (codexAgentBackend{}).Capabilities(); got != agentWant {
-		t.Errorf("codexAgentBackend capabilities = %+v, want %+v", got, agentWant)
-	}
-	if got := ProviderCapabilityStatus(ProviderCodex, CapabilitySession); got != CapabilitySupported {
-		t.Errorf("codex session status = %q, want %q", got, CapabilitySupported)
-	}
-}
-
-// TestCodexCapabilityMatrixIsExplicit pins the published status of every
-// capability 🎯T4.6 names. The point is not that the values are these
-// values; it is that each one is *stated*, so a Codex gap can never be
-// discovered by a user at runtime instead of read off the matrix.
 func TestCodexCapabilityMatrixIsExplicit(t *testing.T) {
 	want := map[Capability]CapabilityStatus{
 		CapabilityTask:             CapabilitySupported,
@@ -125,27 +107,6 @@ func TestCodexCapabilityGapsVersusClaude(t *testing.T) {
 // public matrix says what is claimed, and a wired-but-unclaimed (or
 // claimed-but-unwired) capability is exactly the fake parity 🎯T4.6
 // exists to prevent.
-func TestCodexCapabilityMatrixMatchesBackendClaims(t *testing.T) {
-	task := (codexTaskBackend{}).Capabilities()
-	agent := (codexAgentBackend{}).Capabilities()
-	wired := providerCapabilities{
-		Task:    task.Task || agent.Task,
-		Session: task.Session || agent.Session,
-		Resume:  task.Resume || agent.Resume,
-		Rewind:  task.Rewind || agent.Rewind,
-		Cost:    task.Cost || agent.Cost,
-	}
-	for capability, on := range backendCapabilityNames(wired) {
-		status := ProviderCapabilityStatus(ProviderCodex, capability)
-		if on && status != CapabilitySupported {
-			t.Errorf("a Codex backend wires %s but the matrix says %q", capability, status)
-		}
-		if !on && status == CapabilitySupported {
-			t.Errorf("no Codex backend wires %s but the matrix claims supported", capability)
-		}
-	}
-}
-
 func TestCodexOracleFixturesPresent(t *testing.T) {
 	// Ratchet: every path named by docs/codex-provider-oracle-map.md must exist.
 	// Prevents "oracle map says hermetic" while fixtures drift off disk.

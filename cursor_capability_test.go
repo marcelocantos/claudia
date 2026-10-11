@@ -47,30 +47,6 @@ func TestCursorCapabilityMatrixIsExplicit(t *testing.T) {
 	}
 }
 
-func TestCursorCapabilityMatrixMatchesBackendClaims(t *testing.T) {
-	wired := map[Capability]bool{}
-	for _, caps := range []providerCapabilities{
-		(cursorAgentBackend{}).Capabilities(),
-		(cursorTaskBackend{}).Capabilities(),
-	} {
-		for capability, ok := range backendCapabilityNames(caps) {
-			wired[capability] = wired[capability] || ok
-		}
-	}
-	if len(wired) == 0 {
-		t.Fatal("no backend capabilities collected; the test would pass vacuously")
-	}
-	for capability, isWired := range wired {
-		status := ProviderCapabilityStatus(ProviderCursor, capability)
-		if isWired && status != CapabilitySupported {
-			t.Errorf("a Cursor backend wires %s but the matrix says %q", capability, status)
-		}
-		if !isWired && status == CapabilitySupported {
-			t.Errorf("no Cursor backend wires %s but the matrix claims supported", capability)
-		}
-	}
-}
-
 func TestResolveCursorBin(t *testing.T) {
 	fake := "/tmp/fake-agent"
 	errNotFound := errors.New("not found")

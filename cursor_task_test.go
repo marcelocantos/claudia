@@ -60,21 +60,6 @@ func TestParseCursorTaskLineError(t *testing.T) {
 	}
 }
 
-func TestCursorTaskArgsResumeAndModel(t *testing.T) {
-	args := cursorTaskArgs(taskRunRequest{
-		Prompt:    "hi",
-		Model:     "auto",
-		SessionID: "chat-1",
-	})
-	joined := strings.Join(args, " ")
-	if !strings.Contains(joined, "--print") || !strings.Contains(joined, "stream-json") {
-		t.Fatalf("args missing print/stream-json: %v", args)
-	}
-	if !argvHolds(args, "auto") || !argvHolds(args, "chat-1") || !argvHolds(args, "--resume") {
-		t.Fatalf("args = %v", args)
-	}
-}
-
 func TestHermeticCursorTaskRun(t *testing.T) {
 	bin := writeFakeCursorPrint(t)
 	t.Setenv("CURSOR_BIN", bin)

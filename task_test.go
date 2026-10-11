@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -224,37 +223,6 @@ func TestParseTaskEmptyContent(t *testing.T) {
 	}
 }
 
-func TestCodexTaskArgs(t *testing.T) {
-	req := taskRunRequest{
-		WorkDir:        "/repo",
-		Model:          "gpt-5.4",
-		SandboxMode:    "read-only",
-		ApprovalPolicy: "never",
-		Prompt:         "summarize",
-	}
-	got := codexTaskArgs(req)
-	want := []string{
-		"--ask-for-approval", "never",
-		"--cd", "/repo",
-		"--sandbox", "read-only",
-		"--model", "gpt-5.4",
-		"exec", "--skip-git-repo-check",
-		"--json",
-		"summarize",
-	}
-	if !slicesEqual(got, want) {
-		t.Errorf("codexTaskArgs = %v, want %v", got, want)
-	}
-}
-
-func TestCodexTaskArgsResume(t *testing.T) {
-	got := codexTaskArgs(taskRunRequest{SessionID: "thread-123", Prompt: "continue"})
-	want := []string{"exec", "--skip-git-repo-check", "resume", "--json", "thread-123", "continue"}
-	if !slicesEqual(got, want) {
-		t.Errorf("codexTaskArgs resume = %v, want %v", got, want)
-	}
-}
-
 func TestCodexTaskParser(t *testing.T) {
 	parser := codexTaskParser{}
 	lines := readFixtureLines(t, "testdata/codex/exec/success.jsonl")
@@ -398,38 +366,6 @@ func TestCodexTaskParserMalformedFixture(t *testing.T) {
 		if len(events) != 0 {
 			t.Errorf("events for malformed/unknown line %q = %#v, want none", line, events)
 		}
-	}
-}
-
-func TestGrokTaskArgs(t *testing.T) {
-	req := taskRunRequest{
-		WorkDir: "/repo",
-		Model:   "grok-4",
-		Prompt:  "summarize",
-	}
-	got := grokTaskArgs(req)
-	want := []string{
-		"-p", "summarize",
-		"--output-format", "streaming-json",
-		"--permission-mode", "bypassPermissions",
-		"--cwd", "/repo",
-		"--model", "grok-4",
-	}
-	if !slicesEqual(got, want) {
-		t.Errorf("grokTaskArgs = %v, want %v", got, want)
-	}
-}
-
-func TestGrokTaskArgsResume(t *testing.T) {
-	got := grokTaskArgs(taskRunRequest{SessionID: "sess-123", Prompt: "continue"})
-	want := []string{
-		"-p", "continue",
-		"--output-format", "streaming-json",
-		"--permission-mode", "bypassPermissions",
-		"--resume", "sess-123",
-	}
-	if !slicesEqual(got, want) {
-		t.Errorf("grokTaskArgs resume = %v, want %v", got, want)
 	}
 }
 
@@ -577,35 +513,47 @@ func TestGrokTaskParserMalformedFixture(t *testing.T) {
 }
 
 func TestTaskBackendForProvider(t *testing.T) {
-	if _, ok := taskBackendForProvider("").(claudeTaskBackend); !ok {
-		t.Error("empty provider did not select claudeTaskBackend")
-	}
-	if _, ok := taskBackendForProvider(ProviderCodex).(codexTaskBackend); !ok {
-		t.Error("ProviderCodex did not select codexTaskBackend")
-	}
-	if _, ok := taskBackendForProvider(ProviderGrok).(grokTaskBackend); !ok {
-		t.Error("ProviderGrok did not select grokTaskBackend")
-	}
-	if _, ok := taskBackendForProvider(ProviderCursor).(cursorTaskBackend); !ok {
-		t.Error("ProviderCursor did not select cursorTaskBackend")
+	for _, provider := range []Provider{"", ProviderClaude, ProviderCodex, ProviderGrok, ProviderCursor} {
+		t.Run(string(provider), func(t *testing.T) {
+			backend := taskBackendForProvider(provider)
+			if _, ok := backend.(errorTaskBackend); !ok {
+				t.Fatalf("backend = %T, want errorTaskBackend", backend)
+			}
+			if backend.Capabilities() != (providerCapabilities{}) {
+				t.Fatalf("capabilities = %+v, want none", backend.Capabilities())
+			}
+			_, err := backend.RunTask(context.Background(), taskRunRequest{Prompt: "hello"})
+			if !errors.Is(err, ErrTaskCLIRemoved) {
+				t.Fatalf("RunTask error = %v, want ErrTaskCLIRemoved", err)
+			}
+		})
 	}
 	if _, ok := taskBackendForProvider(ProviderBedrock).(bedrockTaskBackend); !ok {
-		t.Error("ProviderBedrock did not select bedrockTaskBackend")
+		t.Error("Bedrock backend changed")
 	}
-	caps := taskBackendForProvider(ProviderGrok).Capabilities()
-	if !caps.Task || !caps.Resume || caps.Cost || caps.Session {
-		t.Errorf("ProviderGrok capabilities = %+v, want Task+Resume only", caps)
+	if _, ok := taskBackendForProvider(ProviderOllama).(ollamaTaskBackend); !ok {
+		t.Error("Ollama backend changed")
 	}
-	bcaps := taskBackendForProvider(ProviderBedrock).Capabilities()
-	if !bcaps.Task || bcaps.Resume || bcaps.Session || bcaps.Cost {
-		t.Errorf("ProviderBedrock capabilities = %+v, want Task only", bcaps)
+	if _, err := taskBackendForProvider(Provider("bogus")).RunTask(context.Background(), taskRunRequest{}); err == nil {
+		t.Error("unknown provider accepted")
 	}
-	backend := taskBackendForProvider(Provider("bogus"))
-	if _, ok := backend.(errorTaskBackend); !ok {
-		t.Fatalf("unknown provider backend = %T, want errorTaskBackend", backend)
-	}
-	if _, err := backend.RunTask(context.Background(), taskRunRequest{}); err == nil {
-		t.Error("unknown provider RunTask returned nil error")
+}
+
+func TestRemovedCLITaskRunReturnsPromptly(t *testing.T) {
+	for _, provider := range []Provider{ProviderClaude, ProviderCodex, ProviderGrok, ProviderCursor} {
+		t.Run(string(provider), func(t *testing.T) {
+			task := NewTask(TaskConfig{Provider: provider, WorkDir: t.TempDir()})
+			task.SetDirect(true)
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			events, err := task.Run(ctx, "hello")
+			if !errors.Is(err, ErrTaskCLIRemoved) || events != nil {
+				t.Fatalf("Task.Run = (%v, %v), want removed error and no events", events, err)
+			}
+			if ctx.Err() != nil {
+				t.Fatal("Task.Run timed out")
+			}
+		})
 	}
 }
 
@@ -618,8 +566,8 @@ func TestGrokPublicTaskEntryPath(t *testing.T) {
 		ID:       "public-entry",
 		WorkDir:  t.TempDir(),
 	})
-	if _, ok := task.backend.(grokTaskBackend); !ok {
-		t.Fatalf("NewTask(ProviderGrok).backend = %T, want grokTaskBackend", task.backend)
+	if _, ok := task.backend.(errorTaskBackend); !ok {
+		t.Fatalf("NewTask(ProviderGrok).backend = %T, want errorTaskBackend", task.backend)
 	}
 	lines := readFixtureLines(t, "testdata/grok/exec/success.jsonl")
 	if err := grokTaskSuccessOracle(lines); err != nil {
@@ -947,237 +895,6 @@ func TestTaskFilterEnvPartialMatch(t *testing.T) {
 //
 // Gated on CLAUDIA_LIVE=1 (spends API credit) and on the claude
 // binary being available.
-func TestTaskRunSmoke(t *testing.T) {
-	if os.Getenv("CLAUDIA_LIVE") == "" {
-		t.Skip("CLAUDIA_LIVE not set (this test spends API credit)")
-	}
-	if _, err := exec.LookPath("claude"); err != nil {
-		t.Skip("claude binary not on PATH")
-	}
-
-	task := NewTask(TaskConfig{
-		ID:      "smoke-test",
-		Name:    "smoke",
-		WorkDir: t.TempDir(),
-		Model:   "haiku",
-	})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-	defer cancel()
-
-	events, err := task.Run(ctx, "respond with: ok")
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-
-	var (
-		sawInit   bool
-		sawResult bool
-		resultTxt string
-	)
-	for ev := range events {
-		switch ev.Type {
-		case TaskEventInit:
-			sawInit = true
-			if ev.SessionID == "" {
-				t.Error("TaskEventInit missing SessionID")
-			}
-		case TaskEventResult:
-			sawResult = true
-			resultTxt = ev.Content
-			if ev.DurationMs <= 0 {
-				t.Errorf("TaskEventResult DurationMs = %v, want > 0", ev.DurationMs)
-			}
-		case TaskEventError:
-			t.Fatalf("TaskEventError: %s", ev.ErrorMsg)
-		}
-	}
-
-	if !sawInit {
-		t.Error("never saw TaskEventInit")
-	}
-	if !sawResult {
-		t.Error("never saw TaskEventResult")
-	}
-	if resultTxt == "" {
-		t.Error("TaskEventResult content empty")
-	}
-	t.Logf("result: %q", resultTxt)
-
-	if got := task.Status(); got != TaskStatusIdle {
-		t.Errorf("post-run status = %q, want %q", got, TaskStatusIdle)
-	}
-}
-
-// TestClaudeTaskDisallowToolsLiveSmoke (🎯T49.3) is the live oracle for the
-// ytt empty-result incident: Claude Code 2.1.x treats --disallowedTools as
-// variadic, so a trailing positional prompt was eaten and print mode exited
-// 1 with no result. BaseDisallowedTools is always on; extras mirror a
-// synopsis-style locked-down task.
-func TestClaudeTaskDisallowToolsLiveSmoke(t *testing.T) {
-	if os.Getenv("CLAUDIA_LIVE") == "" {
-		t.Skip("CLAUDIA_LIVE not set (this test spends API credit); residue for 🎯T49.3")
-	}
-	if _, err := exec.LookPath("claude"); err != nil {
-		t.Skip("claude binary not on PATH; residue for 🎯T49.3")
-	}
-
-	task := NewTask(TaskConfig{
-		ID:            "smoke-disallow",
-		Name:          "smoke-disallow",
-		WorkDir:       t.TempDir(),
-		Model:         "haiku",
-		DisallowTools: []string{"Bash", "Edit", "Write", "WebFetch", "WebSearch"},
-	})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-	defer cancel()
-
-	events, err := task.Run(ctx, "respond with only the word: ok")
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-
-	var (
-		sawResult bool
-		resultTxt string
-	)
-	for ev := range events {
-		switch ev.Type {
-		case TaskEventResult:
-			sawResult = true
-			resultTxt = ev.Content
-		case TaskEventError:
-			t.Fatalf("TaskEventError: %s", ev.ErrorMsg)
-		}
-	}
-	if !sawResult {
-		t.Fatal("never saw TaskEventResult")
-	}
-	if strings.TrimSpace(resultTxt) == "" {
-		t.Fatal("TaskEventResult content empty")
-	}
-	t.Logf("result: %q", resultTxt)
-}
-
-// TestGrokTaskRunSmoke spawns a real grok headless process and runs a
-// trivial prompt through Task mode. Gated on CLAUDIA_GROK_LIVE because it
-// uses local Grok credentials and may contact xAI.
-func TestGrokTaskRunSmoke(t *testing.T) {
-	if os.Getenv("CLAUDIA_GROK_LIVE") == "" {
-		t.Skip("CLAUDIA_GROK_LIVE not set (this test spends API credit)")
-	}
-	if _, err := resolveGrokBin(); err != nil {
-		t.Skipf("grok binary not found: %v", err)
-	}
-
-	workDir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Getwd: %v", err)
-	}
-
-	task := NewTask(TaskConfig{
-		ID:       "grok-smoke-test",
-		Name:     "grok-smoke",
-		Provider: ProviderGrok,
-		WorkDir:  workDir,
-	})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-	defer cancel()
-
-	events, err := task.Run(ctx, "respond with exactly: ok")
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-
-	var sawResult bool
-	var sessionID string
-	for ev := range events {
-		switch ev.Type {
-		case TaskEventInit:
-			sessionID = ev.SessionID
-		case TaskEventResult:
-			sawResult = true
-			if ev.Content == "" {
-				t.Error("TaskEventResult content empty")
-			}
-		case TaskEventError:
-			t.Fatalf("TaskEventError: %s", ev.ErrorMsg)
-		}
-	}
-	if !sawResult {
-		t.Error("never saw TaskEventResult")
-	}
-	if sessionID == "" && task.ClaudeID() == "" {
-		t.Error("never captured Grok session id")
-	}
-}
-
-// TestCodexTaskRunSmoke spawns a real codex exec --json process and runs a
-// trivial prompt through Task mode. It is gated separately from
-// CLAUDIA_LIVE because it uses Codex credentials and may contact OpenAI.
-func TestCodexTaskRunSmoke(t *testing.T) {
-	if os.Getenv("CLAUDIA_CODEX_LIVE") == "" {
-		t.Skip("CLAUDIA_CODEX_LIVE not set (this test spends API credit)")
-	}
-	if _, err := resolveCodexBin(); err != nil {
-		t.Skipf("codex binary not found: %v", err)
-	}
-
-	// Sentinel and other task callers can use a personal directory that is
-	// not a Git checkout. The live smoke must cover that workdir shape.
-	workDir := t.TempDir()
-	pick, err := Resolve(context.Background(), ModelPredicates{
-		Mode:             CapabilityTask,
-		Quality:          ModelQualityStandard,
-		PreferPlan:       true,
-		PreferProvider:   ProviderCodex,
-		ExcludeProviders: []Provider{ProviderClaude, ProviderGrok, ProviderCursor},
-		Usage:            []PlanUsage{},
-	})
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
-	}
-	if pick.Model != "gpt-6-sol" {
-		t.Fatalf("standard Codex model: %s", pick.Model)
-	}
-
-	task := NewTask(TaskConfig{
-		ID:             "codex-smoke-test",
-		Name:           "codex-smoke",
-		Provider:       ProviderCodex,
-		Model:          pick.Model,
-		WorkDir:        workDir,
-		SandboxMode:    "read-only",
-		ApprovalPolicy: "never",
-	})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-	defer cancel()
-
-	events, err := task.Run(ctx, "respond with: ok")
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-
-	var sawResult bool
-	for ev := range events {
-		switch ev.Type {
-		case TaskEventResult:
-			sawResult = true
-			if ev.Content == "" {
-				t.Error("TaskEventResult content empty")
-			}
-		case TaskEventError:
-			t.Fatalf("TaskEventError: %s", ev.ErrorMsg)
-		}
-	}
-	if !sawResult {
-		t.Error("never saw TaskEventResult")
-	}
-}
-
 func TestTaskStop(t *testing.T) {
 	s := NewTask(TaskConfig{ID: "test-456", Name: "test"})
 	s.Stop()

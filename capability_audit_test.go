@@ -4,6 +4,7 @@
 package claudia
 
 import (
+	"context"
 	"errors"
 	"os"
 	"reflect"
@@ -300,24 +301,13 @@ func exportedFields(t reflect.Type) []string {
 
 func taskPrecheck(provider Provider, req taskRunRequest) error {
 	switch provider {
-	case ProviderClaude:
-		return claudeTaskPrecheck(req)
-	case ProviderCodex:
-		// As for Session: the grant needs its mode, and Codex refuses it
-		// without (TestT116GitWriteNeedsWorkspaceWrite). Every other
-		// provider still sees the bare field and must refuse it.
-		if req.SandboxGitWrite && req.SandboxMode == "" {
-			req.SandboxMode = codexSandboxWorkspaceWrite
-		}
-		return codexTaskPrecheck(req)
-	case ProviderGrok:
-		return grokTaskPrecheck(req)
+	case ProviderClaude, ProviderCodex, ProviderGrok, ProviderCursor:
+		_, err := taskBackendForProvider(provider).RunTask(context.Background(), req)
+		return err
 	case ProviderBedrock:
 		return bedrockTaskPrecheck(req)
 	case ProviderOllama:
 		return ollamaTaskPrecheck(req)
-	case ProviderCursor:
-		return cursorTaskPrecheck(req)
 	default:
 		return unsupportedCapability(provider, CapabilityTask, "no task precheck")
 	}
@@ -357,23 +347,6 @@ func taskMaterialises(provider Provider, field string) bool {
 		req.ToolPolicy.HomeDir = ""
 	}
 	switch provider {
-	case ProviderClaude:
-		return argvHolds(claudeTaskArgs(req), taskNeedle(field, req))
-	case ProviderCodex:
-		if field == "SandboxGitWrite" {
-			// 🎯T116: resolved against this repository (the audit's own
-			// workdir does not exist) and carried as a -c override; and
-			// absent when the field is.
-			req.SandboxMode, req.WorkDir = codexSandboxWorkspaceWrite, "."
-			granted, err := codexTaskGitGrant(req)
-			req.SandboxGitWrite = false
-			withheld, _ := codexTaskGitGrant(req)
-			return err == nil && argvHolds(codexTaskArgs(granted), codexSandboxConfigKey) &&
-				!argvHolds(codexTaskArgs(withheld), codexSandboxConfigKey)
-		}
-		return argvHolds(codexTaskArgs(req), taskNeedle(field, req))
-	case ProviderGrok:
-		return argvHolds(grokTaskArgs(req), taskNeedle(field, req))
 	case ProviderBedrock:
 		in := buildBedrockConverseInput(req.Model, req.Prompt)
 		switch field {
@@ -384,8 +357,6 @@ func taskMaterialises(provider Provider, field string) bool {
 		}
 	case ProviderOllama:
 		return field == "Model" && req.Model != ""
-	case ProviderCursor:
-		return argvHolds(cursorTaskArgs(req), taskNeedle(field, req))
 	default:
 		return false
 	}
@@ -433,6 +404,10 @@ func auditTaskFates(fates map[Provider]map[string]fieldDecl) []string {
 	var issues []string
 	fields := exportedFields(reflect.TypeFor[TaskConfig]())
 	for _, provider := range taskProviders {
+		if provider == ProviderClaude || provider == ProviderCodex || provider == ProviderGrok || provider == ProviderCursor {
+			// Direct CLI Task transport is removed; the backend refuses before using any fields.
+			continue
+		}
 		decls, ok := fates[provider]
 		if !ok {
 			issues = append(issues, string(provider)+": no Task dispositions")
@@ -706,6 +681,10 @@ func auditSessionFates(fates map[Provider]map[string]fieldDecl) []string {
 			}
 			continue
 		}
+		if provider == ProviderClaude || provider == ProviderCodex || provider == ProviderGrok || provider == ProviderCursor {
+			// Direct CLI Task transport is removed; the backend refuses before using any fields.
+			continue
+		}
 		decls, ok := fates[provider]
 		if !ok {
 			issues = append(issues, string(provider)+": no Session dispositions")
@@ -800,32 +779,6 @@ func TestProviderPathsHonourOrRefuseEveryRequestField(t *testing.T) {
 
 // TestDeclaringAConsumedFieldUnsupportedGoesRed is mutation (b): a field
 // the path in fact honours, marked refused, must fail the audit.
-func TestDeclaringAConsumedFieldUnsupportedGoesRed(t *testing.T) {
-	task := cloneTaskFates()
-	task[ProviderClaude]["Model"] = fieldDecl{fateRefused, "mutated declaration"}
-	issues := requestFieldAudit(task, sessionFieldFates)
-	if !containsIssue(issues, "claude Task Model: declared refused") {
-		t.Fatalf("declaring Claude Task Model unsupported did not fail the audit: %v", issues)
-	}
-}
-
-// TestReintroducingASilentDropGoesRed is mutation (a): a field the path
-// cannot honour, if no longer refused, fails the audit. The live precheck
-// is the production path; flipping the declaration to consumed is the
-// same shape as deleting the precheck while leaving the claim in place.
-func TestReintroducingASilentDropGoesRed(t *testing.T) {
-	req := taskRunRequest{Prompt: "hi", DisallowTools: []string{"Bash"}}
-	if err := grokTaskPrecheck(req); !isCapErr(err) {
-		t.Fatalf("Grok Task DisallowTools was dropped: %v", err)
-	}
-	task := cloneTaskFates()
-	task[ProviderGrok]["DisallowTools"] = fieldDecl{fateConsumed, ""}
-	issues := requestFieldAudit(task, sessionFieldFates)
-	if !containsIssue(issues, "grok Task DisallowTools") {
-		t.Fatalf("declaring Grok Task DisallowTools consumed did not fail the audit: %v", issues)
-	}
-}
-
 // TestOmittingASessionFieldDispositionGoesRed is mutation (c): a Config
 // field with no row at all in a Session map must fail the audit as a
 // silent drop. This is the ENT-002 shape (🎯T47.2): Config.GoalCompleteCheck
