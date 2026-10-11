@@ -125,8 +125,54 @@ func TestUseOMPIncludesGrokAndCursorWithoutFlag(t *testing.T) {
 	if useOMP(Config{Provider: ProviderBedrock}) {
 		t.Fatal("bedrock is not a subscription sidecar seat")
 	}
-	if useOMP(Config{Provider: ProviderClaude}) || useOMP(Config{Provider: ProviderCodex}) {
-		t.Fatal("claude/codex CLI ids stay vendor until reminted onto anthropic/openai-codex")
+	for _, tc := range []struct {
+		provider Provider
+		id       string
+	}{
+		{ProviderClaude, omp.Anthropic}, {ProviderCodex, omp.OpenAICodex},
+	} {
+		if !useOMP(Config{Provider: tc.provider}) || ompProviderID(tc.provider) != tc.id {
+			t.Errorf("%s must use OMP as %s", tc.provider, tc.id)
+		}
+	}
+}
+
+func TestOMPCodexSandboxControlsFailClosed(t *testing.T) {
+	// A missing socket proves refusal happens before a sidecar launch/dial.
+	t.Setenv(omp.SocketEnv, filepath.Join(t.TempDir(), "missing.sock"))
+	for _, provider := range []Provider{ProviderCodex, Provider(omp.OpenAICodex)} {
+		for _, tc := range []struct {
+			name string
+			set  func(*Config)
+		}{
+			{"SandboxMode", func(c *Config) { c.SandboxMode = "read-only" }},
+			{"ApprovalPolicy", func(c *Config) { c.ApprovalPolicy = "never" }},
+			{"SandboxGitWrite", func(c *Config) { c.SandboxGitWrite = true }},
+		} {
+			t.Run(string(provider)+"/"+tc.name, func(t *testing.T) {
+				cfg := Config{Provider: provider, Model: "gpt-6-sol"}
+				tc.set(&cfg)
+				if _, err := StartDirectContext(t.Context(), cfg); !errors.Is(err, ErrOMPCodexSandboxUnsupported) {
+					t.Fatalf("StartDirect accepted: %v", err)
+				}
+				_, err := (ompAgentBackend{}).StartAgent(agentStartRequest{Context: t.Context(), Config: cfg})
+				if !errors.Is(err, ErrOMPCodexSandboxUnsupported) || !strings.Contains(err.Error(), tc.name) {
+					t.Fatalf("backend error = %v, want named refusal of %s", err, tc.name)
+				}
+			})
+		}
+	}
+}
+
+func TestOMPCodexWithoutControlsPassesGuard(t *testing.T) {
+	for _, provider := range []Provider{ProviderCodex, Provider(omp.OpenAICodex)} {
+		cfg := Config{Provider: provider, Model: "gpt-6-sol"}
+		if err := checkOMPCodexSandbox(cfg); err != nil {
+			t.Fatalf("%s: %v", provider, err)
+		}
+		if _, err := withDefaultOMPModel(t.Context(), cfg); err != nil {
+			t.Fatalf("%s: %v", provider, err)
+		}
 	}
 }
 
@@ -185,7 +231,9 @@ func TestOMPEmptyModelLoadsProviderLocalDefault(t *testing.T) {
 		{ProviderGrok, omp.XAIOAuth, "grok-4.5"},
 		{ProviderCursor, omp.Cursor, "composer-2.5"},
 		{Provider(omp.Anthropic), omp.Anthropic, "claude-sonnet-5"},
+		{ProviderClaude, omp.Anthropic, "claude-sonnet-5"},
 		{Provider(omp.OpenAICodex), omp.OpenAICodex, "gpt-6-sol"},
+		{ProviderCodex, omp.OpenAICodex, "gpt-6-sol"},
 		{Provider(omp.XAIOAuth), omp.XAIOAuth, "grok-4.5"},
 	} {
 		agent, err := StartDirect(Config{Name: "default-" + string(tc.provider), Provider: tc.provider, WorkDir: t.TempDir(), TermLogPath: "-"})
