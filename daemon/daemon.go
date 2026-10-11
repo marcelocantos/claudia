@@ -254,6 +254,11 @@ func New(opts Options) (*Daemon, error) {
 		return nil, fmt.Errorf("broker daemon: grants: %w", err)
 	}
 	reg.SetDirect(true)
+	// One-time, owner-approved deletion of the exact T177 legacy grants.
+	// Never use a provider-wide predicate: new seats may reuse these names.
+	if err := pruneObsoleteLegacyGrantsOnce(reg, stateDir); err != nil {
+		return nil, fmt.Errorf("broker daemon: prune obsolete legacy grants: %w", err)
+	}
 	if opts.launchers != nil {
 		reg.SetLaunchers(opts.launchers)
 	}
