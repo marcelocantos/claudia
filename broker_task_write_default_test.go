@@ -145,3 +145,30 @@ func TestSpendLimitedProviderIsNotAdmitted(t *testing.T) {
 		t.Fatalf("claude row = %+v, want admit=false reason=spend_limit", c)
 	}
 }
+
+// Live: the config a pick-remaining broker task gets on codex writes a
+// file in its workdir — the 2026-10-12 read-only seat could not.
+func TestCodexBrokerTaskWriteDefaultLiveSmoke(t *testing.T) {
+	if os.Getenv("CLAUDIA_CODEX_LIVE") == "" {
+		t.Skip("CLAUDIA_CODEX_LIVE not set (this test spends API credit)")
+	}
+	if _, err := resolveCodexBin(); err != nil {
+		t.Skipf("codex binary not found: %v", err)
+	}
+	repo := t109Repo(t)
+	cfg := TaskConfig{ID: "codex-broker-write", Name: "codex-broker-write", Provider: ProviderCodex, WorkDir: repo}
+	ApplyBrokerTaskWriteDefault(&cfg)
+	events, err := NewTask(cfg).Run(t.Context(), "Create a file named draft.md in the current directory containing exactly the line WRITE-OK, then reply DONE.")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	for ev := range events {
+		if ev.Type == TaskEventError {
+			t.Fatalf("TaskEventError: %s", ev.ErrorMsg)
+		}
+	}
+	b, err := os.ReadFile(filepath.Join(repo, "draft.md"))
+	if err != nil || !strings.Contains(string(b), "WRITE-OK") {
+		t.Fatalf("draft.md = %q, %v; the codex broker seat did not write its workdir", b, err)
+	}
+}
