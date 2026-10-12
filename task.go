@@ -883,9 +883,26 @@ func (claudeTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*task
 	ch := make(chan TaskEvent, 16)
 	go func() {
 		defer close(ch)
-		streamErr := forwardTaskStream(ctx, stdout, ParseTaskLine, req.RawLog, ch)
+		// A provider refusal (spend limit, rate limit, auth) ends the run
+		// now: print mode would otherwise sit on pending background tasks
+		// with no result line (2026-10-12: 33 minutes after the refusal).
+		refused := false
+		parse := func(line []byte) []TaskEvent {
+			evs := ParseTaskLine(line)
+			if _, ok := claudeAssistantAPIError(line); ok && !refused {
+				refused = true
+				killTaskProcessGroup(cmd)
+			}
+			return evs
+		}
+		streamErr := forwardTaskStream(ctx, stdout, parse, req.RawLog, ch)
 		waitErr := cmd.Wait()
 		<-stderrDone
+		if refused {
+			// The refusal was already delivered as the run's error; the
+			// kill's exit status says nothing more.
+			return
+		}
 		if streamErr != nil {
 			// 🎯T133: the process can exit 0 while the stdout scanner
 			// stopped early on an oversized line, so this must be
@@ -1501,6 +1518,9 @@ func parseTaskSystem(line []byte) []TaskEvent {
 }
 
 func parseTaskAssistant(line []byte) []TaskEvent {
+	if msg, ok := claudeAssistantAPIError(line); ok {
+		return []TaskEvent{{Type: TaskEventError, IsError: true, ErrorMsg: msg}}
+	}
 	var msg struct {
 		Message struct {
 			Content []json.RawMessage `json:"content"`
@@ -1545,6 +1565,51 @@ func parseTaskAssistant(line []byte) []TaskEvent {
 		}
 	}
 	return events
+}
+
+// TaskErrorSpendLimit prefixes a Task error whose provider refused the
+// turn because the account's spend limit is reached.
+const TaskErrorSpendLimit = "spend_limit"
+
+// claudeAssistantAPIError reports a stream-json assistant line that
+// carries Claude Code's top-level "error" class (rate_limit,
+// billing_error, authentication_failed, ...). Claude Code emits the
+// refusal as a synthetic assistant message — on 2026-10-12 it was
+// error "rate_limit" with the text "You've hit your monthly spend limit
+// · raise it at ... · your session limit resets 10:10pm" (apiError
+// usage_limit_reached, overageStatus rejected) — and print mode then
+// keeps the process alive while background tasks are pending, so no
+// result line follows for half an hour. The refusal is the end of the
+// run: it is returned as a Task error, with spend_limit named when the
+// provider's own text says so.
+func claudeAssistantAPIError(line []byte) (string, bool) {
+	var msg struct {
+		Error   string `json:"error"`
+		Message struct {
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal(line, &msg); err != nil || msg.Error == "" {
+		return "", false
+	}
+	var text []string
+	for _, c := range msg.Message.Content {
+		if c.Type == "text" && strings.TrimSpace(c.Text) != "" {
+			text = append(text, strings.TrimSpace(c.Text))
+		}
+	}
+	detail := strings.Join(text, " ")
+	class := msg.Error
+	if strings.Contains(strings.ToLower(detail), "spend limit") {
+		class = TaskErrorSpendLimit
+	}
+	if detail == "" {
+		detail = "provider refused the turn"
+	}
+	return "claude " + class + ": " + detail, true
 }
 
 func parseTaskResult(line []byte) []TaskEvent {

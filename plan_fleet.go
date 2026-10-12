@@ -29,6 +29,10 @@ func fleetProviders() []Provider {
 // seat died).
 const FleetReasonBinaryNotFound = "binary_not_found"
 
+// FleetReasonSpendLimit is [FleetUsageRow.Reason] for a provider whose
+// published usage says its spend limit is reached ([SpendLimitReached]).
+const FleetReasonSpendLimit = "spend_limit"
+
 // ProviderBinaryError reports whether provider can start on this host.
 // It is nil when the provider's backend on that surface runs no local
 // CLI — session seats for Cursor and Grok run in the plan sidecar, and
@@ -123,6 +127,9 @@ func ProjectFleetUsage(usage []PlanUsage, fetchedAt, now time.Time, th *PlanThre
 		}
 		if u.Status == "" {
 			row.Status = PlanUsageUnavailable
+		}
+		if SpendLimitReached(u) {
+			row.Reason = FleetReasonSpendLimit + ": provider reports its spend limit reached"
 		}
 		if pct, window, ok := fleetRemaining(u); ok {
 			row.RemainingPercent = floatPtr(pct)

@@ -1552,6 +1552,9 @@ func (d *Daemon) handleTaskRun(c *broker.ClientConn, req *broker.Request) {
 		rem := choice.RemainingPercent
 		pickedRemaining = &rem
 	}
+	// A broker task seat writes its workdir on every provider: Codex's
+	// read-only default is not the seat contract (2026-10-12).
+	claudia.ApplyBrokerTaskWriteDefault(&cfg)
 	// Admission reads the same snapshot `claudia broker usage` prints, and
 	// refreshes it when the TTL has elapsed, before any provider process.
 	if err := d.admitTask(cfg.Provider); err != nil {

@@ -162,11 +162,22 @@ func ClassifyWindow(w PlanWindow, now time.Time, th PlanThresholds) PlanBand {
 	return BandOfPressure(Pressure(*used, elapsed, th), th)
 }
 
+// SpendLimitReached reports the provider's own flag that the account's
+// spend limit is hit (Claude's extra_usage.spend_limit_reached). A seat
+// started then is refused by the provider at its first turn, so it is
+// not admitted whatever the plan windows read.
+func SpendLimitReached(usage PlanUsage) bool {
+	return usage.Spend != nil && usage.Spend.LimitReached
+}
+
 // HasAvailableTokens reports whether this snapshot still has usable plan
 // capacity. Unpublished / unknown is not a veto — only known exhaustion,
 // weekly-hot, and session-low/exhausted fail. This is the automatic
 // Resolve predicate (🎯T61.3).
 func HasAvailableTokens(usage PlanUsage, now time.Time, th *PlanThresholds) bool {
+	if SpendLimitReached(usage) {
+		return false
+	}
 	v := ClassifyPlan(usage, now, th)
 	switch v.Session {
 	case PlanSessionLow, PlanSessionExhausted:
