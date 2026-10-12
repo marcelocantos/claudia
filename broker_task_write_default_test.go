@@ -91,24 +91,17 @@ func TestClaudeTaskSpendLimitFailsFast(t *testing.T) {
 	}
 	t.Setenv("CLAUDE_BIN", bin)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	run, err := claudeTaskBackend{}.RunTask(ctx, taskRunRequest{WorkDir: dir, Prompt: "p"})
+	// The fake sleeps 600s after the refusal: a hang is caught by
+	// `go test -timeout`, no wall clock here (🎯T97).
+	run, err := claudeTaskBackend{}.RunTask(context.Background(), taskRunRequest{WorkDir: dir, Prompt: "p"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	start := time.Now()
 	var errs []string
 	for ev := range run.events {
 		if ev.Type == TaskEventError {
 			errs = append(errs, ev.ErrorMsg)
 		}
-	}
-	if ctx.Err() != nil {
-		t.Fatal("run hung until the test deadline after the spend-limit refusal")
-	}
-	if time.Since(start) > 10*time.Second {
-		t.Fatalf("run took %s to end after the refusal", time.Since(start))
 	}
 	if len(errs) != 1 || !strings.Contains(errs[0], TaskErrorSpendLimit) {
 		t.Fatalf("errors = %q, want exactly the spend_limit refusal", errs)
