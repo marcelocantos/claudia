@@ -108,34 +108,46 @@ func TestClaudeTaskSpendLimitFailsFast(t *testing.T) {
 	}
 }
 
-func TestSpendLimitedProviderIsNotAdmitted(t *testing.T) {
+// The spend-limit flag alone is not a veto: on 2026-10-13 it read true
+// with session 95% left and Claude answered. It names the refusal only
+// when a plan window is exhausted too.
+func TestSpendLimitNamesExhaustionButDoesNotVetoRoom(t *testing.T) {
 	now := time.Now()
 	pct := func(v float64) *float64 { return &v }
-	row := func(p Provider, rem float64, limited bool) PlanUsage {
-		u := PlanUsage{Provider: p, Status: PlanUsageAvailable,
-			Windows: []PlanWindow{{Name: PlanWindowWeekly, RemainingPercent: pct(rem)}}}
+	row := func(p Provider, session, weekly float64, limited bool) PlanUsage {
+		u := PlanUsage{Provider: p, Status: PlanUsageAvailable, Windows: []PlanWindow{
+			{Name: PlanWindowSession, RemainingPercent: pct(session)},
+			{Name: PlanWindowWeekly, RemainingPercent: pct(weekly)},
+		}}
 		if limited {
 			u.Spend = &PlanSpend{Enabled: true, LimitReached: true}
 		}
 		return u
 	}
+	roomy := row(ProviderClaude, 95, 90, true)
+	if !HasAvailableTokens(roomy, now, nil) {
+		t.Fatal("spend-limited claude with plan room refused")
+	}
 	usage := []PlanUsage{
-		row(ProviderCursor, 10, false),
-		row(ProviderGrok, 40, false),
-		row(ProviderClaude, 90, true),
-		row(ProviderCodex, 20, false),
+		row(ProviderCursor, 50, 10, false),
+		row(ProviderGrok, 50, 40, false),
+		row(ProviderClaude, 0, 90, true),
+		row(ProviderCodex, 50, 20, false),
 	}
 	if HasAvailableTokens(usage[2], now, nil) {
-		t.Fatal("spend-limited claude admitted")
+		t.Fatal("claude with an exhausted session admitted")
 	}
 	pick, err := PickByRemaining(usage, now, nil)
 	if err != nil || pick.Provider != ProviderGrok {
-		t.Fatalf("pick = %+v, %v; want grok (claude fullest but spend-limited)", pick, err)
+		t.Fatalf("pick = %+v, %v; want grok", pick, err)
 	}
 	snap := ProjectFleetUsage(usage, now, now, nil)
-	c := snap.Providers[2]
-	if c.Provider != ProviderClaude || c.Admit || !strings.HasPrefix(c.Reason, FleetReasonSpendLimit) {
+	if c := snap.Providers[2]; c.Admit || !strings.HasPrefix(c.Reason, FleetReasonSpendLimit) {
 		t.Fatalf("claude row = %+v, want admit=false reason=spend_limit", c)
+	}
+	snap = ProjectFleetUsage([]PlanUsage{roomy}, now, now, nil)
+	if c := snap.Providers[2]; !c.Admit || strings.HasPrefix(c.Reason, FleetReasonSpendLimit) {
+		t.Fatalf("roomy claude row = %+v, want admitted without spend_limit", c)
 	}
 }
 

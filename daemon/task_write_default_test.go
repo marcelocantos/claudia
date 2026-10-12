@@ -48,8 +48,9 @@ func TestTaskPickRemainingCodexGetsWriteSandbox(t *testing.T) {
 	}
 }
 
-// A spend-limited provider is not picked even when it has the most plan.
-func TestTaskPickRemainingSkipsSpendLimited(t *testing.T) {
+// The spend-limit flag alone does not take a provider with plan room
+// out of the pick (2026-10-13: flag true, Claude answering).
+func TestTaskPickRemainingKeepsSpendLimitedWithRoom(t *testing.T) {
 	f := newFixture(t)
 	snap := fleetSnap(t, 15, 40, 99, 30)
 	snap[2].Spend = &claudia.PlanSpend{Enabled: true, LimitReached: true}
@@ -78,7 +79,7 @@ func TestTaskPickRemainingSkipsSpendLimited(t *testing.T) {
 	}
 	for range ch {
 	}
-	if got != claudia.ProviderGrok {
-		t.Fatalf("picked %q, want grok (claude fullest but spend-limited)", got)
+	if got != claudia.ProviderClaude {
+		t.Fatalf("picked %q, want claude (fullest; spend flag alone is no veto)", got)
 	}
 }

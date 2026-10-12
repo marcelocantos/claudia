@@ -30,7 +30,8 @@ func fleetProviders() []Provider {
 const FleetReasonBinaryNotFound = "binary_not_found"
 
 // FleetReasonSpendLimit is [FleetUsageRow.Reason] for a provider whose
-// published usage says its spend limit is reached ([SpendLimitReached]).
+// plan is exhausted while its spend limit is reached ([SpendLimitReached]),
+// so overage cannot carry it either.
 const FleetReasonSpendLimit = "spend_limit"
 
 // ProviderBinaryError reports whether provider can start on this host.
@@ -128,7 +129,7 @@ func ProjectFleetUsage(usage []PlanUsage, fetchedAt, now time.Time, th *PlanThre
 		if u.Status == "" {
 			row.Status = PlanUsageUnavailable
 		}
-		if SpendLimitReached(u) {
+		if !row.Admit && SpendLimitReached(u) {
 			row.Reason = FleetReasonSpendLimit + ": provider reports its spend limit reached"
 		}
 		if pct, window, ok := fleetRemaining(u); ok {

@@ -163,9 +163,13 @@ func ClassifyWindow(w PlanWindow, now time.Time, th PlanThresholds) PlanBand {
 }
 
 // SpendLimitReached reports the provider's own flag that the account's
-// spend limit is hit (Claude's extra_usage.spend_limit_reached). A seat
-// started then is refused by the provider at its first turn, so it is
-// not admitted whatever the plan windows read.
+// extra-usage spend limit is hit (Claude's extra_usage.spend_limit_reached).
+// It is not an admission veto by itself: the flag stays true while the
+// plan windows still have room, and Claude answers then (Colossus,
+// 2026-10-13: flag true, session 95% left, a live turn ended end_turn).
+// It only means overage cannot cover an exhausted window, which
+// [HasAvailableTokens] already refuses; the roster names it as the
+// reason for that refusal.
 func SpendLimitReached(usage PlanUsage) bool {
 	return usage.Spend != nil && usage.Spend.LimitReached
 }
@@ -175,9 +179,6 @@ func SpendLimitReached(usage PlanUsage) bool {
 // weekly-hot, and session-low/exhausted fail. This is the automatic
 // Resolve predicate (🎯T61.3).
 func HasAvailableTokens(usage PlanUsage, now time.Time, th *PlanThresholds) bool {
-	if SpendLimitReached(usage) {
-		return false
-	}
 	v := ClassifyPlan(usage, now, th)
 	switch v.Session {
 	case PlanSessionLow, PlanSessionExhausted:
