@@ -569,6 +569,9 @@ func admitLabel(b claudia.PlanUsage) string {
 	if claudia.HasAvailableTokens(b, time.Now(), nil) {
 		return "yes"
 	}
+	if claudia.SpendLimitReached(b) {
+		return "no (" + claudia.FleetReasonSpendLimit + ")"
+	}
 	return "no"
 }
 
