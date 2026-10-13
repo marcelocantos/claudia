@@ -116,7 +116,7 @@ func startFakeTransferSidecar(t *testing.T, reply []string) {
 				_, _ = c.Write([]byte("{\"type\":\"ready\"}\n"))
 			case omp.OpPrompt:
 				for _, l := range reply {
-					_, _ = c.Write([]byte(l + "\n"))
+					_, _ = c.Write([]byte(withTurnID(l, msg.TurnID) + "\n"))
 				}
 			}
 		}
@@ -137,4 +137,22 @@ func startFakeTransferSidecar(t *testing.T, reply []string) {
 		return startDirectContext(ctx, cfg)
 	}
 	t.Cleanup(func() { migrationTransferStart = prev })
+}
+
+// withTurnID stamps the prompt's turn identity onto a fixture event, as the
+// real sidecar does since 🎯T179 (events without one are refused).
+func withTurnID(ev, turnID string) string {
+	var m map[string]any
+	if json.Unmarshal([]byte(ev), &m) != nil {
+		return ev
+	}
+	if _, ok := m["turn_id"]; ok {
+		return ev
+	}
+	m["turn_id"] = turnID
+	b, err := json.Marshal(m)
+	if err != nil {
+		return ev
+	}
+	return string(b)
 }

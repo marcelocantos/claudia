@@ -61,7 +61,8 @@ func startT141Sidecar(t *testing.T) *t141Sidecar {
 
 func t141Write(t *testing.T, c net.Conn, ev string) {
 	t.Helper()
-	if _, err := c.Write([]byte(ev + "\n")); err != nil {
+	// The sidecar stamps every answer event with its turn (🎯T179).
+	if _, err := c.Write([]byte(withTurnID(ev, "t141-turn") + "\n")); err != nil {
 		t.Fatal(err)
 	}
 }
