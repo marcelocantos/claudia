@@ -25,25 +25,10 @@ func TestPlanProviderMapsSidecarSeatsToTheirSubscriptions(t *testing.T) {
 	}
 }
 
-func TestSidecarProviderCanMigrateWithoutInheritingCLIClaims(t *testing.T) {
+func TestSidecarProviderDoesNotInheritCLIClaims(t *testing.T) {
 	for _, provider := range []Provider{"xai-oauth", "anthropic", "openai-codex"} {
-		if err := CheckCapability(provider, CapabilityMigrate); err != nil {
-			t.Errorf("%s migrate: %v", provider, err)
-		}
 		if got := ProviderCapabilityStatus(provider, CapabilityExtraArgs); got != CapabilityUnsupported {
 			t.Errorf("%s extra args = %s, want unsupported", provider, got)
 		}
-	}
-}
-
-func TestSidecarIdentityMigratesThroughClaudiaAgent(t *testing.T) {
-	src, _ := startMigrateFixture(t, "xai-oauth", "fake-sidecar-grok")
-	src.PublishEvent(Event{Type: "user", Text: "continue this work"})
-	dest := &fakeAgentBackend{name: "fake-sidecar-claude", assignedSession: "claude-dest"}
-	if err := src.migrateWithBackend(&MigrateArgs{Provider: "anthropic"}, dest); err != nil {
-		t.Fatal(err)
-	}
-	if src.Provider() != "anthropic" || src.SessionID() != "claude-dest" {
-		t.Fatalf("migrated seat = %q / %q", src.Provider(), src.SessionID())
 	}
 }

@@ -56,15 +56,11 @@ const (
 	// provider process verbatim. A provider claudia does not launch as a
 	// CLI with caller-supplied argv cannot honour it.
 	CapabilityExtraArgs Capability = "extra_args"
-	// CapabilityModelSwitch is changing the model on a live Session
-	// without leaving the provider ([Agent.SetModel]). Inter-provider
-	// Session moves use [CapabilityMigrate] / [Agent.Migrate].
+	// CapabilityModelSwitch is changing the model on a live native CLI
+	// Session within its provider ([Agent.SwitchModel]). A sidecar seat
+	// switches provider and model in place and is not gated by it
+	// (🎯T195).
 	CapabilityModelSwitch Capability = "model_switch"
-	// CapabilityMigrate is moving a live Session to a different
-	// Provider ([Agent.Migrate]). Session providers that claudia
-	// actually starts can be sources and destinations; Task-only
-	// providers cannot.
-	CapabilityMigrate Capability = "migrate"
 	// CapabilityMCPTools is a live Session actually surfacing the MCP
 	// tools claudia attaches ([Config.MCPServers]) to the provider's
 	// model — steerability, in the jevons sense: can this seat receive
@@ -153,7 +149,6 @@ func reportedCapabilities() []Capability {
 		CapabilitySandboxPolicy,
 		CapabilityExtraArgs,
 		CapabilityModelSwitch,
-		CapabilityMigrate,
 		CapabilityMCPTools,
 	}
 }
@@ -217,10 +212,6 @@ var providerCapabilityClaims = map[Provider]map[Capability]capabilityClaim{
 			status: CapabilityUnsupported,
 			reason: "Ollama Task mode is one-shot generate; there is no live session model to switch",
 		},
-		CapabilityMigrate: {
-			status: CapabilityUnsupported,
-			reason: migrateNeedsSessionReason,
-		},
 		CapabilityMCPTools: {
 			status: CapabilityUnsupported,
 			reason: "Ollama Task mode is one-shot generate with no tool-calling wired; there is no session for an MCP tool to reach",
@@ -247,7 +238,6 @@ var providerCapabilityClaims = map[Provider]map[Capability]capabilityClaim{
 		},
 		CapabilityExtraArgs:   {status: CapabilitySupported},
 		CapabilityModelSwitch: {status: CapabilitySupported},
-		CapabilityMigrate:     {status: CapabilitySupported},
 		CapabilityMCPTools:    {status: CapabilitySupported},
 	},
 	ProviderCodex: {
@@ -286,7 +276,6 @@ var providerCapabilityClaims = map[Provider]map[Capability]capabilityClaim{
 			reason: "Codex Session speaks typed app-server fields; Config.ExtraArgs have nowhere to go",
 		},
 		CapabilityModelSwitch: {status: CapabilitySupported},
-		CapabilityMigrate:     {status: CapabilitySupported},
 		// 5fa7f35 ("fix(codex): seat MCP servers need no tool approval",
 		// released v0.42.0) sets default_tools_approval_mode = approve
 		// on every Codex seat's MCP block; before it every MCP call was
@@ -333,7 +322,6 @@ var providerCapabilityClaims = map[Provider]map[Capability]capabilityClaim{
 			reason: grokExtraArgsReason,
 		},
 		CapabilityModelSwitch: {status: CapabilitySupported},
-		CapabilityMigrate:     {status: CapabilitySupported},
 		CapabilityMCPTools:    {status: CapabilitySupported},
 	},
 	ProviderCursor: {
@@ -375,7 +363,6 @@ var providerCapabilityClaims = map[Provider]map[Capability]capabilityClaim{
 			reason: cursorExtraArgsReason,
 		},
 		CapabilityModelSwitch: {status: CapabilitySupported},
-		CapabilityMigrate:     {status: CapabilitySupported},
 		// claudia T118 (open, set_aside as of 2026-09-22, no fix landed):
 		// cursor-agent 2026.09.18 over ACP surfaces session/new's
 		// mcpServers and lists them in tools/list, but the model sees
@@ -437,10 +424,6 @@ var providerCapabilityClaims = map[Provider]map[Capability]capabilityClaim{
 			status: CapabilityUnsupported,
 			reason: "Bedrock v1 is one-shot ConverseStream; there is no live session model to switch",
 		},
-		CapabilityMigrate: {
-			status: CapabilityUnsupported,
-			reason: migrateNeedsSessionReason,
-		},
 		CapabilityMCPTools: {
 			status: CapabilityUnsupported,
 			reason: "Bedrock v1 is one-shot ConverseStream with no claudia-bound tool-calling; there is no session for an MCP tool to reach",
@@ -488,7 +471,6 @@ const (
 	cursorExtraArgsReason = "claudia drives Cursor over a fixed `agent … acp` / `--print` command line, so caller argv has nowhere to go"
 	//nolint:lll // one sentence, kept whole for the error message.
 	cursorPermissionModeReason = "Cursor Session auto-approves ACP permissions for unattended embedding; Cursor Task has no ApprovalPolicy/PermissionMode flag, so a non-default mode would be dropped"
-	migrateNeedsSessionReason  = "migrate needs a live Session on both sides; this provider is Task-only"
 )
 
 // capabilityRefusal is the error a provider path returns to a caller who
@@ -515,13 +497,6 @@ func capabilityRefusal(provider Provider, capability Capability, unwiredReason s
 func providerCapabilityClaim(provider Provider, capability Capability) capabilityClaim {
 	if provider == "" {
 		provider = ProviderClaude
-	}
-	// A sidecar seat is named by its protocol provider (for example
-	// xai-oauth), not the plan/catalog provider. Every subscription sidecar
-	// session supports a fresh-session migrate; do not inherit unrelated
-	// CLI capability claims from the plan provider.
-	if capability == CapabilityMigrate && useOMP(Config{Provider: provider}) {
-		return capabilityClaim{status: CapabilitySupported}
 	}
 	if claims, ok := providerCapabilityClaims[provider]; ok {
 		if claim, ok := claims[capability]; ok {

@@ -24,7 +24,7 @@ func TestSeatPolicyStoreRoundTrips(t *testing.T) {
 	policy := SeatPolicy{
 		PreferProvider:   "claude",
 		ExcludeProviders: []Provider{"cursor"},
-		HostMayInterrupt:   true,
+		HostMayInterrupt: true,
 	}
 	if err := st.Put("jv-x", policy); err != nil {
 		t.Fatalf("put: %v", err)

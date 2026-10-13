@@ -1178,7 +1178,10 @@ func startCursorAgent(req agentStartRequest) (*agentStart, error) {
 		promptInFlight: func(*Agent) bool {
 			return client.promptInFlight()
 		},
-		setModel: func(_ *Agent, model string) error {
+		switchModel: func(a *Agent, provider Provider, model string) error {
+			if err := sameProviderSwitch(a, provider); err != nil {
+				return err
+			}
 			return client.SetModel(model)
 		},
 		// 🎯T72.2 seam over the 🎯T72.1 prompt-id stack.

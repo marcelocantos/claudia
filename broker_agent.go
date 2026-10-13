@@ -280,10 +280,7 @@ func (b *brokerAgentBackend) ops() agentOps {
 			}
 			return resp.AgentInfo.PromptInFlight
 		},
-		setModel: func(_ *Agent, model string) error {
-			_, err := b.opCall(&broker.Request{Type: broker.TypeSetModel, SetModel: &broker.SetModelRequest{Name: b.named().Name, Model: model}})
-			return err
-		},
+		switchModel: b.switchModel,
 		// steer forwards mode=steer (🎯T72.3); the daemon runs the
 		// provider's mechanism and the outcome comes back on the sent
 		// response. A daemon that predates send.mode answers the bare
@@ -317,10 +314,8 @@ func (b *brokerAgentBackend) ops() agentOps {
 				BusyOnSecondSubmit: w.BusyOnSecondSubmit,
 			}
 		},
-		migrate:        b.migrate,
-		migrationState: b.migrationState,
-		rewind:         b.rewind,
-		release:        b.release,
+		rewind:  b.rewind,
+		release: b.release,
 		closeGoal: func(*Agent) {
 			if _, err := b.opCall(&broker.Request{Type: broker.TypeCloseGoal, CloseGoal: b.named()}); err != nil {
 				slog.Warn("broker close_goal failed", "grant", b.named().Name, "err", err)
@@ -339,55 +334,17 @@ func (b *brokerAgentBackend) ops() agentOps {
 	}
 }
 
-// migrationState asks the daemon which seat owns this grant before a retry
-// summarizes anything. A migrate reply can be lost after the daemon has
-// already committed and seeded the destination.
-func (b *brokerAgentBackend) migrationState(a *Agent) (bool, error) {
-	if b.hint.pool == nil {
-		if err := b.reclaim(); err != nil {
-			return false, fmt.Errorf("broker migration ownership: %w", err)
-		}
-	}
-	resp, err := b.opCall(&broker.Request{Type: broker.TypeAgentInfo, AgentInfo: b.named()})
-	if err != nil {
-		return false, fmt.Errorf("broker migration state: %w", err)
-	}
-	info := resp.AgentInfo
-	if info == nil || info.Provider == "" || info.SessionID == "" {
-		return false, fmt.Errorf("broker migration state: incomplete agent info")
-	}
-	a.mu.Lock()
-	fromProvider, fromSession := a.provider, a.sessionID
-	a.mu.Unlock()
-	toProvider := Provider(info.Provider)
-	if fromProvider == toProvider && fromSession == info.SessionID {
-		return false, nil
-	}
-	b.repoint(a, seatWhere{provider: toProvider, sessionID: info.SessionID, model: info.Model,
-		windowID: info.WindowID, jsonlPath: info.JSONLPath, termLogPath: info.TermLogPath,
-		attach: info.AttachCommand})
-	return PlanProvider(fromProvider) != PlanProvider(toProvider), nil
-}
-
-// migrate asks the daemon to swap providers, then re-points this handle at
-// the destination. The daemon's model_switch Event arrives on the stream.
-func (b *brokerAgentBackend) migrate(a *Agent, args *MigrateArgs) error {
-	ctx, cancel := context.WithTimeout(context.Background(), grantStartTimeout)
+// switchModel asks the daemon to move the seat to provider and model in
+// place (🎯T195). It can take as long as a compaction, when the conversation
+// must be folded to fit the new model, so it is not an ordinary op call.
+// The daemon's model_switch Event arrives on the stream.
+func (b *brokerAgentBackend) switchModel(_ *Agent, provider Provider, model string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), switchModelTimeout)
 	defer cancel()
-	resp, err := b.client.call(ctx, &broker.Request{Type: broker.TypeMigrate, Migrate: &broker.MigrateRequest{
-		Name: b.named().Name, Provider: broker.Provider(args.Provider), Model: args.Model, Reason: args.Reason,
-		ContextBrief: args.ContextBrief, Force: args.Force,
+	_, err := b.client.call(ctx, &broker.Request{Type: broker.TypeSetModel, SetModel: &broker.SetModelRequest{
+		Name: b.named().Name, Provider: broker.Provider(provider), Model: model,
 	}})
-	if err != nil {
-		return err
-	}
-	m := resp.Migrated
-	if m == nil {
-		return fmt.Errorf("broker: migrate answered with %s", resp.Type)
-	}
-	b.repoint(a, seatWhere{provider: Provider(m.Provider), sessionID: m.SessionID, model: m.Model, windowID: m.WindowID,
-		jsonlPath: m.JSONLPath, termLogPath: m.TermLogPath, attach: m.AttachCommand})
-	return nil
+	return err
 }
 
 // rewind asks the daemon to roll the seat back and relaunch it, then

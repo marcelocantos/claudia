@@ -191,8 +191,25 @@ func withDefaultOMPModel(ctx context.Context, cfg Config) (Config, error) {
 	return cfg, nil
 }
 
+// standardSessionModel is the standard-quality session model on provider's
+// plan, for a seat started or switched without naming one.
+func standardSessionModel(ctx context.Context, provider Provider) (string, error) {
+	pick, err := Resolve(ctx, ModelPredicates{
+		Mode: CapabilitySession, Quality: ModelQualityStandard,
+		PreferPlan: true, PreferProvider: provider,
+		Usage: []PlanUsage{},
+	})
+	if err != nil {
+		return "", fmt.Errorf("choose standard session model: %w", err)
+	}
+	if pick.Provider != provider {
+		return "", fmt.Errorf("no standard session model on provider %s", provider)
+	}
+	return pick.Model, nil
+}
+
 func providerLocalSessionModel(ctx context.Context, provider Provider) (string, error) {
-	model, err := migrationSummaryModel(ctx, PlanProvider(provider))
+	model, err := standardSessionModel(ctx, PlanProvider(provider))
 	if err != nil {
 		return "", fmt.Errorf("%w on %s: %v", ErrNoSubscriptionModel, provider, err)
 	}
@@ -263,19 +280,7 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 			return nil, err
 		}
 	}
-	store := planStore()
-	login := ompLogin
-	if login.Run == nil {
-		login.Run = execBunLogin
-	}
-	if login.Command == "" {
-		login.Command = "bun"
-	}
-	if login.Script == "" {
-		login.Script = sidecarAuthScript()
-	}
-	login.Caller = "launch " + req.Config.Name
-	token, err := store.Ensure(req.Context, provider, login)
+	token, err := ensureOMPToken(req.Context, provider, "launch "+req.Config.Name)
 	if err != nil {
 		return nil, err
 	}
@@ -290,9 +295,7 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 	var tools json.RawMessage
 	var toolRoutes, toolNames map[string]string
 	var mcpUnavailable []string
-	if !req.Config.SummaryOnly {
-		tools, toolRoutes, toolNames, mcpUnavailable = hostToolsReport(req.Context, req.Config.MCPServers)
-	}
+	tools, toolRoutes, toolNames, mcpUnavailable = hostToolsReport(req.Context, req.Config.MCPServers)
 	// The session names the seat's conversation. The sidecar keeps it on
 	// disk under this id, so a sidecar restart resumes it and a new session
 	// starts fresh (🎯T151).
@@ -301,18 +304,17 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 		sessionID = uuid.NewString()
 	}
 	if err := conn.Send(omp.Message{
-		Op:          op,
-		Seat:        req.Config.Name,
-		Provider:    provider,
-		Model:       req.Config.Model,
-		SummaryOnly: req.Config.SummaryOnly,
-		Token:       token,
-		Cwd:         req.Config.WorkDir,
-		SessionID:   sessionID,
-		Preserve:    req.Config.ContextPreserve,
-		Pins:        req.Config.ContextPins,
-		Tools:       tools,
-		Sandbox:     sandbox,
+		Op:        op,
+		Seat:      req.Config.Name,
+		Provider:  provider,
+		Model:     req.Config.Model,
+		Token:     token,
+		Cwd:       req.Config.WorkDir,
+		SessionID: sessionID,
+		Preserve:  req.Config.ContextPreserve,
+		Pins:      req.Config.ContextPins,
+		Tools:     tools,
+		Sandbox:   sandbox,
 	}); err != nil {
 		conn.Close()
 		return nil, err
@@ -370,13 +372,13 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 		return nil, fmt.Errorf("%w: seat %q asked %q, sidecar applied %q (sidecar predates 🎯T178?)",
 			ErrOMPSandboxNotHonoured, req.Config.Name, sandbox.Mode, ev.Sandbox)
 	}
-	historyLost := ompHistoryLost(ev, req.Config.SummaryOnly)
+	historyLost := ompHistoryLost(ev)
 	ctrl := &ompControl{
 		conn: conn, bytes: make(chan []byte, 8),
 		token: token, provider: provider,
 		seat: req.Config.Name, model: req.Config.Model, cwd: req.Config.WorkDir,
-		sessionID: sessionID, summaryOnly: req.Config.SummaryOnly,
-		preserve: req.Config.ContextPreserve, pins: req.Config.ContextPins,
+		sessionID: sessionID,
+		preserve:  req.Config.ContextPreserve, pins: req.Config.ContextPins,
 		tools: tools, toolServers: toolRoutes, toolNames: toolNames,
 		sandbox: sandbox,
 	}
@@ -413,18 +415,12 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 			interrupt: func(*Agent) error {
 				return ctrl.send(omp.Message{Op: omp.OpAbort, Seat: req.Config.Name})
 			},
-			setModel: func(_ *Agent, model string) error {
-				ctrl.mu.Lock()
-				ctrl.model = model
-				ctrl.mu.Unlock()
-				return ctrl.send(ctrl.loadMessage())
+			switchModel: func(_ *Agent, provider Provider, model string) error {
+				return ctrl.switchModel(provider, model)
 			},
 			promptInFlight: func(*Agent) bool { return ctrl.inflight.Load() },
 			stop: func(*Agent) {
 				ompSeats.Delete(ctrl)
-				if req.Config.SummaryOnly {
-					_ = ctrl.send(omp.Message{Op: omp.OpDrop, Seat: req.Config.Name})
-				}
 				conn.Close()
 			},
 		},
@@ -444,15 +440,17 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 }
 
 type ompControl struct {
-	conn        *omp.Conn
-	bytes       chan []byte
-	token       string
-	provider    string
-	seat        string
-	model       string
-	cwd         string
-	sessionID   string
-	summaryOnly bool
+	conn      *omp.Conn
+	bytes     chan []byte
+	token     string
+	provider  string
+	seat      string
+	model     string
+	cwd       string
+	sessionID string
+	// waits routes a sidecar reply that names a request id to the call
+	// waiting for it: a switch's ready or refusal (🎯T195). Under mu.
+	waits map[string]chan omp.Event
 	// preserve and pins steer the seat's compaction (🎯T152).
 	preserve string
 	pins     []string
@@ -548,6 +546,14 @@ func (c *ompControl) pump(a *Agent) {
 			default:
 			}
 		}
+		// A reply to a switch is the switch's, not a turn's (🎯T195): a
+		// refusal must not read as a failed turn.
+		if ev.RequestID != "" && (ev.Type == "ready" || ev.Type == "error") {
+			if ch := c.takeWait(ev.RequestID); ch != nil {
+				ch <- ev
+				continue
+			}
+		}
 		switch ev.Type {
 		case "auth_retry":
 			if ev.RequestID != "" && ev.TurnID != "" && len(ev.FailedToken) == 64 && oauthRejected(ev.Error) {
@@ -584,10 +590,6 @@ func (c *ompControl) pump(a *Agent) {
 				slog.Error("omp refused sidecar answer", "seat", c.seat, "error", err)
 			}
 		case "tool_call":
-			if c.summaryOnly {
-				_ = c.send(omp.Message{Op: omp.OpTool, CallID: ev.CallID, Result: "tools are unavailable to a migration summarizer"})
-				continue
-			}
 			a.publishEvent(Event{
 				Type:         "progress",
 				ProgressType: "tool_use",
@@ -778,6 +780,81 @@ func (c *ompControl) currentToken() string {
 	return c.token
 }
 
+// switchModel moves this seat to provider and model in place (🎯T195): a
+// load naming them, which the sidecar answers once the seat's agent has taken
+// the new model (folding the conversation first when it would not fit), or
+// refuses with the seat left as it was. The seat's provider, model and token
+// change only once the sidecar has switched.
+func (c *ompControl) switchModel(provider Provider, model string) error {
+	id := ompProviderID(provider)
+	if id == "" {
+		return fmt.Errorf("omp: %s is not a sidecar provider", provider)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), switchModelTimeout)
+	defer cancel()
+	c.mu.Lock()
+	token, same := c.token, id == c.provider
+	c.mu.Unlock()
+	if !same {
+		var err error
+		if token, err = ensureOMPToken(ctx, id, "switch "+c.seat); err != nil {
+			return err
+		}
+	}
+	requestID := uuid.NewString()
+	reply := make(chan omp.Event, 1)
+	c.mu.Lock()
+	if c.waits == nil {
+		c.waits = map[string]chan omp.Event{}
+	}
+	c.waits[requestID] = reply
+	c.mu.Unlock()
+	defer c.takeWait(requestID)
+	msg := c.loadMessage()
+	msg.Provider, msg.Model, msg.Token, msg.RequestID = id, model, token, requestID
+	if err := c.send(msg); err != nil {
+		return err
+	}
+	select {
+	case ev := <-reply:
+		if ev.Type == "error" {
+			return fmt.Errorf("sidecar refused the switch to %s/%s: %s", id, model, ev.Text)
+		}
+		c.mu.Lock()
+		c.provider, c.model, c.token = id, model, token
+		c.mu.Unlock()
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("switch to %s/%s: no answer from the sidecar: %w", id, model, ctx.Err())
+	}
+}
+
+// takeWait removes and returns the waiter for requestID, or nil.
+func (c *ompControl) takeWait(requestID string) chan omp.Event {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	ch := c.waits[requestID]
+	delete(c.waits, requestID)
+	return ch
+}
+
+// ensureOMPToken is provider's plan token, logging in when the plan has
+// none. caller names who asked, for the login's own record.
+func ensureOMPToken(ctx context.Context, provider, caller string) (string, error) {
+	login := ompLogin
+	if login.Run == nil {
+		login.Run = execBunLogin
+	}
+	if login.Command == "" {
+		login.Command = "bun"
+	}
+	if login.Script == "" {
+		login.Script = sidecarAuthScript()
+	}
+	login.Caller = caller
+	return planStore().Ensure(ctx, provider, login)
+}
+
 // loadMessage is the load that (re)configures this seat with its current
 // token, model and host tools.
 func (c *ompControl) loadMessage() omp.Message {
@@ -786,7 +863,7 @@ func (c *ompControl) loadMessage() omp.Message {
 	return omp.Message{
 		Op: omp.OpLoad, Seat: c.seat, Provider: c.provider, SessionID: c.sessionID,
 		Preserve: c.preserve, Pins: c.pins,
-		Model: c.model, SummaryOnly: c.summaryOnly, Token: c.token, Cwd: c.cwd,
+		Model: c.model, Token: c.token, Cwd: c.cwd,
 		Tools: c.tools, Sandbox: c.sandbox,
 	}
 }
@@ -1422,10 +1499,10 @@ func providerToolName(name string) string {
 
 // ompHistoryLost reads a sidecar's "ready": a launched seat whose sidecar
 // did not restore its conversation starts without it (jevons 🎯T929). An
-// adopted seat kept its conversation, and a summary-only seat never had one.
-// A sidecar too old to report restoring never restored.
-func ompHistoryLost(ev omp.Event, summaryOnly bool) bool {
-	return ev.How == "launched" && !summaryOnly && (ev.Restored == nil || !*ev.Restored)
+// adopted seat kept its conversation. A sidecar too old to report restoring
+// never restored.
+func ompHistoryLost(ev omp.Event) bool {
+	return ev.How == "launched" && (ev.Restored == nil || !*ev.Restored)
 }
 
 // hostToolsTTL is how long a server's tool list is reused; a failed or empty

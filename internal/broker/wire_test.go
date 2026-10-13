@@ -175,8 +175,7 @@ var requestVectors = map[string]requestVector{
 	"send_interrupt": {msg: &Request{ID: "g6", Type: TypeSend, Send: &SendRequest{Name: "jv-worker-1", Text: "stop and summarise", Mode: SendModeInterrupt}}},
 	"send_queue":     {msg: &Request{ID: "g6", Type: TypeSend, Send: &SendRequest{Name: "jv-worker-1", Text: "after this turn", Mode: SendModeQueue}}},
 	"interrupt":      {msg: &Request{ID: "g7", Type: TypeInterrupt, Interrupt: &NamedRequest{Name: "jv-worker-1"}}},
-	"set_model":      {msg: &Request{ID: "g8", Type: TypeSetModel, SetModel: &SetModelRequest{Name: "jv-worker-1", Model: "sonnet"}}},
-	"migrate":        {msg: &Request{ID: "g9", Type: TypeMigrate, Migrate: &MigrateRequest{Name: "jv-worker-1", Provider: "grok", Model: "grok-4", Reason: "hot"}}},
+	"set_model":      {msg: &Request{ID: "g8", Type: TypeSetModel, SetModel: &SetModelRequest{Name: "jv-worker-1", Provider: "openai-codex", Model: "gpt-5.5"}}},
 	"agent_info":     {msg: &Request{ID: "g10", Type: TypeAgentInfo, AgentInfo: &NamedRequest{Name: "jv-worker-1"}}},
 	"term_subscribe": {msg: &Request{ID: "g11", Type: TypeTermSubscribe, TermSubscribe: &NamedRequest{Name: "jv-worker-1"}}},
 	"resize":         {msg: &Request{ID: "g12", Type: TypeResize, Resize: &ResizeRequest{Name: "jv-worker-1", Cols: 120, Rows: 40}}},
@@ -322,10 +321,6 @@ var responseVectors = map[string]*Response{
 			JSONLPath: "/h/.claude/projects/-w/sid-1.jsonl", TurnsRemoved: 2, LinesRemoved: 9, BytesRemoved: 4096,
 			BackupPath: "/h/.claude/projects/-w/sid-1.jsonl.rewind-bak",
 		},
-	},
-	"migrated": {
-		ID: "g9", Type: TypeMigrated,
-		Migrated: &MigrateResponse{Name: "jv-worker-1", SessionID: "sid-2", Provider: "grok", Model: "grok-4"},
 	},
 	"agent_info_result": {
 		ID: "g10", Type: TypeAgentInfoResult,

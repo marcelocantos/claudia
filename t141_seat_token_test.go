@@ -51,7 +51,9 @@ func startT141Sidecar(t *testing.T) *t141Sidecar {
 			_ = json.Unmarshal(line, &msg)
 			s.got <- msg
 			if msg.Op == omp.OpLoad {
-				_, _ = c.Write([]byte("{\"type\":\"ready\"}\n"))
+				// A switch names a request id and waits for it (🎯T195).
+				ready, _ := json.Marshal(map[string]any{"type": "ready", "request_id": msg.RequestID})
+				_, _ = c.Write(append(ready, '\n'))
 			}
 		}
 	}()
@@ -206,11 +208,11 @@ func TestT141RecoverReloadsLiveSeats(t *testing.T) {
 	s := startT141Sidecar(t)
 	t141Plan(t, "revoked", &refreshes, "recovered")
 	agent, _ := startT141Seat(t, s)
-	if err := agent.SetModel("claude-opus"); err != nil {
+	if err := agent.SwitchModel("", "claude-opus"); err != nil {
 		t.Fatal(err)
 	}
 	if m := s.nextLoad(); m.Model != "claude-opus" {
-		t.Fatalf("setModel load = %+v", m)
+		t.Fatalf("switch load = %+v", m)
 	}
 	// The refused seat's own refresh failed, so the plan reads rejected: the
 	// owner's recovery has something to repair (🎯T165).

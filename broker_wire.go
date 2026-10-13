@@ -209,41 +209,36 @@ func configToGrantDef(name string, cfg Config, base *AgentDef) GrantDefinition {
 	}
 	return GrantDefinition{
 		AgentDef: AgentDef{
-			Name:                  name,
-			Parent:                labels.Parent,
-			Purpose:               labels.Purpose,
-			Role:                  labels.Role,
-			Description:           labels.Description,
-			TargetID:              labels.TargetID,
-			Materialized:          labels.Materialized,
-			WorkDir:               cfg.WorkDir,
-			SessionID:             cfg.SessionID,
-			Provider:              cfg.Provider,
-			SummaryOnly:           cfg.SummaryOnly,
-			Model:                 cfg.Model,
-			DisallowTools:         cfg.DisallowTools,
-			ConnectURL:            cfg.ConnectURL,
-			ConnectPID:            cfg.ConnectPID,
-			GrokConnect:           cfg.GrokConnect,
-			SandboxMode:           cfg.SandboxMode,
-			ApprovalPolicy:        cfg.ApprovalPolicy,
-			SandboxWritableRoots:  cfg.SandboxWritableRoots,
-			SandboxNetworkAccess:  cfg.SandboxNetworkAccess,
-			SandboxGitWrite:       cfg.SandboxGitWrite,
-			Goal:                  cfg.Goal,
-			MCPServers:            cfg.MCPServers,
-			MCPExclusive:          cfg.MCPExclusive,
-			PermissionMode:        cfg.PermissionMode,
-			MCPConfig:             cfg.MCPConfig,
-			ExtraArgs:             cfg.ExtraArgs,
-			TermLogPath:           cfg.TermLogPath,
-			OMP:                   cfg.OMP,
-			ContextPreserve:       cfg.ContextPreserve,
-			ContextPins:           cfg.ContextPins,
-			MigrationSeed:         labels.MigrationSeed,
-			MigrationFrom:         labels.MigrationFrom,
-			MigrationFromSession:  labels.MigrationFromSession,
-			MigrationPendingStart: labels.MigrationPendingStart,
+			Name:                 name,
+			Parent:               labels.Parent,
+			Purpose:              labels.Purpose,
+			Role:                 labels.Role,
+			Description:          labels.Description,
+			TargetID:             labels.TargetID,
+			Materialized:         labels.Materialized,
+			WorkDir:              cfg.WorkDir,
+			SessionID:            cfg.SessionID,
+			Provider:             cfg.Provider,
+			Model:                cfg.Model,
+			DisallowTools:        cfg.DisallowTools,
+			ConnectURL:           cfg.ConnectURL,
+			ConnectPID:           cfg.ConnectPID,
+			GrokConnect:          cfg.GrokConnect,
+			SandboxMode:          cfg.SandboxMode,
+			ApprovalPolicy:       cfg.ApprovalPolicy,
+			SandboxWritableRoots: cfg.SandboxWritableRoots,
+			SandboxNetworkAccess: cfg.SandboxNetworkAccess,
+			SandboxGitWrite:      cfg.SandboxGitWrite,
+			Goal:                 cfg.Goal,
+			MCPServers:           cfg.MCPServers,
+			MCPExclusive:         cfg.MCPExclusive,
+			PermissionMode:       cfg.PermissionMode,
+			MCPConfig:            cfg.MCPConfig,
+			ExtraArgs:            cfg.ExtraArgs,
+			TermLogPath:          cfg.TermLogPath,
+			OMP:                  cfg.OMP,
+			ContextPreserve:      cfg.ContextPreserve,
+			ContextPins:          cfg.ContextPins,
 		},
 		RequireResume: cfg.RequireResume,
 	}
@@ -364,14 +359,4 @@ func DecodePickWire(raw json.RawMessage) (ModelPick, error) {
 		return ModelPick{}, fmt.Errorf("broker pick: %w", err)
 	}
 	return ModelPick(w), nil
-}
-
-// migrateArgsWire mirrors MigrateArgs on the wire (broker.MigrateRequest
-// carries the same fields by name; this keeps the census honest).
-type migrateArgsWire struct {
-	Provider     Provider `json:"provider"`
-	Model        string   `json:"model,omitempty"`
-	Reason       string   `json:"reason,omitempty"`
-	ContextBrief string   `json:"context_brief,omitempty"`
-	Force        bool     `json:"force,omitempty"`
 }

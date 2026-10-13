@@ -43,18 +43,31 @@ func TestT148ContextOverflowIsTerminal(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			startFakeTransferSidecar(t, []string{`{"type":"text","text":"x"}`, tc.reply})
-			_, err := SummarizeForMigration(context.Background(), MigrationTransferArgs{
-				Destination: ProviderClaude, Goal: "T148", Transcript: "user: finish T148\n",
+			startFakeSidecar(t, []string{`{"type":"text","text":"x"}`, tc.reply})
+			ctx := context.Background()
+			agent, err := startDirectContext(ctx, Config{
+				Provider: SubscriptionSeatProvider(ProviderClaude), Name: "t148-seat",
+				Model: "m", WorkDir: t.TempDir(), TermLogPath: "-",
 			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer agent.Stop()
+			if err := agent.WaitReady(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if err := agent.Send("finish T148"); err != nil {
+				t.Fatal(err)
+			}
+			_, err = agent.WaitForResponse(ctx)
 			if tc.wantErr == "" {
 				if err != nil {
-					t.Fatalf("SummarizeForMigration err = %v; want none", err)
+					t.Fatalf("WaitForResponse err = %v; want none", err)
 				}
 				return
 			}
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("SummarizeForMigration err = %v; want it to contain %q", err, tc.wantErr)
+				t.Fatalf("WaitForResponse err = %v; want it to contain %q", err, tc.wantErr)
 			}
 			if got := errors.Is(err, ErrContextOverflow); got != tc.terminal {
 				t.Fatalf("errors.Is(err, ErrContextOverflow) = %v, want %v (err: %v)", got, tc.terminal, err)

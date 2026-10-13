@@ -852,34 +852,44 @@ sets `Event.IsError` and `WaitForResponse` returns that text as an
 `error` immediately — it never hangs to context timeout and never
 treats the synthetic message as a normal reply.
 
-**Switching models mid-session (same provider)**: call
-`agent.SetModel("sonnet")` (or any provider-native id/alias). This is
-gated by the `model_switch` capability: Claude types `/model <name>` into
-the live TUI; Codex applies the model on the next `turn/start`; Grok and
-Cursor use ACP `session/set_config_option` (legacy `session/set_model`
-fallback). SetModel refuses an empty name, a dead agent, or a turn still
-in flight. On success it publishes a `Type=system` Event carrying the
-requested `Model` and `Agent.Model()` updates immediately (a later
-assistant event may refine it to a fully resolved id). Task-only
-providers (Bedrock, Ollama) refuse. Switching *providers* on a live
-conversation uses [Agent.Migrate] (🎯T55), not SetModel.
+**Switching model or provider mid-session (🎯T195)**: call
+`agent.SwitchModel(provider, model)` between turns; an empty provider
+keeps the seat's own. For a registered seat, call
+`Registry.SwitchModel(ctx, name, provider, model, force)`, which also
+takes a plan id (`claude`, `codex`) as provider, picks the standard
+session model when `model` is empty, and with `force` interrupts a turn
+in flight first. The seat keeps its name, session, and conversation.
+Nothing is summarised and no successor seat is started.
 
-**Switching providers mid-session**: `agent.Migrate(&claudia.MigrateArgs{Provider: claudia.ProviderGrok, Model: "grok-4"})`.
-Gated by the `migrate` capability: supported for Claude, Codex, Grok, and Cursor Sessions; Task-only Bedrock and Ollama refuse with `*CapabilityError`. Same-provider calls are refused (use SetModel). Claudia never auto-migrates — the host decides when.
+A subscription-sidecar seat (anthropic, openai-codex, xai-oauth,
+cursor) changes provider or model in place: the sidecar's agent takes
+the new model and converts the history for it on every request. A
+conversation too large for the new model's window is compacted first,
+by the model that wrote it; one that still does not fit refuses the
+switch and leaves the seat where it was. A native CLI seat changes
+model only within its own provider, gated by the `model_switch`
+capability: Claude types `/model <name>` into the live TUI; Codex
+applies the model on the next `turn/start`; Grok and Cursor use ACP
+`session/set_config_option` (legacy `session/set_model` fallback).
+Task-only providers (Bedrock, Ollama) refuse.
 
-The destination is a **new native session** (`session/new` / `--session-id`). Claudia never `--resume` or `session/load` the predecessor's id on the destination. `Agent.SessionID()` rotates; the same `*Agent` handle and `SubscribeEvents` subscriptions stay valid.
+SwitchModel refuses an empty model, a dead agent, or a turn still in
+flight. On success `Agent.Provider()` and `Agent.Model()` name the new
+model and a `Type=system` Event with `ProgressType=model_switch` is
+published, carrying `FromProvider`, `ToProvider`, `FromModel`, and
+`Model`. Switches are never silent. A seat that is not running has its
+definition rewritten instead (`SeatSwitch.Live` is false): its next
+launch resumes the same session on the new model. Only a sidecar seat
+changes provider that way, since a native CLI session belongs to its
+provider. Claudia never switches on its own; the host decides when.
 
-Continuity always has two steps. Claudia first gives bounded, inert predecessor history to one disposable, tool-free context-transfer agent on the **destination provider**, using a standard-quality model. It then sends only that agent's bounded brief as the destination work session's first user turn. The transfer runs on demand; it does not enable Mnemo's incremental or background summarization. The transcript is marked as untrusted history, not executable instructions or transferable tool calls. A missing predecessor history refuses unless `Force` requests a cold start; a failed or empty transfer refuses before moving the work session. A destination that refuses the transfer turn (usage limit, rate limit, auth) fails with `provider refused the turn: <reason>`; `empty brief` means the turn completed with no text (🎯T137). The same holds for any subscription-sidecar seat: a refused turn makes `WaitForResponse` return that error instead of an empty answer. The transfer seat (named `MigrationTransferSeatPrefix` + a UUID; `IsMigrationTransferSeat`) is never kept: the broker never marks it auto-start, drops it when its caller releases it or disconnects, and prunes any left in its table at start (`Registry.PruneMigrationTransferSeats`, 🎯T136). A host with an already prepared brief may pass `ContextBrief` to `Agent.Migrate`; it must have run the same transfer step itself.
-
-For a registered seat with no live handle, call `Registry.MigrateStopped(ctx, name, args, normalizedTranscript)`. Claudia performs the transfer, persists the destination and pending brief together, then starts the successor. Retry the same destination after a failed launch or handover: the registry resumes the pending delivery without paying for a second transfer. Both live and stopped paths reconcile a broker move before attempting another transfer.
+A sidecar seat whose provider refuses a turn (usage limit, rate limit,
+auth) makes `WaitForResponse` return `provider refused the turn:
+<reason>` instead of an empty answer (🎯T137).
 
 Per-seat placement and host permissions are durable `AgentDef` fields. `PreferProvider` is a preference, not a ban; nil `AllowedProviders` leaves the catalog open, while an explicit empty slice allows no destination. `ExcludeProviders` removes named providers. `HostMayInterrupt` permits the host to interrupt an in-flight turn for an automatic move, and `HostNeverPark` forbids the host from parking the seat solely because no destination is eligible. Both permissions default to false. Use `Registry.SetSeatPlanPolicy` to update these fields atomically without remapping the current session. Claudia owns provider eligibility and ranking; the host still decides when to move, interrupt, or park.
 
-On success, a `Type=system` Event with `ProgressType=model_switch` is published **before** the destination accepts work. It carries `FromProvider`, `ToProvider`, `FromModel`, `Model` (destination), `Reason` (host-supplied or `"explicit"`), the post-migrate `SessionID`, and `WarningCodes` when the seed was partial. Switches are never silent.
-
-When a turn ends in a classified stuck/exhausted condition (`rate_limit` or spend/quota wall — not auth, not `model_not_found`), Claudia publishes `ProgressType=stuck` with `StuckClass` and a short detail on the same stream and does **not** SetModel, Migrate, remint, or climb a ladder. The host decides the next step.
-
-Resumed-prefix disk reconstruction (compact/snip/Codex rollback) is a follow-on (🎯T55.2 / 🎯T56). In-flight migrate seeds from the retained live Event log.
+When a turn ends in a classified stuck/exhausted condition (`rate_limit` or spend/quota wall — not auth, not `model_not_found`), Claudia publishes `ProgressType=stuck` with `StuckClass` and a short detail on the same stream and does **not** switch the model, remint, or climb a ladder. The host decides the next step.
 
 **Readiness detection**: The TUI-ready detector polls `tmux capture-pane`
 every 50 ms and gives up after 30 s. These values are fixed and not
@@ -1115,7 +1125,7 @@ the formula catches up.
   Config (as an `AgentDef` plus `Config.Name`) over the Unix socket;
   the daemon starts the provider process as its parent and streams
   `Event`s back. The returned `*Agent` is a handle: `Send`,
-  `Interrupt`, `WaitForResponse`, `SetModel`, `Migrate`, `Usage`,
+  `Interrupt`, `WaitForResponse`, `SwitchModel`, `Usage`,
   `SubscribeTerminal` all work (`SendMode` / `Steer` / `TurnCaps` ride
   the `send.mode` wire, 🎯T72.3); `JSONLPath` / `AttachCommand` name
   host-local paths the daemon reported. `Rewind` rewinds and
@@ -1270,11 +1280,10 @@ Design record: [docs/metaharness.md](docs/metaharness.md).
    | Extra args | Supported | Unsupported — **refuses** | Unsupported — **refuses** | Unsupported — **refuses** | Unsupported — **refuses** |
    | Image inputs | Unsupported (no claudia API) | Unsupported | Unsupported | Unsupported | Unsupported |
    | Model switch | Supported (`/model`) | Supported (next turn/start) | Supported (ACP) | Unsupported | Unsupported |
-   | Migrate (inter-provider) | Supported | Supported | Supported | Unsupported | Unsupported |
    | Web search | Supported | Unsupported (does not bind `--search`) | Unsupported | Unsupported | Unsupported |
 
    Cursor is a sixth Session provider (ACP, like Grok): Task, Session,
-   Resume, model switch, and migrate are Supported; Rewind, ExtraArgs,
+   Resume and model switch are Supported; Rewind, ExtraArgs,
    sandbox, and tool restrictions refuse. Query `ProviderCapabilityMatrix`
    rather than this abbreviated table for Cursor.
 
@@ -1320,9 +1329,7 @@ Design record: [docs/metaharness.md](docs/metaharness.md).
    whether `<SessionID>.jsonl` exists under Claude Code's project
    directory. If it does, claudia passes `--resume`; otherwise
    `--session-id`. Pass a stable `SessionID` to get resumption for
-   free. **`Migrate` is the opposite:** the destination is always a
-   new native session (`Resuming=false`). Claudia never `--resume` or
-   `session/load` the predecessor's id on the destination provider.
+   free.
 
 4. **Terminal log files are append-only, with no run-boundary markers.**
    Resumed sessions concatenate PTY output across runs — this is a

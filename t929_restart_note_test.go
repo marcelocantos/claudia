@@ -18,18 +18,16 @@ import (
 func TestT929SidecarReadySaysWhetherHistoryCameBack(t *testing.T) {
 	yes, no := true, false
 	for _, tc := range []struct {
-		name        string
-		ev          omp.Event
-		summaryOnly bool
-		lost        bool
+		name string
+		ev   omp.Event
+		lost bool
 	}{
-		{"restored", omp.Event{Type: "ready", How: "launched", Restored: &yes}, false, false},
-		{"nothing stored", omp.Event{Type: "ready", How: "launched", Restored: &no}, false, true},
-		{"sidecar predates the store", omp.Event{Type: "ready", How: "launched"}, false, true},
-		{"adopted: never left", omp.Event{Type: "ready", How: "adopted"}, false, false},
-		{"summary-only: no conversation to lose", omp.Event{Type: "ready", How: "launched"}, true, false},
+		{"restored", omp.Event{Type: "ready", How: "launched", Restored: &yes}, false},
+		{"nothing stored", omp.Event{Type: "ready", How: "launched", Restored: &no}, true},
+		{"sidecar predates the store", omp.Event{Type: "ready", How: "launched"}, true},
+		{"adopted: never left", omp.Event{Type: "ready", How: "adopted"}, false},
 	} {
-		if got := ompHistoryLost(tc.ev, tc.summaryOnly); got != tc.lost {
+		if got := ompHistoryLost(tc.ev); got != tc.lost {
 			t.Errorf("%s: lost = %v, want %v", tc.name, got, tc.lost)
 		}
 	}

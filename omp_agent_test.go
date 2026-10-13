@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -420,103 +421,85 @@ func TestOMPStartRefreshFailureDoesNotStart(t *testing.T) {
 	}
 }
 
-func TestOMPMigrateUsesSidecarNotVendorCLI(t *testing.T) {
-	t.Setenv("CLAUDIA_OMP_SOCKET", filepath.Join(t.TempDir(), "missing.sock"))
-	ompKeychain = func(context.Context, string, ...string) ([]byte, error) {
-		return nil, fmt.Errorf("The specified item could not be found in the keychain.")
-	}
-	ompLogin = omp.Login{
-		Script: "auth.ts",
-		Run: func(context.Context, string, ...string) ([]byte, error) {
-			return nil, fmt.Errorf("login not available in test")
-		},
-	}
-	t.Cleanup(func() { ompKeychain = nil; ompLogin = omp.Login{}; omp.ResetKeychainShot() })
-	if err := OpenOMPPlans(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	src, _ := startMigrateFixture(t, ProviderGrok, "fake-grok")
-	src.PublishEvent(Event{Type: "user", Text: "hello"})
-	src.PublishEvent(Event{Type: "assistant", Text: "hi"})
-	dests := []Provider{Provider(omp.Anthropic), Provider(omp.OpenAICodex), Provider(omp.XAIOAuth), ProviderCursor}
-	for _, dest := range dests {
-		err := src.Migrate(&MigrateArgs{Provider: dest, Force: true})
-		if err == nil {
-			t.Fatalf("%s migrate started a seat without credentials", dest)
-		}
-		if strings.Contains(err.Error(), "tmux") || strings.Contains(err.Error(), "grok agent") || strings.Contains(err.Error(), "app-server") {
-			t.Fatalf("%s migrate fell through to a vendor CLI: %v", dest, err)
-		}
-	}
-}
-
-func TestOMPSetModelIsSecondLoad(t *testing.T) {
-	socket := filepath.Join(os.TempDir(), fmt.Sprintf("claudia-omp-set-%d.sock", os.Getpid()))
-	t.Cleanup(func() { os.Remove(socket) })
-	ln, err := net.Listen("unix", socket)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer ln.Close()
-	got := make(chan omp.Message, 4)
-	go func() {
-		c, err := ln.Accept()
-		if err != nil {
-			return
-		}
-		defer c.Close()
-		r := bufio.NewReader(c)
-		for {
-			line, err := r.ReadBytes('\n')
-			if err != nil {
-				return
-			}
-			var msg omp.Message
-			_ = json.Unmarshal(line, &msg)
-			got <- msg
-			if msg.Op == omp.OpLoad {
-				_, _ = c.Write([]byte("{\"type\":\"ready\"}\n"))
-			}
-		}
-	}()
-
-	exp := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
-	blob := `{"records":{"anthropic":{"refresh_token":"r","access_token":"plan-token","expiry":"` + exp + `"}}}`
-	ompKeychain = func(context.Context, string, ...string) ([]byte, error) {
-		return []byte(blob), nil
-	}
-	t.Cleanup(func() { ompKeychain = nil; omp.ResetKeychainShot() })
-	if err := OpenOMPPlans(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("CLAUDIA_OMP_SOCKET", socket)
-
-	agent, err := StartDirect(Config{
-		Name:        "seat",
-		Provider:    Provider(omp.Anthropic),
-		Model:       "claude-opus",
-		WorkDir:     t.TempDir(),
-		TermLogPath: "-",
+// 🎯T195: a sidecar seat switches provider in place: one more load naming
+// the destination plan, model and token, which the seat waits for the
+// sidecar to confirm. The handle then names the destination.
+func TestT195SidecarSwitchIsALoadTheSeatWaitsFor(t *testing.T) {
+	fake := startFakeSidecar(t, nil)
+	ctx := context.Background()
+	agent, err := startDirectContext(ctx, Config{
+		Provider: Provider(omp.Anthropic), Name: "t195-seat", Model: "claude-opus", WorkDir: t.TempDir(), TermLogPath: "-",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { agent.Stop() })
-	if err := agent.WaitReady(context.Background()); err != nil {
+	defer agent.Stop()
+	if err := agent.WaitReady(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if load := <-got; load.Op != omp.OpLoad || load.Model != "claude-opus" {
-		t.Fatalf("first load = %+v", load)
-	}
-	if err := agent.SetModel("claude-sonnet"); err != nil {
+	if err := agent.SwitchModel(Provider(omp.OpenAICodex), "gpt-5.5"); err != nil {
 		t.Fatal(err)
 	}
-	second := <-got
-	if second.Op != omp.OpLoad || second.Model != "claude-sonnet" || second.Token != "plan-token" {
-		t.Fatalf("setModel load = %+v", second)
+	loads := fake.loaded()
+	if len(loads) != 2 {
+		t.Fatalf("loads = %+v, want the launch and one switch", loads)
 	}
-	if second.Text != "" {
-		t.Fatal("setModel must not send a second seed")
+	sw := loads[1]
+	if sw.Provider != omp.OpenAICodex || sw.Model != "gpt-5.5" || sw.Token != "codex-token" || sw.RequestID == "" {
+		t.Fatalf("switch load = %+v, want openai-codex/gpt-5.5 on the codex plan's token with a request id", sw)
+	}
+	if sw.SessionID != loads[0].SessionID {
+		t.Fatalf("switch moved the conversation: session %q -> %q", loads[0].SessionID, sw.SessionID)
+	}
+	if agent.Provider() != Provider(omp.OpenAICodex) || agent.Model() != "gpt-5.5" {
+		t.Fatalf("handle = %s/%s after the switch", agent.Provider(), agent.Model())
+	}
+	// A model change on the same plan keeps the plan's token.
+	if err := agent.SwitchModel("", "gpt-5.5-mini"); err != nil {
+		t.Fatal(err)
+	}
+	if again := fake.loaded()[2]; again.Provider != omp.OpenAICodex || again.Token != "codex-token" || again.Model != "gpt-5.5-mini" {
+		t.Fatalf("same-plan switch load = %+v", again)
+	}
+}
+
+// A switch the sidecar refuses leaves the seat where it was, and the refusal
+// is the switch's error, not a failed turn.
+func TestT195SidecarSwitchRefusalLeavesTheSeat(t *testing.T) {
+	fake := startFakeSidecar(t, nil)
+	fake.refuseSwitch = "switch refused: the conversation does not fit"
+	ctx := context.Background()
+	agent, err := startDirectContext(ctx, Config{
+		Provider: Provider(omp.Anthropic), Name: "t195-refused", Model: "claude-opus", WorkDir: t.TempDir(), TermLogPath: "-",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer agent.Stop()
+	if err := agent.WaitReady(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var errorsSeen []Event
+	agent.SubscribeEvents(func(ev Event) {
+		if ev.IsError {
+			mu.Lock()
+			errorsSeen = append(errorsSeen, ev)
+			mu.Unlock()
+		}
+	})
+	err = agent.SwitchModel(Provider(omp.OpenAICodex), "gpt-5.5")
+	if err == nil || !strings.Contains(err.Error(), "does not fit") {
+		t.Fatalf("err = %v, want the sidecar's refusal", err)
+	}
+	if agent.Provider() != Provider(omp.Anthropic) || agent.Model() != "claude-opus" {
+		t.Fatalf("handle = %s/%s after a refused switch", agent.Provider(), agent.Model())
+	}
+	time.Sleep(100 * time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(errorsSeen) != 0 {
+		t.Fatalf("a refused switch published turn errors: %+v", errorsSeen)
 	}
 }
 
@@ -543,9 +526,6 @@ func TestOMPSidecarPromptCallsPiAgentCore(t *testing.T) {
 	}
 	if !strings.Contains(src, `from "./coding.ts"`) || !strings.Contains(src, "const own = codingTools(() => cwd, boundOf, () => sandbox);") || !strings.Contains(src, "agent.setTools([...own, ...hosted])") {
 		t.Fatal("seat.ts must advertise host coding tools (Bash/Read/Write/Glob/Grep) beside the host's jevons_* tools (🎯T886)")
-	}
-	if !strings.Contains(src, "if (opts.summaryOnly) {\n      agent.setTools([]);") {
-		t.Fatal("a summary-only transfer seat must stay tool-free")
 	}
 	coding, err := os.ReadFile("sidecar/coding.ts")
 	if err != nil {
@@ -587,12 +567,12 @@ func TestOMPSidecarPromptCallsPiAgentCore(t *testing.T) {
 }
 
 func TestOMPGrantCarriesOMP(t *testing.T) {
-	def := configToGrantDef("seat", Config{Provider: ProviderCursor, OMP: true, SummaryOnly: true, WorkDir: "/w"}, nil)
+	def := configToGrantDef("seat", Config{Provider: ProviderCursor, OMP: true, WorkDir: "/w"}, nil)
 	if !def.OMP {
 		t.Fatal("grant must persist Config.OMP so a bounce does not start the vendor CLI")
 	}
 	cfg := def.Config()
-	if !cfg.OMP || !cfg.SummaryOnly || cfg.Provider != ProviderCursor {
+	if !cfg.OMP || cfg.Provider != ProviderCursor {
 		t.Fatalf("rehydrated cfg = %+v", cfg)
 	}
 }

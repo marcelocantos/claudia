@@ -49,7 +49,7 @@ const pasteBlockThreshold = 400
 // keystrokes, outside the paste, saying who wrote the paste. It claims
 // authorship, not obedience — what the text asks of the seat is still
 // the text's business, so a payload that frames part of itself as inert
-// (the Migrate seed) stays inert.
+// stays inert.
 //
 // It is only true because every SendKeys caller is the seat's operator.
 // A host that relays third-party text must mark it as such inside msg.

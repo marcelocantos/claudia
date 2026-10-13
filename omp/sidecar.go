@@ -31,18 +31,17 @@ const (
 // Message is one IPC line. Token is set only on load, and only with the
 // access token the broker just read from the Keychain item.
 type Message struct {
-	Op          string `json:"op"`
-	RequestID   string `json:"request_id,omitempty"`
-	ExpiresAt   int64  `json:"expires_at,omitempty"`
-	Seat        string `json:"seat,omitempty"`
-	Provider    string `json:"provider,omitempty"`
-	Model       string `json:"model,omitempty"`
-	SummaryOnly bool   `json:"summary_only,omitempty"`
-	Token       string `json:"token,omitempty"`
-	Cwd         string `json:"cwd,omitempty"`
-	Text        string `json:"text,omitempty"`
-	CallID      string `json:"call_id,omitempty"`
-	Result      string `json:"result,omitempty"`
+	Op        string `json:"op"`
+	RequestID string `json:"request_id,omitempty"`
+	ExpiresAt int64  `json:"expires_at,omitempty"`
+	Seat      string `json:"seat,omitempty"`
+	Provider  string `json:"provider,omitempty"`
+	Model     string `json:"model,omitempty"`
+	Token     string `json:"token,omitempty"`
+	Cwd       string `json:"cwd,omitempty"`
+	Text      string `json:"text,omitempty"`
+	CallID    string `json:"call_id,omitempty"`
+	Result    string `json:"result,omitempty"`
 	// Turn fields name who prompted the seat (🎯T870). The sidecar
 	// writes them onto the digest when it accepts the prompt.
 	TurnID      string `json:"turn_id,omitempty"`

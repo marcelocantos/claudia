@@ -134,7 +134,7 @@ not keep a second copy of the vertices.
 and session-low/exhausted and 429 reasons; unpublished usage stays eligible.
 
 `Resolve` picks a catalog `(Provider, Model)` from predicates. It does not
-`Start`, `SetModel`, or `Migrate`. The catalog is a set: available-tokens
+`Start` or `SwitchModel`. The catalog is a set: available-tokens
 is a veto, then lower plan slack wins; `PreferProvider` only breaks a
 slack tie. With `Purpose` (or wire `skill`) set it reads the 🎯T71 intel
 series and also returns `Effort`. A purpose with no catalog-overlapping

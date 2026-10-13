@@ -59,10 +59,6 @@ type Config struct {
 	// ProviderClaude. Claude, Codex, Grok and Cursor Session seats use
 	// the subscription sidecar (including their bare provider IDs).
 	Provider Provider
-	// SummaryOnly creates a tool-free, disposable Oh My Pi seat for one
-	// context-transfer turn. It is not a normal work-seat setting.
-	SummaryOnly bool
-
 	// OMP is retained on persisted grants. Launch no longer needs it:
 	// bare grok/cursor/claude/codex and subscription ids use the sidecar.
 	OMP bool
@@ -347,26 +343,16 @@ type Agent struct {
 	goalTurnWorked bool
 	goalIdleTurns  int
 
-	// startCfg is the Config Start resolved (workdir, MCP, Goal, …) so
-	// Migrate can spawn the destination without the caller restating it.
+	// startCfg is the Config Start resolved (workdir, MCP, Goal, …).
 	startCfg Config
-	// backendGen increments on Migrate so source control/JSONL/TUI
-	// goroutines do not mark the destination dead when they exit.
+	// backendGen increments when the handle is re-pointed at another
+	// backend (a broker repoint), so the old backend's goroutines do not
+	// mark the new one dead when they exit.
 	backendGen atomic.Uint64
-	// onMigrated is set by the Registry that launched this agent (🎯T75.3):
-	// it runs once the handle names the destination, so the persisted
-	// definition follows the seat. Guarded by mu.
-	onMigrated func() error
-	// A migration may reach the destination while its registry write fails.
-	// Retrying the same destination must finish that write, not mint a third seat.
-	migrationPersistencePending bool
-	migrationSeedPending        string
-	migrationMu                 sync.Mutex
-	// Tests may replace the disposable transfer operation without launching
-	// a paid provider seat. Nil uses SummarizeForMigration.
-	migrationSummarizer func(context.Context, MigrationTransferArgs) (MigrationTransferResult, error)
-	// inertTurns is the bounded live-turn log Migrate distills (🎯T55.1).
-	inertTurns []inertTurn
+	// onSwitched is set by the Registry that launched this agent: it runs
+	// once the seat has moved to another provider or model in place, so the
+	// persisted definition follows the seat (🎯T195). Guarded by mu.
+	onSwitched func() error
 
 	// promptCause is who prompted the next Send. ResumeAll sets it
 	// before the restart nudge so the sidecar digest can name the
@@ -466,16 +452,11 @@ type agentOps struct {
 	reclaim func() error
 	// promptInFlight is optional (Grok ACP). Nil → always false.
 	promptInFlight func(*Agent) bool
-	// setModel switches the in-session model within the same provider
-	// (🎯T54). Nil → SetModel refuses after the capability check.
-	setModel func(*Agent, string) error
-	// migrate is set only by the broker backend: the daemon performs the
-	// provider swap and this handle re-points at the destination. Nil →
-	// Migrate runs the in-process swap.
-	migrate func(*Agent, *MigrateArgs) error
-	// migrationState reconciles a broker-held handle after a lost migrate
-	// reply, before a retry pays for another context transfer.
-	migrationState func(*Agent) (bool, error)
+	// switchModel moves the seat to provider and model in place, keeping
+	// its conversation (🎯T195). A sidecar seat can change provider; the
+	// native CLI backends only change model within their own provider.
+	// Nil → SwitchModel refuses after the capability check.
+	switchModel func(a *Agent, provider Provider, model string) error
 	// rewind is set only by the broker backend: the daemon rolls the seat
 	// back and relaunches it, and this handle re-points (🎯T75.8).
 	rewind func(*Agent, int) (*RewindResult, error)
@@ -683,7 +664,10 @@ func claudeAgentOps() agentOps {
 				a.tmuxCtrl.Close()
 			}
 		},
-		setModel: func(a *Agent, model string) error {
+		switchModel: func(a *Agent, provider Provider, model string) error {
+			if err := sameProviderSwitch(a, provider); err != nil {
+				return err
+			}
 			// Claude Code: /model <alias|id> switches the live session model.
 			return tmuxagent.SendKeys(a.tmuxWindowID, "/model "+model)
 		},
@@ -720,14 +704,6 @@ func StartContext(ctx context.Context, cfg Config) (*Agent, error) {
 	cfg, err = withDefaultOMPModel(ctx, cfg)
 	if err != nil {
 		return nil, err
-	}
-	if cfg.SummaryOnly {
-		if !useOMP(cfg) {
-			return nil, fmt.Errorf("SummaryOnly requires an Oh My Pi provider")
-		}
-		// The broker owns the subscription Keychain item. Never fall back to
-		// direct startup for a disposable context-transfer seat.
-		return startViaBrokerContext(ctx, cfg)
 	}
 	// Gate on the published capability matrix rather than a per-provider
 	// branch list, so Start cannot drift into offering a session claudia
@@ -799,9 +775,6 @@ func startDirectContext(ctx context.Context, cfg Config) (*Agent, error) {
 	cfg, err = withDefaultOMPModel(ctx, cfg)
 	if err != nil {
 		return nil, err
-	}
-	if cfg.SummaryOnly && !useOMP(cfg) {
-		return nil, fmt.Errorf("SummaryOnly requires an Oh My Pi provider")
 	}
 	if _, known := providerCapabilityClaims[cfg.Provider]; known || cfg.Provider == "" {
 		if err := CheckCapability(cfg.Provider, CapabilitySession); err != nil {
@@ -1399,7 +1372,10 @@ func startCodexAgent(req agentStartRequest) (*agentStart, error) {
 		promptInFlight: func(*Agent) bool {
 			return client.promptInFlight()
 		},
-		setModel: func(_ *Agent, model string) error {
+		switchModel: func(a *Agent, provider Provider, model string) error {
+			if err := sameProviderSwitch(a, provider); err != nil {
+				return err
+			}
 			return client.SetModel(model)
 		},
 		turnCaps: func(*Agent) TurnCaps {
@@ -1502,7 +1478,10 @@ func startGrokAgent(req agentStartRequest) (*agentStart, error) {
 		promptInFlight: func(*Agent) bool {
 			return client.promptInFlight()
 		},
-		setModel: func(_ *Agent, model string) error {
+		switchModel: func(a *Agent, provider Provider, model string) error {
+			if err := sameProviderSwitch(a, provider); err != nil {
+				return err
+			}
 			return client.SetModel(model)
 		},
 		// Nil until grokACPClient satisfies turnSteerer (🎯T72.1); then
@@ -1902,7 +1881,6 @@ func (a *Agent) SendWithRequestID(msg, requestID string) error {
 		}
 		return err
 	}
-	a.recordInert(inertTurn{Role: "user", Text: strings.TrimSpace(msg)})
 	return nil
 }
 
@@ -1958,63 +1936,6 @@ func (a *Agent) Model() string {
 	return a.model
 }
 
-// SetModel switches the model used for subsequent turns on this Session
-// without changing provider (🎯T54). Empty model is rejected. Refuses while
-// a turn is in flight. Support is gated by [CapabilityModelSwitch]:
-// Claude sends `/model <name>` into the TUI; Codex applies model on the
-// next turn/start; Grok/Cursor use ACP session/set_config_option (with
-// legacy session/set_model fallback). Task-only providers refuse.
-//
-// On success, [Agent.Model] is updated immediately to the requested string
-// and a Type=system Event with that Model is published so subscribers see
-// the switch; a later assistant event may refine Model to a fully resolved id.
-func (a *Agent) SetModel(model string) error {
-	model = strings.TrimSpace(model)
-	if model == "" {
-		return fmt.Errorf("SetModel: model must be non-empty")
-	}
-	if !useOMP(Config{Provider: a.provider, OMP: a.startCfg.OMP}) {
-		if err := CheckCapability(a.provider, CapabilityModelSwitch); err != nil {
-			return err
-		}
-	}
-	<-a.ready
-	if a.readyErr != nil {
-		return fmt.Errorf("agent not ready: %w", a.readyErr)
-	}
-	a.mu.Lock()
-	alive := a.alive
-	a.mu.Unlock()
-	if !alive {
-		return fmt.Errorf("agent process not running")
-	}
-	if a.PromptInFlight() {
-		return fmt.Errorf("SetModel: turn in flight; wait for the current response or Interrupt first")
-	}
-	if a.ops.setModel == nil {
-		return unsupportedCapability(a.provider, CapabilityModelSwitch,
-			"provider did not supply a setModel operation")
-	}
-	if err := a.ops.setModel(a, model); err != nil {
-		return err
-	}
-	if a.brokerGrant != "" {
-		// The daemon's Agent published the switch event; it arrives on
-		// the stream. Publishing again here would double it.
-		a.mu.Lock()
-		a.model = model
-		a.mu.Unlock()
-		return nil
-	}
-	a.publishEvent(Event{
-		Type:      "system",
-		SessionID: a.sessionID,
-		Model:     model,
-		Text:      "model switch: " + model,
-	})
-	return nil
-}
-
 func (a *Agent) publishEvent(ev Event) {
 	a.mu.Lock()
 	if ev.Model != "" {
@@ -2026,9 +1947,6 @@ func (a *Agent) publishEvent(ev Event) {
 		a.usage.OutputTokens += ev.Usage.OutputTokens
 		a.usage.CacheCreationInputTokens += ev.Usage.CacheCreationInputTokens
 		a.usage.CacheReadInputTokens += ev.Usage.CacheReadInputTokens
-	}
-	if t, ok := noteInertFromEvent(ev); ok {
-		a.recordInertLocked(t)
 	}
 	a.correlateRequestLocked(&ev)
 	a.noteGoalEvent(ev)

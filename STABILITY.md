@@ -553,11 +553,12 @@ v0.21.0 was tagged 2026-08-10, so the earliest eligible 1.0 cut date is
 
 ## Beyond this snapshot (HEAD)
 
-The Event row above names ProgressType model_switch and stuck for 🎯T55
-(inert-seed inter-provider Session migrate). The snapshot tag does not
-yet export Agent.Migrate, MigrateArgs, or CapabilityMigrate — those are
-HEAD. agents-guide.md is the consumer contract until the next snapshot
-retarget. SetModel (🎯T54) is likewise HEAD-only.
+The Event row above names ProgressType model_switch and stuck. At HEAD a
+seat changes model with Agent.SwitchModel and Registry.SwitchModel
+(🎯T195), keeping its conversation; Agent.SetModel, Agent.Migrate,
+MigrateArgs, Registry.MigrateStopped, and CapabilityMigrate are gone.
+agents-guide.md is the consumer contract until the next snapshot
+retarget.
 
 `grok.Conn` (🎯T47.9) is HEAD-only: an interface with `Read(ctx)
 ([]byte, error)`, `Write(ctx, msg []byte) error` and `Close() error`,

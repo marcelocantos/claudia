@@ -202,9 +202,6 @@ distinguishes CLI vs OMP seats".
 | `omp_agent.go:52-69` `useOMP`, `ompProviderID` | the fork; `claude` and `codex` are deliberately not mapped |
 | `agent.go:60-69` `Config.OMP` | "retained on persisted grants", no longer consulted for launch (🎯T866.5); still copied on the wire (`broker_wire.go:236`, `registry_lifecycle.go:136`) |
 | `registry.go:587-600` adopt switch | one branch per transport; `isClaudeProvider` chooses `adoptProc` |
-| `migrate.go:303-349` | `CheckCapability(Migrate)` only for non-OMP sides; `capability.go:519-523` exempts every sidecar id from the matrix |
-| `migration_transfer.go:225-227` | transfer seat is forced onto `SubscriptionSeatProvider(provider)` so a `claude` destination does not mint a tmux seat |
-| `registry_migrate_stopped.go:103`, `migrate.go:316` | default model only for OMP destinations |
 | `plan_fleet.go:21, 45-47`; `daemon/daemon.go:1715` | fleet id lists still enumerate `claude`, `codex`, `grok`, `cursor` |
 | `internal/broker/wire.go:84-85, 238-243` | broker-level `ProviderClaude` normalisation |
 | `cmd/claudia/broker_seat.go:67` `-adopt` | "prefer reattaching a provider process the daemon can find" |

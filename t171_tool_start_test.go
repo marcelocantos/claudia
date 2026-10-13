@@ -13,7 +13,7 @@ import (
 // the host as a tool_use progress event when it starts, so a long Bash call
 // is visible while it runs instead of the seat going silent.
 func TestT171SidecarOwnToolStartPublishesToolUse(t *testing.T) {
-	startFakeTransferSidecar(t, []string{
+	startFakeSidecar(t, []string{
 		`{"type":"accepted"}`,
 		`{"type":"tool_start","call_id":"call-1","name":"Bash","text":"{\"command\":\"sleep 60\"}"}`,
 		`{"type":"text","text":"ok"}`,

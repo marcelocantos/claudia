@@ -106,8 +106,8 @@ type ModelPick struct {
 	Author string
 }
 
-// Resolve chooses a catalog model matching predicates. It never Start,
-// SetModel, or Migrate. Known-exhausted / weekly-hot / session-low
+// Resolve chooses a catalog model matching predicates. It never Start or
+// SwitchModel. Known-exhausted / weekly-hot / session-low
 // candidates are skipped automatically.
 func Resolve(ctx context.Context, pred ModelPredicates) (ModelPick, error) {
 	pred = normalizePredicates(pred)

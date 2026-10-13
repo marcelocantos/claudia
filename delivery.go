@@ -6,7 +6,6 @@ package claudia
 import (
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 )
 
@@ -267,7 +266,6 @@ func (a *Agent) steerWithRequestID(text string, phase TurnPhase, requestID strin
 	if a.brokerGrant == "" && steered.Mechanism == MechanismCodexTurnSteer {
 		a.bindSameTurnSteer(requestID)
 	}
-	a.recordInert(inertTurn{Role: "user", Text: strings.TrimSpace(text)})
 	return out, nil
 }
 

@@ -262,17 +262,6 @@ func New(opts Options) (*Daemon, error) {
 	if opts.launchers != nil {
 		reg.SetLaunchers(opts.launchers)
 	}
-	// A transfer seat left in the table was stranded by a crash, or by a
-	// daemon that predated SummaryOnly and marked it auto-start. Pruning
-	// before resume keeps a restart from refreshing an OAuth token for each
-	// one (🎯T136: 534 of them once cost ~90s before real seats resumed).
-	pruned, err := reg.PruneMigrationTransferSeats()
-	if err != nil {
-		return nil, fmt.Errorf("broker daemon: prune migration transfer seats: %w", err)
-	}
-	if len(pruned) > 0 {
-		log.Info("pruned stranded migration transfer seats", "count", len(pruned))
-	}
 	claims, err := loadSeatClaims(filepath.Join(stateDir, claimsFile))
 	if err != nil {
 		return nil, fmt.Errorf("broker daemon: claims: %w", err)
@@ -451,7 +440,7 @@ func (d *Daemon) HandleRequest(c *broker.ClientConn, req *broker.Request) bool {
 			return false
 		}
 		d.handleRelease(c, req)
-	case broker.TypeSend, broker.TypeInterrupt, broker.TypeSetModel, broker.TypeMigrate,
+	case broker.TypeSend, broker.TypeInterrupt, broker.TypeSetModel,
 		broker.TypeAgentInfo, broker.TypeTermSubscribe, broker.TypeResize, broker.TypeCloseGoal, broker.TypeRewind:
 		d.handleAgentOp(c, req)
 	case broker.TypeGoalVerdict:
@@ -547,14 +536,11 @@ func (d *Daemon) handleAuthStatus(c *broker.ClientConn, req *broker.Request) {
 		AuthStatus: &broker.AuthStatusResponse{Plans: out}})
 }
 
-// ConnClosed implements broker.Handler: seats stay running, unowned. A
-// migration transfer seat is the exception: it answers one call on the
-// connection that made it, so when that connection goes it is stopped
-// and forgotten (🎯T136).
+// ConnClosed implements broker.Handler: seats stay running, unowned.
 // Ephemeral plumbing seats stay only until their orphan TTL.
 func (d *Daemon) ConnClosed(c *broker.ClientConn) {
 	d.mu.Lock()
-	var detached, dropped, ephemeral []string
+	var detached, ephemeral []string
 	var returned []*brokerGrant
 	for name, g := range d.grants {
 		if g.owner != c {
@@ -568,14 +554,6 @@ func (d *Daemon) ConnClosed(c *broker.ClientConn) {
 			continue
 		}
 		d.detachLocked(g)
-		if def := d.reg.Def(name); def != nil && claudia.IsMigrationTransferSeat(*def) {
-			if g.proc != nil && g.sub != 0 {
-				g.proc.UnsubscribeEvents(g.sub)
-			}
-			delete(d.grants, name)
-			dropped = append(dropped, name)
-			continue
-		}
 		if g.ephemeral {
 			d.noteUnownedLocked(name)
 			ephemeral = append(ephemeral, name)
@@ -595,13 +573,6 @@ func (d *Daemon) ConnClosed(c *broker.ClientConn) {
 	for _, name := range detached {
 		d.log.Info("consumer connection closed; seat kept running", "grant", name)
 		d.emit(broker.EventMessage{Kind: broker.EventDetach, Name: name})
-	}
-	for _, name := range dropped {
-		d.log.Info("consumer connection closed; migration transfer seat removed", "grant", name)
-		if err := d.reg.Remove(name); err != nil {
-			d.log.Warn("remove orphaned transfer seat", "grant", name, "err", err)
-		}
-		d.emit(broker.EventMessage{Kind: broker.EventRelease, Name: name})
 	}
 	for _, name := range ephemeral {
 		d.log.Info("consumer connection closed; ephemeral seat reclaimable until TTL",
@@ -777,10 +748,8 @@ func (d *Daemon) handleGrant(c *broker.ClientConn, req *broker.Request) {
 	// A broker grant seat writes its workdir on every provider: Codex
 	// app-server's read-only default is not the seat contract (2026-10-13).
 	claudia.ApplyBrokerGrantWriteDefault(&def)
-	// Work seats survive a broker restart. A one-shot transfer seat must
-	// disappear if its caller cannot finish and release it.
-	transfer := claudia.IsMigrationTransferSeat(def)
-	def.AutoStart = !transfer
+	// Work seats survive a broker restart.
+	def.AutoStart = true
 
 	d.mu.Lock()
 	g := d.liveGrantLocked(name)
@@ -814,25 +783,25 @@ func (d *Daemon) handleGrant(c *broker.ClientConn, req *broker.Request) {
 	// broker's destination is authoritative; accepting the stale source
 	// would overwrite the only durable record of the moved seat.
 	if existing := d.reg.Def(name); existing != nil {
-		if req.Grant.Adopt && def.Provider != existing.Provider && def.SessionID != existing.SessionID {
-			d.log.Warn("adopting broker migration over stale consumer definition", "name", name,
+		if req.Grant.Adopt && def.Provider != existing.Provider {
+			// The seat was switched to another provider in place while the
+			// consumer was away (🎯T195): the session is the same, and the
+			// daemon's record of the provider is the one that is true.
+			d.log.Warn("adopting a seat switched in place over stale consumer definition", "name", name,
 				"consumer_provider", def.Provider, "broker_provider", existing.Provider)
 			// Keep the consumer's current role, goal and host constraints;
 			// only the seat identity belongs to the broker here.
 			def.Provider, def.SessionID, def.Model = existing.Provider, existing.SessionID, existing.Model
 			def.ConnectURL, def.ConnectPID = existing.ConnectURL, existing.ConnectPID
 			def.Materialized, def.GrokConnect = existing.Materialized, existing.GrokConnect
-			def.OMP, def.SummaryOnly, def.TermLogPath = existing.OMP, existing.SummaryOnly, existing.TermLogPath
+			def.OMP, def.TermLogPath = existing.OMP, existing.TermLogPath
 		} else if def.SessionID == existing.SessionID {
 			def.ConnectURL, def.ConnectPID = existing.ConnectURL, existing.ConnectPID
 			def.Materialized = def.Materialized || existing.Materialized
 			def.GrokConnect = def.GrokConnect || existing.GrokConnect
-			if req.Grant.Adopt {
-				// The daemon may already have delivered a migration seed
-				// whose acknowledgement the consumer lost. Its durable
-				// delivery state wins over the consumer's stale copy.
-				def.MigrationSeed = existing.MigrationSeed
-				def.MigrationPendingStart = existing.MigrationPendingStart
+			if req.Grant.Adopt && def.Model != existing.Model {
+				// A same-provider model switch the consumer did not record.
+				def.Model = existing.Model
 			}
 		}
 	}
@@ -853,13 +822,6 @@ func (d *Daemon) handleGrant(c *broker.ClientConn, req *broker.Request) {
 		proc, err = d.reg.LaunchContext(ctx, name)
 	}
 	if err != nil {
-		if transfer {
-			// A failed one-shot transfer has no owner handle to release it.
-			// Ordinary failed grants remain registered for recovery.
-			if removeErr := d.reg.Remove(name); removeErr != nil {
-				d.log.Warn("remove failed transfer seat", "grant", name, "err", removeErr)
-			}
-		}
 		_ = c.Fail(req.ID, err)
 		return
 	}
@@ -1403,8 +1365,6 @@ func (d *Daemon) handleAgentOp(c *broker.ClientConn, req *broker.Request) {
 		name = req.Interrupt.Name
 	case broker.TypeSetModel:
 		name = req.SetModel.Name
-	case broker.TypeMigrate:
-		name = req.Migrate.Name
 	case broker.TypeAgentInfo:
 		name = req.AgentInfo.Name
 	case broker.TypeTermSubscribe:
@@ -1437,23 +1397,14 @@ func (d *Daemon) handleAgentOp(c *broker.ClientConn, req *broker.Request) {
 		}
 		_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeInterrupted, Interrupted: named})
 	case broker.TypeSetModel:
-		if err := proc.SetModel(req.SetModel.Model); err != nil {
+		// The daemon's Registry launched proc, so a switch rewrites the
+		// seat's definition and a restart resumes it on the new model
+		// (🎯T195).
+		if err := proc.SwitchModel(claudia.Provider(req.SetModel.Provider), req.SetModel.Model); err != nil {
 			_ = c.Fail(req.ID, err)
 			return
 		}
 		_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeModelSet, ModelSet: named})
-	case broker.TypeMigrate:
-		if err := proc.Migrate(&claudia.MigrateArgs{Provider: claudia.Provider(req.Migrate.Provider), Model: req.Migrate.Model,
-			Reason: req.Migrate.Reason, ContextBrief: req.Migrate.ContextBrief, Force: req.Migrate.Force}); err != nil {
-			_ = c.Fail(req.ID, err)
-			return
-		}
-		// The Registry recorded the destination (🎯T75.3), so a boot
-		// resume brings back the seat the consumer is actually on.
-		_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeMigrated, Migrated: &broker.MigrateResponse{
-			Name: name, SessionID: proc.SessionID(), Provider: broker.Provider(procProvider(proc)), Model: proc.Model(),
-			WindowID: proc.WindowID(), JSONLPath: proc.JSONLPath(), TermLogPath: proc.TermLogPath(), AttachCommand: proc.AttachCommand(),
-		}})
 	case broker.TypeAgentInfo:
 		usage, _ := json.Marshal(proc.Usage())
 		_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeAgentInfoResult, AgentInfo: &broker.AgentInfoResponse{

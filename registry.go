@@ -68,10 +68,6 @@ type AgentDef struct {
 	HostMayInterrupt bool `json:"host_may_interrupt,omitempty"`
 	HostNeverPark    bool `json:"host_never_park,omitempty"`
 
-	// SummaryOnly makes a disposable, tool-free context-transfer seat.
-	// It travels with the broker grant so the daemon launches the same mode.
-	SummaryOnly bool `json:"summary_only,omitempty"`
-
 	// Model overrides the default model (e.g. "opus", "sonnet", "grok-4").
 	Model string `json:"model,omitempty"`
 
@@ -145,18 +141,6 @@ type AgentDef struct {
 	// onto Config.Goal at Launch/Adopt so a provider switch keeps the
 	// same objective. Empty means one-shot Send.
 	Goal string `json:"goal,omitempty"`
-	// MigrationSeed is the destination's bounded handover. It is persisted
-	// with the destination identity before Migrate reports success, then
-	// cleared only after the destination accepts it. A daemon restart in
-	// that interval retries the seed on the same destination session.
-	MigrationSeed        string   `json:"migration_seed,omitempty"`
-	MigrationFrom        Provider `json:"migration_from,omitempty"`
-	MigrationFromSession string   `json:"migration_from_session,omitempty"`
-	// MigrationPendingStart distinguishes a persisted destination intent
-	// from a session that already started. A restart may mint the intended
-	// destination only while this bit remains true.
-	MigrationPendingStart bool `json:"migration_pending_start,omitempty"`
-
 	// MCPServers is the session-scoped MCP list (🎯T40). Copied onto
 	// Config.MCPServers at Launch. Session never writes provider config
 	// files.
@@ -227,9 +211,6 @@ type Registry struct {
 	// launchers, when set, replace the providers for this Registry's
 	// starts and adopts. Guarded by mu.
 	launchers *RegistryLaunchers
-	// migrationSummarizer is the injectable disposable transfer seam. Nil
-	// uses SummarizeForMigration; production always runs one transfer task.
-	migrationSummarizer func(context.Context, MigrationTransferArgs) (MigrationTransferResult, error)
 	// Seat lifecycle subscribers (registry_seats.go). seatMu is separate
 	// from mu because subscribers are called while lifecycle operations
 	// that take mu are in flight.
@@ -367,15 +348,6 @@ func (r *Registry) SetMCPHost(h *MCPHost) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.mcpHost = h
-}
-
-// SetMigrationSummarizer replaces the disposable transfer runner for an
-// individual registry. It is primarily a deterministic test seam; nil
-// restores the production SummarizeForMigration operation.
-func (r *Registry) SetMigrationSummarizer(f func(context.Context, MigrationTransferArgs) (MigrationTransferResult, error)) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.migrationSummarizer = f
 }
 
 // Register adds or updates an agent definition and persists the registry.
@@ -543,9 +515,6 @@ func (r *Registry) startHeld(ctx context.Context, op *registryLifecycle, name st
 		if err := prior.ensureOwned(); err != nil {
 			return nil, err
 		}
-		if err := r.deliverMigrationSeed(name, prior); err != nil {
-			return nil, err
-		}
 		return prior, nil
 	}
 	if denied != nil {
@@ -649,21 +618,22 @@ func (r *Registry) startHeld(ctx context.Context, op *registryLifecycle, name st
 		return nil, fmt.Errorf("agent %q: startup returned no process", name)
 	}
 	current := r.agents[name]
-	brokerMigration := brokerAnswered && requestedAdopt &&
+	// The daemon holds the seat, and it may have been switched to another
+	// provider in place while this host was not watching (🎯T195): the
+	// definition follows the seat, not the other way round.
+	brokerSwitched := brokerAnswered && requestedAdopt &&
 		PlanProvider(proc.Provider()) != PlanProvider(def.Provider)
 	if sid := proc.SessionID(); sid != "" && sid != def.SessionID &&
-		(wantResume || current.Materialized) && !brokerMigration {
+		(wantResume || current.Materialized) {
 		r.mu.Unlock()
 		proc.Stop()
 		return nil, fmt.Errorf("refusing remint of %s: session %s → %s — existing conversation required", name, def.SessionID, sid)
 	}
 	delete(r.resumeDenied, name)
-	priorDef := cloneAgentDef(*current)
 	changed := false
-	if brokerMigration {
+	if brokerSwitched {
 		current.Provider = proc.Provider()
 		current.Model = proc.Model()
-		current.Materialized = false
 		changed = true
 	}
 	if sid := proc.SessionID(); sid != "" && sid != current.SessionID {
@@ -678,29 +648,12 @@ func (r *Registry) startHeld(ctx context.Context, op *registryLifecycle, name st
 		current.ConnectPID = p
 		changed = true
 	}
-	if current.MigrationPendingStart {
-		if PlanProvider(proc.Provider()) != PlanProvider(current.Provider) {
-			r.mu.Unlock()
-			_ = proc.Detach()
-			return nil, fmt.Errorf("agent %q: broker returned %s for pending destination %s", name, proc.Provider(), current.Provider)
-		}
-		current.MigrationPendingStart = false
-		changed = true
-	}
 	if !current.Materialized && claudeSessionEvidence(current.Provider, current.SessionID, current.WorkDir) {
 		current.Materialized = true
 		changed = true
 	}
 	if changed {
 		if err := r.save(); err != nil {
-			if brokerMigration || priorDef.MigrationPendingStart || priorDef.MigrationSeed != "" {
-				*current = priorDef
-				r.mu.Unlock()
-				if detachErr := proc.Detach(); detachErr != nil {
-					slog.Warn("detach migration destination after failed registry save", "name", name, "err", detachErr)
-				}
-				return nil, fmt.Errorf("persist migration destination for %q: %w", name, err)
-			}
 			slog.Warn("persist agent def after startup", "name", name, "err", err)
 		}
 	}
@@ -708,16 +661,8 @@ func (r *Registry) startHeld(ctx context.Context, op *registryLifecycle, name st
 	materialized := current.Materialized
 	r.mu.Unlock()
 	proc.mu.Lock()
-	proc.onMigrated = func() error { return r.recordMigrate(name, proc) }
+	proc.onSwitched = func() error { return r.recordSwitch(name, proc) }
 	proc.mu.Unlock()
-	if brokerAnswered {
-		err = r.confirmBrokerMigrationSeed(name, proc)
-	} else {
-		err = r.deliverMigrationSeed(name, proc)
-	}
-	if err != nil {
-		return nil, err
-	}
 	message := "agent adopted"
 	if started {
 		message = "agent started"
@@ -727,12 +672,10 @@ func (r *Registry) startHeld(ctx context.Context, op *registryLifecycle, name st
 	return proc, nil
 }
 
-// recordMigrate persists the backend a seat moved to (🎯T75.3). Without it
-// the definition keeps naming the source provider and session, and the next
-// launch resumes a conversation the seat is no longer on. Materialized is
-// cleared because the destination is a new native session with no durable
-// transcript yet.
-func (r *Registry) recordMigrate(name string, proc *Agent) error {
+// recordSwitch persists the provider and model a running seat switched to in
+// place (🎯T195). The session is the same conversation, so it and the
+// seat's materialized state are kept.
+func (r *Registry) recordSwitch(name string, proc *Agent) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	def := r.agents[name]
@@ -740,69 +683,11 @@ func (r *Registry) recordMigrate(name string, proc *Agent) error {
 		return fmt.Errorf("agent %q is no longer registered to this process", name)
 	}
 	next := cloneAgentDef(*def)
-	next.Provider = proc.Provider()
-	if next.Provider == "" {
-		next.Provider = ProviderClaude
-	}
-	next.SessionID, next.Model = proc.SessionID(), proc.Model()
-	next.ConnectURL, next.ConnectPID = proc.ConnectURL(), proc.PID()
-	next.Materialized = false
-	next.MigrationPendingStart = false
-	proc.mu.Lock()
-	next.MigrationSeed = proc.migrationSeedPending
-	proc.mu.Unlock()
+	next.Provider, next.Model = proc.Provider(), proc.Model()
 	r.agents[name] = &next
 	if err := r.save(); err != nil {
 		r.agents[name] = def
-		return fmt.Errorf("persist migrated agent %q: %w", name, err)
-	}
-	return nil
-}
-
-// deliverMigrationSeed completes a move whose destination was persisted
-// before its seed could be sent. A failed send leaves the seed durable and
-// refuses to hand an apparently ready seat back to the host.
-func (r *Registry) deliverMigrationSeed(name string, proc *Agent) error {
-	return r.settleMigrationSeed(name, proc, true)
-}
-
-// The broker does not return a grant until its registry has delivered the
-// seed. The consumer clears its mirrored pending bit without sending again.
-func (r *Registry) confirmBrokerMigrationSeed(name string, proc *Agent) error {
-	return r.settleMigrationSeed(name, proc, false)
-}
-
-func (r *Registry) settleMigrationSeed(name string, proc *Agent, send bool) error {
-	r.mu.Lock()
-	def := r.agents[name]
-	if def == nil || r.procs[name] != proc {
-		r.mu.Unlock()
-		return fmt.Errorf("agent %q is no longer registered to this process", name)
-	}
-	seed := def.MigrationSeed
-	r.mu.Unlock()
-	if seed == "" {
-		return nil
-	}
-	if send {
-		if err := proc.Send(seed); err != nil {
-			return fmt.Errorf("deliver migration handover to %q: %w", name, err)
-		}
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	def = r.agents[name]
-	if def == nil || r.procs[name] != proc || def.MigrationSeed != seed {
-		return fmt.Errorf("migration handover for %q changed while being delivered", name)
-	}
-	next := cloneAgentDef(*def)
-	next.MigrationSeed = ""
-	next.MigrationFrom = ""
-	next.MigrationFromSession = ""
-	r.agents[name] = &next
-	if err := r.save(); err != nil {
-		r.agents[name] = def
-		return fmt.Errorf("persist migration handover delivery for %q: %w", name, err)
+		return fmt.Errorf("persist switched agent %q: %w", name, err)
 	}
 	return nil
 }
@@ -845,9 +730,6 @@ func isClaudeProvider(p Provider) bool {
 // rather than mint a replacement session. Caller holds r.mu.
 func (r *Registry) requireResumeLocked(def *AgentDef) bool {
 	if def == nil {
-		return false
-	}
-	if def.MigrationPendingStart {
 		return false
 	}
 	if def.Materialized {

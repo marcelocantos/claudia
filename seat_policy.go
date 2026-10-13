@@ -45,14 +45,6 @@ type SeatPolicy struct {
 	// their own call sites.
 	HostMayInterrupt bool `json:"host_may_interrupt,omitempty"`
 	HostNeverPark    bool `json:"host_never_park,omitempty"`
-
-	// MigrationSeed, MigrationFrom, MigrationFromSession and
-	// MigrationPendingStart bookmark an in-flight cross-provider
-	// migration so a restarted host can resume it.
-	MigrationSeed         string          `json:"migration_seed,omitempty"`
-	MigrationFrom         claudiaProvider `json:"migration_from,omitempty"`
-	MigrationFromSession  string          `json:"migration_from_session,omitempty"`
-	MigrationPendingStart bool            `json:"migration_pending_start,omitempty"`
 }
 
 // claudiaProvider is a local alias so this file reads independently of

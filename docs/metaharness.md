@@ -55,7 +55,7 @@ Everything else is library API the daemon calls:
 |---|---|---|
 | Seat resume after a restart, nudge, remint | `Registry.ResumeAll` | calls it on boot, maps outcomes onto the tail |
 | Seat lifecycle events, liveness watch | `Registry.SubscribeSeatEvents` | forwards to the tail and to the owner (`agent_gone`) |
-| Migrate persistence | `Registry` records `Migrate` on its seats | nothing |
+| Model-switch persistence | `Registry` records `SwitchModel` on its seats | nothing |
 | Rewind | `Registry.Rewind` | `rewind` op, moves the grant's subscription |
 | Plan-usage monitor, 429 invalidation | `PlanUsageMonitor`, invalidation on a direct agent's stuck event | runs one instance host-wide |
 | MCP hosting | `MCPHost`, `Registry.SetMCPHost` | runs one host, sets `jevonsmcp` as consumer-owned |
@@ -87,7 +87,7 @@ Scope, per the section above: the mechanism in each row is library code.
 
 "Switch when tokens run low" is on the daemon **only** as
 rebind-to-keep-predicates. Jevons Claude-first is `PreferProvider=claude`
-on the grant. Overseer exemption is a pinned grant. Park-vs-migrate stays
+on the grant. Overseer exemption is a pinned grant. Park-vs-switch stays
 a client decision: the daemon says "this grant cannot be satisfied"
 (`stuck`); only Jevons parks a seat. That moves actuation without
 importing Jevons policy, so 🎯T13 holds.
@@ -151,8 +151,8 @@ tell: tools run inside the harness Claudia started. Claudia routes
   current `(provider, model)` fails `HasAvailableTokens` or a `NotBand`
   predicate against the daemon snapshot. Never on a timer. Never while
   `PromptInFlight`.
-- Intra-provider → `SetModel` (🎯T54). Cross-provider → `Agent.Migrate`
-  with the inert seed (🎯T55.1). `ProgressType=model_switch` is
+- `Agent.SwitchModel` in place (🎯T195): any model on a sidecar seat,
+  within its own provider on a native CLI seat. `ProgressType=model_switch` is
   published before the admitted Send's first Event, with the `Resolve`
   reason.
 - Pinned grant → never rebound. No satisfiable candidate → `stuck`

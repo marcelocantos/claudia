@@ -67,7 +67,6 @@ type Line = {
   seat?: string;
   provider?: string;
   model?: string;
-  summary_only?: boolean;
   token?: string;
   request_id?: string;
   expires_at?: number;
@@ -98,7 +97,6 @@ type Seat = {
   provider: string;
   model: string;
   token: string;
-  summaryOnly: boolean;
   agent: SeatAgent;
   // calls is the HostCalls of the connection this seat is bound to, so a
   // rebind can fail this seat's in-flight tools without touching others
@@ -126,10 +124,7 @@ const server = createServer((socket) => {
 
   const write = (ev: Record<string, unknown>) => {
     const seat = typeof ev.seat === "string" ? ev.seat : "";
-    // A one-shot transfer seat carries a full predecessor transcript.
-    // Return its events to the caller without duplicating them in the
-    // durable fleet spool.
-    if (seat && ev.type !== "dropped" && !seats.get(seat)?.summaryOnly) {
+    if (seat && ev.type !== "dropped") {
       try {
         const loaded = seats.get(seat);
         const str = (k: string) => (typeof ev[k] === "string" ? ev[k] as string : undefined);
@@ -217,7 +212,7 @@ async function handle(
       write({ seat, type: "error", text: "seat is not loaded" });
       return;
     }
-    if (existing.provider !== msg.provider || existing.summaryOnly !== (msg.summary_only === true)) {
+    if (existing.provider !== msg.provider) {
       write({ seat, type: "error", reason: "seat_identity_mismatch",
         text: `loaded seat is ${existing.provider}; registry asked for ${msg.provider ?? ""}` });
       return;
@@ -233,11 +228,10 @@ async function handle(
       return;
     }
     const existing = seats.get(seat);
-    const summaryOnly = msg.summary_only === true;
     // A load of a loaded seat keeps its conversation. A different provider
     // or model is a switch in place (🎯T195): the agent takes the new model
     // between turns, and nothing is summarised or handed over.
-    if (existing && existing.summaryOnly === summaryOnly) {
+    if (existing) {
       const switched = msg.provider !== existing.provider || (!!msg.model && msg.model !== existing.model);
       if (!(await switchIfAsked(existing, msg, seat, write))) return;
       rebindSeat(existing, msg, seat, write, callTool, calls);
@@ -255,7 +249,7 @@ async function handle(
     }
     // A host that names the seat's session gets a durable conversation; one
     // that does not (an older host) gets the old in-memory seat.
-    const store = !summaryOnly && msg.session_id ? new SeatStore(storeRoot, seat, msg.session_id) : undefined;
+    const store = msg.session_id ? new SeatStore(storeRoot, seat, msg.session_id) : undefined;
     // A seat joining a plan runs on the plan's newest token.
     setPlanToken(msg.provider ?? "", msg.token);
     const agent = createSeatAgent({
@@ -263,7 +257,6 @@ async function handle(
       model: msg.model ?? "",
       token: planTokens.get(msg.provider ?? "") ?? msg.token,
       cwd: msg.cwd ?? "",
-      summaryOnly,
       emit: (ev) => write({ seat, ...ev }),
       callTool,
       tools: msg.tools,
@@ -272,15 +265,10 @@ async function handle(
       pins: msg.pins,
       sandbox: msg.sandbox,
     });
-    if (existing) {
-      existing.calls.failSeat(seat, HOST_CONNECTION_LOST);
-      existing.agent.abort();
-    }
     seats.set(seat, {
       provider: msg.provider ?? "",
       model: msg.model ?? "",
       token: planTokens.get(msg.provider ?? "") ?? msg.token,
-      summaryOnly,
       agent,
       calls,
     });

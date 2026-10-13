@@ -46,8 +46,6 @@ const (
 	TypeInterrupt MessageType = "interrupt"
 	// TypeSetModel switches the seat's model within its provider.
 	TypeSetModel MessageType = "set_model"
-	// TypeMigrate moves the seat to another provider with an inert seed.
-	TypeMigrate MessageType = "migrate"
 	// TypeAgentInfo reads the seat's live state.
 	TypeAgentInfo MessageType = "agent_info"
 	// TypeTermSubscribe starts streaming the seat's raw terminal bytes.
@@ -91,7 +89,6 @@ const (
 	TypeSent            MessageType = "sent"
 	TypeInterrupted     MessageType = "interrupted"
 	TypeModelSet        MessageType = "model_set"
-	TypeMigrated        MessageType = "migrated"
 	TypeAgentInfoResult MessageType = "agent_info_result"
 	TypeTermSubscribed  MessageType = "term_subscribed"
 	TypeResized         MessageType = "resized"
@@ -576,10 +573,12 @@ type TurnCaps struct {
 	BusyOnSecondSubmit string `json:"busy_on_second_submit,omitempty"`
 }
 
-// SetModelRequest switches the model within the provider.
+// SetModelRequest moves the seat to Provider and Model in place, keeping its
+// conversation (claudia 🎯T195). An empty Provider keeps the seat's own.
 type SetModelRequest struct {
-	Name  string `json:"name"`
-	Model string `json:"model"`
+	Name     string   `json:"name"`
+	Provider Provider `json:"provider,omitempty"`
+	Model    string   `json:"model"`
 }
 
 // Validate checks the fields.
@@ -593,28 +592,6 @@ func (r *SetModelRequest) Validate() error {
 	return nil
 }
 
-// MigrateRequest moves the seat to another provider (claudia.MigrateArgs).
-type MigrateRequest struct {
-	Name         string   `json:"name"`
-	Provider     Provider `json:"provider"`
-	Model        string   `json:"model,omitempty"`
-	Reason       string   `json:"reason,omitempty"`
-	ContextBrief string   `json:"context_brief,omitempty"`
-	Force        bool     `json:"force,omitempty"`
-}
-
-// Validate checks the fields.
-func (r *MigrateRequest) Validate() error {
-	if strings.TrimSpace(r.Name) == "" {
-		return &ProtocolError{Code: CodeMissingField, Field: "name", Msg: "grant name is required"}
-	}
-	if strings.TrimSpace(string(r.Provider)) == "" {
-		return &ProtocolError{Code: CodeMissingField, Field: "provider", Msg: "destination provider is required"}
-	}
-	return nil
-}
-
-// MigrateResponse reports the destination the seat now runs on.
 // GoalCheckMessage asks the owner of a seat to judge its Goal against the
 // turn that just ended (claudia.Config.GoalCompleteCheck). The owner answers
 // with goal_verdict carrying the same CheckID.
@@ -677,17 +654,6 @@ type RewindResponse struct {
 	LinesRemoved  int      `json:"lines_removed"`
 	BytesRemoved  int64    `json:"bytes_removed"`
 	BackupPath    string   `json:"backup_path,omitempty"`
-}
-
-type MigrateResponse struct {
-	Name          string   `json:"name"`
-	SessionID     string   `json:"session_id"`
-	Provider      Provider `json:"provider"`
-	Model         string   `json:"model,omitempty"`
-	WindowID      string   `json:"window_id,omitempty"`
-	JSONLPath     string   `json:"jsonl_path,omitempty"`
-	TermLogPath   string   `json:"term_log_path,omitempty"`
-	AttachCommand string   `json:"attach_command,omitempty"`
 }
 
 // AgentInfoResponse is the seat's live state.
