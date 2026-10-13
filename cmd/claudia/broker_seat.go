@@ -115,9 +115,6 @@ func grantCmd(args []string) error {
 		if err := send.Validate(); err != nil {
 			return fmt.Errorf("grant: %w", err)
 		}
-		if *wait && send.Mode == broker.SendModeQueue {
-			return errors.New("grant: --wait does not apply to --mode queue (nothing is written to the seat)")
-		}
 	} else if *wait {
 		// Waiting without a send folds the stream from the grant, including
 		// anything replayed from while the seat was unowned.
@@ -197,9 +194,6 @@ func sendCmd(args []string) error {
 	send := &broker.SendRequest{Name: name, Text: text, Mode: broker.SendMode(*mode)}
 	if err := send.Validate(); err != nil {
 		return fmt.Errorf("send: %w", err)
-	}
-	if *wait && send.Mode == broker.SendModeQueue {
-		return errors.New("send: --wait does not apply to --mode queue (nothing is written to the seat)")
 	}
 	disp, err := parseReleaseFlag(*releaseFlag)
 	if err != nil {
@@ -440,8 +434,37 @@ func driveSeat(d seatDrive) error {
 		return nil
 	}
 
-	if d.send != nil {
+	if d.send != nil && d.send.Mode == broker.SendModeQueue {
+		// The daemon's queue mode only acknowledges a host-side enqueue and
+		// writes nothing to the seat; this process is the host. Before
+		// 2026-10-13 the CLI stopped at that acknowledgement, so `--mode
+		// queue` silently dropped the text and `--wait` was refused. Hold
+		// the text here until the open turn (if any) ends, then submit it.
 		out.askedMode = d.send.Mode
+		resp, got, err := s.call(ctx, &broker.Request{Type: broker.TypeSend, Send: d.send}, deadline)
+		if err != nil {
+			return err
+		}
+		if resp.Sent == nil {
+			return fmt.Errorf("broker: send answered with %s", resp.Type)
+		}
+		got, err = drainGoals(ctx, s, deadline, got)
+		if err != nil {
+			return err
+		}
+		if resp.Sent.PhaseBefore == string(claudia.TurnInTurn) {
+			if _, err := waitTurn(ctx, s, deadline, got); err != nil {
+				return fmt.Errorf("queue: waiting for the open turn to end: %w", err)
+			}
+		}
+		submit := *d.send
+		submit.Mode = broker.SendModeSubmit
+		d.send = &submit
+	}
+	if d.send != nil {
+		if out.askedMode == "" {
+			out.askedMode = d.send.Mode
+		}
 		resp, got, err := s.call(ctx, &broker.Request{Type: broker.TypeSend, Send: d.send}, deadline)
 		if err != nil {
 			return err

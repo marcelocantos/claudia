@@ -78,14 +78,43 @@ func TestGrantRejectsUnknownPurposeBeforeDial(t *testing.T) {
 	}
 }
 
-func TestQueueWaitRefusedBeforeDial(t *testing.T) {
-	t.Setenv(broker.SocketPathEnv, filepath.Join(t.TempDir(), "missing.sock"))
-	err := sendCmd([]string{"--mode", "queue", "--wait", "--text", "later", "pimp-smoke-1"})
-	if err == nil || !strings.Contains(err.Error(), "queue") {
-		t.Fatalf("error = %v, want a queue refusal", err)
+// --mode queue on a busy seat holds the text until the open turn ends,
+// then submits it; --wait folds the queued turn, not the one it waited out.
+func TestSendQueueWaitDeliversAfterOpenTurn(t *testing.T) {
+	shortenSettle(t)
+	fake := startSeatFake(t)
+	fake.listed = []broker.GrantStatus{{Name: "pimp-q", Provider: "grok", SessionID: "sid-q", WorkDir: "/work"}}
+	fake.queuePhase = string(claudia.TurnInTurn)
+	fake.afterQueue = []claudia.Event{{Type: "assistant", Text: "earlier turn", StopReason: "end_turn"}}
+	fake.afterSend = []claudia.Event{{Type: "assistant", Text: "queued answer", StopReason: "end_turn"}}
+	out := captureStdout(t, func() error {
+		return sendCmd([]string{"--mode", "queue", "--wait", "--timeout", "5s", "pimp-q", "later"})
+	})
+	if strings.TrimSpace(out) != "queued answer" {
+		t.Fatalf("stdout = %q, want the queued turn's text", out)
 	}
-	if strings.Contains(err.Error(), "no daemon") {
-		t.Fatalf("refused --wait dialed anyway: %v", err)
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.sends) != 2 || fake.sends[0].Mode != broker.SendModeQueue ||
+		fake.sends[1].Mode != broker.SendModeSubmit || fake.sends[1].Text != "later" {
+		t.Fatalf("sends = %+v, want queue probe then submit of the text", fake.sends)
+	}
+}
+
+// On an idle seat --mode queue submits straight away; without --wait it
+// still delivers (it used to stop at the daemon's acknowledgement).
+func TestSendQueueIdleSubmitsWithoutWait(t *testing.T) {
+	shortenSettle(t)
+	fake := startSeatFake(t)
+	fake.listed = []broker.GrantStatus{{Name: "pimp-q2", Provider: "grok", SessionID: "sid-q2", WorkDir: "/work"}}
+	fake.queuePhase = string(claudia.TurnIdle)
+	_ = captureStdout(t, func() error {
+		return sendCmd([]string{"--mode", "queue", "--timeout", "5s", "pimp-q2", "now"})
+	})
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.sends) != 2 || fake.sends[1].Mode != broker.SendModeSubmit || fake.sends[1].Text != "now" {
+		t.Fatalf("sends = %+v, want the text submitted", fake.sends)
 	}
 }
 
@@ -345,6 +374,9 @@ type seatFake struct {
 	ops         []string
 	afterSend   []claudia.Event
 	beforeGrant []claudia.Event
+	sends       []broker.SendRequest
+	queuePhase  string
+	afterQueue  []claudia.Event
 }
 
 func (f *seatFake) HandleRequest(c *broker.ClientConn, req *broker.Request) bool {
@@ -377,10 +409,16 @@ func (f *seatFake) HandleRequest(c *broker.ClientConn, req *broker.Request) bool
 	case broker.TypeSend:
 		cp := *req.Send
 		f.send = &cp
+		f.sends = append(f.sends, cp)
 		after := append([]claudia.Event(nil), f.afterSend...)
+		phase := ""
+		if cp.Mode == broker.SendModeQueue {
+			after = append([]claudia.Event(nil), f.afterQueue...)
+			phase = f.queuePhase
+		}
 		f.mu.Unlock()
 		_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeSent, Sent: &broker.SentResponse{
-			Name: cp.Name, Mode: cp.Mode, Mechanism: "test",
+			Name: cp.Name, Mode: cp.Mode, Mechanism: "test", PhaseBefore: phase,
 		}})
 		_ = writeEvents(c, cp.Name, after)
 		return true
