@@ -35,7 +35,11 @@ func (b *brokerTaskBackend) Capabilities() providerCapabilities {
 // pushes and are delivered to it in order (🎯T75.10).
 func (b *brokerTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*taskRun, error) {
 	cfg := b.cfg
-	cfg.WorkDir = req.WorkDir
+	wd, err := ResolveClientWorkDir(req.WorkDir)
+	if err != nil {
+		return nil, err
+	}
+	cfg.WorkDir = wd
 	cfg.Model = req.Model
 	cfg.SandboxMode = req.SandboxMode
 	cfg.SandboxGitWrite = req.SandboxGitWrite

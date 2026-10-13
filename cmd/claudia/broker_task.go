@@ -61,11 +61,15 @@ func taskCmd(args []string) error {
 	if err != nil {
 		return fmt.Errorf("task: %w", err)
 	}
+	wd, err := claudia.ResolveClientWorkDir(*workdir)
+	if err != nil {
+		return fmt.Errorf("task: %w", err)
+	}
 	cfg := claudia.TaskConfig{
 		ID:              *id,
 		Provider:        prov,
 		Model:           *model,
-		WorkDir:         *workdir,
+		WorkDir:         wd,
 		PickByRemaining: pickRemaining,
 	}
 	raw, err := claudia.EncodeTaskConfigWire(cfg)

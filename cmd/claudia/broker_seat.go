@@ -296,8 +296,9 @@ func seatDefinition(name, provider, workdir, purpose, parent, model, session str
 	if err := checkPurpose(purpose); err != nil {
 		return claudia.GrantDefinition{}, err
 	}
-	if workdir == "" {
-		workdir = "."
+	workdir, err := claudia.ResolveClientWorkDir(workdir)
+	if err != nil {
+		return claudia.GrantDefinition{}, err
 	}
 	return claudia.GrantDefinition{AgentDef: claudia.AgentDef{
 		Name:      name,

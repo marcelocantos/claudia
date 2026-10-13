@@ -183,7 +183,7 @@ func TestGrantSendWaitReleaseOnWire(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if def.Name != "pimp-smoke-1" || def.Provider != claudia.ProviderGrok || def.Parent != "pimp" || def.Purpose != claudia.PurposeWork || def.WorkDir != dir {
+	if def.Name != "pimp-smoke-1" || def.Provider != claudia.ProviderGrok || def.Parent != "pimp" || def.Purpose != claudia.PurposeWork || def.WorkDir != mustEvalSymlinks(t, dir) {
 		t.Fatalf("def = %+v", def.AgentDef)
 	}
 	if fake.send.Text != "ping" || fake.send.Mode != broker.SendModeSubmit {
@@ -442,4 +442,15 @@ func startSeatFake(t *testing.T) *seatFake {
 	t.Setenv(broker.SocketPathEnv, sock)
 	t.Setenv(broker.NoBrokerEnv, "")
 	return fake
+}
+
+// mustEvalSymlinks mirrors claudia.ResolveClientWorkDir: the CLI sends the
+// symlink-resolved workdir (macOS t.TempDir() lives under /var -> /private/var).
+func mustEvalSymlinks(t *testing.T, p string) string {
+	t.Helper()
+	r, err := filepath.EvalSymlinks(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
 }

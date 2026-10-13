@@ -1524,6 +1524,14 @@ func (d *Daemon) handleTaskRun(c *broker.ClientConn, req *broker.Request) {
 		_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeMalformed, Field: "task.tool_policy", Msg: "restricted task requires tool_policy"})
 		return
 	}
+	// The daemon's own cwd is not the caller's; a relative or empty WorkDir
+	// would silently run the task in the daemon's checkout. Clients resolve
+	// it (claudia.ResolveClientWorkDir) before sending.
+	if !filepath.IsAbs(cfg.WorkDir) {
+		_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeMalformed, Field: "task.workdir", Value: cfg.WorkDir,
+			Msg: "task workdir must be an absolute path (the daemon's cwd is not the caller's)"})
+		return
+	}
 	if req.TaskRun.RequireBackgroundCapacity {
 		if err := d.admitBackgroundTask(cfg); err != nil {
 			_ = c.Fail(req.ID, err)
