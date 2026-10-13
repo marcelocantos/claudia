@@ -30,7 +30,7 @@ func TestOMPSidecarSeatsMapSandboxPolicy(t *testing.T) {
 			}
 			sb, err = ompSandboxFor(Config{Provider: p, WorkDir: repo, SandboxMode: "workspace-write",
 				SandboxWritableRoots: []string{"/tmp/gates"}, SandboxNetworkAccess: true, SandboxGitWrite: true})
-			if err != nil || sb == nil || !samePaths(sb.WritableRoots, []string{"/tmp/gates", gitDir}) || len(sb.Protected) != 0 {
+			if err != nil || sb == nil || !samePaths(sb.WritableRoots, []string{"/tmp/gates", bullseyeLedgerRoot(), gitDir}) || len(sb.Protected) != 0 {
 				t.Fatalf("ge-po shape = %+v, %v", sb, err)
 			}
 		})
@@ -69,9 +69,40 @@ func TestOMPAnthropicSeatWithSandboxPolicyResumes(t *testing.T) {
 			load := f.nextLoad(t)
 			if load.Provider != omp.Anthropic || load.SessionID != "sid-gepo" || load.Sandbox == nil ||
 				load.Sandbox.Mode != "workspace-write" ||
-				!samePaths(load.Sandbox.WritableRoots, []string{"/tmp/gates", filepath.Join(repo, ".git")}) {
+				!samePaths(load.Sandbox.WritableRoots, []string{"/tmp/gates", bullseyeLedgerRoot(), filepath.Join(repo, ".git")}) {
 				t.Fatalf("load = provider %q session %q sandbox %+v", load.Provider, load.SessionID, load.Sandbox)
 			}
 		})
+	}
+}
+
+// Workspace-write sidecar seats may write the bullseye ledger, and nothing
+// broader; read-only seats get no writable root at all.
+func TestOMPWorkspaceWriteAddsBullseyeLedgerRoot(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	want := filepath.Join(home, ".local", "share", "bullseye")
+	if got := bullseyeLedgerRoot(); got != want {
+		t.Fatalf("bullseyeLedgerRoot = %q, want %q", got, want)
+	}
+	dir := t.TempDir()
+	for _, p := range []Provider{Provider(omp.Anthropic), ProviderCodex, ProviderCursor, ProviderGrok} {
+		t.Run(string(p), func(t *testing.T) {
+			sb, err := ompSandboxFor(Config{Provider: p, WorkDir: dir, SandboxMode: "workspace-write"})
+			if err != nil || sb == nil || len(sb.WritableRoots) != 1 || sb.WritableRoots[0] != want {
+				t.Fatalf("workspace-write = %+v, %v; want only %s", sb, err, want)
+			}
+			sb, err = ompSandboxFor(Config{Provider: p, WorkDir: dir, SandboxMode: "workspace-write", SandboxWritableRoots: []string{want}})
+			if err != nil || len(sb.WritableRoots) != 1 {
+				t.Fatalf("explicit root duplicated: %+v, %v", sb, err)
+			}
+			sb, err = ompSandboxFor(Config{Provider: p, WorkDir: dir, SandboxMode: "read-only"})
+			if err != nil || sb == nil || sb.Mode != "read-only" || len(sb.WritableRoots) != 0 {
+				t.Fatalf("read-only = %+v, %v; want no writable roots", sb, err)
+			}
+		})
+	}
+	if sb, _ := ompSandboxFor(Config{Provider: ProviderCodex, WorkDir: dir}); sb == nil || len(sb.WritableRoots) != 0 {
+		t.Fatalf("bare codex (read-only default) = %+v", sb)
 	}
 }

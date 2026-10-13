@@ -138,6 +138,9 @@ func ompSandboxFor(cfg Config) (*omp.Sandbox, error) {
 		return &omp.Sandbox{Mode: omp.SandboxReadOnly}, nil
 	case omp.SandboxWorkspaceWrite:
 		sb := &omp.Sandbox{Mode: omp.SandboxWorkspaceWrite, WritableRoots: slices.Clone(cfg.SandboxWritableRoots)}
+		if root := bullseyeLedgerRoot(); root != "" && !slices.Contains(sb.WritableRoots, root) {
+			sb.WritableRoots = append(sb.WritableRoots, root)
+		}
 		gitRoots, err := codexGitWritableRoots(cfg.WorkDir)
 		if err != nil {
 			if cfg.SandboxGitWrite {
@@ -157,6 +160,17 @@ func ompSandboxFor(cfg Config) (*omp.Sandbox, error) {
 	default:
 		return nil, describe()
 	}
+}
+
+// bullseyeLedgerRoot is the bullseye ledger directory every workspace-write
+// sidecar seat may write: seats record target status there. Only this one
+// directory, and never for read-only seats.
+func bullseyeLedgerRoot() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".local", "share", "bullseye")
 }
 
 // withDefaultOMPModel resolves an omitted model before either a broker grant

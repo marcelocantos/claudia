@@ -19,6 +19,7 @@ func TestOMPCodexSandboxMapping(t *testing.T) {
 	repo := t109Repo(t)
 	gitDir := filepath.Join(repo, ".git")
 	plain := t.TempDir()
+	bl := bullseyeLedgerRoot()
 	for _, tc := range []struct {
 		name string
 		cfg  Config
@@ -28,11 +29,11 @@ func TestOMPCodexSandboxMapping(t *testing.T) {
 		{"subscription id without settings is untouched", Config{Provider: Provider(omp.OpenAICodex), WorkDir: repo}, nil},
 		{"read-only", Config{Provider: ProviderCodex, WorkDir: repo, SandboxMode: "read-only"}, &omp.Sandbox{Mode: "read-only"}},
 		{"workspace-write keeps git protected", Config{Provider: ProviderCodex, WorkDir: repo, SandboxMode: "workspace-write"},
-			&omp.Sandbox{Mode: "workspace-write", Protected: []string{gitDir}}},
+			&omp.Sandbox{Mode: "workspace-write", WritableRoots: []string{bl}, Protected: []string{gitDir}}},
 		{"git write adds the git dir", Config{Provider: ProviderCodex, WorkDir: repo, SandboxMode: "workspace-write", SandboxGitWrite: true, ApprovalPolicy: "never"},
-			&omp.Sandbox{Mode: "workspace-write", WritableRoots: []string{gitDir}}},
+			&omp.Sandbox{Mode: "workspace-write", WritableRoots: []string{bl, gitDir}}},
 		{"writable roots carried", Config{Provider: Provider(omp.OpenAICodex), WorkDir: plain, SandboxMode: "workspace-write", SandboxWritableRoots: []string{"/tmp/x"}},
-			&omp.Sandbox{Mode: "workspace-write", WritableRoots: []string{"/tmp/x"}}},
+			&omp.Sandbox{Mode: "workspace-write", WritableRoots: []string{"/tmp/x", bl}}},
 		{"full access is unconfined", Config{Provider: ProviderCodex, WorkDir: repo, SandboxMode: "danger-full-access"}, nil},
 		{"not codex", Config{Provider: ProviderGrok, WorkDir: repo}, nil},
 	} {
@@ -110,7 +111,7 @@ func TestOMPCodexLoadCarriesSandbox(t *testing.T) {
 	defer agent.Stop()
 	load := f.nextLoad(t)
 	if load.Provider != omp.OpenAICodex || load.Sandbox == nil || load.Sandbox.Mode != "workspace-write" ||
-		!samePaths(load.Sandbox.WritableRoots, []string{filepath.Join(repo, ".git")}) || len(load.Sandbox.Protected) != 0 {
+		!samePaths(load.Sandbox.WritableRoots, []string{bullseyeLedgerRoot(), filepath.Join(repo, ".git")}) || len(load.Sandbox.Protected) != 0 {
 		t.Fatalf("load = provider %q sandbox %+v", load.Provider, load.Sandbox)
 	}
 	if err := agent.Send("hello"); err != nil {
