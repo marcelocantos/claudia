@@ -9,6 +9,7 @@
 //
 // The turn loop is @oh-my-pi/pi-agent-core (pinned in package.json).
 
+import { switchOnLoad } from "./loadswitch.ts";
 import { createServer } from "node:net";
 import { unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -232,8 +233,9 @@ async function handle(
     // or model is a switch in place (🎯T195): the agent takes the new model
     // between turns, and nothing is summarised or handed over.
     if (existing) {
-      const switched = msg.provider !== existing.provider || (!!msg.model && msg.model !== existing.model);
+      const before = `${existing.provider}/${existing.model}`;
       if (!(await switchIfAsked(existing, msg, seat, write))) return;
+      const switched = `${existing.provider}/${existing.model}` !== before;
       rebindSeat(existing, msg, seat, write, callTool, calls);
       write({
         seat,
@@ -267,7 +269,10 @@ async function handle(
     });
     seats.set(seat, {
       provider: msg.provider ?? "",
-      model: msg.model ?? "",
+      // The model the seat resolved, not the one asked for: an empty ask
+      // takes the provider's default, and a later re-attach naming that
+      // default is not a switch.
+      model: (agent.snapshot() as { model?: { id?: string } }).model?.id || msg.model || "",
       token: planTokens.get(msg.provider ?? "") ?? msg.token,
       agent,
       calls,
@@ -320,8 +325,9 @@ function rebindSeat(
     if (n > 0) console.error(`sidecar: rebound ${seat} with ${n} unanswered tool call(s); failed them`);
     existing.calls = calls;
   }
-  if (msg.provider) existing.provider = msg.provider;
-  if (msg.token) setPlanToken(existing.provider, msg.token);
+  // The token is for the plan the host named; a seat that stayed on its own
+  // plan (a re-attach that could not switch) keeps that plan's token.
+  if (msg.token && (msg.provider || existing.provider) === existing.provider) setPlanToken(existing.provider, msg.token);
   existing.agent.rebind((ev) => write({ seat, ...ev }), callTool);
   if (msg.tools) existing.agent.setHostTools(msg.tools);
   if (msg.cwd) existing.agent.setCwd(msg.cwd);
@@ -331,33 +337,26 @@ function rebindSeat(
   existing.agent.setContext(msg.preserve, msg.pins);
 }
 
-// switchIfAsked moves a loaded seat to the provider and model msg names, when
-// they differ, before anything is rebound: a conversation that must be folded
-// to fit is folded by the model that wrote it, on its own plan's token
-// (🎯T195). It reports false, having written the refusal, when the seat
-// cannot switch; the seat then stays as it was.
+// switchIfAsked moves a loaded seat to the provider and model msg names,
+// before anything is rebound: a conversation that must be folded to fit is
+// folded by the model that wrote it, on its own plan's token (🎯T195). An
+// explicit switch (a request id) that the seat refuses writes the refusal
+// and reports false; the seat stays as it was. A plain re-attach never
+// fails here: the seat keeps its own model (switchOnLoad).
 async function switchIfAsked(
   existing: Seat,
   msg: Line,
   seat: string,
   write: (ev: Record<string, unknown>) => void,
 ): Promise<boolean> {
-  const provider = msg.provider || existing.provider;
-  const model = msg.model || existing.model;
-  if (provider === existing.provider && model === existing.model) return true;
-  try {
-    await existing.agent.switchModel(provider, model);
-  } catch (err) {
-    write({
-      seat,
-      type: "error",
-      reason: "switch_refused",
-      request_id: msg.request_id,
-      text: err instanceof Error ? err.message : String(err),
-    });
+  const out = await switchOnLoad(existing, msg, (provider, model) => existing.agent.switchModel(provider, model));
+  if (!out.ok) {
+    write({ seat, type: "error", reason: "switch_refused", request_id: msg.request_id, text: out.error });
     return false;
   }
-  existing.model = model;
+  if (out.refused) {
+    console.error(`sidecar: ${seat} re-attached on ${existing.provider}/${existing.model}; not switched to ${msg.provider}/${msg.model}: ${out.refused}`);
+  }
   return true;
 }
 
