@@ -6,6 +6,7 @@ package claudia
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -15,9 +16,11 @@ import (
 
 // 🎯T195 live: a running sidecar seat moves from the anthropic plan to the
 // openai-codex plan in place, and the new model answers from the
-// conversation the old one had. The codeword exists only in that
-// conversation, so recalling it means the destination read it; the session
-// id must not change. It spends a few turns on both plans.
+// conversation the old one had, tool calls included. One secret is said in a
+// prompt; the other exists only in a file the seat reads with a tool before
+// the switch, so recalling it means the destination read the converted
+// tool-call history. The session id must not change. It spends a few turns
+// on both plans.
 func TestT195LiveSidecarSwitchKeepsConversation(t *testing.T) {
 	if os.Getenv("CLAUDIA_OMP_LIVE") == "" {
 		t.Skip("CLAUDIA_OMP_LIVE not set (this test spends anthropic and openai-codex plan capacity)")
@@ -26,7 +29,12 @@ func TestT195LiveSidecarSwitchKeepsConversation(t *testing.T) {
 		t.Skip("no claudia daemon reachable (start one with `claudia broker serve`; run with CLAUDIA_NO_BROKER=0)")
 	}
 	name := "t195-switch-live-" + newRunID()
-	a, err := Start(Config{Name: name, Provider: Provider(omp.Anthropic), WorkDir: t.TempDir()})
+	work := t.TempDir()
+	const fileSecret = "OCHREPELICAN27"
+	if err := os.WriteFile(filepath.Join(work, "secret.txt"), []byte(fileSecret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a, err := Start(Config{Name: name, Provider: Provider(omp.Anthropic), WorkDir: work})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -51,6 +59,10 @@ func TestT195LiveSidecarSwitchKeepsConversation(t *testing.T) {
 	}
 	const codeword = "MAGENTAWALRUS61"
 	ask("Remember this codeword for later: " + codeword + ". Reply with exactly: STORED")
+	read := ask("Use your Read or Bash tool to read the file secret.txt in your working directory. Reply with its contents only.")
+	if !strings.Contains(strings.ToUpper(read), fileSecret) {
+		t.Fatalf("anthropic seat did not read the file with a tool: %q", read)
+	}
 	session := a.SessionID()
 
 	model, err := standardSessionModel(ctx, ProviderCodex)
@@ -70,5 +82,13 @@ func TestT195LiveSidecarSwitchKeepsConversation(t *testing.T) {
 	if !strings.Contains(strings.ToUpper(got), codeword) {
 		t.Fatalf("openai-codex/%s did not recall the codeword from the anthropic turns: %q", model, got)
 	}
-	t.Logf("switched %s anthropic → openai-codex/%s on session %s; recalled %q", name, model, session, got)
+	// Gone now: only the conversation can answer.
+	if err := os.Remove(filepath.Join(work, "secret.txt")); err != nil {
+		t.Fatal(err)
+	}
+	got = ask("Without using any tool, what did secret.txt contain when you read it earlier? Reply with the contents only.")
+	if !strings.Contains(strings.ToUpper(got), fileSecret) {
+		t.Fatalf("openai-codex/%s did not recall the earlier tool result: %q", model, got)
+	}
+	t.Logf("switched %s anthropic → openai-codex/%s on session %s; recalled the codeword and the tool result %q", name, model, session, got)
 }
