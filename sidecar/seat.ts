@@ -47,7 +47,10 @@ export type SeatAgent = {
   prompt: (text: string, meta?: PromptMeta) => Promise<void>;
   steer: (text: string, meta?: PromptMeta) => void;
   abort: () => void;
-  setModel: (provider: string, model: string) => void;
+  // switchModel moves the seat to another provider or model between turns,
+  // keeping its conversation (🎯T195). It rejects while a turn runs, for an
+  // unknown model, and when the conversation cannot be made to fit.
+  switchModel: (provider: string, model: string) => Promise<void>;
   setToken: (token: string) => void;
   setCwd: (cwd: string) => void;
   // setSandbox replaces the policy on the seat's own tools (🎯T178).
@@ -92,6 +95,8 @@ export function createSeatAgent(opts: {
   // compaction seams (🎯T150). Tests only: a mock model with a small window
   // and a fake summary.
   modelOverride?: Model;
+  // resolveModelOverride replaces the catalog lookup a switch makes (tests).
+  resolveModelOverride?: (provider: string, model: string) => Model;
   maintenance?: Pick<MaintenanceHost, "compactImpl" | "summaryOptions" | "nativeEligible">;
   // store keeps the conversation across a sidecar restart (🎯T151). A seat
   // loaded with a store that already holds its session resumes from it.
@@ -450,8 +455,11 @@ export function createSeatAgent(opts: {
         }
       });
     },
-    setModel: (provider: string, modelId: string) => {
-      agent.setModel(resolveModel(provider, modelId));
+    switchModel: async (provider: string, modelId: string) => {
+      if (agent.state.isStreaming || (turn && !turn.closed)) {
+        throw new Error("switch refused: a turn is running");
+      }
+      await maint.switchModel((opts.resolveModelOverride ?? resolveModel)(provider, modelId));
     },
     setToken: (next: string) => {
       token = next;

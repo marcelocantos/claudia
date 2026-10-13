@@ -222,6 +222,7 @@ async function handle(
         text: `loaded seat is ${existing.provider}; registry asked for ${msg.provider ?? ""}` });
       return;
     }
+    if (!(await switchIfAsked(existing, msg, seat, write))) return;
     rebindSeat(existing, msg, seat, write, callTool, calls);
     write({ seat, type: "ready", how: "adopted", bound_tools: existing.agent.boundToolNames(), sandbox: existing.agent.sandboxMode() });
     return;
@@ -233,12 +234,23 @@ async function handle(
     }
     const existing = seats.get(seat);
     const summaryOnly = msg.summary_only === true;
-    // A reconnect keeps the session. A provider switch mints a fresh
-    // work agent: handing the old in-memory transcript to the new provider
-    // would bypass the bounded transfer brief.
-    if (existing && existing.provider === msg.provider && existing.summaryOnly === summaryOnly) {
+    // A load of a loaded seat keeps its conversation. A different provider
+    // or model is a switch in place (🎯T195): the agent takes the new model
+    // between turns, and nothing is summarised or handed over.
+    if (existing && existing.summaryOnly === summaryOnly) {
+      const switched = msg.provider !== existing.provider || (!!msg.model && msg.model !== existing.model);
+      if (!(await switchIfAsked(existing, msg, seat, write))) return;
       rebindSeat(existing, msg, seat, write, callTool, calls);
-      write({ seat, type: "ready", how: "adopted", bound_tools: existing.agent.boundToolNames(), sandbox: existing.agent.sandboxMode() });
+      write({
+        seat,
+        type: "ready",
+        how: switched ? "switched" : "adopted",
+        request_id: msg.request_id,
+        provider: existing.provider,
+        model: existing.model,
+        bound_tools: existing.agent.boundToolNames(),
+        sandbox: existing.agent.sandboxMode(),
+      });
       return;
     }
     // A host that names the seat's session gets a durable conversation; one
@@ -329,11 +341,36 @@ function rebindSeat(
   if (msg.op === "load" || msg.sandbox !== undefined) existing.agent.setSandbox(msg.sandbox);
   // The host sends its current compaction steer on every load (🎯T152).
   existing.agent.setContext(msg.preserve, msg.pins);
-  if (msg.model && msg.model !== existing.model) {
-    existing.agent.setModel(msg.provider ?? existing.provider, msg.model);
-    existing.model = msg.model;
+}
+
+// switchIfAsked moves a loaded seat to the provider and model msg names, when
+// they differ, before anything is rebound: a conversation that must be folded
+// to fit is folded by the model that wrote it, on its own plan's token
+// (🎯T195). It reports false, having written the refusal, when the seat
+// cannot switch; the seat then stays as it was.
+async function switchIfAsked(
+  existing: Seat,
+  msg: Line,
+  seat: string,
+  write: (ev: Record<string, unknown>) => void,
+): Promise<boolean> {
+  const provider = msg.provider || existing.provider;
+  const model = msg.model || existing.model;
+  if (provider === existing.provider && model === existing.model) return true;
+  try {
+    await existing.agent.switchModel(provider, model);
+  } catch (err) {
+    write({
+      seat,
+      type: "error",
+      reason: "switch_refused",
+      request_id: msg.request_id,
+      text: err instanceof Error ? err.message : String(err),
+    });
+    return false;
   }
-  if (msg.provider) existing.provider = msg.provider;
+  existing.model = model;
+  return true;
 }
 
 function promptMeta(msg: Line) {

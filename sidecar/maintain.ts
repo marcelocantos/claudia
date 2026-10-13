@@ -104,7 +104,7 @@ const recoveryBand = 0.8;
 const transientRetries = 2;
 const transientBackoffMs = 1000;
 
-export type Reason = "threshold" | "overflow";
+export type Reason = "threshold" | "overflow" | "switch";
 export type Phase = "pre_turn" | "mid_turn" | "post_turn";
 type Method = "remote" | "soft";
 
@@ -288,8 +288,11 @@ export class History {
 
   // rebuild is the model's context from the entries: the latest compaction's
   // summary, the tail it kept, and everything after it (the CLI's
-  // buildSessionContext, non-transcript path).
-  rebuild(): AgentMessage[] {
+  // buildSessionContext, non-transcript path). provider is the provider the
+  // context is for: an OpenAI replacement history from another provider is
+  // opaque to it, so the summary text and the kept turns stand in for it
+  // (🎯T195, a seat that switched provider).
+  rebuild(provider?: string): AgentMessage[] {
     const path = this.entries;
     let ci = -1;
     for (let i = path.length - 1; i >= 0; i--) {
@@ -301,8 +304,9 @@ export class History {
     const messageOf = (e: SessionEntry) => (e.type === "message" ? [(e as SessionMessageEntry).message] : []);
     if (ci < 0) return path.flatMap(messageOf);
     const c = path[ci] as SeatCompactionEntry;
-    const remote = openAiRemotePayload(c);
-    const anthropic = getAnthropicCompactionPayload(c.preserveData);
+    const native = openAiRemotePayload(c);
+    const remote = native && (!provider || native.provider === provider) ? native : undefined;
+    const anthropic = !provider || provider === "anthropic" ? getAnthropicCompactionPayload(c.preserveData) : undefined;
     // A natively replayed Anthropic summary must predate the kept tail, or
     // its rewrite marker would strip the tail's thinking signatures.
     let summaryTimestamp = c.timestamp;
@@ -400,7 +404,7 @@ export class Maintenance {
   // and session were stored before. It throws when the store is unreadable.
   restore(): boolean {
     if (!this.history.restore()) return false;
-    this.#host.agent.replaceMessages(this.history.rebuild());
+    this.#host.agent.replaceMessages(this.history.rebuild(this.#provider()));
     this.#compactedAt = this.history.latestCompactionAt();
     return true;
   }
@@ -416,6 +420,42 @@ export class Maintenance {
 
   abort(): void {
     this.#abort?.abort();
+  }
+
+  #provider(): string | undefined {
+    return this.#host.agent.state.model?.provider;
+  }
+
+  // switchModel moves the seat onto next, keeping its conversation (🎯T195).
+  // A conversation too large for next's window is folded first, by the model
+  // that wrote it, down to what next can carry; if it cannot be, the switch
+  // is refused and the seat stays where it was. Limits learned from the old
+  // provider's refusals do not describe the new one.
+  async switchModel(next: Model): Promise<void> {
+    const agent = this.#host.agent;
+    const window = next.contextWindow ?? 0;
+    if (window > 0 && shouldCompact(this.contextTokens(agent.state.messages), window, settings)) {
+      await this.run("switch", "pre_turn", agent.state.messages, { window, soft: true });
+      if (shouldCompact(this.contextTokens(agent.state.messages), window, settings)) {
+        throw new Error(
+          `switch refused: the conversation (${this.contextTokens(agent.state.messages)} tokens) does not fit ${next.provider}/${next.id} (${window}) even after compaction`,
+        );
+      }
+    }
+    const from = agent.state.model?.provider;
+    agent.setModel(next);
+    this.#limit = 0;
+    this.#deadEnd = false;
+    if (from !== next.provider) {
+      // A native compaction payload, and a Codex server-side history, belong
+      // to the provider that made them.
+      agent.replaceMessages(this.history.rebuild(next.provider));
+      resetOpenAICodexHistoryAfterCompaction({
+        providerSessionState: agent.providerSessionState,
+        sessionId: agent.sessionId,
+        compaction: { operationId: crypto.randomUUID(), trigger: "auto", reason: "context_limit", phase: "pre_turn", strategy: "memento" } as never,
+      });
+    }
   }
 
   window(): number {
@@ -470,15 +510,23 @@ export class Maintenance {
   // progress (the rebuilt context fits, or sits under the recovery band).
   // messages is the live conversation: mid-turn, the loop's own array, which
   // can hold tool results the Agent's state has not taken yet.
-  async run(reason: Reason, phase: Phase, messages: readonly AgentMessage[] = this.#host.agent.state.messages): Promise<boolean> {
+  // target narrows a pass: the window to fold down to (a switch to a smaller
+  // model) and whether only the local summary may run, since a native
+  // payload would be foreign to the model taking over.
+  async run(
+    reason: Reason,
+    phase: Phase,
+    messages: readonly AgentMessage[] = this.#host.agent.state.messages,
+    target: { window?: number; soft?: boolean } = {},
+  ): Promise<boolean> {
     const agent = this.#host.agent;
     const model = agent.state.model;
-    const window = this.window();
+    const window = target.window ?? this.window();
     if (!model || window <= 0 || this.#abort) return false;
     this.history.sync(messages);
     const before = this.contextTokens(messages);
     const nativeEligible = this.#host.nativeEligible ?? shouldUseProviderNativeCompaction;
-    const methods: Method[] = nativeEligible(model, methodSettings("remote")) ? ["remote", "soft"] : ["soft"];
+    const methods: Method[] = !target.soft && nativeEligible(model, methodSettings("remote")) ? ["remote", "soft"] : ["soft"];
     const compactImpl = this.#host.compactImpl ?? engineCompact;
     const abort = new AbortController();
     this.#abort = abort;
@@ -567,7 +615,7 @@ export class Maintenance {
   #commit(result: CompactionResult, method: Method, codex: object): void {
     const agent = this.#host.agent;
     const entry = this.history.appendCompaction(result, method);
-    agent.replaceMessages(this.history.rebuild());
+    agent.replaceMessages(this.history.rebuild(this.#provider()));
     this.#compactedAt = Date.now();
     entry.tokensAfter = this.storedTokens();
     this.history.persist();
