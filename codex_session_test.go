@@ -256,12 +256,10 @@ func TestCodexSessionLiveSmoke(t *testing.T) {
 	if os.Getenv("CLAUDIA_CODEX_LIVE") == "" {
 		t.Skip("CLAUDIA_CODEX_LIVE not set (this test spends API credit)")
 	}
-	if _, err := resolveCodexBin(); err != nil {
-		t.Skipf("codex binary not found: %v", err)
-	}
+	// The real path since 🎯T178: a Codex Session seat on the sidecar.
 
 	workDir := t.TempDir()
-	first, err := startLegacyCodexSession(Config{
+	first, err := Start(Config{
 		Provider:    ProviderCodex,
 		WorkDir:     workDir,
 		TermLogPath: "-",
@@ -280,7 +278,7 @@ func TestCodexSessionLiveSmoke(t *testing.T) {
 	}
 	first.Stop()
 
-	second, err := startLegacyCodexSession(Config{
+	second, err := Start(Config{
 		Provider:      ProviderCodex,
 		WorkDir:       workDir,
 		SessionID:     threadID,
