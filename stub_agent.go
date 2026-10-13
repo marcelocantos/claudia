@@ -68,6 +68,9 @@ type StubAgentOps struct {
 	Exited <-chan struct{}
 	// Started receives what Start resolved for this process.
 	Started func(StubStart)
+	// SwitchModel answers [Agent.SwitchModel] (🎯T195). Nil refuses the
+	// switch as unsupported.
+	SwitchModel func(provider Provider, model string) error
 }
 
 // StubStart is what [StartStub] resolved before handing the stub its
@@ -147,6 +150,9 @@ func (b *stubAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error
 	}
 	if o.TurnCaps != nil {
 		ops.turnCaps = func(*Agent) TurnCaps { return o.TurnCaps() }
+	}
+	if o.SwitchModel != nil {
+		ops.switchModel = func(_ *Agent, provider Provider, model string) error { return o.SwitchModel(provider, model) }
 	}
 	return &agentStart{
 		Control: ctrl,

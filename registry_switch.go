@@ -5,10 +5,17 @@ package claudia
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 )
+
+// ErrSeatNotAttached refuses a switch of a seat the broker is running but
+// this host holds no handle for (after a host restart, before it re-attaches
+// the seat). Rewriting its definition would not reach the running seat, and
+// the adopt that follows would put the old model back.
+var ErrSeatNotAttached = errors.New("the seat is running in the broker but not attached to this host; attach it, then switch")
 
 // SeatSwitch reports a [Registry.SwitchModel].
 type SeatSwitch struct {
@@ -37,7 +44,9 @@ const switchSettle = 30 * time.Second
 // refuses the switch unless force is set, which interrupts the turn first. A
 // seat that is not running has its definition rewritten, so its next launch
 // resumes the conversation on the new model; only a sidecar seat can change
-// provider that way, since a native CLI session belongs to its provider.
+// provider that way, since a native CLI session belongs to its provider. A
+// seat the broker runs but this host has not attached refuses with
+// [ErrSeatNotAttached].
 func (r *Registry) SwitchModel(ctx context.Context, name string, provider Provider, model string, force bool) (SeatSwitch, error) {
 	def := r.Def(name)
 	if def == nil {
@@ -95,6 +104,20 @@ func (r *Registry) SwitchModel(ctx context.Context, name string, provider Provid
 	}
 	if PlanProvider(from) != PlanProvider(to) && (!useOMP(Config{Provider: from}) || !useOMP(Config{Provider: to})) {
 		return out, fmt.Errorf("switch %s: a stopped %s seat cannot move to %s; only a sidecar seat changes provider", name, from, to)
+	}
+	r.mu.Lock()
+	direct := r.direct
+	r.mu.Unlock()
+	if usingBroker() && !direct {
+		seats, err := BrokerSeats(ctx)
+		if err != nil {
+			return out, fmt.Errorf("switch %s: ask the broker whether the seat is running: %w", name, err)
+		}
+		for _, s := range seats {
+			if s.Name == name && s.Alive {
+				return out, fmt.Errorf("switch %s: %w", name, ErrSeatNotAttached)
+			}
+		}
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()

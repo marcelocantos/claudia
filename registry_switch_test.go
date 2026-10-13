@@ -5,10 +5,13 @@ package claudia
 
 import (
 	"context"
+	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/marcelocantos/claudia/internal/broker"
 	"github.com/marcelocantos/claudia/omp"
 )
 
@@ -109,5 +112,64 @@ func TestT195RegistrySwitchRefusals(t *testing.T) {
 	}
 	if def := reg.Def("local"); def.Provider != ProviderOllama {
 		t.Fatalf("refused switch rewrote the seat: %+v", def)
+	}
+}
+
+// grantsBroker answers a grants listing with the seats it is running.
+type grantsBroker struct{ live []string }
+
+func (b grantsBroker) HandleRequest(c *broker.ClientConn, req *broker.Request) bool {
+	if req.Type != broker.TypeGrants {
+		return false
+	}
+	var grants []broker.GrantStatus
+	for _, name := range b.live {
+		grants = append(grants, broker.GrantStatus{Name: name, Provider: "anthropic", Alive: true})
+	}
+	_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeGrantsResult, Grants: &broker.GrantsResponse{Grants: grants}})
+	return true
+}
+
+func (grantsBroker) ConnClosed(*broker.ClientConn) {}
+
+// A seat the broker is running but this host has not attached cannot be
+// switched by rewriting its definition: the running seat would not hear it,
+// and the adopt that follows would put the old model back.
+func TestT195StoppedSwitchRefusesASeatTheBrokerRuns(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "claudia-switch-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	socket := filepath.Join(dir, "broker.sock")
+	t.Setenv(broker.SocketPathEnv, socket)
+	t.Setenv(broker.NoBrokerEnv, "0")
+	listener, err := broker.Listen(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv, err := broker.Serve(&broker.ServeArgs{Listener: listener, Handler: grantsBroker{live: []string{"held"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = srv.Close() })
+
+	reg, err := NewRegistry(filepath.Join(t.TempDir(), "agents.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"held", "down"} {
+		if err := reg.Register(AgentDef{Name: name, Provider: Provider(omp.Anthropic), Model: "claude-opus", SessionID: "s-" + name}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := reg.SwitchModel(context.Background(), "held", "openai-codex", "gpt-5.5", false); !errors.Is(err, ErrSeatNotAttached) {
+		t.Fatalf("err = %v, want ErrSeatNotAttached", err)
+	}
+	if def := reg.Def("held"); def.Provider != Provider(omp.Anthropic) || def.Model != "claude-opus" {
+		t.Fatalf("refused switch rewrote the seat: %+v", def)
+	}
+	if got, err := reg.SwitchModel(context.Background(), "down", "openai-codex", "gpt-5.5", false); err != nil || !got.Changed {
+		t.Fatalf("switch of a seat the broker is not running = %+v, %v", got, err)
 	}
 }
