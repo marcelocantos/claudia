@@ -39,3 +39,32 @@ func ApplyBrokerTaskWriteDefault(cfg *TaskConfig) {
 		cfg.SandboxGitWrite = true
 	}
 }
+
+// ApplyBrokerGrantWriteDefault is the grant-seat twin of
+// [ApplyBrokerTaskWriteDefault]. A `claudia broker grant --provider codex`
+// seat runs `codex app-server`, whose session default is read-only
+// (defaultCodexSandbox), so a Codex work seat could read its workdir but
+// every write failed with "read-only filesystem, permission escalation
+// disabled" (pimp-den-casks, 2026-10-13) while Claude and Grok seats wrote
+// freely. The app-server already runs with approval "never"; this sets
+// workspace-write, plus SandboxGitWrite when the workdir is in Git.
+//
+// It applies only to the CLI-runtime Codex seat (ProviderCodex) when the
+// caller set no sandbox field and no DisallowTools; anything explicit is
+// the caller's own choice. OMP seats (openai-codex) carry no Codex sandbox
+// — the sidecar refuses sandbox fields — and are left alone.
+func ApplyBrokerGrantWriteDefault(def *AgentDef) {
+	if def == nil || def.Provider != ProviderCodex {
+		return
+	}
+	if len(def.DisallowTools) > 0 {
+		return
+	}
+	if def.SandboxMode != "" || def.SandboxGitWrite || len(def.SandboxWritableRoots) > 0 || def.SandboxNetworkAccess {
+		return
+	}
+	def.SandboxMode = codexSandboxWorkspaceWrite
+	if roots, err := codexGitWritableRoots(def.WorkDir); err == nil && len(roots) > 0 {
+		def.SandboxGitWrite = true
+	}
+}

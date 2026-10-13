@@ -769,6 +769,9 @@ func (d *Daemon) handleGrant(c *broker.ClientConn, req *broker.Request) {
 		def.Provider = chosen.provider
 		pickedRemaining = chosen.remaining
 	}
+	// A broker grant seat writes its workdir on every provider: Codex
+	// app-server's read-only default is not the seat contract (2026-10-13).
+	claudia.ApplyBrokerGrantWriteDefault(&def)
 	// Work seats survive a broker restart. A one-shot transfer seat must
 	// disappear if its caller cannot finish and release it.
 	transfer := claudia.IsMigrationTransferSeat(def)
@@ -1693,18 +1696,27 @@ func (d *Daemon) pickByRemaining(session bool) (claudia.FleetPick, error) {
 		usable = append(usable, u)
 	}
 	for p, reason := range missing {
-		d.log.Warn("pick remaining skipped provider", "provider", p, "reason", claudia.FleetReasonBinaryNotFound, "detail", reason)
+		d.log.Warn("pick remaining skipped provider", "provider", p, "reason", claudia.FleetExclusionReason(reason), "detail", reason)
 	}
 	choice, err := claudia.PickByRemaining(usable, d.clock.Now(), nil)
 	if err != nil {
 		msg := err.Error()
 		if len(missing) > 0 {
-			var names []string
-			for p := range missing {
-				names = append(names, string(p))
+			byReason := map[string][]string{}
+			for p, reason := range missing {
+				r := claudia.FleetExclusionReason(reason)
+				byReason[r] = append(byReason[r], string(p))
 			}
-			sort.Strings(names)
-			msg += "; excluded (" + claudia.FleetReasonBinaryNotFound + "): " + strings.Join(names, ", ")
+			reasons := make([]string, 0, len(byReason))
+			for r := range byReason {
+				reasons = append(reasons, r)
+			}
+			sort.Strings(reasons)
+			for _, r := range reasons {
+				names := byReason[r]
+				sort.Strings(names)
+				msg += "; excluded (" + r + "): " + strings.Join(names, ", ")
+			}
 		}
 		return claudia.FleetPick{}, &broker.ProtocolError{
 			Code:  broker.CodePlanExhausted,

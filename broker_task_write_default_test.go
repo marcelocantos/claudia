@@ -6,6 +6,7 @@ package claudia
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -175,5 +176,75 @@ func TestCodexBrokerTaskWriteDefaultLiveSmoke(t *testing.T) {
 	b, err := os.ReadFile(filepath.Join(repo, "draft.md"))
 	if err != nil || !strings.Contains(string(b), "WRITE-OK") {
 		t.Fatalf("draft.md = %q, %v; the codex broker seat did not write its workdir", b, err)
+	}
+}
+
+func TestApplyBrokerGrantWriteDefault(t *testing.T) {
+	repo := t.TempDir()
+	if out, err := exec.Command("git", "init", "-q", repo).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v %s", err, out)
+	}
+	def := AgentDef{Provider: ProviderCodex, WorkDir: repo}
+	ApplyBrokerGrantWriteDefault(&def)
+	if def.SandboxMode != codexSandboxWorkspaceWrite || !def.SandboxGitWrite {
+		t.Fatalf("codex grant in git repo: got mode=%q git=%v", def.SandboxMode, def.SandboxGitWrite)
+	}
+	plain := AgentDef{Provider: ProviderCodex, WorkDir: t.TempDir()}
+	ApplyBrokerGrantWriteDefault(&plain)
+	if plain.SandboxMode != codexSandboxWorkspaceWrite || plain.SandboxGitWrite {
+		t.Fatalf("codex grant outside git: got mode=%q git=%v", plain.SandboxMode, plain.SandboxGitWrite)
+	}
+	explicit := AgentDef{Provider: ProviderCodex, WorkDir: repo, SandboxMode: "read-only"}
+	ApplyBrokerGrantWriteDefault(&explicit)
+	if explicit.SandboxMode != "read-only" || explicit.SandboxGitWrite {
+		t.Fatalf("explicit sandbox overridden: %+v", explicit)
+	}
+	restricted := AgentDef{Provider: ProviderCodex, WorkDir: repo, DisallowTools: []string{"Bash"}}
+	ApplyBrokerGrantWriteDefault(&restricted)
+	if restricted.SandboxMode != "" {
+		t.Fatalf("DisallowTools seat widened: %+v", restricted)
+	}
+	for _, p := range []Provider{ProviderClaude, ProviderGrok, "openai-codex", ProviderCursor} {
+		other := AgentDef{Provider: p, WorkDir: repo}
+		ApplyBrokerGrantWriteDefault(&other)
+		if other.SandboxMode != "" || other.SandboxGitWrite {
+			t.Fatalf("%s grant got codex sandbox: %+v", p, other)
+		}
+	}
+}
+
+// Live: the def a `claudia broker grant --provider codex` seat gets writes
+// a file in its workdir and commits — pimp-den-casks (2026-10-13) could not.
+func TestCodexBrokerGrantWriteDefaultLiveSmoke(t *testing.T) {
+	if os.Getenv("CLAUDIA_CODEX_LIVE") == "" {
+		t.Skip("CLAUDIA_CODEX_LIVE not set (this test spends API credit)")
+	}
+	if _, err := resolveCodexBin(); err != nil {
+		t.Skipf("codex binary not found: %v", err)
+	}
+	repo := t109Repo(t)
+	t109Git(t, repo, "config", "user.name", "grant")
+	t109Git(t, repo, "config", "user.email", "grant@example.invalid")
+	def := AgentDef{Name: "codex-grant-write", Provider: ProviderCodex, WorkDir: repo}
+	ApplyBrokerGrantWriteDefault(&def)
+	cfg := registryConfig(&def, false)
+	cfg.TermLogPath = "-"
+	agent, err := Start(cfg)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer agent.Stop()
+	prompt := "Run exactly this shell command in the current directory and then reply with its output, nothing else:\n" +
+		"printf 'WRITE-OK\\n' > draft.md && git add draft.md && git commit -q -m grant-write && echo GRANT-OK"
+	if err := liveCodexTurn(t, agent, prompt); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(repo, "draft.md"))
+	if err != nil || !strings.Contains(string(b), "WRITE-OK") {
+		t.Fatalf("draft.md = %q, %v; the codex grant seat did not write its workdir", b, err)
+	}
+	log, err := exec.Command("git", "-C", repo, "log", "--format=%s", "-1").Output()
+	if err != nil || strings.TrimSpace(string(log)) != "grant-write" {
+		t.Fatalf("HEAD subject = %q, %v; the codex grant seat could not commit", log, err)
 	}
 }
