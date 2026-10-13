@@ -88,7 +88,7 @@ func agentBackendFor(cfg Config) agentBackend {
 	return agentBackendForProvider(cfg.Provider)
 }
 
-// ompSandboxFor maps a Codex seat's sandbox settings onto the sidecar's
+// ompSandboxFor maps a sidecar seat's sandbox settings onto the sidecar's
 // tool policy (🎯T178):
 //
 //	workspace-write  Write and Bash, writes confined to the workdir (+ roots)
@@ -100,13 +100,17 @@ func agentBackendFor(cfg Config) agentBackend {
 // subscription-id seat with no mode, and danger-full-access, get no policy:
 // the tools as they always were.
 func ompSandboxFor(cfg Config) (*omp.Sandbox, error) {
-	if ompProviderID(cfg.Provider) != omp.OpenAICodex {
-		// Codex settings on another provider's seat are refused, not dropped.
+	if ompProviderID(cfg.Provider) == "" {
+		// Not a sidecar seat: nothing here can enforce the policy.
 		if sandboxPolicyRequested(cfg) {
 			return nil, capabilityRefusal(cfg.Provider, CapabilitySandboxPolicy, sandboxPolicyIsCodexOnlyReason)
 		}
 		return nil, nil
 	}
+	// The sidecar's tools are provider-agnostic, so every sidecar seat
+	// (anthropic, cursor, grok, codex) gets the same mapping. A claude seat
+	// whose grant carries sandbox_policy resumes confined instead of being
+	// refused (ge-po, regression from 🎯T178).
 	describe := func() error {
 		return fmt.Errorf("%w: SandboxMode=%q ApprovalPolicy=%q SandboxGitWrite=%t",
 			ErrOMPCodexSandboxUnsupported, cfg.SandboxMode, cfg.ApprovalPolicy, cfg.SandboxGitWrite)
@@ -137,13 +141,13 @@ func ompSandboxFor(cfg Config) (*omp.Sandbox, error) {
 		gitRoots, err := codexGitWritableRoots(cfg.WorkDir)
 		if err != nil {
 			if cfg.SandboxGitWrite {
-				return nil, fmt.Errorf("omp: codex git write for %s: %w", cfg.WorkDir, err)
+				return nil, fmt.Errorf("omp: sandbox git write for %s: %w", cfg.WorkDir, err)
 			}
 			gitRoots = nil
 		}
 		if cfg.SandboxGitWrite {
 			if len(gitRoots) == 0 {
-				return nil, fmt.Errorf("omp: codex git write: %s is not in a git repository", cfg.WorkDir)
+				return nil, fmt.Errorf("omp: sandbox git write: %s is not in a git repository", cfg.WorkDir)
 			}
 			sb.WritableRoots = append(sb.WritableRoots, gitRoots...)
 		} else {
