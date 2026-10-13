@@ -44,7 +44,8 @@ const (
 	TypeSend MessageType = "send"
 	// TypeInterrupt cancels the seat's current turn.
 	TypeInterrupt MessageType = "interrupt"
-	// TypeSetModel switches the seat's model within its provider.
+	// TypeSetModel switches the seat to another provider or model in place,
+	// keeping its conversation (🎯T195).
 	TypeSetModel MessageType = "set_model"
 	// TypeAgentInfo reads the seat's live state.
 	TypeAgentInfo MessageType = "agent_info"

@@ -410,7 +410,7 @@ type seatWhere struct {
 }
 
 // repoint makes this handle describe the seat's new process after the
-// daemon swapped it (Migrate, Rewind). Subscriptions are the handle's and
+// daemon swapped it (Rewind). Subscriptions are the handle's and
 // stay.
 func (b *brokerAgentBackend) repoint(a *Agent, w seatWhere) {
 	b.mu.Lock()

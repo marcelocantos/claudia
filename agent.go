@@ -1279,8 +1279,8 @@ func codexSessionPrecheck(req agentStartRequest) error {
 }
 
 // acpBind wires an ACP/app-server client to an Agent after Start
-// constructs it. onClose is generation-gated so a source Close after
-// [Agent.Migrate] cannot mark the destination dead (🎯T55).
+// constructs it. onClose is generation-gated so a Close from a client the
+// Agent has since replaced cannot mark the current one dead (🎯T55).
 type acpBind struct {
 	ref atomic.Pointer[Agent]
 	gen atomic.Uint64
@@ -1928,7 +1928,7 @@ func (a *Agent) Usage() Usage {
 // [Config.Model] to detect silent fallback: an alias such as "opus" resolves
 // to its full id here. An unusable model surfaces as "<synthetic>" with
 // [Event.IsError] set — [Agent.WaitForResponse] returns that as a descriptive
-// error rather than a normal reply. After a successful [Agent.SetModel], this
+// error rather than a normal reply. After a successful [Agent.SwitchModel], this
 // reflects the requested model until a later event publishes a resolved id.
 func (a *Agent) Model() string {
 	a.mu.Lock()
