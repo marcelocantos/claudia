@@ -497,7 +497,7 @@ func usageCmd(args []string) error {
 		}
 		admit := admitLabel(b)
 		if _, gone := missing[b.Provider]; gone {
-			admit = "no (" + claudia.FleetReasonBinaryNotFound + ")"
+			admit = "no (" + claudia.FleetExclusionReason(missing[b.Provider]) + ")"
 		}
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", b.Provider, st, band.Weekly, admit, strings.Join(wins, " "))
 	}
@@ -506,7 +506,7 @@ func usageCmd(args []string) error {
 	}
 	fmt.Println("ADMIT is the task_run gate for that row. A provider absent from this table is admitted.")
 	for _, p := range sortedProviders(missing) {
-		fmt.Printf("%s: %s (pick remaining skips it): %s\n", p, claudia.FleetReasonBinaryNotFound, missing[p])
+		fmt.Printf("%s: %s (pick remaining skips it): %s\n", p, claudia.FleetExclusionReason(missing[p]), missing[p])
 	}
 	return nil
 }

@@ -304,3 +304,16 @@ func packagedSidecarDir(exe string) string {
 	}
 	return filepath.Clean(dir)
 }
+
+// CursorExecFile is the sidecar module that answers Cursor's native tool
+// frames (read, write, shell, ...). A sidecar without it answers every
+// Cursor tool call "Tool not available", so a cursor seat can do nothing.
+const CursorExecFile = "cursorexec.ts"
+
+// CursorExecWired reports whether the sidecar this host runs
+// ([ServerScript]'s directory) carries [CursorExecFile]. The broker serves
+// the sidecar from its supervisor checkout, which can lag the binary.
+func CursorExecWired() bool {
+	_, err := os.Stat(filepath.Join(filepath.Dir(ServerScript()), CursorExecFile))
+	return err == nil
+}

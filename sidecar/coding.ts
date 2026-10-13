@@ -228,7 +228,7 @@ function grepTool(cwdOf: () => string, boundOf: () => number): AgentTool {
   } as AgentTool;
 }
 
-function under(cwd: string, rel: string): string {
+export function under(cwd: string, rel: string): string {
   const root = path.resolve(cwd || process.cwd());
   const abs = path.resolve(root, rel);
   const prefix = root.endsWith(path.sep) ? root : root + path.sep;

@@ -5,6 +5,7 @@ import { AuthRetry, authRefusal, type RetryReply } from "./authretry.ts";
 import { Agent, type AgentTool } from "@oh-my-pi/pi-agent-core";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import type { Model } from "@oh-my-pi/pi-ai";
+import { cursorExecHandlers } from "./cursorexec.ts";
 import { codingTools } from "./coding.ts";
 import { capToolText, toolResultBound } from "./truncate.ts";
 import { awaitHostCall } from "./hostcalls.ts";
@@ -126,6 +127,12 @@ export function createSeatAgent(opts: {
     },
     cwd,
     cwdResolver: () => cwd || undefined,
+    // Cursor's native tools come back as exec frames, not tool calls; without
+    // handlers each answered "Tool not available" (2026-10-13). A
+    // summary-only seat has no tools on any provider.
+    cursorExecHandlers: opts.summaryOnly
+      ? undefined
+      : cursorExecHandlers(() => cwd, () => toolResultBound(agent.state.model?.contextWindow ?? 0)),
     getApiKey: async () => { attemptToken = replayToken || token; replayToken = ""; requestCount++; return attemptToken; },
     // A compaction summary must reach the provider; the Agent's default
     // converter drops roles it does not know (🎯T150).

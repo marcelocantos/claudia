@@ -5,8 +5,11 @@ package claudia
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/marcelocantos/claudia/omp"
 )
 
 // PickRemaining is the grant and task value that selects the fullest
@@ -34,6 +37,26 @@ const FleetReasonBinaryNotFound = "binary_not_found"
 // so overage cannot carry it either.
 const FleetReasonSpendLimit = "spend_limit"
 
+// FleetReasonSeatToolsUnwired is [FleetUsageRow.Reason]'s prefix for
+// cursor when the sidecar this host serves cannot run Cursor's native
+// tools ([omp.CursorExecWired]): a cursor seat there answers every read,
+// write and shell "Tool not available" (Pimp, 2026-10-13), so pick
+// remaining must not choose it however much plan it has left.
+const FleetReasonSeatToolsUnwired = "seat_tools_unwired"
+
+// cursorSeatToolsGate turns that exclusion on. Remove it, and the check in
+// [ProviderBinaryError], once every host's sidecar carries cursorexec.ts.
+const cursorSeatToolsGate = true
+
+// FleetExclusionReason is the roster reason for a provider the daemon
+// reported it cannot launch, given that report's detail.
+func FleetExclusionReason(detail string) string {
+	if strings.HasPrefix(detail, FleetReasonSeatToolsUnwired) {
+		return FleetReasonSeatToolsUnwired
+	}
+	return FleetReasonBinaryNotFound
+}
+
 // ProviderBinaryError reports whether provider can start on this host.
 // It is nil when the provider's backend on that surface runs no local
 // CLI — session seats for Cursor and Grok run in the plan sidecar, and
@@ -43,6 +66,10 @@ const FleetReasonSpendLimit = "spend_limit"
 // session selects the Session (seat) surface; false is the Task surface.
 func ProviderBinaryError(provider Provider, session bool) error {
 	if session && useOMP(Config{Provider: provider}) {
+		if cursorSeatToolsGate && provider == ProviderCursor && !omp.CursorExecWired() {
+			return fmt.Errorf("%s: sidecar %s has no %s; cursor seats cannot read, write or run commands",
+				FleetReasonSeatToolsUnwired, filepath.Dir(omp.ServerScript()), omp.CursorExecFile)
+		}
 		return nil
 	}
 	var err error
@@ -71,7 +98,12 @@ func ExcludeUnlaunchable(snap FleetUsageSnapshot, missing map[Provider]string) F
 			continue
 		}
 		snap.Providers[i].Admit = false
-		snap.Providers[i].Reason = FleetReasonBinaryNotFound + ": " + strings.TrimSpace(detail)
+		detail = strings.TrimSpace(detail)
+		if FleetExclusionReason(detail) == FleetReasonSeatToolsUnwired {
+			snap.Providers[i].Reason = detail
+			continue
+		}
+		snap.Providers[i].Reason = FleetReasonBinaryNotFound + ": " + detail
 	}
 	return snap
 }
