@@ -585,6 +585,12 @@ func (r *Registry) startHeld(ctx context.Context, op *registryLifecycle, name st
 	startProc, adoptProc := r.processSeams()
 	if proc == nil && err == nil && adopt {
 		switch {
+		case isClaudeProvider(def.Provider):
+			// Claude seats keep their adopt seam even on the sidecar route
+			// (🎯T178): Adopt asks the sidecar for the running seat and never
+			// mints one, so a refused adopt (grant held elsewhere) cannot turn
+			// into a second process on the same session here.
+			proc, err = adoptProc(cfg)
 		case ompProviderID(def.Provider) != "" && def.ConnectURL == "" && def.ConnectPID == 0:
 			// A sidecar seat that is already running is adopted. AdoptOnly
 			// does not create one, so a miss falls through to launch — and
@@ -595,8 +601,6 @@ func (r *Registry) startHeld(ctx context.Context, op *registryLifecycle, name st
 			if err != nil && def.Provider == ProviderCursor {
 				reapCursorACPDef(&def)
 			}
-		case isClaudeProvider(def.Provider):
-			proc, err = adoptProc(cfg)
 		case def.Provider == ProviderGrok && (def.ConnectURL != "" || def.ConnectPID > 0):
 			proc, err = startProc(ctx, cfg)
 		case def.Provider == ProviderCursor:

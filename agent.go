@@ -1148,6 +1148,13 @@ func Adopt(cfg Config) (*Agent, error) {
 			return nil, err
 		}
 	}
+	if ompProviderID(cfg.Provider) != "" && cfg.ConnectURL == "" && cfg.ConnectPID == 0 {
+		// A sidecar seat (bare Claude and Codex included since 🎯T178) is
+		// adopted by asking the sidecar for the running seat. AdoptOnly never
+		// mints one, so a miss is an error, not a new process.
+		cfg.AdoptOnly = true
+		return startDirectContext(context.Background(), cfg)
+	}
 	if provider == ProviderGrok && (cfg.ConnectURL != "" || cfg.ConnectPID > 0) {
 		// Grok reuse is Start with a live connect endpoint; it dials,
 		// it does not mint a serve process.
