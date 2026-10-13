@@ -362,19 +362,6 @@ func TestStartUsesInjectedBackendLifecycle(t *testing.T) {
 	}
 }
 
-func TestStartCodexSessionUsesAppServer(t *testing.T) {
-	writeFakeCodexSubscriptionAuth(t)
-	t.Setenv("CODEX_BIN", writeFakeCodexAppServer(t))
-	agent, err := Start(Config{Provider: ProviderCodex, WorkDir: t.TempDir(), TermLogPath: "-"})
-	if err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	defer agent.Stop()
-	if agent.SessionID() == "" {
-		t.Fatal("empty SessionID after Codex Start")
-	}
-}
-
 // emptyAgentBackend models the mistake a provider backend makes when its
 // refusal is derived from something that can go nil — e.g. returning
 // CheckCapability(...) directly, which becomes nil the moment the claim

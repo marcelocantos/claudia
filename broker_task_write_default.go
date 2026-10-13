@@ -41,18 +41,19 @@ func ApplyBrokerTaskWriteDefault(cfg *TaskConfig) {
 }
 
 // ApplyBrokerGrantWriteDefault is the grant-seat twin of
-// [ApplyBrokerTaskWriteDefault]. A `claudia broker grant --provider codex`
-// seat runs `codex app-server`, whose session default is read-only
-// (defaultCodexSandbox), so a Codex work seat could read its workdir but
-// every write failed with "read-only filesystem, permission escalation
-// disabled" (pimp-den-casks, 2026-10-13) while Claude and Grok seats wrote
-// freely. The app-server already runs with approval "never"; this sets
-// workspace-write, plus SandboxGitWrite when the workdir is in Git.
+// [ApplyBrokerTaskWriteDefault]. A Codex grant's safe default is read-only
+// (🎯T37), so a Codex work seat could read its workdir but every write
+// failed (pimp-den-casks, 2026-10-13) while Claude and Grok seats wrote
+// freely. This sets workspace-write, plus SandboxGitWrite when the workdir
+// is in Git. Since 🎯T178 the seat runs on the sidecar, and ompSandboxFor
+// maps that onto its tools: Write and Bash, writes confined to the workdir
+// and the repo's git dirs.
 //
-// It applies only to the CLI-runtime Codex seat (ProviderCodex) when the
-// caller set no sandbox field and no DisallowTools; anything explicit is
-// the caller's own choice. OMP seats (openai-codex) carry no Codex sandbox
-// — the sidecar refuses sandbox fields — and are left alone.
+// It applies only to the bare Codex seat (ProviderCodex) when the caller
+// set no sandbox field and no DisallowTools; anything explicit is the
+// caller's own choice. Subscription-id seats (openai-codex) with no sandbox
+// field run the sidecar's tools unconfined, as they always have, and are
+// left alone.
 func ApplyBrokerGrantWriteDefault(def *AgentDef) {
 	if def == nil || def.Provider != ProviderCodex {
 		return

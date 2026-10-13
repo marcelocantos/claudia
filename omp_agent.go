@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -34,9 +35,14 @@ import (
 var ErrSeatIdentityMismatch = errors.New("omp: loaded seat differs from registered provider or purpose")
 var ErrNoSubscriptionModel = errors.New("omp: no provider-local subscription session model")
 
-// ErrOMPCodexSandboxUnsupported refuses requested Codex sandbox/approval controls
-// that the OMP seat protocol cannot carry.
-var ErrOMPCodexSandboxUnsupported = errors.New("omp: codex sandbox and approval controls are unsupported")
+// ErrOMPCodexSandboxUnsupported refuses a Codex sandbox or approval setting
+// the sidecar cannot honour (anything but approval "never", or an unknown
+// sandbox mode). Supported settings map onto the sidecar's tools (🎯T178).
+var ErrOMPCodexSandboxUnsupported = errors.New("omp: codex sandbox or approval setting unsupported")
+
+// ErrOMPSandboxNotHonoured refuses a seat whose sidecar did not confirm the
+// requested tool policy, rather than run it with more access than asked.
+var ErrOMPSandboxNotHonoured = errors.New("omp: sidecar did not apply the requested sandbox")
 
 // ErrOMPMissingTurnID refuses sidecar answer payloads that cannot be tied to a turn.
 var ErrOMPMissingTurnID = errors.New("omp: answer payload missing turn_id")
@@ -82,24 +88,78 @@ func agentBackendFor(cfg Config) agentBackend {
 	return agentBackendForProvider(cfg.Provider)
 }
 
-// checkOMPCodexSandbox refuses controls before broker grants or sidecar loads.
-// Check again at the backend boundary for callers that bypass StartContext.
-func checkOMPCodexSandbox(cfg Config) error {
+// ompSandboxFor maps a Codex seat's sandbox settings onto the sidecar's
+// tool policy (🎯T178):
+//
+//	workspace-write  Write and Bash, writes confined to the workdir (+ roots)
+//	SandboxGitWrite  adds the repo's git dirs; without it they stay protected
+//	read-only        no Write, no Bash
+//	approval         "never" (the default) only; anything else is refused
+//
+// Bare codex with no mode keeps the safe read-only default (🎯T37). A
+// subscription-id seat with no mode, and danger-full-access, get no policy:
+// the tools as they always were.
+func ompSandboxFor(cfg Config) (*omp.Sandbox, error) {
 	if ompProviderID(cfg.Provider) != omp.OpenAICodex {
-		return nil
+		// Codex settings on another provider's seat are refused, not dropped.
+		if sandboxPolicyRequested(cfg) {
+			return nil, capabilityRefusal(cfg.Provider, CapabilitySandboxPolicy, sandboxPolicyIsCodexOnlyReason)
+		}
+		return nil, nil
 	}
-	if cfg.SandboxMode != "" || cfg.ApprovalPolicy != "" || cfg.SandboxGitWrite {
+	describe := func() error {
 		return fmt.Errorf("%w: SandboxMode=%q ApprovalPolicy=%q SandboxGitWrite=%t",
 			ErrOMPCodexSandboxUnsupported, cfg.SandboxMode, cfg.ApprovalPolicy, cfg.SandboxGitWrite)
 	}
-	return nil
+	if cfg.ApprovalPolicy != "" && cfg.ApprovalPolicy != "never" {
+		return nil, fmt.Errorf("%w (only approval \"never\" is supported: sidecar seats cannot ask for approval)", describe())
+	}
+	mode := cfg.SandboxMode
+	if mode == "" {
+		if cfg.Provider != ProviderCodex {
+			if cfg.SandboxGitWrite || len(cfg.SandboxWritableRoots) > 0 {
+				return nil, fmt.Errorf("%w (git write and writable roots need SandboxMode workspace-write)", describe())
+			}
+			return nil, nil
+		}
+		mode = omp.SandboxReadOnly
+	}
+	switch mode {
+	case codexSandboxFullAccess:
+		return nil, nil
+	case omp.SandboxReadOnly:
+		if cfg.SandboxGitWrite || len(cfg.SandboxWritableRoots) > 0 {
+			return nil, fmt.Errorf("%w (a read-only seat writes nothing, so git write and writable roots do not apply)", describe())
+		}
+		return &omp.Sandbox{Mode: omp.SandboxReadOnly}, nil
+	case omp.SandboxWorkspaceWrite:
+		sb := &omp.Sandbox{Mode: omp.SandboxWorkspaceWrite, WritableRoots: slices.Clone(cfg.SandboxWritableRoots)}
+		gitRoots, err := codexGitWritableRoots(cfg.WorkDir)
+		if err != nil {
+			if cfg.SandboxGitWrite {
+				return nil, fmt.Errorf("omp: codex git write for %s: %w", cfg.WorkDir, err)
+			}
+			gitRoots = nil
+		}
+		if cfg.SandboxGitWrite {
+			if len(gitRoots) == 0 {
+				return nil, fmt.Errorf("omp: codex git write: %s is not in a git repository", cfg.WorkDir)
+			}
+			sb.WritableRoots = append(sb.WritableRoots, gitRoots...)
+		} else {
+			sb.Protected = gitRoots
+		}
+		return sb, nil
+	default:
+		return nil, describe()
+	}
 }
 
 // withDefaultOMPModel resolves an omitted model before either a broker grant
 // or a direct start records the seat. An adopt reports the broker's persisted
 // model instead of choosing a potentially different current default.
 func withDefaultOMPModel(ctx context.Context, cfg Config) (Config, error) {
-	if err := checkOMPCodexSandbox(cfg); err != nil {
+	if _, err := ompSandboxFor(cfg); err != nil {
 		return cfg, err
 	}
 	if !useOMP(cfg) || cfg.Model != "" || cfg.AdoptOnly {
@@ -148,7 +208,8 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 	if provider == "" {
 		return nil, fmt.Errorf("omp: %s is not a sidecar provider", req.Config.Provider)
 	}
-	if err := checkOMPCodexSandbox(req.Config); err != nil {
+	sandbox, err := ompSandboxFor(req.Config)
+	if err != nil {
 		return nil, err
 	}
 	// Adopting a seat that is already running must not mint one, and must
@@ -233,6 +294,7 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 		Preserve:    req.Config.ContextPreserve,
 		Pins:        req.Config.ContextPins,
 		Tools:       tools,
+		Sandbox:     sandbox,
 	}); err != nil {
 		conn.Close()
 		return nil, err
@@ -285,6 +347,11 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 			return nil, fmt.Errorf("omp: seat %q sidecar ready but host tools not bound to model: %s", req.Config.Name, strings.Join(missing, ", "))
 		}
 	}
+	if sandbox != nil && ev.Sandbox != sandbox.Mode {
+		conn.Close()
+		return nil, fmt.Errorf("%w: seat %q asked %q, sidecar applied %q (sidecar predates 🎯T178?)",
+			ErrOMPSandboxNotHonoured, req.Config.Name, sandbox.Mode, ev.Sandbox)
+	}
 	historyLost := ompHistoryLost(ev, req.Config.SummaryOnly)
 	ctrl := &ompControl{
 		conn: conn, bytes: make(chan []byte, 8),
@@ -293,6 +360,7 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 		sessionID: sessionID, summaryOnly: req.Config.SummaryOnly,
 		preserve: req.Config.ContextPreserve, pins: req.Config.ContextPins,
 		tools: tools, toolServers: toolRoutes, toolNames: toolNames,
+		sandbox: sandbox,
 	}
 	ompSeats.Store(ctrl, struct{}{})
 	return &agentStart{
@@ -372,6 +440,8 @@ type ompControl struct {
 	pins     []string
 	// tools is the host tool list the seat was loaded with; a reload keeps it.
 	tools json.RawMessage
+	// sandbox is the seat's tool policy; a reload sends it again (🎯T178).
+	sandbox *omp.Sandbox
 	// toolServers routes a model tool name to the AgentDef.MCPServers URL
 	// that declared it (🎯T871.1). A name absent here (jevons_* offered via
 	// resolveFallbackTool, or a legacy caller) falls back to runOMPTool.
@@ -699,7 +769,7 @@ func (c *ompControl) loadMessage() omp.Message {
 		Op: omp.OpLoad, Seat: c.seat, Provider: c.provider, SessionID: c.sessionID,
 		Preserve: c.preserve, Pins: c.pins,
 		Model: c.model, SummaryOnly: c.summaryOnly, Token: c.token, Cwd: c.cwd,
-		Tools: c.tools,
+		Tools: c.tools, Sandbox: c.sandbox,
 	}
 }
 

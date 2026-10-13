@@ -51,7 +51,7 @@ func TestHermeticCodexSessionStartSendWait(t *testing.T) {
 	t.Setenv("CODEX_BIN", bin)
 	writeFakeCodexSubscriptionAuth(t)
 
-	agent, err := Start(Config{
+	agent, err := startLegacyCodexSession(Config{
 		Provider:    ProviderCodex,
 		WorkDir:     t.TempDir(),
 		Model:       "gpt-5-codex",
@@ -122,7 +122,7 @@ func TestHermeticCodexStartHonoursSandboxMode(t *testing.T) {
 	t.Run("default-read-only", func(t *testing.T) {
 		last := filepath.Join(t.TempDir(), "start.json")
 		t.Setenv("FAKE_CODEX_LAST_START", last)
-		agent, err := Start(Config{
+		agent, err := startLegacyCodexSession(Config{
 			Provider:    ProviderCodex,
 			WorkDir:     t.TempDir(),
 			TermLogPath: "-",
@@ -143,7 +143,7 @@ func TestHermeticCodexStartHonoursSandboxMode(t *testing.T) {
 	t.Run("workspace-write", func(t *testing.T) {
 		last := filepath.Join(t.TempDir(), "start.json")
 		t.Setenv("FAKE_CODEX_LAST_START", last)
-		agent, err := Start(Config{
+		agent, err := startLegacyCodexSession(Config{
 			Provider:    ProviderCodex,
 			WorkDir:     t.TempDir(),
 			SandboxMode: "workspace-write",
@@ -169,7 +169,7 @@ func TestHermeticCodexRequireResumeFailsClosed(t *testing.T) {
 	t.Setenv("FAKE_CODEX_REJECT_RESUME", "1")
 	writeFakeCodexSubscriptionAuth(t)
 
-	_, err := Start(Config{
+	_, err := startLegacyCodexSession(Config{
 		Provider:      ProviderCodex,
 		WorkDir:       t.TempDir(),
 		SessionID:     "thr_missing",
@@ -190,7 +190,7 @@ func TestHermeticCodexRequireResumeKeepsThreadID(t *testing.T) {
 	writeFakeCodexSubscriptionAuth(t)
 
 	const want = "thr_existing"
-	agent, err := Start(Config{
+	agent, err := startLegacyCodexSession(Config{
 		Provider:      ProviderCodex,
 		WorkDir:       t.TempDir(),
 		SessionID:     want,
@@ -211,7 +211,7 @@ func TestHermeticCodexUnmaterializedFallsThrough(t *testing.T) {
 	t.Setenv("CODEX_BIN", bin)
 	writeFakeCodexSubscriptionAuth(t)
 
-	agent, err := Start(Config{
+	agent, err := startLegacyCodexSession(Config{
 		Provider:    ProviderCodex,
 		WorkDir:     t.TempDir(),
 		SessionID:   "not-a-thread",
@@ -236,7 +236,7 @@ func TestHermeticCodexResumesNonThrPrefix(t *testing.T) {
 	t.Setenv("FAKE_CODEX_RESUME_ID", want)
 	writeFakeCodexSubscriptionAuth(t)
 
-	agent, err := Start(Config{
+	agent, err := startLegacyCodexSession(Config{
 		Provider:      ProviderCodex,
 		WorkDir:       t.TempDir(),
 		SessionID:     want,
@@ -261,7 +261,7 @@ func TestCodexSessionLiveSmoke(t *testing.T) {
 	}
 
 	workDir := t.TempDir()
-	first, err := Start(Config{
+	first, err := startLegacyCodexSession(Config{
 		Provider:    ProviderCodex,
 		WorkDir:     workDir,
 		TermLogPath: "-",
@@ -280,7 +280,7 @@ func TestCodexSessionLiveSmoke(t *testing.T) {
 	}
 	first.Stop()
 
-	second, err := Start(Config{
+	second, err := startLegacyCodexSession(Config{
 		Provider:      ProviderCodex,
 		WorkDir:       workDir,
 		SessionID:     threadID,
@@ -336,7 +336,7 @@ func TestHermeticCodexInterrupt(t *testing.T) {
 	t.Setenv("FAKE_CODEX_HOLD_TURN", "1")
 	writeFakeCodexSubscriptionAuth(t)
 
-	agent, err := Start(Config{
+	agent, err := startLegacyCodexSession(Config{
 		Provider:    ProviderCodex,
 		WorkDir:     t.TempDir(),
 		TermLogPath: "-",
@@ -374,7 +374,7 @@ func TestHermeticCodexExclusiveHomeSurvivesStop(t *testing.T) {
 		MCPServers:   []MCPServer{{Name: "onlyme", URL: "http://127.0.0.1:9/mcp"}},
 		TermLogPath:  "-",
 	}
-	agent, err := Start(cfg)
+	agent, err := startLegacyCodexSession(cfg)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -397,7 +397,7 @@ func TestHermeticCodexExclusiveHomeSurvivesStop(t *testing.T) {
 	t.Setenv("FAKE_CODEX_LAST_HOME", lastHome2)
 	cfg.SessionID = sid
 	cfg.RequireResume = true
-	agent2, err := Start(cfg)
+	agent2, err := startLegacyCodexSession(cfg)
 	if err != nil {
 		t.Fatalf("resume Start: %v", err)
 	}
@@ -420,7 +420,7 @@ func TestHermeticCodexExclusiveHomeMissingFailsLoud(t *testing.T) {
 	writeFakeCodexSubscriptionAuth(t)
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 
-	_, err := Start(Config{
+	_, err := startLegacyCodexSession(Config{
 		Provider:      ProviderCodex,
 		WorkDir:       t.TempDir(),
 		SessionID:     "thr_existing",
@@ -446,7 +446,7 @@ func TestHermeticCodexCloseFlushesExclusiveHome(t *testing.T) {
 	writeFakeCodexSubscriptionAuth(t)
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 
-	agent, err := Start(Config{
+	agent, err := startLegacyCodexSession(Config{
 		Provider:     ProviderCodex,
 		WorkDir:      t.TempDir(),
 		SessionID:    "fd4bbbe8-0000-4000-8000-000000d95307",
@@ -471,7 +471,7 @@ func TestHermeticCodexStartSeedsRolloutWithoutTurn(t *testing.T) {
 	writeFakeCodexSubscriptionAuth(t)
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 
-	agent, err := Start(Config{
+	agent, err := startLegacyCodexSession(Config{
 		Provider:     ProviderCodex,
 		WorkDir:      t.TempDir(),
 		MCPExclusive: true,
@@ -493,7 +493,7 @@ func TestHermeticCodexStartSeedsRolloutWithoutTurn(t *testing.T) {
 	}
 	agent.Stop()
 
-	agent2, err := Start(Config{
+	agent2, err := startLegacyCodexSession(Config{
 		Provider:      ProviderCodex,
 		WorkDir:       t.TempDir(),
 		SessionID:     sid,
@@ -521,7 +521,7 @@ func TestHermeticCodexResumeEmptyHomeNamesPath(t *testing.T) {
 	if err := os.MkdirAll(home, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	_, err := Start(Config{
+	_, err := startLegacyCodexSession(Config{
 		Provider:      ProviderCodex,
 		WorkDir:       t.TempDir(),
 		SessionID:     sid,
@@ -568,7 +568,7 @@ func TestHermeticCodexThreadStartTimesOut(t *testing.T) {
 	t.Setenv("FAKE_CODEX_HANG_START", "1")
 	writeFakeCodexSubscriptionAuth(t)
 
-	_, err := Start(Config{
+	_, err := startLegacyCodexSession(Config{
 		Provider:    ProviderCodex,
 		WorkDir:     t.TempDir(),
 		TermLogPath: "-",

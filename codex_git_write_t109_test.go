@@ -183,7 +183,7 @@ func TestT109HermeticStartGrantsTheRepoGitDir(t *testing.T) {
 	t.Setenv("FAKE_CODEX_LAST_ARGV", argvLog)
 	repo := t109Repo(t)
 
-	agent, err := Start(Config{
+	agent, err := startLegacyCodexSession(Config{
 		Provider:        ProviderCodex,
 		WorkDir:         repo,
 		SandboxMode:     "workspace-write",
@@ -215,7 +215,7 @@ func TestT109ReadOnlySeatGetsNoGitGrant(t *testing.T) {
 	argvLog := filepath.Join(t.TempDir(), "argv.json")
 	t.Setenv("FAKE_CODEX_LAST_ARGV", argvLog)
 
-	agent, err := Start(Config{Provider: ProviderCodex, WorkDir: t109Repo(t), TermLogPath: "-"})
+	agent, err := startLegacyCodexSession(Config{Provider: ProviderCodex, WorkDir: t109Repo(t), TermLogPath: "-"})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -237,7 +237,7 @@ func TestT109HermeticGrantKeepsTheCallersRoots(t *testing.T) {
 	repo := t109Repo(t)
 	gates := filepath.Join(t.TempDir(), "gates")
 
-	agent, err := Start(Config{
+	agent, err := startLegacyCodexSession(Config{
 		Provider:             ProviderCodex,
 		WorkDir:              repo,
 		SandboxMode:          "workspace-write",
@@ -265,7 +265,7 @@ func TestT109HermeticStartRefusesWhenTheGrantIsIgnored(t *testing.T) {
 	t.Setenv("FAKE_CODEX_DROP_WRITABLE_ROOTS", "1")
 	repo := t109Repo(t)
 
-	agent, err := Start(Config{
+	agent, err := startLegacyCodexSession(Config{
 		Provider:        ProviderCodex,
 		WorkDir:         repo,
 		SandboxMode:     "workspace-write",
@@ -306,7 +306,7 @@ func TestT112DefaultKeepsGitProtectedAndSaysSo(t *testing.T) {
 	logs := t112CaptureLogs(t)
 	repo := t109Repo(t)
 
-	agent, err := Start(Config{
+	agent, err := startLegacyCodexSession(Config{
 		Provider:    ProviderCodex,
 		WorkDir:     repo,
 		SandboxMode: "workspace-write",

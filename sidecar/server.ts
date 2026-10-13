@@ -18,6 +18,7 @@ import { claimSocket } from "./singleton.ts";
 import { PlanTokens } from "./plantokens.ts";
 import { HOST_CONNECTION_LOST, HostCalls } from "./hostcalls.ts";
 import { SeatStore } from "./store.ts";
+import type { SandboxPolicy } from "./coding.ts";
 
 const banned = [
   "ANTHROPIC_API_KEY",
@@ -71,6 +72,7 @@ type Line = {
   request_id?: string;
   expires_at?: number;
   cwd?: string;
+  sandbox?: SandboxPolicy;
   text?: string;
   call_id?: string;
   result?: string;
@@ -221,7 +223,7 @@ async function handle(
       return;
     }
     rebindSeat(existing, msg, seat, write, callTool, calls);
-    write({ seat, type: "ready", how: "adopted", bound_tools: existing.agent.boundToolNames() });
+    write({ seat, type: "ready", how: "adopted", bound_tools: existing.agent.boundToolNames(), sandbox: existing.agent.sandboxMode() });
     return;
   }
   if (msg.op === "load") {
@@ -236,7 +238,7 @@ async function handle(
     // would bypass the bounded transfer brief.
     if (existing && existing.provider === msg.provider && existing.summaryOnly === summaryOnly) {
       rebindSeat(existing, msg, seat, write, callTool, calls);
-      write({ seat, type: "ready", how: "adopted", bound_tools: existing.agent.boundToolNames() });
+      write({ seat, type: "ready", how: "adopted", bound_tools: existing.agent.boundToolNames(), sandbox: existing.agent.sandboxMode() });
       return;
     }
     // A host that names the seat's session gets a durable conversation; one
@@ -256,6 +258,7 @@ async function handle(
       store,
       preserve: msg.preserve,
       pins: msg.pins,
+      sandbox: msg.sandbox,
     });
     if (existing) {
       existing.calls.failSeat(seat, HOST_CONNECTION_LOST);
@@ -269,7 +272,7 @@ async function handle(
       agent,
       calls,
     });
-    write({ seat, type: "ready", how: "launched", restored: agent.restored, bound_tools: agent.boundToolNames() });
+    write({ seat, type: "ready", how: "launched", restored: agent.restored, bound_tools: agent.boundToolNames(), sandbox: agent.sandboxMode() });
     return;
   }
   const loaded = seats.get(seat);
@@ -322,6 +325,8 @@ function rebindSeat(
   existing.agent.rebind((ev) => write({ seat, ...ev }), callTool);
   if (msg.tools) existing.agent.setHostTools(msg.tools);
   if (msg.cwd) existing.agent.setCwd(msg.cwd);
+  // A load names the seat's sandbox every time; absent clears it (🎯T178).
+  if (msg.op === "load" || msg.sandbox !== undefined) existing.agent.setSandbox(msg.sandbox);
   // The host sends its current compaction steer on every load (🎯T152).
   existing.agent.setContext(msg.preserve, msg.pins);
   if (msg.model && msg.model !== existing.model) {

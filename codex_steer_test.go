@@ -100,7 +100,7 @@ func TestHermeticCodexSteerFoldsIntoOpenTurn(t *testing.T) {
 	t.Setenv("FAKE_CODEX_STEER_LOG", steerLog)
 	writeFakeCodexSubscriptionAuth(t)
 
-	agent, err := Start(Config{Provider: ProviderCodex, WorkDir: t.TempDir(), TermLogPath: "-"})
+	agent, err := startLegacyCodexSession(Config{Provider: ProviderCodex, WorkDir: t.TempDir(), TermLogPath: "-"})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -150,7 +150,7 @@ func TestHermeticCodexWithoutSteerRefusesHonestly(t *testing.T) {
 	t.Setenv("FAKE_CODEX_HOLD_TURN", "1")
 	writeFakeCodexSubscriptionAuth(t)
 
-	agent, err := Start(Config{Provider: ProviderCodex, WorkDir: t.TempDir(), TermLogPath: "-"})
+	agent, err := startLegacyCodexSession(Config{Provider: ProviderCodex, WorkDir: t.TempDir(), TermLogPath: "-"})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}

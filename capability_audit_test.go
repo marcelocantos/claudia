@@ -169,6 +169,7 @@ var sessionFieldFates = map[Provider]map[string]fieldDecl{
 		"SandboxWritableRoots": {fateRefused, "Codex sandbox tuning; refused by sandboxPolicyRequested"},
 		"SandboxNetworkAccess": {fateRefused, "Codex sandbox tuning; refused by sandboxPolicyRequested"},
 		"SandboxGitWrite":      {fateRefused, "Codex sandbox tuning; refused by sandboxPolicyRequested"},
+		"ApprovalPolicy":       {fateRefused, "Codex approval control; refused by sandboxPolicyRequested"},
 		"MCPConfig":            {fateConsumed, ""},
 		"MCPServers":           {fateConsumed, ""},
 		"MCPExclusive":         {fateConsumed, ""},
@@ -201,6 +202,7 @@ var sessionFieldFates = map[Provider]map[string]fieldDecl{
 		"SandboxWritableRoots": {fateRefused, "Codex sandbox tuning; refused by sandboxPolicyRequested"},
 		"SandboxNetworkAccess": {fateRefused, "Codex sandbox tuning; refused by sandboxPolicyRequested"},
 		"SandboxGitWrite":      {fateRefused, "Codex sandbox tuning; refused by sandboxPolicyRequested"},
+		"ApprovalPolicy":       {fateRefused, "Codex approval control; refused by sandboxPolicyRequested"},
 		"MCPConfig":            {fateConsumed, ""},
 		"MCPServers":           {fateConsumed, ""},
 		"MCPExclusive":         {fateConsumed, ""},
@@ -233,6 +235,7 @@ var sessionFieldFates = map[Provider]map[string]fieldDecl{
 		"SandboxWritableRoots": {fateConsumed, ""},
 		"SandboxNetworkAccess": {fateConsumed, ""},
 		"SandboxGitWrite":      {fateConsumed, "a -c writable_roots override on the app-server argv"},
+		"ApprovalPolicy":       {fateConsumed, "mapped onto the sidecar tool policy: never is the only mode, anything else refused (🎯T178)"},
 		"MCPConfig":            {fateIgnored, "app-server thread/start has no MCPConfig field"},
 		"MCPServers":           {fateConsumed, "process-private CODEX_HOME at spawn"},
 		"MCPExclusive":         {fateConsumed, "CODEX_HOME isolate at spawn"},
@@ -265,6 +268,7 @@ var sessionFieldFates = map[Provider]map[string]fieldDecl{
 		"SandboxWritableRoots": {fateRefused, "Codex sandbox tuning; refused by sandboxPolicyRequested"},
 		"SandboxNetworkAccess": {fateRefused, "Codex sandbox tuning; refused by sandboxPolicyRequested"},
 		"SandboxGitWrite":      {fateRefused, "Codex sandbox tuning; refused by sandboxPolicyRequested"},
+		"ApprovalPolicy":       {fateRefused, "Codex approval control; refused by sandboxPolicyRequested"},
 		"MCPConfig":            {fateConsumed, ""},
 		"MCPServers":           {fateConsumed, ""},
 		"MCPExclusive":         {fateConsumed, "ACP mcpServers only (no project mcp.json rewrite)"},
@@ -521,6 +525,8 @@ func sessionStartRequest(field string) agentStartRequest {
 		req.Config.SandboxNetworkAccess = true
 	case "SandboxGitWrite":
 		req.Config.SandboxGitWrite = true
+	case "ApprovalPolicy":
+		req.Config.ApprovalPolicy = "never"
 	case "MCPConfig":
 		req.Config.MCPConfig = "/tmp/claudia-t24-mcp.json"
 	case "MCPServers":
@@ -558,6 +564,12 @@ func sessionMaterialises(provider Provider, field string) bool {
 			return req.Config.RequireResume
 		case "MCPServers", "MCPExclusive":
 			return needsSessionMCPMaterialization(req.Config)
+		case "ApprovalPolicy":
+			// 🎯T178: the sidecar route takes "never" (its only mode) and
+			// refuses anything else by name rather than dropping it.
+			_, never := ompSandboxFor(Config{Provider: ProviderCodex, SandboxMode: "read-only", ApprovalPolicy: "never"})
+			_, other := ompSandboxFor(Config{Provider: ProviderCodex, SandboxMode: "read-only", ApprovalPolicy: "on-request"})
+			return never == nil && errors.Is(other, ErrOMPCodexSandboxUnsupported)
 		case "SandboxGitWrite":
 			// 🎯T112: the grant is a workspace-write setting, read off the
 			// workdir's repository — this one, since the audit's own

@@ -6,7 +6,7 @@ import { Agent, type AgentTool } from "@oh-my-pi/pi-agent-core";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { cursorExecHandlers } from "./cursorexec.ts";
-import { codingTools } from "./coding.ts";
+import { codingTools, type SandboxPolicy } from "./coding.ts";
 import { capToolText, toolResultBound } from "./truncate.ts";
 import { awaitHostCall } from "./hostcalls.ts";
 import { ContextOverflow, isOverflow, Maintenance, seatConvertToLlm, type MaintenanceHost } from "./maintain.ts";
@@ -50,6 +50,10 @@ export type SeatAgent = {
   setModel: (provider: string, model: string) => void;
   setToken: (token: string) => void;
   setCwd: (cwd: string) => void;
+  // setSandbox replaces the policy on the seat's own tools (🎯T178).
+  setSandbox: (policy: SandboxPolicy | undefined) => void;
+  // sandboxMode is the policy mode in force, echoed on ready (🎯T178).
+  sandboxMode: () => string | undefined;
   snapshot: () => unknown;
   // Read the model-visible list after setTools, not the host offer.
   boundToolNames: () => string[];
@@ -96,7 +100,10 @@ export function createSeatAgent(opts: {
   // keep, and facts carried verbatim after it. setContext replaces them.
   preserve?: string;
   pins?: string[];
+  // sandbox limits the seat's own tools (🎯T178). Absent: unchanged.
+  sandbox?: SandboxPolicy;
 }): SeatAgent {
+  let sandbox = opts.sandbox;
   let token = opts.token;
   let cwd = opts.cwd;
   let preserve = opts.preserve;
@@ -154,7 +161,9 @@ export function createSeatAgent(opts: {
   // The sidecar's own tools (Bash, Read, Write, Glob, Grep). A host tool
   // reaches the host as tool_call; these ran unseen (claudia 🎯T171).
   let ownToolNames = new Set<string>();
+  let lastHost: HostTool[] | undefined;
   const applyTools = (host: HostTool[] | undefined) => {
+    lastHost = host;
     if (opts.summaryOnly) {
       agent.setTools([]);
       return;
@@ -165,7 +174,7 @@ export function createSeatAgent(opts: {
     // (T864.3) — it only fires for a jevons_* name the host did not list
     // here, never for these explicit tools.
     const hosted = (host ?? []).map((t) => jevonsTool(t.name, callBack, t.description, t.input_schema, boundOf));
-    const own = codingTools(() => cwd, boundOf);
+    const own = codingTools(() => cwd, boundOf, () => sandbox);
     ownToolNames = new Set(own.map((t) => t.name));
     agent.setTools([...own, ...hosted]);
   };
@@ -449,6 +458,11 @@ export function createSeatAgent(opts: {
     },
     setCwd: (next: string) => {
       if (next) cwd = next;
+    },
+    sandboxMode: () => sandbox?.mode,
+    setSandbox: (next) => {
+      sandbox = next;
+      applyTools(lastHost);
     },
     snapshot: () => agent.state,
     boundToolNames: () => (agent.state.tools ?? []).map((tool) => tool.name),

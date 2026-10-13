@@ -107,8 +107,9 @@ type Config struct {
 	// Defaults to "bypassPermissions".
 	PermissionMode string
 
-	// SandboxMode selects the legacy Codex app-server sandbox (e.g.
-	// "read-only", "workspace-write"). OMP Codex seats refuse it.
+	// SandboxMode selects a Codex seat's sandbox (e.g. "read-only",
+	// "workspace-write"). On the sidecar it maps onto the seat's own tools
+	// (🎯T178, see ompSandboxFor).
 	// Empty keeps the safe default of read-only (🎯T37). Other
 	// providers refuse a non-empty value rather than drop it.
 	//
@@ -118,8 +119,9 @@ type Config struct {
 	// to it. Start logs that when it applies. SandboxGitWrite lifts it.
 	SandboxMode string
 
-	// ApprovalPolicy is a Codex-native approval control. OMP seats refuse it
-	// until the sidecar can honour it rather than silently dropping it.
+	// ApprovalPolicy is a Codex approval control. The sidecar never asks for
+	// approval, so it takes "never" (the default) and refuses anything else
+	// by name rather than dropping it (🎯T178).
 	ApprovalPolicy string
 
 	// SandboxGitWrite lets a workspace-write Codex seat write its repo's
@@ -1078,7 +1080,7 @@ func claudeAgentArgsWithMCP(req agentStartRequest, mcpConfig string) []string {
 // less access than its mission needs and fails only at its first gate
 // (🎯T598).
 func sandboxPolicyRequested(c Config) bool {
-	return c.SandboxMode != "" || len(c.SandboxWritableRoots) > 0 || c.SandboxNetworkAccess || c.SandboxGitWrite
+	return c.SandboxMode != "" || len(c.SandboxWritableRoots) > 0 || c.SandboxNetworkAccess || c.SandboxGitWrite || c.ApprovalPolicy != ""
 }
 
 func claudeSessionPrecheck(req agentStartRequest) error {

@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/marcelocantos/claudia/omp"
 	"os"
 	"path/filepath"
 	"strings"
@@ -283,13 +284,14 @@ func TestLaunchPassesProvider(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	writeFakeCodexSubscriptionAuth(t)
-	t.Setenv("CODEX_BIN", writeFakeCodexAppServer(t))
+	// A Codex seat launches on the sidecar (🎯T178) with its provider.
+	f := startOMPFixture(t)
 	if err := r.Register(AgentDef{
 		Name:      "codex-sess",
 		WorkDir:   t.TempDir(),
 		SessionID: "sid-x",
 		Provider:  ProviderCodex,
+		Model:     "gpt-6-sol",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -300,6 +302,9 @@ func TestLaunchPassesProvider(t *testing.T) {
 	defer agent.Stop()
 	if agent == nil {
 		t.Fatal("Launch returned nil agent")
+	}
+	if load := f.nextLoad(t); load.Provider != omp.OpenAICodex || load.SessionID != "sid-x" {
+		t.Fatalf("load = provider %q session %q", load.Provider, load.SessionID)
 	}
 }
 

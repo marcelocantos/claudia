@@ -58,6 +58,25 @@ type Message struct {
 	// offered to a work seat on load and adopt, so the model can choose
 	// them. Calls still come back to the host as tool_call (🎯T886).
 	Tools json.RawMessage `json:"tools,omitempty"`
+	// Sandbox limits the seat's own tools (claudia 🎯T178): Codex sandbox
+	// settings mapped onto what the sidecar controls. Nil leaves them as
+	// they are. A sidecar that honours it names the mode on ready.
+	Sandbox *Sandbox `json:"sandbox,omitempty"`
+}
+
+// Sandbox modes the sidecar enforces on its own tools.
+const (
+	SandboxReadOnly       = "read-only"
+	SandboxWorkspaceWrite = "workspace-write"
+)
+
+// Sandbox is a seat's tool policy. read-only offers no Write and no Bash;
+// workspace-write confines Write and Bash's file writes to the working
+// directory plus WritableRoots, and keeps Protected read-only.
+type Sandbox struct {
+	Mode          string   `json:"mode"`
+	WritableRoots []string `json:"writable_roots,omitempty"`
+	Protected     []string `json:"protected,omitempty"`
 }
 
 // Event is one sidecar line. Type turn_end carries a context snapshot.
@@ -75,10 +94,13 @@ type Event struct {
 	// BoundTools is the actual model-visible tool list after the sidecar
 	// bound the offered tools. Nil means the sidecar did not attest binding.
 	BoundTools []string `json:"bound_tools"`
-	Reason     string   `json:"reason,omitempty"`
-	Text       string   `json:"text,omitempty"`
-	CallID     string   `json:"call_id,omitempty"`
-	Name       string   `json:"name,omitempty"`
+	// Sandbox, on ready, is the tool policy mode the sidecar applied
+	// (claudia 🎯T178). Empty from a sidecar that predates it.
+	Sandbox string `json:"sandbox,omitempty"`
+	Reason  string `json:"reason,omitempty"`
+	Text    string `json:"text,omitempty"`
+	CallID  string `json:"call_id,omitempty"`
+	Name    string `json:"name,omitempty"`
 	// Error is the provider's refusal on a turn_end that got no answer
 	// (usage limit, rate limit, auth). Empty on a turn that answered.
 	Error    string          `json:"error,omitempty"`

@@ -84,11 +84,100 @@ export function runCommand(
   });
 }
 
-export function codingTools(cwdOf: () => string, boundOf: () => number = () => toolResultBound(0)): AgentTool[] {
-  return [bashTool(cwdOf, boundOf), readTool(cwdOf, boundOf), writeTool(cwdOf, boundOf), globTool(cwdOf, boundOf), grepTool(cwdOf, boundOf)];
+// SandboxPolicy is what the host asked this seat's own tools to be allowed
+// (🎯T178: Codex sandbox settings mapped onto the sidecar). Absent means the
+// tools run as they always have. read-only offers no Write and no Bash.
+// workspace-write confines Write, and Bash's file writes (macOS seatbelt), to
+// the seat's working directory plus writable_roots, and keeps everything under
+// protected (a repo's git dirs, unless the host granted them) read-only.
+export type SandboxPolicy = {
+  mode: "read-only" | "workspace-write";
+  writable_roots?: string[];
+  protected?: string[];
+};
+
+export function codingTools(
+  cwdOf: () => string,
+  boundOf: () => number = () => toolResultBound(0),
+  policyOf: () => SandboxPolicy | undefined = () => undefined,
+): AgentTool[] {
+  const policy = policyOf();
+  if (policy?.mode === "read-only") {
+    return [readTool(cwdOf, boundOf), globTool(cwdOf, boundOf), grepTool(cwdOf, boundOf)];
+  }
+  return [
+    bashTool(cwdOf, boundOf, policyOf),
+    readTool(cwdOf, boundOf),
+    writeTool(cwdOf, boundOf, policyOf),
+    globTool(cwdOf, boundOf),
+    grepTool(cwdOf, boundOf),
+  ];
 }
 
-function bashTool(cwdOf: () => string, boundOf: () => number): AgentTool {
+// realish resolves symlinks through the nearest existing ancestor, so a path
+// that does not exist yet is judged by where it would really land.
+export function realish(p: string): string {
+  let cur = path.resolve(p);
+  const tail: string[] = [];
+  for (;;) {
+    try {
+      return path.join(fs.realpathSync(cur), ...tail.reverse());
+    } catch {
+      const parent = path.dirname(cur);
+      if (parent === cur) return path.resolve(p);
+      tail.push(path.basename(cur));
+      cur = parent;
+    }
+  }
+}
+
+function within(root: string, abs: string): boolean {
+  const r = realish(root);
+  const prefix = r.endsWith(path.sep) ? r : r + path.sep;
+  return abs === r || abs.startsWith(prefix);
+}
+
+// writableRoots is where a workspace-write seat may write: its working
+// directory and the host's extra roots.
+export function writableRoots(cwd: string, policy: SandboxPolicy): string[] {
+  return [cwd || process.cwd(), ...(policy.writable_roots ?? [])].filter(Boolean);
+}
+
+// checkWrite refuses a write a workspace-write policy does not allow.
+export function checkWrite(cwd: string, abs: string, policy: SandboxPolicy | undefined): void {
+  if (!policy) return;
+  if (policy.mode === "read-only") throw new Error(`read-only seat: write refused: ${abs}`);
+  const real = realish(abs);
+  for (const p of policy.protected ?? []) {
+    if (within(p, real)) throw new Error(`write refused: ${abs} is under protected ${p} (git write not granted)`);
+  }
+  if (!writableRoots(cwd, policy).some((r) => within(r, real))) {
+    throw new Error(`write refused: ${abs} is outside the seat's writable roots`);
+  }
+}
+
+function sbplString(s: string): string {
+  return JSON.stringify(s);
+}
+
+// seatbeltProfile confines file writes to the policy's roots plus temp dirs.
+// Later rules win, so protected dirs are denied after the roots are allowed.
+export function seatbeltProfile(cwd: string, policy: SandboxPolicy): string {
+  const allow = [...writableRoots(cwd, policy), "/private/tmp", "/private/var/folders", process.env.TMPDIR ?? ""]
+    .filter(Boolean)
+    .map((r) => `(subpath ${sbplString(realish(r))})`);
+  const lines = [
+    "(version 1)",
+    "(allow default)",
+    "(deny file-write*)",
+    `(allow file-write* ${allow.join(" ")} (regex #"^/dev/"))`,
+  ];
+  const prot = (policy.protected ?? []).map((p) => `(subpath ${sbplString(realish(p))})`);
+  if (prot.length > 0) lines.push(`(deny file-write* ${prot.join(" ")})`);
+  return lines.join("\n");
+}
+
+function bashTool(cwdOf: () => string, boundOf: () => number, policyOf: () => SandboxPolicy | undefined): AgentTool {
   return {
     name: "Bash",
     label: "Bash",
@@ -109,7 +198,12 @@ function bashTool(cwdOf: () => string, boundOf: () => number): AgentTool {
       if (refusal && refusal.verdict === "deny") {
         return { ...textResult(refusal.message, boundOf(), "Bash"), isError: true };
       }
-      const r = await runCommand("/bin/bash", ["-lc", command], {
+      const policy = policyOf();
+      const [bin, args] =
+        policy?.mode === "workspace-write"
+          ? ["/usr/bin/sandbox-exec", ["-p", seatbeltProfile(cwd, policy), "/bin/bash", "-lc", command]]
+          : ["/bin/bash", ["-lc", command]];
+      const r = await runCommand(bin, args, {
         cwd,
         timeoutMs: bashTimeoutMs,
         maxBuffer: maxOut,
@@ -145,7 +239,7 @@ function readTool(cwdOf: () => string, boundOf: () => number): AgentTool {
   } as AgentTool;
 }
 
-function writeTool(cwdOf: () => string, boundOf: () => number): AgentTool {
+function writeTool(cwdOf: () => string, boundOf: () => number, policyOf: () => SandboxPolicy | undefined): AgentTool {
   return {
     name: "Write",
     label: "Write",
@@ -162,6 +256,7 @@ function writeTool(cwdOf: () => string, boundOf: () => number): AgentTool {
       const p = params as { path?: string; content?: string };
       try {
         const abs = under(cwdOf(), String(p?.path || ""));
+        checkWrite(cwdOf(), abs, policyOf());
         fs.mkdirSync(path.dirname(abs), { recursive: true });
         fs.writeFileSync(abs, String(p?.content ?? ""), "utf8");
         return textResult("wrote " + abs, boundOf(), "Write");
