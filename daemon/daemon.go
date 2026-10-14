@@ -541,16 +541,8 @@ func (d *Daemon) handleAuthStatus(c *broker.ClientConn, req *broker.Request) {
 func (d *Daemon) ConnClosed(c *broker.ClientConn) {
 	d.mu.Lock()
 	var detached, ephemeral []string
-	var returned []*brokerGrant
 	for name, g := range d.grants {
 		if g.owner != c {
-			continue
-		}
-		if g.pool {
-			// Nobody can reclaim an acquired seat by name: it goes back
-			// to the pool for the next Acquire.
-			d.startReturningLocked(g)
-			returned = append(returned, g)
 			continue
 		}
 		d.detachLocked(g)
@@ -578,13 +570,6 @@ func (d *Daemon) ConnClosed(c *broker.ClientConn) {
 		d.log.Info("consumer connection closed; ephemeral seat reclaimable until TTL",
 			"grant", name, "ttl", claudia.EphemeralGrantTTL)
 		d.emit(broker.EventMessage{Kind: broker.EventDetach, Name: name})
-	}
-	for _, g := range returned {
-		d.log.Info("consumer connection closed; returning pooled seat", "grant", g.name)
-		if err := d.releasePooled(g, "return"); err != nil {
-			d.log.Warn("return pooled seat", "grant", g.name, "err", err)
-		}
-		d.forgetReturned(g)
 	}
 	for _, cancel := range cancels {
 		cancel()
@@ -716,12 +701,9 @@ func (d *Daemon) handleGrant(c *broker.ClientConn, req *broker.Request) {
 		return
 	}
 	if req.Grant.Pool != nil {
-		if req.Grant.Pick != "" {
-			_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeUnsupportedValue, Field: "pick", Value: req.Grant.Pick,
-				Msg: "pick remaining chooses a provider for a named seat, not a pool acquire"})
-			return
-		}
-		d.handleAcquire(c, req, wire)
+		// The warm pool ran on tmux windows and is gone with them.
+		_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeUnsupportedValue, Field: "pool",
+			Msg: "the warm seat pool was removed with the tmux backend; grant a named seat instead"})
 		return
 	}
 	def := wire.AgentDef
@@ -892,67 +874,6 @@ func (d *Daemon) handleGrant(c *broker.ClientConn, req *broker.Request) {
 		Detail: map[bool]string{true: "reclaimed", false: "started"}[reclaimed]})
 }
 
-// daemonAcquire is how the daemon draws a warm seat: the library's own pool.
-var daemonAcquire = claudia.AcquireDirect
-
-// handleAcquire grants a warm seat from the pool the daemon runs (🎯T64).
-// The seat belongs to this connection until it is released, or until the
-// connection closes, when it goes back to the pool.
-func (d *Daemon) handleAcquire(c *broker.ClientConn, req *broker.Request, def claudia.GrantDefinition) {
-	name := req.Grant.Name
-	d.mu.Lock()
-	if d.liveGrantLocked(name) != nil {
-		d.mu.Unlock()
-		_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeGrantHeld, Field: "name", Value: name,
-			Msg: fmt.Sprintf("grant %s already names a seat", name)})
-		return
-	}
-	d.mu.Unlock()
-	cfg := def.Config()
-	cfg.PoolPolicy, cfg.PoolCap = req.Grant.Pool.Policy, req.Grant.Pool.Cap
-	ctx, cancel := context.WithTimeout(d.ctx, grantStartTimeout)
-	defer cancel()
-	proc, err := daemonAcquire(ctx, cfg)
-	if err != nil {
-		_ = c.Fail(req.ID, err)
-		return
-	}
-
-	d.mu.Lock()
-	g := &brokerGrant{name: name, pool: true}
-	d.grants[name] = g
-	d.bindSeatLocked(g, proc)
-	g.owner = c
-	pump := make(chan []byte, d.pumpCap())
-	g.pump = pump
-	d.mu.Unlock()
-	ownedBy(c, name)
-	d.wg.Add(1)
-	go func() { defer d.wg.Done(); d.runPump(g, c, pump) }()
-
-	_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeGranted, Granted: &broker.GrantResponse{
-		Name:           name,
-		SessionID:      proc.SessionID(),
-		Provider:       broker.Provider(procProvider(proc)),
-		Model:          proc.Model(),
-		WindowID:       proc.WindowID(),
-		JSONLPath:      proc.JSONLPath(),
-		TermLogPath:    proc.TermLogPath(),
-		AttachCommand:  proc.AttachCommand(),
-		TurnCaps:       turnCapsWire(proc),
-		MCPUnavailable: proc.HostMCPUnavailable(),
-	}})
-	d.emit(broker.EventMessage{Kind: broker.EventGrant, Name: name, SessionID: proc.SessionID(), Detail: "acquired"})
-}
-
-// releasePooled hands a pooled seat back to the library pool with
-// disposition (return, drop, keep_alive_for:<secs>). d.mu must not be held.
-func (d *Daemon) releasePooled(g *brokerGrant, disposition string) error {
-	err := g.proc.Release(disposition)
-	d.emit(broker.EventMessage{Kind: broker.EventRelease, Name: g.name, Detail: disposition})
-	return err
-}
-
 // liveGrantLocked is d.grants[name] restricted to grants the daemon can
 // still hand out. A pooled seat mid-return is not one of them: it is on
 // its way back to the pool and belongs to no connection. d.mu held.
@@ -962,34 +883,6 @@ func (d *Daemon) liveGrantLocked(name string) *brokerGrant {
 		return nil
 	}
 	return g
-}
-
-// startReturningLocked detaches a pooled grant from its owner and marks
-// the return under way. The grant deliberately stays in d.grants: the
-// window is still marked held in tmux until releasePooled clears it, and
-// the pool reads tmux, not this map. Removing the grant first published a
-// return that had not happened — an Acquire in that gap read the window as
-// another consumer's and cold-spawned beside a seat that was about to be
-// free (🎯T94). forgetReturned closes the pair. d.mu held.
-func (d *Daemon) startReturningLocked(g *brokerGrant) {
-	d.detachLocked(g)
-	if g.proc != nil && g.sub != 0 {
-		g.proc.UnsubscribeEvents(g.sub)
-		g.sub = 0
-	}
-	g.returning = true
-}
-
-// forgetReturned drops a pooled grant now that its window is back in the
-// pool (or gone). It removes only its own entry: a later grant of the same
-// name has taken the slot and is not this one's to delete. d.mu must not
-// be held.
-func (d *Daemon) forgetReturned(g *brokerGrant) {
-	d.mu.Lock()
-	if d.grants[g.name] == g {
-		delete(d.grants, g.name)
-	}
-	d.mu.Unlock()
 }
 
 func procProvider(a *claudia.Agent) claudia.Provider {
@@ -1198,40 +1091,6 @@ func (d *Daemon) handleRelease(c *broker.ClientConn, req *broker.Request) {
 		d.mu.Unlock()
 		_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeNotOwner, Field: "name", Value: name,
 			Msg: fmt.Sprintf("grant %s belongs to another connection", name)})
-		return
-	}
-	if g != nil && g.pool && req.Release.Force {
-		d.mu.Unlock()
-		_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeUnsupportedValue, Field: "force", Value: "true",
-			Msg: "a pooled seat has no detached state to force"})
-		return
-	}
-	if g != nil && g.pool {
-		var disposition string
-		switch req.Release.Disposition {
-		case broker.DispositionReuse:
-			disposition = "return"
-			if secs := req.Release.KeepAliveSeconds; secs > 0 {
-				disposition = fmt.Sprintf("keep_alive_for:%d", secs)
-			}
-		case broker.DispositionStop:
-			disposition = "drop"
-		default:
-			d.mu.Unlock()
-			_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeUnsupportedValue, Field: "disposition",
-				Value: string(req.Release.Disposition), Msg: "a pooled seat is released with reuse or stop"})
-			return
-		}
-		d.startReturningLocked(g)
-		d.mu.Unlock()
-		err := d.releasePooled(g, disposition)
-		d.forgetReturned(g)
-		if err != nil {
-			_ = c.Fail(req.ID, err)
-			return
-		}
-		_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeReleased,
-			Released: &broker.ReleaseResponse{Name: name, Disposition: req.Release.Disposition}})
 		return
 	}
 	switch req.Release.Disposition {
@@ -1909,7 +1768,7 @@ func (d *Daemon) refreshClaims(next <-chan time.Time) {
 		d.mu.Lock()
 		var names []string
 		for name, g := range d.grants {
-			if g.owner != nil && !g.pool {
+			if g.owner != nil {
 				names = append(names, name)
 			}
 		}

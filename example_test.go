@@ -125,42 +125,6 @@ func ExampleAgent_Rewind() {
 	defer agent.Stop()
 }
 
-// ExampleAcquire demonstrates the warm agent pool. Acquire checks out a
-// pre-warmed agent; Release returns it for the next caller.
-func ExampleAcquire() {
-	cfg := claudia.Config{
-		WorkDir:    os.TempDir(),
-		Model:      "haiku",
-		PoolPolicy: "spawn", // create a new window if none is idle
-	}
-
-	agent, err := claudia.Acquire(context.Background(), cfg)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-
-	if err := agent.Send("Respond with: hello"); err != nil {
-		// Drop the window if send fails — it may be in a bad state.
-		_ = agent.Release("drop")
-		log.Fatal(err)
-	}
-
-	reply, err := agent.WaitForResponse(ctx)
-	if err != nil {
-		_ = agent.Release("drop")
-		log.Fatal(err)
-	}
-	fmt.Println(reply)
-
-	// Return the window to the pool so the next Acquire can reuse it.
-	if err := agent.Release("return"); err != nil {
-		log.Println("release:", err)
-	}
-}
-
 // ExampleNewRegistry demonstrates the Registry: register named agents,
 // launch them, and stop them all on shutdown.
 func ExampleNewRegistry() {

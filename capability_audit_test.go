@@ -176,8 +176,6 @@ var sessionFieldFates = map[Provider]map[string]fieldDecl{
 		"DisallowTools":        {fateConsumed, ""},
 		"ExtraArgs":            {fateConsumed, ""},
 		"TermLogPath":          {fateLocal, "host-side PTY log path; not a provider argument"},
-		"PoolPolicy":           {fateLocal, "Acquire policy; Start does not consult it"},
-		"PoolCap":              {fateLocal, "Acquire cap; Start does not consult it"},
 		"TurnSilenceBound":     {fateLocal, "bounds this handle's WaitForResponse; no provider is told about it"},
 		"GrokConnect":          {fateIgnored, "Grok serve-mode switch; Claude Session is tmux"},
 		"ConnectURL":           {fateIgnored, "Grok reattach URL; Claude Session has no serve endpoint"},
@@ -208,8 +206,6 @@ var sessionFieldFates = map[Provider]map[string]fieldDecl{
 		"DisallowTools":        {fateRefused, "Config.DisallowTools never reaches the ACP client"},
 		"ExtraArgs":            {fateRefused, "fixed grok agent argv; caller ExtraArgs have nowhere to go"},
 		"TermLogPath":          {fateLocal, "host-side log path; Grok ACP is not a PTY"},
-		"PoolPolicy":           {fateLocal, "Acquire policy; Start does not consult it"},
-		"PoolCap":              {fateLocal, "Acquire cap; Start does not consult it"},
 		"TurnSilenceBound":     {fateLocal, "bounds this handle's WaitForResponse; no provider is told about it"},
 		"GrokConnect":          {fateConsumed, ""},
 		"ConnectURL":           {fateConsumed, ""},
@@ -240,8 +236,6 @@ var sessionFieldFates = map[Provider]map[string]fieldDecl{
 		"DisallowTools":        {fateRefused, "codex exec / app-server have no per-tool disallow flag"},
 		"ExtraArgs":            {fateRefused, "typed app-server fields only"},
 		"TermLogPath":          {fateLocal, "host-side log path; app-server is not a PTY"},
-		"PoolPolicy":           {fateLocal, "Acquire policy; Start does not consult it"},
-		"PoolCap":              {fateLocal, "Acquire cap; Start does not consult it"},
 		"TurnSilenceBound":     {fateLocal, "bounds this handle's WaitForResponse; no provider is told about it"},
 		"GrokConnect":          {fateIgnored, "Grok serve-mode switch; Codex Session is app-server stdio"},
 		"ConnectURL":           {fateIgnored, "Grok reattach URL"},
@@ -272,8 +266,6 @@ var sessionFieldFates = map[Provider]map[string]fieldDecl{
 		"DisallowTools":        {fateRefused, "Config.DisallowTools never reaches the ACP client"},
 		"ExtraArgs":            {fateRefused, "fixed agent acp argv; caller ExtraArgs have nowhere to go"},
 		"TermLogPath":          {fateLocal, "host-side log path; Cursor ACP is not a PTY"},
-		"PoolPolicy":           {fateLocal, "Acquire policy; Start does not consult it"},
-		"PoolCap":              {fateLocal, "Acquire cap; Start does not consult it"},
 		"TurnSilenceBound":     {fateLocal, "bounds this handle's WaitForResponse; no provider is told about it"},
 		"GrokConnect":          {fateIgnored, "Grok serve-mode switch; Cursor Session is ACP stdio"},
 		"ConnectURL":           {fateIgnored, "Grok reattach URL"},
@@ -677,7 +669,9 @@ func sessionNeedle(field string, req agentStartRequest) string {
 func sessionPrecheck(provider Provider, req agentStartRequest) error {
 	switch provider {
 	case ProviderClaude:
-		return claudeSessionPrecheck(req)
+		// Claude sessions run on the sidecar (the tmux backend is gone).
+		_, err := ompSandboxFor(req.Config)
+		return err
 	case ProviderGrok:
 		return grokSessionPrecheck(req)
 	case ProviderCodex:

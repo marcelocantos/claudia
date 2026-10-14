@@ -1,11 +1,11 @@
 // Copyright 2026 Marcelo Cantos
 // SPDX-License-Identifier: Apache-2.0
 
-package tmuxagent
+package claudia
 
 import "strings"
 
-// ClaudeSessionMarkers are the variables Claude Code sets on the processes
+// claudeSessionMarkers are the variables Claude Code sets on the processes
 // it runs to say "you are inside my session": its identity, its IPC channel,
 // and the child-session flag. A seat claudia spawns is a session of its own,
 // so none of them may reach it (🎯T121).
@@ -20,7 +20,7 @@ import "strings"
 // This is a list of session markers, not a CLAUDE_* wildcard. Variables that
 // configure Claude Code (CLAUDE_EFFORT, CLAUDE_CODE_USE_BEDROCK, …) are the
 // operator's settings and must still reach the seat.
-var ClaudeSessionMarkers = []string{
+var claudeSessionMarkers = []string{
 	"CLAUDECODE",
 	"CLAUDE_CODE_ENTRYPOINT",
 	"CLAUDE_CODE_SESSION_ID",
@@ -32,11 +32,11 @@ var ClaudeSessionMarkers = []string{
 	"CLAUDE_PID",
 }
 
-// StripClaudeSessionMarkers returns env (in os.Environ() "K=V" form) without
-// any of ClaudeSessionMarkers.
-func StripClaudeSessionMarkers(env []string) []string {
-	drop := make(map[string]bool, len(ClaudeSessionMarkers))
-	for _, name := range ClaudeSessionMarkers {
+// stripClaudeSessionMarkers returns env (in os.Environ() "K=V" form) without
+// any of claudeSessionMarkers.
+func stripClaudeSessionMarkers(env []string) []string {
+	drop := make(map[string]bool, len(claudeSessionMarkers))
+	for _, name := range claudeSessionMarkers {
 		drop[name] = true
 	}
 	out := make([]string, 0, len(env))

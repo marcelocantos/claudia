@@ -1,4 +1,4 @@
-# Hermetic owner gate (🎯T48). Same suite as .github/workflows/test.yml.
+# Hermetic owner gate (🎯T48). There is no GitHub Actions CI; this is the gate.
 # On success it attests the tree it measured (scripts/gate-attest.sh);
 # pre-push checks that attestation rather than re-running the gate, which
 # takes ~25 minutes — longer than GitHub keeps an idle SSH connection open.
@@ -65,7 +65,7 @@ verify-stability:
 # unwired oracle: it applies the decay each entry declares (8c5e04a's landed=true
 # for T28) and requires it to be invisible to the suites AND to make this check
 # go red. A check that cannot be shown to fail is not evidence either.
-# CI runs this in .github/workflows/test.yml.
+# `make gate` runs this.
 .PHONY: verify-mutation-evidence
 verify-mutation-evidence:
 	@scripts/check-mutation-evidence.py
@@ -94,12 +94,12 @@ verify-mutation-evidence:
 # Disposable recovery Keychain: CLAUDIA_RECOVERY_KEYCHAIN_LIVE=1
 .PHONY: live
 live:
-	@go run ./cmd/livelock -- go test -count=1 -timeout 30m -run 'TestTaskRunSmoke|TestClaudeTaskDisallowToolsLiveSmoke|TestModelObservableLive|TestModelNotFoundLiveFailLoud|TestAgentReadinessSmoke|TestAgentReadinessUntrustedGitWorkdirLive|TestAgentReadinessFailureOnDeadProcess|TestAgentSendAndWaitForResponse|TestAgentMultiTurn|TestRunHelper|TestCrashSurvival$$|TestRewindSessionLive|TestRewindLive|TestGoalCompleteCheckLive|TestAcquireLive|TestPoolAgentEventsLive|TestAcquireColdAndReturn|TestAcquireDropKillsWindow|TestAcquireKeepAliveFor|TestAcquireConcurrentDifferentKeys|TestAcquireHeldWindowNotReused|TestAcquirePoolCapEviction|TestAcquireErrorPolicy|TestPoolCrashSurvival$$|TestGrokTaskRunSmoke|TestGrokSessionLiveSmoke|TestGrokSessionLiveSmokeSteer|TestExclusiveGrokSessionResumeLive|TestGrokPlanUsageLive|TestLiveConnect|TestCodexTaskRunSmoke|TestCodexTaskGitWriteLiveSmoke|TestCodexBrokerTaskWriteDefaultLiveSmoke|TestCodexBrokerGrantWriteDefaultLiveSmoke|TestCodexSessionLiveSmoke|TestCodexGitWriteLiveSmoke|TestLiveCodexTaskRun|TestLiveCodexStandaloneGitWriteCommit|TestBedrockTaskLiveSmoke|TestOllamaTaskLiveSmoke|TestJudgeLiveSmoke|TestCursorTaskLiveSmoke|TestCursorSessionLiveSmoke|TestCursorSessionLiveSmokeSteer|TestCursorSavedSessionResumeLive|TestGoalJourneyLiveBackends|TestBrokerReclaimLiveBackends|TestT30LargePayloadSubmitsOnRealPath|TestT110PastedBriefIsActedOnLive|TestMCPLiveLoadAndSessionSeesMnemo|TestMCPHostLiveSeatsSeeMnemo|TestMCPCodexSeatCallsToolLive|TestMCPExclusiveGrokInspectJourney|TestMCPExclusiveSessionRoundTrip|TestMCPExclusiveCursorSessionRoundTrip|TestRecoverPlanDisposableKeychainAfterMissedRead|TestT170LiveDirectKeychainACL|TestT865LiveNonBrokerCannotRead|TestT865LiveBrokerRefreshPlans|TestT865LiveRebuiltBrokerRefused|TestT865LiveBrokerSmokeLaunchVerbs|TestT865LiveSidecarSurvivesJevonsdBounce|TestT195LiveSidecarSwitchKeepsConversation' ./...
+	@go run ./cmd/livelock -- go test -count=1 -timeout 30m -run 'TestTaskRunSmoke|TestClaudeTaskDisallowToolsLiveSmoke|TestModelObservableLive|TestModelNotFoundLiveFailLoud|TestAgentReadinessSmoke|TestAgentReadinessUntrustedGitWorkdirLive|TestAgentReadinessFailureOnDeadProcess|TestAgentSendAndWaitForResponse|TestAgentMultiTurn|TestRunHelper$$|TestRewindSessionLive|TestRewindLive|TestGoalCompleteCheckLive|TestGrokTaskRunSmoke|TestGrokSessionLiveSmoke|TestGrokSessionLiveSmokeSteer|TestExclusiveGrokSessionResumeLive|TestGrokPlanUsageLive|TestLiveConnect|TestCodexTaskRunSmoke|TestCodexTaskGitWriteLiveSmoke|TestCodexBrokerTaskWriteDefaultLiveSmoke|TestCodexBrokerGrantWriteDefaultLiveSmoke|TestCodexSessionLiveSmoke|TestCodexGitWriteLiveSmoke|TestLiveCodexTaskRun|TestLiveCodexStandaloneGitWriteCommit|TestBedrockTaskLiveSmoke|TestOllamaTaskLiveSmoke|TestJudgeLiveSmoke|TestCursorTaskLiveSmoke|TestCursorSessionLiveSmoke|TestCursorSessionLiveSmokeSteer|TestCursorSavedSessionResumeLive|TestGoalJourneyLiveBackends|TestBrokerReclaimLiveBackends|TestMCPLiveLoadAndSessionSeesMnemo|TestMCPHostLiveSeatsSeeMnemo|TestMCPCodexSeatCallsToolLive|TestMCPExclusiveGrokInspectJourney|TestMCPExclusiveSessionRoundTrip|TestMCPExclusiveCursorSessionRoundTrip|TestRecoverPlanDisposableKeychainAfterMissedRead|TestT170LiveDirectKeychainACL|TestT865LiveNonBrokerCannotRead|TestT865LiveBrokerRefreshPlans|TestT865LiveRebuiltBrokerRefused|TestT865LiveBrokerSmokeLaunchVerbs|TestT865LiveSidecarSurvivesJevonsdBounce|TestT195LiveSidecarSwitchKeepsConversation' ./...
 
 # Model-check the broker lifecycle spec (T2.0/T2.8 oracle). The correct config
 # must be green AND every fault-injection mutant must be caught — a spec that
 # stays green on known-broken code is toothless. Requires Java + tla2tools.jar
-# (see scripts/tlc.sh). CI runs this in .github/workflows/specs.yml.
+# (see scripts/tlc.sh). Run it before a release (`make gate-full`).
 .PHONY: supervisor-install supervisor-status
 supervisor-install:
 	@supervisor/install.sh

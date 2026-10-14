@@ -117,7 +117,7 @@ release it claims to describe.
 
 | Item | Signature | Status |
 |---|---|---|
-| `Acquire` | `Acquire(ctx context.Context, cfg Config) (*Agent, error)` | Needs review |
+| `Acquire` | `Acquire(ctx context.Context, cfg Config) (*Agent, error)` — removed after v0.53.0 with the tmux warm pool | Needs review |
 | `Adopt` | `Adopt(cfg Config) (*Agent, error)` — rebuild a handle for a live Claude tmux window or Grok connect-mode serve; missing process is `ErrNoSessionWindow`, not a silent `Start` | Needs review |
 | `AuthorizeMCP` | `AuthorizeMCP(ctx context.Context, args *AuthorizeMCPArgs) (*MCPToken, error)` — owner-present PKCE; tokens are returned, not stored | Fluid |
 | `CursorACPSessionDir` | `CursorACPSessionDir(sessionID string) string` | Fluid |
@@ -172,7 +172,7 @@ release it claims to describe.
 | `ProcessAlive` | `() bool` — falls back to `Alive` when no PID is known | Fluid |
 | `PromptInFlight` | `() bool` — provider turn open and blocking `Send`; false when unknown | Fluid |
 | `PublishEvent` | `(ev Event)` — drives the subscriber fan-out without a live JSONL tail | Needs review |
-| `Release` | `(disposition string) error` | Needs review |
+| `Release` | `(disposition string) error` — removed after v0.53.0 with the tmux warm pool | Needs review |
 | `Resize` | `(cols, rows uint16) error` | Stable |
 | `Rewind` | `(n int, cfg Config) (*Agent, error)` | Needs review |
 | `Send` | `(msg string) error` | Stable |
@@ -703,12 +703,12 @@ together as a single breaking release:
 
 Resolved in v0.11.0 — all exported types, functions, methods, and constants
 have doc comments, and `example_test.go` adds `ExampleRun`, `ExampleNewTask`,
-`ExampleStart`, `ExampleAcquire`, and `ExampleNewRegistry`.
+`ExampleStart` and `ExampleNewRegistry`.
 
 ### Testing and CI
 
-- ~~**No CI workflow.**~~ Resolved: `.github/workflows/test.yml`
-  landed in PR #5 and runs on push.
+- **No GitHub Actions CI, by decision (8 Oct).** The workflows were
+  removed; `make gate` plus the pre-push attestation hook is the CI.
 - **Test coverage is growing.** Agent readiness, crash-survival,
   WaitForResponse settle semantics, event parsing, and terminal-log
   path derivation are covered. ~~Task mode still has no end-to-end

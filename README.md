@@ -5,9 +5,9 @@ Go library for embedding [Claude Code](https://claude.com/claude-code),
 [Cursor](https://cursor.com/docs/cli/acp) agents in any program.
 
 claudia wraps each provider's CLI or API in two complementary generation modes
-(Task and Session), and offers Judge mode for typed Jev questions. Session transports differ by provider: Claude uses
-a tmux PTY plus JSONL tail; Grok uses ACP over stdio or connect-mode
-WebSocket; Codex uses `codex app-server` JSON-RPC. Cursor uses ACP over `agent acp`. Bedrock and Ollama
+(Task and Session), and offers Judge mode for typed Jev questions. Session seats run on the
+subscription sidecar (the omp agent core, `sidecar/`, run by `bun`), which
+the broker starts and supervises. Bedrock and Ollama
 are Task-only HTTP paths.
 
 ## Requirements
@@ -15,16 +15,15 @@ are Task-only HTTP paths.
 - Go 1.26+
 - macOS or Linux (Windows is not supported; WSL works)
 - Per provider, as used:
-  - Claude: `claude` CLI (`CLAUDE_BIN` or `$PATH` / known install dirs); tmux 3.0+ for Session mode
+  - Claude: `claude` CLI (`CLAUDE_BIN` or `$PATH` / known install dirs)
   - Grok: `grok` CLI (`GROK_BIN` or `$PATH` / `~/.grok/bin/grok`)
   - Codex: `codex` CLI (`CODEX_BIN` or `$PATH` / known app-bundle paths)
   - Bedrock: AWS SDK default credential chain
   - Ollama: a local daemon (`CLAUDIA_OLLAMA_ENDPOINT`, default `http://127.0.0.1:11434`)
   - Cursor: `cursor-agent` / `agent` CLI (`CURSOR_BIN` or `$PATH` / `~/.local/bin/agent`)
 
-No launchd or systemd setup is needed. Claude Session mode uses tmux for
-process lifetime; Grok and Codex Session modes are stdio processes (or
-Grok connect-mode `grok agent serve`).
+No launchd or systemd setup is needed. Session seats live in the sidecar
+the broker supervises; claudia runs no tmux server.
 
 **Grok Build CLI** ships via `ProviderGrok` for both Task mode and
 Session mode. Binary discovery checks `GROK_BIN`, then `grok` on `$PATH`,
@@ -163,21 +162,10 @@ Session, resume, and tools fail closed. Cost is latency, not tokens.
 
 ### Session mode — persistent conversations
 
-Claude Session mode spawns `claude` inside a tmux window on a dedicated
-claudia tmux server and keeps it alive. Grok Session uses ACP (`grok
-agent stdio` or connect-mode serve); Codex Session uses `codex
-app-server` JSON-RPC. There is no tmux window for Grok or Codex.
-Use Session mode for multi-turn conversations, interactive agents that
+Session seats for every provider run on the subscription sidecar, which
+keeps each seat's transcript and outlives the consumer. Use Session mode for multi-turn conversations, interactive agents that
 respond to external events, or programs that need to observe the session
-as it happens. Claude's tmux substrate provides crash-survival (the
-agent outlives the consumer) and human-attachable observability — you
-can inspect a live Claude agent with:
-
-```sh
-tmux -S ~/.local/state/claudia/tmux.sock attach -t <window>
-```
-
-(`AttachCommand()` on the agent returns the exact invocation.)
+as it happens.
 
 ```go
 agent, err := claudia.Start(claudia.Config{
@@ -374,26 +362,13 @@ defer reg.StopAll()
 If the host program owns a single short-lived agent, skip the Registry
 and call `Start` directly.
 
-## tmux substrate
+## Session lifetime
 
-Claude Session mode agents run inside a dedicated claudia tmux server
-(socket at `$XDG_STATE_HOME/claudia/tmux.sock`, defaulting to
-`~/.local/state/claudia/tmux.sock`). Each Claude agent occupies one
-tmux window. The server starts automatically on the first Claude
-`Start` or `Acquire` call and persists until the machine reboots — no
-launchd or systemd configuration is needed.
-
-Because Claude agents live in tmux, they survive consumer process death.
-A new consumer process can reconnect to an existing window (via
-`Acquire` with a matching pool key) or observe its transcript via the
-JSONL file that Claude Code writes to `~/.claude/projects/`. Grok
-connect-mode (`Config.GrokConnect`) is the analogous outlive-the-consumer
-path for Grok; Codex Session is process-local stdio.
-
+Session seats live in the subscription sidecar, so they survive consumer
+process death; a new consumer reclaims a seat by name through the broker.
 Session-id chains across resume/rotate are filesystem-backed via
-`RegisterChain` / `LookupChain`. The tmux server is not a `claudiad`
-sidecar — Claude Session lifetime is tmux. The optional host-wide
-process is `claudia broker serve` (see [Daemon](#daemon-optional)).
+`RegisterChain` / `LookupChain`. The tmux substrate and the warm `Acquire`
+pool were removed: claudia starts no tmux server.
 
 ## grok subpackage
 

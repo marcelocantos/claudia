@@ -173,8 +173,7 @@ func DecodeTaskConfigWire(raw json.RawMessage) (TaskConfig, error) {
 // GrantDefinition is what a grant carries: the persistent AgentDef, which is
 // the whole Session Config except three fields. Config.GoalCompleteCheck is
 // a func: it stays on the consumer's handle and the daemon calls back to it
-// (configByCallback). PoolPolicy / PoolCap belong to Acquire, which is not
-// brokered. RequireResume is the consumer Registry's verdict for this launch.
+// (configByCallback). RequireResume is the consumer Registry's verdict for this launch.
 type GrantDefinition struct {
 	AgentDef
 	RequireResume bool `json:"require_resume,omitempty"`
@@ -184,9 +183,7 @@ type GrantDefinition struct {
 // carry, with the reason. TestBrokerWireMirrorsAreComplete refuses any other
 // omission.
 var configNotOnGrantWire = map[string]string{
-	"AdoptOnly":  "registry-local sidecar adoption probe; daemon sets it while reattaching a seat",
-	"PoolPolicy": "Acquire pool policy; carried as grant.pool on an acquire, not on the definition",
-	"PoolCap":    "Acquire pool cap; carried as grant.pool on an acquire, not on the definition",
+	"AdoptOnly": "registry-local sidecar adoption probe; daemon sets it while reattaching a seat",
 	// The wait it bounds runs in the consumer's process, on its own
 	// handle; the daemon's seat has its own (🎯T96). Sending it would
 	// claim a control over the seat that the field does not have.

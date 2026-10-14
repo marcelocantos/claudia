@@ -40,7 +40,6 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -49,8 +48,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-
-	"github.com/marcelocantos/claudia/internal/tmuxagent"
 )
 
 // Config configures a session agent.
@@ -207,19 +204,6 @@ type Config struct {
 	// (with $XDG_STATE_HOME defaulting to ~/.local/state). Set to "-"
 	// to disable terminal logging.
 	TermLogPath string
-
-	// PoolPolicy controls what Acquire does when all matching pool
-	// windows are held by other consumers.
-	//   "spawn" (default): create a new window.
-	//   "wait":            block until a window is released (currently
-	//                      falls back to "spawn").
-	//   "error":           return an error immediately.
-	PoolPolicy string
-
-	// PoolCap is the maximum number of pool windows (idle + held) for
-	// this pool key. When Acquire would exceed the cap, the oldest idle
-	// window is evicted. 0 means unlimited.
-	PoolCap int
 
 	// GrokConnect enables connect-mode for ProviderGrok Session: a
 	// detached `grok agent serve` process with ACP over WebSocket so
@@ -427,14 +411,6 @@ const (
 	readyPollInterval   = 50 * time.Millisecond
 )
 
-// checkTmux returns a clear error if tmux is not on PATH.
-func checkTmux() error {
-	if _, err := exec.LookPath("tmux"); err != nil {
-		return fmt.Errorf("tmux is required for claudia Session mode but was not found on PATH; install it via: brew install tmux (macOS) or apt install tmux (Linux)")
-	}
-	return nil
-}
-
 type agentControl interface {
 	Bytes() <-chan []byte
 	Close() error
@@ -465,9 +441,6 @@ type agentOps struct {
 	// (🎯T73). WaitForResponse compares the count across a wait, so a
 	// silence that may be a lost terminal event says so (🎯T105).
 	droppedFrames func(*Agent) (int, error)
-	// release is set only by the broker backend for an acquired seat: the
-	// daemon returns it to, or drops it from, the pool it runs (🎯T64).
-	release func(*Agent, string) error
 	// subscribeTerminal is set only by the broker backend: the first
 	// SubscribeTerminal asks the daemon to stream raw bytes.
 	subscribeTerminal func(*Agent)
@@ -552,8 +525,6 @@ type agentBackend interface {
 	StartAgent(agentStartRequest) (*agentStart, error)
 }
 
-type claudeAgentBackend struct{}
-
 type codexAgentBackend struct{}
 
 type grokAgentBackend struct{}
@@ -567,7 +538,8 @@ type errorAgentBackend struct {
 func agentBackendForProvider(provider Provider) agentBackend {
 	switch provider {
 	case "", ProviderClaude:
-		return claudeAgentBackend{}
+		// Claude runs on the sidecar; the tmux backend is gone.
+		return ompAgentBackend{}
 	case ProviderCodex:
 		return codexAgentBackend{}
 	case ProviderGrok:
@@ -579,10 +551,6 @@ func agentBackendForProvider(provider Provider) agentBackend {
 	default:
 		return errorAgentBackend{err: fmt.Errorf("unknown agent provider %q", provider)}
 	}
-}
-
-func (claudeAgentBackend) Capabilities() providerCapabilities {
-	return claudeProviderCapabilities()
 }
 
 func (codexAgentBackend) Capabilities() providerCapabilities {
@@ -626,52 +594,6 @@ func (b errorAgentBackend) Capabilities() providerCapabilities {
 
 func (b errorAgentBackend) StartAgent(agentStartRequest) (*agentStart, error) {
 	return nil, b.err
-}
-
-func claudeAgentOps() agentOps {
-	return agentOps{
-		// 🎯T601: a tmux Claude session must answer this from the pane.
-		// Leaving it unset made Agent.PromptInFlight() return a confident
-		// false for every Claude session — not "unknown", but "no turn is
-		// running" while one visibly was. A caller using that to decide
-		// whether an agent is wedged concludes the wrong thing precisely
-		// when a turn is long, which is when it matters.
-		promptInFlight: func(a *Agent) bool {
-			if a == nil || a.tmuxWindowID == "" {
-				return false
-			}
-			frame, err := tmuxagent.CapturePane(a.tmuxWindowID)
-			if err != nil {
-				return false
-			}
-			return tmuxagent.MatchTurnInProgress(frame)
-		},
-		attachCommand: func(a *Agent) string {
-			return fmt.Sprintf("tmux -S %s attach -t %s", tmuxagent.SocketPath(), a.tmuxWindowID)
-		},
-		interrupt: func(a *Agent) error {
-			return tmuxagent.SendEscape(a.tmuxWindowID)
-		},
-		send: func(a *Agent, msg string) error {
-			return tmuxagent.SendKeys(a.tmuxWindowID, msg)
-		},
-		resize: func(a *Agent, cols, rows uint16) error {
-			return tmuxagent.ResizeWindow(a.tmuxWindowID, cols, rows)
-		},
-		stop: func(a *Agent) {
-			tmuxagent.KillWindow(a.tmuxWindowID)
-			if a.tmuxCtrl != nil {
-				a.tmuxCtrl.Close()
-			}
-		},
-		switchModel: func(a *Agent, provider Provider, model string) error {
-			if err := sameProviderSwitch(a, provider); err != nil {
-				return err
-			}
-			// Claude Code: /model <alias|id> switches the live session model.
-			return tmuxagent.SendKeys(a.tmuxWindowID, "/model "+model)
-		},
-	}
 }
 
 // Start spawns a new agent for cfg.Provider. Claude uses a tmux-backed
@@ -952,13 +874,6 @@ func startWithBackendContext(ctx context.Context, cfg Config, backend agentBacke
 		a.termMu.Unlock()
 	}
 
-	// Store session ID on the window for crash-survival recovery.
-	if start.StoreSessionInWindow {
-		if err := tmuxagent.SetWindowOption(windowID, "claudia-session-id", sessionID); err != nil {
-			slog.Warn("failed to set session ID on tmux window", "err", err)
-		}
-	}
-
 	attach := ""
 	if a.ops.attachCommand != nil {
 		attach = a.AttachCommand()
@@ -992,18 +907,6 @@ func startWithBackendContext(ctx context.Context, cfg Config, backend agentBacke
 
 	if start.TailJSONL {
 		go a.tailJSONLFrom(tailFrom)
-	}
-	// Claude Session: poll capture-pane for provisional ⏺ preview (🎯T51).
-	if start.TailJSONL && windowID != "" {
-		a.tuiPreview = &tuiPreviewTracker{}
-		a.capturePane = func() (string, error) {
-			b, err := tmuxagent.CapturePane(a.tmuxWindowID)
-			if err != nil {
-				return "", err
-			}
-			return string(b), nil
-		}
-		go a.pollTUIPreview()
 	}
 
 	if start.DetectReady != nil {
@@ -1056,55 +959,6 @@ func sandboxPolicyRequested(c Config) bool {
 	return c.SandboxMode != "" || len(c.SandboxWritableRoots) > 0 || c.SandboxNetworkAccess || c.SandboxGitWrite || c.ApprovalPolicy != ""
 }
 
-func claudeSessionPrecheck(req agentStartRequest) error {
-	if sandboxPolicyRequested(req.Config) {
-		return capabilityRefusal(ProviderClaude, CapabilitySandboxPolicy, sandboxPolicyIsCodexOnlyReason)
-	}
-	return nil
-}
-
-func (claudeAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
-	if err := claudeSessionPrecheck(req); err != nil {
-		return nil, err
-	}
-	if err := checkTmux(); err != nil {
-		return nil, err
-	}
-
-	mcpArg, mcpCleanup, err := prepareClaudeMCPConfig(req.Config)
-	if err != nil {
-		return nil, fmt.Errorf("session mcp: %w", err)
-	}
-	args := claudeAgentArgsWithMCP(req, mcpArg)
-
-	windowName := tmuxagent.SessionWindowName(req.SessionID)
-	claudeBin, err := resolveClaudeBin()
-	if err != nil {
-		if mcpCleanup != nil {
-			mcpCleanup()
-		}
-		return nil, err
-	}
-	windowID, err := tmuxagent.SpawnWindow(req.WorkDir, windowName, claudeBin, args)
-	if err != nil {
-		if mcpCleanup != nil {
-			mcpCleanup()
-		}
-		return nil, fmt.Errorf("tmux spawn: %w", err)
-	}
-
-	start, err := attachClaudeWindow(windowID)
-	if err != nil {
-		tmuxagent.KillWindow(windowID)
-		if mcpCleanup != nil {
-			mcpCleanup()
-		}
-		return nil, err
-	}
-	start.Cleanup = mcpCleanup
-	return start, nil
-}
-
 // ErrNoSessionWindow is returned by [Adopt] when no live tmux window
 // belongs to the session. Callers that want drain semantics fall back
 // to [Start]; upgrade callers treat it as "this agent actually exited."
@@ -1135,54 +989,7 @@ func Adopt(cfg Config) (*Agent, error) {
 		// it does not mint a serve process.
 		return Start(cfg)
 	}
-	if provider != ProviderClaude && cfg.Provider != "" {
-		return nil, fmt.Errorf("%w: provider %s has no adopt path", ErrNoSessionWindow, provider)
-	}
-	return startWithBackend(cfg, adoptClaudeBackend{})
-}
-
-type adoptClaudeBackend struct{}
-
-func (adoptClaudeBackend) Capabilities() providerCapabilities {
-	return claudeProviderCapabilities()
-}
-
-func (adoptClaudeBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
-	if err := checkTmux(); err != nil {
-		return nil, err
-	}
-	if req.SessionID == "" {
-		return nil, ErrNoSessionWindow
-	}
-	ids, err := tmuxagent.WindowsForSession(req.SessionID)
-	if err != nil {
-		return nil, err
-	}
-	if len(ids) == 0 {
-		return nil, fmt.Errorf("%w: %s", ErrNoSessionWindow, req.SessionID)
-	}
-	return attachClaudeWindow(ids[0])
-}
-
-func attachClaudeWindow(windowID string) (*agentStart, error) {
-	if !tmuxagent.IsWindowAlive(windowID) {
-		return nil, fmt.Errorf("%w: window %s gone", ErrNoSessionWindow, windowID)
-	}
-	ctrl, err := tmuxagent.DialControl(windowID)
-	if err != nil {
-		return nil, fmt.Errorf("tmux control-mode: %w", err)
-	}
-	return &agentStart{
-		WindowID:             windowID,
-		WindowAlive:          tmuxagent.IsWindowAlive,
-		Control:              ctrl,
-		Ops:                  claudeAgentOps(),
-		TailJSONL:            true,
-		StoreSessionInWindow: true,
-		DetectReady: func(a *Agent) {
-			go a.detectReady()
-		},
-	}, nil
+	return nil, fmt.Errorf("%w: provider %s has no adopt path", ErrNoSessionWindow, provider)
 }
 
 // grokSessionPlan is everything the Grok Session path derives from a
@@ -2381,23 +2188,6 @@ func (a *Agent) Rewind(n int, cfg Config) (*Agent, error) {
 	return Start(cfg)
 }
 
-// detectReady polls capture-pane for Claude Code's idle input box
-// at the bottom of the rendered viewport. The empty-prompt-box regex
-// matches a horizontal rule, the ❯ prompt glyph, another horizontal
-// rule, and up to 5 trailing status lines.
-//
-// This replaces the earlier PTY-silence heuristic. The rendered-frame
-// approach is cleaner: it detects a fixed-point visual state rather
-// than inferring readiness from the absence of byte traffic.
-func (a *Agent) detectReady() {
-	defer close(a.ready)
-
-	_, err := tmuxagent.WaitReady(a.tmuxWindowID, readyPollInterval, readyOverallTimeout)
-	if err != nil {
-		a.readyErr = err
-	}
-}
-
 const termBufSize = 128 * 1024 // 128KB ring buffer
 
 func (a *Agent) pushTermOutput(data []byte) {
@@ -2548,30 +2338,6 @@ func (a *Agent) tailJSONLFrom(offset int64) {
 }
 
 const tuiPreviewPollInterval = 100 * time.Millisecond
-
-// pollTUIPreview periodically captures the Claude tmux pane and publishes
-// provisional ⏺ preview (and invariant fault) Events (🎯T51 / 🎯T51.4).
-func (a *Agent) pollTUIPreview() {
-	gen := a.backendGen.Load()
-	ticker := time.NewTicker(tuiPreviewPollInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ticker.C:
-			if a.backendGen.Load() != gen || !a.Alive() {
-				return
-			}
-			if a.capturePane == nil {
-				continue
-			}
-			frame, err := a.capturePane()
-			if err != nil {
-				continue
-			}
-			a.ObservePaneFrame(frame)
-		}
-	}
-}
 
 // ObservePaneFrame feeds a capture-pane frame into the Claude TUI preview
 // tracker and publishes resulting Events. Hermetic tests inject fixtures

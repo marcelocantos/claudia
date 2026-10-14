@@ -21,7 +21,8 @@ import (
 // Two things make it hard to erode. The scanner itself is a pure function with
 // its own table test below, covering both what must trip it and what must not
 // (an over-broad rule that flagged time.Unix would be abandoned within a week).
-// And the enrolment of pool.go is pinned by name, so quietly deleting its
+// And the enrolment of registry_seats.go is pinned by name (pool.go was,
+// until the tmux pool was removed), so quietly deleting its
 // marker fails rather than silently shrinking the guarded set.
 
 // policyRule is one banned construct plus the seam that replaces it.
@@ -102,7 +103,7 @@ var exemptFiles = map[string]map[string]bool{
 // failure mode for a guard like this — someone hits the rule, drops the marker,
 // and the guarded set silently shrinks to nothing. Naming the file here turns
 // that into a build failure.
-var pinnedPolicyFiles = []string{"pool.go"}
+var pinnedPolicyFiles = []string{"registry_seats.go"}
 
 // policyPaths returns every file the guard scans: this package (broker policy
 // by construction, minus the Clock seam) plus any file elsewhere in the repo

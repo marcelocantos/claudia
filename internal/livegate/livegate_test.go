@@ -89,7 +89,7 @@ func TestLiveTargetIsWhatMakeRuns(t *testing.T) {
 	}
 	// And each name the recipe spells survives as an alternative of its own.
 	alts := lt.Alternatives()
-	for _, want := range []string{"TestCrashSurvival$", "TestRewindSessionLive", "TestPoolCrashSurvival$", "TestGrokTaskRunSmoke"} {
+	for _, want := range []string{"TestRunHelper$", "TestRewindSessionLive", "TestGrokTaskRunSmoke"} {
 		if !slices.Contains(alts, want) {
 			t.Errorf("%s is not an alternative of its own in %q", want, alts)
 		}
@@ -224,7 +224,7 @@ func TestBrandNewProviderLiveSmoke(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		const escaped, swallowed = "TestCrashSurvival$$|", "TestCrashSurvival$|"
+		const escaped, swallowed = "TestRunHelper$$|", "TestRunHelper$|"
 		if !strings.Contains(string(mk), escaped) {
 			t.Fatalf("the Makefile no longer spells %s; this case needs a new specimen", escaped)
 		}
@@ -237,12 +237,12 @@ func TestBrandNewProviderLiveSmoke(t *testing.T) {
 	t.Run("two names fused into one", func(t *testing.T) {
 		// The expression as make delivered it before T111, should one ever
 		// reach Check by another road.
-		fused := LiveTarget{Run: strings.Replace(lt.Run, "TestCrashSurvival$|", "TestCrashSurvival", 1), Pkgs: lt.Pkgs}
+		fused := LiveTarget{Run: strings.Replace(lt.Run, "TestRunHelper$|", "TestRunHelper", 1), Pkgs: lt.Pkgs}
 		if fused.Run == lt.Run {
 			t.Fatal("nothing was fused; this case needs a new specimen")
 		}
 		vs := Check(c, fused, agents, x, reg)
-		for _, name := range []string{"TestCrashSurvival", "TestRewindSessionLive"} {
+		for _, name := range []string{"TestRunHelper", "TestRewindSessionLive"} {
 			if !mentions(vs, name, "make live") {
 				t.Errorf("%s is unreachable once fused and must be reported; got:\n%s", name, join(vs))
 			}
@@ -421,16 +421,12 @@ func TestLiveGateCensusReadsTheAwkwardForms(t *testing.T) {
 	for _, want := range []struct {
 		name, gate, why string
 	}{
-		{"TestT30LargePayloadSubmitsOnRealPath", "CLAUDIA_LIVE_SEND",
-			"gate named through a package constant, and no \"Live\" in the test's name"},
 		{"TestBrokerReclaimLiveBackends", "CLAUDIA_GROK_LIVE",
 			"gate is a field of a table-driven case, unresolvable without type information"},
 		{"TestLiveCodexTaskRun", "CLAUDIA_CODEX_LIVE",
 			"lives in a sub-package the live recipe once did not list"},
 		{"TestT96MeasureSilenceGrok", "CLAUDIA_GROK_LIVE",
 			"whole body is one call to a helper, with the gate passed as an argument"},
-		{"TestAcquireColdAndReturn", "CLAUDIA_LIVE",
-			"gate is read by a requireLive-style helper, which is how a whole file of live tests hid"},
 	} {
 		gates, ok := live[want.name]
 		if !ok {

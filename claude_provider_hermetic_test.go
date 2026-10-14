@@ -27,9 +27,6 @@ func TestClaudeProviderCapabilitiesClaimed(t *testing.T) {
 	if got := (claudeTaskBackend{}).Capabilities(); got != caps {
 		t.Errorf("claudeTaskBackend capabilities = %+v, want %+v", got, caps)
 	}
-	if got := (claudeAgentBackend{}).Capabilities(); got != caps {
-		t.Errorf("claudeAgentBackend capabilities = %+v, want %+v", got, caps)
-	}
 }
 
 func TestHermeticTaskRunClaudeToolUse(t *testing.T) {

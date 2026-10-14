@@ -34,12 +34,7 @@ func TestMain(m *testing.M) {
 	_ = os.Setenv("CLAUDIA_PLAN_CACHE", cache)
 	// A plan Flush in a test writes here, never the owner's file (🎯T143).
 	omp.UseTestDataPath(filepath.Join(cache, "plan-credentials.enc"))
-	// Every tmux seat the suite starts goes on a server of its own, so the
-	// fleet's pane census cannot reap a test window out from under a
-	// running assertion (🎯T77). See planTestTmuxSocket.
-	stopTmux := usePrivateTmuxServer()
 	code := m.Run()
-	stopTmux()
 	_ = os.RemoveAll(cache)
 	os.Exit(code)
 }

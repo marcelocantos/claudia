@@ -62,7 +62,7 @@ func TestNoTestControlEnvLeak(t *testing.T) {
 	b.WriteString("global environment, and this shell is an agent window that\n")
 	b.WriteString("inherited it. Check with:\n")
 	b.WriteString("\ttmux -S \"${CLAUDIA_TMUX_SOCKET:-$HOME/.local/state/claudia/tmux.sock}\" show-environment -g\n")
-	b.WriteString("Current claudia scrubs these on tmuxagent.EnsureServer; a window\n")
+	b.WriteString("Claudia no longer runs a tmux server; a window\n")
 	b.WriteString("opened before that guard landed keeps the stale environment until\n")
 	b.WriteString("it is replaced.\n")
 	t.Fatal(b.String())
