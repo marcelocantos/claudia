@@ -57,6 +57,9 @@ type SeatEvent struct {
 	Name string
 	// SessionID is the seat's session when the event was published.
 	SessionID string
+	// OldSessionID is set on SeatResumed when How is ResumeReminted: the
+	// conversation that could not be restored (jevons 🎯T861).
+	OldSessionID string
 	// How is set on SeatResumed.
 	How ResumeHow
 	// Err is set on SeatResumeFailed.
@@ -74,13 +77,36 @@ const DefaultRestartNudge = "[claudia] The host restarted at %s. This session wa
 	"something (a build, a test, another agent), check its state again before assuming it completed."
 
 // LostHistoryRestartNudge is what a relaunched seat is told when its
-// backend could not bring back its earlier conversation (jevons 🎯T929):
-// claiming a resumption there sends the seat back to work it no longer
-// knows about. %s is the restart time.
+// backend could not bring back its earlier conversation (jevons 🎯T929 /
+// 🎯T861): claiming a resumption there sends the seat back to work it no
+// longer knows about. %s is the restart time.
 const LostHistoryRestartNudge = "[claudia] The host restarted at %s, and this seat's earlier conversation could not be restored: " +
 	"you are starting without it. Anything you were doing before the restart is not in your context. " +
 	"Before continuing, reconstruct where things stand from durable state (the repository, its commits and its targets, " +
 	"your brief) or ask whoever gave you the work. Do not assume a build, test or tool call from before the restart finished."
+
+// LostHistoryRemintNudge is the 🎯T861 form used when ResumeAll had to mint a
+// fresh session because the saved conversation would not load. First %s is
+// the restart time; second %s is the dead session id. Naming the dead id is
+// load-bearing: without it the seat hunts for work that never existed under
+// a notice that claimed the transcript was restored.
+const LostHistoryRemintNudge = "[claudia] The host restarted at %s, and this seat's earlier conversation could not be restored: " +
+	"you are starting without it. The previous session id %s is gone and was not resumed. " +
+	"Anything you were doing before the restart is not in your context. " +
+	"Before continuing, reconstruct where things stand from durable state (the repository, its commits and its targets, " +
+	"your brief) or ask whoever gave you the work. Do not assume a build, test or tool call from before the restart finished. " +
+	"Do not hunt for in-flight work under the old session — there is none to resume."
+
+// FormatLostHistoryNudge builds the lost-history restart note. When
+// oldSession is non-empty (a remint), the dead session id is named
+// (jevons 🎯T861); otherwise the generic 🎯T929 wording is used.
+func FormatLostHistoryNudge(now time.Time, oldSession string) string {
+	ts := now.Format(time.RFC3339)
+	if oldSession != "" {
+		return fmt.Sprintf(LostHistoryRemintNudge, ts, oldSession)
+	}
+	return fmt.Sprintf(LostHistoryRestartNudge, ts)
+}
 
 const (
 	// NoRestartNudge as [ResumeArgs.Nudge] sends nothing.
@@ -288,10 +314,10 @@ func (r *Registry) ResumeAll(ctx context.Context, args *ResumeArgs) []ResumeOutc
 		nudge = fmt.Sprintf(DefaultRestartNudge, now.Format(time.RFC3339))
 	}
 	// A seat that came back without its conversation is told so, whatever
-	// the configured note says (jevons 🎯T929); NoRestartNudge still wins.
+	// the configured note says (jevons 🎯T929 / 🎯T861); NoRestartNudge still wins.
 	lostNudge := ""
 	if nudge != NoRestartNudge {
-		lostNudge = fmt.Sprintf(LostHistoryRestartNudge, now.Format(time.RFC3339))
+		lostNudge = FormatLostHistoryNudge(now, "")
 	}
 	pace := nudgePacer(r.seatClock(), args.NudgeSpacing)
 	conc := args.Concurrency
@@ -319,7 +345,7 @@ func (r *Registry) ResumeAll(ctx context.Context, args *ResumeArgs) []ResumeOutc
 			var once sync.Once
 			release := func() { once.Do(func() { <-sem }) }
 			defer release()
-			r.resumeSeat(ctx, &out[i], nudge, lostNudge, timeout, release, pace)
+			r.resumeSeat(ctx, &out[i], nudge, lostNudge, now, timeout, release, pace)
 		}()
 	}
 	wg.Wait()
@@ -328,7 +354,7 @@ func (r *Registry) ResumeAll(ctx context.Context, args *ResumeArgs) []ResumeOutc
 
 // resumeSeat brings one seat back. started is called once the seat is
 // running or has failed to start, before anything else is asked of it.
-func (r *Registry) resumeSeat(ctx context.Context, out *ResumeOutcome, nudge, lostNudge string, timeout time.Duration, started func(), pace func(context.Context) error) {
+func (r *Registry) resumeSeat(ctx context.Context, out *ResumeOutcome, nudge, lostNudge string, now time.Time, timeout time.Duration, started func(), pace func(context.Context) error) {
 	name := out.Name
 	launch := func() (*Agent, error) {
 		lctx, cancel := context.WithTimeout(ctx, timeout)
@@ -355,11 +381,23 @@ func (r *Registry) resumeSeat(ctx context.Context, out *ResumeOutcome, nudge, lo
 		return
 	}
 	out.How, out.Agent = how, proc
-	r.publishSeatEvent(SeatEvent{Kind: SeatResumed, Name: name, SessionID: proc.SessionID(), How: how, Agent: proc})
+	r.publishSeatEvent(SeatEvent{
+		Kind: SeatResumed, Name: name, SessionID: proc.SessionID(),
+		OldSessionID: out.OldSessionID, How: how, Agent: proc,
+	})
 	if how == ResumeAdopted || nudge == NoRestartNudge {
 		return
 	}
-	if proc.StartedWithoutHistory() && lostNudge != "" {
+	// A remint always lost its conversation — that is why it reminted.
+	// StartedWithoutHistory covers the OMP relaunch path (🎯T929). Either
+	// way the seat must not hear "resumed from its saved transcript" or
+	// "continue the task you were working on" (jevons 🎯T861 specimen
+	// jv-compact-1207c272).
+	if how == ResumeReminted {
+		// Re-stamp with the dead session id; lostNudge alone is the
+		// generic form without it.
+		nudge = FormatLostHistoryNudge(now, out.OldSessionID)
+	} else if proc.StartedWithoutHistory() && lostNudge != "" {
 		nudge = lostNudge
 	}
 	if err := pace(ctx); err != nil {

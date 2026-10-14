@@ -1942,8 +1942,17 @@ func (d *Daemon) onSeatEvent(ev claudia.SeatEvent) {
 			d.noteUnownedLocked(ev.Name)
 		}
 		d.mu.Unlock()
-		d.log.Info("seat resumed", "grant", ev.Name, "how", ev.How, "session", ev.SessionID)
-		d.emit(broker.EventMessage{Kind: broker.EventResume, Name: ev.Name, SessionID: ev.SessionID, Detail: string(ev.How), At: ev.At})
+		// 🎯T861: a remint names the dead session so the overseer can read
+		// the rotation without scraping the warn log alone.
+		detail := string(ev.How)
+		if ev.How == claudia.ResumeReminted && ev.OldSessionID != "" {
+			detail = string(ev.How) + " from " + ev.OldSessionID
+			d.log.Info("seat resumed", "grant", ev.Name, "how", ev.How,
+				"session", ev.SessionID, "old_session", ev.OldSessionID)
+		} else {
+			d.log.Info("seat resumed", "grant", ev.Name, "how", ev.How, "session", ev.SessionID)
+		}
+		d.emit(broker.EventMessage{Kind: broker.EventResume, Name: ev.Name, SessionID: ev.SessionID, Detail: detail, At: ev.At})
 	case claudia.SeatResumeFailed:
 		d.log.Warn("seat resume failed", "grant", ev.Name, "err", ev.Err)
 		d.emit(broker.EventMessage{Kind: broker.EventResumeFailed, Name: ev.Name, Detail: ev.Err.Error(), At: ev.At})

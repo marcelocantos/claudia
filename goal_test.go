@@ -262,3 +262,63 @@ func TestRegistryLaunchPassesGoal(t *testing.T) {
 		t.Fatalf("Launch Provider = %q", (*cfgs)[0].Provider)
 	}
 }
+
+// TestT741GrokChunkThenEmptyTerminalClosesGoal is 🎯T741: a Grok ACP turn
+// whose displayed text arrives as agent_message_chunk events, followed by
+// a terminal assistant event with empty Text (publishPromptResult's shape),
+// must still close the Session Goal when the chunks carry GOAL_STATUS:
+// complete. Without reading the accumulated displayed text, maybeContinueGoal
+// sees an empty goalTurn and issues a continuation.
+func TestT741GrokChunkThenEmptyTerminalClosesGoal(t *testing.T) {
+	agent, backend := startGoalAgent(t, "close when told")
+	if err := agent.Send("go"); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	// Streaming chunk shape from grok_acp agent_message_chunk: Text set,
+	// PreviewUpdateAppend, no StopReason yet.
+	publishIdleTurn(agent, backend, Event{
+		Type:          "assistant",
+		Text:          GoalStatusComplete,
+		PreviewUpdate: PreviewUpdateAppend,
+	})
+	// publishPromptResult terminal: empty Text, end_turn stopReason.
+	publishIdleTurn(agent, backend, Event{
+		Type:       "assistant",
+		Text:       "",
+		StopReason: "end_turn",
+	})
+	waitGoalSettle(t)
+	if n := len(backendSends(t, backend)); n != 1 {
+		t.Fatalf("sends = %d, want 1 (no continuation after GOAL_STATUS in chunk): %#v", n, backendSends(t, backend))
+	}
+	if agent.GoalActive() {
+		t.Fatal("GOAL_STATUS: complete in a Grok chunk must close the goal even when the terminal event has empty Text")
+	}
+}
+
+// TestT741OrdinaryChunkThenEmptyTerminalContinues is the control half of
+// 🎯T741: ordinary chunk text with no GOAL_STATUS must still continue.
+func TestT741OrdinaryChunkThenEmptyTerminalContinues(t *testing.T) {
+	agent, backend := startGoalAgent(t, "keep going")
+	if err := agent.Send("go"); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	publishIdleTurn(agent, backend, Event{
+		Type:          "assistant",
+		Text:          "still working on it",
+		PreviewUpdate: PreviewUpdateAppend,
+	})
+	publishIdleTurn(agent, backend, Event{
+		Type:       "assistant",
+		Text:       "",
+		StopReason: "end_turn",
+	})
+	waitGoalSettle(t)
+	sends := backendSends(t, backend)
+	if len(sends) != 2 {
+		t.Fatalf("sends = %d, want 2 (brief + continuation): %#v", len(sends), sends)
+	}
+	if !agent.GoalActive() {
+		t.Fatal("ordinary chunk text must leave the goal active")
+	}
+}
