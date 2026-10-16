@@ -229,8 +229,9 @@ test("accepted input survives cancelled pre-dispatch compaction without requirin
   history.persist();
   const model = createMockModel({ contextWindow: 60_000, handler: () => ({ content: ["ok"] }) });
   let compactions = 0;
+  const completed = Promise.withResolvers<void>();
   const agent = createSeatAgent({ provider: "mock", model: "mock", token: "t", cwd: dirname(storage.path), store: storage,
-    modelOverride: model, emit: () => {}, callTool: async () => "", maintenance: {
+    modelOverride: model, emit: e => { if (e.type === "receipt" && e.request_id === "A" && e.receipt?.state === "completed") completed.resolve(); }, callTool: async () => "", maintenance: {
       nativeEligible: () => false,
       compactImpl: (async (prep: any) => {
         compactions++;
@@ -245,7 +246,77 @@ test("accepted input survives cancelled pre-dispatch compaction without requirin
   expect(agent.receipt("A").state).toBe("accepted");
   expect(model.calls.length).toBe(0);
   await agent.prompt("new obligation", meta("A"));
+  await completed.promise;
   expect(model.calls.length).toBe(1);
   expect(model.calls[0].context.messages.filter(m => (m as any).claudiaRequest?.request_id === "A").length).toBe(1);
   expect(agent.receipt("A").state).toBe("completed");
+});
+
+test("abort and prompt drains wait for outer preparation and receipt cleanup", async () => {
+  const storage = store();
+  const history = new History(storage);
+  const large = "the quick brown fox jumps over the lazy dog. ".repeat(1200);
+  for (let i = 0; i < 8; i++) history.sync([
+    { role: "user", content: `${i}: ${large}`, timestamp: i * 2 },
+    { role: "assistant", content: [{ type: "text", text: "ok" }], api: "mock", provider: "mock", model: "mock", timestamp: i * 2 + 1,
+      usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop" } as AssistantMessage,
+  ]);
+  history.persist();
+  const preparing = Promise.withResolvers<void>();
+  const releasePreparation = Promise.withResolvers<void>();
+  const modelStarted = Promise.withResolvers<void>();
+  const releaseModel = Promise.withResolvers<void>();
+  const completed = Promise.withResolvers<void>();
+  const events: SeatEvent[] = [];
+  const finished = new Set<string>();
+  const model = createMockModel({ contextWindow: 60_000, handler: async () => {
+    if (model.calls.length === 1) {
+      modelStarted.resolve();
+      await releaseModel.promise;
+    }
+    return { content: ["ok"] };
+  } });
+  let preparations = 0;
+  const agent = createSeatAgent({ provider: "mock", model: "mock", token: "t", cwd: dirname(storage.path), store: storage,
+    modelOverride: model, emit: e => {
+      events.push(e);
+      if (e.type === "receipt" && e.receipt?.state === "completed") finished.add(e.request_id!);
+      if (finished.size === 3) completed.resolve();
+    }, callTool: async () => "", maintenance: {
+      nativeEligible: () => false,
+      compactImpl: (async (prep: any) => {
+        if (++preparations === 1) {
+          preparing.resolve();
+          await releasePreparation.promise;
+          throw new Error("cancelled preparation");
+        }
+        return { summary: "earlier work", firstKeptEntryId: prep.firstKeptEntryId, tokensBefore: prep.tokensBefore };
+      }) as never,
+    } });
+  const first = agent.prompt("A", meta("A"));
+  const rejected = first.then(() => undefined, error => error);
+  try {
+    await preparing.promise;
+    await agent.prompt("B", meta("B"));
+    agent.abort();
+    await agent.prompt("C", meta("C")); // The closed-digest gap must still queue.
+    await expect(agent.switchModel("mock", "other")).rejects.toThrow(/turn is running/);
+    await Bun.sleep(10);
+    expect(model.calls.length).toBe(0);
+    releasePreparation.resolve();
+    expect((await rejected)?.message).toBe("cancelled preparation");
+    await modelStarted.promise;
+    const bTurn = agent.receipt("B").turn_ids.at(-1)!;
+    expect(bTurn).not.toBe("turn-A");
+    expect(events.filter(e => e.type === "turn" && e.turn_id === bTurn)).toEqual([]);
+    releaseModel.resolve();
+    await completed.promise;
+    for (const id of ["A", "B", "C"]) expect(agent.receipt(id).state).toBe("completed");
+    const seen = model.calls.at(-1)!.context.messages.filter(m => m.role === "user").map(m => (m as any).claudiaRequest?.request_id).filter(Boolean);
+    expect(seen).toEqual(["B", "C", "A"]);
+  } finally {
+    releasePreparation.resolve();
+    releaseModel.resolve();
+    await first.catch(() => {});
+  }
 });

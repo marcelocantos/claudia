@@ -246,6 +246,7 @@ export function createSeatAgent(opts: {
   const pending = new Set<Parameters<typeof agent.steer>[0]>();
   let currentRequests = new Set<string>();
   const cancelledTurns = new Set<string>();
+  let turnDone: Promise<void> | undefined;
   const heldSteering: Parameters<typeof agent.steer>[0][] = [];
   const heldFollowUps: Parameters<typeof agent.followUp>[0][] = [];
 
@@ -341,7 +342,7 @@ export function createSeatAgent(opts: {
 
   // runTurn brackets one turn: digest, acceptance, the run itself, any
   // follow-ups left after it, and turn_end.
-  const runTurn = async (text: string, meta: PromptMeta | undefined, run: () => Promise<void>, accepted?: RequestReceipt) => {
+  const executeTurn = async (text: string, meta: PromptMeta | undefined, run: () => Promise<void>, accepted?: RequestReceipt) => {
     assertRestorableExecution();
     const metaSession = meta?.session_id || sessionId;
     turn = beginTurn({
@@ -472,6 +473,21 @@ export function createSeatAgent(opts: {
     sink.emit({ type: "turn_end", turn_id: turn.turn_id, snapshot: agent.state });
   };
 
+  // The engine can be idle while preparation or receipt cleanup is still
+  // running. Serialize that whole interval, including after abort closed the
+  // digest, so an earlier turn cannot overwrite the next turn's identity.
+  const runTurn = async (text: string, meta: PromptMeta | undefined, run: () => Promise<void>, accepted?: RequestReceipt) => {
+    if (turnDone) throw new Error("a turn is still unwinding");
+    let releaseTurn!: () => void;
+    turnDone = new Promise<void>(resolve => { releaseTurn = resolve; });
+    try {
+      await executeTurn(text, meta, run, accepted);
+    } finally {
+      turnDone = undefined;
+      releaseTurn();
+    }
+  };
+
   return {
     receipt: (requestId) => receipts.query(requestId),
     authRetry: (reply) => recovery.receive(reply),
@@ -481,7 +497,7 @@ export function createSeatAgent(opts: {
       const accepted = meta?.request_id ? receipts.accept(text, meta as typeof meta & { request_id: string; session_id: string }, "prompt") : undefined;
       if (accepted && !accepted.fresh) {
         sink.emit({ type: "accepted", request_id: meta!.request_id, rpc_id: meta?.rpc_id, receipt: accepted.receipt });
-        if (accepted.receipt.state === "accepted" && !retrying && !agent.state.isStreaming && (!turn || turn.closed) && agent.hasQueuedMessages()) {
+        if (accepted.receipt.state === "accepted" && !turnDone && !retrying && !agent.state.isStreaming && agent.hasQueuedMessages()) {
           await runTurn("", meta, () => agent.continue());
         }
         return;
@@ -493,7 +509,7 @@ export function createSeatAgent(opts: {
       // (2026-09-28, owner messages to a busy product owner). Checking the
       // agent too covers the gap after this turn closes while pi-agent-core
       // is still finishing, where prompt() throws AgentBusyError.
-      if (retrying || (turn && !turn.closed) || agent.state.isStreaming || agent.hasQueuedMessages()) {
+      if (turnDone || retrying || agent.state.isStreaming || agent.hasQueuedMessages()) {
         const enqueue = retrying ? (m: Parameters<typeof agent.followUp>[0]) => heldFollowUps.push(m) : (m: Parameters<typeof agent.followUp>[0]) => agent.followUp(m);
         enqueue(message);
         pending.add(message);
@@ -502,7 +518,7 @@ export function createSeatAgent(opts: {
         sink.emit({ type: "accepted", request_id: meta?.request_id, rpc_id: meta?.rpc_id, receipt: accepted?.receipt });
         // A terminal refusal leaves accepted inputs queued. A later prompt
         // joins behind them rather than jumping ahead via agent.prompt().
-        if (!retrying && !agent.state.isStreaming && (!turn || turn.closed)) {
+        if (!turnDone && !retrying && !agent.state.isStreaming) {
           await runTurn("", meta, () => agent.continue());
         }
         return;
@@ -524,6 +540,7 @@ export function createSeatAgent(opts: {
       sink.emit({ type: "accepted", request_id: meta?.request_id, rpc_id: meta?.rpc_id, receipt: accepted?.receipt });
     },
     abort: () => {
+      const interruptedTurn = turnDone ?? Promise.resolve();
       cancelled = true;
       if (turn && !turn.closed) cancelledTurns.add(turn.turn_id);
       recovery.cancel();
@@ -534,8 +551,9 @@ export function createSeatAgent(opts: {
       // queues survive abort; once the aborted run has unwound, run what is
       // queued as its own turn instead of leaving it for a later prompt.
       void agent.waitForIdle().then(async () => {
+        await interruptedTurn;
         await retryDone;
-        if (!agent.hasQueuedMessages() || agent.state.isStreaming || (turn && !turn.closed)) return;
+        if (!agent.hasQueuedMessages() || agent.state.isStreaming || turnDone) return;
         try {
           await runTurn("", { cause: "interrupt-deliver" }, () => agent.continue());
         } catch (err) {
@@ -545,7 +563,7 @@ export function createSeatAgent(opts: {
     },
     switchModel: async (provider: string, modelId: string) => {
       assertRestorableExecution();
-      if (agent.state.isStreaming || (turn && !turn.closed)) {
+      if (turnDone || agent.state.isStreaming) {
         throw new Error("switch refused: a turn is running");
       }
       await maint.switchModel((opts.resolveModelOverride ?? resolveModel)(provider, modelId));
