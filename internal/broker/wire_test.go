@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/marcelocantos/claudia/omp"
 )
 
 // This file is the class-1 half of 🎯T2.1's declared oracle (docs/broker-oracles.md):
@@ -48,6 +50,7 @@ type requestVector struct {
 
 // requestVectors is every client → broker message, in canonical form.
 var requestVectors = map[string]requestVector{
+	"receipt": {msg: &Request{ID: "rpc-receipt", Type: TypeReceipt, Receipt: &ReceiptRequest{Seat: "seat", SessionID: "session", RequestID: "logical-request"}}},
 	"spawn_minimal": {
 		msg: &Request{
 			ID: "r1", Type: TypeSpawn,
@@ -191,6 +194,7 @@ var requestVectors = map[string]requestVector{
 
 // responseVectors is every broker → client message, in canonical form.
 var responseVectors = map[string]*Response{
+	"receipt_result": {ID: "rpc-receipt", Type: TypeReceiptResult, Receipt: &omp.RequestReceipt{Seat: "seat", SessionID: "session", RequestID: "logical-request", State: omp.ReceiptUnknown, TurnIDs: []string{}, Reason: "not_found"}},
 	"spawned": {
 		ID: "r1", Type: TypeSpawned,
 		Spawned: &SpawnResponse{SessionID: "s-1", PID: 4242, Warm: false},

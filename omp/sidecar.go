@@ -15,13 +15,14 @@ import (
 
 // Verbs the broker sends. The sidecar streams Event messages back.
 const (
-	OpLoad   = "load"
-	OpAdopt  = "adopt"
-	OpPrompt = "prompt"
-	OpSteer  = "steer"
-	OpAbort  = "abort"
-	OpDrop   = "drop"
-	OpTool   = "tool_result"
+	OpLoad    = "load"
+	OpAdopt   = "adopt"
+	OpPrompt  = "prompt"
+	OpSteer   = "steer"
+	OpAbort   = "abort"
+	OpDrop    = "drop"
+	OpReceipt = "receipt"
+	OpTool    = "tool_result"
 	// OpToken sets a plan's access token for every seat on it (🎯T159).
 	// It carries Provider and Token and names no seat.
 	OpToken     = "token"
@@ -33,6 +34,8 @@ const (
 type Message struct {
 	Op        string `json:"op"`
 	RequestID string `json:"request_id,omitempty"`
+	RPCID     string `json:"rpc_id,omitempty"`
+	AttemptID string `json:"attempt_id,omitempty"`
 	ExpiresAt int64  `json:"expires_at,omitempty"`
 	Seat      string `json:"seat,omitempty"`
 	Provider  string `json:"provider,omitempty"`
@@ -80,12 +83,14 @@ type Sandbox struct {
 
 // Event is one sidecar line. Type turn_end carries a context snapshot.
 type Event struct {
-	RequestID   string `json:"request_id,omitempty"`
-	TurnID      string `json:"turn_id,omitempty"`
-	FailedToken string `json:"failed_token,omitempty"`
-	Seat        string `json:"seat,omitempty"`
-	Type        string `json:"type"`
-	How         string `json:"how,omitempty"`
+	RequestID   string          `json:"request_id,omitempty"`
+	RPCID       string          `json:"rpc_id,omitempty"`
+	Receipt     *RequestReceipt `json:"receipt,omitempty"`
+	TurnID      string          `json:"turn_id,omitempty"`
+	FailedToken string          `json:"failed_token,omitempty"`
+	Seat        string          `json:"seat,omitempty"`
+	Type        string          `json:"type"`
+	How         string          `json:"how,omitempty"`
 	// Restored, on a "ready" for a launched seat, says whether the sidecar
 	// brought back the seat's stored conversation (claudia 🎯T151, jevons
 	// 🎯T929). Absent from a sidecar that predates the store, which never did.
@@ -167,6 +172,33 @@ func (c *Conn) Send(msg Message) error {
 		return err
 	}
 	return c.w.Flush()
+}
+
+// SendContext bounds a write on a connection whose caller serializes writes.
+// It does not change the read deadline or close a model's event stream.
+func (c *Conn) SendContext(ctx context.Context, msg Message) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		if err := c.c.SetWriteDeadline(deadline); err != nil {
+			return err
+		}
+	}
+	interrupted := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() { _ = c.c.SetWriteDeadline(time.Now()); close(interrupted) })
+	err := c.Send(msg)
+	if !stop() {
+		<-interrupted
+	}
+	resetErr := c.c.SetWriteDeadline(time.Time{})
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if err != nil {
+		return err
+	}
+	return resetErr
 }
 
 func (c *Conn) Recv() (Event, error) {

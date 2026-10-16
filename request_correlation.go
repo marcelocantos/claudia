@@ -26,6 +26,11 @@ func (a *Agent) discardPendingRequestID(id string) {
 }
 
 func (a *Agent) correlateRequestLocked(ev *Event) {
+	// Sidecar receipts carry identity on the wire. A queued input may be
+	// absorbed by an existing turn, so no single FIFO/turn binding is valid.
+	if a.ops.explicitRequestIDs || ev.RequestID != "" {
+		return
+	}
 	if a.brokerGrant != "" || ev.TurnID == "" {
 		return
 	}

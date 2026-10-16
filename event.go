@@ -26,6 +26,8 @@ type Event struct {
 	// RequestID is the host-assigned identity of the logical send, independent
 	// of provider turn ids and broker RPC response ids.
 	RequestID string `json:"-"`
+	// Receipt is the durable per-request fact, independent of turn-level stops.
+	Receipt *RequestReceipt `json:"-"`
 
 	// Final is set by the daemon on the last answer fragment of a turn.
 	// Consumers must not infer finality from the fragment's text.

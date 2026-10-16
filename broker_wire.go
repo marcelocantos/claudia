@@ -22,32 +22,33 @@ import (
 
 // eventWire is Event, field for field, with wire tags.
 type eventWire struct {
-	Type          string   `json:"type"`
-	SessionID     string   `json:"session_id,omitempty"`
-	TurnID        string   `json:"turn_id,omitempty"`
-	RequestID     string   `json:"request_id,omitempty"`
-	Final         bool     `json:"final,omitempty"`
-	FragmentSeq   int      `json:"fragment_seq,omitempty"`
-	MessageID     string   `json:"message_id,omitempty"`
-	RecordID      string   `json:"record_id,omitempty"`
-	Raw           []byte   `json:"raw,omitempty"`
-	Text          string   `json:"text,omitempty"`
-	StopReason    string   `json:"stop_reason,omitempty"`
-	Usage         Usage    `json:"usage,omitzero"`
-	ProgressType  string   `json:"progress_type,omitempty"`
-	PreviewUpdate string   `json:"preview_update,omitempty"`
-	ToolCallID    string   `json:"tool_call_id,omitempty"`
-	ToolTitle     string   `json:"tool_title,omitempty"`
-	ToolStatus    string   `json:"tool_status,omitempty"`
-	Model         string   `json:"model,omitempty"`
-	IsError       bool     `json:"is_error,omitempty"`
-	FromProvider  Provider `json:"from_provider,omitempty"`
-	ToProvider    Provider `json:"to_provider,omitempty"`
-	FromModel     string   `json:"from_model,omitempty"`
-	Reason        string   `json:"reason,omitempty"`
-	WarningCodes  []string `json:"warning_codes,omitempty"`
-	StuckClass    string   `json:"stuck_class,omitempty"`
-	Truncated     bool     `json:"truncated,omitempty"`
+	Type          string          `json:"type"`
+	SessionID     string          `json:"session_id,omitempty"`
+	TurnID        string          `json:"turn_id,omitempty"`
+	RequestID     string          `json:"request_id,omitempty"`
+	Receipt       *RequestReceipt `json:"receipt,omitempty"`
+	Final         bool            `json:"final,omitempty"`
+	FragmentSeq   int             `json:"fragment_seq,omitempty"`
+	MessageID     string          `json:"message_id,omitempty"`
+	RecordID      string          `json:"record_id,omitempty"`
+	Raw           []byte          `json:"raw,omitempty"`
+	Text          string          `json:"text,omitempty"`
+	StopReason    string          `json:"stop_reason,omitempty"`
+	Usage         Usage           `json:"usage,omitzero"`
+	ProgressType  string          `json:"progress_type,omitempty"`
+	PreviewUpdate string          `json:"preview_update,omitempty"`
+	ToolCallID    string          `json:"tool_call_id,omitempty"`
+	ToolTitle     string          `json:"tool_title,omitempty"`
+	ToolStatus    string          `json:"tool_status,omitempty"`
+	Model         string          `json:"model,omitempty"`
+	IsError       bool            `json:"is_error,omitempty"`
+	FromProvider  Provider        `json:"from_provider,omitempty"`
+	ToProvider    Provider        `json:"to_provider,omitempty"`
+	FromModel     string          `json:"from_model,omitempty"`
+	Reason        string          `json:"reason,omitempty"`
+	WarningCodes  []string        `json:"warning_codes,omitempty"`
+	StuckClass    string          `json:"stuck_class,omitempty"`
+	Truncated     bool            `json:"truncated,omitempty"`
 }
 
 // EncodeEventWire is an Event in its daemon-protocol form (agent_event).
