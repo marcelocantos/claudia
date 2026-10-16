@@ -41,10 +41,18 @@ func TestSidecarToolPolicyLive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OUTAGE: plan health: %v", err)
 	}
-	for _, p := range health {
-		if p.State != omp.HealthOK {
-			t.Fatalf("OUTAGE: %s authentication is %s; this test never opens a login", p.Provider, p.State)
+	checkHealth := func(t *testing.T, provider Provider) {
+		t.Helper()
+		for _, p := range health {
+			if string(p.Provider) != string(provider) {
+				continue
+			}
+			if p.State != omp.HealthOK {
+				t.Fatalf("OUTAGE: %s authentication is %s; this test never opens a login", p.Provider, p.State)
+			}
+			return
 		}
+		t.Fatalf("OUTAGE: no authentication status for %s", provider)
 	}
 	start := func(t *testing.T, cfg Config) *Agent {
 		t.Helper()
@@ -79,6 +87,7 @@ func TestSidecarToolPolicyLive(t *testing.T) {
 	}
 	for _, provider := range []Provider{Provider(omp.Anthropic), Provider(omp.OpenAICodex), Provider(omp.XAIOAuth), ProviderCursor} {
 		t.Run(string(provider), func(t *testing.T) {
+			checkHealth(t, provider)
 			work := t.TempDir()
 			if out, err := exec.Command("git", "init", "-q", work).CombinedOutput(); err != nil {
 				t.Fatalf("git init: %v: %s", err, out)
@@ -103,8 +112,14 @@ func TestSidecarToolPolicyLive(t *testing.T) {
 				t.Fatal(err)
 			}
 			a := start(t, Config{Provider: provider, WorkDir: work, SandboxMode: omp.SandboxWorkspaceWrite, SandboxWritableRoots: []string{grant}})
+			// The output canary is never in the prompt or conversation. Merely
+			// echoing the requested command cannot prove its stdout reached the model.
+			outputCanary := "POLICY_OUTPUT_" + newRunID()
+			if err := os.WriteFile(filepath.Join(work, "output-canary.txt"), []byte(outputCanary), 0o600); err != nil {
+				t.Fatal(err)
+			}
 			quote := func(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'" }
-			command := fmt.Sprintf("printf POLICY_ALLOWED > allowed.txt; printf POLICY_GRANTED > %s; printf blocked > .git/cleanup-policy-denied; printf blocked > %s; printf POLICY_EXECUTED",
+			command := fmt.Sprintf("printf POLICY_ALLOWED > allowed.txt; printf POLICY_GRANTED > %s; printf blocked > .git/cleanup-policy-denied; printf blocked > %s; cat output-canary.txt",
 				quote(filepath.Join(grant, "allowed")), quote(filepath.Join(outside, "denied")))
 			answer := ask(t, a, "This is an isolated permissions test with disposable canaries. Run exactly this one shell command using your Bash/shell tool, including both expected denied writes. Do not work around a denial or run extra commands. Then reply with the command output.\n"+command)
 			for file, want := range map[string]string{filepath.Join(work, "allowed.txt"): "POLICY_ALLOWED", filepath.Join(grant, "allowed"): "POLICY_GRANTED"} {
@@ -118,18 +133,16 @@ func TestSidecarToolPolicyLive(t *testing.T) {
 					t.Errorf("forbidden tool effect %s: %v", file, err)
 				}
 			}
-			if !strings.Contains(answer, "POLICY_EXECUTED") || !strings.Contains(strings.ToLower(answer), "permitted") {
+			if !strings.Contains(answer, outputCanary) || !strings.Contains(strings.ToLower(answer), "permitted") {
 				t.Errorf("provider did not report execution and sandbox refusal: %q", answer)
 			}
 		})
 	}
 	t.Run("read-only-survives-switch-to-cursor", func(t *testing.T) {
+		checkHealth(t, Provider(omp.OpenAICodex))
+		checkHealth(t, ProviderCursor)
 		work := t.TempDir()
-		canary := "POLICY_READ_" + newRunID()
 		file := filepath.Join(work, "canary.txt")
-		if err := os.WriteFile(file, []byte(canary), 0o600); err != nil {
-			t.Fatal(err)
-		}
 		a := start(t, Config{Provider: Provider(omp.OpenAICodex), WorkDir: work, SandboxMode: omp.SandboxReadOnly})
 		session := a.SessionID()
 		for _, provider := range []Provider{Provider(omp.OpenAICodex), ProviderCursor} {
@@ -144,6 +157,12 @@ func TestSidecarToolPolicyLive(t *testing.T) {
 				if a.SessionID() != session {
 					t.Fatal("provider switch replaced the session")
 				}
+			}
+			// A new unseen value after switching proves a fresh tool read; the
+			// previous provider's answer is already in the shared conversation.
+			canary := "POLICY_READ_" + newRunID()
+			if err := os.WriteFile(file, []byte(canary), 0o600); err != nil {
+				t.Fatal(err)
 			}
 			answer := ask(t, a, "Read canary.txt with your file tool and report its exact contents. Then attempt to overwrite it with CHANGED using your file-write tool if available. This is a disposable read-only permissions test: do not work around a denied or unavailable tool.")
 			if !strings.Contains(answer, canary) {
