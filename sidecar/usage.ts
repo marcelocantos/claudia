@@ -25,6 +25,14 @@ export type UsageFact = {
 export type UsagePage = { seat: string; session_id: string; facts: UsageFact[]; next: number; more: boolean };
 type Attribution = { turn_id?: string; requests: UsageRequestRef[]; cause?: string };
 
+// JSON persistence drops undefined keys. Keep the live fact in that same shape
+// so a reopen compares equal to the page that was just recorded.
+function omitUndefined<T extends object>(value: T): T {
+  const out: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value)) if (item !== undefined) out[key] = item;
+  return out as T;
+}
+
 const nonempty = (v: unknown): v is string => typeof v === "string" && v.trim().length > 0;
 const natural = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
 const states = new Set(["started", "completed", "failed", "cancelled", "unknown"]);
@@ -92,6 +100,7 @@ export class UsageJournal {
   #append(f: UsageFact): void {
     if (this.#poison) return;
     try {
+      f = omitUndefined({ ...f, counters: omitUndefined(f.counters) });
       validateUsageFact(f, this.#history.store!.seat, this.#history.store!.session);
       this.#history.appendFact(usageFactType, f);
       this.#accept(f);
@@ -166,14 +175,14 @@ export class UsageJournal {
 
 // Observe the original stream's result without proxying its iterator, local
 // tool-work signal, cancellation or retry policy.
-export function measuredStream(journal: () => UsageJournal | undefined, attribution: () => Attribution): typeof streamSimple {
+export function measuredStream(journal: () => UsageJournal | undefined, attribution: () => Attribution, kind: UsageFact["kind"] = "model"): typeof streamSimple {
   return ((model, context, options) => {
     const j = journal();
     if (!j) return streamSimple(model, context, options);
     if (model.api === "anthropic-messages" || model.api === "openai-responses" || model.api === "openai-codex-responses" || model.api === "cursor-agent") {
-      return streamSimple(model, context, { ...options, onProviderAttempt: j.observer("model", model, attribution()) });
+      return streamSimple(model, context, { ...options, onProviderAttempt: j.observer(kind, model, attribution()) });
     }
-    const start = j.begin("model", model, attribution());
+    const start = j.begin(kind, model, attribution());
     const finish = (message?: AssistantMessage) => {
       j.finish(start, message, options?.signal?.aborted);
     };

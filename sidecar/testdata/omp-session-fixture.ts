@@ -67,13 +67,18 @@ agent.addBeforeModelCall(context => {
 });
 const tokens = new Map<string, string>();
 const tokenFor = (provider: string) => provider === model.provider ? token : tokens.get(provider);
-const adapter = await createOmpSession({ agent, sessionManager: manager, stateDir: root, tokenFor, sideStreamFn: streamSimple });
+const nativeCompactionOptions = () => {
+  throw new Error("native compaction is not part of this fixture");
+};
+const adapter = await createOmpSession({ agent, sessionManager: manager, stateDir: root, tokenFor, sideStreamFn: streamSimple, nativeCompactionOptions });
 let raw: InstanceType<typeof AgentSession> | undefined;
 try {
   await assert.rejects(createOmpSession({ agent: makeAgent(), sessionManager: SessionManager.inMemory(cwd),
-    stateDir: join(root, "wrong-root"), tokenFor, sideStreamFn: streamSimple }), /outside the explicit state root/);
+    stateDir: join(root, "wrong-root"), tokenFor, sideStreamFn: streamSimple, nativeCompactionOptions }), /outside the explicit state root/);
   await assert.rejects(createOmpSession({ agent: makeAgent(), sessionManager: SessionManager.inMemory(cwd),
-    stateDir: root, tokenFor, sideStreamFn: undefined! }), /requires an observed sideStreamFn/);
+    stateDir: root, tokenFor, sideStreamFn: undefined!, nativeCompactionOptions }), /requires an observed sideStreamFn/);
+  await assert.rejects(createOmpSession({ agent: makeAgent(), sessionManager: SessionManager.inMemory(cwd),
+    stateDir: root, tokenFor, sideStreamFn: streamSimple, nativeCompactionOptions: undefined! }), /requires observed native compaction options/);
   const auth = adapter.session.modelRegistry.authStorage;
   const hostileProviders = ["anthropic", "xai", "xai-oauth", "amazon-bedrock", "bedrock-mantle"];
   const assertNoCredential = async (provider: string) => {
@@ -168,7 +173,7 @@ const reopened = await OMPJournal.open({ ...journalOptions, requireResume: true 
 const restoredAgent = makeAgent();
 assert.equal(restoredAgent.state.messages.length, 0);
 const restored = await createOmpSession({ agent: restoredAgent, sessionManager: reopened.manager,
-  stateDir: root, tokenFor, sideStreamFn: streamSimple });
+  stateDir: root, tokenFor, sideStreamFn: streamSimple, nativeCompactionOptions });
 try {
   assert.equal(new ReceiptJournal(reopened).query("request-A").state, "completed");
   assert.equal(new ReceiptJournal(reopened).query("request-B").state, "completed");

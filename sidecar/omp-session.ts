@@ -9,6 +9,7 @@ import { copyPerCallContextMessage } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import type { AgentSessionConfig } from "@oh-my-pi/pi-coding-agent/session/agent-session-types";
 import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
 import type { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { getAgentDir, getBaseConfigRoot } from "@oh-my-pi/pi-utils/dirs";
@@ -51,11 +52,17 @@ export interface OmpSessionOptions {
   // Mandatory: compaction and other SDK side calls must use the host's
   // observed transport rather than silently defaulting to streamSimple.
   sideStreamFn: StreamFn;
+  // Native compaction dispatches outside sideStreamFn. Resolve its observer
+  // against the actual chosen candidate; attribution remains owned by the host.
+  // Mandatory: without it the SDK uses its default transport and the attempt
+  // never reaches the host's usage journal.
+  nativeCompactionOptions: NonNullable<AgentSessionConfig["nativeCompactionOptions"]>;
 }
 
 export async function createOmpSession(opts: OmpSessionOptions) {
   if (!isAbsolute(opts.stateDir)) throw new Error("OMP session stateDir must be absolute");
   if (typeof opts.sideStreamFn !== "function") throw new Error("OMP session requires an observed sideStreamFn");
+  if (typeof opts.nativeCompactionOptions !== "function") throw new Error("OMP session requires observed native compaction options");
   if (opts.agent.state.isStreaming) throw new Error("OMP session cannot adopt a running Agent");
   for (const dir of [getAgentDir(), getBaseConfigRoot()]) {
     const suffix = relative(opts.stateDir, dir);
@@ -125,6 +132,17 @@ export async function createOmpSession(opts: OmpSessionOptions) {
     // This private registry accepts only broker runtime tokens, never shell or
     // local configuration credential helpers.
     auth.setConfigValueResolver(async () => undefined);
+    // A provider token makes every bundled sibling look available. The SDK's
+    // compaction and promotion chains would then call a different catalog model
+    // at its own endpoint. The host's current model is the only authorized target.
+    const listAvailable = modelRegistry.getAvailable.bind(modelRegistry);
+    modelRegistry.getAvailable = (kind) => {
+      const models = listAvailable(kind);
+      const current = opts.agent.state.model;
+      if (!current) return models;
+      const selected = models.filter(model => model.provider === current.provider && model.id === current.id);
+      return selected.length > 0 ? selected : [current];
+    };
     // Direct construction does not perform the SDK factory's restore step.
     // The canonical manager owns context, including compaction and branching.
     opts.agent.replaceMessages(opts.sessionManager.buildSessionContext().messages);
@@ -147,6 +165,7 @@ export async function createOmpSession(opts: OmpSessionOptions) {
       mcpManagerToolNames: [],
       toolRegistry: new Map(opts.agent.state.tools.map(tool => [tool.name, tool])),
       sideStreamFn: opts.sideStreamFn,
+      nativeCompactionOptions: opts.nativeCompactionOptions,
       convertToLlm: convertOmpMessages,
     });
     let disposal: Promise<void> | undefined;
