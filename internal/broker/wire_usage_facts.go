@@ -4,8 +4,9 @@
 package broker
 
 import (
-	"github.com/marcelocantos/claudia/omp"
 	"strings"
+
+	"github.com/marcelocantos/claudia/omp"
 )
 
 const (
@@ -18,6 +19,9 @@ type UsageFactsRequest struct {
 	SessionID string `json:"session_id"`
 	After     uint64 `json:"after"`
 	Limit     int    `json:"limit"`
+	// Absolute caller deadline in Unix milliseconds. Zero is the legacy
+	// omitted value; the direct query still imposes the server maximum.
+	ExpiresAt int64 `json:"expires_at,omitempty"`
 }
 
 func (r *UsageFactsRequest) Validate() error {
@@ -26,6 +30,9 @@ func (r *UsageFactsRequest) Validate() error {
 	}
 	if r.Limit < 1 || r.Limit > omp.UsagePageLimit {
 		return &ProtocolError{Code: CodeUnsupportedValue, Field: "limit", Msg: "usage page limit must be bounded"}
+	}
+	if r.ExpiresAt < 0 {
+		return &ProtocolError{Code: CodeUnsupportedValue, Field: "expires_at", Msg: "usage query expiry must be nonnegative"}
 	}
 	return nil
 }

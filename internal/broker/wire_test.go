@@ -50,8 +50,9 @@ type requestVector struct {
 
 // requestVectors is every client → broker message, in canonical form.
 var requestVectors = map[string]requestVector{
-	"usage_facts": {msg: &Request{ID: "rpc-usage", Type: TypeUsageFacts, UsageFacts: &UsageFactsRequest{Seat: "seat", SessionID: "session", After: 3, Limit: 128}}},
-	"receipt":     {msg: &Request{ID: "rpc-receipt", Type: TypeReceipt, Receipt: &ReceiptRequest{Seat: "seat", SessionID: "session", RequestID: "logical-request"}}},
+	"usage_facts_deadline": {msg: &Request{ID: "rpc-usage-deadline", Type: TypeUsageFacts, UsageFacts: &UsageFactsRequest{Seat: "seat", SessionID: "session", After: 3, Limit: 128, ExpiresAt: goldenAt.UnixMilli()}}},
+	"usage_facts":          {msg: &Request{ID: "rpc-usage", Type: TypeUsageFacts, UsageFacts: &UsageFactsRequest{Seat: "seat", SessionID: "session", After: 3, Limit: 128}}},
+	"receipt":              {msg: &Request{ID: "rpc-receipt", Type: TypeReceipt, Receipt: &ReceiptRequest{Seat: "seat", SessionID: "session", RequestID: "logical-request"}}},
 	"spawn_minimal": {
 		msg: &Request{
 			ID: "r1", Type: TypeSpawn,
@@ -788,5 +789,18 @@ func TestEncodeRejectsUnknownType(t *testing.T) {
 	}
 	if _, err := (&Response{Type: "teleport"}).Encode(); err == nil {
 		t.Error("Response.Encode accepted an unknown type")
+	}
+}
+
+func TestUsageFactsDeadlineValidation(t *testing.T) {
+	for _, expiry := range []int64{0, goldenAt.UnixMilli()} {
+		request := &UsageFactsRequest{Seat: "seat", SessionID: "session", Limit: 128, ExpiresAt: expiry}
+		if err := request.Validate(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	request := &UsageFactsRequest{Seat: "seat", SessionID: "session", Limit: 128, ExpiresAt: -1}
+	if err := request.Validate(); err == nil {
+		t.Fatal("negative expiry accepted")
 	}
 }

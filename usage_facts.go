@@ -59,7 +59,11 @@ func queryUsage(ctx context.Context, q UsageQuery, direct bool) (*UsagePage, err
 }
 
 func queryBrokerUsage(ctx context.Context, b *brokerClient, q UsageQuery) (*UsagePage, error) {
-	resp, err := b.call(ctx, &broker.Request{Type: broker.TypeUsageFacts, UsageFacts: &broker.UsageFactsRequest{Seat: q.Seat, SessionID: q.SessionID, After: q.After, Limit: q.Limit}})
+	request := &broker.UsageFactsRequest{Seat: q.Seat, SessionID: q.SessionID, After: q.After, Limit: q.Limit}
+	if deadline, ok := ctx.Deadline(); ok {
+		request.ExpiresAt = deadline.UnixMilli()
+	}
+	resp, err := b.call(ctx, &broker.Request{Type: broker.TypeUsageFacts, UsageFacts: request})
 	if err != nil {
 		return nil, err
 	}

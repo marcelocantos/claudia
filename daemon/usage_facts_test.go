@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/marcelocantos/claudia"
 	"github.com/marcelocantos/claudia/omp"
@@ -62,11 +63,17 @@ func TestUsageQueryBrokerAndRemoteHandleNeverLoadsSeat(t *testing.T) {
 	f.boot(t, nil)
 	q := claudia.UsageQuery{Seat: "unloaded", SessionID: "old"}
 	for _, query := range []func(context.Context, claudia.UsageQuery) (*claudia.UsagePage, error){claudia.QueryUsageDirect, claudia.QueryUsage} {
-		page, err := query(context.Background(), q)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		deadline, _ := ctx.Deadline()
+		page, err := query(ctx, q)
+		cancel()
 		if err != nil || len(page.Facts) != 2 {
 			t.Fatalf("query: %+v %v", page, err)
 		}
 		msg := <-seen
+		if msg.ExpiresAt != deadline.UnixMilli() {
+			t.Fatalf("sidecar deadline=%d, caller deadline=%d", msg.ExpiresAt, deadline.UnixMilli())
+		}
 		if msg.Op != "usage" || msg.RPCID == "" || msg.SessionID != "old" || msg.Seat != "unloaded" || msg.Token != "" || msg.Provider != "" || msg.RequestID != "" {
 			t.Fatalf("query confused identities or loaded credentials: %+v", msg)
 		}

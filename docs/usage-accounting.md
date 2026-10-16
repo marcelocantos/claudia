@@ -35,8 +35,15 @@ detecting arbitrary historical edits after eviction or restart.
 
 The historical reader permits one concurrent cold scan, sharing it for the
 same session. Other cold queries receive an explicit busy error. It honors
-the caller's forwarded deadline/disconnect with a ten-second server maximum,
+the forwarded deadline and sidecar-connection disconnect with a ten-second
+server maximum,
 checking between asynchronous 64 KiB reads and bounded record processing.
+The original caller expiry crosses the broker unchanged, rather than starting
+a fresh timeout there. Early broker-client cancellation does not introduce a
+new cancellation protocol: outstanding sidecar work remains bounded by that
+forwarded expiry. Filesystem stat/open/read completion is cooperative:
+a blocked OS operation itself cannot be preempted by this deadline; the reader
+checks it again when that operation returns.
 Resource ceilings are 256 MiB of journal bytes, 8 MiB per JSONL record,
 50,000 facts, 16 MiB of charged projection memory, and an eight-session LRU
 cache capped at 32 MiB charged memory. Charge is four times encoded fact

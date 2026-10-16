@@ -235,6 +235,31 @@ test("real unloaded sidecar usage route honors deadlines and keeps the seat unlo
     expect(ready).toBe(true);
     const expired = await ask({ op: "usage", seat: "seat", session_id: "session", expires_at: Date.now() - 1 });
     expect(expired.type).toBe("error"); expect(expired.text).toContain("deadline");
+    // Both requests enter the actual server on one socket batch. A cold
+    // usage read must yield before its response, allowing an unrelated
+    // control route to answer first. The former synchronous load answered
+    // usage first and held the second route behind the entire transcript.
+    const order = await new Promise<Record<string, any>[]>((resolve, reject) => {
+      const c = connect(sock, () => c.write([
+        { op: "usage", seat: "seat", session_id: "session", rpc_id: "cold-usage", limit: 128 },
+        { op: "abort", seat: "absent", rpc_id: "control" },
+      ].map(v => JSON.stringify(v) + "\n").join("")));
+      const out: Record<string, any>[] = []; let text = "";
+      c.setTimeout(3000, () => c.destroy(new Error("concurrent sidecar query timed out")));
+      c.on("error", reject);
+      c.on("data", chunk => {
+        text += chunk.toString();
+        let nl: number;
+        while ((nl = text.indexOf("\n")) >= 0) {
+          out.push(JSON.parse(text.slice(0, nl))); text = text.slice(nl + 1);
+          if (out.length === 2) { c.end(); resolve(out); }
+        }
+      });
+    });
+    expect(order.map(e => e.rpc_id)).toEqual(["control", "cold-usage"]);
+    expect(order[0].text).toBe("seat is not loaded");
+    expect(order[1].type).toBe("usage_page");
+    expect(order[1].usage_page.facts).toEqual(f.facts.slice(0, 128));
     const facts: UsageFact[] = [];
     for (let after = 0; after < f.facts.length; after += 128) {
       const result = await ask({ op: "usage", seat: "seat", session_id: "session", after, limit: 128, expires_at: Date.now() + 3000 });
