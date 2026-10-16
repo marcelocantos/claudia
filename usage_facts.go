@@ -7,7 +7,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"reflect"
 	"strings"
 
 	"github.com/marcelocantos/claudia/internal/broker"
@@ -20,6 +19,14 @@ type UsageRequestRef = omp.UsageRequestRef
 type UsagePage = omp.UsagePage
 
 const UsagePageLimit = omp.UsagePageLimit
+
+// ValidateUsageTransition returns whether a validated incoming fact should
+// replace the previous projection. False means harmless replay; errors reject
+// invalid evidence. A nil previous permits a first-seen terminal observation.
+// See omp.ValidateUsageTransition for identity and external routing semantics.
+func ValidateUsageTransition(previous, incoming *UsageFact) (apply bool, err error) {
+	return omp.ValidateUsageTransition(previous, incoming)
+}
 
 type UsageQuery struct {
 	Seat, SessionID string
@@ -144,19 +151,13 @@ func (a *Agent) applyUsageFactLocked(ev *Event) (bool, error) {
 		a.usageCalls = map[string]UsageFact{}
 	}
 	key := f.Seat + "\x00" + f.SessionID + "\x00" + f.CallID
+	var previous *UsageFact
 	if old, exists := a.usageCalls[key]; exists {
-		if f.Seq < old.Seq {
-			return false, nil
-		}
-		if f.Seq == old.Seq {
-			if !reflect.DeepEqual(old, *f) {
-				return false, fmt.Errorf("usage fact conflicts with recorded identity")
-			}
-			return false, nil
-		}
-		if old.State != "started" || f.State == "started" || old.Coverage != f.Coverage || old.CounterSource != f.CounterSource || old.InvocationID != f.InvocationID || old.ProviderAttemptID != f.ProviderAttemptID || old.StartedAt != f.StartedAt || old.Provider != f.Provider || old.Model != f.Model || old.Kind != f.Kind || old.TurnID != f.TurnID || old.Cause != f.Cause || !reflect.DeepEqual(old.Requests, f.Requests) {
-			return false, fmt.Errorf("usage fact has invalid invocation transition")
-		}
+		previous = &old
+	}
+	apply, err := ValidateUsageTransition(previous, f)
+	if err != nil || !apply {
+		return false, err
 	}
 	// Keep an independent copy: an event subscriber may mutate its payload.
 	data, err := json.Marshal(f)

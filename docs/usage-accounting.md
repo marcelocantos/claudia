@@ -60,6 +60,17 @@ local diagnostic admission limits, not an established economical profile for
 provider context maintenance. Regression tests independently vary fact count
 and conversation bytes and measure actual source reads and warm pages.
 
+`ValidateUsageTransition(previous, incoming)` is the library-owned projection
+contract shared by the SDK and external consumers. It validates both facts
+without modifying them. `apply=true` means insert or replace the latest fact;
+`false, nil` means an exact duplicate or an older started observation replayed
+after its terminal fact. An error rejects invalid evidence, changed immutable
+identity, or conflicting terminal observations. A nil previous permits a
+first-seen terminal fact, so spool arrival before historical replay is safe.
+Callers still bind the first fact to the expected seat/session and make their
+own projection and cursor writes transactional. They must not maintain their
+own mutable-field exclusions or add full snapshots on replay.
+
 Counters and estimated dollars are optional. An absent counter is unknown;
 a present zero can represent a measured zero in the typed contract. The
 unpatched backends observe positive adapter-normalized counters because

@@ -314,3 +314,16 @@ func TestUsageConflictsRemainErrorsAndDoNotAdvanceReplay(t *testing.T) {
 		t.Fatal("foreign empty page accepted")
 	}
 }
+
+func TestUsageProjectionRejectsForeignIdentityInOlderReplay(t *testing.T) {
+	start := UsageFact{Seq: 1, CallID: "physical", ProviderAttemptID: "physical", InvocationID: "invocation", Seat: "seat", SessionID: "generation", Kind: "model", State: "started", Provider: "cursor", Model: "fixture", Requests: []UsageRequestRef{{RequestID: "logical", AttemptID: "delivery"}}, StartedAt: "2026-10-16T01:00:00Z", CounterSource: "provider_reported", Coverage: "provider_attempt"}
+	final := start
+	final.Seq, final.State, final.FinishedAt = 2, "completed", "2026-10-16T01:00:01Z"
+	a := &Agent{sessionID: "generation", startCfg: Config{Name: "seat"}}
+	a.publishEvent(Event{Type: "usage", UsageFact: &final})
+	start.InvocationID = "foreign-invocation"
+	a.publishEvent(Event{Type: "usage", UsageFact: &start})
+	if a.UsageError() == nil {
+		t.Fatal("older replay bypassed immutable usage identity validation")
+	}
+}
