@@ -64,7 +64,7 @@ a present zero can represent a measured zero in the typed contract. The
 unpatched backends observe positive adapter-normalized counters because
 the adapters synthesize zero defaults. They declare
 `counter_source: adapter_normalized_positive`, `coverage: engine_invocation`.
-Patched Anthropic Messages and generic Responses instead declare
+Patched Anthropic Messages, generic Responses and Codex Responses instead declare
 `counter_source: provider_reported`, `coverage: provider_attempt`, and retain
 explicit raw zero fields. No zero-valued default is promoted to evidence.
 Context size is separate
@@ -85,8 +85,14 @@ disjoint counters; inclusive totals and availability stay in typed facts.
 The reproducible Bun patch of `@oh-my-pi/pi-ai@18.2.11` adds one neutral
 observer at physical fetch dispatch and raw usage parser boundaries. It
 does not alter retries, consume bodies independently, or store another
-ledger. Anthropic and generic Responses include HTTP errors, stream
+ledger. Anthropic, generic Responses and Codex include HTTP errors, stream
 errors, transport retries and otherwise discarded empty-success retries.
+Codex also observes each WebSocket `response.create` send and its validated
+incoming frames. Socket reconnects, HTTP fallback and compressed-request
+fallback retain separate physical IDs within the same engine invocation.
+Connection handshakes and prewarming before any inference request are not
+counted as model calls. Reused-socket response guards run before accounting,
+so stale or foreign response frames cannot bill the next request.
 Their physical facts replace the engine aggregate, so the two scopes are
 never both counted for the same invocation. Historical invocation-only
 records retain their original scope. Anthropic native compaction and local
@@ -103,10 +109,13 @@ Negative, nonfinite or unsafe counters are refused and reported as
 The observer neither retries calls nor changes admission. The shared
 History's existing terminal-persistence errors remain errors.
 
-This is still a partial lower bound, not complete usage reporting. Codex
-and Cursor transport attempts, OpenAI/Codex native compaction, and raw
-availability for their counters remain open. The new raw fixtures prove
-the Anthropic and generic Responses seams, not every optional upstream
+This is still a partial lower bound, not complete usage reporting. Cursor
+transport attempts, OpenAI/Codex native compaction, and raw availability
+for their counters remain open. Codex native compaction shares transport
+helpers but its engine caller does not yet carry the accounting observer;
+the helper's instrumentation does not establish end-to-end coverage there.
+The raw fixtures prove the Anthropic, generic Responses and Codex seams,
+not every optional upstream
 transport, custom client or provider extension. Responses orchestration and
 other vendor-specific usage extensions are not fully normalized here;
 unproven fields stay absent. Missing raw cache dimensions remain unknown.

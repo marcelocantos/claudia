@@ -13,5 +13,11 @@ cache details: fresh/cache counts must remain unknown; total input stays 12.
 The empty successful response consumed 10 input and 1 output even though the
 adapter's normal policy retries it and discards its assistant message.
 
+The Codex tests consume the same Responses bytes through its independent
+SSE and WebSocket adapters. WebSocket fixtures use the frozen data frames
+as messages, including stale/interleaved response variants; HTTP fixtures
+also exercise 429 retry and compressed-request rejection. No live server
+or provider connection is involved.
+
 Fixtures establish parser behavior and accounting conservation, not that a
 real provider is available or that every provider response supplies these fields.

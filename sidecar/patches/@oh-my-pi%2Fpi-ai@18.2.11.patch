@@ -1,3 +1,6 @@
+diff --git a/node_modules/@oh-my-pi/pi-ai/.bun-tag-774b716bf9837e6f b/.bun-tag-774b716bf9837e6f
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
 diff --git a/dist/types/types.d.ts b/dist/types/types.d.ts
 index 4e933cd3190eca48213a94828fdd30dfaad4cbab..6f71524db8241134be3944f870d7142d60536653 100644
 --- a/dist/types/types.d.ts
@@ -129,6 +132,140 @@ index c2941dc97e6add3882d9fa3197e78b1a8397334e..ac8bcbe28efab141dabb8f41fe643033
  			for (const block of output.content) {
  				if (block.type === "toolCall") clearStreamingPartialJson(block);
  			}
+diff --git a/src/providers/openai-codex-responses.ts b/src/providers/openai-codex-responses.ts
+index 9552ad5284d80a1f780460e46fbb8549076a3e1a..5c522e340ae7690f1db751b131a6d13bd1dbf231 100644
+--- a/src/providers/openai-codex-responses.ts
++++ b/src/providers/openai-codex-responses.ts
+@@ -1,3 +1,4 @@
++import { beginProviderAttempt, providerAttempts } from "../utils/provider-attempt";
+ import { scheduler } from "node:timers/promises";
+ import { type } from "@oh-my-pi/omptype";
+ import { calculateCost } from "@oh-my-pi/pi-catalog/models";
+@@ -134,6 +135,7 @@ import {
+ 	mapOpenAIResponsesStopReason,
+ 	normalizeOpenAIPromptCacheKey,
+ 	populateResponsesUsageFromResponse,
++	observedResponsesUsage,
+ 	promoteResponsesToolUseStopReason,
+ 	type SequentialCutoffSummaryState,
+ } from "./openai-shared";
+@@ -1847,6 +1849,7 @@ async function openCodexWebSocketTransport(
+ 		},
+ 		requestSetup.requestSignal,
+ 		onSseEvent,
++		options?.onProviderAttempt,
+ 	);
+ 	return {
+ 		eventStream,
+@@ -1913,6 +1916,7 @@ async function openCodexSseTransport(
+ 				options?.codexSseMaxAttempts,
+ 				event => options?.onSseEvent?.(event, model),
+ 				options?.fetch,
++				options?.onProviderAttempt,
+ 			),
+ 		);
+ 	};
+@@ -3798,6 +3802,7 @@ class CodexWebSocketConnection {
+ 		timeouts: CodexWebSocketRequestTimeouts,
+ 		signal?: AbortSignal,
+ 		onSseEvent?: (event: RawSseEvent) => void,
++		onProviderAttempt?: StreamOptions["onProviderAttempt"],
+ 	): AsyncGenerator<Record<string, unknown>> {
+ 		if (!this.#socket || this.#socket.readyState !== WebSocket.OPEN) {
+ 			throw new CodexWebSocketTransportError(`websocket connection is unavailable`);
+@@ -3828,6 +3833,8 @@ class CodexWebSocketConnection {
+ 		};
+ 		if (signal) signal.addEventListener("abort", onAbort, { once: true });
+ 
++		let accounting: ReturnType<typeof beginProviderAttempt> | undefined;
++		let accountingState: "completed" | "failed" | "cancelled" | undefined;
+ 		try {
+ 			const debugSession = isRequestDebugEnabled()
+ 				? await createRequestDebugSession({
+@@ -3857,6 +3864,7 @@ class CodexWebSocketConnection {
+ 				throw new CodexWebSocketTransportError(`websocket connection is unavailable`);
+ 			}
+ 			try {
++				if (onProviderAttempt) accounting = beginProviderAttempt(onProviderAttempt);
+ 				socket.send(requestPayload);
+ 			} catch (error) {
+ 				throw new CodexWebSocketTransportError(
+@@ -3966,6 +3974,7 @@ class CodexWebSocketConnection {
+ 					lastProgressAt = lastEventAt;
+ 					lastProgressEventType = lastEventType;
+ 				}
++				accountingState = observeCodexAttempt(next, (counters, id) => accounting?.observe(counters, id, true)) ?? accountingState;
+ 				yield next;
+ 				if (
+ 					eventType === "response.completed" ||
+@@ -3978,6 +3987,7 @@ class CodexWebSocketConnection {
+ 				}
+ 			}
+ 		} finally {
++			accounting?.finish(accountingState ?? (signal?.aborted ? "cancelled" : "failed"));
+ 			this.#activeRequest = false;
+ 			this.#streamObserver = undefined;
+ 			if (signal) {
+@@ -4269,7 +4279,10 @@ async function openCodexSseEventStream(
+ 	codexSseMaxAttempts: number | undefined,
+ 	onSseEvent?: OpenAICodexResponsesOptions["onSseEvent"],
+ 	fetchOverride?: FetchImpl,
++	onProviderAttempt?: StreamOptions["onProviderAttempt"],
+ ): Promise<AsyncGenerator<Record<string, unknown>>> {
++	const attempts = providerAttempts({ onProviderAttempt });
++	const observedFetch = attempts.wrapFetch(fetchOverride) ?? fetch;
+ 	const headers = createCodexHeaders(
+ 		requestHeaders,
+ 		accountId,
+@@ -4292,7 +4305,7 @@ async function openCodexSseEventStream(
+ 	const fetchAttempt: FetchImpl = async (input, init) => {
+ 		let response: Response | undefined;
+ 		try {
+-			response = await (fetchOverride ?? fetch)(input, init);
++			response = await observedFetch(input, init);
+ 			return response;
+ 		} finally {
+ 			// A successful streaming body is governed by the iterator-level idle
+@@ -4380,11 +4393,23 @@ async function openCodexSseEventStream(
+ 	}
+ 	updateCodexSessionMetadataFromHeaders(turnState, state, response.headers);
+ 	if (!response.body) {
++		attempts.close("failed");
+ 		throw new CodexProviderStreamError("No response body", false);
+ 	}
+-	return readSseJson<Record<string, unknown>>(response.body, signal, event =>
++	const decoded = readSseJson<Record<string, unknown>>(response.body, signal, event =>
+ 		onSseEvent?.({ event: event.event, data: event.data, raw: [...event.raw] }, undefined),
+ 	);
++	return (async function* () {
++		let terminal: "completed" | "failed" | "cancelled" | undefined;
++		try {
++			for await (const event of decoded) {
++				terminal = observeCodexAttempt(event, (counters, id) => attempts.observe(response, counters, id, true)) ?? terminal;
++				yield event;
++			}
++		} finally {
++			attempts.finish(response, terminal ?? (signal?.aborted ? "cancelled" : "failed"));
++		}
++	})();
+ }
+ 
+ function createCodexHeaders(
+@@ -4901,3 +4926,14 @@ function formatCodexErrorEvent(rawEvent: Record<string, unknown>, code: string,
+ 		return "Codex error event";
+ 	}
+ }
++
++/** Raw usage is observed before terminal errors can be discarded by recovery. */
++function observeCodexAttempt(event: Record<string, unknown>, observe: (counters: import("../types").ProviderAttemptCounters, id?: string) => void): "completed" | "failed" | "cancelled" | undefined {
++ const response = asRecord(event.response);
++ const usage = asRecord(response?.usage);
++ if (usage) observe(observedResponsesUsage(usage), typeof response?.id === "string" ? response.id : undefined);
++ if (event.type === "error" || event.type === "response.failed" || response?.status === "failed") return "failed";
++ if (response?.status === "cancelled") return "cancelled";
++ if (event.type === "response.completed" || event.type === "response.done" || event.type === "response.incomplete") return "completed";
++ return undefined;
++}
 diff --git a/src/providers/openai-responses.ts b/src/providers/openai-responses.ts
 index 9668d84834e68357a3bec3c679729a1350e9fcbb..8c31fe1605c42f0c34784f0e92b2cecf491fa431 100644
 --- a/src/providers/openai-responses.ts
@@ -193,7 +330,7 @@ index 9668d84834e68357a3bec3c679729a1350e9fcbb..8c31fe1605c42f0c34784f0e92b2cecf
  			const capturedErrorResponse = error instanceof OpenAIHttpError ? error.captured : undefined;
  			const result = await AIError.finalize(error, {
 diff --git a/src/providers/openai-shared.ts b/src/providers/openai-shared.ts
-index 14ae4bbe2f649597a8446e9b196cde98ad182f03..f9e326f022d574857617a23b300194ed7a664a59 100644
+index 14ae4bbe2f649597a8446e9b196cde98ad182f03..5e78cdf584276f511b441ece7217e2c7b1390801 100644
 --- a/src/providers/openai-shared.ts
 +++ b/src/providers/openai-shared.ts
 @@ -2864,6 +2864,7 @@ function getOpenAIResponsesTerminalEvent(event: ResponseStreamEvent): OpenAIResp
@@ -226,7 +363,7 @@ index 14ae4bbe2f649597a8446e9b196cde98ad182f03..f9e326f022d574857617a23b300194ed
  }
 +
 +/** Presence-aware disjoint buckets. An absent cache subset cannot prove fresh input. */
-+function observedResponsesUsage(raw: Parameters<typeof populateResponsesUsageFromResponse>[1]): import("../types").ProviderAttemptCounters {
++export function observedResponsesUsage(raw: Parameters<typeof populateResponsesUsageFromResponse>[1]): import("../types").ProviderAttemptCounters {
 + const c: import("../types").ProviderAttemptCounters = {};
 + if (!raw) return c;
 + if (raw.input_tokens != null && raw.input_tokens_details?.orchestration_input_tokens == null) c.total_input_tokens = raw.input_tokens;
@@ -285,54 +422,70 @@ index 1090054a2cfcd19968820b8fcde855bca8ea8fed..d0946a77aa2925d23b5b93cb11c463f9
  	 * providers apply this budget twice when they can: once to the underlying
 diff --git a/node_modules/@oh-my-pi/pi-ai/src/utils/provider-attempt.ts b/src/utils/provider-attempt.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..817816aacc6babcb3ba34780331d2e768031fa43
+index 0000000000000000000000000000000000000000..cce4240b5c042d241bae2d333dd5d2e93892c102
 --- /dev/null
 +++ b/src/utils/provider-attempt.ts
-@@ -0,0 +1,47 @@
+@@ -0,0 +1,63 @@
 +import type { FetchImpl, ProviderAttemptObservation, ProviderAttemptCounters, StreamOptions } from "../types";
++
++/** One physical dispatch. Observers cannot change provider control flow. */
++export function beginProviderAttempt(observer?: StreamOptions["onProviderAttempt"]) {
++ const event: ProviderAttemptObservation = { id: crypto.randomUUID(), state: "started", startedAt: new Date().toISOString(), counters: {} };
++ let settled = false;
++ const emit = (value: ProviderAttemptObservation) => {
++  try { observer?.(structuredClone(value)); } catch { /* Accounting errors never retry a request. */ }
++ };
++ emit(event);
++ return {
++  requestId(value: string | undefined) { event.requestId = value; },
++  counters(): ProviderAttemptCounters { return { ...event.counters }; },
++  observe(counters: ProviderAttemptCounters, responseId?: string, replace = false) {
++   if (settled) return;
++   event.counters = replace ? { ...counters } : { ...event.counters, ...counters };
++   if (responseId) event.responseId = responseId;
++  },
++  finish(state: "completed" | "failed" | "cancelled") {
++   if (settled) return;
++   settled = true;
++   emit({ ...event, state, finishedAt: new Date().toISOString() });
++  },
++ };
++}
 +
 +/** Observation only: never consumes a body or changes retries/dispatch. */
 +export function providerAttempts(options?: StreamOptions) {
-+	const pending = new Map<Response, ProviderAttemptObservation>();
-+	const emit = (event: ProviderAttemptObservation) => {
-+		try { options?.onProviderAttempt?.(structuredClone(event)); } catch { /* Observer failure cannot retry a request. */ }
-+	};
-+	const finish = (response: Response, state: "completed" | "failed" | "cancelled") => {
-+		const event = pending.get(response);
-+		if (!event) return;
-+		pending.delete(response);
-+		emit({ ...event, state, finishedAt: new Date().toISOString() });
-+	};
-+	return {
-+		wrapFetch(fetchImpl: FetchImpl | undefined): FetchImpl | undefined {
-+			if (!options?.onProviderAttempt) return fetchImpl;
-+			return (async (input, init) => {
-+				const event: ProviderAttemptObservation = { id: crypto.randomUUID(), state: "started", startedAt: new Date().toISOString(), counters: {} };
-+				emit(event);
-+				try {
-+					const response = await (fetchImpl ?? globalThis.fetch)(input, init);
-+					event.requestId = response.headers.get("request-id") ?? response.headers.get("x-request-id") ?? undefined;
-+					pending.set(response, event);
-+					if (!response.ok) finish(response, "failed");
-+					return response;
-+				} catch (error) {
-+					emit({ ...event, state: init?.signal?.aborted ? "cancelled" : "failed", finishedAt: new Date().toISOString() });
-+					throw error;
-+				}
-+			}) as FetchImpl;
-+		},
-+		counters(response: Response | undefined): ProviderAttemptCounters {
-+			return { ...(response && pending.get(response)?.counters) };
-+		},
-+		observe(response: Response | undefined, counters: ProviderAttemptCounters, responseId?: string, replace = false) {
-+			const event = response && pending.get(response);
-+			if (!event) return;
-+			event.counters = replace ? { ...counters } : { ...event.counters, ...counters };
-+			if (responseId) event.responseId = responseId;
-+		},
-+		finish,
-+		close(state: "completed" | "failed" | "cancelled") {
-+			for (const response of pending.keys()) finish(response, state);
-+		},
-+	};
++ const pending = new Map<Response, ReturnType<typeof beginProviderAttempt>>();
++ const finish = (response: Response, state: "completed" | "failed" | "cancelled") => {
++  const attempt = pending.get(response);
++  if (!attempt) return;
++  pending.delete(response); attempt.finish(state);
++ };
++ return {
++  wrapFetch(fetchImpl: FetchImpl | undefined): FetchImpl | undefined {
++   if (!options?.onProviderAttempt) return fetchImpl;
++   return (async (input, init) => {
++    const attempt = beginProviderAttempt(options.onProviderAttempt);
++    try {
++     const response = await (fetchImpl ?? globalThis.fetch)(input, init);
++     attempt.requestId(response.headers.get("request-id") ?? response.headers.get("x-request-id") ?? undefined);
++     pending.set(response, attempt);
++     if (!response.ok) finish(response, "failed");
++     return response;
++    } catch (error) {
++     attempt.finish(init?.signal?.aborted ? "cancelled" : "failed");
++     throw error;
++    }
++   }) as FetchImpl;
++  },
++  counters(response: Response | undefined): ProviderAttemptCounters {
++   return response ? pending.get(response)?.counters() ?? {} : {};
++  },
++  observe(response: Response | undefined, counters: ProviderAttemptCounters, responseId?: string, replace = false) {
++   if (response) pending.get(response)?.observe(counters, responseId, replace);
++  },
++  finish,
++  close(state: "completed" | "failed" | "cancelled") {
++   for (const response of pending.keys()) finish(response, state);
++  },
++ };
 +}

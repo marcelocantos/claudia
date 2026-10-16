@@ -168,7 +168,7 @@ export function measuredStream(journal: () => UsageJournal | undefined, attribut
   return ((model, context, options) => {
     const j = journal();
     if (!j) return streamSimple(model, context, options);
-    if (model.api === "anthropic-messages" || model.api === "openai-responses") {
+    if (model.api === "anthropic-messages" || model.api === "openai-responses" || model.api === "openai-codex-responses") {
       return streamSimple(model, context, { ...options, onProviderAttempt: j.observer("model", model, attribution()) });
     }
     const start = j.begin("model", model, attribution());
@@ -192,7 +192,7 @@ export function measuredStream(journal: () => UsageJournal | undefined, attribut
 export function measuredCompletion(journal: () => UsageJournal | undefined, attribution: () => Attribution, complete: typeof completeSimple = completeSimple): typeof completeSimple {
   return (async (model, context, options) => {
     const j = journal();
-    if (j && (model.api === "anthropic-messages" || model.api === "openai-responses")) {
+    if (j && (model.api === "anthropic-messages" || model.api === "openai-responses" || model.api === "openai-codex-responses")) {
       return complete(model, context, { ...options, onProviderAttempt: j.observer("compaction", model, attribution()) });
     }
     const start = j?.begin("compaction", model, attribution());

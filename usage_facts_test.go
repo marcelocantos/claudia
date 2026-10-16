@@ -20,7 +20,7 @@ func usageFixture(t *testing.T) (*UsagePage, string, string) {
 	return usageProducerFixture(t, "sidecar/testdata/usage-producer.ts")
 }
 
-func usageProducerFixture(t *testing.T, script string) (*UsagePage, string, string) {
+func usageProducerFixture(t *testing.T, script string, args ...string) (*UsagePage, string, string) {
 	t.Helper()
 	bun, err := exec.LookPath("bun")
 	if err != nil {
@@ -31,7 +31,7 @@ func usageProducerFixture(t *testing.T, script string) (*UsagePage, string, stri
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(root) })
-	cmd := exec.Command(bun, script, root)
+	cmd := exec.Command(bun, append([]string{script, root}, args...)...)
 	raw, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("actual producer: %v: %s", err, raw)
@@ -44,6 +44,50 @@ func usageProducerFixture(t *testing.T, script string) (*UsagePage, string, stri
 		t.Fatal(err)
 	}
 	return &page, root, bun
+}
+
+func TestUsageCodexPhysicalProducerAndBrokerReplay(t *testing.T) {
+	page, _, _ := usageProducerFixture(t, "sidecar/testdata/provider-usage-producer.ts", "codex")
+	if len(page.Facts) != 4 {
+		t.Fatalf("missing Codex physical retry: %+v", page.Facts)
+	}
+	first, second := page.Facts[1], page.Facts[3]
+	if first.State != "failed" || first.Counters != (UsageCounters{}) || second.State != "completed" || first.InvocationID != second.InvocationID || first.ProviderAttemptID == second.ProviderAttemptID || second.Coverage != "provider_attempt" || second.Provider != "openai-codex" {
+		t.Fatalf("Codex attempts conflated: %+v", page.Facts)
+	}
+	_, a, _, peer, events := receiptPipe(t)
+	a.mu.Lock()
+	a.sessionID, a.startCfg.Name = "generation", "seat"
+	a.mu.Unlock()
+	b := &Agent{sessionID: "generation", startCfg: Config{Name: "seat"}}
+	for _, fact := range page.Facts {
+		replyReceipt(t, peer, omp.Event{Type: "usage", Seat: "seat", UsageFact: &fact})
+		select {
+		case ev := <-events:
+			if ev.Type != "usage" || !reflect.DeepEqual(ev.UsageFact, &fact) {
+				t.Fatalf("socket changed Codex fact: %+v", ev)
+			}
+			raw, err := EncodeEventWire(ev)
+			if err != nil {
+				t.Fatal(err)
+			}
+			decoded, err := DecodeEventWire(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(decoded.UsageFact, &fact) {
+				t.Fatal("broker changed Codex fact")
+			}
+			b.publishEvent(decoded)
+			b.publishEvent(decoded)
+		case <-time.After(5 * time.Second):
+			t.Fatal("missing Codex accounting event")
+		}
+	}
+	want := Usage{InputTokens: 21, OutputTokens: 4, CacheReadInputTokens: 7}
+	if a.Usage() != want || b.Usage() != want {
+		t.Fatalf("Codex aggregate counted twice: %v %v", a.Usage(), b.Usage())
+	}
 }
 
 func TestUsagePhysicalProducerSocketAndBrokerPreserveRetries(t *testing.T) {

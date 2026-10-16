@@ -9,13 +9,15 @@ import { createSeatAgent } from "../seat.ts";
 import { SeatStore } from "../store.ts";
 
 const root = process.argv[2];
-const model = { ...getBundledModel("xai-oauth", "grok-4.3")!, baseUrl: "https://fixture.invalid" };
+const codex = process.argv[3] === "codex";
+const model = { ...getBundledModel(codex ? "openai-codex" : "xai-oauth", codex ? "gpt-5.5" : "grok-4.3")!, baseUrl: "https://fixture.invalid", preferWebsockets: false };
 let calls = 0;
 globalThis.fetch = (async (input: string | URL | Request) => {
   const url = input instanceof Request ? input.url : String(input);
   if (!url.startsWith("https://fixture.invalid/")) throw new Error("unexpected fixture URL");
   calls++;
   if (calls > 2) throw new Error("unexpected additional fixture request");
+  if (codex && calls === 1) return new Response('{"error":{"message":"fixture overload"}}', { status: 429, headers: { "retry-after": "0" } });
   const path = calls === 1 ? "response-empty.sse" : "responses.sse";
   return new Response(readFileSync(join(import.meta.dir, "provider-usage", path), "utf8"), {
     headers: { "content-type": "text/event-stream", "x-request-id": `http-${calls}` },
