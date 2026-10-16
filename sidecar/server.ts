@@ -254,6 +254,9 @@ async function handle(
     setPlanToken(msg.provider ?? "", msg.token ?? "");
     return;
   }
+  if ((msg.op === "load" || msg.op === "adopt") && msg.require_resume && !msg.session_id) {
+    throw Object.assign(new Error("required resume needs an explicit session identity"), { reason: "seat_identity_mismatch" });
+  }
   if (msg.op === "adopt") {
     // A seat that is not already running is not created (🎯T869). ResumeAll
     // treats that as a miss and launches, and only the launch is nudged.

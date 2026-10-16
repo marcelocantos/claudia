@@ -102,6 +102,23 @@ func TestSeatResumeActualSidecarDirectAndBroker(t *testing.T) {
 				if p == "" && a.Provider() != claudia.ProviderClaude {
 					t.Fatalf("default provider=%s", a.Provider())
 				}
+				for _, op := range []string{omp.OpLoad, omp.OpAdopt} {
+					c, err := net.Dial("unix", socket)
+					if err != nil {
+						t.Fatal(err)
+					}
+					_ = c.SetDeadline(time.Now().Add(5 * time.Second))
+					if err := json.NewEncoder(c).Encode(omp.Message{Op: op, Seat: name, RequireResume: true, Token: "fixture"}); err != nil {
+						c.Close()
+						t.Fatal(err)
+					}
+					var ev omp.Event
+					err = json.NewDecoder(c).Decode(&ev)
+					c.Close()
+					if err != nil || ev.Type != "error" || ev.Reason != "seat_identity_mismatch" || ev.ResumeChecked {
+						t.Fatalf("required %s without generation: %+v %v", op, ev, err)
+					}
+				}
 				// A matching already-loaded generation may be adopted even before its
 				// first turn; this is not permission to recreate it after it disappears.
 				adopted, err := claudia.Adopt(claudia.Config{Name: name, SessionID: "generation", Provider: p, WorkDir: root, TermLogPath: "-"})
