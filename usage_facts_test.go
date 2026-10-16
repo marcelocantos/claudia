@@ -46,6 +46,50 @@ func usageProducerFixture(t *testing.T, script string, args ...string) (*UsagePa
 	return &page, root, bun
 }
 
+func TestUsageCursorProtocolProducerAndBrokerReplay(t *testing.T) {
+	page, _, _ := usageProducerFixture(t, "sidecar/testdata/provider-usage-producer.ts", "cursor")
+	if len(page.Facts) != 2 {
+		t.Fatalf("missing Cursor Run observation: %+v", page.Facts)
+	}
+	fact := page.Facts[1]
+	if fact.State != "completed" || fact.Counters != (UsageCounters{}) || fact.ProtocolTokenDeltaTotal == nil || *fact.ProtocolTokenDeltaTotal != 7 || fact.ContextTokens == nil || *fact.ContextTokens != 23 || fact.Coverage != "provider_attempt" || fact.Provider != "cursor" {
+		t.Fatalf("Cursor observation conflated with consumption: %+v", fact)
+	}
+	_, a, _, peer, events := receiptPipe(t)
+	a.mu.Lock()
+	a.sessionID, a.startCfg.Name = "generation", "seat"
+	a.mu.Unlock()
+	b := &Agent{sessionID: "generation", startCfg: Config{Name: "seat"}}
+	for _, fact := range page.Facts {
+		replyReceipt(t, peer, omp.Event{Type: "usage", Seat: "seat", UsageFact: &fact})
+		select {
+		case ev := <-events:
+			if ev.Type != "usage" || !reflect.DeepEqual(ev.UsageFact, &fact) {
+				t.Fatalf("socket changed Cursor fact: %+v", ev)
+			}
+			raw, err := EncodeEventWire(ev)
+			if err != nil {
+				t.Fatal(err)
+			}
+			decoded, err := DecodeEventWire(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(decoded.UsageFact, &fact) {
+				t.Fatal("broker changed Cursor fact")
+			}
+			b.publishEvent(decoded)
+			b.publishEvent(decoded)
+		case <-time.After(5 * time.Second):
+			t.Fatal("missing Cursor accounting event")
+		}
+	}
+	want := Usage{}
+	if a.Usage() != want || b.Usage() != want {
+		t.Fatalf("Cursor protocol observations entered consumption: %v %v", a.Usage(), b.Usage())
+	}
+}
+
 func TestUsageCodexPhysicalProducerAndBrokerReplay(t *testing.T) {
 	page, _, _ := usageProducerFixture(t, "sidecar/testdata/provider-usage-producer.ts", "codex")
 	if len(page.Facts) != 4 {

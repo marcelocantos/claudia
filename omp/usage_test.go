@@ -32,9 +32,10 @@ func TestUsageAvailabilityAndBoundaryValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	for label, mutate := range map[string]func(*UsageFact){
-		"foreign session": func(f *UsageFact) { f.SessionID = "other" },
-		"negative":        func(f *UsageFact) { n := int64(-1); f.Counters.InputTokens = &n },
-		"unsafe integer":  func(f *UsageFact) { n := int64(1 << 53); f.Counters.InputTokens = &n },
+		"foreign session":   func(f *UsageFact) { f.SessionID = "other" },
+		"negative":          func(f *UsageFact) { n := int64(-1); f.Counters.InputTokens = &n },
+		"negative protocol": func(f *UsageFact) { n := int64(-1); f.ProtocolTokenDeltaTotal = &n },
+		"unsafe integer":    func(f *UsageFact) { n := int64(1 << 53); f.Counters.InputTokens = &n },
 		"nonfinite cost": func(f *UsageFact) {
 			n := math.Inf(1)
 			f.APIEquivalentCostUSD = &n
@@ -154,5 +155,17 @@ func TestUsageProviderAttemptIdentityAndInclusiveInput(t *testing.T) {
 				t.Fatal("invalid physical observation accepted")
 			}
 		})
+	}
+}
+
+func TestUsageProtocolDeltaAvailability(t *testing.T) {
+	for _, raw := range []string{`{"protocol_token_delta_total":0}`, `{}`} {
+		var fact UsageFact
+		if err := json.Unmarshal([]byte(raw), &fact); err != nil {
+			t.Fatal(err)
+		}
+		if (fact.ProtocolTokenDeltaTotal == nil) != (raw == `{}`) {
+			t.Fatal("protocol omitted and zero values collapsed")
+		}
 	}
 }

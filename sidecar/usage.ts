@@ -17,7 +17,7 @@ export type UsageFact = {
   provider: string; model: string; turn_id?: string; requests: UsageRequestRef[];
   invocation_id?: string; provider_attempt_id?: string; provider_request_id?: string; provider_response_id?: string;
   cause?: string; started_at: string; finished_at?: string;
-  counters: UsageCounters; context_tokens?: number; api_equivalent_cost_usd?: number;
+  counters: UsageCounters; context_tokens?: number; protocol_token_delta_total?: number; api_equivalent_cost_usd?: number;
   counter_source: "adapter_normalized_positive" | "provider_reported"; cost_source?: "provider_adapter_estimate";
   // One stream/completion invocation can hide several transport attempts.
   coverage: "engine_invocation" | "provider_attempt";
@@ -47,17 +47,18 @@ export function validateUsageFact(value: unknown, seat: string, session: string)
   for (const [key, n] of Object.entries(f.counters)) {
     if (!counterKeys.has(key) || !natural(n)) throw new Error("usage journal: invalid counter");
   }
+  if (f.protocol_token_delta_total !== undefined && !natural(f.protocol_token_delta_total)) throw new Error("usage journal: invalid protocol delta total");
   if (f.context_tokens !== undefined && !natural(f.context_tokens)) throw new Error("usage journal: invalid context size");
   if (f.api_equivalent_cost_usd !== undefined && (!Number.isFinite(f.api_equivalent_cost_usd) || f.api_equivalent_cost_usd < 0 || f.cost_source !== "provider_adapter_estimate")) throw new Error("usage journal: invalid cost estimate");
   if (f.state !== "started" && (!f.finished_at || !Number.isFinite(Date.parse(f.finished_at)) || Date.parse(f.finished_at) < Date.parse(f.started_at))) throw new Error("usage journal: invalid completion time");
-  if (f.state === "started" && (Object.keys(f.counters).length || f.finished_at || f.context_tokens !== undefined || f.api_equivalent_cost_usd !== undefined)) throw new Error("usage journal: unsettled invocation has counters");
+  if (f.state === "started" && (Object.keys(f.counters).length || f.finished_at || f.context_tokens !== undefined || f.protocol_token_delta_total !== undefined || f.api_equivalent_cost_usd !== undefined)) throw new Error("usage journal: unsettled invocation has counters");
   return f;
 }
 
 export function validateUsageTransition(f: UsageFact, next: number, old?: UsageFact): void {
   if (f.seq !== next) throw new Error("usage journal: discontinuous sequence");
   if ((!old && f.state !== "started") || (old && (old.state !== "started" || f.state === "started" ||
-      JSON.stringify({ ...old, seq: 0, state: "", counters: {} }) !== JSON.stringify({ ...f, seq: 0, state: "", counters: {}, finished_at: undefined, context_tokens: undefined, api_equivalent_cost_usd: undefined, cost_source: undefined, provider_request_id: undefined, provider_response_id: undefined })))) {
+      JSON.stringify({ ...old, seq: 0, state: "", counters: {} }) !== JSON.stringify({ ...f, seq: 0, state: "", counters: {}, finished_at: undefined, context_tokens: undefined, protocol_token_delta_total: undefined, api_equivalent_cost_usd: undefined, cost_source: undefined, provider_request_id: undefined, provider_response_id: undefined })))) {
     throw new Error("usage journal: conflicting invocation transition");
   }
 }
@@ -135,7 +136,7 @@ export class UsageJournal {
       if (!start) { this.#fail("provider attempt finished without a start"); return; }
       starts.delete(event.id);
       this.#append({ ...start, seq: this.#facts.length + 1, state: event.state, finished_at: event.finishedAt,
-        counters: structuredClone(event.counters), provider_request_id: event.requestId, provider_response_id: event.responseId });
+        counters: structuredClone(event.counters), context_tokens: event.contextTokens, protocol_token_delta_total: event.protocolTokenDeltaTotal, provider_request_id: event.requestId, provider_response_id: event.responseId });
     };
   }
 
@@ -168,7 +169,7 @@ export function measuredStream(journal: () => UsageJournal | undefined, attribut
   return ((model, context, options) => {
     const j = journal();
     if (!j) return streamSimple(model, context, options);
-    if (model.api === "anthropic-messages" || model.api === "openai-responses" || model.api === "openai-codex-responses") {
+    if (model.api === "anthropic-messages" || model.api === "openai-responses" || model.api === "openai-codex-responses" || model.api === "cursor-agent") {
       return streamSimple(model, context, { ...options, onProviderAttempt: j.observer("model", model, attribution()) });
     }
     const start = j.begin("model", model, attribution());
@@ -192,7 +193,7 @@ export function measuredStream(journal: () => UsageJournal | undefined, attribut
 export function measuredCompletion(journal: () => UsageJournal | undefined, attribution: () => Attribution, complete: typeof completeSimple = completeSimple): typeof completeSimple {
   return (async (model, context, options) => {
     const j = journal();
-    if (j && (model.api === "anthropic-messages" || model.api === "openai-responses" || model.api === "openai-codex-responses")) {
+    if (j && (model.api === "anthropic-messages" || model.api === "openai-responses" || model.api === "openai-codex-responses" || model.api === "cursor-agent")) {
       return complete(model, context, { ...options, onProviderAttempt: j.observer("compaction", model, attribution()) });
     }
     const start = j?.begin("compaction", model, attribution());

@@ -13,9 +13,10 @@ original acceptance attempt IDs; one call can absorb several inputs, and
 one input can require many model calls. A transport `rpc_id` identifies only
 a query. Neither the owner request nor the turn is an accounting dedup key.
 Physical observations also carry `invocation_id` for the enclosing engine
-call and `provider_attempt_id` for one actual HTTP dispatch. The latter is
-the `call_id`, never a host delivery attempt. Provider-returned request and
-response IDs are optional diagnostics, not dedup keys.
+call and `provider_attempt_id` for one actual provider dispatch. The latter is
+the `call_id`, never a host delivery attempt. Provider request and response IDs are optional diagnostics, not dedup keys.
+Cursor records its client-generated wire request header; other adapters may
+record a provider-returned ID. Neither replaces the physical attempt ID.
 
 `QueryUsage(ctx, UsageQuery{Seat, SessionID, After, Limit})` reads a bounded
 page without loading an agent or accessing credentials. `Next` is the next
@@ -64,7 +65,7 @@ a present zero can represent a measured zero in the typed contract. The
 unpatched backends observe positive adapter-normalized counters because
 the adapters synthesize zero defaults. They declare
 `counter_source: adapter_normalized_positive`, `coverage: engine_invocation`.
-Patched Anthropic Messages, generic Responses and Codex Responses instead declare
+Patched Anthropic Messages, generic Responses, Codex Responses and Cursor instead declare
 `counter_source: provider_reported`, `coverage: provider_attempt`, and retain
 explicit raw zero fields. No zero-valued default is promoted to evidence.
 Context size is separate
@@ -93,6 +94,19 @@ fallback retain separate physical IDs within the same engine invocation.
 Connection handshakes and prewarming before any inference request are not
 counted as model calls. Reused-socket response guards run before accounting,
 so stale or foreign response frames cannot bill the next request.
+Cursor observes each HTTP/2 `AgentService/Run` dispatch, including the
+existing discovered-model retry. This is a client-dispatch census: one Run
+can contain server-owned model/tool activity whose individual billed calls
+are not exposed. Cursor leaves billed counters and estimated dollars absent.
+`context_tokens` preserves an explicitly present checkpoint `usedTokens`;
+`protocol_token_delta_total` sums explicitly present `TokenDeltaUpdate.tokens`
+fields. Neither enters `Agent.Usage()`, consumption totals, or budgets.
+Presence-only protobuf views avoid promoting decoder defaults to known zeros.
+Token-delta frames contain no sequence or update identity: equal increments
+and replayed frames cannot be distinguished. This field counts observed wire
+deltas, not unique generated tokens, and never merges separate Run attempts.
+It does not establish a billing equivalence or hidden-server-call coverage.
+
 Their physical facts replace the engine aggregate, so the two scopes are
 never both counted for the same invocation. Historical invocation-only
 records retain their original scope. Anthropic native compaction and local
@@ -109,8 +123,8 @@ Negative, nonfinite or unsafe counters are refused and reported as
 The observer neither retries calls nor changes admission. The shared
 History's existing terminal-persistence errors remain errors.
 
-This is still a partial lower bound, not complete usage reporting. Cursor
-transport attempts, OpenAI/Codex native compaction, and raw availability
+This is still partial evidence, not complete usage reporting. Cursor billed
+usage and hidden server calls, OpenAI/Codex native compaction, and raw availability
 for their counters remain open. Codex native compaction shares transport
 helpers but its engine caller does not yet carry the accounting observer;
 the helper's instrumentation does not establish end-to-end coverage there.

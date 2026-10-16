@@ -1,11 +1,8 @@
-diff --git a/node_modules/@oh-my-pi/pi-ai/.bun-tag-774b716bf9837e6f b/.bun-tag-774b716bf9837e6f
-new file mode 100644
-index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
 diff --git a/dist/types/types.d.ts b/dist/types/types.d.ts
-index 4e933cd3190eca48213a94828fdd30dfaad4cbab..6f71524db8241134be3944f870d7142d60536653 100644
+index 4e933cd3190eca48213a94828fdd30dfaad4cbab..f9e754df9a7fa3fb8c32578a64bc38a9d82ddaf3 100644
 --- a/dist/types/types.d.ts
 +++ b/dist/types/types.d.ts
-@@ -1,3 +1,15 @@
+@@ -1,3 +1,18 @@
 +/** Disjoint consumption buckets; absent means not observed, including absent zero. */
 +export interface ProviderAttemptCounters {
 + total_input_tokens?: number; input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number;
@@ -13,6 +10,9 @@ index 4e933cd3190eca48213a94828fdd30dfaad4cbab..6f71524db8241134be3944f870d7142d
 +}
 +/** One physical request, independent of engine invocation and host delivery IDs. */
 +export interface ProviderAttemptObservation {
++ contextTokens?: number;
++ /** Sum of observed protocol deltas, not billed or uniquely generated tokens. */
++ protocolTokenDeltaTotal?: number;
 + id: string; state: "started" | "completed" | "failed" | "cancelled";
 + startedAt: string; finishedAt?: string; requestId?: string; responseId?: string;
 + counters: ProviderAttemptCounters;
@@ -21,7 +21,7 @@ index 4e933cd3190eca48213a94828fdd30dfaad4cbab..6f71524db8241134be3944f870d7142d
  export * from "@oh-my-pi/pi-catalog/effort";
  export * from "@oh-my-pi/pi-catalog/types";
  import type { Type } from "@oh-my-pi/omptype";
-@@ -372,6 +384,8 @@ export interface StreamOptions {
+@@ -372,6 +387,8 @@ export interface StreamOptions {
       * let observers alter stream contents.
       */
      onSseEvent?: (event: RawSseEvent, model?: Model<Api>) => void;
@@ -132,6 +132,100 @@ index c2941dc97e6add3882d9fa3197e78b1a8397334e..ac8bcbe28efab141dabb8f41fe643033
  			for (const block of output.content) {
  				if (block.type === "toolCall") clearStreamingPartialJson(block);
  			}
+diff --git a/src/providers/cursor.ts b/src/providers/cursor.ts
+index b90bd4b7faf28516be31f09bc6951adf664d2143..2b86f428346583b984bd2a1d07790e22569fc570 100644
+--- a/src/providers/cursor.ts
++++ b/src/providers/cursor.ts
+@@ -1,3 +1,4 @@
++import { beginProviderAttempt } from "../utils/provider-attempt";
+ import { createHash } from "node:crypto";
+ import * as fs from "node:fs/promises";
+ import http2 from "node:http2";
+@@ -155,6 +156,8 @@ import {
+ 	decodeJsonValue,
+ 	encodeJsonValue,
+ 	fromBinary,
++	pb,
++	type ProtoMessage,
+ 	type JsonValue,
+ 	toBinary,
+ 	toJson,
+@@ -570,6 +573,25 @@ function omitTypeName(record: Record<string, unknown>): Record<string, unknown>
+ 	return rest;
+ }
+ 
++// Presence-only views use the pinned protocol field numbers. The full decoder
++// supplies scalar defaults, which cannot establish that zero was reported.
++const observedDelta = pb<ProtoMessage & { tokens?: number }>("usage.TokenDelta", [
++ { no: 1, name: "tokens", kind: "int32", optional: true },
++]);
++const observedInteraction = pb<ProtoMessage & { delta?: { tokens?: number } }>("usage.Interaction", [
++ { no: 8, name: "delta", kind: "message", T: () => observedDelta },
++]);
++const observedTokens = pb<ProtoMessage & { used?: number }>("usage.TokenDetails", [
++ { no: 1, name: "used", kind: "uint32", optional: true },
++]);
++const observedCheckpoint = pb<ProtoMessage & { tokens?: { used?: number } }>("usage.Checkpoint", [
++ { no: 5, name: "tokens", kind: "message", T: () => observedTokens },
++]);
++const observedCursorUsage = pb<ProtoMessage & { interaction?: { delta?: { tokens?: number } }; checkpoint?: { tokens?: { used?: number } } }>("usage.Server", [
++ { no: 1, name: "interaction", kind: "message", T: () => observedInteraction },
++ { no: 3, name: "checkpoint", kind: "message", T: () => observedCheckpoint },
++]);
++
+ function streamCursorWithWireMode(
+ 	model: Model<"cursor-agent">,
+ 	context: Context,
+@@ -678,6 +700,7 @@ function streamCursorWithWireMode(
+ 		let baseConversationId: string | undefined;
+ 		let conversationId: string | undefined;
+ 		let usageState: UsageState | undefined;
++		let usageAttempt: ReturnType<typeof beginProviderAttempt> | undefined;
+ 		let serializedFallbackWireModelId: string | undefined;
+ 		try {
+ 			const apiKey = options?.apiKey;
+@@ -765,6 +788,8 @@ function streamCursorWithWireMode(
+ 			}
+ 			h2Client.on("error", error => settleH2(mapH2TransportError(error, baseUrl)));
+ 
++			usageAttempt = beginProviderAttempt(options?.onProviderAttempt);
++			usageAttempt.requestId(requestHeaders["x-request-id"]);
+ 			h2Request = h2Client.request(requestHeaders);
+ 
+ 			stream.push({ type: "start", partial: output });
+@@ -851,6 +876,16 @@ function streamCursorWithWireMode(
+ 						const interaction =
+ 							serverMessage.message.case === "interactionUpdate" ? serverMessage.message.value : undefined;
+ 						const interactionCase = interaction?.message?.case;
++						if (options?.onProviderAttempt && (interactionCase === "tokenDelta" || serverMessage.message.case === "conversationCheckpointUpdate")) {
++							try {
++								const observed = fromBinary(observedCursorUsage, messageBytes);
++								if (interactionCase === "tokenDelta") usageAttempt?.protocol(undefined, observed.interaction?.delta?.tokens);
++								if (serverMessage.message.case === "conversationCheckpointUpdate") usageAttempt?.protocol(observed.checkpoint?.tokens?.used);
++							} catch {
++								// Accounting parse failure must not suppress ordinary frame handling.
++								usageAttempt?.protocol(undefined, Number.NaN);
++							}
++						}
+ 						// A heartbeat is a pure keepalive `processInteractionUpdate` ignores;
+ 						// every other frame is progress or a side effect that must block the
+ 						// discovered-id retry.
+@@ -958,6 +993,7 @@ function streamCursorWithWireMode(
+ 			endCurrentThinkingBlock(output, stream, state);
+ 			flushOpenToolCalls(output, stream, state);
+ 
++			usageAttempt?.finish("completed");
+ 			calculateCost(model, output.usage, output.timestamp);
+ 
+ 			output.duration = performance.now() - startTime;
+@@ -969,6 +1005,7 @@ function streamCursorWithWireMode(
+ 			});
+ 			stream.end();
+ 		} catch (error) {
++			usageAttempt?.finish(options?.signal?.aborted ? "cancelled" : "failed");
+ 			const fallbackWireModelId =
+ 				wireMode === "normalized" &&
+ 				!sawProgressOrSideEffect &&
 diff --git a/src/providers/openai-codex-responses.ts b/src/providers/openai-codex-responses.ts
 index 9552ad5284d80a1f780460e46fbb8549076a3e1a..5c522e340ae7690f1db751b131a6d13bd1dbf231 100644
 --- a/src/providers/openai-codex-responses.ts
@@ -392,10 +486,10 @@ index feb9934af10f4d02bbfe8433f39ba25bd3305c26..a7f8ce0d5c440afab2cca37f44e30120
  		fetch: options?.fetch,
  		fallbacks: options?.fallbacks,
 diff --git a/src/types.ts b/src/types.ts
-index 1090054a2cfcd19968820b8fcde855bca8ea8fed..d0946a77aa2925d23b5b93cb11c463f952f6a03b 100644
+index 1090054a2cfcd19968820b8fcde855bca8ea8fed..b61370196ff9f51c54e9695ae9f45ceb777ec9dc 100644
 --- a/src/types.ts
 +++ b/src/types.ts
-@@ -1,3 +1,15 @@
+@@ -1,3 +1,18 @@
 +/** Disjoint consumption buckets; absent means not observed, including absent zero. */
 +export interface ProviderAttemptCounters {
 + total_input_tokens?: number; input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number;
@@ -403,6 +497,9 @@ index 1090054a2cfcd19968820b8fcde855bca8ea8fed..d0946a77aa2925d23b5b93cb11c463f9
 +}
 +/** One physical request, independent of engine invocation and host delivery IDs. */
 +export interface ProviderAttemptObservation {
++ contextTokens?: number;
++ /** Sum of observed protocol deltas, not billed or uniquely generated tokens. */
++ protocolTokenDeltaTotal?: number;
 + id: string; state: "started" | "completed" | "failed" | "cancelled";
 + startedAt: string; finishedAt?: string; requestId?: string; responseId?: string;
 + counters: ProviderAttemptCounters;
@@ -411,7 +508,7 @@ index 1090054a2cfcd19968820b8fcde855bca8ea8fed..d0946a77aa2925d23b5b93cb11c463f9
  export * from "@oh-my-pi/pi-catalog/effort";
  export * from "@oh-my-pi/pi-catalog/types";
  
-@@ -563,6 +575,8 @@ export interface StreamOptions {
+@@ -563,6 +578,8 @@ export interface StreamOptions {
  	 * let observers alter stream contents.
  	 */
  	onSseEvent?: (event: RawSseEvent, model?: Model<Api>) => void;
@@ -422,10 +519,10 @@ index 1090054a2cfcd19968820b8fcde855bca8ea8fed..d0946a77aa2925d23b5b93cb11c463f9
  	 * providers apply this budget twice when they can: once to the underlying
 diff --git a/node_modules/@oh-my-pi/pi-ai/src/utils/provider-attempt.ts b/src/utils/provider-attempt.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..cce4240b5c042d241bae2d333dd5d2e93892c102
+index 0000000000000000000000000000000000000000..7e527b62c2f2a075b2d2e6ee94e9122d7a7f13f0
 --- /dev/null
 +++ b/src/utils/provider-attempt.ts
-@@ -0,0 +1,63 @@
+@@ -0,0 +1,69 @@
 +import type { FetchImpl, ProviderAttemptObservation, ProviderAttemptCounters, StreamOptions } from "../types";
 +
 +/** One physical dispatch. Observers cannot change provider control flow. */
@@ -438,6 +535,12 @@ index 0000000000000000000000000000000000000000..cce4240b5c042d241bae2d333dd5d2e9
 + emit(event);
 + return {
 +  requestId(value: string | undefined) { event.requestId = value; },
++  protocol(contextTokens?: number, tokenDelta?: number) {
++   if (settled) return;
++   if (contextTokens !== undefined) event.contextTokens = contextTokens;
++   if (tokenDelta !== undefined) event.protocolTokenDeltaTotal = Number.isSafeInteger(tokenDelta) && tokenDelta >= 0
++    ? (event.protocolTokenDeltaTotal ?? 0) + tokenDelta : Number.NaN;
++  },
 +  counters(): ProviderAttemptCounters { return { ...event.counters }; },
 +  observe(counters: ProviderAttemptCounters, responseId?: string, replace = false) {
 +   if (settled) return;

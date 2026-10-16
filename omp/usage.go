@@ -61,6 +61,9 @@ type UsageFact struct {
 	CounterSource        string            `json:"counter_source"`
 	CostSource           string            `json:"cost_source,omitempty"`
 	Coverage             string            `json:"coverage"`
+
+	// ProtocolTokenDeltaTotal is an observed wire sum, never billed consumption.
+	ProtocolTokenDeltaTotal *int64 `json:"protocol_token_delta_total,omitempty"`
 }
 
 func (f *UsageFact) ValidateIdentity(seat, session string) error {
@@ -81,7 +84,7 @@ func (f *UsageFact) ValidateIdentity(seat, session string) error {
 	}
 	switch f.State {
 	case "started":
-		if f.FinishedAt != "" || f.Counters != (UsageCounters{}) || f.ContextTokens != nil || f.APIEquivalentCostUSD != nil {
+		if f.FinishedAt != "" || f.Counters != (UsageCounters{}) || f.ContextTokens != nil || f.ProtocolTokenDeltaTotal != nil || f.APIEquivalentCostUSD != nil {
 			return fmt.Errorf("usage fact: unfinished invocation has counters")
 		}
 	case "completed", "failed", "cancelled", "unknown":
@@ -99,7 +102,7 @@ func (f *UsageFact) ValidateIdentity(seat, session string) error {
 		}
 		seen[r.RequestID] = true
 	}
-	for _, n := range []*int64{f.Counters.TotalInputTokens, f.Counters.InputTokens, f.Counters.OutputTokens, f.Counters.CacheReadInputTokens, f.Counters.CacheCreationInputTokens, f.Counters.ReasoningTokens, f.ContextTokens} {
+	for _, n := range []*int64{f.Counters.TotalInputTokens, f.Counters.InputTokens, f.Counters.OutputTokens, f.Counters.CacheReadInputTokens, f.Counters.CacheCreationInputTokens, f.Counters.ReasoningTokens, f.ContextTokens, f.ProtocolTokenDeltaTotal} {
 		if n != nil && (*n < 0 || *n > 1<<53-1) {
 			return fmt.Errorf("usage fact: invalid counter")
 		}
