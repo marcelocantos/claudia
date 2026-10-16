@@ -48,11 +48,15 @@ export interface OmpSessionOptions {
   // root before imports. The adapter never mutates process-wide directories.
   stateDir: string;
   tokenFor: (provider: string) => string | undefined;
-  sideStreamFn?: StreamFn;
+  // Mandatory: compaction and other SDK side calls must use the host's
+  // observed transport rather than silently defaulting to streamSimple.
+  sideStreamFn: StreamFn;
 }
 
 export async function createOmpSession(opts: OmpSessionOptions) {
   if (!isAbsolute(opts.stateDir)) throw new Error("OMP session stateDir must be absolute");
+  if (typeof opts.sideStreamFn !== "function") throw new Error("OMP session requires an observed sideStreamFn");
+  if (opts.agent.state.isStreaming) throw new Error("OMP session cannot adopt a running Agent");
   for (const dir of [getAgentDir(), getBaseConfigRoot()]) {
     const suffix = relative(opts.stateDir, dir);
     if (suffix === ".." || suffix.startsWith(`..${sep}`) || isAbsolute(suffix)) {
@@ -60,6 +64,9 @@ export async function createOmpSession(opts: OmpSessionOptions) {
     }
   }
   const settings = Settings.isolated({
+    // Even ignoreLocalModelConfig registries add these implicit keyless
+    // endpoints; none is an authenticated broker-selected compaction route.
+    disabledProviders: ["local", "web", "ollama", "llama.cpp", "lm-studio"],
     "memory.backend": "off",
     "memories.enabled": false,
     "autolearn.enabled": false,
@@ -70,7 +77,9 @@ export async function createOmpSession(opts: OmpSessionOptions) {
     "magicKeywords.enabled": false,
     "recap.enabled": false,
     "title.refreshOnReplan": false,
-    "retry.enabled": true,
+    // Outer session retries require service admission policy. Provider-level
+    // retries remain owned and observed by the injected transport adapters.
+    "retry.enabled": false,
     "retry.modelFallback": false,
     "retry.usageAwareFallback": false,
     "retry.waitForUsageReset": false,
@@ -86,6 +95,7 @@ export async function createOmpSession(opts: OmpSessionOptions) {
     throw new Error("Claudia does not permit auxiliary SDK network discovery or credential requests");
   };
   const auth = await AuthStorage.create(":memory:", {
+    allowEnvironmentCredentials: false,
     usageProviderResolver: () => undefined,
     usageFetch: noAuxiliaryFetch,
     configValueResolver: async () => undefined,
@@ -95,7 +105,10 @@ export async function createOmpSession(opts: OmpSessionOptions) {
   // on broker refresh and before selecting a destination model.
   const syncToken = (provider: string): string => {
     const token = opts.tokenFor(provider);
-    if (!token) throw new Error(`broker supplied no credential for ${provider}`);
+    if (!token?.trim()) {
+      auth.removeRuntimeApiKey(provider);
+      throw new Error(`broker supplied no credential for ${provider}`);
+    }
     auth.setRuntimeApiKey(provider, token);
     return token;
   };
@@ -112,6 +125,9 @@ export async function createOmpSession(opts: OmpSessionOptions) {
     // This private registry accepts only broker runtime tokens, never shell or
     // local configuration credential helpers.
     auth.setConfigValueResolver(async () => undefined);
+    // Direct construction does not perform the SDK factory's restore step.
+    // The canonical manager owns context, including compaction and branching.
+    opts.agent.replaceMessages(opts.sessionManager.buildSessionContext().messages);
     const session = new AgentSession({
       agent: opts.agent,
       sessionManager: opts.sessionManager,

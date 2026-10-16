@@ -7,10 +7,12 @@ import { join } from "node:path";
 // Block unexpected auxiliary network work before loading the SDK.
 globalThis.fetch = (async () => { throw new Error("unexpected fixture network request"); }) as typeof fetch;
 const { Agent } = await import("@oh-my-pi/pi-agent-core");
+const { AuthStorage, streamSimple } = await import("@oh-my-pi/pi-ai");
 const { createMockModel, registerMockApi } = await import("@oh-my-pi/pi-ai/providers/mock");
 const { AgentSession } = await import("@oh-my-pi/pi-coding-agent/session/agent-session");
 const { SessionManager } = await import("@oh-my-pi/pi-coding-agent/session/session-manager");
 const { createOmpSession, convertOmpMessages } = await import("../omp-session.ts");
+const { OMPJournal } = await import("../omp-journal.ts");
 
 const root = process.argv[2];
 const cwd = join(root, "work");
@@ -29,7 +31,7 @@ const model = createMockModel({
     return { content: ["OK"], usage: { input: 10, output: 1 } };
   },
 });
-let token = "fixture-token-one";
+let token: string | undefined = "fixture-token-one";
 const makeAgent = () => new Agent({
   initialState: { model, systemPrompt: ["Reply OK."], tools: [] },
   cwd,
@@ -37,17 +39,56 @@ const makeAgent = () => new Agent({
   convertToLlm: convertOmpMessages,
 });
 const agent = makeAgent();
-const manager = SessionManager.inMemory(cwd);
+const journalOptions = { root: join(root, "sessions"), seat: "fixture-seat", session: "fixture-generation", cwd };
+const journal = await OMPJournal.open(journalOptions);
+const manager = journal.manager;
 let observedRequests: unknown[] = [];
 agent.addBeforeModelCall(context => {
   observedRequests = context.messages.filter(message => "claudiaRequest" in message)
     .map(message => message.claudiaRequest);
 });
-const adapter = await createOmpSession({ agent, sessionManager: manager, stateDir: root, tokenFor: () => token });
+const tokens = new Map<string, string>();
+const tokenFor = (provider: string) => provider === model.provider ? token : tokens.get(provider);
+const adapter = await createOmpSession({ agent, sessionManager: manager, stateDir: root, tokenFor, sideStreamFn: streamSimple });
 let raw: InstanceType<typeof AgentSession> | undefined;
 try {
   await assert.rejects(createOmpSession({ agent: makeAgent(), sessionManager: SessionManager.inMemory(cwd),
-    stateDir: join(root, "wrong-root"), tokenFor: () => token }), /outside the explicit state root/);
+    stateDir: join(root, "wrong-root"), tokenFor, sideStreamFn: streamSimple }), /outside the explicit state root/);
+  await assert.rejects(createOmpSession({ agent: makeAgent(), sessionManager: SessionManager.inMemory(cwd),
+    stateDir: root, tokenFor, sideStreamFn: undefined! }), /requires an observed sideStreamFn/);
+  const auth = adapter.session.modelRegistry.authStorage;
+  const hostileProviders = ["anthropic", "xai", "xai-oauth", "amazon-bedrock", "bedrock-mantle"];
+  const assertNoCredential = async (provider: string) => {
+    assert.equal(auth.hasAuth(provider), false, provider);
+    assert.equal(auth.hasConcreteAuth(provider), false, provider);
+    assert.equal(auth.hasResolvableAuth(provider), false, provider);
+    assert.equal(auth.hasNonEnvCredential(provider), false, provider);
+    assert.equal(auth.getCredentialOrigin(provider), undefined, provider);
+    assert.equal(auth.describeCredentialSource(provider), undefined, provider);
+    assert.equal(auth.hasOAuth(provider), false, provider);
+    assert.equal(await auth.getApiKey(provider), undefined, provider);
+    assert.equal(await auth.peekApiKey(provider), undefined, provider);
+    assert.equal(await adapter.session.modelRegistry.getApiKeyForProvider(provider), undefined, provider);
+    assert.deepEqual(adapter.session.modelRegistry.getAvailableForProviders(new Set([provider])), [], provider);
+  };
+  for (const provider of hostileProviders) await assertNoCredential(provider);
+  for (const provider of ["local", "web", "ollama", "llama.cpp", "lm-studio"]) {
+    await assertNoCredential(provider);
+  }
+  // The SDK option is additive: ordinary AuthStorage still sees fake ambient
+  // credentials. This control cannot read a disk credential store.
+  const defaultAuth = await AuthStorage.create(":memory:");
+  try { assert.equal(await defaultAuth.getApiKey("anthropic"), "fixture-ambient-anthropic"); }
+  finally { defaultAuth.close(); }
+  tokens.set("anthropic", "fixture-broker-anthropic");
+  adapter.syncToken("anthropic");
+  assert.equal(auth.hasConcreteAuth("anthropic"), true);
+  assert.ok(adapter.session.modelRegistry.getAvailableForProviders(new Set(["anthropic"])).length > 0);
+  assert.equal(await auth.getApiKey("anthropic"), "fixture-broker-anthropic");
+  tokens.delete("anthropic");
+  assert.throws(() => adapter.syncToken("anthropic"), /broker supplied no credential/);
+  await assertNoCredential("anthropic");
+  assert.equal(adapter.settings.get("retry.enabled"), false);
   const details = { request_id: "request-A", attempt_id: "attempt-one" };
   assert.equal(await adapter.session.promptCustomMessage({
     customType: "claudia-request", content: `Read @${outside}`, display: true, attribution: "user", details,
@@ -94,5 +135,32 @@ try {
 } finally {
   await raw?.dispose();
   await adapter.dispose();
+  await journal.close();
+}
+// Restoration is exercised through the actual canonical disk journal, not a
+// hand-created message array. The Agent constructor starts without history.
+const reopened = await OMPJournal.open({ ...journalOptions, requireResume: true });
+const restoredAgent = makeAgent();
+assert.equal(restoredAgent.state.messages.length, 0);
+const restored = await createOmpSession({ agent: restoredAgent, sessionManager: reopened.manager,
+  stateDir: root, tokenFor, sideStreamFn: streamSimple });
+try {
+  assert.equal(restoredAgent.state.messages.filter(message => message.role === "assistant").length, 2);
+  const restoredIDs = convertOmpMessages(restoredAgent.state.messages)
+    .filter(message => "claudiaRequest" in message).map(message => message.claudiaRequest);
+  assert.deepEqual(restoredIDs, [
+    { request_id: "request-A", attempt_id: "attempt-one" },
+    { request_id: "request-B", attempt_id: "attempt-two" },
+  ]);
+  token = undefined;
+  assert.throws(() => restored.syncToken(model.provider), /broker supplied no credential/);
+  assert.equal(await restored.session.modelRegistry.getApiKey(model), undefined);
+  await assert.rejects(restored.session.promptCustomMessage({ customType: "claudia-request",
+    content: "must not dispatch", display: true, attribution: "user",
+    details: { request_id: "revoked", attempt_id: "revoked-attempt" } }), /API key|credential/i);
+  assert.equal(contexts.length, 3);
+} finally {
+  await restored.dispose();
+  await reopened.close();
 }
 console.log("OMP session fixture passed");

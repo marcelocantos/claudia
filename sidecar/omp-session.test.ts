@@ -25,6 +25,12 @@ test("embedded OMP session preserves request metadata without implicit file read
         OMP_PROFILE: "",
         PI_PROFILE: "",
         PI_NO_TITLE: "1",
+        // Hostile ambient credentials must never expand this service session's
+        // broker-owned availability or resurrect a revoked runtime token.
+        ANTHROPIC_API_KEY: "fixture-ambient-anthropic",
+        XAI_API_KEY: "fixture-ambient-xai",
+        XAI_OAUTH_TOKEN: "fixture-ambient-xai-oauth",
+        AWS_BEARER_TOKEN_BEDROCK: "fixture-ambient-bedrock",
       },
       stdout: "pipe",
       stderr: "pipe",
