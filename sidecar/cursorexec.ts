@@ -156,7 +156,10 @@ export function cursorExecHandlers(cwdOf: () => string, boundOf: () => number, p
       }
     },
     shell: async (a: Any) => shell(a.toolCallId, String(a.command || ""), a.workingDirectory, a.timeout && a.timeout > 0 ? a.timeout : shellDefaultMs),
-    shellStream: async (a: Any) => shell(a.toolCallId, String(a.command || ""), a.workingDirectory, a.timeout && a.timeout > 0 ? a.timeout : shellDefaultMs),
+    // This runner collects a bounded batch result. Do not advertise shellStream:
+    // Cursor then expects output through callbacks and suppresses the batch
+    // stdout/stderr. The pinned provider routes streamed frames to shell when
+    // shellStream is absent, forwarding its result before the exit/close frames.
     piRead: async (c: Any) => read(c.toolCallId, "read", c.args.path, c.args.offset, c.args.limit),
     piBash: async (c: Any) => shell(c.toolCallId, String(c.args.command || ""), undefined, c.args.timeout && c.args.timeout > 0 ? c.args.timeout * 1000 : shellDefaultMs),
     piWrite: async (c: Any) => write(c.toolCallId, "write", c.args.path, String(c.args.content ?? "")),
