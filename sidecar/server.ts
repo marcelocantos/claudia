@@ -202,8 +202,7 @@ async function handle(
   if (msg.op === "receipt") {
     if (!msg.session_id || !msg.request_id) throw new Error("receipt query requires session_id and request_id");
     const existing = seats.get(seat);
-    if (existing && existing.session_id !== msg.session_id) throw new Error("receipt query seat identity mismatch");
-    if (existing) {
+    if (existing && existing.session_id === msg.session_id) {
       write({ seat, type: "receipt", rpc_id: msg.rpc_id, request_id: msg.request_id, receipt: existing.agent.receipt(msg.request_id) });
     } else {
       // Querying an unloaded seat never loads a model, repairs history,

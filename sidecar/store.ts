@@ -91,6 +91,16 @@ export class SeatStore {
       entries.push(e as SessionEntry);
     }
     if (!header) throw new Error(`conversation store ${this.path} is empty`);
+    // A crash can omit only the newline after an otherwise complete JSON
+    // record. Preserve the valid record, but restore its delimiter before a
+    // later append could concatenate two objects into one corrupt line.
+    if (torn) {
+      if (options.repairTail === false) {
+        throw new Error(`conversation store ${this.path} has an incomplete tail; receipt is unknown`);
+      }
+      console.error(`sidecar: ${this.path}: restoring the final record delimiter`);
+      this.rewrite(entries);
+    }
     return entries;
   }
 

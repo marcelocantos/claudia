@@ -364,6 +364,7 @@ export function createSeatAgent(opts: {
     else if (!meta?.request_id) sink.emit({ type: "accepted", turn_id: turn.turn_id });
     let refusal = "";
     let overflow = false;
+    let runInvoked = false;
     try {
       // Before the prompt, counting the prompt itself: the CLI's pre-prompt
       // pass, so the provider never sees a request past its window.
@@ -371,6 +372,7 @@ export function createSeatAgent(opts: {
         await maint.run("threshold", "pre_turn");
       }
       const before = new Set(agent.state.messages);
+      runInvoked = true;
       await run();
       const failed = agent.state.messages.at(-1);
       const authError = turnRefusal(agent.state);
@@ -433,7 +435,19 @@ export function createSeatAgent(opts: {
       refusal = turnRefusal(agent.state);
       finish(refusal ? "error" : turn?.stop_token ? "stop_token" : "end_turn");
     } catch (err) {
-      settleRequests(executionRequests, "failed", "execution_error");
+      // Preparation (notably compaction) can fail before Agent.prompt gets
+      // the newly accepted input. Keep it in the existing queue so the same
+      // ID can resume in this process, not only after a sidecar restart.
+      if (!runInvoked && accepted) {
+        const waiting = receipts.pending().find(item => item.receipt.request_id === accepted.request_id);
+        if (waiting) {
+          agent.followUp(waiting.message);
+          pending.add(waiting.message);
+        }
+      }
+      settleRequests(executionRequests, cancelledTurns.has(executionTurn.turn_id) ? "cancelled" : "failed",
+        cancelledTurns.has(executionTurn.turn_id) ? "cancelled" : "execution_error");
+      cancelledTurns.delete(executionTurn.turn_id);
       finish("error");
       throw err;
     } finally {

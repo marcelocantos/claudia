@@ -75,6 +75,23 @@ const ok = (): MockResponse => ({ content: ["ok"], usage: { input: 1000, output:
 const sentText = (context: Context) => JSON.stringify(context.messages);
 
 describe("durable seat conversations (🎯T151)", () => {
+  test("a complete receipt without its final newline is preserved before further appends", () => {
+    const storage = new SeatStore(tempDir(), "worker", "session");
+    const original = new ReceiptJournal(new History(storage));
+    original.accept("first", { request_id: "A", session_id: "session" }, "prompt");
+    const truncated = readFileSync(storage.path, "utf8").slice(0, -1);
+    writeFileSync(storage.path, truncated);
+    expect(() => storage.load({ repairTail: false })).toThrow(/incomplete tail/);
+    expect(readFileSync(storage.path, "utf8")).toBe(truncated);
+    const restored = new History(storage);
+    expect(restored.restore()).toBe(true);
+    const journal = new ReceiptJournal(restored);
+    expect(journal.query("A").state).toBe("accepted");
+    journal.accept("second", { request_id: "B", session_id: "session" }, "prompt");
+    const again = new History(storage);
+    expect(again.restore()).toBe(true);
+    expect(new ReceiptJournal(again).pending().map(p => p.receipt.request_id)).toEqual(["A", "B"]);
+  });
   test("a reloaded seat resumes its conversation and its compaction, without re-summarizing", async () => {
     const root = tempDir();
     const first = seat(new SeatStore(root, "po", "s1"), ok);
@@ -336,6 +353,14 @@ describe("sidecar restart (🎯T151)", () => {
       const base = { seat: "po", provider: "anthropic", model: "claude-sonnet-5", token: "t", cwd: dir };
       const first = await ask(sock, [{ ...base, op: "load", session_id: "first" }], e => e.type === "ready" || e.type === "error");
       expect(first[0].type).toBe("ready");
+      // A predecessor generation remains queryable while the new one is loaded.
+      const old = new SeatStore(join(dir, "omp-seats"), "po", "predecessor");
+      new ReceiptJournal(new History(old)).accept("old work", { request_id: "old-request", session_id: "predecessor" }, "prompt");
+      const oldBytes = readFileSync(old.path);
+      const receipt = await ask(sock, [{ op: "receipt", seat: "po", session_id: "predecessor", request_id: "old-request", rpc_id: "old-query" }], e => e.type === "receipt" || e.type === "error");
+      expect(receipt[0].type).toBe("receipt");
+      expect((receipt[0].receipt as { session_id: string }).session_id).toBe("predecessor");
+      expect(readFileSync(old.path)).toEqual(oldBytes);
       for (const op of ["load", "adopt"]) {
         const other = await ask(sock, [{ ...base, op, session_id: "other", request_id: "operation" }], e => e.type === "ready" || e.type === "error");
         expect(other[0].type).toBe("error");
