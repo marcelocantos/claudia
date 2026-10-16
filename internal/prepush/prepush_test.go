@@ -63,13 +63,14 @@ func newRepo(t *testing.T) *repo {
 	git(t, dir, "add", "-A")
 	git(t, dir, "commit", "-q", "-m", "bad")
 	bad := git(t, dir, "rev-parse", "HEAD")
+	git(t, dir, "checkout", "-q", good)
 	return &repo{t: t, dir: dir, good: good, bad: bad}
 }
 
 // attest writes the attestation make gate would leave for sha's tree.
 func (r *repo) attest(sha string) {
 	tree := git(r.t, r.dir, "rev-parse", sha+"^{tree}")
-	body := "tree=" + tree + "\ndirty=0\nat=2026-10-08T22:50:00+11:00\n"
+	body := "profile=full-runtime-v1\ntree=" + tree + "\ndirty=0\nat=2026-10-08T22:50:00+11:00\n"
 	if err := os.WriteFile(filepath.Join(r.dir, ".git", "gate-attestation"), []byte(body), 0o644); err != nil {
 		r.t.Fatal(err)
 	}
@@ -121,10 +122,7 @@ func TestNormalRefStillNeedsAttestation(t *testing.T) {
 	}
 }
 
-// A normal ref still runs build + vet. (They build the working tree, and
-// as before a failure there does not stop the hook: under sh's set -e a
-// failing command inside an && list is not fatal. The attestation is what
-// refuses an unverified tree. That is unchanged here on purpose.)
+// A normal ref still runs build + vet, and either failure refuses the push.
 func TestNormalRefStillRunsBuildAndVet(t *testing.T) {
 	r := newRepo(t)
 	git(t, r.dir, "checkout", "-q", r.good)
@@ -132,6 +130,31 @@ func TestNormalRefStillRunsBuildAndVet(t *testing.T) {
 	ok, out := r.push(line("refs/heads/master", r.good, "refs/heads/master"))
 	if !ok || !strings.Contains(out, "✓ build + vet") {
 		t.Fatalf("normal push: ok=%v, want build + vet to run:\n%s", ok, out)
+	}
+}
+
+func TestBrokenWorkingTreeRefusesEvenWithAttestation(t *testing.T) {
+	r := newRepo(t)
+	r.attest(r.good)
+	git(t, r.dir, "checkout", "-q", r.bad)
+	if ok, out := r.push(line("refs/heads/master", r.good, "refs/heads/master")); ok {
+		t.Fatalf("broken sanity check passed: %s", out)
+	}
+}
+
+func TestLegacyAttestationCannotOmitSidecarGate(t *testing.T) {
+	r := newRepo(t)
+	r.attest(r.good)
+	path := filepath.Join(r.dir, ".git", "gate-attestation")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(strings.ReplaceAll(string(b), "profile=full-runtime-v1\n", "")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if ok, out := r.push(line("refs/heads/master", r.good, "refs/heads/master")); ok || !strings.Contains(out, "gate profile") {
+		t.Fatalf("old attestation: ok=%v %s", ok, out)
 	}
 }
 

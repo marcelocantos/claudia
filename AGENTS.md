@@ -255,7 +255,13 @@ override:
   - ci-green: skip
 
 The owner gate is local `make gate`. It attests the tree it passed on
-(`.git/gate-attestation`, per clone, untracked); `scripts/hooks/pre-push`
+only from clean committed inputs, running Go and Bun sidecar checks in a
+private checkout with `GOWORK=off` and a frozen dependency install. Use
+`make gate-checks` for non-attesting WIP diagnosis. Concurrent gate attempts
+refuse; a failed run revokes old evidence. The full-runtime profile rejects
+legacy attestations that omitted the sidecar tests. See `docs/gate.md`.
+The attestation lives in `.git/gate-attestation` (per clone, untracked);
+`scripts/hooks/pre-push`
 builds, vets, and refuses a push unless that attestation names the tree of
 the tip commit going out (earlier commits are not checked; the attestation
 is never committed) — it does not re-run the gate, which takes ~25
