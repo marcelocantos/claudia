@@ -16,7 +16,7 @@
 // a seat switching branches inside its own worktree is its own business.
 
 import path from "node:path";
-import { runCommand } from "./coding.ts";
+import { runCommand } from "./process.ts";
 
 export type BranchCheckout = {
   // ref is the branch or ref the command would move HEAD to.

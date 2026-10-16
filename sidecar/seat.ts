@@ -138,7 +138,7 @@ export function createSeatAgent(opts: {
     cwdResolver: () => cwd || undefined,
     // Cursor's native tools come back as exec frames, not tool calls; without
     // handlers each answered "Tool not available" (2026-10-13).
-    cursorExecHandlers: cursorExecHandlers(() => cwd, () => toolResultBound(agent.state.model?.contextWindow ?? 0)),
+    cursorExecHandlers: cursorExecHandlers(() => cwd, () => toolResultBound(agent.state.model?.contextWindow ?? 0), () => sandbox),
     getApiKey: async () => { attemptToken = replayToken || token; replayToken = ""; requestCount++; return attemptToken; },
     // A compaction summary must reach the provider; the Agent's default
     // converter drops roles it does not know (🎯T150).
