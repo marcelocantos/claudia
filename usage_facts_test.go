@@ -62,27 +62,23 @@ func TestUsageCursorProtocolProducerAndBrokerReplay(t *testing.T) {
 	b := &Agent{sessionID: "generation", startCfg: Config{Name: "seat"}}
 	for _, fact := range page.Facts {
 		replyReceipt(t, peer, omp.Event{Type: "usage", Seat: "seat", UsageFact: &fact})
-		select {
-		case ev := <-events:
-			if ev.Type != "usage" || !reflect.DeepEqual(ev.UsageFact, &fact) {
-				t.Fatalf("socket changed Cursor fact: %+v", ev)
-			}
-			raw, err := EncodeEventWire(ev)
-			if err != nil {
-				t.Fatal(err)
-			}
-			decoded, err := DecodeEventWire(raw)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !reflect.DeepEqual(decoded.UsageFact, &fact) {
-				t.Fatal("broker changed Cursor fact")
-			}
-			b.publishEvent(decoded)
-			b.publishEvent(decoded)
-		case <-time.After(5 * time.Second):
-			t.Fatal("missing Cursor accounting event")
+		ev := <-events
+		if ev.Type != "usage" || !reflect.DeepEqual(ev.UsageFact, &fact) {
+			t.Fatalf("socket changed Cursor fact: %+v", ev)
 		}
+		raw, err := EncodeEventWire(ev)
+		if err != nil {
+			t.Fatal(err)
+		}
+		decoded, err := DecodeEventWire(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(decoded.UsageFact, &fact) {
+			t.Fatal("broker changed Cursor fact")
+		}
+		b.publishEvent(decoded)
+		b.publishEvent(decoded)
 	}
 	want := Usage{}
 	if a.Usage() != want || b.Usage() != want {
@@ -106,27 +102,23 @@ func TestUsageCodexPhysicalProducerAndBrokerReplay(t *testing.T) {
 	b := &Agent{sessionID: "generation", startCfg: Config{Name: "seat"}}
 	for _, fact := range page.Facts {
 		replyReceipt(t, peer, omp.Event{Type: "usage", Seat: "seat", UsageFact: &fact})
-		select {
-		case ev := <-events:
-			if ev.Type != "usage" || !reflect.DeepEqual(ev.UsageFact, &fact) {
-				t.Fatalf("socket changed Codex fact: %+v", ev)
-			}
-			raw, err := EncodeEventWire(ev)
-			if err != nil {
-				t.Fatal(err)
-			}
-			decoded, err := DecodeEventWire(raw)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !reflect.DeepEqual(decoded.UsageFact, &fact) {
-				t.Fatal("broker changed Codex fact")
-			}
-			b.publishEvent(decoded)
-			b.publishEvent(decoded)
-		case <-time.After(5 * time.Second):
-			t.Fatal("missing Codex accounting event")
+		ev := <-events
+		if ev.Type != "usage" || !reflect.DeepEqual(ev.UsageFact, &fact) {
+			t.Fatalf("socket changed Codex fact: %+v", ev)
 		}
+		raw, err := EncodeEventWire(ev)
+		if err != nil {
+			t.Fatal(err)
+		}
+		decoded, err := DecodeEventWire(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(decoded.UsageFact, &fact) {
+			t.Fatal("broker changed Codex fact")
+		}
+		b.publishEvent(decoded)
+		b.publishEvent(decoded)
 	}
 	want := Usage{InputTokens: 21, OutputTokens: 4, CacheReadInputTokens: 7}
 	if a.Usage() != want || b.Usage() != want {
@@ -153,27 +145,23 @@ func TestUsagePhysicalProducerSocketAndBrokerPreserveRetries(t *testing.T) {
 	b := &Agent{sessionID: "generation", startCfg: Config{Name: "seat"}}
 	for _, fact := range page.Facts {
 		replyReceipt(t, peer, omp.Event{Type: "usage", Seat: "seat", UsageFact: &fact})
-		select {
-		case ev := <-events:
-			if ev.Type != "usage" || !reflect.DeepEqual(ev.UsageFact, &fact) {
-				t.Fatalf("socket lost physical evidence: %+v", ev)
-			}
-			raw, err := EncodeEventWire(ev)
-			if err != nil {
-				t.Fatal(err)
-			}
-			decoded, err := DecodeEventWire(raw)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !reflect.DeepEqual(decoded.UsageFact, &fact) {
-				t.Fatal("broker changed physical evidence")
-			}
-			b.publishEvent(decoded)
-			b.publishEvent(decoded)
-		case <-time.After(5 * time.Second):
-			t.Fatal("missing physical observation")
+		ev := <-events
+		if ev.Type != "usage" || !reflect.DeepEqual(ev.UsageFact, &fact) {
+			t.Fatalf("socket lost physical evidence: %+v", ev)
 		}
+		raw, err := EncodeEventWire(ev)
+		if err != nil {
+			t.Fatal(err)
+		}
+		decoded, err := DecodeEventWire(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(decoded.UsageFact, &fact) {
+			t.Fatal("broker changed physical evidence")
+		}
+		b.publishEvent(decoded)
+		b.publishEvent(decoded)
 	}
 	want := Usage{InputTokens: 31, OutputTokens: 5, CacheReadInputTokens: 7}
 	if a.Usage() != want || b.Usage() != want {
@@ -201,27 +189,23 @@ func TestUsageActualProducerSocketPumpAndBrokerReplay(t *testing.T) {
 	b := &Agent{sessionID: "generation", startCfg: Config{Name: "seat"}}
 	for _, fact := range page.Facts {
 		replyReceipt(t, peer, omp.Event{Type: "usage", Seat: "seat", UsageFact: &fact})
-		select {
-		case ev := <-events:
-			if ev.Type != "usage" || ev.UsageFact == nil {
-				t.Fatalf("pump lost fact: %+v", ev)
-			}
-			raw, err := EncodeEventWire(ev)
-			if err != nil {
-				t.Fatal(err)
-			}
-			decoded, err := DecodeEventWire(raw)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !reflect.DeepEqual(ev.UsageFact, decoded.UsageFact) {
-				t.Fatal("broker changed usage identity/availability")
-			}
-			b.publishEvent(decoded)
-			b.publishEvent(decoded)
-		case <-time.After(5 * time.Second):
-			t.Fatal("pump lost usage event")
+		ev := <-events
+		if ev.Type != "usage" || ev.UsageFact == nil {
+			t.Fatalf("pump lost fact: %+v", ev)
 		}
+		raw, err := EncodeEventWire(ev)
+		if err != nil {
+			t.Fatal(err)
+		}
+		decoded, err := DecodeEventWire(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(ev.UsageFact, decoded.UsageFact) {
+			t.Fatal("broker changed usage identity/availability")
+		}
+		b.publishEvent(decoded)
+		b.publishEvent(decoded)
 	}
 	want := Usage{InputTokens: 11, OutputTokens: 3, CacheReadInputTokens: 5}
 	if a.Usage() != want || b.Usage() != want {
@@ -240,20 +224,13 @@ func TestUsageActualProducerSocketPumpAndBrokerReplay(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
 	t.Setenv(omp.SocketEnv, socket)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	var reopened *UsagePage
-	var err error
-	for {
-		reopened, err = QueryUsageDirect(ctx, UsageQuery{Seat: "seat", SessionID: "generation", Limit: 1})
-		if err == nil {
-			break
-		}
-		select {
-		case <-ctx.Done():
-			t.Fatal(err)
-		case <-time.After(10 * time.Millisecond):
-		}
+	ctx := t.Context()
+	for !omp.Listening(ctx, socket) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	reopened, err := QueryUsageDirect(ctx, UsageQuery{Seat: "seat", SessionID: "generation", Limit: 1})
+	if err != nil {
+		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(reopened.Facts, page.Facts[:1]) || !reopened.More {
 		t.Fatalf("restart changed fact: %+v", reopened)

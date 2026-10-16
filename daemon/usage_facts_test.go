@@ -63,17 +63,13 @@ func TestUsageQueryBrokerAndRemoteHandleNeverLoadsSeat(t *testing.T) {
 	f.boot(t, nil)
 	q := claudia.UsageQuery{Seat: "unloaded", SessionID: "old"}
 	for _, query := range []func(context.Context, claudia.UsageQuery) (*claudia.UsagePage, error){claudia.QueryUsageDirect, claudia.QueryUsage} {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		deadline, _ := ctx.Deadline()
-		page, err := query(ctx, q)
-		cancel()
-		if err != nil || len(page.Facts) != 2 {
-			t.Fatalf("query: %+v %v", page, err)
-		}
-		msg := <-seen
-		if msg.ExpiresAt != deadline.UnixMilli() {
-			t.Fatalf("sidecar deadline=%d, caller deadline=%d", msg.ExpiresAt, deadline.UnixMilli())
-		}
+		msg := queryWithObservedDeadline(t, seen, func(ctx context.Context) error {
+			page, err := query(ctx, q)
+			if err == nil && len(page.Facts) != 2 {
+				t.Fatalf("query: %+v", page)
+			}
+			return err
+		})
 		if msg.Op != "usage" || msg.RPCID == "" || msg.SessionID != "old" || msg.Seat != "unloaded" || msg.Token != "" || msg.Provider != "" || msg.RequestID != "" {
 			t.Fatalf("query confused identities or loaded credentials: %+v", msg)
 		}
@@ -104,5 +100,37 @@ func TestUsageQueryBrokerAndRemoteHandleNeverLoadsSeat(t *testing.T) {
 	<-seen
 	if a.Usage().InputTokens != 17 || a.UsageError() != nil {
 		t.Fatalf("remote projection not deduplicated: %+v %v", a.Usage(), a.UsageError())
+	}
+}
+
+// queryWithObservedDeadline checks exact forwarding, not fixture speed.
+// 🎯T97 exemption: an expired attempt with no captured request is retried,
+// never scored. Only captured wire data decides the result; go test -timeout
+// bounds a fixture that never responds. Capture can arrive after cancellation,
+// so retain the exact issued expiries rather than compare with the newest try.
+func queryWithObservedDeadline(t *testing.T, seen <-chan omp.Message, query func(context.Context) error) omp.Message {
+	t.Helper()
+	issued := map[int64]bool{}
+	for {
+		ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+		deadline, _ := ctx.Deadline()
+		issued[deadline.UnixMilli()] = true
+		err := query(ctx)
+		expired := ctx.Err() != nil
+		cancel()
+		if err != nil && !expired {
+			t.Fatal(err)
+		}
+		select {
+		case msg := <-seen:
+			if !issued[msg.ExpiresAt] {
+				t.Fatalf("sidecar expiry %d was not an original caller expiry: %v", msg.ExpiresAt, issued)
+			}
+			return msg
+		default:
+			if !expired {
+				t.Fatal("successful query produced no captured request")
+			}
+		}
 	}
 }

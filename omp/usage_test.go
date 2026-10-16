@@ -71,6 +71,9 @@ func TestUsageAvailabilityAndBoundaryValidation(t *testing.T) {
 }
 
 // This reaches the socket contract, not a message-construction helper.
+// 🎯T97 exemption: an expired attempt without a captured request is retried,
+// never scored. Only captured wire data decides exact deadline forwarding;
+// go test -timeout bounds a fixture that never responds.
 func TestQueryUsageForwardsDeadline(t *testing.T) {
 	dir, err := os.MkdirTemp("/tmp", "usage-deadline-")
 	if err != nil {
@@ -84,44 +87,51 @@ func TestQueryUsageForwardsDeadline(t *testing.T) {
 	}
 	defer listener.Close()
 	t.Setenv(SocketEnv, socket)
-	deadline := time.Now().Add(3 * time.Second)
-	ctx, cancel := context.WithDeadline(context.Background(), deadline)
-	defer cancel()
 	messages := make(chan Message, 1)
-	failures := make(chan error, 1)
 	go func() {
-		conn, err := listener.Accept()
-		if err != nil {
-			failures <- err
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return // The test closes the listener on completion or failure.
+			}
+			var msg Message
+			if err := json.NewDecoder(conn).Decode(&msg); err != nil {
+				conn.Close()
+				continue // A caller can expire before it sends the request.
+			}
+			messages <- msg
+			// A caller can expire after its request was captured. Its wire
+			// deadline still supplies evidence; the reply need not arrive.
+			_ = json.NewEncoder(conn).Encode(Event{Type: "usage_page", RPCID: msg.RPCID, UsagePage: &UsagePage{Seat: "seat", SessionID: "session", Facts: []UsageFact{}, Next: 0}})
+			conn.Close()
 			return
 		}
-		defer conn.Close()
-		_ = conn.SetDeadline(deadline)
-		var msg Message
-		if err := json.NewDecoder(conn).Decode(&msg); err != nil {
-			failures <- err
-			return
-		}
-		messages <- msg
-		failures <- json.NewEncoder(conn).Encode(Event{Type: "usage_page", RPCID: msg.RPCID, UsagePage: &UsagePage{Seat: "seat", SessionID: "session", Facts: []UsageFact{}, Next: 0}})
 	}()
-	page, err := QueryUsage(ctx, "seat", "session", 0, 128)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if page.More || len(page.Facts) != 0 {
-		t.Fatalf("bad page: %+v", page)
-	}
-	select {
-	case msg := <-messages:
-		if msg.ExpiresAt != deadline.UnixMilli() {
-			t.Fatalf("deadline=%d, want %d", msg.ExpiresAt, deadline.UnixMilli())
+	issued := map[int64]bool{}
+	for {
+		ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+		deadline, _ := ctx.Deadline()
+		issued[deadline.UnixMilli()] = true
+		page, err := QueryUsage(ctx, "seat", "session", 0, 128)
+		expired := ctx.Err() != nil
+		cancel()
+		if err != nil && !expired {
+			t.Fatal(err)
 		}
-	case <-ctx.Done():
-		t.Fatal(ctx.Err())
-	}
-	if err := <-failures; err != nil {
-		t.Fatal(err)
+		if err == nil && (page.More || len(page.Facts) != 0) {
+			t.Fatalf("bad page: %+v", page)
+		}
+		select {
+		case msg := <-messages:
+			if !issued[msg.ExpiresAt] {
+				t.Fatalf("sidecar expiry %d was not an original caller expiry: %v", msg.ExpiresAt, issued)
+			}
+			return
+		default:
+			if !expired {
+				t.Fatal("successful query produced no captured request")
+			}
+		}
 	}
 }
 

@@ -5,6 +5,7 @@ package ownergate
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"os"
 	"os/exec"
@@ -183,7 +184,24 @@ func TestGitSelectionEnvironmentCannotRedirectSnapshot(t *testing.T) {
 // A removed/unreachable sidecar command must not satisfy this negative oracle.
 func TestProductionGateRejectsFailingSidecar(t *testing.T) {
 	dir := fixture(t, "true")
-	for _, name := range []string{"Makefile", "scripts/check-sidecar-prerequisites.ts", "sidecar/package.json", "sidecar/bun.lockb"} {
+	names := []string{"Makefile", "scripts/check-sidecar-prerequisites.ts", "sidecar/package.json", "sidecar/bun.lockb"}
+	manifest, err := os.ReadFile(filepath.Join("..", "..", "sidecar", "package.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pkg struct {
+		PatchedDependencies map[string]string `json:"patchedDependencies"`
+	}
+	if err := json.Unmarshal(manifest, &pkg); err != nil {
+		t.Fatal(err)
+	}
+	for _, patch := range pkg.PatchedDependencies {
+		if !filepath.IsLocal(patch) {
+			t.Fatalf("patch path escapes sidecar: %q", patch)
+		}
+		names = append(names, filepath.Join("sidecar", patch))
+	}
+	for _, name := range names {
 		b, err := os.ReadFile(filepath.Join("..", "..", name))
 		if err != nil {
 			t.Fatal(err)
@@ -202,7 +220,7 @@ func TestProductionGateRejectsFailingSidecar(t *testing.T) {
 	fixtureGit(t, dir, "add", ".")
 	fixtureGit(t, dir, "commit", "-qm", "plant sidecar failure")
 	var output bytes.Buffer
-	err := Run(dir, &output)
+	err = Run(dir, &output)
 	if err == nil || !strings.Contains(output.String(), "(fail) "+marker) {
 		t.Fatalf("planted test was not the failing check: %v\n%s", err, &output)
 	}

@@ -52,16 +52,9 @@ func TestGenerationDiscoveryActualHistoryDirectAndBroker(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
 	t.Setenv(omp.SocketEnv, socket)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	tick := time.NewTicker(10 * time.Millisecond)
-	defer tick.Stop()
+	ctx := t.Context()
 	for !omp.Listening(ctx, socket) {
-		select {
-		case <-ctx.Done():
-			t.Fatal(ctx.Err())
-		case <-tick.C:
-		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	f.boot(t, nil)
 	for _, query := range []func(context.Context, claudia.GenerationQuery) (*claudia.GenerationPage, error){claudia.DiscoverGenerationsDirect, claudia.DiscoverGenerations} {
@@ -139,15 +132,14 @@ func TestGenerationDiscoveryBrokerPreservesDeadlineAndNoCredentials(t *testing.T
 	}()
 	f.boot(t, nil)
 	for _, query := range []func(context.Context, claudia.GenerationQuery) (*claudia.GenerationPage, error){claudia.DiscoverGenerationsDirect, claudia.DiscoverGenerations} {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		deadline, _ := ctx.Deadline()
-		page, err := query(ctx, claudia.GenerationQuery{Cursor: "opaque:1", Limit: 1})
-		cancel()
-		if err != nil || !page.Complete {
-			t.Fatalf("discovery=%+v %v", page, err)
-		}
-		msg := <-seen
-		if msg.ExpiresAt != deadline.UnixMilli() || msg.Cursor != "opaque:1" || msg.Limit != 1 || msg.Op != "generations" || msg.Token != "" || msg.Provider != "" || msg.Seat != "" || msg.SessionID != "" {
+		msg := queryWithObservedDeadline(t, seen, func(ctx context.Context) error {
+			page, err := query(ctx, claudia.GenerationQuery{Cursor: "opaque:1", Limit: 1})
+			if err == nil && !page.Complete {
+				t.Fatalf("discovery=%+v", page)
+			}
+			return err
+		})
+		if msg.Cursor != "opaque:1" || msg.Limit != 1 || msg.Op != "generations" || msg.Token != "" || msg.Provider != "" || msg.Seat != "" || msg.SessionID != "" {
 			t.Fatalf("bad discovery wire %+v", msg)
 		}
 	}
