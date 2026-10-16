@@ -2,15 +2,17 @@
 // A prompt must call Agent.prompt on the pinned @oh-my-pi/pi-agent-core.
 
 import { AuthRetry, authRefusal, type RetryReply } from "./authretry.ts";
-import { Agent, type AgentTool } from "@oh-my-pi/pi-agent-core";
+import { Agent, unpairedToolCallTail, type AgentTool } from "@oh-my-pi/pi-agent-core";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
-import type { Model } from "@oh-my-pi/pi-ai";
+import type { AssistantMessage, Model } from "@oh-my-pi/pi-ai";
+import { classifyMessage, Flag, is as hasFlag } from "@oh-my-pi/pi-ai/error";
 import { cursorExecHandlers } from "./cursorexec.ts";
 import { codingTools, type SandboxPolicy } from "./coding.ts";
 import { capToolText, toolResultBound } from "./truncate.ts";
 import { awaitHostCall } from "./hostcalls.ts";
 import { ContextOverflow, isOverflow, Maintenance, seatConvertToLlm, type MaintenanceHost } from "./maintain.ts";
 import type { SeatStore } from "./store.ts";
+import { ReceiptJournal, type RequestReceipt, type ReceiptMessage, type ReceiptTerminalState } from "./receipts.ts";
 import {
   beginTurn,
   closeTurn,
@@ -27,6 +29,7 @@ import {
 export type SeatEvent = {
   type: string;
   request_id?: string;
+  rpc_id?: string;
   turn_id?: string;
   failed_token?: string;
   text?: string;
@@ -37,6 +40,7 @@ export type SeatEvent = {
   // reason classifies an error: "context_overflow" is terminal (🎯T148).
   reason?: string;
   snapshot?: unknown;
+  receipt?: RequestReceipt;
 };
 
 export type SeatEmit = (ev: SeatEvent) => void;
@@ -47,6 +51,7 @@ export type SeatAgent = {
   prompt: (text: string, meta?: PromptMeta) => Promise<void>;
   steer: (text: string, meta?: PromptMeta) => void;
   abort: () => void;
+  receipt: (requestId: string) => RequestReceipt;
   // switchModel moves the seat to another provider or model between turns,
   // keeping its conversation (🎯T195). It rejects while a turn runs, for an
   // unknown model, and when the conversation cannot be made to fit.
@@ -188,6 +193,17 @@ export function createSeatAgent(opts: {
   // Resume the stored conversation. An unreadable store throws, so the load
   // fails loudly instead of starting the seat on an empty conversation.
   const restored = maint.restore();
+  const receipts = new ReceiptJournal(maint.history);
+  // continue() re-executes an unpaired tool batch before its model gate.
+  // After a process crash we cannot know whether those effects happened.
+  // Keep the history inspectable, but require a fresh session to proceed.
+  const uncertainToolRestore = restored && unpairedToolCallTail(agent.state.messages) !== undefined;
+  const assertRestorableExecution = () => {
+    if (uncertainToolRestore) throw Object.assign(
+      new Error("restored history has unfinished tool calls; inspect their effects before starting a fresh session"),
+      { reason: "execution_uncertain" },
+    );
+  };
   if (restored) {
     console.error(
       `sidecar: resumed ${opts.store?.path}: ${maint.history.entries.length} entries, ${agent.state.messages.length} messages in context`,
@@ -227,14 +243,61 @@ export function createSeatAgent(opts: {
   // Messages queued or steered behind a running turn that the model has
   // not yet taken. pi-agent-core emits message_start for each one as its run
   // loop takes it; the host is told, so an escalation stops there (T138).
-  const pending: string[] = [];
+  const pending = new Set<Parameters<typeof agent.steer>[0]>();
+  let currentRequests = new Set<string>();
+  const cancelledTurns = new Set<string>();
   const heldSteering: Parameters<typeof agent.steer>[0][] = [];
   const heldFollowUps: Parameters<typeof agent.followUp>[0][] = [];
+
+  // Accepted inputs that never reached dispatch remain obligations after a
+  // restart. Rebuild only that queue; a started/unknown request is never
+  // automatically submitted again. Loading or querying does not run it.
+  const recovered = receipts.pending();
+  const recoveredIDs = new Set(recovered.map(item => item.receipt.request_id));
+  if (recoveredIDs.size > 0) {
+    agent.replaceMessages(agent.state.messages.filter(message => {
+      if (!recoveredIDs.has((message as ReceiptMessage).claudiaRequest?.request_id)) return true;
+      // Remove the undelivered input from canonical context too: a switch
+      // or compaction rebuild must not reinsert it beside its queue copy.
+      maint.history.forget(message);
+      return false;
+    }));
+    maint.persist();
+    for (const item of recovered) {
+      pending.add(item.message);
+      if (item.delivery === "steer") agent.steer(item.message);
+      else agent.followUp(item.message);
+    }
+  }
+  const settleRequests = (ids: Set<string>, state: ReceiptTerminalState, reason?: string) => {
+    if (ids.size === 0) return;
+    const started = [...ids].filter(id => receipts.query(id).state === "started");
+    receipts.finish([...ids], state, reason);
+    for (const id of started) sink.emit({ type: "receipt", request_id: id, receipt: receipts.query(id) });
+  };
+  agent.addBeforeModelCall((context) => {
+    receipts.assertHealthy();
+    // Input events are emitted after this gate on the first call. Inspect
+    // the actual prepared input, not event timing or the pending FIFO.
+    for (const message of context.messages) {
+      const id = (message as ReceiptMessage).claudiaRequest?.request_id;
+      if (!id) continue;
+      const state = receipts.query(id).state;
+      if (state === "accepted" || state === "started") currentRequests.add(id);
+    }
+    if (currentRequests.size === 0) return;
+    // Listeners are observational and swallow exceptions in pi-agent-core.
+    // This awaited gate is the fail-closed persistence boundary.
+    maint.persist();
+    const newlyStarted = [...currentRequests].filter(id => !receipts.query(id).turn_ids.includes(turn!.turn_id));
+    receipts.start([...currentRequests], turn!.turn_id);
+    for (const id of newlyStarted) sink.emit({ type: "receipt", request_id: id, turn_id: turn!.turn_id, receipt: receipts.query(id) });
+  });
 
   agent.subscribe((event: {
     type?: string;
     assistantMessageEvent?: { type?: string; delta?: string };
-    message?: { role?: string; content?: unknown };
+    message?: { role?: string; content?: unknown; claudiaRequest?: { request_id: string } };
     toolCallId?: string;
     toolName?: string;
     args?: unknown;
@@ -246,10 +309,10 @@ export function createSeatAgent(opts: {
     }
     if (event.type === "message_start" && event.message?.role === "user") {
       const text = userText(event.message.content);
-      const i = pending.indexOf(text);
-      if (i >= 0) {
-        pending.splice(i, 1);
-        sink.emit({ type: "absorbed", text });
+      const id = event.message.claudiaRequest?.request_id;
+      if (id) currentRequests.add(id);
+      if (pending.delete(event.message as Parameters<typeof agent.steer>[0])) {
+        sink.emit({ type: "absorbed", text, request_id: id, turn_id: turn?.turn_id });
       }
       return;
     }
@@ -278,7 +341,8 @@ export function createSeatAgent(opts: {
 
   // runTurn brackets one turn: digest, acceptance, the run itself, any
   // follow-ups left after it, and turn_end.
-  const runTurn = async (text: string, meta: PromptMeta | undefined, run: () => Promise<void>) => {
+  const runTurn = async (text: string, meta: PromptMeta | undefined, run: () => Promise<void>, accepted?: RequestReceipt) => {
+    assertRestorableExecution();
     const metaSession = meta?.session_id || sessionId;
     turn = beginTurn({
       seat: "",
@@ -286,6 +350,9 @@ export function createSeatAgent(opts: {
       meta: { ...meta, session_id: metaSession || undefined },
     });
     sessionId = turn.session_id;
+    const executionTurn = turn;
+    const executionRequests = new Set<string>();
+    currentRequests = executionRequests;
     attemptToken = "";
     replayToken = "";
     requestCount = 0;
@@ -293,7 +360,8 @@ export function createSeatAgent(opts: {
     unsafe = false;
     // A turn can think for a minute before its first token. Announce it
     // now so the host sees the prompt land (Jevons T887).
-    sink.emit({ type: "accepted" });
+    if (accepted) sink.emit({ type: "accepted", request_id: accepted.request_id, rpc_id: meta?.rpc_id, receipt: accepted, turn_id: turn.turn_id });
+    else if (!meta?.request_id) sink.emit({ type: "accepted", turn_id: turn.turn_id });
     let refusal = "";
     let overflow = false;
     try {
@@ -365,12 +433,23 @@ export function createSeatAgent(opts: {
       refusal = turnRefusal(agent.state);
       finish(refusal ? "error" : turn?.stop_token ? "stop_token" : "end_turn");
     } catch (err) {
+      settleRequests(executionRequests, "failed", "execution_error");
       finish("error");
       throw err;
     } finally {
       // The turn's messages are durable before the host hears it ended.
+      receipts.assertHealthy();
       maint.persist();
     }
+    const errorID = refusal ? classifyMessage(agent.state.messages.at(-1) as AssistantMessage) : undefined;
+    const failureReason = !refusal ? undefined : overflow ? ContextOverflow
+      : authRefusal(refusal) || hasFlag(errorID, Flag.AuthFailed) || hasFlag(errorID, Flag.OAuthExpiry) ? "auth_unavailable"
+      : hasFlag(errorID, Flag.UsageLimit) ? "capacity_unavailable"
+      : hasFlag(errorID, Flag.Timeout) ? "provider_timeout"
+      : hasFlag(errorID, Flag.Transient) ? "provider_unavailable" : "provider_refusal";
+    settleRequests(executionRequests, cancelledTurns.has(executionTurn.turn_id) ? "cancelled" : refusal ? "failed" : "completed",
+      cancelledTurns.has(executionTurn.turn_id) ? "cancelled" : failureReason);
+    cancelledTurns.delete(executionTurn.turn_id);
     if (cancelled) return;
     if (refusal) {
       sink.emit({ type: "turn_end", turn_id: turn.turn_id, error: refusal, reason: overflow ? ContextOverflow : undefined, snapshot: agent.state });
@@ -380,8 +459,20 @@ export function createSeatAgent(opts: {
   };
 
   return {
+    receipt: (requestId) => receipts.query(requestId),
     authRetry: (reply) => recovery.receive(reply),
     prompt: async (text: string, meta?: PromptMeta) => {
+      receipts.assertHealthy();
+      assertRestorableExecution();
+      const accepted = meta?.request_id ? receipts.accept(text, meta as typeof meta & { request_id: string; session_id: string }, "prompt") : undefined;
+      if (accepted && !accepted.fresh) {
+        sink.emit({ type: "accepted", request_id: meta!.request_id, rpc_id: meta?.rpc_id, receipt: accepted.receipt });
+        if (accepted.receipt.state === "accepted" && !retrying && !agent.state.isStreaming && (!turn || turn.closed) && agent.hasQueuedMessages()) {
+          await runTurn("", meta, () => agent.continue());
+        }
+        return;
+      }
+      const message = accepted?.message ?? { role: "user" as const, content: text, timestamp: Date.now() };
       // A prompt that arrives mid-turn is queued, not refused. The running
       // turn answers it before it ends. Refusing lost the message: the
       // refusal reached the owner as the seat's own reply and nothing retried
@@ -390,15 +481,11 @@ export function createSeatAgent(opts: {
       // is still finishing, where prompt() throws AgentBusyError.
       if (retrying || (turn && !turn.closed) || agent.state.isStreaming || agent.hasQueuedMessages()) {
         const enqueue = retrying ? (m: Parameters<typeof agent.followUp>[0]) => heldFollowUps.push(m) : (m: Parameters<typeof agent.followUp>[0]) => agent.followUp(m);
-        enqueue({
-          role: "user",
-          content: text,
-          timestamp: Date.now(),
-        });
-        pending.push(text);
+        enqueue(message);
+        pending.add(message);
         // Say at once that it was accepted: a host that waits for a first
         // streamed token would call a queued prompt undelivered.
-        sink.emit({ type: "accepted" });
+        sink.emit({ type: "accepted", request_id: meta?.request_id, rpc_id: meta?.rpc_id, receipt: accepted?.receipt });
         // A terminal refusal leaves accepted inputs queued. A later prompt
         // joins behind them rather than jumping ahead via agent.prompt().
         if (!retrying && !agent.state.isStreaming && (!turn || turn.closed)) {
@@ -406,20 +493,25 @@ export function createSeatAgent(opts: {
         }
         return;
       }
-      await runTurn(text, meta, () => agent.prompt(text));
+      await runTurn(text, meta, () => agent.prompt(message), accepted?.receipt);
     },
-    steer: (text: string, _meta?: PromptMeta) => {
+    steer: (text: string, meta?: PromptMeta) => {
+      receipts.assertHealthy();
+      assertRestorableExecution();
+      const accepted = meta?.request_id ? receipts.accept(text, meta as typeof meta & { request_id: string; session_id: string }, "steer") : undefined;
+      if (accepted && !accepted.fresh) {
+        sink.emit({ type: "accepted", request_id: meta!.request_id, rpc_id: meta?.rpc_id, receipt: accepted.receipt });
+        return;
+      }
       const enqueue = retrying ? (m: Parameters<typeof agent.steer>[0]) => heldSteering.push(m) : (m: Parameters<typeof agent.steer>[0]) => agent.steer(m);
-      enqueue({
-        role: "user",
-        content: text,
-        timestamp: Date.now(),
-      });
-      pending.push(text);
-      sink.emit({ type: "accepted" });
+      const message = accepted?.message ?? { role: "user" as const, content: text, timestamp: Date.now() };
+      enqueue(message);
+      pending.add(message);
+      sink.emit({ type: "accepted", request_id: meta?.request_id, rpc_id: meta?.rpc_id, receipt: accepted?.receipt });
     },
     abort: () => {
       cancelled = true;
+      if (turn && !turn.closed) cancelledTurns.add(turn.turn_id);
       recovery.cancel();
       maint.abort();
       agent.abort();
@@ -438,6 +530,7 @@ export function createSeatAgent(opts: {
       });
     },
     switchModel: async (provider: string, modelId: string) => {
+      assertRestorableExecution();
       if (agent.state.isStreaming || (turn && !turn.closed)) {
         throw new Error("switch refused: a turn is running");
       }

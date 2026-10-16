@@ -38,9 +38,12 @@ export class SeatStore {
     this.path = join(root, safeName(seat), `${safeName(session)}.jsonl`);
   }
 
+  get seat(): string { return this.#seat; }
+  get session(): string { return this.#session; }
+
   // load returns the stored entries, or null when this seat and session have
   // never been stored. It throws when the file cannot be trusted.
-  load(): SessionEntry[] | null {
+  load(options: { repairTail?: boolean } = {}): SessionEntry[] | null {
     if (!existsSync(this.path)) return null;
     const text = readFileSync(this.path, "utf8");
     const lines = text.split("\n");
@@ -58,6 +61,9 @@ export class SeatStore {
         // Only repair a tail after establishing whose conversation this
         // is. A torn header is not evidence of an empty new session.
         if (header && torn && i === lines.length - 1) {
+          if (options.repairTail === false) {
+            throw new Error(`conversation store ${this.path} has an incomplete tail; receipt is unknown`);
+          }
           console.error(`sidecar: ${this.path}: dropping a torn last line (a crash while appending)`);
           this.rewrite(entries);
           return entries;

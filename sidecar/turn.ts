@@ -27,6 +27,10 @@ const causeSet = new Set<string>(CAUSES);
 const resumeSet = new Set<string>(RESUMES);
 
 export type PromptMeta = {
+  // Host obligation and delivery attempt, separate from execution turn.
+  request_id?: string;
+  rpc_id?: string;
+  attempt_id?: string;
   turn_id?: string;
   session_id?: string;
   cause?: string;

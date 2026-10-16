@@ -214,6 +214,18 @@ export class History {
     this.#persisted = this.entries.length;
   }
 
+  // Execution facts share the conversation's durable entry sequence but
+  // never enter model context. Persist before acknowledging the fact.
+  appendFact(customType: string, data: unknown): void {
+    if (!this.store) throw new Error("durable execution facts require a session store");
+    this.entries.push({
+      type: "custom", customType, data,
+      id: crypto.randomUUID(), parentId: this.#last(),
+      timestamp: new Date().toISOString(),
+    });
+    this.persist();
+  }
+
   // latestCompactionAt is when the newest compaction entry was committed.
   latestCompactionAt(): number {
     for (let i = this.entries.length - 1; i >= 0; i--) {

@@ -327,6 +327,40 @@ the rendered terminal view alongside the structured JSONL transcript.
 Override via `Config.TermLogPath`; set to `"-"` to disable. Grok and
 Codex Session have no PTY log (`CapabilityTerminalLog` unsupported).
 
+### Durable sidecar request receipts
+
+For sidecar sessions, `SendWithRequestID` and identified steering preserve a
+host-created logical request ID through the SDK, broker and execution queue.
+Acceptance is recorded in the session's history before it is acknowledged.
+Reoffering the same ID and text returns its existing receipt; different text
+under that ID is rejected. Identical text under different IDs is distinct work.
+Delivery-attempt, execution-turn and transport-RPC IDs are separate identities.
+
+`Agent.Receipt(ctx, requestID)` queries a handle's request. `QueryReceipt(ctx,
+ReceiptQuery{Seat: ..., SessionID: ..., RequestID: ...})` queries an existing
+broker/sidecar even when that seat is unloaded. Queries do not load a model,
+refresh credentials, repair the history or submit work. Unsupported backends,
+lost acknowledgements and unavailable stores report uncertainty; `not_found`
+is not proof that execution never happened.
+
+Receipts distinguish `accepted`, `started`, `completed`, `cancelled`, `failed`
+and `unknown`. `started` records local dispatch intent, not provider acceptance.
+After a sidecar process restart, an interrupted started request becomes unknown
+and is not automatically replayed. Accepted inputs recover into the existing
+queue without executing on load. Terminal receipts describe execution, not the
+host's judgment that a mission has met its acceptance criteria. Receipt events
+carry their own request identity; an unrelated turn ending cannot settle a
+queued input.
+
+Recovery is conservative when history ends in unpaired tool calls: execution
+is refused with `execution_uncertain` until the caller inspects effects and
+starts a fresh session. This slice does not provide automatic tool-effect
+reconciliation or exactly-once external effects. Storage guarantees cover
+process restart; power-loss durability and concurrent writers are not claimed.
+Receipts are execution facts outside model context and survive compaction and
+provider switches. A receipt records the originally accepted delivery attempt;
+it is not an audit log of every retransmission.
+
 ## Daemon (optional)
 
 Install the daemon with Homebrew, then start it as a user service:
