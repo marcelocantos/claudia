@@ -3,16 +3,13 @@
 // through the Agent's cursorExecHandlers, not through setTools. Without
 // them every Cursor tool call answered "Tool not available" and a cursor
 // seat could do nothing. These run the same operations as coding.ts under
-// the same confinement: every path resolves inside the seat workdir, a
-// shell runs there (or in a subdirectory of it), and the branch guard
-// (🎯T164) still refuses a checkout of the shared clone.
+// the shared execution policy: current seat roots, read-only/protected
+// grants, shell sandbox and the branch guard (🎯T164).
 
 import crypto from "node:crypto";
 import fs from "node:fs";
-import path from "node:path";
 import type { CursorExecHandlers, ToolResultMessage } from "@oh-my-pi/pi-ai";
-import { guardBranchCheckout } from "./branchguard.ts";
-import { runCommand, under } from "./coding.ts";
+import { runCommand, runShell, under, writeFile, deleteFile, editFile, type SandboxPolicy } from "./execution.ts";
 import { capToolText } from "./truncate.ts";
 
 const maxOut = 200_000;
@@ -66,13 +63,13 @@ function sliceLines(body: string, start?: number, count?: number, end?: number):
   return lines.slice(from, to).join("\n");
 }
 
-export function cursorExecHandlers(cwdOf: () => string, boundOf: () => number): CursorExecHandlers {
+export function cursorExecHandlers(cwdOf: () => string, boundOf: () => number, policyOf: () => SandboxPolicy | undefined = () => undefined): CursorExecHandlers {
   const root = () => cwdOf() || process.cwd();
 
   const read = (id: string | undefined, tool: string, p: string, offset?: number, limit?: number) => {
     try {
       const sel = readSelector(String(p || ""));
-      const abs = under(root(), sel.file);
+      const abs = under(root(), sel.file, policyOf());
       if (fs.statSync(abs).isDirectory()) return list(id, tool, abs);
       const body = fs.readFileSync(abs, "utf8");
       const start = offset !== undefined ? Math.max(1, offset) : sel.start;
@@ -88,16 +85,14 @@ export function cursorExecHandlers(cwdOf: () => string, boundOf: () => number): 
   };
   const ls = (id: string | undefined, p: string | undefined, limit?: number) => {
     try {
-      return list(id, "read", under(root(), p || "."), limit);
+      return list(id, "read", under(root(), p || ".", policyOf()), limit);
     } catch (err) {
       return result(id, "read", String(err), true, boundOf());
     }
   };
   const write = (id: string | undefined, tool: string, p: string, content: string) => {
     try {
-      const abs = under(root(), String(p || ""));
-      fs.mkdirSync(path.dirname(abs), { recursive: true });
-      fs.writeFileSync(abs, content, "utf8");
+      const abs = writeFile(root(), String(p || ""), content, policyOf());
       return result(id, tool, "wrote " + abs, false, boundOf());
     } catch (err) {
       return result(id, tool, String(err), true, boundOf());
@@ -105,14 +100,11 @@ export function cursorExecHandlers(cwdOf: () => string, boundOf: () => number): 
   };
   const shell = async (id: string | undefined, command: string, wd: string | undefined, timeoutMs: number) => {
     try {
-      const cwd = wd ? under(root(), wd) : root();
-      const refusal = await guardBranchCheckout(cwd, command);
-      if (refusal && refusal.verdict === "deny") return result(id, "bash", refusal.message, true, boundOf());
-      const r = await runCommand("/bin/bash", ["-lc", command], {
-        cwd,
+      const r = await runShell(cwdOf, policyOf, {
+        command,
+        workingDirectory: wd,
         timeoutMs: Math.min(Math.max(timeoutMs, 1000), shellMaxMs),
         maxBuffer: maxOut,
-        env: process.env,
       });
       const out = `${r.stdout || ""}${r.stderr || ""}`.slice(0, maxOut);
       const status = r.status ?? (r.error ? 1 : 0);
@@ -123,8 +115,8 @@ export function cursorExecHandlers(cwdOf: () => string, boundOf: () => number): 
   };
   const grep = async (id: string | undefined, a: { pattern: string; path?: string; glob?: string; ignoreCase?: boolean; literal?: boolean; limit?: number }) => {
     try {
-      const target = under(root(), a.path || ".");
-      const args = ["-n", "--max-count", "50"];
+      const target = under(root(), a.path || ".", policyOf());
+      const args = ["--no-config", "--no-follow", "-n", "--max-count", "50"];
       if (a.ignoreCase) args.push("-i");
       if (a.literal) args.push("-F");
       if (a.glob) args.push("--glob", a.glob);
@@ -140,7 +132,7 @@ export function cursorExecHandlers(cwdOf: () => string, boundOf: () => number): 
   };
   const find = async (id: string | undefined, pattern: string, p?: string, limit?: number) => {
     try {
-      const target = under(root(), p || ".");
+      const target = under(root(), p || ".", policyOf());
       const r = await runCommand("/usr/bin/find", [target, "-name", pattern || "*"], { timeoutMs: searchTimeoutMs, maxBuffer: maxOut });
       const lines = (r.stdout || "").split("\n").filter(Boolean).slice(0, limit && limit > 0 ? limit : 500);
       return result(id, "find", lines.join("\n") || "(no matches)", false, boundOf());
@@ -157,9 +149,7 @@ export function cursorExecHandlers(cwdOf: () => string, boundOf: () => number): 
       write(a.toolCallId, "write", a.path, a.fileBytes && a.fileBytes.length > 0 ? new TextDecoder().decode(a.fileBytes) : String(a.fileText ?? "")),
     delete: async (a: Any) => {
       try {
-        const abs = under(root(), String(a.path || ""));
-        if (abs === path.resolve(root())) throw new Error("refusing to delete the workdir");
-        fs.rmSync(abs);
+        const abs = deleteFile(root(), String(a.path || ""), policyOf());
         return result(a.toolCallId, "delete", "deleted " + abs, false, boundOf());
       } catch (err) {
         return result(a.toolCallId, "delete", String(err), true, boundOf());
@@ -172,14 +162,7 @@ export function cursorExecHandlers(cwdOf: () => string, boundOf: () => number): 
     piWrite: async (c: Any) => write(c.toolCallId, "write", c.args.path, String(c.args.content ?? "")),
     piEdit: async (c: Any) => {
       try {
-        const abs = under(root(), String(c.args.path || ""));
-        let body = fs.readFileSync(abs, "utf8");
-        for (const e of (c.args.edits ?? []) as { oldText: string; newText: string }[]) {
-          const at = body.indexOf(e.oldText);
-          if (at < 0) throw new Error(`old text not found in ${c.args.path}`);
-          body = body.slice(0, at) + e.newText + body.slice(at + e.oldText.length);
-        }
-        fs.writeFileSync(abs, body, "utf8");
+        const abs = editFile(root(), String(c.args.path || ""), c.args.edits ?? [], policyOf());
         return result(c.toolCallId, "edit", "edited " + abs, false, boundOf());
       } catch (err) {
         return result(c.toolCallId, "edit", String(err), true, boundOf());
