@@ -121,14 +121,14 @@ describe("one seat policy through every tool adapter", () => {
     expect(fs.existsSync(path.join(rebound, "revoked"))).toBe(false);
   });
 
-  test("Cursor edit, delete and streaming shell cannot bypass read-only", async () => {
+  test("Cursor edit, delete and shell cannot bypass read-only", async () => {
     const dir = temp();
     fs.writeFileSync(path.join(dir, "keep"), "original");
     const cursor = cursorExecHandlers(() => dir, () => 100_000, () => ({ mode: "read-only" })) as any;
     for (const result of [
       await cursor.delete({ path: "keep" }),
       await cursor.piEdit({ args: { path: "keep", edits: [{ oldText: "original", newText: "no" }] } }),
-      await cursor.shellStream({ command: "echo no > keep" }),
+      await cursor.shell({ command: "echo no > keep" }),
     ]) expect(text(result)).toContain("read-only");
     expect(fs.readFileSync(path.join(dir, "keep"), "utf8")).toBe("original");
   });
@@ -186,7 +186,7 @@ describe("one seat policy through every tool adapter", () => {
     fs.mkdirSync(path.join(dir, "sub"));
     // The execution cwd is not a new sandbox authority: the rest of the
     // original seat grant remains writable, and protected roots remain denied.
-    await cursor.shellStream({ command: "echo yes > ../from-sub", workingDirectory: "sub" });
+    await cursor.shell({ command: "echo yes > ../from-sub", workingDirectory: "sub" });
     expect(fs.readFileSync(path.join(dir, "from-sub"), "utf8")).toBe("yes\n");
   });
 

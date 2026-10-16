@@ -51,6 +51,9 @@ func TestSidecarToolPolicyLive(t *testing.T) {
 		cfg.Name = "tool-policy-live-" + newRunID()
 		a, err := Start(cfg)
 		if err != nil {
+			if strings.Contains(err.Error(), "refresh refused: "+omp.NoNetworkEnv) {
+				t.Fatalf("OUTAGE: %s needs token renewal outside this isolate; no provider request ran", cfg.Provider)
+			}
 			t.Fatalf("Start %s: %v", cfg.Provider, err)
 		}
 		t.Cleanup(a.Stop)

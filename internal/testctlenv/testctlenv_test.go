@@ -29,6 +29,7 @@ func TestRegistryMembershipPinned(t *testing.T) {
 		"CLAUDIA_OLLAMA_LIVE",
 		"CLAUDIA_CURSOR_LIVE",
 		"CLAUDIA_OMP_LIVE",
+		"CLAUDIA_TOOL_POLICY_LIVE",
 		"CLAUDIA_RECOVERY_KEYCHAIN_LIVE",
 		// Two more live gates, found by internal/livegate reading the
 		// tests rather than this list (T100): they had been un-skipping

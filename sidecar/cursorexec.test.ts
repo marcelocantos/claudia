@@ -13,9 +13,12 @@ const text = (r: any) => r.content.map((c: any) => c.text).join("");
 describe("cursor exec handlers", () => {
   test("every Cursor tool frame has a handler (none answers Tool not available)", () => {
     const { h } = seat();
-    for (const k of ["read", "ls", "grep", "write", "delete", "shell", "shellStream", "piRead", "piBash", "piEdit", "piWrite", "piGrep", "piFind", "piLs"]) {
+    for (const k of ["read", "ls", "grep", "write", "delete", "shell", "piRead", "piBash", "piEdit", "piWrite", "piGrep", "piFind", "piLs"]) {
       expect(typeof h[k]).toBe("function");
     }
+    // A batch runner must not claim streaming callbacks: the provider would
+    // omit the collected output. TestSidecarToolPolicyLive covers that wire.
+    expect(h.shellStream).toBeUndefined();
   });
 
   test("write then read round-trips inside the workdir", async () => {
