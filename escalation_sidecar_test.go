@@ -4,39 +4,28 @@
 package claudia
 
 import (
-	"os"
-	"strings"
 	"testing"
+
+	"github.com/marcelocantos/claudia/omp"
 )
 
-// 🎯T138: the sidecar reports when the model takes a message queued or
-// steered behind a turn, and a hard-stop delivers what is queued at once
-// rather than leaving it for some later prompt.
-func TestOMPSidecarReportsAbsorbedAndDrainsOnAbort(t *testing.T) {
-	raw, err := os.ReadFile("sidecar/seat.ts")
-	if err != nil {
-		t.Fatal(err)
+// 🎯T138: exercise the actual socket pump. Queue consumption and abort drain
+// are behavioral sidecar tests in seat-receipts.test.ts, run by make gate;
+// matching source text here never proved either behavior.
+func TestOMPSidecarReportsIdentifiedAbsorbed(t *testing.T) {
+	_, _, _, peer, events := receiptPipe(t)
+	replyReceipt(t, peer, omp.Event{Type: "absorbed", Text: "same text", RequestID: "B", TurnID: "turn-A"})
+	ev := <-events
+	if ev.Type != "progress" || ev.ProgressType != ProgressDeliveryAbsorbed || ev.Text != "same text" || ev.RequestID != "B" || ev.TurnID != "turn-A" {
+		t.Fatalf("absorption lost its identity: %+v", ev)
 	}
-	src := string(raw)
-	for _, want := range []string{
-		`event.type === "message_start" && event.message?.role === "user"`,
-		`sink.emit({ type: "absorbed", text });`,
-		`pending.push(text);`,
-		`void agent.waitForIdle().then(async () => {`,
-		`await runTurn("", { cause: "interrupt-deliver" }, () => agent.continue());`,
-	} {
-		if !strings.Contains(src, want) {
-			t.Errorf("seat.ts lacks %s", want)
-		}
-	}
-	if n := strings.Count(src, "pending.push(text);"); n != 2 {
-		t.Errorf("seat.ts tracks %d queue paths as pending; want the follow-up and the steer", n)
-	}
-	goSrc, err := os.ReadFile("omp_agent.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(goSrc), `a.publishEvent(Event{Type: "progress", ProgressType: ProgressDeliveryAbsorbed, Text: ev.Text})`) {
-		t.Error("the sidecar's absorbed event must publish as delivery_absorbed")
+}
+
+func TestOMPSidecarAnnouncesLegacyAcceptedPrompt(t *testing.T) {
+	ctrl, _, _, peer, events := receiptPipe(t)
+	replyReceipt(t, peer, omp.Event{Type: "accepted", TurnID: "legacy-turn"})
+	ev := <-events
+	if ev.Type != "progress" || ev.ProgressType != ProgressPromptAccepted || ev.TurnID != "legacy-turn" || !ctrl.inflight.Load() {
+		t.Fatalf("legacy acceptance was not observable: %+v", ev)
 	}
 }
