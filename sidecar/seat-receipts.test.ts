@@ -66,6 +66,22 @@ test("active A, identical-text steer B and later prompt C retain separate receip
   expect(finalUsers.map(m => (m as any).claudiaRequest.request_id)).toEqual(["A", "B", "C"]);
 });
 
+test("legacy initial, follow-up and steering inputs are acknowledged before output and all consumed", async () => {
+  const f = fixture(store(), () => {
+    if (f.model.calls.length === 1) {
+      expect(f.events.filter(e => e.type === "accepted").length).toBe(1);
+      void f.agent.prompt("queued prompt");
+      f.agent.steer("queued steer");
+      expect(f.events.filter(e => e.type === "accepted").length).toBe(3);
+      expect(f.events.filter(e => e.type === "text")).toEqual([]);
+    }
+    return { content: ["ok"] };
+  });
+  await f.agent.prompt("initial");
+  expect(f.events.filter(e => e.type === "absorbed").map(e => e.text)).toEqual(["queued steer", "queued prompt"]);
+  expect(f.model.calls.at(-1)!.context.messages.filter(m => m.role === "user").map(m => m.content)).toEqual(["initial", "queued steer", "queued prompt"]);
+});
+
 test("an unconsumed follow-up survives terminal failure and restart without being marked complete", async () => {
   const storage = store();
   const first = fixture(storage, () => {

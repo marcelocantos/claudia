@@ -131,50 +131,6 @@ func TestRunToolRoutesToDiscoveredServer(t *testing.T) {
 	}
 }
 
-// A prompt that reaches a busy seat is queued as a pi-agent-core follow-up,
-// not refused: the refusal reached the owner as the seat's reply and the
-// message was lost (2026-09-28). Leftover follow-ups drain inside the turn.
-func TestOMPSidecarQueuesPromptWhileBusy(t *testing.T) {
-	seat, err := os.ReadFile("sidecar/seat.ts")
-	if err != nil {
-		t.Fatal(err)
-	}
-	src := string(seat)
-	if strings.Contains(src, "seat is already processing") {
-		t.Fatal("a busy seat must not refuse a prompt")
-	}
-	// T169 holds inputs during auth recovery before handing them to the same
-	// follow-up queue. Execution/order is covered by the protocol journey;
-	// this census must not depend on adjacency or an inline object literal.
-	if !strings.Contains(src, "(turn && !turn.closed) || agent.state.isStreaming") || !strings.Contains(src, "agent.followUp(") {
-		t.Fatal("a prompt that arrives mid-turn must be queued with agent.followUp")
-	}
-	if !strings.Contains(src, "agent.hasQueuedMessages() && !agent.state.isStreaming") || !strings.Contains(src, "await agent.continue()") {
-		t.Fatal("follow-ups left after the run must drain inside the turn")
-	}
-}
-
-// Jevons T887: a sidecar seat announces a prompt it took (turn begun, or
-// queued behind the running one) before any token, and Claudia publishes it
-// as prompt_accepted, so a host's delivery check does not call it lost.
-func TestOMPSidecarAnnouncesAcceptedPrompt(t *testing.T) {
-	seat, err := os.ReadFile("sidecar/seat.ts")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n := strings.Count(string(seat), `sink.emit({ type: "accepted" });`); n != 3 {
-		t.Fatalf("seat.ts announces acceptance %d times; want the turn start, the queued follow-up and the steer (T138)", n)
-	}
-	src, err := os.ReadFile("omp_agent.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(src), "case \"accepted\":\n\t\t\t// The sidecar took the prompt") ||
-		!strings.Contains(string(src), `a.publishEvent(Event{Type: "progress", ProgressType: ProgressPromptAccepted})`) {
-		t.Fatal("the sidecar's accepted event must publish as prompt_accepted progress")
-	}
-}
-
 // 🎯T871.1: the sidecar must offer the model every host tool it is given,
 // not only jevons_* names — routing which server executes a tool is the
 // host's job (hostTools), not seat.ts's.
