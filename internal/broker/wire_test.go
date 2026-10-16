@@ -298,6 +298,10 @@ var responseVectors = map[string]*Response{
 		ID: "g5", Type: TypeGranted,
 		Granted: &GrantResponse{Name: "jv-worker-1", SessionID: "sid-1", Provider: "grok", Reclaimed: true, Replayed: 3, Lagged: true, ConnectURL: "ws://127.0.0.1:1/ws", ConnectPID: 99},
 	},
+	"granted_receipts": {
+		ID: "g5", Type: TypeGranted,
+		Granted: &GrantResponse{Name: "jv-worker-1", SessionID: "sid-1", Provider: "grok", DurableReceipts: true},
+	},
 	"agent_event": {
 		Type:       TypeAgentEvent,
 		AgentEvent: &AgentEventMessage{Name: "jv-worker-1", Event: json.RawMessage(`{"type":"assistant","text":"hi"}`)},

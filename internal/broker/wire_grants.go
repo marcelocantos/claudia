@@ -380,6 +380,8 @@ type GrantResponse struct {
 	// TurnCaps is what the seat's provider can do with a busy turn
 	// (🎯T72.3). Absent from a daemon that predates it.
 	TurnCaps *TurnCaps `json:"turn_caps,omitempty"`
+	// DurableReceipts is absent for native backends and older daemons.
+	DurableReceipts bool `json:"durable_receipts,omitempty"`
 	// RemainingPercent is the primary-window remaining when this grant
 	// was chosen by pick remaining. Absent on a named provider and on a
 	// reclaim.

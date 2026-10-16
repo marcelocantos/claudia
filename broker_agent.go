@@ -162,10 +162,12 @@ func (b *brokerAgentBackend) StartAgent(req agentStartRequest) (*agentStart, err
 		slog.Warn("broker grant reclaimed with a lagged replay; event history is incomplete",
 			"grant", name, "replayed", g.Replayed)
 	}
+	ops := b.ops()
+	ops.explicitRequestIDs = g.DurableReceipts
 	return &agentStart{
 		WindowID:           g.WindowID,
 		HostMCPUnavailable: g.MCPUnavailable,
-		Ops:                b.ops(),
+		Ops:                ops,
 		SessionID:          g.SessionID,
 		JSONLPath:          g.JSONLPath,
 		TermLogPath:        g.TermLogPath,
