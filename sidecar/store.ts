@@ -22,6 +22,26 @@ const storeVersion = 1;
 
 type Header = { type: "claudia_seat"; v: number; seat: string; session: string };
 
+// Shared by restore and the read-only historical usage scanner. Neither
+// consumer may accept a journal belonging to a sanitized-name collision.
+export function validateStoreHeader(value: unknown, seat: string, session: string, path: string): void {
+  const h = value as Partial<Header>;
+  if (!h || typeof h !== "object" || h.type !== "claudia_seat" || h.v !== storeVersion) {
+    throw new Error(`conversation store ${path} has no claudia_seat v${storeVersion} header`);
+  }
+  if (h.seat !== seat || h.session !== session) {
+    throw new Error(`conversation store ${path} identity mismatch: expected seat ${JSON.stringify(seat)} session ${JSON.stringify(session)}, found seat ${JSON.stringify(h.seat)} session ${JSON.stringify(h.session)}`);
+  }
+}
+
+export function validateStoreEntry(value: unknown, path: string, line: number): SessionEntry {
+  const e = value as Partial<SessionEntry>;
+  if (!e || typeof e !== "object" || typeof e.type !== "string" || typeof e.id !== "string") {
+    throw new Error(`conversation store ${path} line ${line} is not an entry`);
+  }
+  return e as SessionEntry;
+}
+
 // safeName keeps a seat or session id usable as one path component.
 function safeName(s: string): string {
   return s.replace(/[^A-Za-z0-9._-]/g, "_");
@@ -71,24 +91,11 @@ export class SeatStore {
         throw new Error(`conversation store ${this.path} line ${i + 1} is not JSON: ${String(err)}`);
       }
       if (!header) {
-        const h = rec as Partial<Header>;
-        if (!h || typeof h !== "object" || h.type !== "claudia_seat" || h.v !== storeVersion) {
-          throw new Error(`conversation store ${this.path} has no claudia_seat v${storeVersion} header`);
-        }
-        // safeName is deliberately compatible with existing paths, but
-        // different names can sanitize to the same component. The header,
-        // not the filename, proves which durable session we are loading.
-        if (h.seat !== this.#seat || h.session !== this.#session) {
-          throw new Error(`conversation store ${this.path} identity mismatch: expected seat ${JSON.stringify(this.#seat)} session ${JSON.stringify(this.#session)}, found seat ${JSON.stringify(h.seat)} session ${JSON.stringify(h.session)}`);
-        }
+        validateStoreHeader(rec, this.#seat, this.#session, this.path);
         header = true;
         continue;
       }
-      const e = rec as Partial<SessionEntry>;
-      if (!e || typeof e !== "object" || typeof e.type !== "string" || typeof e.id !== "string") {
-        throw new Error(`conversation store ${this.path} line ${i + 1} is not an entry`);
-      }
-      entries.push(e as SessionEntry);
+      entries.push(validateStoreEntry(rec, this.path, i + 1));
     }
     if (!header) throw new Error(`conversation store ${this.path} is empty`);
     // A crash can omit only the newline after an otherwise complete JSON

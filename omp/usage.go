@@ -135,7 +135,11 @@ func QueryUsage(ctx context.Context, seat, session string, after uint64, limit i
 	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer stop()
 	rpc := uuid.NewString()
-	if err := conn.Send(Message{Op: "usage", Seat: seat, SessionID: session, RPCID: rpc, After: after, Limit: limit}); err != nil {
+	msg := Message{Op: "usage", Seat: seat, SessionID: session, RPCID: rpc, After: after, Limit: limit}
+	if deadline, ok := ctx.Deadline(); ok {
+		msg.ExpiresAt = deadline.UnixMilli()
+	}
+	if err := conn.Send(msg); err != nil {
 		return nil, err
 	}
 	for {

@@ -21,7 +21,7 @@ import { HOST_CONNECTION_LOST, HostCalls } from "./hostcalls.ts";
 import { SeatStore } from "./store.ts";
 import { History } from "./maintain.ts";
 import { ReceiptJournal } from "./receipts.ts";
-import { UsageJournal } from "./usage.ts";
+import { HistoricalUsageReader } from "./usage-reader.ts";
 import type { SandboxPolicy } from "./coding.ts";
 
 const banned = [
@@ -114,6 +114,7 @@ type Seat = {
 };
 
 const seats = new Map<string, Seat>();
+const historicalUsage = new HistoricalUsageReader();
 
 process.on("uncaughtException", (err: NodeJS.ErrnoException) => {
   if (err.code === "EPIPE" || err.code === "ECONNRESET") return;
@@ -123,10 +124,12 @@ process.on("uncaughtException", (err: NodeJS.ErrnoException) => {
 const server = createServer((socket) => {
   let buf = "";
   const calls = new HostCalls();
+  const disconnected = new AbortController();
   socket.on("error", () => {});
   // A tool call this connection was answering can no longer be answered.
   // Fail it so the turn ends instead of waiting forever (jevons 🎯T927).
   socket.on("close", () => {
+    disconnected.abort();
     const n = calls.failAll(HOST_CONNECTION_LOST);
     if (n > 0) console.error(`sidecar: host connection closed with ${n} tool call(s) unanswered; failed them`);
   });
@@ -187,7 +190,7 @@ const server = createServer((socket) => {
         write({ type: "tool_call", call_id: callId, name, text: args });
         return answer;
       };
-      void handle(msg, seat, write, callTool, calls).catch((err: unknown) => {
+      void handle(msg, seat, write, callTool, calls, disconnected.signal).catch((err: unknown) => {
         write({ seat, type: "error", request_id: msg.request_id, rpc_id: msg.rpc_id,
           reason: err instanceof Error && "reason" in err && typeof err.reason === "string" ? err.reason : undefined,
           text: err instanceof Error ? err.message : String(err) });
@@ -202,6 +205,7 @@ async function handle(
   write: (ev: Record<string, unknown>) => void,
   callTool: (callId: string, name: string, args: string) => Promise<string>,
   calls: HostCalls,
+  signal: AbortSignal,
 ): Promise<void> {
   if (msg.op === "usage") {
     if (!msg.session_id) throw new Error("usage query requires session_id");
@@ -211,11 +215,7 @@ async function handle(
       page = existing.agent.usage(msg.after, msg.limit);
     } else {
       const store = new SeatStore(storeRoot, seat, msg.session_id);
-      const entries = store.load({ repairTail: false });
-      if (!entries) throw new Error("usage accounting unavailable: no stored session");
-      const history = new History(store);
-      history.entries = entries;
-      page = new UsageJournal(history).page(msg.after, msg.limit);
+      page = await historicalUsage.page(store, msg.after, msg.limit, { expiresAt: msg.expires_at, signal });
     }
     write({ seat, type: "usage_page", rpc_id: msg.rpc_id, usage_page: page });
     return;

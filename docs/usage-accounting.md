@@ -23,6 +23,31 @@ counters to `Agent.Usage()` only once. `Agent.UsageError()` exposes a sticky
 observation failure. Replaying old facts is read-only, not a request to
 repeat provider work.
 
+Historical queries make one asynchronous cold scan per cached file version,
+retaining only validated usage facts. Warm pages recheck file identity and
+copy at most 128 facts; they do not reread or parse the conversation.
+Append or atomic rewrite invalidates the cached version. Rebuilding must
+preserve the cached fact prefix, so normal growth and conversation-only
+rewrites remain usable; conflicting changes fail. A file that changes during
+scanning fails that query without an automatic retry. Cache eviction loses
+prior-prefix mutation detection, not the durable facts. There is no claim of
+detecting arbitrary historical edits after eviction or restart.
+
+The historical reader permits one concurrent cold scan, sharing it for the
+same session. Other cold queries receive an explicit busy error. It honors
+the caller's forwarded deadline/disconnect with a ten-second server maximum,
+checking between asynchronous 64 KiB reads and bounded record processing.
+Resource ceilings are 256 MiB of journal bytes, 8 MiB per JSONL record,
+50,000 facts, 16 MiB of charged projection memory, and an eight-session LRU
+cache capped at 32 MiB charged memory. Charge is four times encoded fact
+bytes plus 512 bytes per fact; it is a conservative accounting budget, not a
+measurement or guarantee of JavaScript heap size. One cold projection and
+record buffers coexist with the cache. Oversize or malformed input fails
+explicitly, with no truncated success, file repair, or model load. These are
+local diagnostic admission limits, not an established economical profile for
+provider context maintenance. Regression tests independently vary fact count
+and conversation bytes and measure actual source reads and warm pages.
+
 Counters and estimated dollars are optional. An absent counter is unknown;
 a present zero can represent a measured zero in the typed contract. The
 current producer only observes positive adapter-normalized counters because

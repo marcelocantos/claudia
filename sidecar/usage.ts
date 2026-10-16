@@ -52,6 +52,14 @@ export function validateUsageFact(value: unknown, seat: string, session: string)
   return f;
 }
 
+export function validateUsageTransition(f: UsageFact, next: number, old?: UsageFact): void {
+  if (f.seq !== next) throw new Error("usage journal: discontinuous sequence");
+  if ((!old && f.state !== "started") || (old && (old.state !== "started" || f.state === "started" ||
+      JSON.stringify({ ...old, seq: 0, state: "", counters: {} }) !== JSON.stringify({ ...f, seq: 0, state: "", counters: {}, finished_at: undefined, context_tokens: undefined, api_equivalent_cost_usd: undefined, cost_source: undefined })))) {
+    throw new Error("usage journal: conflicting invocation transition");
+  }
+}
+
 // An indexed projection over the existing history, never a second store.
 // Append failures poison reads and are reported without changing provider
 // dispatch/retry policy. A missing final fact leaves consumption unknown.
@@ -73,12 +81,7 @@ export class UsageJournal {
   }
 
   #accept(f: UsageFact): void {
-    if (f.seq !== this.#facts.length + 1) throw new Error("usage journal: discontinuous sequence");
-    const old = this.#last.get(f.call_id);
-    if ((!old && f.state !== "started") || (old && (old.state !== "started" || f.state === "started" ||
-        JSON.stringify({ ...old, seq: 0, state: "", counters: {} }) !== JSON.stringify({ ...f, seq: 0, state: "", counters: {}, finished_at: undefined, context_tokens: undefined, api_equivalent_cost_usd: undefined, cost_source: undefined })))) {
-      throw new Error("usage journal: conflicting invocation transition");
-    }
+    validateUsageTransition(f, this.#facts.length + 1, this.#last.get(f.call_id));
     this.#facts.push(structuredClone(f)); this.#last.set(f.call_id, structuredClone(f));
   }
 

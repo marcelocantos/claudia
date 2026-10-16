@@ -4,9 +4,14 @@
 package omp
 
 import (
+	"context"
 	"encoding/json"
 	"math"
+	"net"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestUsageAvailabilityAndBoundaryValidation(t *testing.T) {
@@ -61,5 +66,60 @@ func TestUsageAvailabilityAndBoundaryValidation(t *testing.T) {
 	p.More = true
 	if p.Validate("seat", "session", 1, 1) == nil {
 		t.Fatal("nonadvancing pagination accepted")
+	}
+}
+
+// This reaches the socket contract, not a message-construction helper.
+func TestQueryUsageForwardsDeadline(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "usage-deadline-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	socket := filepath.Join(dir, "sidecar.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	t.Setenv(SocketEnv, socket)
+	deadline := time.Now().Add(3 * time.Second)
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
+	messages := make(chan Message, 1)
+	failures := make(chan error, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			failures <- err
+			return
+		}
+		defer conn.Close()
+		_ = conn.SetDeadline(deadline)
+		var msg Message
+		if err := json.NewDecoder(conn).Decode(&msg); err != nil {
+			failures <- err
+			return
+		}
+		messages <- msg
+		failures <- json.NewEncoder(conn).Encode(Event{Type: "usage_page", RPCID: msg.RPCID, UsagePage: &UsagePage{Seat: "seat", SessionID: "session", Facts: []UsageFact{}, Next: 0}})
+	}()
+	page, err := QueryUsage(ctx, "seat", "session", 0, 128)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.More || len(page.Facts) != 0 {
+		t.Fatalf("bad page: %+v", page)
+	}
+	select {
+	case msg := <-messages:
+		if msg.ExpiresAt != deadline.UnixMilli() {
+			t.Fatalf("deadline=%d, want %d", msg.ExpiresAt, deadline.UnixMilli())
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	if err := <-failures; err != nil {
+		t.Fatal(err)
 	}
 }
