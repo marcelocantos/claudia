@@ -36,8 +36,9 @@ never represents a subscription balance or quota.
 The first slice covers the engine stream invocation (including explicit
 auth-retry calls) and local compaction completion calls. It records failed
 calls even when the failed assistant message is removed before retry.
-Cancellation without a completed stream result records cancellation with
-unknown counters. A crash leaving only a start fact remains uncertainty.
+Cancellation does not preempt a late result carrying measured usage. A
+cancelled stream whose result never settles, like a crash leaving only a
+start fact, remains incomplete with unknown consumption.
 Negative, nonfinite or unsafe counters are refused and reported as
 `usage_error`; accounting append failures poison current journal queries.
 The observer neither retries calls nor changes admission. The shared

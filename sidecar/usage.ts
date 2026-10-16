@@ -144,22 +144,16 @@ export function measuredStream(journal: () => UsageJournal | undefined, attribut
   return ((model, context, options) => {
     const j = journal();
     if (!j) return streamSimple(model, context, options);
-    const start = j?.begin("model", model, attribution());
-    let settled = false;
+    const start = j.begin("model", model, attribution());
     const finish = (message?: AssistantMessage) => {
-      if (settled) return;
-      settled = true;
-      options?.signal?.removeEventListener("abort", aborted);
-      if (start) j!.finish(start, message, options?.signal?.aborted);
+      j.finish(start, message, options?.signal?.aborted);
     };
-    const aborted = () => finish();
-    // Some providers never resolve result() after cancellation. The abort
-    // itself proves only cancellation, never a measured zero consumption.
-    options?.signal?.addEventListener("abort", aborted, { once: true });
+    // Abort alone is not a final accounting observation: a provider can
+    // return measured usage afterward. An abandoned result remains started
+    // and incomplete, just like a process interruption.
     try {
       const stream = streamSimple(model, context, options);
-      if (options?.signal?.aborted) finish();
-      if (start) void stream.result().then(finish, () => finish());
+      void stream.result().then(finish, () => finish());
       return stream;
     } catch (err) {
       finish();

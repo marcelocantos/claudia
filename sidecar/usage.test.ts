@@ -10,7 +10,7 @@ import type { AssistantMessage, Model } from "@oh-my-pi/pi-ai";
 import { createSeatAgent, type SeatEvent } from "./seat.ts";
 import { SeatStore } from "./store.ts";
 import { History } from "./maintain.ts";
-import { UsageJournal, usageFactType } from "./usage.ts";
+import { UsageJournal, usageFactType, measuredStream } from "./usage.ts";
 import { Spool } from "./spool.ts";
 import { readFileSync } from "node:fs";
 
@@ -81,10 +81,26 @@ test("auth retry retains failed usage facts even though the refused message is r
   expect(fixture(store).agent.usage().facts.filter(v => v.state !== "started")).toEqual(facts);
 });
 
-test("an interrupted invocation keeps explicit cancellation and unknown counters", async () => {
+test("an abandoned interrupted stream remains incomplete with unknown counters", async () => {
   const f = fixture(storage(), () => { f.agent.abort(); return { content: ["interrupted"] }; });
   await f.agent.prompt("A", meta("A"));
-  expect(f.agent.usage().facts.at(-1)).toMatchObject({ state: "cancelled", counters: {} });
+  expect(f.agent.usage().facts).toHaveLength(1);
+  expect(f.agent.usage().facts[0]).toMatchObject({ state: "started", counters: {} });
+});
+
+test("abort does not discard actual usage returned after the cancellation signal", async () => {
+  const j = new UsageJournal(new History(storage()));
+  const abort = new AbortController();
+  const model = createMockModel({ handler: () => {
+    abort.abort();
+    return { content: ["partial"], usage: { input: 21, output: 4 } };
+  } });
+  const stream = measuredStream(() => j, () => ({ requests: [] }))(model, { messages: [] }, { signal: abort.signal });
+  const actual = await stream.result();
+  expect(actual.usage.input).toBe(21);
+  expect(actual.usage.output).toBe(4);
+  expect(j.page().facts).toHaveLength(2);
+  expect(j.page().facts[1]).toMatchObject({ state: "cancelled", counters: { input_tokens: 21, output_tokens: 4 } });
 });
 
 test("dated spool mirrors typed facts without flattening identity or availability", async () => {
