@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 // Block unexpected auxiliary network work before loading the SDK.
 globalThis.fetch = (async () => { throw new Error("unexpected fixture network request"); }) as typeof fetch;
@@ -11,8 +11,10 @@ const { AuthStorage, streamSimple } = await import("@oh-my-pi/pi-ai");
 const { createMockModel, registerMockApi } = await import("@oh-my-pi/pi-ai/providers/mock");
 const { AgentSession } = await import("@oh-my-pi/pi-coding-agent/session/agent-session");
 const { SessionManager } = await import("@oh-my-pi/pi-coding-agent/session/session-manager");
+const { parseSessionContent } = await import("@oh-my-pi/pi-coding-agent/session/session-loader");
 const { createOmpSession, convertOmpMessages } = await import("../omp-session.ts");
 const { OMPJournal } = await import("../omp-journal.ts");
+const { ReceiptJournal, requestFactType } = await import("../receipts.ts");
 
 const root = process.argv[2];
 const cwd = join(root, "work");
@@ -22,11 +24,23 @@ const secret = "OUTSIDE_FILE_SENTINEL_6c89b";
 writeFileSync(outside, secret);
 registerMockApi();
 const contexts: unknown[] = [];
+let expectedDispatch: string | undefined;
 const model = createMockModel({
   provider: "fixture-provider",
   id: "fixture-model",
   contextWindow: 200_000,
   handler: context => {
+    if (expectedDispatch) {
+      // This is the actual SDK transport boundary: independently read disk
+      // before the mock response. No in-memory receipt substitutes for it.
+      const persisted = parseSessionContent(readFileSync(journal.store.path, "utf8"));
+      const facts = persisted.entries.filter(entry => entry.type === "custom" && entry.customType === requestFactType)
+        .map(entry => entry.data as { receipt: { request_id: string; state: string } })
+        .filter(fact => fact.receipt.request_id === expectedDispatch);
+      assert.deepEqual(facts.map(fact => fact.receipt.state), ["accepted", "started"]);
+      assert.ok(context.messages.some(message => "claudiaRequest" in message &&
+        (message.claudiaRequest as { request_id: string }).request_id === expectedDispatch));
+    }
     contexts.push(structuredClone(context));
     return { content: ["OK"], usage: { input: 10, output: 1 } };
   },
@@ -42,10 +56,14 @@ const agent = makeAgent();
 const journalOptions = { root: join(root, "sessions"), seat: "fixture-seat", session: "fixture-generation", cwd };
 const journal = await OMPJournal.open(journalOptions);
 const manager = journal.manager;
+const receipts = new ReceiptJournal(journal);
 let observedRequests: unknown[] = [];
 agent.addBeforeModelCall(context => {
   observedRequests = context.messages.filter(message => "claudiaRequest" in message)
     .map(message => message.claudiaRequest);
+  const ids = observedRequests.map(request => (request as { request_id: string }).request_id)
+    .filter(id => receipts.query(id).state === "accepted");
+  if (ids.length) receipts.start(ids, `sdk-turn-${expectedDispatch}`);
 });
 const tokens = new Map<string, string>();
 const tokenFor = (provider: string) => provider === model.provider ? token : tokens.get(provider);
@@ -90,9 +108,12 @@ try {
   await assertNoCredential("anthropic");
   assert.equal(adapter.settings.get("retry.enabled"), false);
   const details = { request_id: "request-A", attempt_id: "attempt-one" };
+  receipts.accept(`Read @${outside}`, { ...details, session_id: journal.store.session }, "prompt");
+  expectedDispatch = details.request_id;
   assert.equal(await adapter.session.promptCustomMessage({
     customType: "claudia-request", content: `Read @${outside}`, display: true, attribution: "user", details,
   }), true);
+  receipts.finish([details.request_id], "completed");
   assert.deepEqual(observedRequests, [details]);
   assert.equal(contexts.length, 1);
   assert.equal(JSON.stringify(contexts[0]).includes(secret), false);
@@ -103,8 +124,11 @@ try {
   // Repeated payloads are distinct requests. Identity follows the custom
   // message itself, not text matching or the newest queue slot.
   const second = { request_id: "request-B", attempt_id: "attempt-two" };
+  receipts.accept(`Read @${outside}`, { ...second, session_id: journal.store.session }, "prompt");
+  expectedDispatch = second.request_id;
   await adapter.session.promptCustomMessage({ customType: "claudia-request",
     content: `Read @${outside}`, display: true, attribution: "user", details: second });
+  receipts.finish([second.request_id], "completed");
   assert.deepEqual(observedRequests, [details, second]);
   assert.equal(contexts.length, 2);
   assert.equal(JSON.stringify(contexts).includes(secret), false);
@@ -128,6 +152,7 @@ try {
     memoryEnabled: false, disableExtensionDiscovery: true, scoutAllowedBySpawnPolicy: false,
     skills: [], skillsReloadable: false, advisorConfigs: [],
   });
+  expectedDispatch = undefined;
   await raw.promptCustomMessage({ customType: "fixture", content: `Read @${outside}`,
     display: true, attribution: "user", details: {} });
   assert.equal(contexts.length, 3);
@@ -145,6 +170,8 @@ assert.equal(restoredAgent.state.messages.length, 0);
 const restored = await createOmpSession({ agent: restoredAgent, sessionManager: reopened.manager,
   stateDir: root, tokenFor, sideStreamFn: streamSimple });
 try {
+  assert.equal(new ReceiptJournal(reopened).query("request-A").state, "completed");
+  assert.equal(new ReceiptJournal(reopened).query("request-B").state, "completed");
   assert.equal(restoredAgent.state.messages.filter(message => message.role === "assistant").length, 2);
   const restoredIDs = convertOmpMessages(restoredAgent.state.messages)
     .filter(message => "claudiaRequest" in message).map(message => message.claudiaRequest);

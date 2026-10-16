@@ -1,3 +1,16 @@
+diff --git a/dist/types/auth-storage.d.ts b/dist/types/auth-storage.d.ts
+index ce3755c6c995b0271a181ce550550548f911d346..747390ce62c33e9e0c156e6f981319f34473b3cc 100644
+--- a/dist/types/auth-storage.d.ts
++++ b/dist/types/auth-storage.d.ts
+@@ -432,6 +432,8 @@ export interface CredentialDisabledEvent {
+     disabledCause: string;
+ }
+ export type AuthStorageOptions = {
++    /** Consult ambient provider credentials. Disable for broker-owned credential resolution. Default: true. */
++    allowEnvironmentCredentials?: boolean;
+     usageProviderResolver?: (provider: Provider) => UsageProvider | undefined;
+     rankingStrategyResolver?: (provider: Provider) => CredentialRankingStrategy | undefined;
+     usageFetch?: typeof fetch;
 diff --git a/dist/types/providers/openai-shared.d.ts b/dist/types/providers/openai-shared.d.ts
 index 45dddcbaf6c897ba1d734581bf9773d9f318ae41..5d24a167a09888387a25e63e554189235502a581 100644
 --- a/dist/types/providers/openai-shared.d.ts
@@ -40,7 +53,7 @@ index 4e933cd3190eca48213a94828fdd30dfaad4cbab..f9e754df9a7fa3fb8c32578a64bc38a9
      /**
       * Optional override for the first-event watchdog in milliseconds. Built-in
       * providers apply this budget twice when they can: once to the underlying
-diff --git a/dist/types/utils/provider-attempt.d.ts b/dist/types/utils/provider-attempt.d.ts
+diff --git a/node_modules/@oh-my-pi/pi-ai/dist/types/utils/provider-attempt.d.ts b/dist/types/utils/provider-attempt.d.ts
 new file mode 100644
 index 0000000000000000000000000000000000000000..e59a21f02bc2dce28955547882ad44656828ed64
 --- /dev/null
@@ -61,6 +74,132 @@ index 0000000000000000000000000000000000000000..e59a21f02bc2dce28955547882ad4465
 + finish(response: Response, state: "completed" | "failed" | "cancelled"): void;
 + close(state: "completed" | "failed" | "cancelled"): void;
 +};
+diff --git a/src/auth-storage.ts b/src/auth-storage.ts
+index df8bb7262614afa0cd08e1b259cd16b9b9313fa0..e26788be6f2db2e3622cda9ed5b1bfa5c12224ec 100644
+--- a/src/auth-storage.ts
++++ b/src/auth-storage.ts
+@@ -584,6 +584,8 @@ export interface CredentialDisabledEvent {
+ }
+ 
+ export type AuthStorageOptions = {
++	/** Consult ambient provider credentials. Disable for broker-owned credential resolution. Default: true. */
++	allowEnvironmentCredentials?: boolean;
+ 	usageProviderResolver?: (provider: Provider) => UsageProvider | undefined;
+ 	rankingStrategyResolver?: (provider: Provider) => CredentialRankingStrategy | undefined;
+ 	usageFetch?: typeof fetch;
+@@ -1416,6 +1418,7 @@ export class AuthStorage {
+ 	#fallbackResolver?: (provider: string) => string | undefined;
+ 	#store: AuthCredentialStore;
+ 	#configValueResolver: (config: string) => Promise<string | undefined>;
++	#allowEnvironmentCredentials: boolean;
+ 	#refreshOAuthCredentialOverride?: AuthStorageOptions["refreshOAuthCredential"];
+ 	#fetchUsageReportsOverride?: AuthStorageOptions["fetchUsageReports"];
+ 	#sourceLabel?: string;
+@@ -1437,6 +1440,7 @@ export class AuthStorage {
+ 
+ 	constructor(store: AuthCredentialStore, options: AuthStorageOptions = {}) {
+ 		this.#store = store;
++		this.#allowEnvironmentCredentials = options.allowEnvironmentCredentials ?? true;
+ 		this.#configValueResolver = options.configValueResolver ?? defaultConfigValueResolver;
+ 		this.#usageProviderResolver = options.usageProviderResolver ?? resolveDefaultUsageProvider;
+ 		this.#rankingStrategyResolver = options.rankingStrategyResolver ?? resolveDefaultRankingStrategy;
+@@ -3036,13 +3040,13 @@ export class AuthStorage {
+ 		if (this.#runtimeOverrides.has(provider)) return true;
+ 		if (this.#configOverrides.has(provider)) return true;
+ 		if (this.#getAuthBearingCredentials(provider).length > 0) return true;
+-		if ((provider === "amazon-bedrock" || provider === "bedrock-mantle") && $env.AWS_BEARER_TOKEN_BEDROCK?.trim()) {
++		if (this.#allowEnvironmentCredentials && (provider === "amazon-bedrock" || provider === "bedrock-mantle") && $env.AWS_BEARER_TOKEN_BEDROCK?.trim()) {
+ 			return true;
+ 		}
+ 		if (provider === "xai-oauth") {
+-			if ($env.XAI_OAUTH_TOKEN?.trim()) return true;
++			if (this.#allowEnvironmentCredentials && $env.XAI_OAUTH_TOKEN?.trim()) return true;
+ 		} else {
+-			const envApiKey = getEnvApiKey(provider);
++			const envApiKey = this.#getEnvApiKey(provider);
+ 			if (envApiKey !== undefined && envApiKey !== AUTHENTICATED_SENTINEL) return true;
+ 		}
+ 		const fallback = this.#fallbackResolver?.(provider);
+@@ -3058,7 +3062,7 @@ export class AuthStorage {
+ 	 */
+ 	hasResolvableAuth(provider: string): boolean {
+ 		if (this.hasAuth(provider)) return true;
+-		return Boolean(getEnvApiKey(provider));
++		return Boolean(this.#getEnvApiKey(provider));
+ 	}
+ 
+ 	/**
+@@ -3090,10 +3094,15 @@ export class AuthStorage {
+ 	 * over paid `xai/grok-4.6`.
+ 	 */
+ 	#hasDedicatedEnvAuth(provider: string): boolean {
++		if (!this.#allowEnvironmentCredentials) return false;
+ 		if (provider === "xai-oauth") {
+ 			return Boolean($env.XAI_OAUTH_TOKEN?.trim());
+ 		}
+-		return Boolean(getEnvApiKey(provider));
++		return Boolean(this.#getEnvApiKey(provider));
++	}
++
++	#getEnvApiKey(provider: string): string | undefined {
++		return this.#allowEnvironmentCredentials ? getEnvApiKey(provider) : undefined;
+ 	}
+ 
+ 	/**
+@@ -3154,7 +3163,7 @@ export class AuthStorage {
+ 		// account_uuid injection would misattribute traffic. Only apply this guard when
+ 		// sessionPref is absent; a recorded OAuth sticky (sessionPref.type === "oauth") must
+ 		// NOT be blocked even if an env key also happens to exist.
+-		if (!sessionPref && (getEnvApiKey(provider) || this.#fallbackResolver?.(provider))) return undefined;
++		if (!sessionPref && (this.#getEnvApiKey(provider) || this.#fallbackResolver?.(provider))) return undefined;
+ 		// Resolve the sticky index against the full credential list — the index is
+ 		// recorded against the unfiltered provider array (by #recordSessionCredential /
+ 		// #tryOAuthCredential), not the OAuth-only subset, so dereferencing it into the
+@@ -3966,7 +3975,7 @@ export class AuthStorage {
+ 					requests.push(request);
+ 					hasUsableStoredOAuthCredential = true;
+ 				}
+-				const oauthToken = $env.XAI_OAUTH_TOKEN?.trim();
++				const oauthToken = this.#allowEnvironmentCredentials ? $env.XAI_OAUTH_TOKEN?.trim() : undefined;
+ 				if (!hasUsableStoredOAuthCredential && oauthToken) {
+ 					const request = this.#buildUsageRequest(provider, { type: "oauth", accessToken: oauthToken }, baseUrl);
+ 					if (!providerImpl.supports || providerImpl.supports(request)) requests.push(request);
+@@ -3980,7 +3989,7 @@ export class AuthStorage {
+ 					extensionUsageKey = extensionUsageKeyConfig
+ 						? await this.#configValueResolver(extensionUsageKeyConfig)
+ 						: undefined,
+-					envKey = getEnvApiKey(providerId);
++					envKey = this.#getEnvApiKey(providerId);
+ 				const apiKey = runtimeKey ?? extensionUsageKey ?? envKey;
+ 				if (!apiKey) continue;
+ 				const request = this.#buildUsageRequest(provider, { type: "api_key", apiKey }, baseUrl);
+@@ -6057,7 +6066,7 @@ export class AuthStorage {
+ 			return this.#configValueResolver(loginApiKeySelection.credential.key);
+ 		}
+ 
+-		const envKey = getEnvApiKey(provider);
++		const envKey = this.#getEnvApiKey(provider);
+ 		if (envKey) return envKey;
+ 
+ 		const apiKeySelection = this.#selectCredentialByType(provider, "api_key");
+@@ -6118,7 +6127,7 @@ export class AuthStorage {
+ 		// suppresses account_uuid for this session.
+ 		if (sessionId) this.#sessionLastCredential.get(provider)?.delete(sessionId);
+ 
+-		const envKey = getEnvApiKey(provider);
++		const envKey = this.#getEnvApiKey(provider);
+ 		if (envKey) return envKey;
+ 		const apiKeySelection = await this.#selectApiKeyCredential(
+ 			provider,
+@@ -7619,7 +7628,7 @@ export class AuthStorage {
+ 				!this.#isKeylessFallbackCredential(provider, credential),
+ 		);
+ 		if (loginApiKeySource) return loginApiKeySource;
+-		if (getEnvApiKey(provider)) return `env (over ${baseLabel})`;
++		if (this.#getEnvApiKey(provider)) return `env (over ${baseLabel})`;
+ 		const apiKeySource = describeStored(
+ 			"api_key",
+ 			credential => credential.type !== "api_key" || credential.source !== "login",
 diff --git a/src/providers/anthropic.ts b/src/providers/anthropic.ts
 index c2941dc97e6add3882d9fa3197e78b1a8397334e..ac8bcbe28efab141dabb8f41fe64303355ddb690 100644
 --- a/src/providers/anthropic.ts

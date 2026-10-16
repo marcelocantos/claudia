@@ -1,0 +1,102 @@
+diff --git a/dist/types/sdk.d.ts b/dist/types/sdk.d.ts
+index 7cbbeb6f12cac7d8f800d9ff152b59df826c21a6..77355cdbc3b8df7c7ac99cc48c8468bbba90db78 100644
+--- a/dist/types/sdk.d.ts
++++ b/dist/types/sdk.d.ts
+@@ -28,6 +28,8 @@ import { BashTool, BUILTIN_TOOLS, createTools, EditTool, EvalTool, GlobTool, Gre
+ import { EventBus } from "./utils/event-bus.js";
+ import { type WorkspaceTree } from "./workspace-tree.js";
+ export interface CreateAgentSessionOptions {
++    /** Expand @file mentions by reading local files. Default: true. */
++    autoReadFileMentions?: boolean;
+     /** Working directory for project-local discovery. Default: getProjectDir() */
+     cwd?: string;
+     /** Additional workspace directories beyond cwd (multi-root), absolute or cwd-relative. */
+diff --git a/dist/types/session/agent-session-types.d.ts b/dist/types/session/agent-session-types.d.ts
+index 2c6158f899173b913efa76420bc8d4b916348862..05f7b5a27088121e033c0edfb16828389cfeed37 100644
+--- a/dist/types/session/agent-session-types.d.ts
++++ b/dist/types/session/agent-session-types.d.ts
+@@ -96,6 +96,8 @@ export interface InitialRetryFallbackState {
+ /** Dependencies and initial state used to construct an AgentSession. */
+ export interface AgentSessionConfig {
+     agent: Agent;
++    /** Expand @file mentions by reading local files. Default: true. */
++    autoReadFileMentions?: boolean;
+     /** Shared with the provider stream wrapper: current Codex Code Mode tool exposure snapshot for turn metadata. */
+     codeModeState?: {
+         namespacesInfo?: unknown;
+diff --git a/src/sdk.ts b/src/sdk.ts
+index d453f0d8d9d6d524f40cb8ac1f4a4983e77b38a6..7d7100dbed30cf0bbe86e8206f18298a5cceea19 100644
+--- a/src/sdk.ts
++++ b/src/sdk.ts
+@@ -374,6 +374,8 @@ function applyMCPEnvironment(result: { exaApiKeys: string[] }): void {
+ 
+ // Types
+ export interface CreateAgentSessionOptions {
++	/** Expand @file mentions by reading local files. Default: true. */
++	autoReadFileMentions?: boolean;
+ 	/** Working directory for project-local discovery. Default: getProjectDir() */
+ 	cwd?: string;
+ 	/** Additional workspace directories beyond cwd (multi-root), absolute or cwd-relative. */
+@@ -3889,6 +3891,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
+ 		// block createAgentSession for tens of seconds while the whole file is
+ 		// streamed and parsed on the main thread.
+ 		session = new AgentSession({
++			autoReadFileMentions: options.autoReadFileMentions,
+ 			codeModeState,
+ 			advisorWatchdogPrompt,
+ 			advisorContextPrompt,
+diff --git a/src/session/agent-session-types.ts b/src/session/agent-session-types.ts
+index cae1ed98a92bb34cb5290a2d9741f9b6e4992b01..469ae0742538d8825111805e97b62a7a374ca47e 100644
+--- a/src/session/agent-session-types.ts
++++ b/src/session/agent-session-types.ts
+@@ -125,6 +125,8 @@ export interface InitialRetryFallbackState {
+ /** Dependencies and initial state used to construct an AgentSession. */
+ export interface AgentSessionConfig {
+ 	agent: Agent;
++	/** Expand @file mentions by reading local files. Embedders may disable this independently of tools. Default: true. */
++	autoReadFileMentions?: boolean;
+ 	/** Shared with the provider stream wrapper: current Codex Code Mode tool exposure snapshot for turn metadata. */
+ 	codeModeState?: { namespacesInfo?: unknown };
+ 	sessionManager: SessionManager;
+diff --git a/src/session/agent-session.ts b/src/session/agent-session.ts
+index 14daeca13832b78fe8dbde5bcd94347b757df663..b0a426d5334762e843e7609150870f45e8018da6 100644
+--- a/src/session/agent-session.ts
++++ b/src/session/agent-session.ts
+@@ -568,6 +568,7 @@ export function powerAssertionOptions(mode: "off" | "idle" | "display" | "system
+ 
+ export class AgentSession {
+ 	readonly agent: Agent;
++	readonly #autoReadFileMentions: boolean;
+ 	readonly sessionManager: SessionManager;
+ 	readonly settings: Settings;
+ 	/** Session-start policy, independent of the selected project memory backend. */
+@@ -1304,6 +1305,7 @@ export class AgentSession {
+ 
+ 	constructor(config: AgentSessionConfig) {
+ 		this.agent = config.agent;
++		this.#autoReadFileMentions = config.autoReadFileMentions ?? true;
+ 		this.tokenRate = new TokenRateMeter(text => this.agent.tokenizer.countTokens(text));
+ 		this.#reseedTokenRate();
+ 		this.#codeModeState = config.codeModeState ?? {};
+@@ -6946,7 +6948,7 @@ export class AgentSession {
+ 			this.#pendingNextTurnMessages = [];
+ 
+ 			// Auto-read @filepath mentions
+-			const fileMentions = extractFileMentions(expandedText);
++			const fileMentions = this.#autoReadFileMentions ? extractFileMentions(expandedText) : [];
+ 			if (fileMentions.length > 0) {
+ 				const fileMentionMessages = await generateFileMentionMessages(fileMentions, this.sessionManager.getCwd(), {
+ 					autoResizeImages: this.settings.get("images.autoResize"),
+diff --git a/src/session/session-persistence.ts b/src/session/session-persistence.ts
+index 6cb1ba0087cf904c28ff696552166698b86d733a..cfb6b8d7bdf6006e8b81bd82f92aa6f806419003 100644
+--- a/src/session/session-persistence.ts
++++ b/src/session/session-persistence.ts
+@@ -452,5 +452,8 @@ function stripReplayedReasoningSignatures(entry: FileEntry): FileEntry {
+ }
+ 
+ export function prepareEntryForPersistence(entry: FileEntry, blobStore: BlobStore): FileEntry {
++	// Application facts are durable metadata, not expendable model context.
++	// Truncating a receipt payload changes the identity of acknowledged work.
++	if (entry.type === "custom") return entry;
+ 	return truncateForPersistence(stripReplayedReasoningSignatures(entry), blobStore) as FileEntry;
+ }

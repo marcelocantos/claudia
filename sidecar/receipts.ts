@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { UserMessage } from "@oh-my-pi/pi-ai";
-import type { History } from "./maintain.ts";
+import type { FactJournal } from "./journal.ts";
 
 export const requestFactType = "claudia_request_v1";
 export type ReceiptDelivery = "prompt" | "steer";
@@ -36,14 +36,14 @@ const nonempty = (v: unknown): v is string => typeof v === "string" && v.trim().
 const timestamp = (v: unknown): v is string => typeof v === "string" && Number.isFinite(Date.parse(v));
 
 // Facts, rather than conversation text or transient engine events, own request
-// acceptance. This is a projection over History's journal, not another queue:
+// acceptance. This is a projection over the session journal, not another queue:
 // pending() supplies accepted inputs to the existing Agent queues on recovery.
 export class ReceiptJournal {
-  #history: History;
+  #history: FactJournal;
   #facts = new Map<string, Fact>();
   #poison?: string;
 
-  constructor(history: History) {
+  constructor(history: FactJournal) {
     this.#history = history;
     for (const entry of history.entries) {
       if (!("customType" in entry) || entry.customType !== requestFactType) continue;

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { completeSimple, streamSimple, type AssistantMessage, type Model, type ProviderAttemptObservation } from "@oh-my-pi/pi-ai";
-import type { History } from "./maintain.ts";
+import type { FactJournal } from "./journal.ts";
 
 export const usageFactType = "claudia_usage_v1";
 export const usagePageLimit = 128;
@@ -67,17 +67,18 @@ export function validateUsageTransition(f: UsageFact, next: number, old?: UsageF
 // Append failures poison reads and are reported without changing provider
 // dispatch/retry policy. A missing final fact leaves consumption unknown.
 export class UsageJournal {
-  #history: History;
+  #history: FactJournal;
   #facts: UsageFact[] = [];
   #last = new Map<string, UsageFact>();
   #poison?: string;
   #emit: (fact: UsageFact) => void;
   #error: (message: string) => void;
 
-  constructor(history: History, emit: (fact: UsageFact) => void = () => {}, error: (message: string) => void = () => {}) {
+  constructor(history: FactJournal, emit: (fact: UsageFact) => void = () => {}, error: (message: string) => void = () => {}) {
     this.#history = history; this.#emit = emit; this.#error = error;
     for (const e of history.entries) {
-      if (e.type !== "custom" || e.customType !== usageFactType) continue;
+      if (e.customType !== usageFactType) continue;
+      if (e.type !== "custom") throw new Error("usage journal: invalid fact entry type");
       const f = validateUsageFact(e.data, history.store?.seat ?? "", history.store?.session ?? "");
       this.#accept(f);
     }
