@@ -55,7 +55,9 @@ export class SeatStore {
       try {
         rec = JSON.parse(line);
       } catch (err) {
-        if (torn && i === lines.length - 1) {
+        // Only repair a tail after establishing whose conversation this
+        // is. A torn header is not evidence of an empty new session.
+        if (header && torn && i === lines.length - 1) {
           console.error(`sidecar: ${this.path}: dropping a torn last line (a crash while appending)`);
           this.rewrite(entries);
           return entries;
@@ -64,8 +66,14 @@ export class SeatStore {
       }
       if (!header) {
         const h = rec as Partial<Header>;
-        if (h.type !== "claudia_seat" || h.v !== storeVersion) {
+        if (!h || typeof h !== "object" || h.type !== "claudia_seat" || h.v !== storeVersion) {
           throw new Error(`conversation store ${this.path} has no claudia_seat v${storeVersion} header`);
+        }
+        // safeName is deliberately compatible with existing paths, but
+        // different names can sanitize to the same component. The header,
+        // not the filename, proves which durable session we are loading.
+        if (h.seat !== this.#seat || h.session !== this.#session) {
+          throw new Error(`conversation store ${this.path} identity mismatch: expected seat ${JSON.stringify(this.#seat)} session ${JSON.stringify(this.#session)}, found seat ${JSON.stringify(h.seat)} session ${JSON.stringify(h.session)}`);
         }
         header = true;
         continue;

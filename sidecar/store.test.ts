@@ -4,7 +4,7 @@
 // is a hard error, never a silent empty conversation.
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "node:net";
@@ -147,6 +147,34 @@ describe("durable seat conversations (🎯T151)", () => {
     store.rewrite([]);
     appendFileSync(store.path, "{not json}\n" + JSON.stringify({ type: "message", id: "x" }) + "\n");
     expect(() => seat(store, ok)).toThrow(/conversation store .* line 2 is not JSON/);
+  });
+
+  test("a stored header must name the exact seat and session being resumed", async () => {
+    for (const [otherSeat, otherSession] of [["p/o", "s_1"], ["p_o", "s/1"], ["other", "other-session"]]) {
+      const root = tempDir();
+      const original = new SeatStore(root, "p_o", "s_1");
+      await seat(original, ok).agent.prompt("private original conversation");
+      const other = new SeatStore(root, otherSeat, otherSession);
+      // Exercise the loader against both accidental path aliasing and a
+      // valid file copied under the wrong session path.
+      if (other.path !== original.path) {
+        other.rewrite([]);
+        writeFileSync(other.path, readFileSync(original.path));
+      }
+      const before = readFileSync(other.path);
+      expect(() => seat(other, ok)).toThrow(/conversation store .* identity mismatch/);
+      expect(readFileSync(other.path)).toEqual(before);
+    }
+  });
+
+  test("a missing, malformed or torn identity header is never repaired into an empty session", () => {
+    const store = new SeatStore(tempDir(), "po", "s1");
+    store.rewrite([]);
+    for (const header of ["null\n", '{"type":"claudia_seat","v":1}\n', '{"type":"claudia_seat"']) {
+      writeFileSync(store.path, header);
+      expect(() => seat(store, ok)).toThrow(/conversation store/);
+      expect(readFileSync(store.path, "utf8")).toBe(header);
+    }
   });
 
   test("a torn last line (a crash mid-append) is dropped and the rest resumes", async () => {
@@ -338,12 +366,16 @@ describe("sidecar restart (🎯T151)", () => {
     }
   });
 
-  test("a restarted sidecar refuses a seat whose store is unreadable", async () => {
+  for (const [label, content] of [
+    ["unreadable", "garbage\n"],
+    ["owned by another session", '{"type":"claudia_seat","v":1,"seat":"po","session":"s-other"}\n'],
+    ["missing an intact header", '{"type":"claudia_seat"'],
+  ]) test(`a restarted sidecar refuses a seat whose store is ${label}`, async () => {
     const dir = tempDir();
     const sock = join(dir, "omp.sock");
     const store = new SeatStore(join(dir, "omp-seats"), "po", "s1");
     store.rewrite([]);
-    writeFileSync(store.path, "garbage\n");
+    writeFileSync(store.path, content);
     const proc = startSidecar(sock);
     try {
       const out = await ask(
@@ -353,6 +385,7 @@ describe("sidecar restart (🎯T151)", () => {
       );
       expect(out.at(-1)?.type).toBe("error");
       expect(String(out.at(-1)?.text)).toContain("conversation store");
+      expect(readFileSync(store.path, "utf8")).toBe(content);
     } finally {
       proc.kill();
       await proc.exited;
