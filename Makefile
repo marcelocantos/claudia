@@ -2,8 +2,8 @@
 # On success it attests the tree it measured (scripts/gate-attest.sh);
 # pre-push checks that attestation rather than re-running the gate, which
 # takes ~25 minutes — longer than GitHub keeps an idle SSH connection open.
-# Does not require a clean tree, but the attestation records dirt and the
-# hook refuses a dirty one.
+# Requires committed inputs and runs in an isolated checkout. No sibling
+# workspace, untracked source or pre-existing node_modules is measured.
 # Never pipe go test: `go test ... | tail` reports tail's status, so a
 # failing suite can print green and exit 0.
 .PHONY: gate gate-full bullseye hooks
@@ -11,13 +11,21 @@ hooks:
 	@git config core.hooksPath scripts/hooks && echo "✓ core.hooksPath=scripts/hooks"
 
 gate:
-	@scripts/gate-attest.sh begin
+	@scripts/gate-attest.sh
+
+# Diagnostic WIP runs do not write an attestation.
+.PHONY: gate-checks test-sidecar
+gate-checks: test-sidecar
 	@go vet ./... && echo "✓ vet"
 	@go test -race -count=1 ./... && echo "✓ tests"
 	@$(MAKE) --no-print-directory verify-stability >/dev/null && echo "✓ stability surface"
 	@$(MAKE) --no-print-directory verify-mutation-evidence >/dev/null && \
 	 echo "✓ mutation evidence"
-	@scripts/gate-attest.sh end
+
+test-sidecar:
+	@command -v bun >/dev/null || { echo "OUTAGE: Bun is required for sidecar tests" >&2; exit 2; }
+	@bun scripts/check-sidecar-prerequisites.ts
+	@cd sidecar && bun install --frozen-lockfile && bun test
 
 # TLA+ broker lifecycle (Java + tla2tools). Not on the pre-push hook;
 # run before a release.

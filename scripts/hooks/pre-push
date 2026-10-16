@@ -56,7 +56,9 @@ if [ "$strict" = 0 ]; then
     exit 0
 fi
 
-go build ./... && go vet ./... && echo "✓ build + vet"
+GOWORK=off GOFLAGS=-mod=readonly go build ./...
+GOWORK=off GOFLAGS=-mod=readonly go vet ./...
+echo "✓ build + vet"
 
 att="$(git rev-parse --git-dir)/gate-attestation"
 if [ ! -f "$att" ]; then
@@ -64,6 +66,11 @@ if [ ! -f "$att" ]; then
     exit 1
 fi
 tree=$(sed -n 's/^tree=//p' "$att")
+profile=$(sed -n 's/^profile=//p' "$att")
+if [ "$profile" != "full-runtime-v1" ]; then
+    echo "pre-push: obsolete or missing gate profile — run make gate including sidecar tests" >&2
+    exit 1
+fi
 dirty=$(sed -n 's/^dirty=//p' "$att")
 at=$(sed -n 's/^at=//p' "$att")
 if [ "${dirty:-1}" != "0" ]; then
