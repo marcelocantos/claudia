@@ -709,7 +709,7 @@ func TestDeclaringAConsumedFieldUnsupportedGoesRed(t *testing.T) {
 	task[ProviderBedrock]["Model"] = fieldDecl{fateRefused, "mutated declaration"}
 	issues := requestFieldAudit(task, sessionFieldFates)
 	if !containsIssue(issues, "bedrock Task Model: declared refused") {
-		t.Fatalf("declaring Claude Task Model unsupported did not fail the audit: %v", issues)
+		t.Fatalf("declaring Bedrock Task Model unsupported did not fail the audit: %v", issues)
 	}
 }
 
@@ -720,13 +720,13 @@ func TestDeclaringAConsumedFieldUnsupportedGoesRed(t *testing.T) {
 func TestReintroducingASilentDropGoesRed(t *testing.T) {
 	req := taskRunRequest{Prompt: "hi", DisallowTools: []string{"Bash"}}
 	if err := bedrockTaskPrecheck(req); !isCapErr(err) {
-		t.Fatalf("Grok Task DisallowTools was dropped: %v", err)
+		t.Fatalf("Bedrock Task DisallowTools was dropped: %v", err)
 	}
 	task := cloneTaskFates()
 	task[ProviderBedrock]["DisallowTools"] = fieldDecl{fateConsumed, ""}
 	issues := requestFieldAudit(task, sessionFieldFates)
 	if !containsIssue(issues, "bedrock Task DisallowTools") {
-		t.Fatalf("declaring Grok Task DisallowTools consumed did not fail the audit: %v", issues)
+		t.Fatalf("declaring Bedrock Task DisallowTools consumed did not fail the audit: %v", issues)
 	}
 }
 

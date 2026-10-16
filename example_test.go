@@ -35,10 +35,11 @@ func ExampleRun() {
 // Collect each event type as it arrives, then read the final result.
 func ExampleNewTask() {
 	task := claudia.NewTask(claudia.TaskConfig{
-		ID:      "example-task",
-		Name:    "example",
-		WorkDir: os.TempDir(),
-		Model:   "haiku",
+		Provider: claudia.ProviderOllama,
+		ID:       "example-task",
+		Name:     "example",
+		WorkDir:  os.TempDir(),
+		Model:    "your-installed-model",
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -61,8 +62,6 @@ func ExampleNewTask() {
 		}
 	}
 
-	// Preserve the Claude session ID to resume conversation later.
-	_ = task.ClaudeID()
 }
 
 // ExampleStart demonstrates Session mode: a persistent agent that survives
