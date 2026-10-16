@@ -19,6 +19,8 @@ import { claimSocket } from "./singleton.ts";
 import { PlanTokens } from "./plantokens.ts";
 import { HOST_CONNECTION_LOST, HostCalls } from "./hostcalls.ts";
 import { SeatStore } from "./store.ts";
+import { History } from "./maintain.ts";
+import { ReceiptJournal } from "./receipts.ts";
 import type { SandboxPolicy } from "./coding.ts";
 
 const banned = [
@@ -70,6 +72,8 @@ type Line = {
   model?: string;
   token?: string;
   request_id?: string;
+  rpc_id?: string;
+  attempt_id?: string;
   expires_at?: number;
   cwd?: string;
   sandbox?: SandboxPolicy;
@@ -95,6 +99,7 @@ function setPlanToken(provider: string, token: string) {
 }
 
 type Seat = {
+  session_id?: string;
   provider: string;
   model: string;
   token: string;
@@ -179,7 +184,9 @@ const server = createServer((socket) => {
         return answer;
       };
       void handle(msg, seat, write, callTool, calls).catch((err: unknown) => {
-        write({ seat, type: "error", text: err instanceof Error ? err.message : String(err) });
+        write({ seat, type: "error", request_id: msg.request_id, rpc_id: msg.rpc_id,
+          reason: err instanceof Error && "reason" in err && typeof err.reason === "string" ? err.reason : undefined,
+          text: err instanceof Error ? err.message : String(err) });
       });
     }
   });
@@ -192,6 +199,23 @@ async function handle(
   callTool: (callId: string, name: string, args: string) => Promise<string>,
   calls: HostCalls,
 ): Promise<void> {
+  if (msg.op === "receipt") {
+    if (!msg.session_id || !msg.request_id) throw new Error("receipt query requires session_id and request_id");
+    const existing = seats.get(seat);
+    if (existing && existing.session_id !== msg.session_id) throw new Error("receipt query seat identity mismatch");
+    if (existing) {
+      write({ seat, type: "receipt", rpc_id: msg.rpc_id, request_id: msg.request_id, receipt: existing.agent.receipt(msg.request_id) });
+    } else {
+      // Querying an unloaded seat never loads a model, repairs history,
+      // refreshes credentials or resumes queued execution.
+      const store = new SeatStore(storeRoot, seat, msg.session_id);
+      const history = new History(store);
+      history.entries = store.load({ repairTail: false }) ?? [];
+      const receipt = new ReceiptJournal(history).query(msg.request_id);
+      write({ seat, type: "receipt", rpc_id: msg.rpc_id, request_id: msg.request_id, receipt });
+    }
+    return;
+  }
   if (msg.op === "tool_result") {
     calls.settle(msg.call_id ?? "", msg.result ?? "");
     return;
@@ -205,16 +229,17 @@ async function handle(
     // A seat that is not already running is not created (🎯T869). ResumeAll
     // treats that as a miss and launches, and only the launch is nudged.
     if (!msg.token) {
-      write({ seat, type: "error", text: "adopt without an access token" });
+      write({ seat, type: "error", request_id: msg.request_id, rpc_id: msg.rpc_id, text: "adopt without an access token" });
       return;
     }
     const existing = seats.get(seat);
     if (!existing) {
-      write({ seat, type: "error", text: "seat is not loaded" });
+      write({ seat, type: "error", request_id: msg.request_id, rpc_id: msg.rpc_id, text: "seat is not loaded" });
       return;
     }
+    if (msg.session_id && existing.session_id !== msg.session_id) throw new Error("adopt seat identity mismatch");
     if (existing.provider !== msg.provider) {
-      write({ seat, type: "error", reason: "seat_identity_mismatch",
+      write({ seat, type: "error", request_id: msg.request_id, rpc_id: msg.rpc_id, reason: "seat_identity_mismatch",
         text: `loaded seat is ${existing.provider}; registry asked for ${msg.provider ?? ""}` });
       return;
     }
@@ -225,7 +250,7 @@ async function handle(
   }
   if (msg.op === "load") {
     if (!msg.token) {
-      write({ seat, type: "error", text: "load without an access token" });
+      write({ seat, type: "error", request_id: msg.request_id, rpc_id: msg.rpc_id, text: "load without an access token" });
       return;
     }
     const existing = seats.get(seat);
@@ -233,6 +258,7 @@ async function handle(
     // or model is a switch in place (🎯T195): the agent takes the new model
     // between turns, and nothing is summarised or handed over.
     if (existing) {
+      if (msg.session_id && existing.session_id !== msg.session_id) throw new Error("load seat identity mismatch");
       const before = `${existing.provider}/${existing.model}`;
       if (!(await switchIfAsked(existing, msg, seat, write))) return;
       const switched = `${existing.provider}/${existing.model}` !== before;
@@ -268,6 +294,7 @@ async function handle(
       sandbox: msg.sandbox,
     });
     seats.set(seat, {
+      session_id: msg.session_id,
       provider: msg.provider ?? "",
       // The model the seat resolved, not the one asked for: an empty ask
       // takes the provider's default, and a later re-attach naming that
@@ -282,9 +309,10 @@ async function handle(
   }
   const loaded = seats.get(seat);
   if (!loaded) {
-    write({ seat, type: "error", text: "seat is not loaded" });
+    write({ seat, type: "error", request_id: msg.request_id, rpc_id: msg.rpc_id, text: "seat is not loaded" });
     return;
   }
+  if (msg.session_id && loaded.session_id !== msg.session_id) throw new Error("request seat identity mismatch");
   if (msg.op === "auth_retry") {
     loaded.agent.authRetry(msg);
     return;
@@ -351,7 +379,7 @@ async function switchIfAsked(
 ): Promise<boolean> {
   const out = await switchOnLoad(existing, msg, (provider, model) => existing.agent.switchModel(provider, model));
   if (!out.ok) {
-    write({ seat, type: "error", reason: "switch_refused", request_id: msg.request_id, text: out.error });
+    write({ seat, type: "error", reason: "switch_refused", request_id: msg.request_id, rpc_id: msg.rpc_id, text: out.error });
     return false;
   }
   if (out.refused) {
@@ -362,6 +390,9 @@ async function switchIfAsked(
 
 function promptMeta(msg: Line) {
   return {
+    request_id: msg.request_id,
+    rpc_id: msg.rpc_id,
+    attempt_id: msg.attempt_id,
     turn_id: msg.turn_id,
     session_id: msg.session_id,
     cause: msg.cause,

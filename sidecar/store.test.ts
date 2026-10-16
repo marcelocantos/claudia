@@ -13,6 +13,8 @@ import { createMockModel, registerMockApi, type MockResponse } from "@oh-my-pi/p
 import type { AssistantMessage, Context, Model } from "@oh-my-pi/pi-ai";
 import { createSeatAgent, type SeatEvent } from "./seat.ts";
 import { SeatStore } from "./store.ts";
+import { History } from "./maintain.ts";
+import { ReceiptJournal } from "./receipts.ts";
 
 registerMockApi();
 
@@ -288,6 +290,63 @@ describe("sidecar restart (🎯T151)", () => {
     }
     throw new Error("sidecar never answered");
   }
+
+  test("receipt query reads an unloaded durable session without loading or modifying it", async () => {
+    const dir = tempDir();
+    const sock = join(dir, "omp.sock");
+    const storage = new SeatStore(join(dir, "omp-seats"), "po", "s1");
+    const journal = new ReceiptJournal(new History(storage));
+    journal.accept("queued obligation", { request_id: "host-request", session_id: "s1" }, "prompt");
+    const before = readFileSync(storage.path);
+    const proc = startSidecar(sock);
+    try {
+      const out = await ask(sock, [{ op: "receipt", seat: "po", session_id: "s1", request_id: "host-request", rpc_id: "query-1" }],
+        e => e.type === "receipt" || e.type === "error");
+      expect(out.map(e => e.type)).toEqual(["receipt"]);
+      expect(out[0].rpc_id).toBe("query-1");
+      expect((out[0].receipt as { state: string }).state).toBe("accepted");
+      expect(readFileSync(storage.path)).toEqual(before);
+      // Query did not mint a seat: even an abort still finds no loaded agent.
+      const absent = await ask(sock, [{ op: "abort", seat: "po" }], e => e.type === "error" || e.type === "turn_end");
+      expect(absent[0].type).toBe("error");
+      expect(absent[0].text).toBe("seat is not loaded");
+      for (const op of ["prompt", "steer", "adopt", "load"]) {
+        const rejected = await ask(sock, [{ op, seat: "absent", session_id: "s1", request_id: "host-request", rpc_id: `rejected-${op}` }], e => e.type === "error");
+        expect(rejected[0].rpc_id).toBe(`rejected-${op}`);
+        expect(rejected[0].request_id).toBe("host-request");
+      }
+      appendFileSync(storage.path, '{"type":"custom"');
+      const torn = readFileSync(storage.path);
+      const uncertain = await ask(sock, [{ op: "receipt", seat: "po", session_id: "s1", request_id: "host-request", rpc_id: "query-2" }],
+        e => e.type === "receipt" || e.type === "error");
+      expect(uncertain[0].type).toBe("error");
+      expect(uncertain[0].rpc_id).toBe("query-2");
+      expect(readFileSync(storage.path)).toEqual(torn);
+    } finally {
+      proc.kill();
+      await proc.exited;
+    }
+  });
+
+  test("loaded seat refuses adoption under a different session identity", async () => {
+    const dir = tempDir();
+    const sock = join(dir, "omp.sock");
+    const proc = startSidecar(sock);
+    try {
+      const base = { seat: "po", provider: "anthropic", model: "claude-sonnet-5", token: "t", cwd: dir };
+      const first = await ask(sock, [{ ...base, op: "load", session_id: "first" }], e => e.type === "ready" || e.type === "error");
+      expect(first[0].type).toBe("ready");
+      for (const op of ["load", "adopt"]) {
+        const other = await ask(sock, [{ ...base, op, session_id: "other", request_id: "operation" }], e => e.type === "ready" || e.type === "error");
+        expect(other[0].type).toBe("error");
+        expect(other[0].request_id).toBe("operation");
+        expect(String(other[0].text)).toContain("identity mismatch");
+      }
+    } finally {
+      proc.kill();
+      await proc.exited;
+    }
+  });
 
   test("a restarted sidecar reloads a seat's stored conversation, compaction included", async () => {
     const dir = tempDir();
