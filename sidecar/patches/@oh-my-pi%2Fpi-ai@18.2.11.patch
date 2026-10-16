@@ -40,7 +40,7 @@ index 4e933cd3190eca48213a94828fdd30dfaad4cbab..f9e754df9a7fa3fb8c32578a64bc38a9
      /**
       * Optional override for the first-event watchdog in milliseconds. Built-in
       * providers apply this budget twice when they can: once to the underlying
-diff --git a/node_modules/@oh-my-pi/pi-ai/dist/types/utils/provider-attempt.d.ts b/dist/types/utils/provider-attempt.d.ts
+diff --git a/dist/types/utils/provider-attempt.d.ts b/dist/types/utils/provider-attempt.d.ts
 new file mode 100644
 index 0000000000000000000000000000000000000000..e59a21f02bc2dce28955547882ad44656828ed64
 --- /dev/null

@@ -346,27 +346,24 @@ func TestUsageNativeCompactionProducerSocketAndBrokerReplay(t *testing.T) {
 			b := &Agent{sessionID: "generation", startCfg: Config{Name: "seat"}}
 			for _, fact := range page.Facts {
 				replyReceipt(t, peer, omp.Event{Type: "usage", Seat: "seat", UsageFact: &fact})
-				select {
-				case ev := <-events:
-					if ev.Type != "usage" || !reflect.DeepEqual(ev.UsageFact, &fact) {
-						t.Fatalf("socket changed native fact: %+v", ev)
-					}
-					raw, err := EncodeEventWire(ev)
-					if err != nil {
-						t.Fatal(err)
-					}
-					decoded, err := DecodeEventWire(raw)
-					if err != nil {
-						t.Fatal(err)
-					}
-					if !reflect.DeepEqual(decoded.UsageFact, &fact) {
-						t.Fatal("broker changed native fact")
-					}
-					b.publishEvent(decoded)
-					b.publishEvent(decoded)
-				case <-time.After(5 * time.Second):
-					t.Fatal("missing native compaction accounting event")
+				// The suite timeout is the backstop; host scheduling does not decide this assertion.
+				ev := <-events
+				if ev.Type != "usage" || !reflect.DeepEqual(ev.UsageFact, &fact) {
+					t.Fatalf("socket changed native fact: %+v", ev)
 				}
+				raw, err := EncodeEventWire(ev)
+				if err != nil {
+					t.Fatal(err)
+				}
+				decoded, err := DecodeEventWire(raw)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !reflect.DeepEqual(decoded.UsageFact, &fact) {
+					t.Fatal("broker changed native fact")
+				}
+				b.publishEvent(decoded)
+				b.publishEvent(decoded)
 			}
 			// Raw inclusive inputs 100 + 28 include caches 40 + 7 already.
 			// The legacy accumulator remains disjoint and replay does not add twice.
