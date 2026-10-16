@@ -177,6 +177,18 @@ describe("durable seat conversations (🎯T151)", () => {
     }
   });
 
+  test("a foreign session's torn tail is rejected before any repair", () => {
+    const root = tempDir();
+    const original = new SeatStore(root, "p_o", "s1");
+    original.rewrite([]);
+    appendFileSync(original.path, '{"type":"message","id":"torn"');
+    const before = readFileSync(original.path);
+    const other = new SeatStore(root, "p/o", "s1");
+    expect(other.path).toBe(original.path);
+    expect(() => seat(other, ok)).toThrow(/identity mismatch/);
+    expect(readFileSync(original.path)).toEqual(before);
+  });
+
   test("a torn last line (a crash mid-append) is dropped and the rest resumes", async () => {
     const root = tempDir();
     const first = seat(new SeatStore(root, "po", "s1"), ok);
