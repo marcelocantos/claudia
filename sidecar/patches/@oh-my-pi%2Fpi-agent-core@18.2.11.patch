@@ -1,0 +1,345 @@
+diff --git a/dist/types/compaction/compaction-v2-streaming.d.ts b/dist/types/compaction/compaction-v2-streaming.d.ts
+index 0718942345556cf90e5a1171c693d035c28a46ea..f3d7d695b793247286f82d998c04cd915ba4ef34 100644
+--- a/dist/types/compaction/compaction-v2-streaming.d.ts
++++ b/dist/types/compaction/compaction-v2-streaming.d.ts
+@@ -63,6 +63,7 @@ export declare function buildCompactionV2RequestFromBody(model: Model, body: Ope
+ }): CompactionV2Request;
+ /** Request V2 compaction over the normal OpenAI Responses streaming endpoint. */
+ export declare function requestCompactionV2Streaming(model: Model, apiKey: string, request: CompactionV2Request, signal?: AbortSignal, options?: {
++		onProviderAttempt?: import("@oh-my-pi/pi-ai").StreamOptions["onProviderAttempt"];
+     fetch?: FetchImpl;
+     timeoutMs?: number;
+     retryWait?: (delayMs: number, signal?: AbortSignal) => Promise<void>;
+diff --git a/dist/types/compaction/compaction.d.ts b/dist/types/compaction/compaction.d.ts
+index d78142ee93cda34ea50415651e3b8f6aa073a791..e090559c80f637330c4cbdb39f3c11245294339e 100644
+--- a/dist/types/compaction/compaction.d.ts
++++ b/dist/types/compaction/compaction.d.ts
+@@ -169,6 +169,7 @@ export declare const AUTO_HANDOFF_THRESHOLD_FOCUS: string;
+  * If previousSummary is provided, uses the update prompt to merge.
+  */
+ export interface SummaryOptions {
++	onProviderAttempt?: SimpleStreamOptions["onProviderAttempt"];
+     promptOverride?: string;
+     extraContext?: string[];
+     remoteEndpoint?: string;
+diff --git a/dist/types/compaction/openai.d.ts b/dist/types/compaction/openai.d.ts
+index ec28a34cd0505552124d3fc0bed3455fb328c02b..2baf302b51ea4c90865a9c74d56262bc25a90fd0 100644
+--- a/dist/types/compaction/openai.d.ts
++++ b/dist/types/compaction/openai.d.ts
+@@ -90,6 +90,7 @@ export declare function withOpenAiRemoteCompactionPreserveData(preserveData: Rec
+  */
+ export declare function buildOpenAiNativeHistory(messages: Message[], model: Model, previousReplacementHistory?: Array<Record<string, unknown>>, supportsImageDetailOriginal?: boolean): Array<Record<string, unknown>>;
+ export declare function requestOpenAiRemoteCompaction(model: Model, apiKey: string, compactInput: Array<Record<string, unknown>>, instructions: string, signal?: AbortSignal, opts?: {
++		onProviderAttempt?: import("@oh-my-pi/pi-ai").StreamOptions["onProviderAttempt"];
+     fetch?: FetchImpl;
+     timeoutMs?: number;
+     sessionId?: string;
+diff --git a/src/compaction/compaction-v2-streaming.ts b/src/compaction/compaction-v2-streaming.ts
+index 9ee36cfe77ddbf207829730116700878f8698f64..910f6ffec03297f78d6944db55fac775c4971b9b 100644
+--- a/src/compaction/compaction-v2-streaming.ts
++++ b/src/compaction/compaction-v2-streaming.ts
+@@ -1,3 +1,5 @@
++import { providerAttempts } from "@oh-my-pi/pi-ai/utils/provider-attempt";
++import { observedResponsesUsage } from "@oh-my-pi/pi-ai/providers/openai-shared";
+ /**
+  * Remote Compaction V2: streaming Responses compaction.
+  *
+@@ -262,6 +264,7 @@ export async function requestCompactionV2Streaming(
+ 	request: CompactionV2Request,
+ 	signal?: AbortSignal,
+ 	options?: {
++		onProviderAttempt?: import("@oh-my-pi/pi-ai").StreamOptions["onProviderAttempt"];
+ 		fetch?: FetchImpl;
+ 		timeoutMs?: number;
+ 		retryWait?: (delayMs: number, signal?: AbortSignal) => Promise<void>;
+@@ -300,6 +303,7 @@ export async function requestCompactionV2Streaming(
+ 				providerSessionState: options?.providerSessionState,
+ 				codexCompaction: options?.codexCompaction,
+ 				preferWebsockets: options?.preferWebsockets,
++				onProviderAttempt: options?.onProviderAttempt,
+ 			});
+ 		} catch (err) {
+ 			const error = err instanceof Error ? err : new Error(String(err));
+@@ -332,6 +336,7 @@ async function attemptCompactionV2Streaming(
+ 	fetchImpl: FetchImpl,
+ 	signal: AbortSignal | undefined,
+ 	options: {
++		onProviderAttempt?: import("@oh-my-pi/pi-ai").StreamOptions["onProviderAttempt"];
+ 		codexMetadata?: OpenAICodexCompatibilityMetadata;
+ 		providerSessionState?: Map<string, ProviderSessionState>;
+ 		codexCompaction?: CodexCompactionContext;
+@@ -359,6 +364,7 @@ async function attemptCompactionV2Streaming(
+ 			sessionId: request.sessionId,
+ 			providerSessionState: options.providerSessionState,
+ 			preferWebsockets: options.preferWebsockets,
++			onProviderAttempt: options.onProviderAttempt,
+ 			responsesLite: model.useResponsesLite,
+ 			codexCompaction: createOpenAICodexCompactionRequestContext({
+ 				context: options.codexCompaction,
+@@ -368,32 +374,43 @@ async function attemptCompactionV2Streaming(
+ 		return collectCompactionV2Events(eventStream, request);
+ 	}
+ 
+-	const response = await fetchImpl(endpoint, {
+-		method: "POST",
+-		headers: buildCompactionV2Headers(model, apiKey, request, options.codexMetadata),
+-		body: stringifyJson(body),
+-		signal,
+-	});
++	const attempts = providerAttempts(options);
++	try {
++		const response = await (attempts.wrapFetch(fetchImpl) ?? fetchImpl)(endpoint, {
++			method: "POST",
++			headers: buildCompactionV2Headers(model, apiKey, request, options.codexMetadata),
++			body: stringifyJson(body),
++			signal,
++		});
+ 
+-	if (!response.ok) {
+-		const cause = await captureOpenAIHttpError(response);
+-		logger.warn("V2 remote compaction failed", {
+-			endpoint,
+-			status: response.status,
+-			statusText: response.statusText,
+-			errorText: cause.captured.bodyText ?? "",
++		if (!response.ok) {
++			const cause = await captureOpenAIHttpError(response);
++			logger.warn("V2 remote compaction failed", {
++				endpoint,
++				status: response.status,
++				statusText: response.statusText,
++				errorText: cause.captured.bodyText ?? "",
++			});
++			throw new AIError.ProviderHttpError(
++				`V2 remote compaction failed (${response.status} ${response.statusText})`,
++				response.status,
++				{
++					headers: response.headers,
++					cause,
++				},
++			);
++		}
++
++		const result = await collectCompactionV2Output(response, request, event => {
++			const raw = isRecord(event.response) ? event.response : undefined;
++			attempts.observe(response, observedResponsesUsage(raw?.usage as Parameters<typeof observedResponsesUsage>[0]), typeof raw?.id === "string" ? raw.id : undefined);
+ 		});
+-		throw new AIError.ProviderHttpError(
+-			`V2 remote compaction failed (${response.status} ${response.statusText})`,
+-			response.status,
+-			{
+-				headers: response.headers,
+-				cause,
+-			},
+-		);
++		attempts.finish(response, "completed");
++		return result;
++	} catch (error) {
++		attempts.close(signal?.aborted ? "cancelled" : "failed");
++		throw error;
+ 	}
+-
+-	return collectCompactionV2Output(response, request);
+ }
+ 
+ function buildCompactionV2Headers(
+@@ -474,6 +491,7 @@ async function collectCompactionV2Events(
+ async function collectCompactionV2Output(
+ 	response: Response,
+ 	request: CompactionV2Request,
++	onEvent?: (event: Record<string, unknown>) => void,
+ ): Promise<CompactionV2Response> {
+ 	const reader = response.body?.getReader();
+ 	if (!reader) {
+@@ -492,7 +510,7 @@ async function collectCompactionV2Output(
+ 				eventName = undefined;
+ 				return;
+ 			}
+-			handleCompactionV2SseEvent(dataLines.join("\n"), eventName, state);
++			handleCompactionV2SseEvent(dataLines.join("\n"), eventName, state, onEvent);
+ 			eventName = undefined;
+ 			dataLines = [];
+ 		};
+@@ -562,6 +580,7 @@ function handleCompactionV2SseEvent(
+ 	data: string,
+ 	eventName: string | undefined,
+ 	state: CompactionV2CollectionState,
++	onEvent?: (event: Record<string, unknown>) => void,
+ ): void {
+ 	if (data === "[DONE]") return;
+ 	let event: Record<string, unknown>;
+@@ -570,6 +589,7 @@ function handleCompactionV2SseEvent(
+ 	} catch (err) {
+ 		throw new Error(`V2 compaction stream parse failed: ${err instanceof Error ? err.message : String(err)}`);
+ 	}
++	onEvent?.(event);
+ 	handleCompactionV2Event(event, eventName, state);
+ }
+ 
+diff --git a/src/compaction/compaction.ts b/src/compaction/compaction.ts
+index 97f9ebfd02630abf713384e317292f9dd9f701f1..3ce7baaaae03e6727b3a667e9c787dbff8f8d6e2 100644
+--- a/src/compaction/compaction.ts
++++ b/src/compaction/compaction.ts
+@@ -668,6 +668,7 @@ function shouldRetryHandoffWithAutoToolChoice(response: AssistantMessage): boole
+  * If previousSummary is provided, uses the update prompt to merge.
+  */
+ export interface SummaryOptions {
++	onProviderAttempt?: SimpleStreamOptions["onProviderAttempt"];
+ 	promptOverride?: string;
+ 	extraContext?: string[];
+ 	remoteEndpoint?: string;
+@@ -1612,6 +1613,7 @@ export async function compact(
+ 		tools: options?.tools,
+ 		fetch: options?.fetch,
+ 		completeImpl: options?.completeImpl,
++		onProviderAttempt: options?.onProviderAttempt,
+ 		// The caller's opt-out must reach every summarization oneshot, otherwise
+ 		// an outer retry loop multiplies with the inner one (see SummaryOptions).
+ 		oneshotRetry: options?.oneshotRetry,
+@@ -1750,6 +1752,7 @@ export async function compact(
+ 					apiKey,
+ 					key =>
+ 						requestCompactionV2Streaming(model, key, request, signal, {
++							onProviderAttempt: summaryOptions.onProviderAttempt,
+ 							fetch: summaryOptions.fetch,
+ 							providerSessionState: summaryOptions.providerSessionState,
+ 							preferWebsockets: summaryOptions.preferWebsockets,
+@@ -1802,6 +1805,7 @@ export async function compact(
+ 							signal,
+ 							{
+ 								fetch: summaryOptions.fetch,
++								onProviderAttempt: summaryOptions.onProviderAttempt,
+ 								sessionId: summaryOptions.sessionId,
+ 								providerSessionState: summaryOptions.providerSessionState,
+ 								codexCompaction: summaryOptions.codexCompaction,
+diff --git a/src/compaction/openai.ts b/src/compaction/openai.ts
+index 743d748b83254b99127088096aefa789cd904313..0306b0280b50ffeb75da17f70d7ac4bd9e82e948 100644
+--- a/src/compaction/openai.ts
++++ b/src/compaction/openai.ts
+@@ -1,3 +1,5 @@
++import { providerAttempts } from "@oh-my-pi/pi-ai/utils/provider-attempt";
++import { observedResponsesUsage } from "@oh-my-pi/pi-ai/providers/openai-shared";
+ /**
+  * Remote compaction utilities.
+  *
+@@ -769,6 +771,7 @@ export async function requestOpenAiRemoteCompaction(
+ 	instructions: string,
+ 	signal?: AbortSignal,
+ 	opts?: {
++		onProviderAttempt?: import("@oh-my-pi/pi-ai").StreamOptions["onProviderAttempt"];
+ 		fetch?: FetchImpl;
+ 		timeoutMs?: number;
+ 		sessionId?: string;
+@@ -859,57 +862,66 @@ export async function requestOpenAiRemoteCompaction(
+ 		}
+ 	}
+ 
+-	const response = await (opts?.fetch ?? fetch)(endpoint, {
+-		method: "POST",
+-		headers,
+-		body: stringifyJson(request),
+-		signal: withRequestTimeout(signal, opts?.timeoutMs ?? REMOTE_COMPACTION_TIMEOUT_MS),
+-	});
+-
+-	if (!response.ok) {
+-		const cause = await captureOpenAIHttpError(response);
+-		logger.warn("OpenAI remote compaction failed", {
+-			endpoint,
+-			status: response.status,
+-			statusText: response.statusText,
+-			errorText: cause.captured.bodyText ?? "",
++	const attempts = providerAttempts(opts);
++	const requestSignal = withRequestTimeout(signal, opts?.timeoutMs ?? REMOTE_COMPACTION_TIMEOUT_MS);
++	try {
++		const response = await (attempts.wrapFetch(opts?.fetch) ?? fetch)(endpoint, {
++			method: "POST",
++			headers,
++			body: stringifyJson(request),
++			signal: requestSignal,
+ 		});
+-		throw new ProviderHttpError(
+-			`Remote compaction failed (${response.status} ${response.statusText})`,
+-			response.status,
+-			{
+-				headers: response.headers,
+-				cause,
+-			},
+-		);
+-	}
+ 
+-	const data = (await response.json()) as { output?: unknown[] } | undefined;
+-	const rawOutput = data?.output ?? [];
+-	const replacementHistory = rawOutput.filter(
+-		(item): item is Record<string, unknown> =>
+-			!!item && typeof item === "object" && shouldKeepOpenAiCompactOutputItem(item as Record<string, unknown>),
+-	);
+-	const compactionItem = replacementHistory.findLast((item): item is OpenAiRemoteCompactionItem => {
+-		if (item.type === "compaction" && typeof item.encrypted_content === "string") return true;
+-		if (item.type === "compaction_summary") return true;
+-		return false;
+-	});
+-	if (!compactionItem) {
+-		const outputTypes = rawOutput.map(item =>
+-			typeof item === "object" && item !== null ? (item as Record<string, unknown>).type : typeof item,
++		if (!response.ok) {
++			const cause = await captureOpenAIHttpError(response);
++			logger.warn("OpenAI remote compaction failed", {
++				endpoint,
++				status: response.status,
++				statusText: response.statusText,
++				errorText: cause.captured.bodyText ?? "",
++			});
++			throw new ProviderHttpError(
++				`Remote compaction failed (${response.status} ${response.statusText})`,
++				response.status,
++				{
++					headers: response.headers,
++					cause,
++				},
++			);
++		}
++
++		const data = (await response.json()) as { output?: unknown[]; usage?: Parameters<typeof observedResponsesUsage>[0]; id?: string } | undefined;
++		attempts.observe(response, observedResponsesUsage(data?.usage), data?.id);
++		const rawOutput = data?.output ?? [];
++		const replacementHistory = rawOutput.filter(
++			(item): item is Record<string, unknown> =>
++				!!item && typeof item === "object" && shouldKeepOpenAiCompactOutputItem(item as Record<string, unknown>),
+ 		);
+-		logger.warn("Remote compaction response missing compaction item", {
+-			endpoint,
+-			model: model.id,
+-			provider: model.provider,
+-			rawOutputLength: rawOutput.length,
+-			outputTypes,
+-			replacementHistoryLength: replacementHistory.length,
++		const compactionItem = replacementHistory.findLast((item): item is OpenAiRemoteCompactionItem => {
++			if (item.type === "compaction" && typeof item.encrypted_content === "string") return true;
++			if (item.type === "compaction_summary") return true;
++			return false;
+ 		});
+-		throw new Error("Remote compaction response missing compaction item");
++		if (!compactionItem) {
++			const outputTypes = rawOutput.map(item =>
++				typeof item === "object" && item !== null ? (item as Record<string, unknown>).type : typeof item,
++			);
++			logger.warn("Remote compaction response missing compaction item", {
++				endpoint,
++				model: model.id,
++				provider: model.provider,
++				rawOutputLength: rawOutput.length,
++				outputTypes,
++				replacementHistoryLength: replacementHistory.length,
++			});
++			throw new Error("Remote compaction response missing compaction item");
++		}
++		attempts.finish(response, "completed");
++		return { provider: model.provider, replacementHistory, compactionItem };
++	} catch (error) {
++		attempts.close(requestSignal?.aborted ? "cancelled" : "failed");
++		throw error;
+ 	}
+-	return { provider: model.provider, replacementHistory, compactionItem };
+ }
+ 
+ /**

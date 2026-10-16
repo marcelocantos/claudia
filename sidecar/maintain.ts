@@ -385,6 +385,8 @@ export type MaintenanceHost = {
   // and whether a model may take the provider-native lane.
   compactImpl?: typeof engineCompact;
   summaryOptions?: Partial<SummaryOptions>;
+  // A fresh native invocation observer, using the model being compacted.
+  nativeUsageObserver?: (model: Model) => SummaryOptions["onProviderAttempt"];
   nativeEligible?: (model: Model, s: CompactionSettings) => boolean;
   // preserve and pins are the host's (🎯T152): what the summary must keep
   // beyond preserveRule, and facts kept verbatim.
@@ -573,6 +575,7 @@ export class Maintenance {
               // retry too, or the two budgets multiply.
               oneshotRetry: false,
               ...this.#host.summaryOptions,
+              onProviderAttempt: this.#host.nativeUsageObserver?.(model),
             });
             break;
           } catch (err) {

@@ -1,0 +1,3 @@
+event: response.failed
+data: {"type":"response.failed","response":{"id":"compact_retry","status":"failed","usage":{"input_tokens":12,"output_tokens":0},"error":{"code":"server_error","message":"fixture server_error"}}}
+

@@ -1,0 +1,6 @@
+event: response.output_item.done
+data: {"type":"response.output_item.done","output_index":0,"item":{"type":"compaction","encrypted_content":"fixture_encrypted_context","id":"compact_item"}}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"compact_v2","status":"completed","usage":{"input_tokens":100,"output_tokens":7,"total_tokens":107,"input_tokens_details":{"cached_tokens":40,"cache_write_tokens":0},"output_tokens_details":{"reasoning_tokens":0}}}}
+

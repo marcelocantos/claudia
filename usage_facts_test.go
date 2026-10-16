@@ -304,3 +304,76 @@ func TestUsageProjectionRejectsForeignIdentityInOlderReplay(t *testing.T) {
 		t.Fatal("older replay bypassed immutable usage identity validation")
 	}
 }
+
+// This producer restores a real seat and triggers automatic native compaction
+// before its ordinary model request. Its only fetch implementation is a frozen
+// in-memory wire fixture; this test does not authenticate or call a provider.
+func TestUsageNativeCompactionProducerSocketAndBrokerReplay(t *testing.T) {
+	for _, backend := range []string{"openai", "codex"} {
+		t.Run(backend, func(t *testing.T) {
+			bun, err := exec.LookPath("bun")
+			if err != nil {
+				t.Fatal(err)
+			}
+			root := t.TempDir()
+			cmd := exec.Command(bun, "sidecar/testdata/native-usage-producer.ts", root, "success", backend)
+			cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + root, "TMPDIR=" + root}
+			raw, err := cmd.Output()
+			if err != nil {
+				if exit, ok := err.(*exec.ExitError); ok {
+					t.Fatalf("actual native producer: %v: %s", err, exit.Stderr)
+				}
+				t.Fatal(err)
+			}
+			var page UsagePage
+			if err := json.Unmarshal(raw, &page); err != nil {
+				t.Fatal(err)
+			}
+			if err := page.Validate("seat", "generation", 0, UsagePageLimit); err != nil {
+				t.Fatal(err)
+			}
+			if len(page.Facts) != 4 {
+				t.Fatalf("native plus model physical attempts: %+v", page.Facts)
+			}
+			compaction, model := page.Facts[1], page.Facts[3]
+			if compaction.Kind != "compaction" || compaction.State != "completed" || compaction.Counters.TotalInputTokens == nil || *compaction.Counters.TotalInputTokens != 100 || model.Kind != "model" || compaction.InvocationID == model.InvocationID {
+				t.Fatalf("compaction identity or raw usage lost: %+v", page.Facts)
+			}
+			_, a, _, peer, events := receiptPipe(t)
+			a.mu.Lock()
+			a.sessionID, a.startCfg.Name = "generation", "seat"
+			a.mu.Unlock()
+			b := &Agent{sessionID: "generation", startCfg: Config{Name: "seat"}}
+			for _, fact := range page.Facts {
+				replyReceipt(t, peer, omp.Event{Type: "usage", Seat: "seat", UsageFact: &fact})
+				select {
+				case ev := <-events:
+					if ev.Type != "usage" || !reflect.DeepEqual(ev.UsageFact, &fact) {
+						t.Fatalf("socket changed native fact: %+v", ev)
+					}
+					raw, err := EncodeEventWire(ev)
+					if err != nil {
+						t.Fatal(err)
+					}
+					decoded, err := DecodeEventWire(raw)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if !reflect.DeepEqual(decoded.UsageFact, &fact) {
+						t.Fatal("broker changed native fact")
+					}
+					b.publishEvent(decoded)
+					b.publishEvent(decoded)
+				case <-time.After(5 * time.Second):
+					t.Fatal("missing native compaction accounting event")
+				}
+			}
+			// Raw inclusive inputs 100 + 28 include caches 40 + 7 already.
+			// The legacy accumulator remains disjoint and replay does not add twice.
+			want := Usage{InputTokens: 81, OutputTokens: 11, CacheReadInputTokens: 47}
+			if a.Usage() != want || b.Usage() != want {
+				t.Fatalf("native consumption double-counted: %v %v", a.Usage(), b.Usage())
+			}
+		})
+	}
+}

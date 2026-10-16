@@ -134,11 +134,22 @@ Negative, nonfinite or unsafe counters are refused and reported as
 The observer neither retries calls nor changes admission. The shared
 History's existing terminal-persistence errors remain errors.
 
+The companion reproducible `pi-agent-core@18.2.11` patch carries the same
+observer through native compaction. OpenAI V1 `/responses/compact` and generic
+streaming V2 observe their actual fetch and raw response; Codex V2 forwards to
+its existing physical transport observer. The compaction engine's retry and
+V2-to-V1 fallback share an invocation identity but retain separate attempt
+IDs. If native compaction fails and maintenance calls a local summarizer,
+those model calls have their own invocation IDs. The seat's current input
+references remain attached, and History rebuild/reload preserves all facts.
+Usage is observed before semantic validation of the required compaction item,
+so an unusable response does not erase measured consumption. Transport success
+and successful installation of a compaction result are separate concepts.
+Codex normally falls straight from V2 to local summarization: its backend
+does not expose V1 unless a compatible endpoint is explicitly configured.
+
 This is still partial evidence, not complete usage reporting. Cursor billed
-usage and hidden server calls, OpenAI/Codex native compaction, and raw availability
-for their counters remain open. Codex native compaction shares transport
-helpers but its engine caller does not yet carry the accounting observer;
-the helper's instrumentation does not establish end-to-end coverage there.
+usage and hidden server calls, and absent raw counter dimensions remain open.
 The raw fixtures prove the Anthropic, generic Responses and Codex seams,
 not every optional upstream
 transport, custom client or provider extension. Responses orchestration and

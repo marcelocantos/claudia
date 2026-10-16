@@ -34,3 +34,13 @@ remain unknown. The H2 fixture adds the actual five-byte Connect envelope;
 the real Cursor transport handler and protobuf decoder consume it. Identical
 deltas have no unique identity, so their sum must never be called unique or
 billed output. No production captures or credentials are used.
+
+Native compaction specimens drive the restored seat's real maintenance path.
+`compact-v2.sse` reports inclusive input 100, cached input 40, cache write 0,
+and output 7. `compact-v1.json` reports input 20, cache 0, output 3. The
+partial/failed/retry/progress streams report inclusive input 12 and output 0
+without cache details; input freshness remains unknown. The missing-item
+specimens retain raw usage despite semantic compaction failure. These synthetic
+responses pin parser semantics, not availability or billing claims about a live
+provider. The cancellation fixture uses an unqueued prompt so it isolates
+native cancellation from the seat's separate identified-input interrupt drain.

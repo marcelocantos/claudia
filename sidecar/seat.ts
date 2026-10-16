@@ -204,6 +204,7 @@ export function createSeatAgent(opts: {
     preserve: () => preserve,
     pins: () => pins,
     ...opts.maintenance,
+    nativeUsageObserver: model => usage?.observer("compaction", model, usageAttribution()),
     summaryOptions: {
       ...opts.maintenance?.summaryOptions,
       completeImpl: measuredCompletion(() => usage, usageAttribution, opts.maintenance?.summaryOptions?.completeImpl),
