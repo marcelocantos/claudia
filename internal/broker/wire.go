@@ -119,9 +119,10 @@ type Disposition string
 const (
 	// DispositionStop tears the agent down.
 	DispositionStop Disposition = "stop"
-	// DispositionReuse returns the agent to the warm pool. Syntactically valid
-	// on the wire from v1; the broker refuses it with CodeUnsupportedValue
-	// until the shared pool (🎯T2.3) exists, rather than accepting it and
+	// DispositionReuse would return the agent to a shared broker pool
+	// (🎯T2.3), which does not exist; the old in-process tmux pool was
+	// removed. Syntactically valid on the wire from v1; the broker refuses
+	// it with CodeUnsupportedValue until such a pool exists, rather than accepting it and
 	// stopping the agent behind the caller's back.
 	DispositionReuse Disposition = "reuse"
 )
@@ -275,9 +276,8 @@ type ReleaseRequest struct {
 	Name string `json:"name,omitempty"`
 	// Disposition is what to do with it.
 	Disposition Disposition `json:"disposition"`
-	// KeepAliveSeconds, with reuse on a pooled seat, keeps the returned
-	// seat warm for this long before the pool may evict it
-	// (claudia.Agent.Release "keep_alive_for:<secs>").
+	// KeepAliveSeconds, with reuse, would keep the returned seat warm this
+	// long before a pool may evict it. Reserved for 🎯T2.3; no pool reads it.
 	KeepAliveSeconds int64 `json:"keep_alive_seconds,omitempty"`
 	// Force, with DispositionDetach, lets an operator on a third connection
 	// clear a grant another connection owns (🎯T124). The old owner is sent
@@ -372,7 +372,7 @@ type SessionStatus struct {
 	WorkDir string `json:"workdir"`
 	// PID is the provider process.
 	PID int `json:"pid"`
-	// Warm reports whether the agent was pooled.
+	// Warm reports whether the agent was pooled. Always false until 🎯T2.3.
 	Warm bool `json:"warm"`
 }
 

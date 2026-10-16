@@ -60,7 +60,7 @@ var ErrSilenceBoundCutShort = errors.New("silence bound was cut short to fit the
 //
 // It bounds SILENCE, not the turn. Every event of any type and every
 // terminal byte rearms it, so a turn that is working — thinking,
-// calling tools, repainting a pane — is never touched however long it
+// calling tools, streaming terminal output — is never touched however long it
 // runs. That distinction is what makes a bound safe here at all, and
 // it is the same one cursorPromptSilenceBound argues for the first
 // prompt of a Cursor session.
@@ -76,7 +76,7 @@ var ErrSilenceBoundCutShort = errors.New("silence bound was cut short to fit the
 //	cursor  turn 4m03.5s   27 events  longest gap with nothing in it 2m26.4s
 //
 // All four counted zero terminal chunks in the same runs — an ACP
-// session has no pane to repaint — so on those backends that gap is
+// session has no terminal to repaint — so on those backends that gap is
 // total silence. Note it is not the tool's 90 seconds but 1.0x to
 // 1.7x of it: the peer falls quiet before the call is announced and
 // stays quiet after it returns. The two mints of a backend agree
@@ -104,13 +104,12 @@ const turnSilenceBound = 30 * time.Minute
 // turnLivenessPollInterval is how often a wait re-probes [Agent.Alive].
 // Death is usually delivered, not polled — a closed ACP transport or a
 // dropped broker socket wakes the wait immediately through markDead —
-// but a killed tmux WINDOW is neither: control mode attaches to the
-// session and keeps streaming after the window is gone (🎯T602, and
-// internal/tmuxagent/control.go's own note that %exit handling is
-// unimplemented). Only the window probe knows, and only when asked.
+// but a backend whose window can vanish without closing its stream is
+// neither (🎯T602; the removed tmux backend was the original case).
+// Only the window probe knows, and only when asked.
 //
 // Alive caches that probe for windowCheckTTL, so asking at the same
-// cadence costs at most one tmux exec per seat per interval and
+// cadence costs at most one probe per seat per interval and
 // usually none: the daemon's converge loop is already asking.
 const turnLivenessPollInterval = windowCheckTTL
 

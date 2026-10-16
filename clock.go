@@ -10,8 +10,8 @@ import (
 )
 
 // Clock is the time source claudia's timed loops read: the Registry's
-// liveness watch, the plan-usage monitor, the model-intel refresher, and the
-// warm pool. Passing a [ManualClock] makes their cadence deterministic in
+// liveness watch, the plan-usage monitor, and the model-intel refresher.
+// Passing a [ManualClock] makes their cadence deterministic in
 // tests. Policy code reads time only through a Clock; the claudia:policy
 // guard fails the build otherwise (🎯T2.8).
 type Clock = broker.Clock

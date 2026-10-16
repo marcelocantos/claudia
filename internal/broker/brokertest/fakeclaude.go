@@ -43,8 +43,9 @@ const (
 	ReadySplash    = fakewire.ReadySplash
 )
 
-// PromptBoxFrame and SplashFrame are the captured-pane frames the fake writes,
-// exposed so a test can assert directly against tmuxagent's readiness matcher.
+// PromptBoxFrame and SplashFrame are the TUI frames the fake writes, exposed
+// so a test can assert against them directly. (They were matched by the
+// readiness detector of the tmux backend, since removed.)
 var (
 	PromptBoxFrame = fakewire.PromptBoxFrame
 	SplashFrame    = fakewire.SplashFrame

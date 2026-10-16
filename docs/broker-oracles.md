@@ -43,16 +43,14 @@ honest:
   over-broadness is itself a test failure.
 - **Enrolment cannot silently shrink.** `internal/broker` is policy by
   construction (minus the `clock.go` seam). Files elsewhere opt in with a
-  `//claudia:policy` marker, and `pool.go` is pinned by name — deleting its
-  marker fails the build rather than quietly emptying the guarded set.
+  `//claudia:policy` marker, and `registry_seats.go` is pinned by name —
+  deleting its marker fails the build rather than quietly emptying the
+  guarded set.
 
-`pool.go` was the pre-existing offender: it read `time.Now().Unix()` inline to
-decide whether a warm window had expired, and again to stamp a
-`keep_alive_for:<secs>` deadline. Both now read the injected `poolClock`, and
-the two decisions are extracted as `poolWindowExpired` / `poolKeepAliveDeadline`
-so `pool_clock_test.go` can pin the exact expiry boundary (live at +299s,
-expired at +300s) and the "a parse slip must never license a kill" direction,
-under a `ManualClock`, with no tmux and no sleeping.
+The original offender was the tmux warm pool (`pool.go`), which read
+`time.Now().Unix()` inline to decide whether a warm window had expired. It
+was moved onto an injected clock and later deleted outright with the tmux
+backend, so the pin moved to `registry_seats.go`.
 
 ## Oracle per target
 

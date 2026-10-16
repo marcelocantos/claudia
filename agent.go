@@ -11,20 +11,16 @@
 //     generation, analysis, or transformation pipelines where you want
 //     structured event output and automatic token/cost accounting.
 //
-//   - Session mode: [Start] spawns a persistent Claude Code process inside
-//     a tmux window on a dedicated claudia tmux server. Use [Agent.Send] to
+//   - Session mode: [Start] spawns a persistent agent session on the omp
+//     agent core (the subscription sidecar, or codex app-server for Codex).
+//     Use [Agent.Send] to
 //     send messages, [Agent.SubscribeEvents] to observe JSONL events, and
 //     [Agent.WaitForResponse] to block until the next assistant turn
 //     completes. The session persists across consumer restarts.
 //
-// A warm agent pool is available for both modes: [Acquire] checks out a
-// pre-warmed [Agent] from the pool (identified by workdir, model, and
-// allowed tools). Return it with [Agent.Release].
-//
-// The tmux substrate gives agents crash-survival (the agent stays alive if
-// the consumer process dies) and human-attachable observability via
-// [Agent.AttachCommand]. JSONL transcript tailing drives the event stream
-// regardless of transport.
+// Session survival across consumer restarts comes from resume (the
+// provider's session id) rather than a long-lived terminal. JSONL
+// transcript tailing drives the event stream where the backend keeps one.
 //
 // The claude binary is located via the CLAUDE_BIN environment variable,
 // then exec.LookPath, then common install dirs (~/.local/bin/claude,
@@ -233,11 +229,9 @@ type Config struct {
 	TurnSilenceBound time.Duration
 }
 
-// Agent is a persistent Claude Code process running inside a tmux
-// window on the dedicated claudia tmux server. The tmux substrate
-// provides crash-survival (the agent stays alive if the consumer
-// process dies) and human-attachable observability (see
-// [Agent.AttachCommand]).
+// Agent is a handle on a persistent agent session run by a provider
+// backend on the omp agent core. Sessions survive consumer restarts by
+// resume; see [Start] and [Adopt].
 type Agent struct {
 	provider     Provider
 	sessionID    string
@@ -297,19 +291,15 @@ type Agent struct {
 	// default.
 	turnSilenceBound time.Duration
 
-	// poolWindow is true when the agent was acquired from the warm pool
-	// (via Acquire) rather than spawned fresh (via Start). Pool agents
-	// must be released via Release rather than stopped with Stop.
-	poolWindow bool
-	// poolWorkDir is the resolved absolute working directory used as
-	// part of the pool key. Set by buildPoolAgent; empty for Start agents.
+	// poolWorkDir is the resolved absolute working directory. Historically
+	// the warm-pool key; the pool is gone and nothing sets it now.
 	poolWorkDir string
 
-	// windowAliveFn probes whether this agent's tmux window still exists
-	// (🎯T602). Set by the tmux backend at start; nil everywhere else,
-	// which is what keeps hermetic fixtures — and every non-tmux
-	// provider — out of the probe. A synthetic window id is not a claim
-	// that tmux knows about it.
+	// windowAliveFn probes whether this agent's backend window still
+	// exists (🎯T602). Set only by a backend that supplies
+	// agentStart.WindowAlive; nil otherwise, which keeps hermetic
+	// fixtures out of the probe. A synthetic window id is not a claim
+	// that anything external knows about it.
 	windowAliveFn func(string) bool
 	windowCheckAt time.Time
 	windowCheckOK bool
@@ -364,15 +354,15 @@ type Agent struct {
 	termLog        *os.File
 	termLogLive    bool // false once the log file has been closed or failed to open
 
-	// TUI readiness. ready closes once detectReady concludes, either
-	// because the capture-pane regex matched (success, readyErr == nil)
-	// or because detection gave up (failure, readyErr set). Send
+	// Readiness. ready closes once the backend reports the session ready
+	// (success, readyErr == nil) or gives up (failure, readyErr set). Send
 	// blocks on this channel before writing to the agent.
 	ready    chan struct{}
 	readyErr error
 
 	// Claude Session provisional ⏺ preview (🎯T51). Nil on non-Claude
-	// backends. capturePane is injectable for hermetic pane fixtures.
+	// backends. capturePane is injectable for hermetic frame fixtures;
+	// no live backend captures panes since tmux was removed.
 	tuiPreviewMu sync.Mutex
 	tuiPreview   *tuiPreviewTracker
 	capturePane  func() (string, error)
@@ -402,7 +392,8 @@ const (
 	// silently removes a working seat from the fleet, while a true wedge
 	// costs only the extra wait, so the generous side is the correct
 	// side to err on — and a timeout now says which it was (still_drawing,
-	// not_started, window_gone or no_composer; see tmuxagent.waitVerdict).
+	// not_started, window_gone or no_composer, from the since-removed tmux
+	// backend's wait verdict). The bound still sizes broker start timeouts.
 	//
 	// One sample, at load 583, never went live: it sat on the splash for
 	// the remaining 126s of a 180s probe. No bound fits that host; the
@@ -481,7 +472,7 @@ type agentStartRequest struct {
 type agentStart struct {
 	WindowID string
 	// WindowAlive probes whether WindowID still exists (🎯T602). Only a
-	// backend that really created a tmux window sets it; a fixture with a
+	// backend that really created an external window sets it; a fixture with a
 	// synthetic WindowID leaves it nil and keeps the old flag-only
 	// liveness, which is what keeps hermetic tests hermetic.
 	WindowAlive          func(string) bool
@@ -596,8 +587,8 @@ func (b errorAgentBackend) StartAgent(agentStartRequest) (*agentStart, error) {
 	return nil, b.err
 }
 
-// Start spawns a new agent for cfg.Provider. Claude uses a tmux-backed
-// Session; Grok and Cursor use the subscription sidecar; Codex uses
+// Start spawns a new agent for cfg.Provider on the omp agent core:
+// Claude, Grok and Cursor use the subscription sidecar; Codex uses
 // `codex app-server` JSON-RPC.
 //
 // When a claudia daemon is listening, Start is a grant and the returned
@@ -778,8 +769,7 @@ func startWithBackendContext(ctx context.Context, cfg Config, backend agentBacke
 	// the owner's stream to the relaunch after it starts, so the surviving
 	// turn's "ok" reached the owner as the answer to its next question
 	// (🎯T114). The end is measured before the relaunch appends anything,
-	// so every line the resumed seat writes is still published. A pooled
-	// window does the same for a previous holder's turns (🎯T78).
+	// so every line the resumed seat writes is still published.
 	var tailFrom int64
 	if resuming {
 		if fi, err := os.Stat(jsonlPath); err == nil {
@@ -921,9 +911,9 @@ func startWithBackendContext(ctx context.Context, cfg Config, backend agentBacke
 	return a, nil
 }
 
-// claudeAgentArgs builds the argv for a tmux-backed Claude Code session.
-// Kept separate from StartAgent so the request-field audit can materialise
-// the request without a tmux server (see capability_audit_test.go).
+// claudeAgentArgs builds the argv for a Claude Code session. Kept
+// separate so the request-field audit can materialise the request
+// without spawning anything (see capability_audit_test.go).
 func claudeAgentArgs(req agentStartRequest) []string {
 	return claudeAgentArgsWithMCP(req, claudeMCPConfigArg(req))
 }
@@ -959,13 +949,13 @@ func sandboxPolicyRequested(c Config) bool {
 	return c.SandboxMode != "" || len(c.SandboxWritableRoots) > 0 || c.SandboxNetworkAccess || c.SandboxGitWrite || c.ApprovalPolicy != ""
 }
 
-// ErrNoSessionWindow is returned by [Adopt] when no live tmux window
+// ErrNoSessionWindow is returned by [Adopt] when no live session process
 // belongs to the session. Callers that want drain semantics fall back
 // to [Start]; upgrade callers treat it as "this agent actually exited."
 var ErrNoSessionWindow = errors.New("no live tmux window for session")
 
-// Adopt rebuilds an [Agent] handle for a still-running Claude tmux
-// window (or a Grok connect-mode serve). It does not spawn. Missing
+// Adopt rebuilds an [Agent] handle for a still-running session (for
+// example a Grok connect-mode serve). It does not spawn. Missing
 // process is [ErrNoSessionWindow], not a silent Start.
 func Adopt(cfg Config) (*Agent, error) {
 	provider := cfg.Provider
@@ -1427,8 +1417,8 @@ func oneLineCauseDetail(s string) string {
 // SessionID returns the Claude Code session ID.
 func (a *Agent) SessionID() string { return a.sessionID }
 
-// WindowID returns the tmux window id (e.g. "@3") for a Claude
-// session, or "" when this agent is not tmux-backed.
+// WindowID returns the backend's window/session handle, or "" when the
+// backend has none.
 func (a *Agent) WindowID() string { return a.tmuxWindowID }
 
 // JSONLPath returns the path to the session JSONL transcript, or "" for
@@ -1482,9 +1472,8 @@ func (a *Agent) TermLogPath() string {
 	return a.termLogPath
 }
 
-// AttachCommand returns the tmux incantation a human can paste to
-// watch the live agent session. This is the primary observability
-// mechanism for claudia agents.
+// AttachCommand returns a command a human can paste to watch the live
+// agent session, or "" when the backend offers none.
 func (a *Agent) AttachCommand() string {
 	if a.ops.attachCommand == nil {
 		return ""
@@ -1498,13 +1487,13 @@ func (a *Agent) AttachCommand() string {
 // + process reattach rather than treating the stale Agent as usable.
 // Alive reports whether this agent can still be reached.
 //
-// For a tmux-backed session the WINDOW is the agent: if it is gone the
+// For a backend with a window probe the WINDOW is the agent: if it is gone the
 // agent is gone, whatever the in-process flag remembers. Returning the
 // cached flag alone was a lie with consequences (🎯T602) — on 2026-08-31
 // the overseer's window vanished and the daemon went on believing the
 // process alive, so its converge loop chose "unstick" over "launch" and
-// tried, every 90 seconds and forever, to send Escape to a window tmux
-// had already forgotten:
+// tried, every 90 seconds and forever, to send Escape to a window the
+// (since-removed) tmux backend had already forgotten:
 //
 //	cockpit: interrupt failed: tmux send-keys Escape: can't find window: @124
 //
@@ -1513,7 +1502,7 @@ func (a *Agent) AttachCommand() string {
 // needed a human to restart the daemon.
 //
 // The window check is cached briefly: Alive is on the converge loop's
-// path (every few seconds, per agent) and each miss costs a tmux exec.
+// path (every few seconds, per agent) and each miss costs a probe.
 func (a *Agent) Alive() bool {
 	a.mu.Lock()
 	alive := a.alive
@@ -1543,14 +1532,13 @@ func (a *Agent) Alive() bool {
 	return ok
 }
 
-// windowCheckTTL bounds how stale the tmux window answer may be. Short
+// windowCheckTTL bounds how stale the window answer may be. Short
 // enough that a lost window is noticed within one converge tick, long
 // enough that agent_list does not shell out per row per request.
 const windowCheckTTL = 2 * time.Second
 
 // PID returns the durable agent OS process id when known (Grok
-// connect-mode serve PID). Zero for stdio children or Claude tmux
-// (use AttachCommand / window tooling there).
+// connect-mode serve PID). Zero for stdio children.
 func (a *Agent) PID() int {
 	return a.connectPID
 }
@@ -1642,12 +1630,9 @@ func (a *Agent) PromptInFlight() bool {
 // return immediately — the ready channel stays closed for the life
 // of the agent.
 //
-// Delivery: short single-line messages are typed via tmux send-keys -l;
-// multi-line or large messages use load-buffer + bracketed paste so
-// Claude Code receives one paste instead of a keystroke flood.
-// Submit is a named Enter key; if a collapsed paste chip remains,
-// additional Enters are pressed until the turn begins (composer leaves
-// idle). Silent "keys sent, turn never started" is an error (🎯T305).
+// Delivery is the backend's send operation (a sidecar or app-server
+// request). A send the backend reports as failed is an error, never a
+// silent "sent, turn never started" (🎯T305).
 //
 // If readiness detection failed (process exited during startup, or
 // the overall timeout elapsed) Send returns the detection error
@@ -1892,7 +1877,7 @@ func (a *Agent) WaitForResponse(ctx context.Context) (string, error) {
 	var liveTick <-chan time.Time
 	if a.Alive() {
 		deadCh = a.deadSignal()
-		// A killed tmux window closes nothing and ends no stream, so the
+		// A killed backend window closes nothing and ends no stream, so the
 		// only thing that knows is the probe, and only when asked.
 		a.mu.Lock()
 		probing := a.windowAliveFn != nil && a.tmuxWindowID != ""
@@ -2071,7 +2056,7 @@ func (a *Agent) WaitForResponse(ctx context.Context) (string, error) {
 			// is handled in one place: the arm above, on the next pass.
 			// A turn that is producing needs no probe — it is answering
 			// the liveness question itself, for free — and skipping it
-			// there keeps a busy fleet from paying a tmux exec per seat
+			// there keeps a busy fleet from paying a probe per seat
 			// per interval for an answer it already has.
 			if a.now().Sub(lastActivity()) >= turnLivenessPollInterval {
 				a.Alive()
@@ -2111,8 +2096,8 @@ func (a *Agent) WaitForResponse(ctx context.Context) (string, error) {
 // imperceptible to most consumers.
 const waitSettleDuration = 250 * time.Millisecond
 
-// Resize changes the terminal dimensions of the tmux window. Useful when
-// embedding terminal output in a variable-size UI.
+// Resize changes the terminal dimensions of the session, for backends
+// that supply a resize operation.
 func (a *Agent) Resize(cols, rows uint16) error {
 	if a.ops.resize == nil {
 		return unsupportedCapability(a.provider, "resize", "provider did not supply a resize operation")
@@ -2120,10 +2105,8 @@ func (a *Agent) Resize(cols, rows uint16) error {
 	return a.ops.resize(a, cols, rows)
 }
 
-// Stop kills the tmux window, closes the control-mode connection, and
-// flushes the terminal log. It is idempotent. For agents obtained via
-// [Acquire], call [Agent.Release] instead — Stop does not return the
-// window to the pool.
+// Stop ends the session via the backend's stop operation, closes the
+// control connection, and flushes the terminal log. It is idempotent.
 func (a *Agent) Stop() {
 	a.stopOnce.Do(func() {
 		a.closeGoal()
@@ -2272,11 +2255,8 @@ func tailStartOffset(size, want int64) int64 {
 // tailJSONLFrom is tailJSONL starting at a byte offset into the
 // transcript. A fresh Start owns its transcript from byte zero, so it
 // tails from 0; a Start that resumes one tails from where the resumed
-// conversation ends (🎯T114). A pooled window's transcript already holds the turns of
-// every holder before this one, and offset is the end of the file at the
-// moment this holder acquired it: replaying those turns into the new
-// holder's subscribers would be somebody else's conversation arriving as
-// if it were this one's (🎯T78).
+// conversation ends (🎯T114), so earlier turns are not replayed to the
+// new subscribers as if they had just been said.
 func (a *Agent) tailJSONLFrom(offset int64) {
 	gen := a.backendGen.Load()
 	// A migration rewrites jsonlPath under a.mu while this generation's tail
@@ -2339,9 +2319,9 @@ func (a *Agent) tailJSONLFrom(offset int64) {
 
 const tuiPreviewPollInterval = 100 * time.Millisecond
 
-// ObservePaneFrame feeds a capture-pane frame into the Claude TUI preview
-// tracker and publishes resulting Events. Hermetic tests inject fixtures
-// here; the live path uses pollTUIPreview (🎯T51).
+// ObservePaneFrame feeds a terminal frame into the Claude TUI preview
+// tracker and publishes resulting Events (🎯T51). Only hermetic tests
+// feed it now; the tmux pane poller that drove it live was removed.
 func (a *Agent) ObservePaneFrame(frame string) {
 	a.tuiPreviewMu.Lock()
 	tr := a.tuiPreview

@@ -234,11 +234,10 @@ func ParseGoalStatus(text string) (string, bool) {
 const goalContinuationMarker = "Continue the open objective"
 
 func goalContinuation(goal string) string {
-	// One line under the Claude Session paste threshold (400 bytes in
-	// internal/tmuxagent). Newlines or len>=400 take the paste-chip
-	// branch; right after a turn that path flakes on submit confirmation
-	// (live 🎯T39 journey). Keep the boilerplate short so typical Goal
-	// strings stay on send-keys -l.
+	// Collapse to one short line. This began as a workaround for the
+	// removed tmux backend's paste threshold (live 🎯T39 journey); it is
+	// kept because a single compact line is also what the continuation
+	// oracle matches and what reads cleanly in a transcript.
 	obj := strings.Join(strings.Fields(strings.TrimSpace(goal)), " ")
 	return goalContinuationMarker + " (previous turn did not finish it). " +
 		"Objective: " + obj + ". " +
