@@ -216,3 +216,36 @@ test("provider-switch compaction retains durable receipts through continued disp
   await recovered.agent.prompt(`0: ${large}`, meta("R0"));
   expect(recovered.model.calls.length).toBe(0);
 });
+
+test("accepted input survives cancelled pre-dispatch compaction without requiring a restart", async () => {
+  const storage = store();
+  const history = new History(storage);
+  const large = "the quick brown fox jumps over the lazy dog. ".repeat(1200);
+  for (let i = 0; i < 8; i++) history.sync([
+    { role: "user", content: `${i}: ${large}`, timestamp: i * 2 },
+    { role: "assistant", content: [{ type: "text", text: "ok" }], api: "mock", provider: "mock", model: "mock", timestamp: i * 2 + 1,
+      usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop" } as AssistantMessage,
+  ]);
+  history.persist();
+  const model = createMockModel({ contextWindow: 60_000, handler: () => ({ content: ["ok"] }) });
+  let compactions = 0;
+  const agent = createSeatAgent({ provider: "mock", model: "mock", token: "t", cwd: dirname(storage.path), store: storage,
+    modelOverride: model, emit: () => {}, callTool: async () => "", maintenance: {
+      nativeEligible: () => false,
+      compactImpl: (async (prep: any) => {
+        compactions++;
+        if (compactions === 1) {
+          agent.abort();
+          throw new Error("cancelled preparation");
+        }
+        return { summary: "earlier work", firstKeptEntryId: prep.firstKeptEntryId, tokensBefore: prep.tokensBefore };
+      }) as never,
+    } });
+  await expect(agent.prompt("new obligation", meta("A"))).rejects.toThrow("cancelled preparation");
+  expect(agent.receipt("A").state).toBe("accepted");
+  expect(model.calls.length).toBe(0);
+  await agent.prompt("new obligation", meta("A"));
+  expect(model.calls.length).toBe(1);
+  expect(model.calls[0].context.messages.filter(m => (m as any).claudiaRequest?.request_id === "A").length).toBe(1);
+  expect(agent.receipt("A").state).toBe("completed");
+});
