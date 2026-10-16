@@ -92,8 +92,13 @@ An unset gate skips under ordinary hermetic tests and is **not live evidence**.
 
 ## Bounds and limits of the evidence
 
-Each provider has 90 seconds; the whole test has an eight-minute context and a
-ten-minute suite backstop. There is one input per provider, no goal, no MCP
+Each provider has a 90-second context within an eight-minute test context for
+cooperative startup, queries and waits. Synchronous SDK send, interrupt and
+deferred stop use their own broker operation timeouts; they do not inherit those
+contexts. The `make live-usage` ten-minute suite timeout is the hard test
+backstop (`make live` uses 30 minutes). A suite timeout can prevent deferred
+cleanup, so the parent must tear down the isolated broker/sidecar externally.
+There is one input per provider, no goal, no MCP
 servers, and a read-only sandbox. The prompt requests no tools; any observed
 tool use fails and interrupts the slice. The session API does not expose a hard
 zero-tool or per-physical-request admission cap. Built-in provider retries remain
