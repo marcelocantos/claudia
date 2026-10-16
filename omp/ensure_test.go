@@ -34,7 +34,7 @@ func testEnsureSidecarVerbs(t *testing.T) {
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	socket := filepath.Join(dir, "omp.sock")
 	t.Setenv(SocketEnv, socket)
-	t.Setenv("JEVONS_SPOOL_DIR", filepath.Join(dir, "spool"))
+	t.Setenv("CLAUDIA_OMP_SPOOL_DIR", filepath.Join(dir, "spool"))
 	ctx := wallclockguard.UntilTestTimeout(t)
 	path, err := Ensure(ctx)
 	if err != nil {
@@ -93,7 +93,7 @@ func TestEnsureSidecarOutlivesTheCall(t *testing.T) {
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	socket := filepath.Join(dir, "child.sock")
 	t.Setenv(SocketEnv, socket)
-	t.Setenv("JEVONS_SPOOL_DIR", filepath.Join(dir, "spool"))
+	t.Setenv("CLAUDIA_OMP_SPOOL_DIR", filepath.Join(dir, "spool"))
 	ctx := wallclockguard.UntilTestTimeout(t)
 	if _, err := Ensure(ctx); err != nil {
 		t.Fatal(err)
@@ -116,7 +116,7 @@ func TestT869AdoptDoesNotCreateAndSecondAttachIsSilent(t *testing.T) {
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	socket := filepath.Join(dir, "adopt.sock")
 	t.Setenv(SocketEnv, socket)
-	t.Setenv("JEVONS_SPOOL_DIR", filepath.Join(dir, "spool"))
+	t.Setenv("CLAUDIA_OMP_SPOOL_DIR", filepath.Join(dir, "spool"))
 	ctx := wallclockguard.UntilTestTimeout(t)
 	if _, err := Ensure(ctx); err != nil {
 		t.Fatal(err)
@@ -186,7 +186,7 @@ func TestBrokerRestartRebindsSeat(t *testing.T) {
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	socket := filepath.Join(dir, "rebind.sock")
 	t.Setenv(SocketEnv, socket)
-	t.Setenv("JEVONS_SPOOL_DIR", filepath.Join(dir, "spool"))
+	t.Setenv("CLAUDIA_OMP_SPOOL_DIR", filepath.Join(dir, "spool"))
 	ctx := wallclockguard.UntilTestTimeout(t)
 	if _, err := Ensure(ctx); err != nil {
 		t.Fatal(err)

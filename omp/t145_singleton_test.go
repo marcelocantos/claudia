@@ -37,7 +37,7 @@ func t145Env(t *testing.T) string {
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	socket := filepath.Join(dir, "omp.sock")
 	t.Setenv(SocketEnv, socket)
-	t.Setenv("JEVONS_SPOOL_DIR", filepath.Join(dir, "spool"))
+	t.Setenv("CLAUDIA_OMP_SPOOL_DIR", filepath.Join(dir, "spool"))
 	return socket
 }
 

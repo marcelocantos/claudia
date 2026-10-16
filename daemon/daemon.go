@@ -104,8 +104,11 @@ type Options struct {
 	DisableMCPHost bool
 	// MCPListenAddr overrides the MCP loopback bind (default 127.0.0.1:0).
 	MCPListenAddr string
+	// MCPSeedStateDirs explicitly names prior MCP owners whose token and
+	// upstream stores may seed an empty broker store. Nil seeds nothing.
+	MCPSeedStateDirs []string
 	// MCPConsumerOwnedPrefixes names MCP servers (by name prefix) the host
-	// leaves on the consumer's URL. Nil keeps jevonsmcp*; empty hosts all.
+	// leaves on the consumer's URL. Nil or empty hosts all.
 	MCPConsumerOwnedPrefixes []string
 	// IntelInterval is how often the daemon refreshes model intel.
 	// Zero uses DefaultModelIntelInterval (24h).
@@ -310,17 +313,11 @@ func New(opts Options) (*Daemon, error) {
 	}
 	d.srv = srv
 	if !opts.DisableMCPHost {
-		var seeds []string
-		if home, err := os.UserHomeDir(); err == nil {
-			// Jevons owned MCP connections before the daemon did; its tokens
-			// seed an empty store so Atlassian and friends do not re-prompt.
-			seeds = append(seeds, filepath.Join(home, ".jevons"))
-		}
 		h, err := claudia.NewMCPHost(&claudia.MCPHostArgs{
 			StateDir:      stateDir,
 			ListenAddr:    opts.MCPListenAddr,
 			ConsumerOwned: consumerOwnedByPrefix(opts.MCPConsumerOwnedPrefixes),
-			SeedStateDirs: seeds,
+			SeedStateDirs: opts.MCPSeedStateDirs,
 			Logger:        func(msg string, args ...any) { log.Warn(msg, args...) },
 		})
 		if err != nil {
@@ -405,9 +402,6 @@ func (d *Daemon) Close() error {
 // whose name starts with one of prefixes (case-insensitive) stays on the
 // consumer's URL.
 func consumerOwnedByPrefix(prefixes []string) func(claudia.MCPServer) bool {
-	if prefixes == nil {
-		prefixes = defaultMCPConsumerOwnedPrefixes
-	}
 	return func(s claudia.MCPServer) bool {
 		name := strings.ToLower(strings.TrimSpace(s.Name))
 		for _, p := range prefixes {
@@ -418,10 +412,6 @@ func consumerOwnedByPrefix(prefixes []string) func(claudia.MCPServer) bool {
 		return false
 	}
 }
-
-// defaultMCPConsumerOwnedPrefixes keeps Jevons's own MCP server (served by
-// jevonsd for each consumer) on the consumer's URL.
-var defaultMCPConsumerOwnedPrefixes = []string{"jevonsmcp"}
 
 func (d *Daemon) emit(ev broker.EventMessage) {
 	if ev.At.IsZero() {

@@ -30,7 +30,7 @@ func TestSeatResumeActualSidecarDirectAndBroker(t *testing.T) {
 		t.Fatal(err)
 	}
 	cmd := exec.Command(bun, "../sidecar/server.ts", socket)
-	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + root, "JEVONS_SPOOL_DIR=" + filepath.Join(root, "spool")}
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + root, "CLAUDIA_OMP_SPOOL_DIR=" + filepath.Join(root, "spool")}
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
@@ -47,7 +47,7 @@ func TestSeatResumeActualSidecarDirectAndBroker(t *testing.T) {
 		}
 	}
 	t.Setenv(omp.SocketEnv, socket)
-	t.Setenv("JEVONS_SPOOL_DIR", filepath.Join(root, "spool"))
+	t.Setenv("CLAUDIA_OMP_SPOOL_DIR", filepath.Join(root, "spool"))
 	t.Setenv("CLAUDIA_OMP_NO_REFRESH", "1")
 	omp.ResetKeychainShot()
 	t.Cleanup(omp.ResetKeychainShot)

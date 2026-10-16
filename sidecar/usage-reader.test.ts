@@ -211,7 +211,7 @@ test("real unloaded sidecar usage route honors deadlines and keeps the seat unlo
   const before = readFileSync(stored.path);
   const sock = join(f.root, "sidecar.sock");
   const proc = Bun.spawn(["bun", join(import.meta.dir, "server.ts"), sock], {
-    stdout: "ignore", stderr: "pipe", env: { ...process.env, JEVONS_SPOOL_DIR: join(f.root, "spool") },
+    stdout: "ignore", stderr: "pipe", env: { ...process.env, CLAUDIA_OMP_SPOOL_DIR: join(f.root, "spool") },
   });
   async function ask(message: object): Promise<Record<string, any>> {
     return new Promise((resolve, reject) => {

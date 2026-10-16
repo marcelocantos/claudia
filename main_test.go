@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/marcelocantos/claudia/internal/broker"
+	"github.com/marcelocantos/claudia/internal/testctlenv"
 	"github.com/marcelocantos/claudia/internal/wallclockguard"
 	"github.com/marcelocantos/claudia/omp"
 )
@@ -32,6 +33,15 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 	_ = os.Setenv("CLAUDIA_PLAN_CACHE", cache)
+	liveRun := false
+	for _, gate := range testctlenv.LiveGates() {
+		liveRun = liveRun || os.Getenv(gate) != ""
+	}
+	// Hermetic tests must override even an ambient production path or a
+	// whitespace-only override. Opt-in live tests validate their own isolate.
+	if !liveRun {
+		_ = os.Setenv("CLAUDIA_OMP_SPOOL_DIR", filepath.Join(cache, "spool"))
+	}
 	// A plan Flush in a test writes here, never the owner's file (🎯T143).
 	omp.UseTestDataPath(filepath.Join(cache, "plan-credentials.enc"))
 	// Every tmux seat the suite starts goes on a server of its own, so the

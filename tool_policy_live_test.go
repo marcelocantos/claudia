@@ -29,8 +29,9 @@ func TestSidecarToolPolicyLive(t *testing.T) {
 	if !filepath.IsAbs(root) || !strings.HasPrefix(filepath.Base(root), "claudia-policy-live.") ||
 		os.Getenv("CLAUDIA_BROKER_SOCKET") != filepath.Join(root, "broker.sock") ||
 		os.Getenv(omp.SocketEnv) != filepath.Join(root, "omp.sock") ||
+		os.Getenv("CLAUDIA_OMP_SPOOL_DIR") != filepath.Join(root, "spool") ||
 		os.Getenv(omp.NoNetworkEnv) != "1" || os.Getenv("CLAUDIA_NO_BROKER") != "0" {
-		t.Fatal("OUTAGE: activate an isolated claudia-policy-live.* broker with explicit sockets, broker mode and OAuth refresh disabled")
+		t.Fatal("OUTAGE: activate an isolated claudia-policy-live.* broker with explicit sockets and CLAUDIA_OMP_SPOOL_DIR, broker mode and OAuth refresh disabled")
 	}
 	if !BrokerAvailable() {
 		t.Fatal("OUTAGE: the selected isolated broker is unavailable")

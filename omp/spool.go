@@ -15,16 +15,17 @@ import (
 	"strings"
 )
 
-// SpoolDir is ~/.jevons/spool, or JEVONS_SPOOL_DIR when set (tests).
+// SpoolDir is the optional dated-event projection under Claudia's state
+// directory. CLAUDIA_OMP_SPOOL_DIR explicitly selects a consumer-owned path.
 func SpoolDir() string {
-	if p := strings.TrimSpace(os.Getenv("JEVONS_SPOOL_DIR")); p != "" {
+	if p := strings.TrimSpace(os.Getenv("CLAUDIA_OMP_SPOOL_DIR")); p != "" {
 		return p
 	}
-	home, err := os.UserHomeDir()
+	dir, err := stateDir()
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, ".jevons", "spool")
+	return filepath.Join(dir, "spool")
 }
 
 // SpoolRecord is one sidecar spool line. Each names its seat.

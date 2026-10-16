@@ -197,6 +197,8 @@ func serve(args []string) error {
 	noResume := fs.Bool("no-resume", false, "do not bring back seats held before the last stop")
 	nudge := fs.String("restart-nudge", "", "message for seats relaunched on boot; '-' sends none")
 	logLevel := fs.String("log", "info", "log level: debug|info|warn|error")
+	var consumer daemon.Options
+	bindMCPConsumerFlags(fs, &consumer)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -260,12 +262,14 @@ func serve(args []string) error {
 	refreshCancel()
 
 	d, err := daemon.New(daemon.Options{
-		SocketPath:    *socket,
-		StateDir:      *stateDir,
-		UsageTTL:      *usageTTL,
-		DisableResume: *noResume,
-		RestartNudge:  *nudge,
-		Logger:        log,
+		MCPSeedStateDirs:         consumer.MCPSeedStateDirs,
+		MCPConsumerOwnedPrefixes: consumer.MCPConsumerOwnedPrefixes,
+		SocketPath:               *socket,
+		StateDir:                 *stateDir,
+		UsageTTL:                 *usageTTL,
+		DisableResume:            *noResume,
+		RestartNudge:             *nudge,
+		Logger:                   log,
 		// The sidecar is this broker's child and exits with it (🎯T166).
 		// One an earlier broker left serving the socket is stopped first,
 		// never adopted: it may be an older build.

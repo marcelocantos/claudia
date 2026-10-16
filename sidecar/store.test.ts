@@ -272,7 +272,7 @@ describe("sidecar restart (🎯T151)", () => {
     return Bun.spawn(["bun", join(import.meta.dir, "server.ts"), sock], {
       stdout: "ignore",
       stderr: "pipe",
-      env: { ...process.env, JEVONS_SPOOL_DIR: join(sock, "..", "spool") },
+      env: { ...process.env, CLAUDIA_OMP_SPOOL_DIR: join(sock, "..", "spool") },
     });
   }
 

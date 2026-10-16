@@ -126,7 +126,7 @@ func t169ProtocolJourney(t *testing.T, scenario string) {
 	}
 	preload, _ := filepath.Abs("sidecar/testdata/t169-provider-preload.ts")
 	cmd := exec.CommandContext(ctx, bun, "--preload", preload, script, sock, "--lifeline=stdin")
-	cmd.Env = append(omp.ScrubEnv(os.Environ()), "T169_PROVIDER_URL="+server.URL, "JEVONS_SPOOL_DIR="+filepath.Join(dir, "spool"))
+	cmd.Env = append(omp.ScrubEnv(os.Environ()), "T169_PROVIDER_URL="+server.URL, "CLAUDIA_OMP_SPOOL_DIR="+filepath.Join(dir, "spool"))
 	var childLog bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &childLog, &childLog
 	life, err := cmd.StdinPipe()

@@ -44,7 +44,7 @@ func (a usageLiveActivation) validate(getenv func(string) string) error {
 	for key, want := range map[string]string{
 		"CLAUDIA_USAGE_ROOT": a.Root, "CLAUDIA_BROKER_SOCKET": filepath.Join(a.Root, "broker.sock"),
 		omp.SocketEnv: filepath.Join(a.Root, "omp.sock"), "XDG_STATE_HOME": filepath.Join(a.Root, "state"),
-		"JEVONS_SPOOL_DIR": filepath.Join(a.Root, "spool"), "CLAUDIA_OMP_SERVER": filepath.Join(a.SourceDir, "sidecar", "server.ts"),
+		"CLAUDIA_OMP_SPOOL_DIR": filepath.Join(a.Root, "spool"), "CLAUDIA_OMP_SERVER": filepath.Join(a.SourceDir, "sidecar", "server.ts"),
 		"CLAUDIA_NO_BROKER": "0", omp.NoNetworkEnv: "1",
 	} {
 		if getenv(key) != want {

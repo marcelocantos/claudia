@@ -2,7 +2,7 @@
 // One global file per UTC day. The shim does not compress.
 
 import { appendFileSync, existsSync, mkdirSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { homedir } from "node:os";
 import type { UsageFact } from "./usage.ts";
 
@@ -35,10 +35,13 @@ const filePrefix = "events-";
 const fileSuffix = ".log";
 
 export function spoolDir(override?: string): string {
-  if (override) return override;
-  const env = process.env.JEVONS_SPOOL_DIR;
+  if (override?.trim()) return override.trim();
+  const env = process.env.CLAUDIA_OMP_SPOOL_DIR?.trim();
   if (env) return env;
-  return join(homedir(), ".jevons", "spool");
+  const stateHome = process.env.XDG_STATE_HOME?.trim();
+  return stateHome && isAbsolute(stateHome)
+    ? join(stateHome, "claudia", "spool")
+    : join(homedir(), ".local", "state", "claudia", "spool");
 }
 
 export function dayUTC(ts: Date | string): string {

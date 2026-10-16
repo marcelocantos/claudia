@@ -16,7 +16,10 @@ import (
 func TestGrantAttachesHostedMCP(t *testing.T) {
 	bin := buildMCPStdioFixture(t)
 	f := newFixture(t)
-	f.boot(t, nil)
+	opts := f.options(nil)
+	opts.DisableResume = true
+	opts.MCPConsumerOwnedPrefixes = []string{"jevonsmcp"}
+	f.bootWith(t, opts)
 	if f.d.mcp == nil {
 		t.Fatal("daemon has no mcp host")
 	}

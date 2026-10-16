@@ -24,7 +24,7 @@ func TestUsageAccountingActivationRefusesImplicitRuntime(t *testing.T) {
 	}
 	env := map[string]string{
 		"CLAUDIA_USAGE_ROOT": root, "CLAUDIA_BROKER_SOCKET": filepath.Join(root, "broker.sock"), omp.SocketEnv: filepath.Join(root, "omp.sock"),
-		"XDG_STATE_HOME": filepath.Join(root, "state"), "JEVONS_SPOOL_DIR": filepath.Join(root, "spool"),
+		"XDG_STATE_HOME": filepath.Join(root, "state"), "CLAUDIA_OMP_SPOOL_DIR": filepath.Join(root, "spool"),
 		"CLAUDIA_OMP_SERVER": filepath.Join(a.SourceDir, "sidecar", "server.ts"), "CLAUDIA_NO_BROKER": "0", omp.NoNetworkEnv: "1",
 	}
 	getenv := func(k string) string { return env[k] }

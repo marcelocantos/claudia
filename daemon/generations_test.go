@@ -46,7 +46,7 @@ func TestGenerationDiscoveryActualHistoryDirectAndBroker(t *testing.T) {
 		t.Fatal(err)
 	}
 	cmd := exec.Command(bun, "../sidecar/server.ts", socket)
-	cmd.Env = append(os.Environ(), "JEVONS_SPOOL_DIR="+filepath.Join(root, "spool"))
+	cmd.Env = append(os.Environ(), "CLAUDIA_OMP_SPOOL_DIR="+filepath.Join(root, "spool"))
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
