@@ -66,6 +66,17 @@ func (a *Agent) Receipt(ctx context.Context, requestID string) (*RequestReceipt,
 // QueryReceipt reads a named durable session, including an unloaded one.
 // It never spawns a process, loads a model, refreshes auth, or retries input.
 func QueryReceipt(ctx context.Context, q ReceiptQuery) (*RequestReceipt, error) {
+	return queryReceipt(ctx, q, false)
+}
+
+// QueryReceiptDirect is QueryReceipt against the sidecar even when a broker is
+// configured. The broker uses it to serve receipt reads without routing the
+// request back through itself. It never loads a seat or starts the sidecar.
+func QueryReceiptDirect(ctx context.Context, q ReceiptQuery) (*RequestReceipt, error) {
+	return queryReceipt(ctx, q, true)
+}
+
+func queryReceipt(ctx context.Context, q ReceiptQuery, direct bool) (*RequestReceipt, error) {
 	if strings.TrimSpace(q.Seat) == "" || strings.TrimSpace(q.SessionID) == "" || strings.TrimSpace(q.RequestID) == "" {
 		return nil, fmt.Errorf("%w: seat, session and request ID are required", ErrReceiptUncertain)
 	}
@@ -73,7 +84,7 @@ func QueryReceipt(ctx context.Context, q ReceiptQuery) (*RequestReceipt, error) 
 	defer cancel()
 	var r *RequestReceipt
 	var err error
-	if usingBroker() {
+	if !direct && usingBroker() {
 		var b *brokerClient
 		b, err = dialBroker()
 		if err == nil {

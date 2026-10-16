@@ -60,6 +60,15 @@ func TestReceiptQueryThroughBrokerWithoutLoadingOrCredentials(t *testing.T) {
 	t.Cleanup(func() { _ = ln.Close(); wg.Wait() })
 	f.boot(t, nil)
 	query := claudia.ReceiptQuery{Seat: "unloaded", SessionID: "old-generation", RequestID: "logical-B"}
+	// The library's direct seam remains direct with broker routing configured;
+	// this is also the daemon's production path, so recursion would deadlock.
+	direct, err := claudia.QueryReceiptDirect(context.Background(), query)
+	if err != nil || direct.State != claudia.ReceiptUnknown {
+		t.Fatalf("direct query with broker configured: %+v %v", direct, err)
+	}
+	if msg := <-seen; msg.Op != omp.OpReceipt || msg.RequestID != query.RequestID {
+		t.Fatalf("direct query changed operation: %+v", msg)
+	}
 	r, err := claudia.QueryReceipt(context.Background(), query)
 	if err != nil || r.State != claudia.ReceiptUnknown || r.Reason != "not_found" {
 		t.Fatalf("query: %+v %v", r, err)
