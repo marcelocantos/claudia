@@ -155,6 +155,8 @@ func disallowedToolList(extra []string) string {
 }
 
 // TaskConfig holds configuration for a one-shot Bedrock or Ollama API request.
+// SessionID and its deprecated ClaudeID alias remain for source compatibility;
+// these stateless API providers refuse non-empty session identifiers.
 // CLI-only fields remain for source compatibility, but no longer enable execution:
 // default, Claude, Codex, Grok and Cursor return [ErrTaskCLIRemoved].
 type TaskConfig struct {
