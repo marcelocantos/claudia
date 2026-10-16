@@ -79,24 +79,31 @@ func TestSeatRequiredResumeAcknowledgement(t *testing.T) {
 	f := startOMPFixture(t)
 	cfg := Config{Name: "required", SessionID: "generation", Provider: ProviderClaude, WorkDir: t.TempDir(), TermLogPath: "-", RequireResume: true}
 	for _, absent := range []bool{true, false} {
-		f.noRestoreEcho.Store(absent)
-		f.unrestored.Store(true)
+		f.noResumeEcho.Store(absent)
+		f.resumeRefused.Store(true)
 		if a, err := StartDirect(cfg); err == nil {
 			a.Stop()
-			t.Fatal("required resume accepted missing or false restoration acknowledgement")
-		} else if !strings.Contains(err.Error(), "did not confirm restoration") {
+			t.Fatal("required resume accepted missing or false admission acknowledgement")
+		} else if !strings.Contains(err.Error(), "did not confirm resume admission") {
 			t.Fatalf("unexpected refusal: %v", err)
 		}
+		// An old sidecar can retain the seat it incorrectly minted on load.
+		// Its adopted response on retry must not bypass the contract check.
+		if a, err := Adopt(cfg); err == nil {
+			a.Stop()
+			t.Fatal("retry adopted an unconfirmed generation")
+		} else if !strings.Contains(err.Error(), "did not confirm resume admission") {
+			t.Fatalf("unexpected retry refusal: %v", err)
+		}
 	}
-	f.unrestored.Store(false)
+	f.resumeRefused.Store(false)
 	a, err := StartDirect(cfg)
 	if err != nil {
-		t.Fatal("affirmative restoration:", err)
+		t.Fatal("affirmative admission:", err)
 	}
 	a.Stop()
 	// Adoption attaches to a matching in-memory generation without recreating
-	// it; it does not need to claim an on-disk restoration.
-	f.noRestoreEcho.Store(true)
+	// it; it must still acknowledge the resume-admission contract.
 	a, err = Adopt(cfg)
 	if err != nil {
 		t.Fatal("matching adoption:", err)

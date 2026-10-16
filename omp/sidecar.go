@@ -102,6 +102,9 @@ type Event struct {
 	// brought back the seat's stored conversation (claudia 🎯T151, jevons
 	// 🎯T929). Absent from a sidecar that predates the store, which never did.
 	Restored *bool `json:"restored,omitempty"`
+	// ResumeChecked acknowledges required-resume admission, including adoption
+	// of a matching in-memory generation. Old sidecars omit this field.
+	ResumeChecked bool `json:"resume_checked,omitempty"`
 	// BoundTools is the actual model-visible tool list after the sidecar
 	// bound the offered tools. Nil means the sidecar did not attest binding.
 	BoundTools []string `json:"bound_tools"`

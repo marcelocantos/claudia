@@ -376,9 +376,9 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 		}
 		return nil, explainOMPSidecarRefusal(refused, req.Config.Provider, socket)
 	}
-	if req.Config.RequireResume && (ev.How != "adopted" && ev.How != "switched") && (ev.Restored == nil || !*ev.Restored) {
+	if req.Config.RequireResume && !ev.ResumeChecked {
 		conn.Close()
-		return nil, fmt.Errorf("omp: existing conversation required but sidecar did not confirm restoration for %s/%s", req.Config.Name, sessionID)
+		return nil, fmt.Errorf("omp: existing conversation required but sidecar did not confirm resume admission for %s/%s", req.Config.Name, sessionID)
 	}
 	// A ready response is not proof that the tools in the load reached the
 	// model. Refuse rather than silently launching a seat missing host tools.

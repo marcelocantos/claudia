@@ -39,8 +39,8 @@ type ompFixture struct {
 	prompts chan omp.Message
 	// noSandboxEcho models a sidecar that predates 🎯T178.
 	noSandboxEcho atomic.Bool
-	noRestoreEcho atomic.Bool
-	unrestored    atomic.Bool
+	noResumeEcho  atomic.Bool
+	resumeRefused atomic.Bool
 	reply         string
 }
 
@@ -114,8 +114,8 @@ func (f *ompFixture) serve(c net.Conn) {
 			if msg.Op == omp.OpAdopt {
 				ready["how"] = "adopted"
 			}
-			if msg.RequireResume && !f.noRestoreEcho.Load() {
-				ready["restored"] = !f.unrestored.Load()
+			if msg.RequireResume && !f.noResumeEcho.Load() {
+				ready["resume_checked"] = !f.resumeRefused.Load()
 			}
 			var tools []struct {
 				Name string `json:"name"`

@@ -20,8 +20,8 @@ recovers that input without a second replay mechanism.
 Malformed and foreign-identity stores fail without repairing their bytes. A matching
 already-loaded seat can be adopted without reminting; a different generation fails
 with the identity-mismatch reason. No seat-wide spool evidence can authorize resume.
-A ready response must confirm restoration or adoption; an old sidecar that reports
-a fresh launch does not satisfy required resume.
+A ready response must explicitly acknowledge required-resume admission. An old
+sidecar cannot satisfy it by reporting either a fresh launch or adoption on retry.
 
 Non-default PermissionMode, DisallowTools, ExtraArgs, MCPConfig, native connect
 endpoint settings and custom TermLogPath fail before transport with CapabilityError.

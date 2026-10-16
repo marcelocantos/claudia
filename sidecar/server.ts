@@ -274,7 +274,7 @@ async function handle(
     }
     if (!(await switchIfAsked(existing, msg, seat, write))) return;
     rebindSeat(existing, msg, seat, write, callTool, calls);
-    write({ seat, type: "ready", how: "adopted", bound_tools: existing.agent.boundToolNames(), sandbox: existing.agent.sandboxMode() });
+    write({ seat, type: "ready", how: "adopted", resume_checked: msg.require_resume === true, bound_tools: existing.agent.boundToolNames(), sandbox: existing.agent.sandboxMode() });
     return;
   }
   if (msg.op === "load") {
@@ -295,6 +295,7 @@ async function handle(
       write({
         seat,
         type: "ready",
+        resume_checked: msg.require_resume === true,
         how: switched ? "switched" : "adopted",
         request_id: msg.request_id,
         provider: existing.provider,
@@ -334,7 +335,7 @@ async function handle(
       agent,
       calls,
     });
-    write({ seat, type: "ready", how: "launched", restored: agent.restored, bound_tools: agent.boundToolNames(), sandbox: agent.sandboxMode() });
+    write({ seat, type: "ready", how: "launched", resume_checked: msg.require_resume === true, restored: agent.restored, bound_tools: agent.boundToolNames(), sandbox: agent.sandboxMode() });
     return;
   }
   const loaded = seats.get(seat);
