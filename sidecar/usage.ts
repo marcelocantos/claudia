@@ -173,6 +173,20 @@ export class UsageJournal {
   }
 }
 
+// The SDK asks for native compaction options once per candidate and reuses that
+// observer for every physical attempt. Read the host's active turn here: a
+// later turn must not keep the attribution captured when the session was built.
+export function observedNativeCompaction(
+  journal: UsageJournal,
+  attribution: () => Attribution,
+  transport: typeof fetch,
+) {
+  return (candidate: Model) => ({
+    fetch: transport,
+    onProviderAttempt: journal.observer("compaction", candidate, attribution()),
+  });
+}
+
 // Observe the original stream's result without proxying its iterator, local
 // tool-work signal, cancellation or retry policy.
 export function measuredStream(journal: () => UsageJournal | undefined, attribution: () => Attribution, kind: UsageFact["kind"] = "model"): typeof streamSimple {
