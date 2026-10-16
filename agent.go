@@ -99,8 +99,8 @@ type Config struct {
 	// empty selects Claudia's standard session model on that provider.
 	Model string
 
-	// PermissionMode sets the Claude Code permission mode.
-	// Defaults to "bypassPermissions".
+	// PermissionMode is retained for compatibility. Sidecar seats accept
+	// only empty or "bypassPermissions"; other CLI modes are refused.
 	PermissionMode string
 
 	// SandboxMode selects a Codex seat's sandbox (e.g. "read-only",
@@ -168,10 +168,8 @@ type Config struct {
 	// The check receives the durable Goal string and the settled turn text.
 	GoalCompleteCheck func(goal, turnText string) bool
 
-	// MCPConfig is the path to an MCP config JSON file.
-	// Empty means Claude Code uses its default discovery.
-	// Prefer [Config.MCPServers] plus [LoadMCP] so callers do not
-	// maintain per-provider files (🎯T40).
+	// MCPConfig is a retired CLI config-file option. Sidecar seats refuse
+	// non-empty values; use [Config.MCPServers] plus [LoadMCP].
 	MCPConfig string
 
 	// MCPServers is the session-scoped MCP list in Claudia's dialect.
@@ -193,19 +191,15 @@ type Config struct {
 	// so bounce can thread/resume (jevons 🎯T545.1.2).
 	MCPExclusive bool
 
-	// DisallowTools lists additional tool names to disallow. Agent,
-	// SendMessage, and EnterWorktree are
-	// always disallowed in addition to whatever appears here.
+	// DisallowTools is a retired CLI restriction option. Sidecar seats
+	// refuse non-empty values; use the supported sandbox policy instead.
 	DisallowTools []string
 
-	// ExtraArgs are additional CLI arguments passed to claude.
+	// ExtraArgs is a retired CLI option; sidecar seats refuse non-empty values.
 	ExtraArgs []string
 
-	// TermLogPath is the path to which raw terminal output (including
-	// ANSI escapes) is appended. If empty, it defaults to
-	// $XDG_STATE_HOME/claudia/terms/<escaped-workdir>/<sessionID>.term
-	// (with $XDG_STATE_HOME defaulting to ~/.local/state). Set to "-"
-	// to disable terminal logging.
+	// TermLogPath is a retired CLI terminal log option. Sidecar seats
+	// accept empty or "-" and refuse a custom path.
 	TermLogPath string
 
 	// PoolPolicy controls what Acquire does when all matching pool
@@ -685,9 +679,8 @@ func claudeAgentOps() agentOps {
 	}
 }
 
-// Start spawns a new agent for cfg.Provider. Claude uses a tmux-backed
-// Session; Grok and Cursor use the subscription sidecar; Codex uses
-// `codex app-server` JSON-RPC.
+// Start loads a subscription sidecar seat for cfg.Provider. An omitted
+// provider means the Claude plan; named provider aliases use the same path.
 //
 // When a claudia daemon is listening, Start is a grant and the returned
 // *Agent keeps that connection open: Send, WaitForResponse, Interrupt,
@@ -850,6 +843,11 @@ func startWithBackendContext(ctx context.Context, cfg Config, backend agentBacke
 	resuming, err := SessionExists(sessionID, workDir)
 	if err != nil {
 		return nil, fmt.Errorf("check session JSONL: %w", err)
+	}
+	// A native transcript is evidence of an existing conversation, never
+	// permission to silently replace it with an empty sidecar generation.
+	if useOMP(cfg) && resuming {
+		cfg.RequireResume = true
 	}
 	// FAIL-CLOSED RESUME (Claude): when the caller marked this id as an
 	// existing conversation (RequireResume), missing JSONL must be a hard
@@ -1125,6 +1123,11 @@ var ErrNoSessionWindow = errors.New("no live tmux window for session")
 // window (or a Grok connect-mode serve). It does not spawn. Missing
 // process is [ErrNoSessionWindow], not a silent Start.
 func Adopt(cfg Config) (*Agent, error) {
+	var err error
+	cfg, err = normalizeSeatConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
 	provider := cfg.Provider
 	if provider == "" {
 		provider = ProviderClaude

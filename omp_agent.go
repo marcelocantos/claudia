@@ -68,7 +68,7 @@ func useOMP(cfg Config) bool {
 
 func ompProviderID(p Provider) string {
 	switch p {
-	case Provider(omp.Anthropic), ProviderClaude:
+	case "", Provider(omp.Anthropic), ProviderClaude:
 		return omp.Anthropic
 	case Provider(omp.OpenAICodex), ProviderCodex:
 		return omp.OpenAICodex
@@ -173,10 +173,56 @@ func bullseyeLedgerRoot() string {
 	return filepath.Join(home, ".local", "share", "bullseye")
 }
 
+// normalizeSeatConfig preserves provider-specific policy defaults while making
+// the omitted provider an explicit Claude plan. CLI-only options cannot be
+// silently discarded by the sidecar.
+func normalizeSeatConfig(cfg Config) (Config, error) {
+	if cfg.Provider == "" {
+		cfg.Provider = ProviderClaude
+	}
+	if !useOMP(cfg) {
+		return cfg, nil
+	}
+	var unsupported []string
+	capability := CapabilityExtraArgs
+	if cfg.PermissionMode != "" && cfg.PermissionMode != "bypassPermissions" {
+		unsupported = append(unsupported, "PermissionMode")
+		capability = CapabilityPermissionMode
+	}
+	if len(cfg.DisallowTools) != 0 {
+		unsupported = append(unsupported, "DisallowTools")
+		capability = CapabilityToolRestrictions
+	}
+	if len(cfg.ExtraArgs) != 0 {
+		unsupported = append(unsupported, "ExtraArgs")
+	}
+	if cfg.MCPConfig != "" {
+		unsupported = append(unsupported, "MCPConfig (use MCPServers)")
+		capability = CapabilityMCPTools
+	}
+	if cfg.GrokConnect || cfg.ConnectURL != "" || cfg.ConnectPID != 0 {
+		unsupported = append(unsupported, "GrokConnect/ConnectURL/ConnectPID")
+		capability = CapabilityResume
+	}
+	if cfg.TermLogPath != "" && cfg.TermLogPath != "-" {
+		unsupported = append(unsupported, "TermLogPath")
+		capability = CapabilityTerminalLog
+	}
+	if len(unsupported) != 0 {
+		return cfg, unsupportedCapability(cfg.Provider, capability, "sidecar seat cannot honour legacy CLI configuration: "+strings.Join(unsupported, ", "))
+	}
+	return cfg, nil
+}
+
 // withDefaultOMPModel resolves an omitted model before either a broker grant
 // or a direct start records the seat. An adopt reports the broker's persisted
 // model instead of choosing a potentially different current default.
 func withDefaultOMPModel(ctx context.Context, cfg Config) (Config, error) {
+	var err error
+	cfg, err = normalizeSeatConfig(cfg)
+	if err != nil {
+		return cfg, err
+	}
 	if _, err := ompSandboxFor(cfg); err != nil {
 		return cfg, err
 	}
@@ -249,25 +295,6 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 	}
 	// Adopting a seat that is already running must not mint one, and must
 	// not start a sidecar in order to discover that it is not there (🎯T869).
-	// RequireResume counts conversation records, not sidecar handshake
-	// lines (🎯T153): bookkeeping-only spool with no omp-seats store must
-	// refuse rather than resume onto an empty conversation.
-	// The check is bounded by the launch (🎯T161): it once read the whole
-	// spool for minutes while a broker restart waited on it.
-	if req.Config.RequireResume && !req.Config.AdoptOnly {
-		ctx := req.Context
-		if ctx == nil {
-			ctx = context.Background()
-		}
-		found, err := omp.SeatHasHistoryContext(ctx, omp.SpoolDir(), req.Config.Name)
-		if err != nil && ctx.Err() != nil {
-			return nil, fmt.Errorf("session %s: checking spool records for seat %q: %w", req.Config.SessionID, req.Config.Name, err)
-		}
-		if !found {
-			return nil, fmt.Errorf("session %s: existing conversation required but no spool records for seat %q under %s — refusing to mint a replacement session",
-				req.Config.SessionID, req.Config.Name, omp.SpoolDir())
-		}
-	}
 	socket := os.Getenv(omp.SocketEnv)
 	if req.Config.AdoptOnly {
 		if socket == "" || !omp.Listening(req.Context, socket) {
@@ -304,17 +331,18 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 		sessionID = uuid.NewString()
 	}
 	if err := conn.Send(omp.Message{
-		Op:        op,
-		Seat:      req.Config.Name,
-		Provider:  provider,
-		Model:     req.Config.Model,
-		Token:     token,
-		Cwd:       req.Config.WorkDir,
-		SessionID: sessionID,
-		Preserve:  req.Config.ContextPreserve,
-		Pins:      req.Config.ContextPins,
-		Tools:     tools,
-		Sandbox:   sandbox,
+		Op:            op,
+		Seat:          req.Config.Name,
+		Provider:      provider,
+		Model:         req.Config.Model,
+		Token:         token,
+		Cwd:           req.Config.WorkDir,
+		SessionID:     sessionID,
+		RequireResume: req.Config.RequireResume,
+		Preserve:      req.Config.ContextPreserve,
+		Pins:          req.Config.ContextPins,
+		Tools:         tools,
+		Sandbox:       sandbox,
 	}); err != nil {
 		conn.Close()
 		return nil, err
@@ -347,6 +375,10 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 			refused = fmt.Errorf("omp: sidecar said %q, want ready: %s", ev.Type, ev.Text)
 		}
 		return nil, explainOMPSidecarRefusal(refused, req.Config.Provider, socket)
+	}
+	if req.Config.RequireResume && (ev.How != "adopted" && ev.How != "switched") && (ev.Restored == nil || !*ev.Restored) {
+		conn.Close()
+		return nil, fmt.Errorf("omp: existing conversation required but sidecar did not confirm restoration for %s/%s", req.Config.Name, sessionID)
 	}
 	// A ready response is not proof that the tools in the load reached the
 	// model. Refuse rather than silently launching a seat missing host tools.

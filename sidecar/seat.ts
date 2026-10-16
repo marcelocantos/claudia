@@ -10,7 +10,7 @@ import { cursorExecHandlers } from "./cursorexec.ts";
 import { codingTools, type SandboxPolicy } from "./coding.ts";
 import { capToolText, toolResultBound } from "./truncate.ts";
 import { awaitHostCall } from "./hostcalls.ts";
-import { ContextOverflow, isOverflow, Maintenance, seatConvertToLlm, type MaintenanceHost } from "./maintain.ts";
+import { ContextOverflow, isOverflow, History, Maintenance, seatConvertToLlm, type MaintenanceHost } from "./maintain.ts";
 import type { SeatStore } from "./store.ts";
 import { ReceiptJournal, type RequestReceipt, type ReceiptMessage, type ReceiptTerminalState } from "./receipts.ts";
 import { UsageJournal, measuredStream, measuredCompletion, type UsageFact, type UsagePage } from "./usage.ts";
@@ -108,6 +108,7 @@ export function createSeatAgent(opts: {
   // store keeps the conversation across a sidecar restart (🎯T151). A seat
   // loaded with a store that already holds its session resumes from it.
   store?: SeatStore;
+  requireResume?: boolean;
   // preserve and pins steer compaction (🎯T152): what the summary must
   // keep, and facts carried verbatim after it. setContext replaces them.
   preserve?: string;
@@ -115,6 +116,19 @@ export function createSeatAgent(opts: {
   // sandbox limits the seat's own tools (🎯T178). Absent: unchanged.
   sandbox?: SandboxPolicy;
 }): SeatAgent {
+  // Resume admission belongs to the authoritative seat/session store. Validate
+  // without repair before constructing an engine or changing any file.
+  if (opts.requireResume) {
+    const entries = opts.store?.load({ repairTail: false });
+    const history = new History(opts.store);
+    history.entries = entries ?? [];
+    // Accepted input is durable before it reaches the engine's history.
+    // Reuse the receipt journal's validation and recovery classification.
+    const pending = new ReceiptJournal(history).pending();
+    if (history.rebuild(opts.provider).length === 0 && pending.length === 0) {
+      throw new Error("existing conversation required for this seat and session; refusing to mint a replacement session");
+    }
+  }
   let sandbox = opts.sandbox;
   let token = opts.token;
   let cwd = opts.cwd;

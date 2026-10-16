@@ -695,13 +695,11 @@ func (r *Registry) recordSwitch(name string, proc *Agent) error {
 // MarkMaterialized records that name has hosted a real conversation and
 // persists Materialized=true so later launches pass RequireResume.
 //
-// For Claude (empty Provider), durable session JSONL must already exist
-// ([SessionExists]); callers cannot flip the flag on bare process start.
-// For other providers, the host attests first-turn / durable transcript
-// evidence (no Claude JSONL path applies).
+// The host attests first-turn or durable transcript evidence for every
+// sidecar provider. Resume admission checks the canonical seat/session store.
 //
 // Idempotent when already Materialized. Returns an error if name is
-// unknown or Claude evidence is still missing.
+// unknown or the registry cannot persist the attestation.
 func (r *Registry) MarkMaterialized(name string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -712,11 +710,6 @@ func (r *Registry) MarkMaterialized(name string) error {
 	}
 	if def.Materialized {
 		return nil
-	}
-	if isClaudeProvider(def.Provider) {
-		if !claudeSessionEvidence(def.Provider, def.SessionID, def.WorkDir) {
-			return fmt.Errorf("agent %q: cannot mark materialized without session JSONL (SessionID=%s)", name, def.SessionID)
-		}
 	}
 	def.Materialized = true
 	return r.save()
@@ -738,14 +731,9 @@ func (r *Registry) requireResumeLocked(def *AgentDef) bool {
 	if def.SessionID == "" {
 		return false
 	}
-	switch def.Provider {
-	case ProviderGrok, ProviderCodex, ProviderCursor:
-		// First mint this process (EnsureAgent / Register) may fall
-		// through. A row reloaded from disk is a bounce resume.
-		return r.freshSession[def.Name] != def.SessionID
-	default:
-		return false
-	}
+	// Every sidecar alias obeys the same persisted-generation fence. Only a
+	// generation freshly registered in this process may start without history.
+	return useOMP(Config{Provider: def.Provider}) && r.freshSession[def.Name] != def.SessionID
 }
 
 // claudeSessionEvidence reports whether Claude durable transcript evidence

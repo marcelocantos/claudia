@@ -85,6 +85,7 @@ type Line = {
   result?: string;
   turn_id?: string;
   session_id?: string;
+  require_resume?: boolean;
   cause?: string;
   cause_detail?: string;
   resume?: string;
@@ -265,7 +266,7 @@ async function handle(
       write({ seat, type: "error", request_id: msg.request_id, rpc_id: msg.rpc_id, text: "seat is not loaded" });
       return;
     }
-    if (msg.session_id && existing.session_id !== msg.session_id) throw new Error("adopt seat identity mismatch");
+    if (msg.session_id && existing.session_id !== msg.session_id) throw Object.assign(new Error("adopt seat identity mismatch"), { reason: "seat_identity_mismatch" });
     if (existing.provider !== msg.provider) {
       write({ seat, type: "error", request_id: msg.request_id, rpc_id: msg.rpc_id, reason: "seat_identity_mismatch",
         text: `loaded seat is ${existing.provider}; registry asked for ${msg.provider ?? ""}` });
@@ -286,7 +287,7 @@ async function handle(
     // or model is a switch in place (🎯T195): the agent takes the new model
     // between turns, and nothing is summarised or handed over.
     if (existing) {
-      if (msg.session_id && existing.session_id !== msg.session_id) throw new Error("load seat identity mismatch");
+      if (msg.session_id && existing.session_id !== msg.session_id) throw Object.assign(new Error("load seat identity mismatch"), { reason: "seat_identity_mismatch" });
       const before = `${existing.provider}/${existing.model}`;
       if (!(await switchIfAsked(existing, msg, seat, write))) return;
       const switched = `${existing.provider}/${existing.model}` !== before;
@@ -317,6 +318,7 @@ async function handle(
       callTool,
       tools: msg.tools,
       store,
+      requireResume: msg.require_resume,
       preserve: msg.preserve,
       pins: msg.pins,
       sandbox: msg.sandbox,

@@ -603,6 +603,11 @@ var errBrokerClosed = errors.New("claudia: broker client closed")
 // not a reason to fall back: a seat the daemon refused to start would not
 // start locally either, and a silent local start would fork the fleet.
 func startViaBrokerContext(ctx context.Context, cfg Config) (*Agent, error) {
+	var err error
+	cfg, err = normalizeSeatConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
 	client, err := dialBroker()
 	if err != nil {
 		return nil, err

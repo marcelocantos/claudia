@@ -50,11 +50,12 @@ type Message struct {
 	Result    string `json:"result,omitempty"`
 	// Turn fields name who prompted the seat (🎯T870). The sidecar
 	// writes them onto the digest when it accepts the prompt.
-	TurnID      string `json:"turn_id,omitempty"`
-	SessionID   string `json:"session_id,omitempty"`
-	Cause       string `json:"cause,omitempty"`
-	CauseDetail string `json:"cause_detail,omitempty"`
-	Resume      string `json:"resume,omitempty"`
+	TurnID        string `json:"turn_id,omitempty"`
+	SessionID     string `json:"session_id,omitempty"`
+	RequireResume bool   `json:"require_resume,omitempty"`
+	Cause         string `json:"cause,omitempty"`
+	CauseDetail   string `json:"cause_detail,omitempty"`
+	Resume        string `json:"resume,omitempty"`
 	// Preserve and Pins steer the seat's compaction (claudia 🎯T152): what
 	// its summary must keep, and facts carried verbatim after it.
 	Preserve string   `json:"preserve,omitempty"`
