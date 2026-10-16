@@ -41,6 +41,8 @@ func TestSeatResumeActualSidecarDirectAndBroker(t *testing.T) {
 		select {
 		case <-ctx.Done():
 			t.Fatalf("sidecar: %v", ctx.Err())
+		// 🎯T97 exemption: expiry only paces another readiness probe; it
+		// cannot pass or fail an assertion. go test -timeout bounds the wait.
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
