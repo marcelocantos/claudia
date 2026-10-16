@@ -48,6 +48,12 @@ not only the test environment. A missing/expired token is OUTAGE, requiring
 separate authorized recovery. Install the source's frozen sidecar dependencies
 before activation. Do not modify that source or its dependencies while serving.
 Keep other workloads off these sockets. Shut down only this isolate afterward.
+The test's deferred `Stop` releases/removes its broker grant. The current direct
+sidecar stop closes the host connection rather than unloading the seat, so the
+idle sidecar seat and durable history can remain until the parent shuts down the
+isolated broker/sidecar. A failed reconnect can also leave a detached grant;
+parent teardown is required even after a failing test. The test never shuts down
+the externally activated broker itself.
 
 Write an operator activation declaration with these JSON fields:
 
@@ -75,8 +81,9 @@ Write an operator activation declaration with these JSON fields:
 
 These are declarations of what was activated, not runtime cryptographic
 attestation. The test verifies clean source commit/tree, broker binary hash and
-Go VCS build metadata, process start times/executable, socket ownership and
-listening status. It cannot prove which JavaScript bytes a process loaded before
+Go VCS build metadata, process start times/executable, sidecar parent PID and
+command naming the declared source/socket, socket ownership and listening status.
+It cannot prove which JavaScript bytes a process loaded before
 the operator recorded activation. The operator must bind that fact honestly.
 
 With that environment set, run `bin/gate -- make live-usage` (or the host's
@@ -97,6 +104,9 @@ Known counters are compared per field without adding inclusive input to cache
 buckets. Absence remains unknown in the typed facts. `Agent.Usage()` and event
 `Usage` are only the partial sum of known disjoint counters. Cursor's protocol
 token deltas are never billed consumption; its billing dimensions remain unknown.
+For the actual OK reply, at least one completed non-Cursor attempt must report
+positive input (inclusive or fresh) and output. This is a wire-presence oracle,
+not verification against the vendor's bill; missing cache dimensions remain unknown.
 Facts are logged without prompts, provider response text, or credentials.
 API-equivalent cost is never subscription quota.
 

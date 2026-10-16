@@ -137,6 +137,11 @@ func usageLivePreflight(t *testing.T) usageLiveActivation {
 	if run("", "/bin/ps", "-p", strconv.Itoa(a.SidecarPID), "-o", "ppid=") != strconv.Itoa(a.BrokerPID) {
 		t.Fatal("OUTAGE: sidecar is not the declared broker's child")
 	}
+	command := run("", "/bin/ps", "-ww", "-p", strconv.Itoa(a.SidecarPID), "-o", "command=")
+	wantArgs := " " + filepath.Join(a.SourceDir, "sidecar", "server.ts") + " " + os.Getenv(omp.SocketEnv) + " " + omp.LifelineArg
+	if !strings.HasSuffix(command, wantArgs) {
+		t.Fatal("OUTAGE: serving sidecar command does not name the declared source and socket")
+	}
 	if !BrokerAvailable() {
 		t.Fatal("OUTAGE: activated broker is unavailable; never auto-start it")
 	}
@@ -286,7 +291,10 @@ func TestUsageAccountingLive(t *testing.T) {
 			measuredConsumption := false
 			for _, f := range latest {
 				invocations[f.InvocationID] = true
-				measuredConsumption = measuredConsumption || f.Counters.TotalInputTokens != nil || f.Counters.OutputTokens != nil
+				// Wire-presence oracle for the actual OK response, not a billing
+				// oracle. Missing cache dimensions and failed attempts stay unknown.
+				measuredConsumption = measuredConsumption || f.State == "completed" &&
+					(value(f.Counters.TotalInputTokens) > 0 || value(f.Counters.InputTokens) > 0) && value(f.Counters.OutputTokens) > 0
 				if f.State == "started" {
 					t.Fatal("terminal turn left an incomplete physical attempt")
 				}
