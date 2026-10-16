@@ -365,7 +365,10 @@ type Agent struct {
 	requestPending    []string
 	requestByTurn     map[string]string
 	requestActiveTurn string
-	armedOK           bool
+	// receiptTurnID survives latch consumption so duplicate started receipts
+	// cannot rearm a response already taken by a waiter. Guarded by mu.
+	receiptTurnID string
+	armedOK       bool
 
 	// Terminal output streaming. termMu also guards termLog writes,
 	// termLog close, and termLogLive so Stop cannot close the file
@@ -1866,7 +1869,11 @@ func (a *Agent) SendWithRequestID(msg, requestID string) error {
 	// Before the write: a Cursor opening prompt does not return until the
 	// peer has spoken, so the reply and its end_turn can be published
 	// while ops.send is still unwinding (🎯T98).
-	a.beginTurn()
+	// Durable admission can acknowledge a queued or already completed request.
+	// Only a started receipt identifies a new turn whose output we should keep.
+	if requestID == "" || !a.SupportsReceipts() {
+		a.beginTurn()
+	}
 	cause, ok := a.takePromptCause()
 	a.noteArmed(cause, ok)
 	if a.brokerGrant == "" && !a.ops.explicitRequestIDs {

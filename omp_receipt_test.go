@@ -226,3 +226,100 @@ func TestIdentifiedSidecarDoesNotFallBackToLegacyOrForeignAcceptance(t *testing.
 		})
 	}
 }
+
+func TestIdentifiedSidecarDuplicateTerminalOrUnknownIsNotNewProgress(t *testing.T) {
+	for _, state := range []ReceiptState{ReceiptUnknown, ReceiptCompleted, ReceiptFailed, ReceiptCancelled} {
+		t.Run(string(state), func(t *testing.T) {
+			ctrl, a, reader, peer, events := receiptPipe(t)
+			done := make(chan error, 1)
+			go func() { done <- a.SendWithRequestID("B", "B") }()
+			msg := nextReceiptMessage(t, reader)
+			r := testReceipt("B")
+			r.State = state
+			r.TurnIDs = []string{"old-turn"}
+			replyReceipt(t, peer, omp.Event{Type: "accepted", Seat: "seat", RPCID: msg.RPCID, RequestID: "B", Receipt: r})
+			err := <-done
+			if state == ReceiptUnknown && !errors.Is(err, ErrReceiptUncertain) {
+				t.Fatalf("unknown accepted: %v", err)
+			}
+			if state != ReceiptUnknown && err != nil {
+				t.Fatal(err)
+			}
+			ev := <-events
+			if ev.Type != "receipt" || ev.ProgressType != "" || ev.Receipt == nil || ev.Receipt.State != state {
+				t.Fatalf("old receipt reported fresh progress: %+v", ev)
+			}
+			if ctrl.inflight.Load() {
+				t.Fatal("old receipt marked a new turn in flight")
+			}
+		})
+	}
+}
+
+func TestIdentifiedSidecarAdmissionPreservesActiveTurn(t *testing.T) {
+	for _, state := range []ReceiptState{ReceiptAccepted, ReceiptStarted, ReceiptUnknown, ReceiptCompleted, ReceiptFailed, ReceiptCancelled} {
+		t.Run(string(state), func(t *testing.T) {
+			ctrl, a, reader, peer, events := receiptPipe(t)
+			started := testReceipt("A")
+			started.State, started.TurnIDs = ReceiptStarted, []string{"turn-A"}
+			replyReceipt(t, peer, omp.Event{Type: "receipt", Seat: "seat", RequestID: "A", Receipt: started})
+			<-events
+			a.publishEvent(Event{Type: "assistant", Text: "A output"})
+			<-events
+			if !ctrl.inflight.Load() {
+				t.Fatal("started receipt did not mark A in flight")
+			}
+			done := make(chan error, 1)
+			go func() { done <- a.SendWithRequestID("B", "B") }()
+			msg := nextReceiptMessage(t, reader)
+			r := testReceipt("B")
+			r.State = state
+			if state != ReceiptAccepted {
+				r.TurnIDs = []string{"old-turn-B"}
+			}
+			replyReceipt(t, peer, omp.Event{Type: "accepted", Seat: "seat", RPCID: msg.RPCID, RequestID: "B", Receipt: r})
+			err := <-done
+			if state == ReceiptUnknown && !errors.Is(err, ErrReceiptUncertain) || state != ReceiptUnknown && err != nil {
+				t.Fatalf("send: %v", err)
+			}
+			<-events
+			if !ctrl.inflight.Load() {
+				t.Fatal("admission cleared A's in-flight state")
+			}
+			a.mu.Lock()
+			text, turnID := a.turn.text.String(), a.receiptTurnID
+			a.mu.Unlock()
+			if text != "A output" || turnID != "turn-A" {
+				t.Fatalf("admission erased A: text=%q turn=%q", text, turnID)
+			}
+			// A repeated started event cannot erase text, including after a wait
+			// consumed the latch. B gets a fresh latch only when it starts.
+			replyReceipt(t, peer, omp.Event{Type: "receipt", Seat: "seat", RequestID: "A", Receipt: started})
+			<-events
+			a.mu.Lock()
+			got := a.takeTurnLocked()
+			a.mu.Unlock()
+			if got.text != "A output" {
+				t.Fatalf("duplicate start erased A: %+v", got)
+			}
+			replyReceipt(t, peer, omp.Event{Type: "receipt", Seat: "seat", RequestID: "A", Receipt: started})
+			<-events
+			a.mu.Lock()
+			armed := a.turn.armed
+			a.mu.Unlock()
+			if armed {
+				t.Fatal("duplicate start rearmed consumed A")
+			}
+			startedB := testReceipt("B")
+			startedB.State, startedB.TurnIDs = ReceiptStarted, []string{"turn-B"}
+			replyReceipt(t, peer, omp.Event{Type: "receipt", Seat: "seat", RequestID: "B", Receipt: startedB})
+			<-events
+			a.mu.Lock()
+			armed, turnID, text = a.turn.armed, a.receiptTurnID, a.turn.text.String()
+			a.mu.Unlock()
+			if !armed || turnID != "turn-B" || text != "" {
+				t.Fatalf("B did not start its own latch: armed=%v turn=%q text=%q", armed, turnID, text)
+			}
+		})
+	}
+}

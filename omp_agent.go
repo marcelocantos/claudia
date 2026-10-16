@@ -413,7 +413,9 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 				return ctrl.send(promptMessage(omp.OpPrompt, req.Config.Name, text, a, ctrl))
 			},
 			sendWithRequestID: func(a *Agent, text, id string) error {
-				ctrl.inflight.Store(true)
+				if id == "" {
+					ctrl.inflight.Store(true)
+				}
 				return ctrl.sendRequest(promptMessage(omp.OpPrompt, req.Config.Name, text, a, ctrl), id)
 			},
 			steer: func(a *Agent, text string) (DeliveryOutcome, error) {
@@ -590,6 +592,9 @@ func (c *ompControl) pump(a *Agent) {
 				slog.Warn("omp refused receipt", "seat", c.seat, "error", err)
 				continue
 			}
+			if ev.Receipt.State == ReceiptStarted {
+				c.inflight.Store(true)
+			}
 			a.publishEvent(Event{Type: "receipt", RequestID: ev.RequestID, SessionID: c.sessionID, Receipt: ev.Receipt})
 		case "auth_retry":
 			if ev.RequestID != "" && ev.TurnID != "" && len(ev.FailedToken) == 64 && oauthRejected(ev.Error) {
@@ -599,6 +604,12 @@ func (c *ompControl) pump(a *Agent) {
 			if ev.RequestID != "" {
 				if err := ev.Receipt.ValidateIdentity(c.seat, c.sessionID, ev.RequestID); err != nil {
 					slog.Warn("omp refused acceptance receipt", "seat", c.seat, "error", err)
+					continue
+				}
+				if ev.Receipt.State != ReceiptAccepted && ev.Receipt.State != ReceiptStarted {
+					// Replaying an ACK for a terminal or uncertain obligation
+					// does not mean that a new model turn was accepted.
+					a.publishEvent(Event{Type: "receipt", RequestID: ev.RequestID, SessionID: c.sessionID, Receipt: ev.Receipt})
 					continue
 				}
 			}

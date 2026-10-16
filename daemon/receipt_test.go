@@ -176,6 +176,9 @@ func TestBrokerIdentifiedSendWaitsForReceiptAndPreservesLostAck(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(a.Stop)
+			if !a.SupportsReceipts() {
+				t.Fatal("broker grant omitted durable receipt capability")
+			}
 			events := make(chan claudia.Event, 8)
 			a.SubscribeEvents(func(ev claudia.Event) { events <- ev })
 			done := make(chan error, 1)

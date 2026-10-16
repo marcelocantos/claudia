@@ -14,6 +14,12 @@ import (
 	"github.com/marcelocantos/claudia/omp"
 )
 
+// SupportsReceipts reports whether identified submissions wait for durable
+// sidecar admission and expose per-request execution receipts.
+func (a *Agent) SupportsReceipts() bool {
+	return a != nil && a.ops.explicitRequestIDs && a.ops.receipt != nil
+}
+
 type RequestReceipt = omp.RequestReceipt
 type ReceiptState = omp.ReceiptState
 

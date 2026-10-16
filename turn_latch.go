@@ -33,8 +33,10 @@ import (
 // ends with the turn.
 //
 // So the turn is recorded as it is published, and a wait that arrives
-// late is handed what it missed. The latch is ARMED by the submit, which
-// is what keeps it from handing back somebody else's conversation: a
+// late is handed what it missed. Legacy submits arm the latch before the
+// write; identified sidecar sends arm it on the durable started receipt,
+// because admission alone can acknowledge an old or queued request. This
+// keeps it from handing back somebody else's conversation: a
 // resumed session replays old assistant messages, and those must not
 // satisfy a caller waiting on a prompt nobody has sent yet.
 //
@@ -43,7 +45,7 @@ import (
 // be accumulating anyway. It is not capped: a cap would silently
 // truncate a reply, a worse failure than the memory it saves.
 type turnLatch struct {
-	// armed is set by beginTurn and cleared when a wait takes the turn.
+	// armed is set by beginTurn or a started receipt and cleared by a wait.
 	// Unarmed, publishEvent records nothing.
 	armed bool
 	// text accumulates exactly as WaitForResponse's own subscriber does,
@@ -75,6 +77,13 @@ func (a *Agent) beginTurn() {
 // WaitForResponse's subscriber exactly; the two must agree, or a waiter
 // that arrives late gets a different answer from one that arrived early.
 func (a *Agent) recordTurnEventLocked(ev Event) {
+	if a.SupportsReceipts() && ev.Type == "receipt" && ev.Receipt != nil && ev.Receipt.State == ReceiptStarted && len(ev.Receipt.TurnIDs) > 0 {
+		turnID := ev.Receipt.TurnIDs[len(ev.Receipt.TurnIDs)-1]
+		if turnID != a.receiptTurnID {
+			a.receiptTurnID = turnID
+			a.turn = turnLatch{armed: true, text: &strings.Builder{}}
+		}
+	}
 	if !a.turn.armed {
 		return
 	}
