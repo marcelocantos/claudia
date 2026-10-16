@@ -32,6 +32,7 @@ const (
 // Message is one IPC line. Token is set only on load, and only with the
 // access token the broker just read from the Keychain item.
 type Message struct {
+	Cursor    string `json:"cursor,omitempty"`
 	Op        string `json:"op"`
 	RequestID string `json:"request_id,omitempty"`
 	RPCID     string `json:"rpc_id,omitempty"`
@@ -85,16 +86,17 @@ type Sandbox struct {
 
 // Event is one sidecar line. Type turn_end carries a context snapshot.
 type Event struct {
-	RequestID   string          `json:"request_id,omitempty"`
-	RPCID       string          `json:"rpc_id,omitempty"`
-	Receipt     *RequestReceipt `json:"receipt,omitempty"`
-	UsageFact   *UsageFact      `json:"usage_fact,omitempty"`
-	UsagePage   *UsagePage      `json:"usage_page,omitempty"`
-	TurnID      string          `json:"turn_id,omitempty"`
-	FailedToken string          `json:"failed_token,omitempty"`
-	Seat        string          `json:"seat,omitempty"`
-	Type        string          `json:"type"`
-	How         string          `json:"how,omitempty"`
+	GenerationPage *GenerationPage `json:"generation_page,omitempty"`
+	RequestID      string          `json:"request_id,omitempty"`
+	RPCID          string          `json:"rpc_id,omitempty"`
+	Receipt        *RequestReceipt `json:"receipt,omitempty"`
+	UsageFact      *UsageFact      `json:"usage_fact,omitempty"`
+	UsagePage      *UsagePage      `json:"usage_page,omitempty"`
+	TurnID         string          `json:"turn_id,omitempty"`
+	FailedToken    string          `json:"failed_token,omitempty"`
+	Seat           string          `json:"seat,omitempty"`
+	Type           string          `json:"type"`
+	How            string          `json:"how,omitempty"`
 	// Restored, on a "ready" for a launched seat, says whether the sidecar
 	// brought back the seat's stored conversation (claudia 🎯T151, jevons
 	// 🎯T929). Absent from a sidecar that predates the store, which never did.

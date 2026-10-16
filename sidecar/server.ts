@@ -21,6 +21,7 @@ import { HOST_CONNECTION_LOST, HostCalls } from "./hostcalls.ts";
 import { SeatStore } from "./store.ts";
 import { History } from "./maintain.ts";
 import { ReceiptJournal } from "./receipts.ts";
+import { GenerationDiscovery } from "./generations.ts";
 import { HistoricalUsageReader } from "./usage-reader.ts";
 import type { SandboxPolicy } from "./coding.ts";
 
@@ -65,6 +66,7 @@ if (process.argv.includes("--lifeline=stdin")) {
 // storeRoot holds each seat's conversation beside the socket (🎯T151), so a
 // sidecar restart resumes a seat the host reloads with the same session.
 const storeRoot = join(dirname(sock), "omp-seats");
+const generations = new GenerationDiscovery(storeRoot);
 
 type Line = {
   op?: string;
@@ -89,6 +91,7 @@ type Line = {
   tools?: HostTool[];
   preserve?: string;
   pins?: string[];
+  cursor?: string;
   after?: number;
   limit?: number;
 };
@@ -207,6 +210,11 @@ async function handle(
   calls: HostCalls,
   signal: AbortSignal,
 ): Promise<void> {
+  if (msg.op === "generations") {
+    const page = await generations.page(msg.cursor, msg.limit, { expiresAt: msg.expires_at, signal });
+    write({ type: "generation_page", rpc_id: msg.rpc_id, generation_page: page });
+    return;
+  }
   if (msg.op === "usage") {
     if (!msg.session_id) throw new Error("usage query requires session_id");
     const existing = seats.get(seat);

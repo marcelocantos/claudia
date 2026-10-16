@@ -117,3 +117,50 @@ append, and admission under accounting outage remain open coverage.
 A successful query or nil
 `UsageError()` does not certify these gaps away. Live provider verification
 and the full runtime gate remain required before product completion.
+
+## Discovering historical generations
+
+`DiscoverGenerations(ctx, GenerationQuery{Cursor, Limit})` enumerates the
+existing canonical `omp-seats` history headers, including removed and unloaded
+seats whose spool is absent. The direct variant is the broker handler's seam.
+It does not read the registry, infer host ownership, load a model, obtain
+credentials, repair a file, or create a second durable index. The original
+caller expiry crosses the typed broker and sidecar requests unchanged.
+
+Start with an empty cursor and retain discovered `(Seat, SessionID)` identities.
+Follow `GenerationPage.Cursor` while `More` is true, using the same limit.
+A page can contain no identities and still have `More`: the limit bounds
+examined directory entries, including empty directories and invalid files.
+`Issues` contains bounded per-page diagnostics. `Complete` is true only on the
+terminal page when this traversal observed no issues on any page. It is **not
+an atomic snapshot, an ownership assertion, or proof that all past sessions
+still exist**. Concurrent creation/deletion follows native directory iterator
+semantics: entries created behind a cursor or deleted before observation may
+be absent without an issue. Entries that disappear after observation can
+produce an explicit read issue. Repeat full sweeps to discover later creation;
+never remove a previously known generation because it is absent from a sweep.
+Identity comes from the validated header, with its canonical path checked;
+sanitized filenames cannot supply the original identity. Symlink entries are
+refused, and an unreadable or malformed observed entry prevents `Complete`.
+
+Limits are 128 examined entries per request, 16 KiB read per history header,
+1,024 UTF-8 bytes per identity component, 96 cursor bytes, and 512 bytes each
+for issue paths and messages. A single page runs at once; it may retain one
+header buffer, two directory streams, and the bounded result. At most four
+scans retain two directory streams and one retry page each. There is no
+whole-directory listing or transcript retention. These are encoded resource
+bounds, not measured JavaScript heap guarantees. The server caps each request
+at ten seconds, checking cancellation/deadline between asynchronous filesystem
+operations; an OS call itself remains cooperatively bounded, as for usage replay.
+
+Opaque cursors expire after 60 seconds idle and do not survive sidecar restart.
+The most recent non-initial page can be retried with the same input cursor
+without advancing again. Older cursors, changed limits, and expired cursors
+return `*GenerationDiscoveryError` with `Code == DiscoveryCursorExpired`,
+through either direct or broker routing. Restart from an empty cursor and
+deduplicate retained identities. An interruption after traversal has advanced
+invalidates that scan rather than silently skipping an unreturned page; an
+interruption before consuming the cursor may leave it usable. A lost initial
+response is handled by starting another scan. `DiscoveryBusy` means retry the
+same request later; scan capacity is released on idle expiry. Completed scans
+retain their last retry page until expiry. Only the most recent page is cached.
