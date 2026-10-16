@@ -433,6 +433,8 @@ func (d *Daemon) emit(ev broker.EventMessage) {
 // HandleRequest implements broker.Handler.
 func (d *Daemon) HandleRequest(c *broker.ClientConn, req *broker.Request) bool {
 	switch req.Type {
+	case broker.TypeUsageFacts:
+		d.handleUsageFacts(c, req)
 	case broker.TypeReceipt:
 		d.handleReceipt(c, req)
 	case broker.TypeGrant:

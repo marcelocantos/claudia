@@ -35,6 +35,7 @@ type eventWire struct {
 	Text          string          `json:"text,omitempty"`
 	StopReason    string          `json:"stop_reason,omitempty"`
 	Usage         Usage           `json:"usage,omitzero"`
+	UsageFact     *UsageFact      `json:"usage_fact,omitempty"`
 	ProgressType  string          `json:"progress_type,omitempty"`
 	PreviewUpdate string          `json:"preview_update,omitempty"`
 	ToolCallID    string          `json:"tool_call_id,omitempty"`

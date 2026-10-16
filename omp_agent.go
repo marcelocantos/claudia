@@ -390,6 +390,9 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 		HostMCPUnavailable: mcpUnavailable,
 		Ops: agentOps{
 			explicitRequestIDs: true,
+			usagePage: func(ctx context.Context, _ *Agent, after uint64, limit int) (*UsagePage, error) {
+				return QueryUsageDirect(ctx, UsageQuery{Seat: ctrl.seat, SessionID: sessionID, After: after, Limit: limit})
+			},
 			receipt: func(ctx context.Context, _ *Agent, id string) (*RequestReceipt, error) {
 				return ctrl.receipt(ctx, id)
 			},
@@ -587,6 +590,14 @@ func (c *ompControl) pump(a *Agent) {
 			}
 		}
 		switch ev.Type {
+		case "usage":
+			if err := ev.UsageFact.ValidateIdentity(c.seat, c.sessionID); err != nil {
+				a.publishEvent(Event{Type: "usage_error", Text: err.Error(), SessionID: c.sessionID})
+				continue
+			}
+			a.publishEvent(Event{Type: "usage", SessionID: c.sessionID, UsageFact: ev.UsageFact})
+		case "usage_error":
+			a.publishEvent(Event{Type: "usage_error", Text: ev.Text, SessionID: c.sessionID})
 		case "receipt":
 			if err := ev.Receipt.ValidateIdentity(c.seat, c.sessionID, ev.RequestID); err != nil {
 				slog.Warn("omp refused receipt", "seat", c.seat, "error", err)

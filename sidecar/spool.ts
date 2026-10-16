@@ -4,6 +4,7 @@
 import { appendFileSync, existsSync, mkdirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import type { UsageFact } from "./usage.ts";
 
 export type SpoolRecord = {
   ts: string;
@@ -15,6 +16,7 @@ export type SpoolRecord = {
   provider?: string;
   model?: string;
   snapshot?: unknown;
+  usage_fact?: UsageFact;
   turn_id?: string;
   session_id?: string;
   cause?: string;
@@ -116,6 +118,7 @@ export class Spool {
       resume: rec.resume,
       text: rec.text,
       call_id: rec.call_id,
+      usage_fact: rec.usage_fact,
       name: rec.name,
       provider: rec.provider,
       model: rec.model,

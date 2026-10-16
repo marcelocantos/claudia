@@ -74,6 +74,9 @@ type Event struct {
 	// Usage is populated for type == "assistant" with the token usage
 	// reported by the message. Zero if the event carries no usage data.
 	Usage Usage `json:"-"`
+	// UsageFact retains invocation identity, partial availability and coverage.
+	// Usage is its deduplicated known-token delta; never sum both.
+	UsageFact *UsageFact `json:"-"`
 
 	// ProgressType is populated for type == "progress" (e.g. "tool_use",
 	// "thought", "plan", "prompt_accepted", "permission", "tui_preview").

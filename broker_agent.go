@@ -244,6 +244,9 @@ func (b *brokerAgentBackend) reclaim() error {
 
 func (b *brokerAgentBackend) ops() agentOps {
 	return agentOps{
+		usagePage: func(ctx context.Context, a *Agent, after uint64, limit int) (*UsagePage, error) {
+			return queryBrokerUsage(ctx, b.client, UsageQuery{Seat: b.named().Name, SessionID: a.SessionID(), After: after, Limit: limit})
+		},
 		receipt: func(ctx context.Context, a *Agent, id string) (*RequestReceipt, error) {
 			return queryBrokerReceipt(ctx, b.client, ReceiptQuery{Seat: b.named().Name, SessionID: a.SessionID(), RequestID: id})
 		},

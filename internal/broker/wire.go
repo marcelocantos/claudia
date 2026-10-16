@@ -524,6 +524,7 @@ type Request struct {
 	AuthDetail    *NamedRequest
 	AuthStatus    *AuthStatusRequest
 	Receipt       *ReceiptRequest
+	UsageFacts    *UsageFactsRequest
 }
 
 // Response is a decoded broker → client message. Exactly one of the body
@@ -568,6 +569,7 @@ type Response struct {
 	AuthDetail       *AuthRecoveryDetailResponse
 	AuthStatus       *AuthStatusResponse
 	Receipt          *omp.RequestReceipt
+	UsageFacts       *omp.UsagePage
 }
 
 // validator is implemented by bodies that normalise defaults or refuse
@@ -607,6 +609,7 @@ func spec[M, B any](what string, slot func(*M) **B, noBody bool) bodySpec[M] {
 // requestSpecs is the client → broker namespace. TestEveryMessageTypeHasAVector
 // walks it, so a type added here without a golden vector fails the build.
 var requestSpecs = map[MessageType]bodySpec[Request]{
+	TypeUsageFacts:        spec("usage facts body", func(r *Request) **UsageFactsRequest { return &r.UsageFacts }, false),
 	TypeReceipt:           spec("receipt body", func(r *Request) **ReceiptRequest { return &r.Receipt }, false),
 	TypeSpawn:             spec("spawn body", func(r *Request) **SpawnRequest { return &r.Spawn }, false),
 	TypeRelease:           spec("release body", func(r *Request) **ReleaseRequest { return &r.Release }, false),
@@ -636,6 +639,7 @@ var requestSpecs = map[MessageType]bodySpec[Request]{
 
 // responseSpecs is the broker → client namespace.
 var responseSpecs = map[MessageType]bodySpec[Response]{
+	TypeUsageFactsResult:   spec("usage facts result body", func(r *Response) **omp.UsagePage { return &r.UsageFacts }, false),
 	TypeReceiptResult:      spec("receipt result body", func(r *Response) **omp.RequestReceipt { return &r.Receipt }, false),
 	TypeSpawned:            spec("spawned body", func(r *Response) **SpawnResponse { return &r.Spawned }, false),
 	TypeReleased:           spec("released body", func(r *Response) **ReleaseResponse { return &r.Released }, false),

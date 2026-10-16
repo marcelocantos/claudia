@@ -36,6 +36,8 @@ type Message struct {
 	RequestID string `json:"request_id,omitempty"`
 	RPCID     string `json:"rpc_id,omitempty"`
 	AttemptID string `json:"attempt_id,omitempty"`
+	After     uint64 `json:"after,omitempty"`
+	Limit     int    `json:"limit,omitempty"`
 	ExpiresAt int64  `json:"expires_at,omitempty"`
 	Seat      string `json:"seat,omitempty"`
 	Provider  string `json:"provider,omitempty"`
@@ -86,6 +88,8 @@ type Event struct {
 	RequestID   string          `json:"request_id,omitempty"`
 	RPCID       string          `json:"rpc_id,omitempty"`
 	Receipt     *RequestReceipt `json:"receipt,omitempty"`
+	UsageFact   *UsageFact      `json:"usage_fact,omitempty"`
+	UsagePage   *UsagePage      `json:"usage_page,omitempty"`
 	TurnID      string          `json:"turn_id,omitempty"`
 	FailedToken string          `json:"failed_token,omitempty"`
 	Seat        string          `json:"seat,omitempty"`

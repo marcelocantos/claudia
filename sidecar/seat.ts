@@ -13,6 +13,7 @@ import { awaitHostCall } from "./hostcalls.ts";
 import { ContextOverflow, isOverflow, Maintenance, seatConvertToLlm, type MaintenanceHost } from "./maintain.ts";
 import type { SeatStore } from "./store.ts";
 import { ReceiptJournal, type RequestReceipt, type ReceiptMessage, type ReceiptTerminalState } from "./receipts.ts";
+import { UsageJournal, measuredStream, measuredCompletion, type UsageFact, type UsagePage } from "./usage.ts";
 import {
   beginTurn,
   closeTurn,
@@ -41,6 +42,7 @@ export type SeatEvent = {
   reason?: string;
   snapshot?: unknown;
   receipt?: RequestReceipt;
+  usage_fact?: UsageFact;
 };
 
 export type SeatEmit = (ev: SeatEvent) => void;
@@ -52,6 +54,7 @@ export type SeatAgent = {
   steer: (text: string, meta?: PromptMeta) => void;
   abort: () => void;
   receipt: (requestId: string) => RequestReceipt;
+  usage: (after?: number, limit?: number) => UsagePage;
   // switchModel moves the seat to another provider or model between turns,
   // keeping its conversation (🎯T195). It rejects while a turn runs, for an
   // unknown model, and when the conversation cannot be made to fit.
@@ -128,6 +131,17 @@ export function createSeatAgent(opts: {
   let retryDone = Promise.resolve();
   let cancelled = false;
   let unsafe = false;
+  let usage: UsageJournal | undefined;
+  let rootRequest: string | undefined;
+  const usageAttribution = () => {
+    const ids = new Set(turn && !turn.closed ? currentRequests : []);
+    if (rootRequest && turn && !turn.closed) ids.add(rootRequest);
+    return {
+      turn_id: turn && !turn.closed ? turn.turn_id : undefined,
+      cause: turn && !turn.closed ? turn.cause : undefined,
+      requests: [...ids].map(id => receipts.query(id)).filter(r => r.attempt_id).map(r => ({ request_id: r.request_id, attempt_id: r.attempt_id })),
+    };
+  };
   const model = opts.modelOverride ?? resolveModel(opts.provider, opts.model);
   const agent = new Agent({
     initialState: {
@@ -141,6 +155,7 @@ export function createSeatAgent(opts: {
     },
     cwd,
     cwdResolver: () => cwd || undefined,
+    streamFn: measuredStream(() => usage, usageAttribution),
     // Cursor's native tools come back as exec frames, not tool calls; without
     // handlers each answered "Tool not available" (2026-10-13).
     cursorExecHandlers: cursorExecHandlers(() => cwd, () => toolResultBound(agent.state.model?.contextWindow ?? 0), () => sandbox),
@@ -189,11 +204,18 @@ export function createSeatAgent(opts: {
     preserve: () => preserve,
     pins: () => pins,
     ...opts.maintenance,
+    summaryOptions: {
+      ...opts.maintenance?.summaryOptions,
+      completeImpl: measuredCompletion(() => usage, usageAttribution, opts.maintenance?.summaryOptions?.completeImpl),
+    },
   });
   // Resume the stored conversation. An unreadable store throws, so the load
   // fails loudly instead of starting the seat on an empty conversation.
   const restored = maint.restore();
   const receipts = new ReceiptJournal(maint.history);
+  if (opts.store) usage = new UsageJournal(maint.history,
+    fact => sink.emit({ type: "usage", usage_fact: fact }),
+    text => sink.emit({ type: "usage_error", text }));
   // continue() re-executes an unpaired tool batch before its model gate.
   // After a process crash we cannot know whether those effects happened.
   // Keep the history inspectable, but require a fresh session to proceed.
@@ -354,6 +376,7 @@ export function createSeatAgent(opts: {
     const executionTurn = turn;
     const executionRequests = new Set<string>();
     currentRequests = executionRequests;
+    rootRequest = meta?.request_id;
     attemptToken = "";
     replayToken = "";
     requestCount = 0;
@@ -490,6 +513,10 @@ export function createSeatAgent(opts: {
 
   return {
     receipt: (requestId) => receipts.query(requestId),
+    usage: (after, limit) => {
+      if (!usage) throw new Error("usage accounting unavailable: no durable session store");
+      return usage.page(after, limit);
+    },
     authRetry: (reply) => recovery.receive(reply),
     prompt: async (text: string, meta?: PromptMeta) => {
       receipts.assertHealthy();

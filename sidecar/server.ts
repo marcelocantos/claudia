@@ -21,6 +21,7 @@ import { HOST_CONNECTION_LOST, HostCalls } from "./hostcalls.ts";
 import { SeatStore } from "./store.ts";
 import { History } from "./maintain.ts";
 import { ReceiptJournal } from "./receipts.ts";
+import { UsageJournal } from "./usage.ts";
 import type { SandboxPolicy } from "./coding.ts";
 
 const banned = [
@@ -88,6 +89,8 @@ type Line = {
   tools?: HostTool[];
   preserve?: string;
   pins?: string[];
+  after?: number;
+  limit?: number;
 };
 
 // planTokens is each plan's current access token, keyed by provider.
@@ -145,6 +148,7 @@ const server = createServer((socket) => {
           provider: loaded?.provider,
           model: loaded?.model,
           snapshot: ev.snapshot,
+          usage_fact: ev.usage_fact as import("./usage.ts").UsageFact | undefined,
           turn_id: str("turn_id"),
           session_id: str("session_id"),
           cause: str("cause"),
@@ -199,6 +203,23 @@ async function handle(
   callTool: (callId: string, name: string, args: string) => Promise<string>,
   calls: HostCalls,
 ): Promise<void> {
+  if (msg.op === "usage") {
+    if (!msg.session_id) throw new Error("usage query requires session_id");
+    const existing = seats.get(seat);
+    let page;
+    if (existing && existing.session_id === msg.session_id) {
+      page = existing.agent.usage(msg.after, msg.limit);
+    } else {
+      const store = new SeatStore(storeRoot, seat, msg.session_id);
+      const entries = store.load({ repairTail: false });
+      if (!entries) throw new Error("usage accounting unavailable: no stored session");
+      const history = new History(store);
+      history.entries = entries;
+      page = new UsageJournal(history).page(msg.after, msg.limit);
+    }
+    write({ seat, type: "usage_page", rpc_id: msg.rpc_id, usage_page: page });
+    return;
+  }
   if (msg.op === "receipt") {
     if (!msg.session_id || !msg.request_id) throw new Error("receipt query requires session_id and request_id");
     const existing = seats.get(seat);

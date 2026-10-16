@@ -50,7 +50,8 @@ type requestVector struct {
 
 // requestVectors is every client → broker message, in canonical form.
 var requestVectors = map[string]requestVector{
-	"receipt": {msg: &Request{ID: "rpc-receipt", Type: TypeReceipt, Receipt: &ReceiptRequest{Seat: "seat", SessionID: "session", RequestID: "logical-request"}}},
+	"usage_facts": {msg: &Request{ID: "rpc-usage", Type: TypeUsageFacts, UsageFacts: &UsageFactsRequest{Seat: "seat", SessionID: "session", After: 3, Limit: 128}}},
+	"receipt":     {msg: &Request{ID: "rpc-receipt", Type: TypeReceipt, Receipt: &ReceiptRequest{Seat: "seat", SessionID: "session", RequestID: "logical-request"}}},
 	"spawn_minimal": {
 		msg: &Request{
 			ID: "r1", Type: TypeSpawn,
@@ -194,7 +195,8 @@ var requestVectors = map[string]requestVector{
 
 // responseVectors is every broker → client message, in canonical form.
 var responseVectors = map[string]*Response{
-	"receipt_result": {ID: "rpc-receipt", Type: TypeReceiptResult, Receipt: &omp.RequestReceipt{Seat: "seat", SessionID: "session", RequestID: "logical-request", State: omp.ReceiptUnknown, TurnIDs: []string{}, Reason: "not_found"}},
+	"usage_facts_result": {ID: "rpc-usage", Type: TypeUsageFactsResult, UsageFacts: &omp.UsagePage{Seat: "seat", SessionID: "session", Facts: []omp.UsageFact{}, Next: 3}},
+	"receipt_result":     {ID: "rpc-receipt", Type: TypeReceiptResult, Receipt: &omp.RequestReceipt{Seat: "seat", SessionID: "session", RequestID: "logical-request", State: omp.ReceiptUnknown, TurnIDs: []string{}, Reason: "not_found"}},
 	"spawned": {
 		ID: "r1", Type: TypeSpawned,
 		Spawned: &SpawnResponse{SessionID: "s-1", PID: 4242, Warm: false},

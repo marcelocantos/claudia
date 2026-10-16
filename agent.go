@@ -297,12 +297,16 @@ type Agent struct {
 	// turn can no longer be answered ends at the death instead of
 	// waiting on an event nothing will publish (🎯T96). Created on
 	// demand by deadSignal; nil until somebody waits.
-	dead      chan struct{}
-	stopOnce  sync.Once
-	eventSubs map[int64]EventFunc
-	turn      turnLatch
-	usage     Usage
-	model     string // resolved model from the latest event that carried one
+	dead          chan struct{}
+	stopOnce      sync.Once
+	eventSubs     map[int64]EventFunc
+	turn          turnLatch
+	usage         Usage
+	usageCalls    map[string]UsageFact
+	usageErr      error
+	usageCursor   uint64
+	usageReplayMu sync.Mutex
+	model         string // resolved model from the latest event that carried one
 
 	// clk is the time source WaitForResponse's silence bound reads, so a
 	// hermetic test drives the bound with a ManualClock instead of
@@ -451,6 +455,7 @@ type agentOps struct {
 	// explicitRequestIDs means the backend, not a host FIFO, identifies events.
 	explicitRequestIDs bool
 	receipt            func(context.Context, *Agent, string) (*RequestReceipt, error)
+	usagePage          func(context.Context, *Agent, uint64, int) (*UsagePage, error)
 	resize             func(*Agent, uint16, uint16) error
 	stop               func(*Agent)
 	// reclaim is set only by the broker backend: it makes sure this
@@ -1923,8 +1928,10 @@ func (a *Agent) WaitReady(ctx context.Context) error {
 	}
 }
 
-// Usage returns the cumulative token usage parsed from the JSONL transcript
-// since the agent was started.
+// Usage returns cumulative observed token counters for this handle. Durable
+// sidecar facts are deduplicated; their absent counters contribute no known
+// amount, not a measured zero. This is a partial lower bound, never a complete
+// consumption or plan-balance claim. See RefreshUsage and UsageError.
 func (a *Agent) Usage() Usage {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -1948,6 +1955,19 @@ func (a *Agent) Model() string {
 
 func (a *Agent) publishEvent(ev Event) {
 	a.mu.Lock()
+	if ev.UsageFact != nil {
+		fresh, err := a.applyUsageFactLocked(&ev)
+		if err != nil {
+			a.usageErr = err
+			ev = Event{Type: "usage_error", Text: err.Error(), SessionID: a.sessionID}
+		} else if !fresh {
+			a.mu.Unlock()
+			return
+		}
+	}
+	if ev.Type == "usage_error" {
+		a.usageErr = fmt.Errorf("usage accounting unavailable: %s", ev.Text)
+	}
 	if ev.Model != "" {
 		a.model = ev.Model
 	}
