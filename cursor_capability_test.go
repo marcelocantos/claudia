@@ -13,7 +13,7 @@ import (
 
 func TestCursorCapabilityMatrixIsExplicit(t *testing.T) {
 	want := map[Capability]CapabilityStatus{
-		CapabilityTask:             CapabilitySupported,
+		CapabilityTask:             CapabilityUnsupported,
 		CapabilityResume:           CapabilitySupported,
 		CapabilitySession:          CapabilitySupported,
 		CapabilityRewind:           CapabilityUnsupported,
@@ -50,7 +50,7 @@ func TestCursorCapabilityMatrixMatchesBackendClaims(t *testing.T) {
 	wired := map[Capability]bool{}
 	for _, caps := range []providerCapabilities{
 		(cursorAgentBackend{}).Capabilities(),
-		(cursorTaskBackend{}).Capabilities(),
+		taskBackendForProvider(ProviderCursor).Capabilities(),
 	} {
 		for capability, ok := range backendCapabilityNames(caps) {
 			wired[capability] = wired[capability] || ok

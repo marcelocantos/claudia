@@ -251,8 +251,8 @@ func TestHermeticGrokSessionLoad(t *testing.T) {
 
 func TestGrokAgentBackendCapabilities(t *testing.T) {
 	caps := grokAgentBackend{}.Capabilities()
-	if !caps.Task || !caps.Session || !caps.Resume {
-		t.Fatalf("capabilities = %+v, want Task+Session+Resume", caps)
+	if caps.Task || !caps.Session || !caps.Resume {
+		t.Fatalf("capabilities = %+v, want Session+Resume without Task", caps)
 	}
 }
 

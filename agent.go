@@ -598,7 +598,7 @@ func (claudeAgentBackend) Capabilities() providerCapabilities {
 
 func (codexAgentBackend) Capabilities() providerCapabilities {
 	return providerCapabilities{
-		Task:    true,
+		Task:    false,
 		Resume:  true,
 		Session: true,
 	}
@@ -610,7 +610,7 @@ func (codexAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) 
 
 func (grokAgentBackend) Capabilities() providerCapabilities {
 	return providerCapabilities{
-		Task:    true,
+		Task:    false,
 		Session: true,
 		Resume:  true,
 	}

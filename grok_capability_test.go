@@ -16,7 +16,7 @@ import (
 // caller it bites.
 func TestGrokCapabilityMatrixIsExplicit(t *testing.T) {
 	want := map[Capability]CapabilityStatus{
-		CapabilityTask:    CapabilitySupported,
+		CapabilityTask:    CapabilityUnsupported,
 		CapabilityResume:  CapabilitySupported,
 		CapabilitySession: CapabilitySupported,
 		// Session is supported on Grok (ACP) and Codex (app-server).
@@ -66,7 +66,7 @@ func TestGrokCapabilityMatrixIsExplicit(t *testing.T) {
 func TestGrokCapabilityMatrixMatchesBackendClaims(t *testing.T) {
 	wired := map[Capability]bool{}
 	for _, caps := range []providerCapabilities{
-		(grokTaskBackend{}).Capabilities(),
+		taskBackendForProvider(ProviderGrok).Capabilities(),
 		(grokAgentBackend{}).Capabilities(),
 	} {
 		for capability, ok := range backendCapabilityNames(caps) {
@@ -84,40 +84,6 @@ func TestGrokCapabilityMatrixMatchesBackendClaims(t *testing.T) {
 		if !isWired && status == CapabilitySupported {
 			t.Errorf("no Grok backend wires %s but the matrix claims supported", capability)
 		}
-	}
-}
-
-// TestGrokToolRestrictionsClaimTracksTheArgvBuilder closes the blind spot
-// the test above cannot cover. backendCapabilityNames has no field for
-// tool_restrictions — no providerCapabilities boolean carries it — so the
-// wired/claimed ratchet never visits that capability, and the published
-// status is otherwise pinned only by a hand-written want map.
-//
-// That leaves one plausible edit fully green: flip the claim to
-// supported, update the want map to match (the natural move when someone
-// believes they have closed the gap), and leave grokTaskArgs untouched.
-// Task.Run would still refuse — grokToolRestrictionRefusal fails closed
-// on a supported claim — but callers would read `supported` from the
-// published matrix and get a refusal at runtime. This asserts the
-// implication directly against the argv builder, so the claim can only
-// move once the translation actually exists.
-func TestGrokToolRestrictionsClaimTracksTheArgvBuilder(t *testing.T) {
-	if ProviderCapabilityStatus(ProviderGrok, CapabilityToolRestrictions) != CapabilitySupported {
-		return // The gap is still declared; the refusal tests own this path.
-	}
-	argv := grokTaskArgs(taskRunRequest{
-		Prompt:        "the prompt",
-		DisallowTools: []string{"Bash"},
-	})
-	var restricted bool
-	for _, arg := range argv {
-		if arg == "--deny" || arg == "--disallowed-tools" {
-			restricted = true
-		}
-	}
-	if !restricted {
-		t.Errorf("the matrix claims Grok tool_restrictions is supported, but grokTaskArgs "+
-			"emits no --deny or --disallowed-tools: %v", argv)
 	}
 }
 

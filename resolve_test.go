@@ -14,7 +14,7 @@ import (
 func TestResolveYTTShapedPrefersGrokWhenHealthy(t *testing.T) {
 	now := time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC)
 	got, err := Resolve(context.Background(), ModelPredicates{
-		Mode:           CapabilityTask,
+		Mode:           CapabilitySession,
 		PreferPlan:     true,
 		PreferProvider: ProviderGrok,
 		Now:            now,
@@ -57,7 +57,7 @@ func TestResolveBackgroundAvoidsOverspentProviders(t *testing.T) {
 	} {
 		t.Run(path.name, func(t *testing.T) {
 			pred := ModelPredicates{
-				Mode: CapabilityTask, Quality: ModelQualityStandard, PreferPlan: true,
+				Mode: CapabilitySession, Quality: ModelQualityStandard, PreferPlan: true,
 				PreferProvider: ProviderGrok, Background: true, Now: now,
 				ExcludeProviders: []Provider{ProviderCursor, ProviderCodex},
 				Usage:            []PlanUsage{weekly(ProviderGrok, 70), weekly(ProviderClaude, 50)},
@@ -95,7 +95,7 @@ func TestResolveSkipsHotClaude(t *testing.T) {
 		}},
 	}
 	got, err := Resolve(context.Background(), ModelPredicates{
-		Mode:           CapabilityTask,
+		Mode:           CapabilitySession,
 		PreferPlan:     true,
 		PreferProvider: ProviderClaude,
 		Now:            now,
@@ -131,7 +131,7 @@ func TestResolveExcludeDropsSlackWinner(t *testing.T) {
 		}
 	}
 	got, err := Resolve(context.Background(), ModelPredicates{
-		Mode: CapabilityTask, Quality: ModelQualityStandard, PreferPlan: true, Now: now,
+		Mode: CapabilitySession, Quality: ModelQualityStandard, PreferPlan: true, Now: now,
 		ExcludeProviders: []Provider{ProviderCursor},
 		Usage: []PlanUsage{
 			weekly(ProviderCursor, 80, 20),
@@ -246,7 +246,7 @@ func TestResolveBlueCursorBeatsUnpublishedCatalogFirst(t *testing.T) {
 	now := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
 	week := now.Add(3*24*time.Hour + 12*time.Hour)
 	got, err := Resolve(context.Background(), ModelPredicates{
-		Mode:       CapabilityTask,
+		Mode:       CapabilitySession,
 		Quality:    ModelQualityStandard,
 		PreferPlan: true,
 		Now:        now,
@@ -292,7 +292,7 @@ func TestResolveCatalogPathPrefersPlanSlack(t *testing.T) {
 		}
 	}
 	got, err := Resolve(context.Background(), ModelPredicates{
-		Mode:       CapabilityTask,
+		Mode:       CapabilitySession,
 		Quality:    ModelQualityStandard,
 		PreferPlan: true,
 		Now:        now,
@@ -322,7 +322,7 @@ func TestResolveCatalogPathPrefersPlanSlack(t *testing.T) {
 
 func TestResolveStandardFailsClosedWhenSlackTied(t *testing.T) {
 	_, err := Resolve(context.Background(), ModelPredicates{
-		Mode:       CapabilityTask,
+		Mode:       CapabilitySession,
 		Quality:    ModelQualityStandard,
 		PreferPlan: true,
 		Usage:      []PlanUsage{},
@@ -343,7 +343,7 @@ func TestResolveCatalogTieBreak(t *testing.T) {
 	weekly := func(p Provider, used float64) PlanUsage {
 		return PlanUsage{Provider: p, Status: PlanUsageAvailable, Windows: []PlanWindow{{Name: PlanWindowWeekly, UsedPercent: floatPtr(used), RemainingPercent: floatPtr(100 - used), ResetsAt: &reset, LimitWindow: defaultWeeklyWindow}}}
 	}
-	pred := ModelPredicates{Mode: CapabilityTask, Quality: ModelQualityStandard, PreferPlan: true, Now: now, ExcludeProviders: []Provider{ProviderCodex, ProviderCursor}, Usage: []PlanUsage{weekly(ProviderClaude, 50), weekly(ProviderGrok, 50.1)}}
+	pred := ModelPredicates{Mode: CapabilitySession, Quality: ModelQualityStandard, PreferPlan: true, Now: now, ExcludeProviders: []Provider{ProviderCodex, ProviderCursor}, Usage: []PlanUsage{weekly(ProviderClaude, 50), weekly(ProviderGrok, 50.1)}}
 	if a, b := weeklyPressure(pred.Usage[0], now, nil), weeklyPressure(pred.Usage[1], now, nil); a == b || a-b >= 0.05 || b-a >= 0.05 {
 		t.Fatalf("fixture needs distinct pressure within 0.05: %v %v", a, b)
 	}
@@ -394,7 +394,7 @@ func TestPickCatalogTieBreakCannotBeatPressure(t *testing.T) {
 
 func TestResolveStandardQualityExcludesOpusAndHaiku(t *testing.T) {
 	got, err := Resolve(context.Background(), ModelPredicates{
-		Mode:           CapabilityTask,
+		Mode:           CapabilitySession,
 		Quality:        ModelQualityStandard,
 		PreferPlan:     true,
 		PreferProvider: ProviderClaude,
@@ -424,7 +424,7 @@ func TestResolveCodexGPT6QualityTiers(t *testing.T) {
 					intel = &ModelIntelArgs{Latest: []ModelObservation{}}
 				}
 				got, err := Resolve(context.Background(), ModelPredicates{
-					Mode:             CapabilityTask,
+					Mode:             CapabilitySession,
 					Purpose:          purpose,
 					Quality:          tc.quality,
 					PreferPlan:       true,
@@ -447,7 +447,7 @@ func TestResolveCodexGPT6QualityTiers(t *testing.T) {
 
 func TestResolveFailsClosed(t *testing.T) {
 	_, err := Resolve(context.Background(), ModelPredicates{
-		Mode:             CapabilityTask,
+		Mode:             CapabilitySession,
 		PreferPlan:       true,
 		ExcludeProviders: []Provider{ProviderClaude, ProviderGrok, ProviderCodex, ProviderCursor},
 		Usage:            []PlanUsage{},

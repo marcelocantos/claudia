@@ -18,7 +18,7 @@ import (
 func TestRunBrokerTaskStreamsAndAdmits(t *testing.T) {
 	pct := 40.0
 	usage := []claudia.PlanUsage{{
-		Provider: claudia.ProviderClaude,
+		Provider: claudia.ProviderOllama,
 		Status:   claudia.PlanUsageAvailable,
 		Windows:  []claudia.PlanWindow{{Name: claudia.PlanWindowWeekly, RemainingPercent: &pct}},
 	}}
@@ -33,7 +33,7 @@ func TestRunBrokerTaskStreamsAndAdmits(t *testing.T) {
 			t.Errorf("spawned before a usage read: fetches=%d", f.fetchCount())
 		}
 		spawned++
-		if cfg.Provider != claudia.ProviderGrok {
+		if cfg.Provider != claudia.ProviderBedrock {
 			t.Errorf("provider = %q", cfg.Provider)
 		}
 		return claudia.NewStubTask(cfg, &claudia.StubTaskOps{Run: func(_ context.Context, run claudia.StubTaskRun) (<-chan claudia.TaskEvent, error) {
@@ -49,10 +49,10 @@ func TestRunBrokerTaskStreamsAndAdmits(t *testing.T) {
 	}
 	t.Cleanup(func() { daemonNewTask = prev })
 
-	// Claude is the only row, and it admits. Grok has no row, so it is
+	// Ollama is the only row, and it admits. Bedrock has no row, so it is
 	// admitted too: a missing reading is not a veto.
 	ch, err := claudia.RunBrokerTask(context.Background(), "ping", claudia.TaskConfig{
-		Provider: claudia.ProviderGrok, WorkDir: t.TempDir(),
+		Provider: claudia.ProviderBedrock, WorkDir: t.TempDir(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -74,7 +74,7 @@ func TestRunBrokerTaskStreamsAndAdmits(t *testing.T) {
 	}
 	var claude claudia.PlanUsage
 	for _, u := range snap {
-		if u.Provider == claudia.ProviderClaude {
+		if u.Provider == claudia.ProviderOllama {
 			claude = u
 		}
 	}
@@ -89,7 +89,7 @@ func TestRunBrokerTaskStreamsAndAdmits(t *testing.T) {
 func TestRunBrokerTaskRefusesExhaustedPlan(t *testing.T) {
 	zero := 0.0
 	usage := []claudia.PlanUsage{{
-		Provider: claudia.ProviderClaude,
+		Provider: claudia.ProviderOllama,
 		Status:   claudia.PlanUsageAvailable,
 		Windows:  []claudia.PlanWindow{{Name: claudia.PlanWindowWeekly, RemainingPercent: &zero}},
 	}}
@@ -105,7 +105,7 @@ func TestRunBrokerTaskRefusesExhaustedPlan(t *testing.T) {
 	}
 	t.Cleanup(func() { daemonNewTask = prev })
 
-	for _, provider := range []claudia.Provider{claudia.ProviderClaude, ""} {
+	for _, provider := range []claudia.Provider{claudia.ProviderOllama} {
 		_, err := claudia.RunBrokerTask(context.Background(), "ping", claudia.TaskConfig{
 			Provider: provider, WorkDir: t.TempDir(),
 		})
@@ -123,7 +123,7 @@ func TestRunBrokerTaskRefusesExhaustedPlan(t *testing.T) {
 	}
 	var claude claudia.PlanUsage
 	for _, u := range snap {
-		if u.Provider == claudia.ProviderClaude {
+		if u.Provider == claudia.ProviderOllama {
 			claude = u
 		}
 	}
@@ -138,7 +138,7 @@ func TestRunBrokerTaskRefusesExhaustedPlan(t *testing.T) {
 func TestRunBrokerTaskRefreshesUsageBeforeSpawn(t *testing.T) {
 	pct := 40.0
 	usage := []claudia.PlanUsage{{
-		Provider: claudia.ProviderClaude,
+		Provider: claudia.ProviderOllama,
 		Status:   claudia.PlanUsageAvailable,
 		Windows:  []claudia.PlanWindow{{Name: claudia.PlanWindowWeekly, RemainingPercent: &pct}},
 	}}
@@ -162,7 +162,7 @@ func TestRunBrokerTaskRefreshesUsageBeforeSpawn(t *testing.T) {
 	t.Cleanup(func() { daemonNewTask = prev })
 
 	ch, err := claudia.RunBrokerTask(context.Background(), "ping", claudia.TaskConfig{
-		Provider: claudia.ProviderClaude, WorkDir: t.TempDir(),
+		Provider: claudia.ProviderOllama, WorkDir: t.TempDir(),
 	})
 	if err != nil {
 		t.Fatal(err)

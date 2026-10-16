@@ -23,45 +23,25 @@ based on the shape of the work. Judge is a separate typed-question mode.
 |                     | Task mode                            | Session mode                            |
 |---------------------|--------------------------------------|-----------------------------------------|
 | Type                | `claudia.Task`                       | `claudia.Agent`                         |
-| Process model       | New process (or HTTP call) per prompt | Persistent process: tmux PTY (Claude); ACP stdio/WebSocket (Grok); `codex app-server` JSON-RPC (Codex) |
+| Process model       | Bedrock or Ollama HTTP call per prompt | Persistent process: tmux PTY (Claude); ACP stdio/WebSocket (Grok); `codex app-server` JSON-RPC (Codex) |
 | Output              | Structured events (JSONL / stream-json / HTTP chunks) | Events via JSONL tail (Claude) or in-process RPC (Grok ACP, Codex app-server). Claude also captures a raw PTY log. |
 | Use case            | One-shot generation / analysis       | Multi-turn conversations                |
 | Cost accounting     | Yes when the provider reports it (`TaskEvent`) | Cumulative via `Agent.Usage()` when the transcript carries tokens |
-| Resume across runs  | Via `TaskConfig.SessionID` (one field for every provider's session id; `ClaudeID` is its deprecated alias) | Via `Config.SessionID` |
+| Resume across runs  | Unsupported by the remaining API Tasks | Via `Config.SessionID` |
 
-**Default to Task mode.** It's simpler, gives you structured events,
-and exposes cost and token accounting. Only use Session mode if the
-user explicitly needs persistent state or wants to observe the
-transcript live.
+**Use Sessions for subscription-plan agents.** The default, Claude, Codex,
+Grok and Cursor CLI Task transports have been removed (T192). `Task.Run`,
+`RunBrokerTask`, `claudia broker task`, and the separate `claudia/codex`
+Task API return `ErrTaskCLIRemoved`; they do not create an OMP replacement
+(T190). The broker returns `task_cli_removed` to old clients. Bedrock and
+Ollama API Tasks remain supported, with an explicit provider.
 
 A third mode, **Judge** (`claudia.Judge`), is for work that is not
 generation at all: a typed judgment (yes/no, one of a set, a position
 on a scale) with a probability, from a System One model (TypeSafe's
 Jev) in under a second. See [Judge mode](#judge-mode-typed-questions-jev).
 
-### Codex provider (Task mode)
-
-```go
-task := claudia.NewTask(claudia.TaskConfig{
-    Provider:       claudia.ProviderCodex,
-    WorkDir:        "/abs/path",
-    Model:          "gpt-6-sol",
-    SandboxMode:    "workspace-write",
-    ApprovalPolicy: "on-request",
-})
-```
-
-For Codex, `Task.Run` shells out to `codex exec --json`; `TaskConfig.SessionID`
-names the resumable provider session id (the Codex thread id). Do not assume Codex and
-Claude flags are semantically identical: `SandboxMode` and
-`ApprovalPolicy` are passed as Codex flags, while Claude Session mode
-continues to use `PermissionMode` and `DisallowTools`.
-
-Before spawn, claudia runs `PreflightCodexAuth`: it requires ChatGPT
-subscription OAuth (`auth_mode=chatgpt` with a non-empty access token in
-`~/.codex/auth.json`, overridable via `CLAUDIA_CODEX_AUTH_PATH`) and
-fails closed when the path would use API-key / `OPENAI_API_KEY` per-token
-billing. See [docs/codex-subscription-spike.md](docs/codex-subscription-spike.md).
+### Codex provider (Session mode)
 
 Codex persistent Session mode uses `codex app-server` over stdio
 (thread/start, turn/start, thread/resume). `SessionID` is the Codex
@@ -109,111 +89,10 @@ The grant covers `.git` only. A worktree added *outside* `WorkDir`
 (`git worktree add ../tree`) also needs its destination in
 `SandboxWritableRoots`.
 
-Task mode is the same sandbox with a quieter failure: under
-`SandboxMode: "workspace-write"`, `codex exec` refuses the commit and
-still exits 0. `TaskConfig.SandboxGitWrite` is the same opt-in, with the
-same trade-off, and `Run` logs the same warning when it is unset.
+The grant travels as a `-c sandbox_workspace_write.writable_roots=[…]`
+override, including the Session's own `SandboxWritableRoots`.
 
-```go
-task := claudia.NewTask(claudia.TaskConfig{
-    Provider:        claudia.ProviderCodex,
-    WorkDir:         "/abs/path/to/repo",
-    SandboxMode:     "workspace-write", // must be spelled out for the grant
-    SandboxGitWrite: true,
-    ApprovalPolicy:  "never",
-})
-```
-
-`Run` refuses `SandboxGitWrite` unless `SandboxMode` is
-`workspace-write` (or `danger-full-access`, where there is nothing to
-grant): an empty `SandboxMode` leaves the mode to the user's
-`config.toml`, which claudia does not read, so the grant could land on a
-read-only run and be dropped in silence.
-
-In both modes the grant travels as a
-`-c sandbox_workspace_write.writable_roots=[…]` override. A `-c` value
-replaces the list in `CODEX_HOME/config.toml` rather than adding to it.
-A Session repeats its own `SandboxWritableRoots` in the override; roots
-the *user* wrote into `~/.codex/config.toml` by hand are not read, and do
-not apply to a run that sets `SandboxGitWrite`.
-
-### Grok Build CLI provider (Task mode)
-
-```go
-task := claudia.NewTask(claudia.TaskConfig{
-    Provider: claudia.ProviderGrok,
-    WorkDir:  "/abs/path",
-    Model:    "grok-4", // optional; empty uses Grok Build default
-})
-```
-
-For Grok Build CLI, `Task.Run` shells out to
-`grok -p <prompt> --output-format streaming-json` (with
-`--permission-mode bypassPermissions` for unattended runs). Binary
-discovery: `GROK_BIN`, then `grok` on `$PATH`, then known installs
-including `~/.grok/bin/grok`. Auth is whatever the installed CLI uses
-(`grok login` or `XAI_API_KEY`). Resume uses `TaskConfig.SessionID`
-as the Grok session id with `--resume`. Plan-usage fetches rotate an
-expired login token themselves — a billing 401 runs one headless grok
-turn, which rewrites `auth.json`, then retries (🎯T74; see
-`docs/plan-usage.md`) — so `grok login` is only needed when the refresh
-token itself is gone.
-
-Headless `streaming-json` maps `text` → `TaskEventText`, terminal
-`end.sessionId` → `TaskEventInit` then `TaskEventResult`, and
-`error` → `TaskEventError`. Thought deltas are ignored. Tool-use
-and cost/usage are not present on this public stream — do not expect
-Claude-parity accounting or tool events. SuperGrok weekly remaining
-is still not a Task stream: `QueryPlanUsage(ProviderGrok)` always
-fetches the undocumented billing endpoint and fails loud (unavailable
-+ reason) when it breaks — never a fabricated percent.
-`grok -p "/usage"` is only a model prompt, not the TUI slash command.
-Console API team prepaid balance uses the Management API, not the
-Grok Build CLI. Details: [docs/grok-usage-billing.md](docs/grok-usage-billing.md).
-
-Grok persistent Session mode uses ACP over `grok agent stdio`:
-
-```go
-agent, err := claudia.Start(claudia.Config{
-    Provider: claudia.ProviderGrok,
-    WorkDir:  "/abs/path",
-    Model:    "grok-4", // optional
-})
-// Send / WaitForResponse / Interrupt / Stop as with Claude Session.
-// AttachCommand is empty (no tmux window). Rewind is unsupported.
-```
-
-Or via the registry (set `AgentDef.Provider` — Launch forwards it to
-`Start`; empty Provider remains Claude):
-
-```go
-_ = reg.Register(claudia.AgentDef{
-    Name:      "helper",
-    WorkDir:   "/abs/path",
-    SessionID: uuid.NewString(), // load falls back to session/new if unknown
-    Provider:  claudia.ProviderGrok,
-    Model:     "grok-4",
-    AutoStart: true,
-})
-agent, err := reg.Launch("helper")
-```
-
-`Config.Goal` (also `AgentDef.Goal`) is a host-owned Session
-objective. Empty keeps one-shot `Send`. When set, the Agent issues a
-continuation `Send` after each terminal assistant turn until `Stop`,
-`Interrupt`, `Agent.CloseGoal()`, `Config.GoalCompleteCheck` returning
-true, or an assistant line `GOAL_STATUS: complete` /
-`GOAL_STATUS: blocked`. It also stops on its own after three
-consecutive turns that end without a tool call: the Goal is closed and
-a `Type=system`, `ProgressType=goal_stalled` Event says so on the same
-stream. Claudia does nothing else; the host decides what a seat that
-answers without working needs. The string is not forwarded to any provider
-`/goal` command, so the same Goal can ride a later `Start` on a
-different Provider. `SetGoalCompleteCheck` installs the hook after
-`Start` / `Launch` when the registry path cannot carry a function on
-`AgentDef`.
-
-### Cursor provider (Session + Task)
+### Cursor provider (Session)
 
 Cursor Session mode uses ACP over `agent acp`:
 
@@ -223,16 +102,6 @@ agent, err := claudia.Start(claudia.Config{
     WorkDir:  "/abs/path",
     Model:    "grok-4.6", // optional
 })
-```
-
-Task mode uses `agent --print --output-format stream-json`:
-
-```go
-task := claudia.NewTask(claudia.TaskConfig{
-    Provider: claudia.ProviderCursor,
-    WorkDir:  "/abs/path",
-})
-ch, err := task.Run(ctx, "Reply with exactly: pong")
 ```
 
 Binary discovery: `CURSOR_BIN`, then `cursor-agent` on `$PATH`, then
@@ -436,20 +305,20 @@ not spawn.
 
 ```go
 pick, err := claudia.Resolve(ctx, claudia.ModelPredicates{
-    Mode:           claudia.CapabilityTask, // or CapabilitySession
+    Mode:           claudia.CapabilitySession,
     Quality:        claudia.ModelQualityStandard, // hard filter; empty means standard
     PreferPlan:     true,
     PreferProvider: claudia.ProviderGrok, // optional host preference
     Background:     true, // low-priority work avoids orange/red plans
 })
-task := claudia.NewTask(claudia.TaskConfig{Provider: pick.Provider, Model: pick.Model, WorkDir: dir})
+agent, err := claudia.Start(claudia.Config{Provider: pick.Provider, Model: pick.Model, WorkDir: dir})
 ```
 
 **Purpose-quality (🎯T71).** Set `Purpose` (`coding`, `analysis`, `agent`, `browse`, `general`) to pick from the daily intel series. `Skill` is a client/wire alias for the same field (`skill=analysis`). Quality is then a floor on that purpose, not a generation shelf. Generation and effort come back on the pick; the host does not specify them unless pinning. A purpose with no catalog-overlapping observations is interpreted as `general` — even when the general series is empty — and the pick records `purpose_fallback_from` (hosts can ask for `analysis` without a host-side fallback). A series that exists but misses the floor or is token-exhausted still fails closed. Catalog rows without an AA score stay eligible when they match the quality shelf — token slack can pick Cursor even if composer is missing from the series. Ranking is plan slack, then research `$` per task. Empty `Purpose` keeps the catalog-shelf path above.
 
 ```go
 pick, err := claudia.Resolve(ctx, claudia.ModelPredicates{
-    Mode:    claudia.CapabilityTask,
+    Mode:    claudia.CapabilitySession,
     Purpose: claudia.ModelPurposeCoding,
     Quality: claudia.ModelQualityStandard,
 })
@@ -474,96 +343,30 @@ semantics: [docs/plan-usage.md](docs/plan-usage.md). Grok research:
 
 ## Task mode: essential patterns
 
-Construct with `NewTask`, then call `Run` to get a channel of
-events:
+Construct an explicit API Task, then drain its returned events:
 
 ```go
 task := claudia.NewTask(claudia.TaskConfig{
-    ID:      "unique-id",
+    Provider: claudia.ProviderOllama,
+    ID: "unique-id",
     WorkDir: "/abs/path",
-    Model:   "sonnet", // or "opus", or "" for default
+    Model: "your-installed-model",
 })
 events, err := task.Run(ctx, prompt)
-```
-
-Set `TaskConfig.RequireBroker` when this run must be admitted by the
-standalone daemon. If the daemon is absent, the socket has no daemon
-runtime, or `SetDirect(true)` was selected, `Run` returns
-`ErrBrokerRequired` without starting a provider directly. The default
-remains the direct fallback for callers that do not require the daemon.
-
-For an unattended host check, set `ToolPolicy` on a Claude or Grok
-Task. It lists provider-native built-in tool IDs, explicit allow/deny
-permission rules, and a maximum number of agent turns. Restricted tasks
-use `dontAsk`, never permission bypass; Claude also suppresses permission
-prompts and ignores inherited MCP configuration. Grok additionally needs
-a private absolute `HomeDir` to isolate its config and compatibility
-discovery. `GROK_AUTH_PATH` may still point at the normal auth file.
-Other providers refuse `ToolPolicy`; a Codex check can instead use
-`SandboxMode: "read-only"` and `ApprovalPolicy: "never"`.
-
-```go
-task := claudia.NewTask(claudia.TaskConfig{
-    Provider:      claudia.ProviderGrok,
-    WorkDir:       senHome,
-    RequireBroker: true,
-    ToolPolicy: &claudia.TaskToolPolicy{
-        Builtins: []string{"run_terminal_cmd", "read_file", "list_dir"},
-        Allow:    []string{"Bash(ps -axo *)", "Read(" + senHome + "/*)"},
-        MaxTurns: 2,
-        HomeDir:  senHome,
-    },
-})
-```
-
-The broker sends these runs as `task_run_restricted`. An older daemon
-rejects the request type rather than silently dropping the policy.
-`DisallowTools` remains Claude-only; `ToolPolicy` is a separate
-provider-native allowlist, not a translation of that field.
-
-Machine clients can use the Unix socket directly. Send a version 1
-`resolve` request with task mode, background pacing, published usage required,
-and any excluded providers. The broker replies with `resolved` and a model
-pick. Send `task_run_restricted` with that provider, model, prompt, and a
-`tool_policy` containing `builtins`, `allow`, `deny`, `max_turns`, and (for
-Grok) `home_dir`. Set `require_background_capacity: true` on `task_run` or
-`task_run_restricted` to make the daemon recheck published capacity and
-background pacing for the selected model before starting it. An older daemon
-rejects that field. Keep the connection open for `task_event` messages through
-`task_done`; closing it cancels the run. The broker owns the provider process.
-
-The channel closes when the process exits. Drain it until then:
-
-```go
+if err != nil { return err }
 for ev := range events {
-    switch ev.Type {
-    case claudia.TaskEventInit:
-        // ev.SessionID — capture if you want to resume later
-    case claudia.TaskEventText:
-        // ev.Content — assistant text
-    case claudia.TaskEventToolUse:
-        // ev.ToolName, ev.ToolInput (JSON string), ev.ToolID
-    case claudia.TaskEventResult:
-        // ev.Content — final text
-        // ev.CostUSD, ev.Usage, ev.DurationMs — accounting
-    case claudia.TaskEventError:
-        // ev.ErrorMsg — task failed
-    }
+    // TaskEventText streams text; TaskEventResult completes the request.
+    // TaskEventError reports a failure.
+    _ = ev
 }
 ```
 
-**Resuming**: set `TaskConfig.SessionID` to the session ID captured
-from a prior `TaskEventInit` (or `Task.SessionID()`). claudia passes
-`--resume <id>` to `claude`. `TaskConfig.ClaudeID` is the deprecated
-pre-1.0 spelling of the same field and still resumes.
-
-**Raw logging**: `Task.SetRawLog(func(line []byte))` gets every NDJSON
-line from `claude` before parsing — useful for debugging or custom
-processing.
-
-**Cancellation**: `Task.Cancel()` sends SIGINT to the running
-process; `Task.Stop()` cancels and marks the task as stopped so
-it cannot be re-run.
+`RequireBroker` refuses direct API fallback when the daemon is absent.
+`Task.Cancel()` cancels the request; `Task.Stop()` also prevents further
+runs. Bedrock and Ollama do not support session resume, tools, or CLI
+sandbox fields. Those compatibility fields cannot re-enable the removed
+Task launchers. Use `errors.Is(err, claudia.ErrTaskCLIRemoved)` to identify
+a removed transport without parsing its message.
 
 ## Judge mode: typed questions (Jev)
 
@@ -846,8 +649,8 @@ public API — correctness is resolution observability + fail-loud errors.
 Claude does not fail fast on a bad `--model`: it echoes the string on
 init, then fails mid-turn with `message.model` `"<synthetic>"`,
 `error: "model_not_found"`, and (in stream-json) a result with
-`is_error: true` even when `subtype` is `"success"`. Task mode surfaces
-that as `TaskEventError` whose `ErrorMsg` names the model. Session mode
+`is_error: true` even when `subtype` is `"success"`. Historical Task parsing surfaces that as `TaskEventError`; the CLI Task
+launcher has been removed. Session mode
 sets `Event.IsError` and `WaitForResponse` returns that text as an
 `error` immediately — it never hangs to context timeout and never
 treats the synthetic message as a normal reply.
@@ -1052,60 +855,24 @@ the library, which re-grants the definition it first sent.
 
 ### Task one-shot over the broker
 
-A Task one-shot that must run on the daemon uses `task_run`, not an
-in-process `NewTask`. `NewTask` / `Task.Run` still consult the daemon
-when one is listening, and spawn in this process when it is not. That
-fallback is the embedding path. `RunBrokerTask` and `claudia broker task`
-do not fall back.
-
-The daemon admits the run before it spawns anything. Admission reads
-the plan-usage snapshot (refreshing it when the TTL has elapsed). A
-provider row that `HasAvailableTokens` rejects is `plan_exhausted`
-(`ErrPlanExhausted`) and no provider process starts. A provider with
-no row is admitted: an unpublished reading is not a veto. `claudia
-broker usage` prints that snapshot. The `ADMIT` column is the same
-predicate, so a `no` on the provider you are about to use is the
-refusal the next `task_run` returns.
-
-```bash
-claudia broker usage
-claudia broker usage -json
-claudia broker task --provider grok --model grok-4 --workdir "$PWD" \
-  'Reply with the single word pong.'
-claudia broker task --pick remaining --workdir "$PWD" \
-  'Reply with the single word pong.'
-```
-
-`-json` on `usage` prints a stable roster of four providers — cursor,
-grok (SuperGrok), claude, codex — in that order. Each row has
-`remaining_percent` (null when the provider published none) and
-`admit`. `admit` is `HasAvailableTokens`, the same predicate as the
-`ADMIT` column. `--pick remaining` on `task` or `grant` asks the
-daemon to spawn the fullest admitted of those four (highest primary
-remaining percent; equal percents break in roster order). A provider
-the snapshot rejects is skipped. If none admits with a number, the
-answer is `plan_exhausted` and nothing is spawned. The choice is
-`picked <provider> remaining=<n>%` on stderr, `provider` and
-`remaining_percent` on `task_started`, and `provider=` on the grant
-line. A later grant of the same name keeps that seat's provider.
-`--provider` and `--pick remaining` are alternatives. The daemon and
-the CLI both have to be this commit: `pick` is a request field an
-older daemon rejects.
-
-`--json` prints the wire: one `task_started`, then `task_event` lines,
-then `task_done`. The socket is the one `claudia broker socket` prints
-(default `~/.local/state/claudia/broker.sock`).
+`RunBrokerTask` and `claudia broker task` run explicit Bedrock or Ollama
+API Tasks on the daemon with no direct fallback. `Task.Run` may fall back
+to an in-process API request unless `RequireBroker` is set. Admission and
+streaming for these API Tasks are unchanged.
 
 ```go
-events, err := claudia.RunBrokerTask(ctx, "Reply with the single word pong.", claudia.TaskConfig{
-    Provider: claudia.ProviderGrok,
-    Model:    "grok-4",
-    WorkDir:  workDir,
+events, err := claudia.RunBrokerTask(ctx, "Summarise this text.", claudia.TaskConfig{
+    Provider: claudia.ProviderOllama,
+    Model: "your-installed-model",
+    WorkDir: workDir,
 })
 ```
 
-`ErrNoBroker` means nothing is listening. Cancel the context to drop
-the connection; the daemon cancels the run.
+Default/Claude/Codex/Grok/Cursor Tasks and Task `--pick remaining` return
+`ErrTaskCLIRemoved`. Grant `--pick remaining` remains supported.
+`ErrNoBroker` means no broker is listening for an otherwise supported API
+Task. Cancelling the context drops the connection and cancels the run.
+`--json` prints `task_started`, `task_event`, and `task_done` frames.
 
 The messages are the existing grant protocol (🎯T2.10), one connection:
 
@@ -1237,8 +1004,7 @@ Design record: [docs/metaharness.md](docs/metaharness.md).
    resolver checks `CODEX_BIN`, then `codex` on `$PATH`, then known
    locations including `/Applications/ChatGPT.app/Contents/Resources/codex`
    (post desktop merger) and the legacy
-   `/Applications/Codex.app/Contents/Resources/codex`. Codex Task mode
-   also runs a subscription auth preflight before spawn: ChatGPT OAuth
+   `/Applications/Codex.app/Contents/Resources/codex`. Legacy Codex Session startup runs a subscription auth preflight: ChatGPT OAuth
    (`auth_mode=chatgpt` + `tokens.access_token` in `~/.codex/auth.json`,
    or `CLAUDIA_CODEX_AUTH_PATH`) is required; if `OPENAI_API_KEY` is set
    or auth falls through to API-key mode, the spawn fails closed with a
@@ -1268,13 +1034,13 @@ Design record: [docs/metaharness.md](docs/metaharness.md).
 
    | Capability | Claude | Codex | Grok | Bedrock | Ollama |
    |------------|--------|-------|------|---------|--------|
-   | Task | Supported | `codex exec --json` | `grok -p` streaming-json | ConverseStream | `/api/generate` |
+   | Task | Removed | Removed | Removed | ConverseStream | `/api/generate` |
    | Session | tmux PTY | `codex app-server` | ACP stdio/serve | Unsupported | Unsupported |
-   | Resume | Supported | `codex exec resume` | `--resume` / ACP load | Unsupported | Unsupported |
+   | Resume | Supported | Session resume | `--resume` / ACP load | Unsupported | Unsupported |
    | Rewind | Supported | Unsupported | Unsupported | Unsupported | Unsupported |
    | Cost | Supported | tokens only | unsupported | unsupported | unsupported (latency, not money) |
    | tmux attach / terminal log | Supported | Unsupported | Unsupported | Unsupported | Unsupported |
-   | Permission mode | Supported | Unsupported (Codex-native sandbox, not a mapping) | Unsupported (Task hardcodes bypassPermissions) | Unsupported | Unsupported |
+   | Permission mode | Supported | Unsupported (Codex-native sandbox, not a mapping) | Unsupported (no Claude PermissionMode mapping) | Unsupported | Unsupported |
    | Tool restrictions | Supported | Unsupported — `Task.Run` **refuses** | Unsupported — `grok` has `--deny` but claudia does not translate; **refuses** | Unsupported — **refuses** | Unsupported — **refuses** |
    | Sandbox policy | Unsupported | Supported (`SandboxMode` / `ApprovalPolicy`) | Unsupported — **refuses** | Unsupported — **refuses** | Unsupported — **refuses** |
    | Extra args | Supported | Unsupported — **refuses** | Unsupported — **refuses** | Unsupported — **refuses** | Unsupported — **refuses** |
@@ -1282,8 +1048,8 @@ Design record: [docs/metaharness.md](docs/metaharness.md).
    | Model switch | Supported (`/model`) | Supported (next turn/start) | Supported (ACP) | Unsupported | Unsupported |
    | Web search | Supported | Unsupported (does not bind `--search`) | Unsupported | Unsupported | Unsupported |
 
-   Cursor is a sixth Session provider (ACP, like Grok): Task, Session,
-   Resume and model switch are Supported; Rewind, ExtraArgs,
+   Cursor is a sixth Session provider (ACP, like Grok): Task is removed;
+   Session, Resume and model switch are Supported; Rewind, ExtraArgs,
    sandbox, and tool restrictions refuse. Query `ProviderCapabilityMatrix`
    rather than this abbreviated table for Cursor.
 
@@ -1423,12 +1189,12 @@ exist. Do not retire on hermetic green *alone* either.
 
 | Gate | Surfaces | Named live tests |
 |------|----------|------------------|
-| `CLAUDIA_LIVE=1` | Claude Task + Session | `TestTaskRunSmoke`, `TestAgentSendAndWaitForResponse`, `TestGoalJourneyLiveBackends/claude` |
-| `CLAUDIA_GROK_LIVE=1` | Grok Task + Session | `TestGrokTaskRunSmoke`, `TestGrokSessionLiveSmoke`, `TestGoalJourneyLiveBackends/grok` |
-| `CLAUDIA_CODEX_LIVE=1` | Codex Task + Session | `TestCodexTaskRunSmoke`, `TestCodexSessionLiveSmoke`, `TestGoalJourneyLiveBackends/codex` |
+| `CLAUDIA_LIVE=1` | Claude Session | `TestAgentSendAndWaitForResponse`, `TestGoalJourneyLiveBackends/claude` |
+| `CLAUDIA_GROK_LIVE=1` | Grok Session | `TestGrokSessionLiveSmoke`, `TestGoalJourneyLiveBackends/grok` |
+| `CLAUDIA_CODEX_LIVE=1` | Codex Session | `TestCodexSessionLiveSmoke`, `TestGoalJourneyLiveBackends/codex` |
 | `CLAUDIA_BEDROCK_LIVE=1` | Bedrock Task | `TestBedrockTaskLiveSmoke` |
 | `CLAUDIA_OLLAMA_LIVE=1` | Ollama Task | `TestOllamaTaskLiveSmoke` (needs `CLAUDIA_OLLAMA_MODEL`) |
-| `CLAUDIA_CURSOR_LIVE=1` | Cursor Task + Session | `TestCursorTaskLiveSmoke`, `TestCursorSessionLiveSmoke`, `TestGoalJourneyLiveBackends/cursor`, `TestMCPLiveLoadAndSessionSeesMnemo/cursor`, `TestMCPExclusiveCursorSessionRoundTrip` |
+| `CLAUDIA_CURSOR_LIVE=1` | Cursor Session | `TestCursorSessionLiveSmoke`, `TestGoalJourneyLiveBackends/cursor`, `TestMCPLiveLoadAndSessionSeesMnemo/cursor`, `TestMCPExclusiveCursorSessionRoundTrip` |
 
 ```sh
 # one backend you just touched

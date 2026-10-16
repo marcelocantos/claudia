@@ -26,25 +26,15 @@ No launchd or systemd setup is needed. Claude Session mode uses tmux for
 process lifetime; Grok and Codex Session modes are stdio processes (or
 Grok connect-mode `grok agent serve`).
 
-**Grok Build CLI** ships via `ProviderGrok` for both Task mode and
-Session mode. Binary discovery checks `GROK_BIN`, then `grok` on `$PATH`,
-then known install locations including `~/.grok/bin/grok`. This is the
-terminal coding agent from [x.ai/cli](https://x.ai/cli), not the Realtime
-voice client in package `claudia/grok`. Session mode uses ACP over
-`grok agent stdio` (not tmux).
+**CLI Task transports have been removed (T192).** `Task.Run`,
+`RunBrokerTask`, and `claudia broker task` refuse the empty default,
+Claude, Codex, Grok and Cursor with `ErrTaskCLIRemoved` before contacting
+a broker or provider. The daemon also refuses old clients with the
+`task_cli_removed` wire code. The `claudia/codex` Task API returns the same
+error. There is no OMP Task replacement (T190).
 
-**Codex Task mode** ships via `ProviderCodex`. The resolver checks
-`CODEX_BIN`, then `codex` on `$PATH`, then known install locations
-including `/Applications/Codex.app/Contents/Resources/codex`. Codex
-Session mode uses `codex app-server` JSON-RPC (not tmux).
-
-**Cursor Agent CLI** ships via `ProviderCursor` for Session and Task.
-Binary discovery checks `CURSOR_BIN`, then `cursor-agent` on `$PATH`,
-then `~/.local/bin/agent`, then a PATH `agent` that is not Grok's
-`~/.grok/bin/agent`. Session mode uses ACP over `agent acp` (not tmux).
-Task mode uses `agent --print --output-format stream-json`. Auth is
-`agent login` or `CURSOR_API_KEY`. See
-[docs/cursor-acp-session.md](docs/cursor-acp-session.md).
+This removal does not change Session transports, Bedrock/Ollama API Tasks,
+or Judge. Historical CLI event parsers remain available.
 
 **AWS Bedrock Task mode** ships via `ProviderBedrock` — Anthropic Claude
 models through Bedrock **ConverseStream** (API path; no local `claude`
@@ -59,89 +49,8 @@ Design: [docs/bedrock-provider.md](docs/bedrock-provider.md).
 
 ### Task mode — one-shot prompts
 
-Spawns `claude` with `--output-format stream-json`, streams structured
-events, and exits. Use it for code generation, analysis, or
-transformation tasks with a clear end, and for anything where you want
-a single prompt → single result with cost and token accounting.
-
-```go
-task := claudia.NewTask(claudia.TaskConfig{
-    ID:      "gen-1",
-    WorkDir: "/path/to/repo",
-    Model:   "sonnet",
-})
-
-events, err := task.Run(ctx, "Summarise the public API of this module.")
-if err != nil {
-    log.Fatal(err)
-}
-for ev := range events {
-    switch ev.Type {
-    case claudia.TaskEventText:
-        fmt.Print(ev.Content)
-    case claudia.TaskEventResult:
-        fmt.Printf("\n(%.2fs, $%.4f)\n", ev.DurationMs/1000, ev.CostUSD)
-    }
-}
-```
-
-Resume a prior task session by setting `TaskConfig.SessionID` to the
-session ID captured from a previous `TaskEventInit` (or from
-`Task.SessionID()`). The same field resumes every provider that can
-resume; `TaskConfig.ClaudeID` is its deprecated pre-1.0 name and still
-works.
-
-Codex Task mode is available by selecting `ProviderCodex`. It runs
-`codex exec --json`, captures the Codex thread id as the task session
-id, and can resume with the same `TaskConfig.SessionID` field:
-
-For constraint-based selection, `Resolve` maps Codex frontier, standard,
-and economy quality to GPT-6 Astra, Sol, and Luna respectively.
-
-```go
-task := claudia.NewTask(claudia.TaskConfig{
-    Provider:       claudia.ProviderCodex,
-    ID:             "codex-summary",
-    WorkDir:        "/path/to/repo",
-    Model:          "gpt-6-sol",
-    SandboxMode:    "workspace-write",
-    ApprovalPolicy: "on-request",
-})
-```
-
-Codex live tests are opt-in because they use local Codex credentials
-and may contact OpenAI. Run them with `CLAUDIA_CODEX_LIVE=1`.
-
-Grok Task mode is available by selecting `ProviderGrok`. It runs
-`grok -p … --output-format streaming-json`, captures the session id
-from the terminal `end` event, and can resume with the same
-`TaskConfig.SessionID` field:
-
-```go
-task := claudia.NewTask(claudia.TaskConfig{
-    Provider: claudia.ProviderGrok,
-    ID:       "grok-summary",
-    WorkDir:  "/path/to/repo",
-    Model:    "grok-4",
-})
-```
-
-Grok live tests are opt-in (`CLAUDIA_GROK_LIVE=1`). Auth is whatever the
-installed `grok` CLI already uses (`grok login` or `XAI_API_KEY`).
-SuperGrok weekly usage / Extra Credits and console prepaid balance are
-**not** Task streams — see
-[docs/grok-usage-billing.md](docs/grok-usage-billing.md).
-
-**Plan remaining (all providers):** `QueryPlanUsage` /
-`QueryAllPlanUsage` expose subscription session + weekly % remaining and
-rollover times when a backend publishes them. Grok and Cursor unofficial
-billing surfaces are always fetched; a break is unavailable-with-reason
-(never invented numbers). Bedrock has no subscription window. `claudia
-broker usage -json` lists Cursor, Grok (SuperGrok), Claude, and Codex
-with remaining percent and the ADMIT flag. `claudia broker task --pick
-remaining` and `claudia broker grant --pick remaining` select the
-fullest admitted of those four. See
-[docs/plan-usage.md](docs/plan-usage.md).
+Task mode supports Bedrock and Ollama API requests. Specify the provider
+explicitly; the empty default no longer launches Claude.
 
 Bedrock Task mode is available by selecting `ProviderBedrock`. It calls
 AWS Bedrock ConverseStream and maps text deltas to `TaskEventText`:
@@ -388,8 +297,8 @@ that snapshot and an `ADMIT` column for the same decision. See
 [Task one-shot over the broker](agents-guide.md#task-one-shot-over-the-broker).
 
 Unattended callers can set `TaskConfig.RequireBroker` to refuse the
-direct fallback and `TaskConfig.ToolPolicy` to restrict Claude or Grok
-tools and turns. See [Task mode: essential patterns](agents-guide.md#task-mode-essential-patterns).
+direct API fallback. `TaskConfig.ToolPolicy` belonged to the removed CLI
+Tasks; it does not enable restricted OMP Tasks. See [Task mode: essential patterns](agents-guide.md#task-mode-essential-patterns).
 
 ## Registry
 

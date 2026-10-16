@@ -5,7 +5,6 @@ package daemon
 
 import (
 	"context"
-	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -13,90 +12,6 @@ import (
 	"github.com/marcelocantos/claudia"
 	"github.com/marcelocantos/claudia/internal/broker"
 )
-
-func TestTaskPickByRemainingSpawnsFullestAdmitted(t *testing.T) {
-	f := newFixture(t)
-	f.boot(t, fleetSnap(t, 15, 82, 40, 25))
-	waitFor(t, "usage fetched", func() bool { return f.fetchCount() >= 1 })
-
-	var spawned atomic.Int32
-	var got claudia.Provider
-	prev := daemonNewTask
-	daemonNewTask = func(cfg claudia.TaskConfig) *claudia.Task {
-		spawned.Add(1)
-		got = cfg.Provider
-		if cfg.PickByRemaining {
-			t.Errorf("daemon spawned with pick still set")
-		}
-		return claudia.NewStubTask(cfg, &claudia.StubTaskOps{Run: func(context.Context, claudia.StubTaskRun) (<-chan claudia.TaskEvent, error) {
-			ch := make(chan claudia.TaskEvent, 1)
-			ch <- claudia.TaskEvent{Type: claudia.TaskEventResult, Content: "pong"}
-			close(ch)
-			return ch, nil
-		}})
-	}
-	t.Cleanup(func() { daemonNewTask = prev })
-
-	ch, err := claudia.RunBrokerTask(context.Background(), "ping", claudia.TaskConfig{
-		PickByRemaining: true, WorkDir: t.TempDir(),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for range ch {
-	}
-	if spawned.Load() != 1 || got != claudia.ProviderGrok {
-		t.Fatalf("spawned %d provider %s, want one grok", spawned.Load(), got)
-	}
-}
-
-func TestTaskPickByRemainingRefusesWhenNoneAdmit(t *testing.T) {
-	f := newFixture(t)
-	f.boot(t, fleetSnap(t, 0, 0, 0, 0))
-	waitFor(t, "usage fetched", func() bool { return f.fetchCount() >= 1 })
-
-	var spawned atomic.Int32
-	prev := daemonNewTask
-	daemonNewTask = func(cfg claudia.TaskConfig) *claudia.Task {
-		spawned.Add(1)
-		return claudia.NewStubTask(cfg, nil)
-	}
-	t.Cleanup(func() { daemonNewTask = prev })
-
-	_, err := claudia.RunBrokerTask(context.Background(), "ping", claudia.TaskConfig{
-		PickByRemaining: true, WorkDir: t.TempDir(),
-	})
-	if !errors.Is(err, claudia.ErrPlanExhausted) {
-		t.Fatalf("err = %v", err)
-	}
-	if spawned.Load() != 0 {
-		t.Fatalf("exhausted fleet spawned %d tasks", spawned.Load())
-	}
-}
-
-func TestTaskPickByRemainingRejectsNamedProvider(t *testing.T) {
-	f := newFixture(t)
-	f.boot(t, fleetSnap(t, 15, 82, 40, 25))
-	waitFor(t, "usage fetched", func() bool { return f.fetchCount() >= 1 })
-
-	var spawned atomic.Int32
-	prev := daemonNewTask
-	daemonNewTask = func(cfg claudia.TaskConfig) *claudia.Task {
-		spawned.Add(1)
-		return claudia.NewStubTask(cfg, nil)
-	}
-	t.Cleanup(func() { daemonNewTask = prev })
-
-	_, err := claudia.RunBrokerTask(context.Background(), "ping", claudia.TaskConfig{
-		Provider: claudia.ProviderClaude, PickByRemaining: true, WorkDir: t.TempDir(),
-	})
-	if err == nil || errors.Is(err, claudia.ErrPlanExhausted) {
-		t.Fatalf("err = %v, want a refusal that is not plan_exhausted", err)
-	}
-	if spawned.Load() != 0 {
-		t.Fatalf("conflicting pick spawned %d tasks", spawned.Load())
-	}
-}
 
 func TestGrantPickByRemainingKeepsProviderOnReclaim(t *testing.T) {
 	var current atomic.Value

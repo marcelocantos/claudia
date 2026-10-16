@@ -35,7 +35,7 @@ func TestResolveAnalysisMissingVersusModelExhausted(t *testing.T) {
 		t.Fatal("fixture must have a healthy Claude plan, spent Sonnet, and eligible Grok")
 	}
 	pred := ModelPredicates{
-		Mode: CapabilityTask, Purpose: ModelPurposeAnalysis, Quality: ModelQualityStandard,
+		Mode: CapabilitySession, Purpose: ModelPurposeAnalysis, Quality: ModelQualityStandard,
 		Effort: ModelEffortHigh, PreferPlan: true, RequireUsage: true, Now: now,
 		Usage: []PlanUsage{claude, grok},
 	}

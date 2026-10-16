@@ -40,17 +40,17 @@ type CatalogModel struct {
 // the provider default.
 func ModelCatalog() []CatalogModel {
 	return []CatalogModel{
-		{Provider: ProviderClaude, Model: "claude-sonnet-5", Access: ModelAccessPlan, Quality: ModelQualityStandard, Task: true, Session: true},
-		{Provider: ProviderClaude, Model: "claude-opus-5", Access: ModelAccessPlan, Quality: ModelQualityFrontier, Task: true, Session: true},
-		{Provider: ProviderClaude, Model: "claude-fable-5", Access: ModelAccessPlan, Quality: ModelQualityFrontier, Task: true, Session: true},
-		{Provider: ProviderClaude, Model: "claude-haiku-4-5", Access: ModelAccessPlan, Quality: ModelQualityEconomy, Task: true, Session: true},
-		{Provider: ProviderGrok, Model: "grok-4.5", Access: ModelAccessPlan, Quality: ModelQualityStandard, Task: true, Session: true},
-		{Provider: ProviderGrok, Model: "grok-4.6", Access: ModelAccessPlan, Quality: ModelQualityFrontier, Task: true, Session: true},
-		{Provider: ProviderGrok, Model: "grok-4", Access: ModelAccessPlan, Quality: ModelQualityEconomy, Task: true, Session: true},
-		{Provider: ProviderCodex, Model: "gpt-6-astra", Access: ModelAccessPlan, Quality: ModelQualityFrontier, Task: true, Session: true},
-		{Provider: ProviderCodex, Model: "gpt-6-sol", Access: ModelAccessPlan, Quality: ModelQualityStandard, Task: true, Session: true},
-		{Provider: ProviderCodex, Model: "gpt-6-luna", Access: ModelAccessPlan, Quality: ModelQualityEconomy, Task: true, Session: true},
-		{Provider: ProviderCursor, Model: "composer-2.5", Access: ModelAccessPlan, Quality: ModelQualityStandard, Task: true, Session: true},
+		{Provider: ProviderClaude, Model: "claude-sonnet-5", Access: ModelAccessPlan, Quality: ModelQualityStandard, Session: true},
+		{Provider: ProviderClaude, Model: "claude-opus-5", Access: ModelAccessPlan, Quality: ModelQualityFrontier, Session: true},
+		{Provider: ProviderClaude, Model: "claude-fable-5", Access: ModelAccessPlan, Quality: ModelQualityFrontier, Session: true},
+		{Provider: ProviderClaude, Model: "claude-haiku-4-5", Access: ModelAccessPlan, Quality: ModelQualityEconomy, Session: true},
+		{Provider: ProviderGrok, Model: "grok-4.5", Access: ModelAccessPlan, Quality: ModelQualityStandard, Session: true},
+		{Provider: ProviderGrok, Model: "grok-4.6", Access: ModelAccessPlan, Quality: ModelQualityFrontier, Session: true},
+		{Provider: ProviderGrok, Model: "grok-4", Access: ModelAccessPlan, Quality: ModelQualityEconomy, Session: true},
+		{Provider: ProviderCodex, Model: "gpt-6-astra", Access: ModelAccessPlan, Quality: ModelQualityFrontier, Session: true},
+		{Provider: ProviderCodex, Model: "gpt-6-sol", Access: ModelAccessPlan, Quality: ModelQualityStandard, Session: true},
+		{Provider: ProviderCodex, Model: "gpt-6-luna", Access: ModelAccessPlan, Quality: ModelQualityEconomy, Session: true},
+		{Provider: ProviderCursor, Model: "composer-2.5", Access: ModelAccessPlan, Quality: ModelQualityStandard, Session: true},
 		{Provider: ProviderBedrock, Model: "", Access: ModelAccessDirect, Quality: ModelQualityStandard, Task: true},
 		{Provider: ProviderOllama, Model: "", Access: ModelAccessDirect, Quality: ModelQualityEconomy, Task: true},
 	}

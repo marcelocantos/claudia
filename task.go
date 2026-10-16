@@ -13,11 +13,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
-
-	"github.com/marcelocantos/claudia/internal/tmuxagent"
 )
 
 // TaskEventType identifies the kind of task event.
@@ -129,7 +126,7 @@ const (
 )
 
 // BaseDisallowedTools are the tools no claudia-spawned Claude agent may
-// use, in either Session or Task mode. It is applied on Claude only; the
+// use in the legacy Session transport. It is applied on Claude only; the
 // names are Claude Code tools no other provider implements.
 //
 // Agents spawned by claudia are forbidden from creating their own
@@ -157,13 +154,9 @@ func disallowedToolList(extra []string) string {
 	return disallowed
 }
 
-// TaskConfig holds the configuration for creating a Task.
-//
-// SessionID is the provider-neutral resume handle: it names the session
-// Run continues on every provider that can resume (Claude, Codex, Grok,
-// Cursor), and Task.SessionID reports the handle a first run established.
-// ClaudeID is the same handle under its pre-1.0 name and is deprecated
-// (🎯T47.10).
+// TaskConfig holds configuration for a one-shot Bedrock or Ollama API request.
+// CLI-only fields remain for source compatibility, but no longer enable execution:
+// default, Claude, Codex, Grok and Cursor return [ErrTaskCLIRemoved].
 type TaskConfig struct {
 	// ID is the caller-assigned unique identifier for this task.
 	ID string
@@ -176,77 +169,26 @@ type TaskConfig struct {
 	Provider Provider
 
 	// RequireBroker refuses the run if the host daemon cannot accept it.
-	// It prevents the usual direct-process fallback when the broker is
+	// It prevents the usual direct-API fallback when the broker is
 	// absent or loses its runtime. Use it when admission and host-wide
 	// accounting must never be bypassed.
 	RequireBroker bool
 
-	// WorkDir is the working directory passed to the claude process.
+	// WorkDir is the caller working directory (absolute for broker requests).
 	WorkDir string
 
-	// Model overrides the default model (e.g. "opus", "sonnet").
-	// Empty means use Claude Code's default.
+	// Model selects the API model. Empty uses provider-specific configuration.
 	Model string
 
-	// SandboxMode selects Codex's sandbox mode for ProviderCodex. Empty
-	// leaves Codex's default in place.
-	//
-	// "workspace-write" makes WorkDir writable and keeps its `.git`
-	// read-only: the run can edit the repo and cannot commit to it, and
-	// `codex exec` still exits 0. Run logs a warning when that applies.
-	SandboxMode string
-
-	// SandboxGitWrite lets a workspace-write Codex Task write its repo's
-	// git directories, so it can `git commit` (🎯T116). It is the Task
-	// form of Config.SandboxGitWrite and carries the same warning: it is
-	// off by default because a writable `.git/hooks` or `.git/config`
-	// runs outside the sandbox on the operator's next git command
-	// (🎯T112). It needs SandboxMode "workspace-write" spelled out, and
-	// other providers refuse it.
-	//
-	// The grant is a `-c sandbox_workspace_write.writable_roots` override,
-	// which replaces, for that run, any writable_roots in the user's own
-	// ~/.codex/config.toml.
+	// SandboxMode, SandboxGitWrite, ApprovalPolicy, DisallowTools, ToolPolicy
+	// and SessionID are retained for compatibility with removed CLI Tasks.
+	// Bedrock and Ollama refuse nonzero unsupported settings.
+	SandboxMode     string
 	SandboxGitWrite bool
-
-	// ApprovalPolicy selects Codex's approval policy for ProviderCodex.
-	// Empty leaves Codex's default in place.
-	ApprovalPolicy string
-
-	// DisallowTools lists tool names to remove from this task.
-	//
-	// Claude only. On Claude these are appended to BaseDisallowedTools
-	// and passed as --disallowedTools. Every other provider reports
-	// CapabilityToolRestrictions as unsupported, and Task.Run refuses a
-	// task carrying this field rather than spawning an agent whose tools
-	// were not actually removed. Check with CheckCapability before
-	// setting it on a non-Claude provider.
-	//
-	// A task that only reads text and emits text — a summariser, a
-	// classifier, a compactor — should disable shell, filesystem and
-	// network tools here. Such a task is running UNTRUSTED INPUT through
-	// a live agent: the model cannot distinguish the text it was asked
-	// to describe from instructions addressed to it, so any imperative
-	// sentence inside that text may be executed rather than summarised.
-	// Removing the tools is what makes that misfire harmless.
-	DisallowTools []string
-
-	// ToolPolicy restricts a headless Claude or Grok task to explicit
-	// built-in tools and permission rules. A non-nil policy fails closed on
-	// providers without this contract. Names use the selected provider's
-	// CLI spelling. The zero value keeps the provider's usual behavior.
-	ToolPolicy *TaskToolPolicy
-
-	// SessionID is the provider session to resume, on whichever provider
-	// this task runs: Claude, Codex, Grok and Cursor each pass it as their
-	// own --resume argument, and Bedrock and Ollama refuse it because
-	// their APIs carry no conversation state. Empty means each Run starts
-	// a fresh session. After the first run, Task.SessionID() returns the
-	// id the provider established, so a caller can persist it and set it
-	// here to continue later. It is not a Claude JSONL path or any other
-	// provider-specific layout; it is whatever id the provider's init
-	// event reported.
-	SessionID string
+	ApprovalPolicy  string
+	DisallowTools   []string
+	ToolPolicy      *TaskToolPolicy
+	SessionID       string
 
 	// ClaudeID is the pre-1.0 name of SessionID. It was never Claude-only:
 	// every provider's resume handle went through it. When both are set,
@@ -260,12 +202,8 @@ type TaskConfig struct {
 	// when re-hydrating a task from persisted state.
 	LastResult string
 
-	// PickByRemaining asks the broker to choose the fullest admitted
-	// fleet provider (cursor, grok, claude, codex) before spawning.
-	// Provider must be empty. The choice uses the daemon's plan-usage
-	// snapshot and [HasAvailableTokens]; none admitted is
-	// [ErrPlanExhausted]. It has no direct-path meaning: a run with no
-	// broker returns [ErrNoBroker] rather than guessing a provider.
+	// PickByRemaining is retained for compatibility. The subscription CLI Task
+	// providers have been removed, so a default-provider run always refuses.
 	PickByRemaining bool
 }
 
@@ -279,11 +217,9 @@ func (cfg TaskConfig) resumeID() string {
 	return cfg.ClaudeID
 }
 
-// TaskToolPolicy is a provider-native allowlist for one headless turn.
-// Builtins and MaxTurns are required when the policy is set. Allow and
-// Deny contain permission rules such as Bash(ps -axo *) and Edit(/dir/*).
-// HomeDir isolates Grok's config and compatibility discovery; it must be
-// an absolute private directory. Claude does not yet support HomeDir.
+// TaskToolPolicy retains the removed CLI Task allowlist wire shape.
+// No remaining public Task backend accepts this policy. It does not
+// configure sidecar seats or enable an OMP Task replacement.
 type TaskToolPolicy struct {
 	Builtins []string `json:"builtins"`
 	Allow    []string `json:"allow,omitempty"`
@@ -336,13 +272,12 @@ func validateTaskToolPolicy(provider Provider, policy *TaskToolPolicy) error {
 	return nil
 }
 
-// RawLogFunc receives raw NDJSON lines from the Claude process.
+// RawLogFunc receives raw provider stream records when a backend supplies them.
 type RawLogFunc func(line []byte)
 
-// Task wraps a single headless Claude Code conversation using
-// --output-format stream-json. Unlike [Agent] (which uses a
-// persistent tmux session), Task spawns a new process per prompt
-// and parses structured NDJSON events from stdout.
+// Task runs a one-shot Bedrock or Ollama API request. The removed CLI
+// providers, including the empty default, return [ErrTaskCLIRemoved].
+// There is no OMP Task replacement (T190).
 type Task struct {
 	id            string
 	name          string
@@ -375,15 +310,12 @@ type taskRunRequest struct {
 	Model           string
 	SandboxMode     string
 	SandboxGitWrite bool
-	// gitRoots are the git directories SandboxGitWrite resolved to; the
-	// Codex backend fills them in before it builds argv (🎯T116).
-	gitRoots       []string
-	ApprovalPolicy string
-	DisallowTools  []string
-	ToolPolicy     *TaskToolPolicy
-	SessionID      string
-	Prompt         string
-	RawLog         RawLogFunc
+	ApprovalPolicy  string
+	DisallowTools   []string
+	ToolPolicy      *TaskToolPolicy
+	SessionID       string
+	Prompt          string
+	RawLog          RawLogFunc
 }
 
 type taskRun struct {
@@ -396,51 +328,30 @@ type taskBackend interface {
 	RunTask(context.Context, taskRunRequest) (*taskRun, error)
 }
 
-type claudeTaskBackend struct{}
-
-type codexTaskBackend struct{}
-
-type grokTaskBackend struct{}
-
 type errorTaskBackend struct {
 	err error
 }
 
 func taskBackendForProvider(provider Provider) taskBackend {
 	switch provider {
-	case "", ProviderClaude:
-		return claudeTaskBackend{}
-	case ProviderCodex:
-		return codexTaskBackend{}
-	case ProviderGrok:
-		return grokTaskBackend{}
+	case "", ProviderClaude, ProviderCodex, ProviderGrok, ProviderCursor, "anthropic", "openai-codex", "xai-oauth":
+		return errorTaskBackend{err: fmt.Errorf("%w: provider %q", ErrTaskCLIRemoved, provider)}
 	case ProviderBedrock:
 		return bedrockTaskBackend{}
 	case ProviderOllama:
 		return ollamaTaskBackend{}
-	case ProviderCursor:
-		return cursorTaskBackend{}
 	default:
 		return errorTaskBackend{err: fmt.Errorf("unknown task provider %q", provider)}
 	}
 }
 
-func (claudeTaskBackend) Capabilities() providerCapabilities {
-	return claudeProviderCapabilities()
-}
-
-func (codexTaskBackend) Capabilities() providerCapabilities {
-	return providerCapabilities{
-		Task:   true,
-		Resume: true,
+// TaskProviderError reports a provider whose Task transport is unavailable.
+// Session support is independent; the four subscription plans still run seats.
+func TaskProviderError(provider Provider) error {
+	if b, ok := taskBackendForProvider(provider).(errorTaskBackend); ok {
+		return b.err
 	}
-}
-
-func (grokTaskBackend) Capabilities() providerCapabilities {
-	return providerCapabilities{
-		Task:   true,
-		Resume: true,
-	}
+	return nil
 }
 
 func (b errorTaskBackend) Capabilities() providerCapabilities {
@@ -539,20 +450,17 @@ func (t *Task) SetDirect(direct bool) {
 	t.direct = direct
 }
 
-// SetRawLog sets the callback for raw NDJSON lines from the Claude process.
+// SetRawLog sets the callback for raw provider stream records.
 func (t *Task) SetRawLog(fn RawLogFunc) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.onRawLog = fn
 }
 
-// Run sends prompt to claude and returns a channel of [TaskEvent] values.
-// The channel is closed when the process exits. Events arrive in order:
-// one [TaskEventInit], zero or more [TaskEventText]/[TaskEventToolUse], and
-// a final [TaskEventResult] or [TaskEventError].
-//
-// Run returns an error immediately if the task is already running or has
-// been stopped. ctx cancellation kills the underlying process.
+// Run starts a one-shot API request and returns its ordered event stream.
+// The channel closes when the request finishes. Removed CLI providers return
+// ErrTaskCLIRemoved before broker lookup or dispatch. Running or stopped tasks
+// refuse another Run; context cancellation cancels the underlying request.
 func (t *Task) Run(ctx context.Context, prompt string) (<-chan TaskEvent, error) {
 	t.mu.Lock()
 	if t.status == TaskStatusRunning {
@@ -562,6 +470,13 @@ func (t *Task) Run(ctx context.Context, prompt string) (<-chan TaskEvent, error)
 	if t.status == TaskStatusStopped {
 		t.mu.Unlock()
 		return nil, fmt.Errorf("task %s is stopped", t.id)
+	}
+	// Refuse removed transports before any broker lookup, policy check, or
+	// provider discovery. An older broker must not resurrect the CLI path.
+	if b, ok := t.backend.(errorTaskBackend); ok {
+		t.status = TaskStatusError
+		t.mu.Unlock()
+		return nil, b.err
 	}
 	t.status = TaskStatusRunning
 	t.mu.Unlock()
@@ -594,7 +509,7 @@ func (t *Task) Run(ctx context.Context, prompt string) (<-chan TaskEvent, error)
 	var run *taskRun
 	var err error
 	// A listening daemon owns the run (🎯T2.10). By default a bare protocol
-	// server or absent socket falls through to a direct process. Callers that
+	// server or absent socket falls through to a direct API request. Callers that
 	// require host-wide admission explicitly refuse that fallback.
 	var bb *brokerTaskBackend
 	t.mu.Lock()
@@ -674,8 +589,7 @@ func (t *Task) Run(ctx context.Context, prompt string) (<-chan TaskEvent, error)
 	return ch, nil
 }
 
-// Cancel sends SIGINT to the running claude process, requesting a graceful
-// stop. It is a no-op if no process is running. To permanently stop the task
+// Cancel interrupts the current request, if any. To permanently stop the task
 // use [Task.Stop].
 func (t *Task) Cancel() error {
 	t.mu.Lock()
@@ -687,7 +601,7 @@ func (t *Task) Cancel() error {
 	return t.run.interrupt()
 }
 
-// Stop permanently terminates the task. Any running process is killed and
+// Stop permanently terminates the task. Any running request is cancelled and
 // the status transitions to [TaskStatusStopped]. Subsequent Run calls return
 // an error. Stop is idempotent.
 func (t *Task) Stop() {
@@ -775,500 +689,6 @@ func forwardTaskStream(
 		return fmt.Errorf("scanning task stream: %w", err)
 	}
 	return nil
-}
-
-// claudeTaskPrecheck refuses a request carrying a field the Claude Task
-// path cannot honour, before anything is spawned. Every provider path has
-// one; together they are what the request-field audit
-// (TestProviderPathsHonourOrRefuseEveryRequestField) probes.
-func claudeTaskPrecheck(req taskRunRequest) error {
-	if err := validateTaskToolPolicy(ProviderClaude, req.ToolPolicy); err != nil {
-		return err
-	}
-	if req.SandboxMode != "" || req.SandboxGitWrite || req.ApprovalPolicy != "" {
-		return capabilityRefusal(ProviderClaude, CapabilitySandboxPolicy,
-			"the Claude tool_restrictions claim covers --disallowedTools only; claudeTaskArgs emits no sandbox or approval flag")
-	}
-	return nil
-}
-
-func claudeTaskArgs(req taskRunRequest) []string {
-	args := []string{
-		"-p",
-		"--verbose",
-		"--output-format", "stream-json",
-		"--include-partial-messages",
-	}
-	disallowed := append([]string(nil), req.DisallowTools...)
-	if req.ToolPolicy == nil {
-		args = append(args, "--dangerously-skip-permissions")
-	} else {
-		policy := req.ToolPolicy
-		args = append(args,
-			"--permission-mode", "dontAsk", "--permission-prompts", "none", "--strict-mcp-config",
-			"--restricted", "--no-session-persistence",
-			"--tools", strings.Join(policy.Builtins, ","),
-			"--max-turns", strconv.Itoa(policy.MaxTurns))
-		for _, rule := range policy.Allow {
-			args = append(args, "--allowedTools", rule)
-		}
-		disallowed = append(disallowed, policy.Deny...)
-	}
-	// The baseline applies in both unrestricted and restricted Task mode.
-	args = append(args, "--disallowedTools", disallowedToolList(disallowed))
-	if req.SessionID != "" {
-		args = append(args, "--resume", req.SessionID)
-	}
-	if req.Model != "" {
-		args = append(args, "--model", req.Model)
-	}
-	// Claude Code 2.1.x documents `--disallowedTools <tools...>` as
-	// variadic. A trailing positional prompt is consumed as another tool
-	// name, print mode then exits 1 with "Input must be provided..."
-	// (ytt 2026-08-26 / 🎯T49). Terminate the option list before the prompt.
-	return append(args, "--", req.Prompt)
-}
-
-func (claudeTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*taskRun, error) {
-	if err := claudeTaskPrecheck(req); err != nil {
-		return nil, err
-	}
-	args := claudeTaskArgs(req)
-
-	slog.Debug("spawning claude task", "args", args)
-
-	claudeBin, err := resolveClaudeBin()
-	if err != nil {
-		return nil, err
-	}
-	cmd := exec.CommandContext(ctx, claudeBin, args...)
-	cmd.Dir = req.WorkDir
-	setTaskProcessGroup(cmd)
-
-	// A Task is a session of its own: none of the host's Claude Code
-	// session markers may reach it (🎯T121), CLAUDECODE included.
-	cmd.Env = tmuxagent.StripClaudeSessionMarkers(os.Environ())
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, fmt.Errorf("stdout pipe: %w", err)
-	}
-
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return nil, fmt.Errorf("stderr pipe: %w", err)
-	}
-
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("start claude: %w", err)
-	}
-	armTaskProcessGroupKill(ctx, cmd)
-
-	var stderrBuf strings.Builder
-	stderrDone := make(chan struct{})
-	go func() {
-		defer close(stderrDone)
-		scanner := bufio.NewScanner(stderr)
-		scanner.Buffer(make([]byte, 256*1024), 256*1024)
-		for scanner.Scan() {
-			line := scanner.Text()
-			slog.Debug("claude stderr", "line", line)
-			if stderrBuf.Len() < 8*1024 {
-				stderrBuf.WriteString(line)
-				stderrBuf.WriteByte('\n')
-			}
-		}
-	}()
-
-	ch := make(chan TaskEvent, 16)
-	go func() {
-		defer close(ch)
-		// A provider refusal (spend limit, rate limit, auth) ends the run
-		// now: print mode would otherwise sit on pending background tasks
-		// with no result line (2026-10-12: 33 minutes after the refusal).
-		refused := false
-		parse := func(line []byte) []TaskEvent {
-			evs := ParseTaskLine(line)
-			if _, ok := claudeAssistantAPIError(line); ok && !refused {
-				refused = true
-				killTaskProcessGroup(cmd)
-			}
-			return evs
-		}
-		streamErr := forwardTaskStream(ctx, stdout, parse, req.RawLog, ch)
-		waitErr := cmd.Wait()
-		<-stderrDone
-		if refused {
-			// The refusal was already delivered as the run's error; the
-			// kill's exit status says nothing more.
-			return
-		}
-		if streamErr != nil {
-			// 🎯T133: the process can exit 0 while the stdout scanner
-			// stopped early on an oversized line, so this must be
-			// checked even when waitErr is nil — the process exiting
-			// cleanly is exactly the deceptive case that made the lost
-			// result undiagnosable.
-			slog.Warn("claude task stream scan failed", "error", streamErr)
-			select {
-			case ch <- TaskEvent{Type: TaskEventError, IsError: true, ErrorMsg: streamErr.Error()}:
-			case <-ctx.Done():
-			}
-			return
-		}
-		if waitErr != nil {
-			msg := strings.TrimSpace(stderrBuf.String())
-			if msg == "" {
-				msg = waitErr.Error()
-			}
-			// 🎯T49.3: failed print-mode stderr (e.g. missing prompt after
-			// variadic --disallowedTools) must reach Task callers, not only
-			// Debug logs — ytt otherwise reports a silent empty result.
-			slog.Warn("claude process exited with error", "error", waitErr, "stderr", msg)
-			select {
-			case ch <- TaskEvent{Type: TaskEventError, IsError: true, ErrorMsg: msg}:
-			case <-ctx.Done():
-			}
-			return
-		}
-		slog.Debug("claude process exited cleanly")
-	}()
-
-	return &taskRun{
-		events:    ch,
-		interrupt: func() error { return interruptTaskProcess(cmd) },
-	}, nil
-}
-
-// codexTaskPrecheck refuses a request carrying a field `codex exec`
-// cannot honour.
-//
-// 🎯T4.6: `codex exec` has no per-tool disallow flag, so a caller who asks
-// for tool restrictions and gets a run anyway has been silently handed a
-// fully-armed agent. That is the exact shape of the incident
-// BaseDisallowedTools documents. Refuse before spawning rather than
-// dropping the request on the floor.
-func codexTaskPrecheck(req taskRunRequest) error {
-	if err := validateTaskToolPolicy(ProviderCodex, req.ToolPolicy); err != nil {
-		return err
-	}
-	if len(req.DisallowTools) > 0 {
-		return capabilityRefusal(ProviderCodex, CapabilityToolRestrictions,
-			"the Codex tool_restrictions claim was flipped to supported, but codexTaskArgs still emits no per-tool disallow flag")
-	}
-	// The git grant is a workspace-write setting. An empty SandboxMode
-	// leaves the mode to the user's config.toml, which claudia does not
-	// read, so the grant could land on a read-only run and be dropped
-	// without a word (🎯T116).
-	if req.SandboxGitWrite && req.SandboxMode != codexSandboxWorkspaceWrite && req.SandboxMode != codexSandboxFullAccess {
-		return fmt.Errorf("codex: SandboxGitWrite asks for a writable .git but SandboxMode is %q — set SandboxMode %q", req.SandboxMode, codexSandboxWorkspaceWrite)
-	}
-	return nil
-}
-
-func (codexTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*taskRun, error) {
-	if err := codexTaskPrecheck(req); err != nil {
-		return nil, err
-	}
-
-	// 🎯T14.1: refuse to spawn on API-key / missing OAuth so Task mode never
-	// silently falls through to per-token OpenAI billing.
-	pf, err := ensureCodexSubscriptionAuth(nil)
-	if err != nil {
-		return nil, err
-	}
-	for _, w := range pf.Warnings {
-		slog.Warn(w)
-	}
-	slog.Debug("codex auth preflight",
-		"mode", pf.Mode,
-		"auth_path", pf.AuthPath,
-		"subscription_ok", pf.SubscriptionOK,
-	)
-
-	codexBin, err := resolveCodexBin()
-	if err != nil {
-		return nil, err
-	}
-
-	req, err = codexTaskGitGrant(req)
-	if err != nil {
-		return nil, err
-	}
-	args := codexTaskArgs(req)
-	slog.Debug("spawning codex task", "args", args)
-	cmd := exec.CommandContext(ctx, codexBin, args...)
-	cmd.Dir = req.WorkDir
-	setTaskProcessGroup(cmd)
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, fmt.Errorf("stdout pipe: %w", err)
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return nil, fmt.Errorf("stderr pipe: %w", err)
-	}
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("start codex: %w", err)
-	}
-	armTaskProcessGroupKill(ctx, cmd)
-
-	go func() {
-		scanner := bufio.NewScanner(stderr)
-		scanner.Buffer(make([]byte, 256*1024), 256*1024)
-		for scanner.Scan() {
-			slog.Debug("codex stderr", "line", scanner.Text())
-		}
-	}()
-
-	ch := make(chan TaskEvent, 16)
-	go func() {
-		defer close(ch)
-		defer func() {
-			if err := cmd.Wait(); err != nil {
-				slog.Warn("codex process exited with error", "error", err)
-			} else {
-				slog.Debug("codex process exited cleanly")
-			}
-		}()
-
-		parser := codexTaskParser{}
-		if streamErr := forwardTaskStream(ctx, stdout, parser.Parse, req.RawLog, ch); streamErr != nil {
-			slog.Warn("codex task stream scan failed", "error", streamErr)
-			select {
-			case ch <- TaskEvent{Type: TaskEventError, IsError: true, ErrorMsg: streamErr.Error()}:
-			case <-ctx.Done():
-			}
-		}
-	}()
-
-	return &taskRun{
-		events:    ch,
-		interrupt: func() error { return interruptTaskProcess(cmd) },
-	}, nil
-}
-
-func codexTaskArgs(req taskRunRequest) []string {
-	args := []string{}
-	if req.ApprovalPolicy != "" {
-		args = append(args, "--ask-for-approval", req.ApprovalPolicy)
-	}
-	if req.WorkDir != "" {
-		args = append(args, "--cd", req.WorkDir)
-	}
-	if req.SandboxMode != "" {
-		args = append(args, "--sandbox", req.SandboxMode)
-	}
-	// A global option like the rest: it goes before `exec` (🎯T116).
-	args = append(args, codexSandboxArgs(codexSandboxTuning{GitRoots: req.gitRoots})...)
-	if req.Model != "" {
-		args = append(args, "--model", req.Model)
-	}
-	// Task callers supply their own workdir, which need not be a Git checkout
-	// (for example, Sentinel's personal directory). Codex otherwise refuses
-	// the run before it can inspect the directory.
-	args = append(args, "exec", "--skip-git-repo-check")
-	if req.SessionID != "" {
-		args = append(args, "resume", "--json", req.SessionID, req.Prompt)
-	} else {
-		args = append(args, "--json", req.Prompt)
-	}
-	return args
-}
-
-// grokTaskPrecheck refuses a request carrying a field the Grok Task path
-// cannot honour.
-//
-// 🎯T23: the fail-open defect 🎯T4.6 closed for Codex, one provider
-// over. grokTaskArgs never consulted req.DisallowTools, so a caller
-// who stripped Bash, Write and WebFetch from a summariser got a
-// fully-armed agent and no signal that anything had been ignored —
-// the incident BaseDisallowedTools documents.
-//
-// Unlike `codex exec`, grok is not missing the machinery: `--deny
-// <RULE>` gates invocations (`Bash(...)`, `Write(...)`,
-// `WebFetch(...)`, … — Claude's own `Bash(cmd:*)` syntax is accepted)
-// and `--disallowed-tools <IDS>` removes built-in tools outright. The
-// refusal is about what claudia can prove, not what grok can do: Task
-// hardcodes --permission-mode bypassPermissions, which grok resolves
-// by appending a catch-all allow rule, and grok accepts a tool name it
-// does not recognise without complaint. Emitting an untested
-// translation would restore the silent drop while publishing a green
-// claim on top of it, which is strictly worse than refusing. See
-// docs/grok-provider-oracle-map.md for the live oracle that would
-// settle it.
-func grokTaskPrecheck(req taskRunRequest) error {
-	if err := validateTaskToolPolicy(ProviderGrok, req.ToolPolicy); err != nil {
-		return err
-	}
-	if len(req.DisallowTools) > 0 {
-		return grokToolRestrictionRefusal(
-			CheckCapability(ProviderGrok, CapabilityToolRestrictions))
-	}
-	if req.SandboxMode != "" || req.SandboxGitWrite || req.ApprovalPolicy != "" {
-		return capabilityRefusal(ProviderGrok, CapabilitySandboxPolicy,
-			"the Grok sandbox_policy claim was flipped to supported, but grokTaskArgs still emits no sandbox or approval flag")
-	}
-	return nil
-}
-
-func (grokTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*taskRun, error) {
-	if err := grokTaskPrecheck(req); err != nil {
-		return nil, err
-	}
-
-	grokBin, err := resolveGrokBin()
-	if err != nil {
-		return nil, err
-	}
-
-	args := grokTaskArgs(req)
-	slog.Debug("spawning grok task", "args", args)
-	cmd := exec.CommandContext(ctx, grokBin, args...)
-	if req.WorkDir != "" {
-		cmd.Dir = req.WorkDir
-	}
-	if req.ToolPolicy != nil {
-		env, err := grokTaskPolicyEnv(req.ToolPolicy.HomeDir)
-		if err != nil {
-			return nil, err
-		}
-		cmd.Env = env
-	}
-	setTaskProcessGroup(cmd)
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, fmt.Errorf("stdout pipe: %w", err)
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return nil, fmt.Errorf("stderr pipe: %w", err)
-	}
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("start grok: %w", err)
-	}
-	armTaskProcessGroupKill(ctx, cmd)
-
-	go func() {
-		scanner := bufio.NewScanner(stderr)
-		scanner.Buffer(make([]byte, 256*1024), 256*1024)
-		for scanner.Scan() {
-			slog.Debug("grok stderr", "line", scanner.Text())
-		}
-	}()
-
-	ch := make(chan TaskEvent, 16)
-	go func() {
-		defer close(ch)
-		defer func() {
-			if err := cmd.Wait(); err != nil {
-				slog.Warn("grok process exited with error", "error", err)
-			} else {
-				slog.Debug("grok process exited cleanly")
-			}
-		}()
-
-		parser := grokTaskParser{}
-		if streamErr := forwardTaskStream(ctx, stdout, parser.Parse, req.RawLog, ch); streamErr != nil {
-			slog.Warn("grok task stream scan failed", "error", streamErr)
-			select {
-			case ch <- TaskEvent{Type: TaskEventError, IsError: true, ErrorMsg: streamErr.Error()}:
-			case <-ctx.Done():
-			}
-		}
-	}()
-
-	return &taskRun{
-		events:    ch,
-		interrupt: func() error { return interruptTaskProcess(cmd) },
-	}, nil
-}
-
-// grokToolRestrictionRefusal turns the published tool_restrictions claim
-// into the error a restricted Grok task is refused with.
-//
-// It exists to survive its own success condition. CheckCapability returns
-// nil the moment the claim flips to supported, and a backend that passed
-// that nil straight back would return (nil, nil) — handing Task.Run no
-// run and no error, and the caller the fully-armed agent they asked not
-// to have. 399b1c8 found exactly this shape in codexAgentBackend by
-// mutating a claim; the lesson is that the claim and the argv builder
-// must move together, so flipping the claim alone still refuses, with a
-// reason that says what is missing.
-func grokToolRestrictionRefusal(claimed error) error {
-	if claimed != nil {
-		return claimed
-	}
-	return unsupportedCapability(
-		ProviderGrok, CapabilityToolRestrictions, grokToolRestrictionsUnwiredReason)
-}
-
-// grokTaskArgs builds argv for a headless Grok Build Task run.
-//
-// Mirrors Claude Task's unattended posture with --permission-mode
-// bypassPermissions (Grok's analogue of --dangerously-skip-permissions).
-//
-// Deliberately emits no --deny or --disallowed-tools: RunTask has already
-// refused any request carrying DisallowTools, and pinning that here keeps
-// the half-fix (emit a flag, keep the claim) from looking green.
-func grokTaskArgs(req taskRunRequest) []string {
-	permissionMode := "bypassPermissions"
-	if req.ToolPolicy != nil {
-		permissionMode = "dontAsk"
-	}
-	args := []string{
-		"-p", req.Prompt,
-		"--output-format", "streaming-json",
-		"--permission-mode", permissionMode,
-	}
-	if policy := req.ToolPolicy; policy != nil {
-		args = append(args, "--no-subagents", "--disable-web-search", "--tools", strings.Join(policy.Builtins, ","),
-			"--max-turns", strconv.Itoa(policy.MaxTurns))
-		for _, rule := range policy.Allow {
-			args = append(args, "--allow", rule)
-		}
-		for _, rule := range policy.Deny {
-			args = append(args, "--deny", rule)
-		}
-	}
-	if req.WorkDir != "" {
-		args = append(args, "--cwd", req.WorkDir)
-	}
-	if req.Model != "" {
-		args = append(args, "--model", req.Model)
-	}
-	if req.SessionID != "" {
-		args = append(args, "--resume", req.SessionID)
-	}
-	return args
-}
-
-func grokTaskPolicyEnv(homeDir string) ([]string, error) {
-	grokHome := filepath.Join(homeDir, ".grok")
-	if err := os.MkdirAll(grokHome, 0o700); err != nil {
-		return nil, fmt.Errorf("create restricted Grok home: %w", err)
-	}
-	info, err := os.Lstat(grokHome)
-	if err != nil {
-		return nil, fmt.Errorf("inspect restricted Grok home: %w", err)
-	}
-	if !info.IsDir() || info.Mode().Perm()&0o077 != 0 {
-		return nil, fmt.Errorf("restricted Grok home %s must be a private directory", grokHome)
-	}
-	env := append(os.Environ(), "HOME="+homeDir, "GROK_HOME="+grokHome)
-	if os.Getenv("GROK_AUTH_PATH") == "" {
-		userHome, err := os.UserHomeDir()
-		if err != nil {
-			return nil, fmt.Errorf("locate Grok authentication: %w", err)
-		}
-		authPath := filepath.Join(userHome, ".grok", "auth.json")
-		if info, err := os.Stat(authPath); err == nil && info.Mode().IsRegular() {
-			env = append(env, "GROK_AUTH_PATH="+authPath)
-		}
-	}
-	return env, nil
 }
 
 // grokTaskParser maps Grok Build headless streaming-json lines to TaskEvent.

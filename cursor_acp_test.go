@@ -348,13 +348,6 @@ func TestCursorAgentBackendCapabilities(t *testing.T) {
 	}
 }
 
-func TestCursorTaskBackendCapabilities(t *testing.T) {
-	caps := cursorTaskBackend{}.Capabilities()
-	if !caps.Task || !caps.Resume || caps.Session {
-		t.Fatalf("capabilities = %+v, want Task+Resume", caps)
-	}
-}
-
 func TestCursorRewindFailsWithCapabilityError(t *testing.T) {
 	agent := &Agent{provider: ProviderCursor}
 	_, err := agent.Rewind(1, Config{Provider: ProviderCursor})

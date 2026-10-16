@@ -4,16 +4,8 @@
 package codex
 
 import (
-	"bufio"
 	"context"
-	"fmt"
-	"log/slog"
-	"os/exec"
-	"strconv"
-	"strings"
 	"sync"
-
-	"github.com/marcelocantos/claudia/internal/codexgit"
 )
 
 // Status is the lifecycle state of a [Task].
@@ -35,50 +27,44 @@ const (
 	StatusStopped Status = "stopped"
 )
 
-// Config holds configuration for a Codex Task.
-// Prefer a struct over functional options.
+// Config preserves source compatibility for the removed Codex Task API.
+// Only ID, Name, WorkDir and SessionID are retained on the inert handle;
+// all execution settings are unused and Run returns ErrTaskCLIRemoved.
 type Config struct {
 	// ID is an optional caller-assigned identifier.
 	ID string
 	// Name is an optional human-readable label.
 	Name string
-	// WorkDir is the working directory (--cd) for codex exec.
+	// WorkDir is retained as handle metadata.
 	WorkDir string
-	// Model overrides the Codex model (--model).
+	// Model is retained for source compatibility; no model runs.
 	Model string
-	// SandboxMode is passed as --sandbox (e.g. "read-only").
+	// SandboxMode is unused after CLI Task removal.
 	SandboxMode string
 	// SandboxGitWrite opts a workspace-write task into writing its Git metadata.
 	// This includes hooks and config, which execute outside Codex's sandbox on
 	// later Git commands. Leave unset unless the task must commit.
 	SandboxGitWrite bool
-	// ApprovalPolicy is passed as --ask-for-approval (e.g. "never").
+	// ApprovalPolicy is unused after CLI Task removal.
 	ApprovalPolicy string
-	// SessionID resumes a prior Codex thread via `codex exec resume`.
+	// SessionID is retained as handle metadata; no session is resumed.
 	SessionID string
-	// Resolve customises binary resolution and auth preflight (tests).
+	// Resolve is unused; Run performs no binary or credential discovery.
 	Resolve *ResolveArgs
-	// RawLog receives raw NDJSON lines before parsing (optional).
+	// RawLog is unused; Run produces no provider output.
 	RawLog func(line []byte)
 }
 
-// Task is a headless Codex agent driven by `codex exec --json`.
+// Task preserves the removed Codex CLI Task API. Run refuses with ErrTaskCLIRemoved.
 type Task struct {
-	id       string
-	name     string
-	workDir  string
-	model    string
-	sandbox  string
-	approval string
-	gitWrite bool
-	resolve  *ResolveArgs
-	rawLog   func(line []byte)
+	id      string
+	name    string
+	workDir string
 
 	mu         sync.Mutex
 	status     Status
 	sessionID  string
 	lastResult string
-	cancel     context.CancelFunc
 }
 
 // NewTask creates a Codex Task in [StatusIdle].
@@ -87,12 +73,6 @@ func NewTask(cfg Config) *Task {
 		id:        cfg.ID,
 		name:      cfg.Name,
 		workDir:   cfg.WorkDir,
-		model:     cfg.Model,
-		sandbox:   cfg.SandboxMode,
-		approval:  cfg.ApprovalPolicy,
-		gitWrite:  cfg.SandboxGitWrite,
-		resolve:   cfg.Resolve,
-		rawLog:    cfg.RawLog,
 		status:    StatusIdle,
 		sessionID: cfg.SessionID,
 	}
@@ -117,8 +97,7 @@ func (t *Task) Status() Status {
 	return t.status
 }
 
-// SessionID returns the Codex thread id captured from thread.started
-// (or the seed from Config.SessionID before the first successful init).
+// SessionID returns the metadata supplied in Config.SessionID.
 func (t *Task) SessionID() string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -132,291 +111,20 @@ func (t *Task) LastResult() string {
 	return t.lastResult
 }
 
-// Stop permanently terminates the task. A running process is cancelled.
+// Stop marks the inert task stopped. No process exists.
 func (t *Task) Stop() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.status = StatusStopped
-	if t.cancel != nil {
-		t.cancel()
-		t.cancel = nil
-	}
 }
 
-// Run spawns `codex exec --json` for prompt and returns a channel of
-// structured [Event] values. The channel is closed when the process exits.
-//
-// Preflight: refuses to spawn when ChatGPT-subscription auth is not active
-// ([*AuthError]). Non-zero process exit without a prior structured error
-// yields an [EventError] carrying [*ExitError].
-func (t *Task) Run(ctx context.Context, prompt string) (<-chan Event, error) {
-	t.mu.Lock()
-	if t.status == StatusStopped {
-		t.mu.Unlock()
-		return nil, fmt.Errorf("codex task stopped")
-	}
-	if t.status == StatusRunning {
-		t.mu.Unlock()
-		return nil, fmt.Errorf("codex task already running")
-	}
-	t.status = StatusRunning
-	runCtx, cancel := context.WithCancel(ctx)
-	t.cancel = cancel
-	sessionID := t.sessionID
-	t.mu.Unlock()
-
-	if err := ensureSubscriptionAuth(t.resolve); err != nil {
-		t.finish(StatusError)
-		return nil, err
-	}
-
-	bin, err := resolveBin(t.resolve)
-	if err != nil {
-		t.finish(StatusError)
-		return nil, err
-	}
-
-	gitRoots, err := t.gitWriteRoots()
-	if err != nil {
-		t.finish(StatusError)
-		return nil, err
-	}
-	args := execArgs(execArgInput{
-		WorkDir:         t.workDir,
-		GitRoots:        gitRoots,
-		SandboxGitWrite: t.gitWrite,
-		Model:           t.model,
-		SandboxMode:     t.sandbox,
-		ApprovalPolicy:  t.approval,
-		SessionID:       sessionID,
-		Prompt:          prompt,
-	})
-	slog.Debug("codex task spawn", "bin", bin, "args", args)
-
-	cmd := exec.CommandContext(runCtx, bin, args...)
-	if t.workDir != "" {
-		cmd.Dir = t.workDir
-	}
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		t.finish(StatusError)
-		return nil, fmt.Errorf("stdout pipe: %w", err)
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		t.finish(StatusError)
-		return nil, fmt.Errorf("stderr pipe: %w", err)
-	}
-	if err := cmd.Start(); err != nil {
-		t.finish(StatusError)
-		return nil, fmt.Errorf("start codex: %w", err)
-	}
-
-	var stderrBuf strings.Builder
-	go func() {
-		sc := bufio.NewScanner(stderr)
-		sc.Buffer(make([]byte, 256*1024), 256*1024)
-		for sc.Scan() {
-			line := sc.Text()
-			slog.Debug("codex stderr", "line", line)
-			if stderrBuf.Len() < 8*1024 {
-				stderrBuf.WriteString(line)
-				stderrBuf.WriteByte('\n')
-			}
-		}
-	}()
-
-	ch := make(chan Event, 16)
-	go func() {
-		defer close(ch)
-		// sendTerminal delivers the last word about why the run ended.
-		// A select on send and Done races when both are ready — the
-		// buffer has room and the context is already cancelled — and Go
-		// picks either, so the error is dropped about half the time and
-		// the channel closes empty (🎯T90). A non-blocking send commits
-		// whenever the buffer can take the event. Only a full buffer
-		// waits, and only then can cancellation abandon the send.
-		sendTerminal := func(ev Event) {
-			select {
-			case ch <- ev:
-				return
-			default:
-			}
-			select {
-			case ch <- ev:
-			case <-runCtx.Done():
-				select {
-				case ch <- ev:
-				default:
-				}
-			}
-		}
-		var (
-			p          parser
-			sawError   bool
-			sawResult  bool
-			lastResult string
-			initID     string
-		)
-		sc := bufio.NewScanner(stdout)
-		sc.Buffer(make([]byte, 1024*1024), 1024*1024)
-		for sc.Scan() {
-			line := sc.Bytes()
-			if len(line) == 0 {
-				continue
-			}
-			if t.rawLog != nil {
-				// Copy: scanner reuses the buffer.
-				cp := append([]byte(nil), line...)
-				t.rawLog(cp)
-			}
-			for _, ev := range p.ParseLine(line) {
-				switch ev.Type {
-				case EventInit:
-					if ev.SessionID != "" {
-						initID = ev.SessionID
-						t.mu.Lock()
-						t.sessionID = ev.SessionID
-						t.mu.Unlock()
-					}
-				case EventResult:
-					sawResult = true
-					lastResult = ev.Content
-				case EventError:
-					sawError = true
-				}
-				select {
-				case ch <- ev:
-				case <-runCtx.Done():
-					// A live stream may be abandoned mid-flight. The
-					// terminal error may not: it is why the run ended.
-					sendTerminal(Event{Type: EventError, Error: context.Cause(runCtx)})
-					_ = cmd.Wait()
-					t.finish(StatusCancelled)
-					return
-				}
-			}
-		}
-
-		waitErr := cmd.Wait()
-		cancelled := runCtx.Err() != nil
-		if cancelled && !sawError {
-			sendTerminal(Event{Type: EventError, Error: context.Cause(runCtx)})
-			sawError = true
-		} else if waitErr != nil && !sawError {
-			exitCode := 1
-			if ee, ok := waitErr.(*exec.ExitError); ok {
-				exitCode = ee.ExitCode()
-			}
-			msg := strings.TrimSpace(stderrBuf.String())
-			if msg == "" {
-				msg = waitErr.Error()
-			}
-			// If stderr looks like auth/rate-limit, classify; else ExitError.
-			var typed error
-			if isAuthMessage(strings.ToLower(msg)) || isRateLimitMessage(strings.ToLower(msg)) {
-				typed = ClassifyFailure(msg)
-			} else {
-				typed = &ExitError{ExitCode: exitCode, Message: msg}
-			}
-			sawError = true
-			sendTerminal(Event{Type: EventError, Error: typed})
-		}
-
-		if initID != "" {
-			t.mu.Lock()
-			t.sessionID = initID
-			t.mu.Unlock()
-		}
-		if sawResult {
-			t.mu.Lock()
-			t.lastResult = lastResult
-			t.mu.Unlock()
-		}
-		if cancelled {
-			t.finish(StatusCancelled)
-		} else if sawError {
-			t.finish(StatusError)
-		} else {
-			t.finish(StatusIdle)
-		}
-	}()
-
-	return ch, nil
-}
-
-func (t *Task) finish(st Status) {
+// Run always returns ErrTaskCLIRemoved. The CLI execution transport has
+// been removed; this compatibility API does not start a replacement agent.
+func (t *Task) Run(context.Context, string) (<-chan Event, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if t.status == StatusStopped {
-		return
+	if t.status != StatusStopped {
+		t.status = StatusError
 	}
-	t.status = st
-	t.cancel = nil
-}
-
-// gitWriteRoots resolves the optional grant before spawning the CLI.
-func (t *Task) gitWriteRoots() ([]string, error) {
-	if t.gitWrite && t.sandbox != "workspace-write" && t.sandbox != "danger-full-access" {
-		return nil, fmt.Errorf("codex: SandboxGitWrite requires workspace-write (or danger-full-access) sandbox")
-	}
-	if t.sandbox != "workspace-write" {
-		return nil, nil
-	}
-	roots, err := codexgit.WritableRoots(t.workDir)
-	if err != nil && t.gitWrite {
-		return nil, fmt.Errorf("codex: SandboxGitWrite cannot resolve Git directory: %w", err)
-	}
-	if !t.gitWrite {
-		if err != nil {
-			slog.Warn("codex workspace-write: .git stays read-only (SandboxGitWrite unset); cannot resolve Git directory", "workdir", t.workDir, "err", err)
-		} else if len(roots) > 0 {
-			slog.Warn("codex workspace-write: .git stays read-only; set SandboxGitWrite to allow git commit", "workdir", t.workDir, "read_only", roots)
-		}
-	}
-	return roots, nil
-}
-
-type execArgInput struct {
-	GitRoots        []string
-	SandboxGitWrite bool
-	WorkDir         string
-	Model           string
-	SandboxMode     string
-	ApprovalPolicy  string
-	SessionID       string
-	Prompt          string
-}
-
-// execArgs builds argv for codex. Global flags belong before `exec`
-// (CLI 0.146.0-alpha.x rejects --ask-for-approval after the subcommand).
-func execArgs(in execArgInput) []string {
-	args := []string{}
-	if in.ApprovalPolicy != "" {
-		args = append(args, "--ask-for-approval", in.ApprovalPolicy)
-	}
-	if in.WorkDir != "" {
-		args = append(args, "--cd", in.WorkDir)
-	}
-	if in.SandboxMode != "" {
-		args = append(args, "--sandbox", in.SandboxMode)
-	}
-	if in.SandboxMode == "workspace-write" && in.SandboxGitWrite && len(in.GitRoots) > 0 {
-		var quoted []string
-		for _, root := range in.GitRoots {
-			quoted = append(quoted, strconv.Quote(root))
-		}
-		args = append(args, "-c", "sandbox_workspace_write.writable_roots=["+strings.Join(quoted, ", ")+"]")
-	}
-	if in.Model != "" {
-		args = append(args, "--model", in.Model)
-	}
-	args = append(args, "exec")
-	if in.SessionID != "" {
-		args = append(args, "resume", "--json", in.SessionID, in.Prompt)
-	} else {
-		args = append(args, "--json", in.Prompt)
-	}
-	return args
+	return nil, ErrTaskCLIRemoved
 }

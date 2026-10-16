@@ -139,6 +139,9 @@ var ErrPlanExhausted = errors.New("claudia: plan exhausted")
 // Cancel ctx to drop the connection; the daemon then cancels the run. Read
 // the channel to completion or cancel — the same rule as [Task.Run].
 func RunBrokerTask(ctx context.Context, prompt string, cfg TaskConfig) (<-chan TaskEvent, error) {
+	if err := TaskProviderError(cfg.Provider); err != nil {
+		return nil, err
+	}
 	client, err := dialBroker()
 	if err != nil {
 		return nil, err
@@ -175,6 +178,9 @@ func RunBrokerTask(ctx context.Context, prompt string, cfg TaskConfig) (<-chan T
 // brokerTaskError maps a task_run refusal onto the public sentinels.
 func brokerTaskError(err error) error {
 	var pe *broker.ProtocolError
+	if errors.As(err, &pe) && pe.Code == broker.CodeTaskCLIRemoved {
+		return fmt.Errorf("%w: %s", ErrTaskCLIRemoved, pe.Error())
+	}
 	if errors.As(err, &pe) && pe.Code == broker.CodePlanExhausted {
 		return fmt.Errorf("%w: %s", ErrPlanExhausted, pe.Error())
 	}

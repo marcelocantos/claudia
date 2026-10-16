@@ -23,7 +23,7 @@ func TestTaskRunRejectsRelativeWorkDir(t *testing.T) {
 			if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
 				t.Fatal(err)
 			}
-			raw, err := claudia.EncodeTaskConfigWire(claudia.TaskConfig{Provider: claudia.ProviderGrok, WorkDir: wd})
+			raw, err := claudia.EncodeTaskConfigWire(claudia.TaskConfig{Provider: claudia.ProviderOllama, WorkDir: wd})
 			if err != nil {
 				t.Fatal(err)
 			}

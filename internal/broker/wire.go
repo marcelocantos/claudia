@@ -171,6 +171,8 @@ const (
 	// CodeUnsupportedValue means a known field carried a value this broker
 	// cannot honour.
 	CodeUnsupportedValue ErrorCode = "unsupported_value"
+	// CodeTaskCLIRemoved means a retired Task transport was requested.
+	CodeTaskCLIRemoved ErrorCode = "task_cli_removed"
 	// CodeUnknownSession means the named session is not one the broker holds.
 	CodeUnknownSession ErrorCode = "unknown_session"
 	// CodeNotOwner means the session exists but belongs to another connection.

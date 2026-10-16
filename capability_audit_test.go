@@ -49,57 +49,6 @@ var sessionProviders = []Provider{ProviderClaude, ProviderCodex, ProviderGrok, P
 // taskFieldFates is what each Task path does with each TaskConfig field.
 // A missing entry is a silent drop waiting to happen.
 var taskFieldFates = map[Provider]map[string]fieldDecl{
-	ProviderClaude: {
-		"ID":              {fateLocal, "caller-assigned id; never sent to the process"},
-		"Name":            {fateLocal, "human label; never sent to the process"},
-		"Provider":        {fateLocal, "selects this path"},
-		"RequireBroker":   {fateLocal, "caller-side admission guard"},
-		"PickByRemaining": {fateLocal, "the broker picks the provider before spawn; a direct run refuses it"},
-		"WorkDir":         {fateConsumed, ""},
-		"Model":           {fateConsumed, ""},
-		"SandboxMode":     {fateRefused, "claudeTaskArgs emits no sandbox flag"},
-		"SandboxGitWrite": {fateRefused, "a Codex sandbox grant; refused with SandboxMode"},
-		"ApprovalPolicy":  {fateRefused, "claudeTaskArgs emits no approval flag"},
-		"DisallowTools":   {fateConsumed, ""},
-		"ToolPolicy":      {fateConsumed, ""},
-		"SessionID":       {fateConsumed, ""},
-		"ClaudeID":        {fateConsumed, ""},
-		"LastResult":      {fateLocal, "rehydration seed for Task.LastResult; never sent to the process"},
-	},
-	ProviderCodex: {
-		"ID":              {fateLocal, "caller-assigned id; never sent to the process"},
-		"Name":            {fateLocal, "human label; never sent to the process"},
-		"Provider":        {fateLocal, "selects this path"},
-		"RequireBroker":   {fateLocal, "caller-side admission guard"},
-		"PickByRemaining": {fateLocal, "the broker picks the provider before spawn; a direct run refuses it"},
-		"WorkDir":         {fateConsumed, ""},
-		"Model":           {fateConsumed, ""},
-		"SandboxMode":     {fateConsumed, ""},
-		"SandboxGitWrite": {fateConsumed, "a -c writable_roots override before exec"},
-		"ApprovalPolicy":  {fateConsumed, ""},
-		"DisallowTools":   {fateRefused, "codex exec has no per-tool disallow flag"},
-		"ToolPolicy":      {fateRefused, "Codex uses SandboxMode rather than this provider-native policy"},
-		"SessionID":       {fateConsumed, ""},
-		"ClaudeID":        {fateConsumed, ""},
-		"LastResult":      {fateLocal, "rehydration seed for Task.LastResult; never sent to the process"},
-	},
-	ProviderGrok: {
-		"ID":              {fateLocal, "caller-assigned id; never sent to the process"},
-		"Name":            {fateLocal, "human label; never sent to the process"},
-		"Provider":        {fateLocal, "selects this path"},
-		"RequireBroker":   {fateLocal, "caller-side admission guard"},
-		"PickByRemaining": {fateLocal, "the broker picks the provider before spawn; a direct run refuses it"},
-		"WorkDir":         {fateConsumed, ""},
-		"Model":           {fateConsumed, ""},
-		"SandboxMode":     {fateRefused, "grokTaskArgs emits no sandbox flag"},
-		"SandboxGitWrite": {fateRefused, "a Codex sandbox grant; refused with SandboxMode"},
-		"ApprovalPolicy":  {fateRefused, "grokTaskArgs emits no approval flag"},
-		"DisallowTools":   {fateRefused, "DisallowTools is not translated onto --deny / --disallowed-tools"},
-		"ToolPolicy":      {fateConsumed, ""},
-		"SessionID":       {fateConsumed, ""},
-		"ClaudeID":        {fateConsumed, ""},
-		"LastResult":      {fateLocal, "rehydration seed for Task.LastResult; never sent to the process"},
-	},
 	ProviderBedrock: {
 		"ID":              {fateLocal, "caller-assigned id; never sent to the API"},
 		"Name":            {fateLocal, "human label; never sent to the API"},
@@ -133,23 +82,6 @@ var taskFieldFates = map[Provider]map[string]fieldDecl{
 		"SessionID":       {fateRefused, "/api/generate carries no conversation state"},
 		"ClaudeID":        {fateRefused, "/api/generate carries no conversation state"},
 		"LastResult":      {fateLocal, "rehydration seed for Task.LastResult; never sent to the API"},
-	},
-	ProviderCursor: {
-		"ID":              {fateLocal, "caller-assigned id; never sent to the process"},
-		"Name":            {fateLocal, "human label; never sent to the process"},
-		"Provider":        {fateLocal, "selects this path"},
-		"RequireBroker":   {fateLocal, "caller-side admission guard"},
-		"PickByRemaining": {fateLocal, "the broker picks the provider before spawn; a direct run refuses it"},
-		"WorkDir":         {fateConsumed, ""},
-		"Model":           {fateConsumed, ""},
-		"SandboxMode":     {fateRefused, "SandboxMode is a Codex app-server field"},
-		"SandboxGitWrite": {fateRefused, "a Codex sandbox grant; refused with SandboxMode"},
-		"ApprovalPolicy":  {fateRefused, "Cursor Task has no ApprovalPolicy flag"},
-		"DisallowTools":   {fateRefused, "Cursor Task has no per-tool disallow flag"},
-		"ToolPolicy":      {fateRefused, "Cursor Task has no provider-native tool allowlist"},
-		"SessionID":       {fateConsumed, ""},
-		"ClaudeID":        {fateConsumed, ""},
-		"LastResult":      {fateLocal, "rehydration seed for Task.LastResult; never sent to the process"},
 	},
 }
 
@@ -300,26 +232,12 @@ func exportedFields(t reflect.Type) []string {
 
 func taskPrecheck(provider Provider, req taskRunRequest) error {
 	switch provider {
-	case ProviderClaude:
-		return claudeTaskPrecheck(req)
-	case ProviderCodex:
-		// As for Session: the grant needs its mode, and Codex refuses it
-		// without (TestT116GitWriteNeedsWorkspaceWrite). Every other
-		// provider still sees the bare field and must refuse it.
-		if req.SandboxGitWrite && req.SandboxMode == "" {
-			req.SandboxMode = codexSandboxWorkspaceWrite
-		}
-		return codexTaskPrecheck(req)
-	case ProviderGrok:
-		return grokTaskPrecheck(req)
 	case ProviderBedrock:
 		return bedrockTaskPrecheck(req)
 	case ProviderOllama:
 		return ollamaTaskPrecheck(req)
-	case ProviderCursor:
-		return cursorTaskPrecheck(req)
 	default:
-		return unsupportedCapability(provider, CapabilityTask, "no task precheck")
+		return TaskProviderError(provider)
 	}
 }
 
@@ -353,42 +271,11 @@ func setTaskField(req *taskRunRequest, field string) func() {
 func taskMaterialises(provider Provider, field string) bool {
 	req := taskRunRequest{Prompt: "t24-prompt"}
 	defer setTaskField(&req, field)()
-	if field == "ToolPolicy" && provider == ProviderClaude {
-		req.ToolPolicy.HomeDir = ""
-	}
-	switch provider {
-	case ProviderClaude:
-		return argvHolds(claudeTaskArgs(req), taskNeedle(field, req))
-	case ProviderCodex:
-		if field == "SandboxGitWrite" {
-			// 🎯T116: resolved against this repository (the audit's own
-			// workdir does not exist) and carried as a -c override; and
-			// absent when the field is.
-			req.SandboxMode, req.WorkDir = codexSandboxWorkspaceWrite, "."
-			granted, err := codexTaskGitGrant(req)
-			req.SandboxGitWrite = false
-			withheld, _ := codexTaskGitGrant(req)
-			return err == nil && argvHolds(codexTaskArgs(granted), codexSandboxConfigKey) &&
-				!argvHolds(codexTaskArgs(withheld), codexSandboxConfigKey)
-		}
-		return argvHolds(codexTaskArgs(req), taskNeedle(field, req))
-	case ProviderGrok:
-		return argvHolds(grokTaskArgs(req), taskNeedle(field, req))
-	case ProviderBedrock:
+	if provider == ProviderBedrock {
 		in := buildBedrockConverseInput(req.Model, req.Prompt)
-		switch field {
-		case "Model":
-			return in.ModelId != nil && *in.ModelId == req.Model
-		default:
-			return false
-		}
-	case ProviderOllama:
-		return field == "Model" && req.Model != ""
-	case ProviderCursor:
-		return argvHolds(cursorTaskArgs(req), taskNeedle(field, req))
-	default:
-		return false
+		return field == "Model" && in.ModelId != nil && *in.ModelId == req.Model
 	}
+	return provider == ProviderOllama && field == "Model" && req.Model != ""
 }
 
 func taskNeedle(field string, req taskRunRequest) string {
@@ -433,6 +320,15 @@ func auditTaskFates(fates map[Provider]map[string]fieldDecl) []string {
 	var issues []string
 	fields := exportedFields(reflect.TypeFor[TaskConfig]())
 	for _, provider := range taskProviders {
+		if err := TaskProviderError(provider); err != nil {
+			if _, exists := fates[provider]; exists {
+				issues = append(issues, string(provider)+" removed Task has per-field dispositions")
+			}
+			if !errors.Is(err, ErrTaskCLIRemoved) {
+				issues = append(issues, string(provider)+" unexpected Task refusal: "+err.Error())
+			}
+			continue
+		}
 		decls, ok := fates[provider]
 		if !ok {
 			issues = append(issues, string(provider)+": no Task dispositions")
@@ -810,9 +706,9 @@ func TestProviderPathsHonourOrRefuseEveryRequestField(t *testing.T) {
 // the path in fact honours, marked refused, must fail the audit.
 func TestDeclaringAConsumedFieldUnsupportedGoesRed(t *testing.T) {
 	task := cloneTaskFates()
-	task[ProviderClaude]["Model"] = fieldDecl{fateRefused, "mutated declaration"}
+	task[ProviderBedrock]["Model"] = fieldDecl{fateRefused, "mutated declaration"}
 	issues := requestFieldAudit(task, sessionFieldFates)
-	if !containsIssue(issues, "claude Task Model: declared refused") {
+	if !containsIssue(issues, "bedrock Task Model: declared refused") {
 		t.Fatalf("declaring Claude Task Model unsupported did not fail the audit: %v", issues)
 	}
 }
@@ -823,13 +719,13 @@ func TestDeclaringAConsumedFieldUnsupportedGoesRed(t *testing.T) {
 // same shape as deleting the precheck while leaving the claim in place.
 func TestReintroducingASilentDropGoesRed(t *testing.T) {
 	req := taskRunRequest{Prompt: "hi", DisallowTools: []string{"Bash"}}
-	if err := grokTaskPrecheck(req); !isCapErr(err) {
+	if err := bedrockTaskPrecheck(req); !isCapErr(err) {
 		t.Fatalf("Grok Task DisallowTools was dropped: %v", err)
 	}
 	task := cloneTaskFates()
-	task[ProviderGrok]["DisallowTools"] = fieldDecl{fateConsumed, ""}
+	task[ProviderBedrock]["DisallowTools"] = fieldDecl{fateConsumed, ""}
 	issues := requestFieldAudit(task, sessionFieldFates)
-	if !containsIssue(issues, "grok Task DisallowTools") {
+	if !containsIssue(issues, "bedrock Task DisallowTools") {
 		t.Fatalf("declaring Grok Task DisallowTools consumed did not fail the audit: %v", issues)
 	}
 }

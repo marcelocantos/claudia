@@ -5,7 +5,6 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -126,64 +125,6 @@ func TestPickRemainingRejectsANamedProvider(t *testing.T) {
 	err = taskCmd([]string{"--pick", "cheapest", "ping"})
 	if err == nil || !strings.Contains(err.Error(), "cheapest") {
 		t.Fatalf("bad pick: %v", err)
-	}
-}
-
-func TestBrokerTaskCLIRunsOverSocket(t *testing.T) {
-	ok := 40.0
-	sock, _ := startCLIDaemon(t, []claudia.PlanUsage{{
-		Provider: claudia.ProviderClaude,
-		Status:   claudia.PlanUsageAvailable,
-		Windows:  []claudia.PlanWindow{{Name: claudia.PlanWindowWeekly, RemainingPercent: &ok}},
-	}})
-	t.Setenv(broker.SocketPathEnv, sock)
-	t.Setenv(broker.NoBrokerEnv, "")
-	marker := filepath.Join(t.TempDir(), "spawned")
-	t.Setenv("CLAUDE_BIN", catCLI(t, filepath.Join("..", "..", "testdata", "claude", "exec", "success.jsonl"), marker))
-
-	out := captureStdout(t, func() error {
-		return taskCmd([]string{"--provider", "claude", "--workdir", t.TempDir(), "--timeout", "20s", "summarize"})
-	})
-	if !strings.Contains(out, "Final answer.") {
-		t.Fatalf("stdout = %q", out)
-	}
-	if _, err := os.Stat(marker); err != nil {
-		t.Fatalf("task_run did not spawn the provider: %v", err)
-	}
-
-	jsonOut := captureStdout(t, func() error {
-		return taskCmd([]string{"--json", "--provider", "claude", "--workdir", t.TempDir(), "--timeout", "20s", "--prompt", "summarize"})
-	})
-	for _, want := range []string{`"type":"task_started"`, `"type":"task_event"`, `"type":"task_done"`} {
-		if !strings.Contains(jsonOut, want) {
-			t.Fatalf("json missing %s:\n%s", want, jsonOut)
-		}
-	}
-}
-
-func TestBrokerTaskCLIRefusesBeforeSpawn(t *testing.T) {
-	zero := 0.0
-	sock, _ := startCLIDaemon(t, []claudia.PlanUsage{{
-		Provider: claudia.ProviderClaude,
-		Status:   claudia.PlanUsageAvailable,
-		Windows:  []claudia.PlanWindow{{Name: claudia.PlanWindowWeekly, RemainingPercent: &zero}},
-	}})
-	t.Setenv(broker.SocketPathEnv, sock)
-	t.Setenv(broker.NoBrokerEnv, "")
-	marker := filepath.Join(t.TempDir(), "spawned")
-	t.Setenv("CLAUDE_BIN", catCLI(t, filepath.Join("..", "..", "testdata", "claude", "exec", "success.jsonl"), marker))
-
-	err := taskCmd([]string{"--provider", "claude", "--workdir", t.TempDir(), "--timeout", "20s", "summarize"})
-	if !errors.Is(err, claudia.ErrPlanExhausted) {
-		t.Fatalf("err = %v", err)
-	}
-	if _, statErr := os.Stat(marker); statErr == nil {
-		t.Fatal("plan_exhausted still spawned the provider")
-	}
-
-	out := waitUsage(t, func(s string) bool { return strings.Contains(s, "exhausted") })
-	if !usageRowAdmits(out, "claude", "no") {
-		t.Fatalf("usage after refusal:\n%s", out)
 	}
 }
 

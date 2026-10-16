@@ -4,7 +4,6 @@
 package daemon
 
 import (
-	"context"
 	"errors"
 	"strings"
 	"sync/atomic"
@@ -30,46 +29,6 @@ func noCodex(sessions *atomic.Int32, tasks *atomic.Int32) func(claudia.Provider,
 			return errNoCodex
 		}
 		return nil
-	}
-}
-
-// Colossus, 2026-10-07 onward: codex had the most plan left (97%), so
-// every --pick remaining chose it, and every seat died at start with
-// "codex executable not found". A provider that cannot start is not a
-// candidate; the pick takes the fullest one that can.
-func TestTaskPickByRemainingSkipsProviderWithoutBinary(t *testing.T) {
-	f := newFixture(t)
-	var sessions, tasks atomic.Int32
-	opts := f.options(fleetSnap(t, 15, 40, 30, 97))
-	opts.DisableResume = true
-	opts.resolveBinary = noCodex(&sessions, &tasks)
-	f.bootWith(t, opts)
-	waitFor(t, "usage fetched", func() bool { return f.fetchCount() >= 1 })
-
-	var got claudia.Provider
-	prev := daemonNewTask
-	daemonNewTask = func(cfg claudia.TaskConfig) *claudia.Task {
-		got = cfg.Provider
-		return claudia.NewStubTask(cfg, &claudia.StubTaskOps{Run: func(context.Context, claudia.StubTaskRun) (<-chan claudia.TaskEvent, error) {
-			ch := make(chan claudia.TaskEvent, 1)
-			ch <- claudia.TaskEvent{Type: claudia.TaskEventResult, Content: "pong"}
-			close(ch)
-			return ch, nil
-		}})
-	}
-	t.Cleanup(func() { daemonNewTask = prev })
-
-	ch, err := claudia.RunBrokerTask(context.Background(), "ping", claudia.TaskConfig{PickByRemaining: true, WorkDir: t.TempDir()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for range ch {
-	}
-	if got != claudia.ProviderGrok {
-		t.Fatalf("picked %q, want grok (codex is fullest but has no binary)", got)
-	}
-	if tasks.Load() == 0 {
-		t.Fatal("a task pick must check the Task surface")
 	}
 }
 
@@ -105,37 +64,6 @@ func TestGrantPickByRemainingSkipsProviderWithoutBinary(t *testing.T) {
 	}
 	if sessions.Load() == 0 {
 		t.Fatal("a grant pick must check the Session surface")
-	}
-}
-
-// When the only providers with room cannot start, the refusal says so
-// instead of a bare plan_exhausted, and nothing spawns.
-func TestTaskPickByRemainingNamesExcludedProviders(t *testing.T) {
-	f := newFixture(t)
-	var sessions, tasks atomic.Int32
-	opts := f.options(fleetSnap(t, 0, 0, 0, 97))
-	opts.DisableResume = true
-	opts.resolveBinary = noCodex(&sessions, &tasks)
-	f.bootWith(t, opts)
-	waitFor(t, "usage fetched", func() bool { return f.fetchCount() >= 1 })
-
-	var spawned atomic.Int32
-	prev := daemonNewTask
-	daemonNewTask = func(cfg claudia.TaskConfig) *claudia.Task {
-		spawned.Add(1)
-		return claudia.NewStubTask(cfg, nil)
-	}
-	t.Cleanup(func() { daemonNewTask = prev })
-
-	_, err := claudia.RunBrokerTask(context.Background(), "ping", claudia.TaskConfig{PickByRemaining: true, WorkDir: t.TempDir()})
-	if !errors.Is(err, claudia.ErrPlanExhausted) {
-		t.Fatalf("err = %v, want plan_exhausted", err)
-	}
-	if !strings.Contains(err.Error(), "excluded (binary_not_found): codex") {
-		t.Fatalf("refusal does not name the excluded provider: %v", err)
-	}
-	if spawned.Load() != 0 {
-		t.Fatalf("spawned %d tasks", spawned.Load())
 	}
 }
 

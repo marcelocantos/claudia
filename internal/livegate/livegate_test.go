@@ -89,7 +89,7 @@ func TestLiveTargetIsWhatMakeRuns(t *testing.T) {
 	}
 	// And each name the recipe spells survives as an alternative of its own.
 	alts := lt.Alternatives()
-	for _, want := range []string{"TestCrashSurvival$", "TestRewindSessionLive", "TestPoolCrashSurvival$", "TestGrokTaskRunSmoke"} {
+	for _, want := range []string{"TestCrashSurvival$", "TestRewindSessionLive", "TestPoolCrashSurvival$", "TestGrokSessionLiveSmoke"} {
 		if !slices.Contains(alts, want) {
 			t.Errorf("%s is not an alternative of its own in %q", want, alts)
 		}
@@ -154,16 +154,16 @@ func TestBrandNewProviderLiveSmoke(t *testing.T) {
 	t.Run("wired but no row in AGENTS.md", func(t *testing.T) {
 		wired := c
 		wired.Live = append(append([]Test{}, c.Live...), Test{
-			Name: "TestTaskRunSmokeExtra", Pkg: ".", File: "extra_test.go", Line: 1,
+			Name: "TestAgentReadinessSmokeExtra", Pkg: ".", File: "extra_test.go", Line: 1,
 			Gates: []string{"CLAUDIA_LIVE"},
 		})
 		// The -run expression matches it by prefix, as go test would, so the
 		// only thing missing is the row an agent would go looking for.
 		vs := Check(wired, lt, agents, x, reg)
-		if !mentions(vs, "TestTaskRunSmokeExtra", "AGENTS.md") {
+		if !mentions(vs, "TestAgentReadinessSmokeExtra", "AGENTS.md") {
 			t.Errorf("a live test with no AGENTS.md row must be reported; got:\n%s", join(vs))
 		}
-		if mentions(vs, "TestTaskRunSmokeExtra", "make live") {
+		if mentions(vs, "TestAgentReadinessSmokeExtra", "make live") {
 			t.Errorf("that test IS reachable from make live; the check said otherwise:\n%s", join(vs))
 		}
 	})
@@ -171,11 +171,11 @@ func TestBrandNewProviderLiveSmoke(t *testing.T) {
 	t.Run("named in make live but in an unlisted package", func(t *testing.T) {
 		far := c
 		far.Live = append(append([]Test{}, c.Live...), Test{
-			Name: "TestTaskRunSmoke", Pkg: "someplace/else", File: "someplace/else/x_test.go", Line: 1,
+			Name: "TestAgentReadinessSmoke", Pkg: "someplace/else", File: "someplace/else/x_test.go", Line: 1,
 			Gates: []string{"CLAUDIA_LIVE"},
 		})
 		narrowed := LiveTarget{Run: lt.Run, Pkgs: []string{".", "./daemon/"}}
-		if !mentions(Check(far, narrowed, agents, x, reg), "TestTaskRunSmoke", "does not list its package") {
+		if !mentions(Check(far, narrowed, agents, x, reg), "TestAgentReadinessSmoke", "does not list its package") {
 			t.Error("a live test outside the recipe's packages is unreachable however well it is named")
 		}
 	})
@@ -191,9 +191,9 @@ func TestBrandNewProviderLiveSmoke(t *testing.T) {
 
 	t.Run("exclusion that is no longer needed", func(t *testing.T) {
 		stale := Exclusions{Exclusions: append(append([]Exclusion{}, x.Exclusions...), Exclusion{
-			Test: "TestTaskRunSmoke", Waives: []string{ObligationMakeLive}, Reason: "it used to be expensive",
+			Test: "TestAgentReadinessSmoke", Waives: []string{ObligationMakeLive}, Reason: "it used to be expensive",
 		})}
-		if !mentions(Check(c, lt, agents, stale, reg), "TestTaskRunSmoke", "Drop the exclusion") {
+		if !mentions(Check(c, lt, agents, stale, reg), "TestAgentReadinessSmoke", "Drop the exclusion") {
 			t.Error("an exclusion the repo has outgrown must be reported, or the list rots")
 		}
 	})
@@ -425,7 +425,7 @@ func TestLiveGateCensusReadsTheAwkwardForms(t *testing.T) {
 			"gate named through a package constant, and no \"Live\" in the test's name"},
 		{"TestBrokerReclaimLiveBackends", "CLAUDIA_GROK_LIVE",
 			"gate is a field of a table-driven case, unresolvable without type information"},
-		{"TestLiveCodexTaskRun", "CLAUDIA_CODEX_LIVE",
+		{"TestT865LiveNonBrokerCannotRead", "CLAUDIA_OMP_LIVE",
 			"lives in a sub-package the live recipe once did not list"},
 		{"TestT96MeasureSilenceGrok", "CLAUDIA_GROK_LIVE",
 			"whole body is one call to a helper, with the gate passed as an argument"},

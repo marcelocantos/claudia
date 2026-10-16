@@ -400,7 +400,7 @@ func TestResolveIdenticalAcrossDaemonAndCache(t *testing.T) {
 		{Provider: claudia.ProviderGrok, Status: claudia.PlanUsageAvailable, Windows: []claudia.PlanWindow{{Name: claudia.PlanWindowWeekly, RemainingPercent: &high}}},
 		{Provider: claudia.ProviderCodex, Status: claudia.PlanUsageUnavailable, Reason: "signed out"},
 	}
-	pred := claudia.ModelPredicates{Mode: claudia.CapabilityTask, PreferPlan: true, PreferProvider: claudia.ProviderClaude}
+	pred := claudia.ModelPredicates{Mode: claudia.CapabilitySession, PreferPlan: true, PreferProvider: claudia.ProviderClaude}
 
 	// Daemon branch: the socket answers with the daemon's snapshot.
 	f := newFixture(t)
@@ -669,9 +669,9 @@ func TestCarriesTaskRawLogClient(t *testing.T) {
 		return
 	}
 	var lines []string
-	brokered := claudia.NewTask(claudia.TaskConfig{ID: "brokered", WorkDir: t.TempDir(), RequireBroker: true})
+	brokered := claudia.NewTask(claudia.TaskConfig{Provider: claudia.ProviderOllama, ID: "brokered", WorkDir: t.TempDir(), RequireBroker: true})
 	brokered.SetRawLog(func(line []byte) { lines = append(lines, string(line)) })
-	for _, task := range []*claudia.Task{brokered, claudia.NewTask(claudia.TaskConfig{ID: "plain", WorkDir: t.TempDir(), RequireBroker: true})} {
+	for _, task := range []*claudia.Task{brokered, claudia.NewTask(claudia.TaskConfig{Provider: claudia.ProviderOllama, ID: "plain", WorkDir: t.TempDir(), RequireBroker: true})} {
 		ch, err := task.Run(context.Background(), "go")
 		if err != nil {
 			t.Fatal(err)

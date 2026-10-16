@@ -218,7 +218,7 @@ var providerCapabilityClaims = map[Provider]map[Capability]capabilityClaim{
 		},
 	},
 	ProviderClaude: {
-		CapabilityTask:             {status: CapabilitySupported},
+		CapabilityTask:             {status: CapabilityUnsupported, reason: "CLI Task transport removed; no OMP Task replacement (T192; T190)"},
 		CapabilitySession:          {status: CapabilitySupported},
 		CapabilityResume:           {status: CapabilitySupported},
 		CapabilityRewind:           {status: CapabilitySupported},
@@ -241,13 +241,13 @@ var providerCapabilityClaims = map[Provider]map[Capability]capabilityClaim{
 		CapabilityMCPTools:    {status: CapabilitySupported},
 	},
 	ProviderCodex: {
-		CapabilityTask:    {status: CapabilitySupported},
+		CapabilityTask:    {status: CapabilityUnsupported, reason: "CLI Task transport removed; no OMP Task replacement (T192; T190)"},
 		CapabilityResume:  {status: CapabilitySupported},
 		CapabilitySession: {status: CapabilitySupported},
 		CapabilityRewind:  {status: CapabilityUnsupported, reason: codexRewindReason},
 		CapabilityCost: {
 			status: CapabilityUnsupported,
-			reason: "codex exec --json reports token usage but no monetary cost; Usage.CostUSD stays zero",
+			reason: "the legacy Codex Session transport reports token usage but no monetary cost",
 		},
 		CapabilityTmuxAttach: {
 			status: CapabilityUnsupported,
@@ -284,7 +284,7 @@ var providerCapabilityClaims = map[Provider]map[Capability]capabilityClaim{
 		CapabilityMCPTools: {status: CapabilitySupported},
 	},
 	ProviderGrok: {
-		CapabilityTask:    {status: CapabilitySupported},
+		CapabilityTask:    {status: CapabilityUnsupported, reason: "CLI Task transport removed; no OMP Task replacement (T192; T190)"},
 		CapabilityResume:  {status: CapabilitySupported},
 		CapabilitySession: {status: CapabilitySupported},
 		CapabilityRewind:  {status: CapabilityUnsupported, reason: grokRewindReason},
@@ -302,7 +302,7 @@ var providerCapabilityClaims = map[Provider]map[Capability]capabilityClaim{
 		},
 		CapabilityPermissionMode: {
 			status: CapabilityUnsupported,
-			reason: "Grok Task mode hardcodes --permission-mode bypassPermissions; Claude PermissionMode values are not mapped",
+			reason: "the legacy Grok Session transport does not map Claude PermissionMode values",
 		},
 		CapabilityToolRestrictions: {status: CapabilityUnsupported, reason: grokToolRestrictionsReason},
 		CapabilityImageInput: {
@@ -325,7 +325,7 @@ var providerCapabilityClaims = map[Provider]map[Capability]capabilityClaim{
 		CapabilityMCPTools:    {status: CapabilitySupported},
 	},
 	ProviderCursor: {
-		CapabilityTask:    {status: CapabilitySupported},
+		CapabilityTask:    {status: CapabilityUnsupported, reason: "CLI Task transport removed; no OMP Task replacement (T192; T190)"},
 		CapabilityResume:  {status: CapabilitySupported},
 		CapabilitySession: {status: CapabilitySupported},
 		CapabilityRewind:  {status: CapabilityUnsupported, reason: cursorRewindReason},
@@ -335,11 +335,11 @@ var providerCapabilityClaims = map[Provider]map[Capability]capabilityClaim{
 		},
 		CapabilityTmuxAttach: {
 			status: CapabilityUnsupported,
-			reason: "Cursor ACP/Task run process-local; there is no tmux window to attach",
+			reason: "Cursor ACP runs process-local; there is no tmux window to attach",
 		},
 		CapabilityTerminalLog: {
 			status: CapabilityUnsupported,
-			reason: "Cursor ACP/Task are JSON streams, not a PTY, so there are no rendered terminal bytes to log",
+			reason: "Cursor ACP carries JSON streams, not a PTY, so there are no rendered terminal bytes to log",
 		},
 		CapabilityPermissionMode: {
 			status: CapabilityUnsupported,
@@ -437,7 +437,7 @@ var providerCapabilityClaims = map[Provider]map[Capability]capabilityClaim{
 const (
 	codexRewindReason = "Codex rewind requires a public app-server fork/resume contract; private transcript truncation is forbidden"
 	//nolint:lll // one sentence, kept whole for the error message.
-	codexToolRestrictionsReason = "codex exec has no per-tool disallow flag; running the task would silently ignore DisallowTools and leave every tool enabled"
+	codexToolRestrictionsReason = "the legacy Codex Session transport has no proven per-tool disallow translation"
 	grokRewindReason            = "Grok rewind requires a public ACP/session API; private session-file truncation is forbidden"
 	// Unlike Codex, the Grok CLI is not missing the machinery: `grok
 	// --deny <RULE>` gates tool invocations and `grok --disallowed-tools
@@ -445,11 +445,10 @@ const (
 	// missing is a translation claudia can stand behind, so the reason
 	// says so rather than claiming a gap in Grok that does not exist.
 	//nolint:lll // one sentence, kept whole for the error message.
-	grokToolRestrictionsReason = "grok has --deny permission rules and --disallowed-tools toolset removal, but claudia translates DisallowTools into neither: Task hardcodes --permission-mode bypassPermissions, which grok resolves by appending a catch-all allow rule, and grok accepts tool names it does not recognise without complaint, so a name claudia failed to translate would be dropped exactly as silently as it is dropped now"
+	grokToolRestrictionsReason = "grok has --deny permission rules and --disallowed-tools toolset removal, but the legacy Session transport has no proven DisallowTools translation"
 	//nolint:lll // one sentence, kept whole for the error message.
-	grokToolRestrictionsUnwiredReason = "the Grok tool_restrictions claim was flipped to supported, but grokTaskArgs still emits no --deny or --disallowed-tools argument, so the restriction would be dropped; wire the translation before changing the claim"
-	bedrockSessionReason              = "Bedrock v1 is Task-only (ConverseStream); Session/tmux is not supported"
-	bedrockRewindReason               = "Bedrock v1 is Task-only and has no Session transcript to rewind"
+	bedrockSessionReason = "Bedrock v1 is Task-only (ConverseStream); Session/tmux is not supported"
+	bedrockRewindReason  = "Bedrock v1 is Task-only and has no Session transcript to rewind"
 	// SandboxMode and ApprovalPolicy name `codex exec` flags. Every other
 	// provider used to take them, drop them on the floor and run anyway —
 	// a caller who asked for a read-only sandbox got an unrestricted one
@@ -457,7 +456,7 @@ const (
 	// isolation story; it claims claudia has not proven a translation, so
 	// it refuses rather than pretending.
 	//nolint:lll // one sentence, kept whole for the error message.
-	sandboxPolicyIsCodexOnlyReason = "SandboxMode and ApprovalPolicy are `codex exec` flags with no proven equivalent here; claudia refuses rather than running with the sandbox the caller asked for silently dropped"
+	sandboxPolicyIsCodexOnlyReason = "SandboxMode and ApprovalPolicy are Codex-native settings with no proven equivalent here; claudia refuses rather than running with the sandbox the caller asked for silently dropped"
 	//nolint:lll // one sentence, kept whole for the error message.
 	grokExtraArgsReason = "claudia drives Grok Session over ACP on a fixed `grok agent … stdio`/`serve` command line, so caller argv has nowhere to go"
 	//nolint:lll // one sentence, kept whole for the error message.
@@ -620,7 +619,7 @@ func backendCapabilityNames(caps providerCapabilities) map[Capability]bool {
 
 func claudeProviderCapabilities() providerCapabilities {
 	return providerCapabilities{
-		Task:          true,
+		Task:          false,
 		Session:       true,
 		Resume:        true,
 		Rewind:        true,

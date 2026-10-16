@@ -155,7 +155,7 @@ func aaIntel(t *testing.T) *ModelIntelArgs {
 func TestResolvePurposeQualityPicksCheapestEffortAndGeneration(t *testing.T) {
 	intel := aaIntel(t)
 	got, err := Resolve(context.Background(), ModelPredicates{
-		Mode:       CapabilityTask,
+		Mode:       CapabilitySession,
 		Purpose:    ModelPurposeCoding,
 		Quality:    ModelQualityStandard,
 		PreferPlan: true,
@@ -192,7 +192,7 @@ func TestResolveRedYieldsToSlackThenCost(t *testing.T) {
 		}},
 	}
 	got, err := Resolve(context.Background(), ModelPredicates{
-		Mode: CapabilityTask, Purpose: ModelPurposeCoding, Quality: ModelQualityStandard,
+		Mode: CapabilitySession, Purpose: ModelPurposeCoding, Quality: ModelQualityStandard,
 		PreferPlan: true, Intel: intel, Now: now, Usage: []PlanUsage{hot, ok},
 	})
 	if err != nil {
@@ -206,7 +206,7 @@ func TestResolveRedYieldsToSlackThenCost(t *testing.T) {
 func TestResolvePinMissesFloorFailsClosed(t *testing.T) {
 	intel := aaIntel(t)
 	_, err := Resolve(context.Background(), ModelPredicates{
-		Mode: CapabilityTask, Purpose: ModelPurposeCoding, Quality: ModelQualityFrontier,
+		Mode: CapabilitySession, Purpose: ModelPurposeCoding, Quality: ModelQualityFrontier,
 		Model: "claude-haiku-4-5", Effort: ModelEffortUnspecified,
 		PreferPlan: true, Intel: intel, Usage: []PlanUsage{},
 	})
@@ -216,7 +216,7 @@ func TestResolvePinMissesFloorFailsClosed(t *testing.T) {
 		t.Fatal("haiku must not meet frontier coding")
 	}
 	_, err = Resolve(context.Background(), ModelPredicates{
-		Mode: CapabilityTask, Purpose: ModelPurposeCoding, Quality: ModelQualityFrontier,
+		Mode: CapabilitySession, Purpose: ModelPurposeCoding, Quality: ModelQualityFrontier,
 		Model: "claude-opus-5", Effort: ModelEffortHigh,
 		PreferPlan: true, Intel: intel, Usage: []PlanUsage{},
 	})
@@ -230,7 +230,7 @@ func TestResolveSkillAliasYieldsToGeneralWhenAnalysisMissing(t *testing.T) {
 		{Generation: "grok-4.6", Effort: ModelEffortHigh, Purpose: ModelPurposeGeneral, Value: 80, CostUSD: 0.10},
 	}}
 	got, err := Resolve(context.Background(), ModelPredicates{
-		Mode: CapabilityTask, Skill: ModelPurposeAnalysis, Quality: ModelQualityStandard,
+		Mode: CapabilitySession, Skill: ModelPurposeAnalysis, Quality: ModelQualityStandard,
 		PreferPlan: true, Intel: intel, Usage: []PlanUsage{},
 	})
 	if err != nil {
@@ -246,7 +246,7 @@ func TestResolveSkillAliasYieldsToGeneralWhenAnalysisMissing(t *testing.T) {
 
 func TestResolveFallsBackToGeneralWhenAnalysisHasNoDataAtAll(t *testing.T) {
 	got, err := Resolve(context.Background(), ModelPredicates{
-		Mode: CapabilityTask, Purpose: ModelPurposeAnalysis, Quality: ModelQualityStandard,
+		Mode: CapabilitySession, Purpose: ModelPurposeAnalysis, Quality: ModelQualityStandard,
 		PreferPlan: true, Intel: &ModelIntelArgs{Latest: []ModelObservation{}},
 		PreferProvider: ProviderGrok,
 		Usage:          []PlanUsage{},
@@ -268,7 +268,7 @@ func TestResolveFallsBackToGeneralWhenPurposeSeriesMissing(t *testing.T) {
 		{Generation: "claude-sonnet-5", Effort: ModelEffortHigh, Purpose: ModelPurposeGeneral, Value: 70, CostUSD: 0.20},
 	}}
 	got, err := Resolve(context.Background(), ModelPredicates{
-		Mode: CapabilityTask, Purpose: ModelPurposeAnalysis, Quality: ModelQualityStandard,
+		Mode: CapabilitySession, Purpose: ModelPurposeAnalysis, Quality: ModelQualityStandard,
 		PreferPlan: true, Intel: intel, Usage: []PlanUsage{},
 	})
 	if err != nil {
@@ -301,7 +301,7 @@ func TestResolvePurposePicksBlueCursorMissingFromIntel(t *testing.T) {
 		}
 	}
 	got, err := Resolve(context.Background(), ModelPredicates{
-		Mode: CapabilityTask, Purpose: ModelPurposeAnalysis, Quality: ModelQualityStandard,
+		Mode: CapabilitySession, Purpose: ModelPurposeAnalysis, Quality: ModelQualityStandard,
 		PreferPlan: true, Intel: intel, Now: now,
 		Usage: []PlanUsage{
 			weekly(ProviderClaude, 50, 50),
@@ -326,7 +326,7 @@ func TestResolveDoesNotFallBackWhenPurposeSeriesExists(t *testing.T) {
 		{Generation: "grok-4.6", Effort: ModelEffortHigh, Purpose: ModelPurposeGeneral, Value: 80, CostUSD: 0.10},
 	}}
 	got, err := Resolve(context.Background(), ModelPredicates{
-		Mode: CapabilityTask, Purpose: ModelPurposeAnalysis, Quality: ModelQualityStandard,
+		Mode: CapabilitySession, Purpose: ModelPurposeAnalysis, Quality: ModelQualityStandard,
 		PreferPlan: true, Intel: intel, Usage: []PlanUsage{{
 			Provider: ProviderClaude, Status: PlanUsageAvailable, Reason: "429 rate limited",
 		}},
@@ -344,7 +344,7 @@ func TestResolveDoesNotFallBackWhenPurposeSeriesExists(t *testing.T) {
 
 func TestResolveCatalogPathUnchangedWithoutPurpose(t *testing.T) {
 	got, err := Resolve(context.Background(), ModelPredicates{
-		Mode: CapabilityTask, Quality: ModelQualityStandard, PreferPlan: true,
+		Mode: CapabilitySession, Quality: ModelQualityStandard, PreferPlan: true,
 		PreferProvider: ProviderClaude, Usage: []PlanUsage{},
 	})
 	if err != nil {

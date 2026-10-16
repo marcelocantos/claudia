@@ -131,7 +131,9 @@ release it claims to describe.
 | `LookupChain` | `LookupChain(sessionID string) (chainID string, sessionIDs []string, err error)` | Needs review |
 | `NewMCPProxy` | `NewMCPProxy(args *MCPProxyArgs) (*MCPProxy, error)` | Fluid |
 | `NewRegistry` | `NewRegistry(path string) (*Registry, error)` | Stable |
-| `NewTask` | `NewTask(cfg TaskConfig) *Task` | Stable |
+| `NewTask` | `NewTask(cfg TaskConfig) *Task` — Bedrock/Ollama only; removed CLI providers refuse on Run | Stable |
+| `ErrTaskCLIRemoved` | Named removed-transport sentinel, shared with `codex.ErrTaskCLIRemoved` | Stable |
+| `TaskProviderError` | `(provider Provider) error` — reports unavailable Task transport before dispatch | Fluid |
 | `ParseCursorTaskLine` | `ParseCursorTaskLine(line []byte) []TaskEvent` — Cursor `--print` stream-json; camelCase usage | Fluid |
 | `ParseGoalStatus` | `ParseGoalStatus(text string) (string, bool)` — whole-line `GOAL_STATUS: complete` or `blocked` | Fluid |
 | `ParseTaskLine` | `ParseTaskLine(line []byte) []TaskEvent` | Stable |
@@ -240,11 +242,10 @@ release it claims to describe.
 
 ### Package `github.com/marcelocantos/claudia/codex`
 
-New public package as of v0.21.0. It is the Codex Task backend in its own
-right: a caller can drive `codex exec --json` through it directly, without
-going via `claudia.Task` and `ProviderCodex`. The whole package is **Fluid**
-— it exists to be exercised, and the duplication between `codex.Task` and
-`claudia.Task` is unresolved (see § Gaps).
+The separate Codex CLI Task launcher was removed in T192. Its constructors
+and methods remain as inert compatibility handles; Run returns
+ErrTaskCLIRemoved without credential discovery or execution. Historical
+parsers and error types remain available.
 
 #### Types
 
@@ -342,7 +343,7 @@ public packages are listed; `internal/` variables are not surface.
 | `XDG_STATE_HOME` | Root for claudia's own state — terminal logs (`<state>/claudia/terms/…`), the chain sidecar, and the Grok connect-mode record. Defaults to `~/.local/state`. | Needs review |
 | `AWS_PROFILE` | Shared-config profile for the `ProviderBedrock` credential chain. | Fluid |
 | `AWS_REGION` | Region for `ProviderBedrock`, below `CLAUDIA_BEDROCK_REGION`. | Fluid |
-| `CLAUDE_BIN` | Absolute path or PATH-resolvable name of the `claude` executable. Honoured by both Task and Session/Pool spawn paths. Falls back to `exec.LookPath("claude")` then to known install locations (`~/.local/bin/claude`, `~/.claude/local/claude`, `/opt/homebrew/bin/claude`, `/usr/local/bin/claude`). | Stable |
+| `CLAUDE_BIN` | Absolute path or PATH-resolvable name of the `claude` executable. Honoured by legacy Session/Pool spawn paths. Falls back to `exec.LookPath("claude")` then to known install locations (`~/.local/bin/claude`, `~/.claude/local/claude`, `/opt/homebrew/bin/claude`, `/usr/local/bin/claude`). | Stable |
 | `CLAUDIA_BEDROCK_MODEL_ID` | Bedrock model id for `ProviderBedrock` when `TaskConfig.Model` is empty. | Fluid |
 | `CLAUDIA_BEDROCK_REGION` | Highest-priority region for `ProviderBedrock`. | Fluid |
 | `CLAUDIA_CLAUDE_OAUTH_TOKEN` | Overrides the keychain lookup for `QueryPlanUsage(ProviderClaude)`. Below `PlanUsageArgs.ClaudeAccessToken`. | Fluid |
@@ -354,11 +355,11 @@ public packages are listed; `internal/` variables are not surface.
 | `CLAUDIA_GROK_USAGE` | Opts into the undocumented Grok billing endpoint behind `QueryPlanUsage(ProviderGrok)`. Off by default because the surface is private and unversioned. | Fluid |
 | `CLAUDIA_OLLAMA_ENDPOINT` | Ollama `/api/generate` base URL for `ProviderOllama` when not default. Empty uses `DefaultOllamaEndpoint` (`http://127.0.0.1:11434`). | Fluid |
 | `CLAUDIA_OLLAMA_MODEL` | Ollama model for `ProviderOllama` when `TaskConfig.Model` is empty. Required if Model is also empty. | Fluid |
-| `CODEX_BIN` | Absolute path or PATH-resolvable name of the `codex` executable. Honoured by Codex Task and Session spawn. Falls back to `exec.LookPath("codex")` then to known install locations including `/Applications/ChatGPT.app/Contents/Resources/codex`. | Fluid |
+| `CODEX_BIN` | Absolute path or PATH-resolvable name of the `codex` executable. Honoured by legacy Codex Session spawn. Falls back to `exec.LookPath("codex")` then to known install locations including `/Applications/ChatGPT.app/Contents/Resources/codex`. | Fluid |
 | `CODEX_HOME` | When `Config.MCPServers` or `Config.MCPExclusive` is set for Codex Session, claudia points Codex at a process-private home so only configured MCP servers attach. The home persists under `$XDG_STATE_HOME/claudia/codex-homes/<sessionID>` so Stop/bounce can `thread/resume`. | Fluid |
-| `CURSOR_API_KEY` | Cursor Agent CLI API key; alternative to `agent login` for Session/Task auth. | Fluid |
-| `CURSOR_BIN` | Absolute path or PATH-resolvable name of the Cursor Agent CLI (`cursor-agent` / `agent`). Honoured by Cursor Task and Session spawn. | Fluid |
-| `GROK_BIN` | Absolute path or PATH-resolvable name of the Grok Build CLI (`grok`). Honoured by Grok Task and Session spawn. Falls back to `exec.LookPath("grok")` then to known install locations including `~/.grok/bin/grok`. Not related to package `claudia/grok` (Realtime voice). | Fluid |
+| `CURSOR_API_KEY` | Cursor Agent CLI API key; alternative to `agent login` for legacy Session auth. | Fluid |
+| `CURSOR_BIN` | Absolute path or PATH-resolvable name of the Cursor Agent CLI (`cursor-agent` / `agent`). Honoured by legacy Cursor Session spawn. | Fluid |
+| `GROK_BIN` | Absolute path or PATH-resolvable name of the Grok Build CLI (`grok`). Honoured by legacy Grok Session spawn. Falls back to `exec.LookPath("grok")` then to known install locations including `~/.grok/bin/grok`. Not related to package `claudia/grok` (Realtime voice). | Fluid |
 | `GROK_HOME` | When `Config.MCPExclusive` is set for Grok Session, claudia points Grok at a process-private temp home (compat MCP discovery off). | Fluid |
 | `OPENAI_API_KEY` | Read only for *detection* by `PreflightCodexAuth`: when set, the ChatGPT-subscription assertion fails (`SubscriptionOK=false`) because Codex would bill per token. claudia never sets or forwards it. | Fluid |
 
@@ -380,7 +381,7 @@ capability rather than claiming one — silence must never read as support.
 
 | Capability | Claude | Codex | Grok | Bedrock | Ollama |
 |---|---|---|---|---|---|
-| `CapabilityTask` | Supported | Supported | Supported | Supported | Supported |
+| `CapabilityTask` | Removed | Removed | Removed | Supported | Supported |
 | `CapabilitySession` | Supported | Supported | Supported | Unsupported | Unsupported |
 | `CapabilityResume` | Supported | Supported | Supported | Unsupported | Unsupported |
 | `CapabilityRewind` | Supported | Unsupported | Unsupported | Unsupported | Unsupported |
@@ -431,10 +432,9 @@ Endpoint and model resolve from `TaskConfig.Model` first, then
 
 ### Codex provider surface
 
-Codex support is pre-1.0 and intentionally capability-gated. The stable
-surface today is Task mode through `codex exec --json`, selected by
-`TaskConfig.Provider = ProviderCodex`. Token usage maps into `Usage`,
-but Codex Task mode does not currently report cost in `CostUSD`.
+Codex CLI Task execution has been removed (T192). Both public Task
+constructors preserve source compatibility, but Run always refuses with
+ErrTaskCLIRemoved. No OMP Task replacement is provided (T190).
 
 Persistent Codex Session mode uses `codex app-server` JSON-RPC
 (`Start` / `Send` / `WaitForResponse` / `Interrupt`). `SessionID` is
@@ -446,18 +446,18 @@ The per-capability rationale claudia publishes for Codex:
 
 | Capability | Codex | Rationale |
 |---|---|---|
-| `CapabilityTask` | Supported | `codex exec --json` |
-| `CapabilityResume` | Supported | `codex exec resume --json` |
+| `CapabilityTask` | Unsupported | CLI Task removed (T192) |
+| `CapabilityResume` | Supported | Session resume |
 | `CapabilitySession` | Supported | `codex app-server` thread/turn JSON-RPC |
 | `CapabilityRewind` | Unsupported | needs a public fork/resume contract; private transcript truncation is forbidden |
 | `CapabilityCost` | Unsupported | tokens are reported, monetary cost is not; `CostUSD` stays zero |
 | `CapabilityTmuxAttach` | Unsupported | claudia does not drive the Codex TUI in tmux |
-| `CapabilityTerminalLog` | Unsupported | Task mode consumes JSON, not a PTY |
+| `CapabilityTerminalLog` | Unsupported | Session transport consumes JSON, not a PTY |
 | `CapabilityPermissionMode` | Unsupported | Codex sandbox/approval flags are Codex-native, not a Claude `PermissionMode` mapping |
-| `CapabilityToolRestrictions` | Unsupported | `codex exec` has no per-tool disallow flag |
+| `CapabilityToolRestrictions` | Unsupported | legacy Session transport has no proven per-tool disallow translation |
 | `CapabilityImageInput` | Unsupported | claudia has no image-attachment API on any provider |
 | `CapabilityWebSearch` | Unsupported | claudia does not bind Codex's `--search`; the Codex default applies |
-| `CapabilitySandboxPolicy` | Supported | `TaskConfig.SandboxMode` / `ApprovalPolicy` and Session `Config.SandboxMode` reach Codex as Codex-native flags |
+| `CapabilitySandboxPolicy` | Supported | Session `Config.SandboxMode` reaches Codex as Codex-native policy |
 | `CapabilityExtraArgs` | Unsupported | Codex Session speaks typed app-server fields; `Config.ExtraArgs` have nowhere to go |
 
 Billing is asserted, not assumed. `PreflightCodexAuth` reads
@@ -472,22 +472,11 @@ Codex sandbox and approval fields are passed to Codex as Codex flags.
 They are not treated as equivalent to Claude `PermissionMode` or
 `DisallowTools` until tests prove a narrower mapping.
 
-Consequently `Task.Run` **refuses** a Codex task that carries
-`TaskConfig.DisallowTools`, returning `*CapabilityError` with
-`Capability == CapabilityToolRestrictions` before any process is
-spawned. Running it would hand the caller a fully-armed agent while
-they believe the tools were removed. `BaseDisallowedTools` names Claude
-Code tools (`Agent`, `TeamCreate`, …) that do not exist in `codex
-exec`, so it is vacuous there and does not by itself block a task.
-
 ### Grok Build CLI provider surface
 
 Grok Build CLI support is pre-1.0 and capability-gated.
 
-**Task mode** uses `grok -p … --output-format streaming-json`
-(`TaskConfig.Provider = ProviderGrok`). Session id is taken from the
-terminal `end.sessionId` field; headless streaming-json does not map
-tool_use into `TaskEvent`. Cost is not reported in `CostUSD`.
+**CLI Task mode is removed.** Run returns `ErrTaskCLIRemoved`.
 
 **Session mode** uses ACP over `grok agent --always-approve stdio`
 (`Config.Provider = ProviderGrok`). `Send` / `WaitForResponse` /
@@ -499,22 +488,9 @@ failure and never mints a replacement id, including when MCP is
 configured. `MCPConfig` does not skip load. Without `RequireResume`,
 an unmaterialized id may fall through to `session/new`.
 
-**Permission mode and tool restrictions are both unsupported, and
-`Task.Run` refuses rather than drops.** Task mode hardcodes
-`--permission-mode bypassPermissions`; `Config.PermissionMode` is not
-mapped onto it. A Grok task carrying `TaskConfig.DisallowTools` is
-refused before any process is spawned, returning `*CapabilityError`
-with `Capability == CapabilityToolRestrictions`.
-
-Unlike `codex exec`, the refusal is not for want of a mechanism:
-`grok --deny <RULE>` gates tool invocations and `grok
---disallowed-tools <IDS>` removes built-in tools from the toolset.
-claudia translates `DisallowTools` into neither. The hardcoded
-`bypassPermissions` resolves to a catch-all allow rule, and `grok`
-accepts unrecognised tool names silently, so an untested translation
-would reinstate the silent drop under a `CapabilitySupported` claim.
-Until the translation is wired and proven, the claim stays
-`CapabilityUnsupported` and the run is refused.
+The legacy Grok Session transport does not map Claude permission settings
+or DisallowTools. It refuses unsupported restrictions rather than ignoring
+them. This does not describe the sidecar's shared tool policy.
 
 `BaseDisallowedTools` is applied on Claude only. It is never passed to
 Grok, so nothing removes `Agent`, `TeamCreate` and friends from a Grok

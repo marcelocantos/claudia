@@ -11,8 +11,7 @@ import (
 
 // TestHermeticTestsHaveNoWallClockDeadline is 🎯T33's guard widened to the
 // whole module (🎯T97): the root package, where most of claudia's hermetic
-// tests live, and every other package the go command compiles. codex/ keeps
-// its own copy because 🎯T33's mutation evidence runs there.
+// tests live, and every other package the go command compiles.
 //
 // 🎯T33 wrote it for codex/ alone and deliberately stopped there: the root
 // package then carried 69 of these clocks, and not all of them were defects,

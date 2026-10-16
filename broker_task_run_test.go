@@ -14,7 +14,7 @@ import (
 )
 
 // TestRunBrokerTaskDoesNotSpawnInProcess: with no daemon, RunBrokerTask
-// returns ErrNoBroker and does not exec a provider. NewTask would.
+// returns ErrTaskCLIRemoved before contacting a daemon or provider.
 func TestRunBrokerTaskDoesNotSpawnInProcess(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "spawned")
 	bin := filepath.Join(t.TempDir(), "claude")
@@ -26,8 +26,8 @@ func TestRunBrokerTaskDoesNotSpawnInProcess(t *testing.T) {
 	t.Setenv(broker.NoBrokerEnv, "1")
 
 	_, err := RunBrokerTask(context.Background(), "ping", TaskConfig{WorkDir: t.TempDir()})
-	if !errors.Is(err, ErrNoBroker) {
-		t.Fatalf("err = %v, want ErrNoBroker", err)
+	if !errors.Is(err, ErrTaskCLIRemoved) {
+		t.Fatalf("err = %v, want ErrTaskCLIRemoved", err)
 	}
 	if _, err := os.Stat(marker); err == nil {
 		t.Fatal("RunBrokerTask spawned a provider in-process")
@@ -36,8 +36,8 @@ func TestRunBrokerTaskDoesNotSpawnInProcess(t *testing.T) {
 	t.Setenv(broker.NoBrokerEnv, "")
 	t.Setenv(broker.SocketPathEnv, filepath.Join(t.TempDir(), "missing.sock"))
 	_, err = RunBrokerTask(context.Background(), "ping", TaskConfig{WorkDir: t.TempDir()})
-	if !errors.Is(err, ErrNoBroker) {
-		t.Fatalf("missing socket: %v, want ErrNoBroker", err)
+	if !errors.Is(err, ErrTaskCLIRemoved) {
+		t.Fatalf("missing socket: %v, want ErrTaskCLIRemoved", err)
 	}
 	if _, err := os.Stat(marker); err == nil {
 		t.Fatal("RunBrokerTask spawned a provider when the socket was absent")
@@ -56,8 +56,8 @@ func TestPickByRemainingDoesNotSpawnWithoutBroker(t *testing.T) {
 
 	task := NewTask(TaskConfig{PickByRemaining: true, WorkDir: t.TempDir()})
 	_, err := task.Run(context.Background(), "ping")
-	if !errors.Is(err, ErrNoBroker) {
-		t.Fatalf("err = %v, want ErrNoBroker", err)
+	if !errors.Is(err, ErrTaskCLIRemoved) {
+		t.Fatalf("err = %v, want ErrTaskCLIRemoved", err)
 	}
 	if _, err := os.Stat(marker); err == nil {
 		t.Fatal("pick by remaining spawned a provider with no broker")

@@ -1487,6 +1487,16 @@ func (d *Daemon) handleTaskRun(c *broker.ClientConn, req *broker.Request) {
 		_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeMalformed, Field: "task", Msg: err.Error()})
 		return
 	}
+	// Reject before provider selection, capacity reads, or constructing a task.
+	// Older clients can still send task_run directly after the SDK retires it.
+	if err := claudia.TaskProviderError(cfg.Provider); err != nil {
+		code := broker.CodeUnsupportedValue
+		if errors.Is(err, claudia.ErrTaskCLIRemoved) {
+			code = broker.CodeTaskCLIRemoved
+		}
+		_ = c.Fail(req.ID, &broker.ProtocolError{Code: code, Field: "task.provider", Value: string(cfg.Provider), Msg: err.Error()})
+		return
+	}
 	if req.Type == broker.TypeTaskRunRestricted && cfg.ToolPolicy == nil {
 		_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeMalformed, Field: "task.tool_policy", Msg: "restricted task requires tool_policy"})
 		return
@@ -1505,31 +1515,11 @@ func (d *Daemon) handleTaskRun(c *broker.ClientConn, req *broker.Request) {
 			return
 		}
 	}
-	var pickedRemaining *float64
-	if req.TaskRun.Pick != "" && req.TaskRun.Pick != claudia.PickRemaining {
-		_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeUnsupportedValue, Field: "pick", Value: req.TaskRun.Pick,
-			Msg: `pick must be "remaining"`})
+	if cfg.PickByRemaining || req.TaskRun.Pick != "" {
+		_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeTaskCLIRemoved,
+			Field: "pick", Msg: claudia.ErrTaskCLIRemoved.Error()})
 		return
 	}
-	if cfg.PickByRemaining || req.TaskRun.Pick == claudia.PickRemaining {
-		if cfg.Provider != "" {
-			_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeUnsupportedValue, Field: "provider", Value: string(cfg.Provider),
-				Msg: "pick remaining chooses the provider; do not also set one"})
-			return
-		}
-		choice, err := d.pickByRemaining(false)
-		if err != nil {
-			_ = c.Fail(req.ID, err)
-			return
-		}
-		cfg.Provider = choice.Provider
-		cfg.PickByRemaining = false
-		rem := choice.RemainingPercent
-		pickedRemaining = &rem
-	}
-	// A broker task seat writes its workdir on every provider: Codex's
-	// read-only default is not the seat contract (2026-10-12).
-	claudia.ApplyBrokerTaskWriteDefault(&cfg)
 	// Admission reads the same snapshot `claudia broker usage` prints, and
 	// refreshes it when the TTL has elapsed, before any provider process.
 	if err := d.admitTask(cfg.Provider); err != nil {
@@ -1559,7 +1549,7 @@ func (d *Daemon) handleTaskRun(c *broker.ClientConn, req *broker.Request) {
 	d.tasks[runID] = &brokerDaemonTask{task: task, cancel: cancel, owner: c}
 	d.mu.Unlock()
 	_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeTaskStarted, TaskStarted: &broker.TaskStartedResponse{
-		RunID: runID, Provider: broker.Provider(cfg.Provider), RemainingPercent: pickedRemaining,
+		RunID: runID, Provider: broker.Provider(cfg.Provider),
 	}})
 	d.emit(broker.EventMessage{Kind: broker.EventTaskStart, Name: runID, Detail: string(cfg.Provider)})
 	d.wg.Add(1)

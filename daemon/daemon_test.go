@@ -469,19 +469,19 @@ func TestTaskRunStreamsThroughDaemon(t *testing.T) {
 	prompts := make(chan string, 1)
 	prev := daemonNewTask
 	daemonNewTask = func(cfg claudia.TaskConfig) *claudia.Task {
-		if cfg.Provider != claudia.ProviderGrok || cfg.ID != "t-1" {
+		if cfg.Provider != claudia.ProviderOllama || cfg.ID != "t-1" {
 			t.Errorf("daemon task cfg = %+v", cfg)
 		}
 		if cfg.RequireBroker {
 			t.Error("caller-only RequireBroker guard reached the daemon task")
 		}
-		if cfg.ToolPolicy == nil || cfg.ToolPolicy.MaxTurns != 2 || len(cfg.ToolPolicy.Builtins) != 1 || cfg.ToolPolicy.Builtins[0] != "read_file" {
-			t.Errorf("restricted tool policy lost across broker wire: %+v", cfg.ToolPolicy)
+		if cfg.ToolPolicy != nil {
+			t.Errorf("unexpected policy: %+v", cfg.ToolPolicy)
 		}
 		return claudia.NewStubTask(cfg, &claudia.StubTaskOps{Run: func(_ context.Context, run claudia.StubTaskRun) (<-chan claudia.TaskEvent, error) {
 			prompts <- run.Prompt
 			ch := make(chan claudia.TaskEvent, 3)
-			ch <- claudia.TaskEvent{Type: claudia.TaskEventInit, SessionID: "run-sid", Model: "grok-4"}
+			ch <- claudia.TaskEvent{Type: claudia.TaskEventInit, SessionID: "run-sid", Model: "fixture-model"}
 			ch <- claudia.TaskEvent{Type: claudia.TaskEventText, Content: "part"}
 			ch <- claudia.TaskEvent{Type: claudia.TaskEventResult, Content: "final", CostUSD: 0.01, Usage: claudia.Usage{InputTokens: 2}}
 			close(ch)
@@ -514,8 +514,7 @@ func TestBrokerRequiredTaskClient(t *testing.T) {
 	if err := os.Chmod(home, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	task := claudia.NewTask(claudia.TaskConfig{ID: "t-1", Provider: claudia.ProviderGrok, WorkDir: home, RequireBroker: true,
-		ToolPolicy: &claudia.TaskToolPolicy{Builtins: []string{"read_file"}, MaxTurns: 2, HomeDir: home}})
+	task := claudia.NewTask(claudia.TaskConfig{ID: "t-1", Provider: claudia.ProviderOllama, WorkDir: home, RequireBroker: true})
 	ch, err := task.Run(context.Background(), "summarise")
 	if err != nil {
 		t.Fatal(err)
@@ -524,57 +523,11 @@ func TestBrokerRequiredTaskClient(t *testing.T) {
 	for ev := range ch {
 		got = append(got, ev)
 	}
-	if len(got) != 3 || got[2].Content != "final" || got[2].CostUSD != 0.01 || got[0].Model != "grok-4" {
+	if len(got) != 3 || got[2].Content != "final" || got[2].CostUSD != 0.01 || got[0].Model != "fixture-model" {
 		t.Fatalf("events via daemon = %+v", got)
 	}
 	if task.ClaudeID() != "run-sid" || task.LastResult() != "final" {
 		t.Fatalf("task state not recorded: id=%q last=%q", task.ClaudeID(), task.LastResult())
-	}
-}
-
-func TestBackgroundTaskAdmissionRefusesSpentCapacity(t *testing.T) {
-	zero, sixty := 0.0, 60.0
-	for _, tc := range []struct {
-		name     string
-		provider claudia.Provider
-		model    string
-		usage    []claudia.PlanUsage
-	}{
-		{name: "missing usage", provider: claudia.ProviderGrok, model: "grok-4.5"},
-		{name: "spent plan", provider: claudia.ProviderGrok, model: "grok-4.5", usage: []claudia.PlanUsage{{Provider: claudia.ProviderGrok, Status: claudia.PlanUsageAvailable,
-			Windows: []claudia.PlanWindow{{Name: claudia.PlanWindowWeekly, RemainingPercent: &zero}}}}},
-		{name: "spent model", provider: claudia.ProviderClaude, model: "claude-fable-5", usage: []claudia.PlanUsage{{Provider: claudia.ProviderClaude, Status: claudia.PlanUsageAvailable,
-			Windows: []claudia.PlanWindow{{Name: claudia.PlanWindowWeekly, RemainingPercent: &sixty},
-				{Name: claudia.PlanWindowModelWeekly, Model: "fable", RemainingPercent: &zero}}}}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			f := newFixture(t)
-			f.boot(t, tc.usage)
-			conn, err := broker.Dial(f.sock)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer conn.Close()
-			if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
-				t.Fatal(err)
-			}
-			raw, err := claudia.EncodeTaskConfigWire(claudia.TaskConfig{Provider: tc.provider, Model: tc.model,
-				WorkDir: t.TempDir(), ToolPolicy: &claudia.TaskToolPolicy{Builtins: []string{"read_file"}, MaxTurns: 2}})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := conn.WriteRequest(&broker.Request{ID: "sen", Type: broker.TypeTaskRunRestricted,
-				TaskRun: &broker.TaskRunRequest{Task: raw, Prompt: "inspect", RequireBackgroundCapacity: true}}); err != nil {
-				t.Fatal(err)
-			}
-			response, err := conn.ReadResponse()
-			if err != nil {
-				t.Fatal(err)
-			}
-			if response.Type != broker.TypeError || response.ID != "sen" || response.Error.Code != broker.CodePlanExhausted {
-				t.Fatalf("background admission = type %s id %s error %+v", response.Type, response.ID, response.Error)
-			}
-		})
 	}
 }
 
@@ -598,7 +551,7 @@ func TestUsageIsTheHostEvaluator(t *testing.T) {
 		t.Fatalf("consumer reads caused vendor fetches: %d", f.fetchCount())
 	}
 	// Resolve reads the same snapshot.
-	pick, err := claudia.Resolve(context.Background(), claudia.ModelPredicates{Mode: claudia.CapabilityTask, PreferProvider: claudia.ProviderClaude})
+	pick, err := claudia.Resolve(context.Background(), claudia.ModelPredicates{Mode: claudia.CapabilitySession, PreferProvider: claudia.ProviderClaude})
 	if err != nil || pick.Provider != claudia.ProviderClaude {
 		t.Fatalf("Resolve via daemon = %+v, %v", pick, err)
 	}

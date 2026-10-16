@@ -30,8 +30,8 @@ func taskCmd(args []string) error {
 		fmt.Fprintf(fs.Output(), "usage: claudia broker task [--provider P | --pick remaining] [--model M] [--workdir DIR] [--id ID] [--timeout D] [--json] [--prompt TEXT | TEXT...]\n")
 		fs.PrintDefaults()
 	}
-	provider := fs.String("provider", "", "provider: claude, codex, grok, cursor, bedrock, ollama (default claude, unless --pick remaining)")
-	pick := fs.String("pick", "", "remaining: fullest admitted of cursor, grok, claude, codex")
+	provider := fs.String("provider", "", "provider: bedrock or ollama; default/claude/codex/grok/cursor Task transports have been removed")
+	pick := fs.String("pick", "", "retired Task selection; returns Task CLI transport removed")
 	model := fs.String("model", "", "model override")
 	workdir := fs.String("workdir", ".", "working directory the task runs in")
 	id := fs.String("id", "", "task id")
@@ -60,6 +60,9 @@ func taskCmd(args []string) error {
 	pickRemaining, prov, err := resolvePick(*pick, *provider)
 	if err != nil {
 		return fmt.Errorf("task: %w", err)
+	}
+	if err := claudia.TaskProviderError(prov); err != nil {
+		return err
 	}
 	wd, err := claudia.ResolveClientWorkDir(*workdir)
 	if err != nil {
@@ -119,8 +122,13 @@ func taskCmd(args []string) error {
 // taskWireError turns a plan_exhausted refusal into [claudia.ErrPlanExhausted].
 func taskWireError(err error) error {
 	var pe *broker.ProtocolError
-	if errors.As(err, &pe) && pe.Code == broker.CodePlanExhausted {
-		return fmt.Errorf("%w: %s", claudia.ErrPlanExhausted, pe.Error())
+	if errors.As(err, &pe) {
+		switch pe.Code {
+		case broker.CodePlanExhausted:
+			return fmt.Errorf("%w: %s", claudia.ErrPlanExhausted, pe.Error())
+		case broker.CodeTaskCLIRemoved:
+			return fmt.Errorf("%w: %s", claudia.ErrTaskCLIRemoved, pe.Error())
+		}
 	}
 	return err
 }

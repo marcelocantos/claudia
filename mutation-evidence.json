@@ -155,21 +155,27 @@
     {
       "target": "T33",
       "mutation": "restore-wall-clock-deadline",
-      "what": "TestHermeticTaskRunSuccess bounds its run with a 10s context deadline again — the wall-clock bound that let a loaded machine, not the product, decide the verdict",
+      "what": "The surviving Bedrock API Task fixture regains a wall-clock deadline; a loaded host must not decide its assertion.",
       "quoted_by": "0902d19",
-      "package": "./codex",
+      "package": ".",
       "edits": [
         {
-          "file": "codex/task_test.go",
-          "find": "\tctx := t.Context()\n\tevents, err := task.Run(ctx, \"summarize\")\n",
-          "replace": "\tctx, cancel := context.WithTimeout(context.Background(), 10000000000)\n\tdefer cancel()\n\tevents, err := task.Run(ctx, \"summarize\")\n"
+          "file": "bedrock_test.go",
+          "find": "\tctx := t.Context()\n\tch, err := task.Run(ctx, \"Say hello\")\n",
+          "replace": "\tctx, cancel := context.WithTimeout(context.Background(), 10000000000)\n\tdefer cancel()\n\tch, err := task.Run(ctx, \"Say hello\")\n"
         }
       ],
       "tests": [
-        {"name": "TestHermeticTestsHaveNoWallClockDeadline", "expect": "red"},
-        {"name": "TestHermeticTaskRunSuccess", "expect": "green"}
+        {
+          "name": "TestHermeticTestsHaveNoWallClockDeadline",
+          "expect": "red"
+        },
+        {
+          "name": "TestHermeticBedrockTaskRunStream",
+          "expect": "green"
+        }
       ],
-      "note": "The deadline is spelled as a bare 10000000000 so the mutation needs no new import; the guard matches the context.WithTimeout call, not the literal. TestHermeticTaskRunSuccess is listed green on purpose: on an idle machine the restored deadline still passes, which is exactly why this flake stayed citable-green between failures and why the guard, not the test, holds the contract."
+      "note": "T192 removed the codex CLI Task fixture. Rehomed its deadline mutation to the surviving Bedrock API Task fixture; the module-wide guard must turn red while the request succeeds on an idle host. The original quoted commit records the predecessor specimen."
     },
     {
       "target": "T96",
@@ -493,21 +499,27 @@
     {
       "target": "T97",
       "mutation": "restore-a-root-wall-clock-deadline",
-      "what": "TestHermeticCursorTaskRun bounds its run with a 15s context deadline again, the root-package twin of the 🎯T33 defect: a clock handed to the product through Task.Run that a loaded host can expire before the fake CLI answers",
+      "what": "The surviving Ollama API Task fixture regains a wall-clock deadline; the module-wide guard must catch it independently of successful HTTP fixture output.",
       "quoted_by": "faa114a",
       "package": ".",
       "edits": [
         {
-          "file": "cursor_task_test.go",
-          "find": "\tch, err := task.Run(t.Context(), \"Reply with exactly: pong\")\n",
-          "replace": "\tctx, cancel := context.WithTimeout(context.Background(), 15000000000)\n\tdefer cancel()\n\tch, err := task.Run(ctx, \"Reply with exactly: pong\")\n"
+          "file": "ollama_test.go",
+          "find": "\tevents, err := task.Run(context.Background(), \"what is the answer?\")\n",
+          "replace": "\tctx, cancel := context.WithTimeout(context.Background(), 15000000000)\n\tdefer cancel()\n\tevents, err := task.Run(ctx, \"what is the answer?\")\n"
         }
       ],
       "tests": [
-        {"name": "TestHermeticTestsHaveNoWallClockDeadline", "expect": "red"},
-        {"name": "TestHermeticCursorTaskRun", "expect": "green"}
+        {
+          "name": "TestHermeticTestsHaveNoWallClockDeadline",
+          "expect": "red"
+        },
+        {
+          "name": "TestOllamaTaskRunEndToEnd",
+          "expect": "green"
+        }
       ],
-      "note": "The same shape as 🎯T33's codex entry, one package up, because the root package is where 🎯T33's guard never looked. TestHermeticCursorTaskRun is green on purpose: on an idle host the restored deadline still passes, which is why only the guard can hold this. The deadline is a bare 15000000000 so the mutation needs no new import."
+      "note": "T192 removed the Cursor CLI Task fixture. This replacement keeps the same deadline mutation and guard contract on a surviving HTTP Task path. The original quoted commit records the predecessor specimen."
     },
     {
       "target": "T97",

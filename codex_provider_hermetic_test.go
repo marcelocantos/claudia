@@ -15,11 +15,11 @@ import (
 // Live residual stays under CLAUDIA_CODEX_LIVE=1 (TestCodexTaskRunSmoke).
 
 func TestCodexProviderCapabilitiesClaimed(t *testing.T) {
-	taskWant := providerCapabilities{Task: true, Resume: true}
-	if got := (codexTaskBackend{}).Capabilities(); got != taskWant {
+	taskWant := providerCapabilities{}
+	if got := taskBackendForProvider(ProviderCodex).Capabilities(); got != taskWant {
 		t.Errorf("codexTaskBackend capabilities = %+v, want %+v", got, taskWant)
 	}
-	agentWant := providerCapabilities{Task: true, Resume: true, Session: true}
+	agentWant := providerCapabilities{Resume: true, Session: true}
 	if got := (codexAgentBackend{}).Capabilities(); got != agentWant {
 		t.Errorf("codexAgentBackend capabilities = %+v, want %+v", got, agentWant)
 	}
@@ -34,7 +34,7 @@ func TestCodexProviderCapabilitiesClaimed(t *testing.T) {
 // discovered by a user at runtime instead of read off the matrix.
 func TestCodexCapabilityMatrixIsExplicit(t *testing.T) {
 	want := map[Capability]CapabilityStatus{
-		CapabilityTask:             CapabilitySupported,
+		CapabilityTask:             CapabilityUnsupported,
 		CapabilityResume:           CapabilitySupported,
 		CapabilitySession:          CapabilitySupported,
 		CapabilityRewind:           CapabilityUnsupported,
@@ -125,7 +125,7 @@ func TestCodexCapabilityGapsVersusClaude(t *testing.T) {
 // claimed-but-unwired) capability is exactly the fake parity 🎯T4.6
 // exists to prevent.
 func TestCodexCapabilityMatrixMatchesBackendClaims(t *testing.T) {
-	task := (codexTaskBackend{}).Capabilities()
+	task := taskBackendForProvider(ProviderCodex).Capabilities()
 	agent := (codexAgentBackend{}).Capabilities()
 	wired := providerCapabilities{
 		Task:    task.Task || agent.Task,
