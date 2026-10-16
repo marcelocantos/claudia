@@ -50,11 +50,15 @@ const attribution = () => ({
   requests: [{ request_id: active.request_id, attempt_id: active.attempt_id }],
 });
 const calls: { route: string; model: string; kind: string }[] = [];
+const authorizations: string[] = [];
 const factoryModels: string[] = [];
 let activeKind = "model";
+// The agent callback is deliberately stale. Dispatch must follow tokenFor.
+let brokerToken: string | undefined = "fixture-token";
 const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => {
   const url = input instanceof Request ? input.url : String(input);
   if (!url.startsWith("https://fixture.invalid/")) throw new Error(`unexpected fixture URL ${url}`);
+  authorizations.push(new Headers(init?.headers).get("authorization") ?? "");
   const body = JSON.parse(String(init?.body));
   const route = url.endsWith("/compact") ? "v1" : body.input?.some((item: { type?: string }) => item.type === "compaction_trigger") ? "v2" : "summary";
   calls.push({ route, model: body.model, kind: route === "summary" ? activeKind : "compaction" });
@@ -69,11 +73,11 @@ const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => 
 const measuredModel = measuredStream(() => usage, attribution);
 const measuredSide = measuredStream(() => usage, attribution, "compaction");
 const agent = new Agent({ initialState: { model, tools: [], systemPrompt: ["Reply OK."] }, cwd,
-  getApiKey: () => "fixture-token", convertToLlm: convertOmpMessages,
+  getApiKey: () => "stale-agent-token", convertToLlm: convertOmpMessages,
   streamFn: (m, c, o) => { activeKind = "model"; return measuredModel(m, c, { ...o, fetch: fakeFetch }); },
 });
 const adapter = await createOmpSession({ agent, sessionManager: journal.manager, stateDir: root,
-  tokenFor: provider => provider === model.provider ? "fixture-token" : undefined,
+  tokenFor: provider => provider === model.provider ? brokerToken : undefined,
   sideStreamFn: (m, c, o) => { activeKind = "compaction"; return measuredSide(m, c, { ...o, fetch: fakeFetch }); },
   nativeCompactionOptions: candidate => {
     factoryModels.push(candidate.id);
@@ -107,7 +111,25 @@ const promptAs = (turn: typeof opened) => {
 };
 try {
   let followAt = calls.length;
-  if (automatic) {
+  if (scenario === "refresh") {
+    await adapter.session.compact(undefined, { suppressContinuation: true });
+    followAt = calls.length;
+    const first = authorizations.splice(0, authorizations.length);
+    assert.ok(first.length > 0);
+    assert.ok(first.every(header => header === "Bearer fixture-token"));
+    brokerToken = "fixture-token-refreshed";
+    rememberBulk("refreshed");
+    await promptAs(followed);
+    const second = authorizations.splice(0, authorizations.length);
+    assert.ok(second.length > 0);
+    assert.ok(second.every(header => header === "Bearer fixture-token-refreshed"));
+    assert.equal(second.some(header => header.includes("stale-agent-token")), false);
+    const dispatched = calls.length;
+    brokerToken = undefined;
+    await assert.rejects(promptAs(opened), /No API key found/);
+    assert.equal(calls.length, dispatched);
+    assert.equal(authorizations.length, 0);
+  } else if (automatic) {
     await promptAs(opened);
     followAt = calls.length;
     rememberBulk("followed");
@@ -125,15 +147,16 @@ try {
   assert.deepEqual(finals.map(fact => fact.kind), calls.map(call => call.kind));
   assert.notEqual(opened.turn_id, followed.turn_id);
   for (const [index, fact] of finals.entries()) {
-    const turn = automatic && index >= followAt ? followed : opened;
+    const turn = (automatic || scenario === "refresh") && index >= followAt ? followed : opened;
     assert.equal(fact.turn_id, turn.turn_id);
     assert.deepEqual(fact.requests, [{ request_id: turn.request_id, attempt_id: turn.attempt_id }]);
   }
   assert.ok(factoryModels.every(id => id === model.id));
-  const firstCalls = calls.slice(0, automatic ? followAt : calls.length);
-  const firstFinals = finals.slice(0, automatic ? followAt : finals.length);
-  const followCalls = automatic ? calls.slice(followAt) : [];
-  const followFinals = automatic ? finals.slice(followAt) : [];
+  const split = automatic || scenario === "refresh";
+  const firstCalls = calls.slice(0, split ? followAt : calls.length);
+  const firstFinals = finals.slice(0, split ? followAt : finals.length);
+  const followCalls = split ? calls.slice(followAt) : [];
+  const followFinals = split ? finals.slice(followAt) : [];
   const account = (sliceCalls: typeof calls, sliceFacts: typeof finals) => {
     const paired = sliceFacts.map((fact, index) => ({ fact, call: sliceCalls[index] }));
     const native = paired.filter(item => item.call.route === "v2" || item.call.route === "v1");
@@ -145,7 +168,7 @@ try {
     return paired;
   };
   account(firstCalls, firstFinals);
-  if (automatic) {
+  if (split) {
     assert.ok(followAt > 0 && followCalls.length > 0);
     const followNative = account(followCalls, followFinals).filter(item => item.call.route === "v2" || item.call.route === "v1");
     assert.notEqual(followNative[0].fact.invocation_id, firstFinals.find((_, index) => firstCalls[index].route === "v2")?.invocation_id);

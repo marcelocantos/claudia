@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 for (const backend of ["openai", "codex"]) {
-  for (const scenario of ["success", "local", "absent", "auto-success", "auto-local"]) {
+  for (const scenario of ["success", "local", "absent", "auto-success", "auto-local", "refresh"]) {
     test(`SDK ${backend} ${scenario} compaction records actual physical dispatches`, async () => {
       const root = mkdtempSync(join(tmpdir(), "cl-sdk-compact-"));
       try {

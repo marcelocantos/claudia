@@ -107,9 +107,9 @@ export async function createOmpSession(opts: OmpSessionOptions) {
     usageFetch: noAuxiliaryFetch,
     configValueResolver: async () => undefined,
   });
-  // Session preflight and native compaction consult ModelRegistry independently
-  // of Agent.getApiKey. Keep their private runtime credential copy synchronized
-  // on broker refresh and before selecting a destination model.
+  // Session preflight, native compaction and the agent loop each read a key
+  // independently. Refresh the active provider from the broker on those reads
+  // so a revoked token cannot remain authorized from the copy taken at startup.
   const syncToken = (provider: string): string => {
     const token = opts.tokenFor(provider);
     if (!token?.trim()) {
@@ -143,6 +143,28 @@ export async function createOmpSession(opts: OmpSessionOptions) {
       const selected = models.filter(model => model.provider === current.provider && model.id === current.id);
       return selected.length > 0 ? selected : [current];
     };
+    const refreshActive = (provider: string) => {
+      if (opts.agent.state.model?.provider !== provider) return;
+      const token = opts.tokenFor(provider);
+      if (!token?.trim()) {
+        auth.removeRuntimeApiKey(provider);
+        return;
+      }
+      auth.setRuntimeApiKey(provider, token);
+    };
+    const readModelKey = modelRegistry.getApiKey.bind(modelRegistry);
+    modelRegistry.getApiKey = async (model, sessionId, options) => {
+      refreshActive(model.provider);
+      return readModelKey(model, sessionId, options);
+    };
+    const readProviderKey = modelRegistry.getApiKeyForProvider.bind(modelRegistry);
+    modelRegistry.getApiKeyForProvider = async (provider, sessionId, options) => {
+      refreshActive(provider);
+      return readProviderKey(provider, sessionId, options);
+    };
+    // The agent loop does not consult the registry key. One broker callback
+    // authorizes both paths; a stale callback captured at construction cannot.
+    opts.agent.getApiKey = (model) => syncToken(model.provider);
     // Direct construction does not perform the SDK factory's restore step.
     // The canonical manager owns context, including compaction and branching.
     opts.agent.replaceMessages(opts.sessionManager.buildSessionContext().messages);
