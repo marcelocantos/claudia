@@ -1,0 +1,1 @@
+{"v":1,"type":"receipt_result","id":"rpc-receipt","body":{"request_id":"logical-request","session_id":"session","seat":"seat","state":"unknown","attempt_id":"","turn_ids":[],"reason":"not_found"}}

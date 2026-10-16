@@ -242,6 +242,9 @@ func (b *brokerAgentBackend) reclaim() error {
 
 func (b *brokerAgentBackend) ops() agentOps {
 	return agentOps{
+		receipt: func(ctx context.Context, a *Agent, id string) (*RequestReceipt, error) {
+			return queryBrokerReceipt(ctx, b.client, ReceiptQuery{Seat: b.named().Name, SessionID: a.SessionID(), RequestID: id})
+		},
 		droppedFrames: func(*Agent) (int, error) { return b.client.DroppedFrames() },
 		reclaim:       b.reclaim,
 		attachCommand: func(*Agent) string {
@@ -255,6 +258,9 @@ func (b *brokerAgentBackend) ops() agentOps {
 		},
 		sendWithRequestID: func(_ *Agent, msg, requestID string) error {
 			_, err := b.opCall(&broker.Request{Type: broker.TypeSend, Send: &broker.SendRequest{Name: b.named().Name, Text: msg, RequestID: requestID}})
+			if err != nil && requestID != "" {
+				return fmt.Errorf("%w: %w", ErrReceiptUncertain, err)
+			}
 			return err
 		},
 		interrupt: func(*Agent) error {
@@ -651,6 +657,9 @@ func (b *brokerAgentBackend) sendEscalatingWithRequestID(text string, esc Escala
 	resp, err := b.opCall(&broker.Request{Type: broker.TypeSend,
 		Send: &broker.SendRequest{Name: b.named().Name, Text: text, Escalation: steps, RequestID: requestID}})
 	if err != nil {
+		if requestID != "" {
+			err = fmt.Errorf("%w: %w", ErrReceiptUncertain, err)
+		}
 		return DeliveryOutcome{}, err
 	}
 	if resp.Sent == nil {
@@ -667,6 +676,9 @@ func (b *brokerAgentBackend) steerWithRequestID(text, requestID string) (Deliver
 	resp, err := b.opCall(&broker.Request{Type: broker.TypeSend,
 		Send: &broker.SendRequest{Name: b.named().Name, Text: text, Mode: broker.SendModeSteer, RequestID: requestID}})
 	if err != nil {
+		if requestID != "" {
+			err = fmt.Errorf("%w: %w", ErrReceiptUncertain, err)
+		}
 		return DeliveryOutcome{}, err
 	}
 	if resp.Sent == nil {

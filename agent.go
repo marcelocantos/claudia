@@ -445,8 +445,11 @@ type agentOps struct {
 	interrupt         func(*Agent) error
 	send              func(*Agent, string) error
 	sendWithRequestID func(*Agent, string, string) error
-	resize            func(*Agent, uint16, uint16) error
-	stop              func(*Agent)
+	// explicitRequestIDs means the backend, not a host FIFO, identifies events.
+	explicitRequestIDs bool
+	receipt            func(context.Context, *Agent, string) (*RequestReceipt, error)
+	resize             func(*Agent, uint16, uint16) error
+	stop               func(*Agent)
 	// reclaim is set only by the broker backend: it makes sure this
 	// handle's connection owns the seat's grant on the daemon (🎯T124).
 	reclaim func() error
@@ -1866,7 +1869,7 @@ func (a *Agent) SendWithRequestID(msg, requestID string) error {
 	a.beginTurn()
 	cause, ok := a.takePromptCause()
 	a.noteArmed(cause, ok)
-	if a.brokerGrant == "" {
+	if a.brokerGrant == "" && !a.ops.explicitRequestIDs {
 		a.queueRequestID(requestID)
 	}
 	var err error

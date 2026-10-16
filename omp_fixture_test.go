@@ -88,6 +88,7 @@ func startOMPFixture(t *testing.T) *ompFixture {
 
 func (f *ompFixture) serve(c net.Conn) {
 	r := bufio.NewReader(c)
+	receipts := map[string]*omp.RequestReceipt{}
 	write := func(v map[string]any) {
 		b, _ := json.Marshal(v)
 		_, _ = c.Write(append(b, '\n'))
@@ -129,8 +130,16 @@ func (f *ompFixture) serve(c net.Conn) {
 			case f.prompts <- msg:
 			default:
 			}
+			if msg.RequestID != "" {
+				now := time.Now().UTC().Format(time.RFC3339Nano)
+				receipt := &omp.RequestReceipt{Seat: msg.Seat, SessionID: msg.SessionID, RequestID: msg.RequestID, AttemptID: msg.AttemptID, State: omp.ReceiptAccepted, TurnIDs: []string{}, AcceptedAt: now, UpdatedAt: now}
+				receipts[msg.RequestID] = receipt
+				write(map[string]any{"seat": msg.Seat, "type": "accepted", "request_id": msg.RequestID, "rpc_id": msg.RPCID, "receipt": receipt})
+			}
 			write(map[string]any{"seat": msg.Seat, "type": "text", "turn_id": msg.TurnID, "text": f.reply})
 			write(map[string]any{"seat": msg.Seat, "type": "turn_end", "turn_id": msg.TurnID, "snapshot": map[string]any{"messages": []any{}}})
+		case omp.OpReceipt:
+			write(map[string]any{"seat": msg.Seat, "type": "receipt", "rpc_id": msg.RPCID, "request_id": msg.RequestID, "receipt": receipts[msg.RequestID]})
 		}
 	}
 }

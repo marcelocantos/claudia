@@ -243,7 +243,7 @@ func (a *Agent) steerWithRequestID(text string, phase TurnPhase, requestID strin
 	}
 	cause, ok := a.takePromptCause()
 	a.noteArmed(cause, ok)
-	if a.brokerGrant == "" {
+	if a.brokerGrant == "" && !a.ops.explicitRequestIDs {
 		a.queueRequestID(requestID)
 	}
 	var steered DeliveryOutcome

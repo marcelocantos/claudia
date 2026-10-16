@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/marcelocantos/claudia/omp"
 )
 
 // The broker wire contract (🎯T2.1). Six sub-targets (🎯T2.2–🎯T2.7) and the SDK
@@ -521,6 +523,7 @@ type Request struct {
 	AuthRecover   *AuthRecoverRequest
 	AuthDetail    *NamedRequest
 	AuthStatus    *AuthStatusRequest
+	Receipt       *ReceiptRequest
 }
 
 // Response is a decoded broker → client message. Exactly one of the body
@@ -564,6 +567,7 @@ type Response struct {
 	AuthRecovered    *NamedResponse
 	AuthDetail       *AuthRecoveryDetailResponse
 	AuthStatus       *AuthStatusResponse
+	Receipt          *omp.RequestReceipt
 }
 
 // validator is implemented by bodies that normalise defaults or refuse
@@ -603,6 +607,7 @@ func spec[M, B any](what string, slot func(*M) **B, noBody bool) bodySpec[M] {
 // requestSpecs is the client → broker namespace. TestEveryMessageTypeHasAVector
 // walks it, so a type added here without a golden vector fails the build.
 var requestSpecs = map[MessageType]bodySpec[Request]{
+	TypeReceipt:           spec("receipt body", func(r *Request) **ReceiptRequest { return &r.Receipt }, false),
 	TypeSpawn:             spec("spawn body", func(r *Request) **SpawnRequest { return &r.Spawn }, false),
 	TypeRelease:           spec("release body", func(r *Request) **ReleaseRequest { return &r.Release }, false),
 	TypeStatus:            spec("status body", func(r *Request) **StatusRequest { return &r.Status }, true),
@@ -631,6 +636,7 @@ var requestSpecs = map[MessageType]bodySpec[Request]{
 
 // responseSpecs is the broker → client namespace.
 var responseSpecs = map[MessageType]bodySpec[Response]{
+	TypeReceiptResult:      spec("receipt result body", func(r *Response) **omp.RequestReceipt { return &r.Receipt }, false),
 	TypeSpawned:            spec("spawned body", func(r *Response) **SpawnResponse { return &r.Spawned }, false),
 	TypeReleased:           spec("released body", func(r *Response) **ReleaseResponse { return &r.Released }, false),
 	TypeStatusResult:       spec("status_result body", func(r *Response) **StatusResponse { return &r.Status }, false),

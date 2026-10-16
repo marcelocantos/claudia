@@ -389,6 +389,10 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 		HistoryLost:        historyLost,
 		HostMCPUnavailable: mcpUnavailable,
 		Ops: agentOps{
+			explicitRequestIDs: true,
+			receipt: func(ctx context.Context, _ *Agent, id string) (*RequestReceipt, error) {
+				return ctrl.receipt(ctx, id)
+			},
 			// A sidecar seat runs under its seat id (xai-oauth, anthropic,
 			// openai-codex), which the provider turn-caps table does not
 			// name, so it reported no steer at all although steer and abort
@@ -408,9 +412,16 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 				ctrl.inflight.Store(true)
 				return ctrl.send(promptMessage(omp.OpPrompt, req.Config.Name, text, a, ctrl))
 			},
+			sendWithRequestID: func(a *Agent, text, id string) error {
+				ctrl.inflight.Store(true)
+				return ctrl.sendRequest(promptMessage(omp.OpPrompt, req.Config.Name, text, a, ctrl), id)
+			},
 			steer: func(a *Agent, text string) (DeliveryOutcome, error) {
 				err := ctrl.send(promptMessage(omp.OpSteer, req.Config.Name, text, a, ctrl))
 				return DeliveryOutcome{}, err
+			},
+			steerWithRequestID: func(a *Agent, text, id string) (DeliveryOutcome, error) {
+				return DeliveryOutcome{}, ctrl.sendRequest(promptMessage(omp.OpSteer, req.Config.Name, text, a, ctrl), id)
 			},
 			interrupt: func(*Agent) error {
 				return ctrl.send(omp.Message{Op: omp.OpAbort, Seat: req.Config.Name})
@@ -448,9 +459,11 @@ type ompControl struct {
 	model     string
 	cwd       string
 	sessionID string
-	// waits routes a sidecar reply that names a request id to the call
-	// waiting for it: a switch's ready or refusal (🎯T195). Under mu.
+	// waits routes transport replies. Receipt RPCs use a separate key prefix
+	// from legacy switches (whose wire historically calls the RPC request_id).
 	waits map[string]chan omp.Event
+	// done closes when the event pump loses the sidecar connection.
+	done chan struct{}
 	// preserve and pins steer the seat's compaction (🎯T152).
 	preserve string
 	pins     []string
@@ -532,6 +545,13 @@ func (c *ompControl) send(msg omp.Message) error {
 
 func (c *ompControl) pump(a *Agent) {
 	defer close(c.bytes)
+	c.mu.Lock()
+	if c.done == nil {
+		c.done = make(chan struct{})
+	}
+	done := c.done
+	c.mu.Unlock()
+	defer close(done)
 	// Recv and publication run in this one goroutine, so the sequence belongs
 	// to the pump rather than the control's concurrently accessed send state.
 	var fragments ompFragmentSequence
@@ -546,6 +566,16 @@ func (c *ompControl) pump(a *Agent) {
 			default:
 			}
 		}
+		// Transport replies use rpc_id. Never let a terminal event for a
+		// different logical input satisfy an identified send or query.
+		if ev.RPCID != "" {
+			if ch := c.takeWait("rpc:" + ev.RPCID); ch != nil {
+				ch <- ev
+			}
+			if ev.Type != "accepted" {
+				continue
+			}
+		}
 		// A reply to a switch is the switch's, not a turn's (🎯T195): a
 		// refusal must not read as a failed turn.
 		if ev.RequestID != "" && (ev.Type == "ready" || ev.Type == "error") {
@@ -555,22 +585,36 @@ func (c *ompControl) pump(a *Agent) {
 			}
 		}
 		switch ev.Type {
+		case "receipt":
+			if err := ev.Receipt.ValidateIdentity(c.seat, c.sessionID, ev.RequestID); err != nil {
+				slog.Warn("omp refused receipt", "seat", c.seat, "error", err)
+				continue
+			}
+			a.publishEvent(Event{Type: "receipt", RequestID: ev.RequestID, SessionID: c.sessionID, Receipt: ev.Receipt})
 		case "auth_retry":
 			if ev.RequestID != "" && ev.TurnID != "" && len(ev.FailedToken) == 64 && oauthRejected(ev.Error) {
 				go c.answerAuthRetry(ev)
 			}
 		case "accepted":
+			if ev.RequestID != "" {
+				if err := ev.Receipt.ValidateIdentity(c.seat, c.sessionID, ev.RequestID); err != nil {
+					slog.Warn("omp refused acceptance receipt", "seat", c.seat, "error", err)
+					continue
+				}
+			}
 			// The sidecar took the prompt (a turn began, or it was queued
 			// behind the running one). Before the first token this is the
 			// only sign the prompt landed. A turn is open from here: that
 			// includes the turn a hard-stop starts to deliver what was
 			// queued (🎯T138), which no send of ours opened.
-			c.inflight.Store(true)
-			a.publishEvent(Event{Type: "progress", ProgressType: ProgressPromptAccepted})
+			if ev.Receipt == nil || ev.Receipt.State == ReceiptAccepted || ev.Receipt.State == ReceiptStarted {
+				c.inflight.Store(true)
+			}
+			a.publishEvent(Event{Type: "progress", ProgressType: ProgressPromptAccepted, TurnID: ev.TurnID, RequestID: ev.RequestID, Receipt: ev.Receipt})
 		case "absorbed":
 			// The model took a message queued or steered behind the turn;
 			// an escalation for it stops here (🎯T138).
-			a.publishEvent(Event{Type: "progress", ProgressType: ProgressDeliveryAbsorbed, Text: ev.Text})
+			a.publishEvent(Event{Type: "progress", ProgressType: ProgressDeliveryAbsorbed, Text: ev.Text, TurnID: ev.TurnID, RequestID: ev.RequestID})
 		case "compacting", "compacted", "compaction_warning":
 			// The seat is managing its context (🎯T150): a host can show
 			// when and why a long conversation was folded, or that it could
@@ -687,6 +731,7 @@ func publishOMPAnswer(a *Agent, wire omp.Event, answer Event, fragments *ompFrag
 	answer.Final = wire.Type == "turn_end" || wire.Type == "error"
 	answer.FragmentSeq = fragments.last
 	answer.TurnID = wire.TurnID
+	answer.RequestID = wire.RequestID
 	a.publishEvent(answer)
 	return nil
 }
