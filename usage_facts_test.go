@@ -17,6 +17,10 @@ import (
 )
 
 func usageFixture(t *testing.T) (*UsagePage, string, string) {
+	return usageProducerFixture(t, "sidecar/testdata/usage-producer.ts")
+}
+
+func usageProducerFixture(t *testing.T, script string) (*UsagePage, string, string) {
 	t.Helper()
 	bun, err := exec.LookPath("bun")
 	if err != nil {
@@ -27,7 +31,7 @@ func usageFixture(t *testing.T) (*UsagePage, string, string) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(root) })
-	cmd := exec.Command(bun, "sidecar/testdata/usage-producer.ts", root)
+	cmd := exec.Command(bun, script, root)
 	raw, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("actual producer: %v: %s", err, raw)
@@ -40,6 +44,60 @@ func usageFixture(t *testing.T) (*UsagePage, string, string) {
 		t.Fatal(err)
 	}
 	return &page, root, bun
+}
+
+func TestUsagePhysicalProducerSocketAndBrokerPreserveRetries(t *testing.T) {
+	page, _, _ := usageProducerFixture(t, "sidecar/testdata/provider-usage-producer.ts")
+	if len(page.Facts) != 4 {
+		t.Fatalf("not two physical requests: %+v", page)
+	}
+	first, second := page.Facts[1], page.Facts[3]
+	if first.Coverage != "provider_attempt" || first.InvocationID == "" || first.InvocationID != second.InvocationID || first.ProviderAttemptID == second.ProviderAttemptID || first.CallID != first.ProviderAttemptID || first.Requests[0].AttemptID != "attempt-A" {
+		t.Fatalf("physical identity lost: %+v", page.Facts)
+	}
+	if first.Counters.TotalInputTokens == nil || *first.Counters.TotalInputTokens != 10 || second.Counters.TotalInputTokens == nil || *second.Counters.TotalInputTokens != 28 || second.Counters.CacheCreationInputTokens == nil || *second.Counters.CacheCreationInputTokens != 0 {
+		t.Fatalf("raw presence/total lost: %+v", page.Facts)
+	}
+	_, a, _, peer, events := receiptPipe(t)
+	a.mu.Lock()
+	a.sessionID, a.startCfg.Name = "generation", "seat"
+	a.mu.Unlock()
+	b := &Agent{sessionID: "generation", startCfg: Config{Name: "seat"}}
+	for _, fact := range page.Facts {
+		replyReceipt(t, peer, omp.Event{Type: "usage", Seat: "seat", UsageFact: &fact})
+		select {
+		case ev := <-events:
+			if ev.Type != "usage" || !reflect.DeepEqual(ev.UsageFact, &fact) {
+				t.Fatalf("socket lost physical evidence: %+v", ev)
+			}
+			raw, err := EncodeEventWire(ev)
+			if err != nil {
+				t.Fatal(err)
+			}
+			decoded, err := DecodeEventWire(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(decoded.UsageFact, &fact) {
+				t.Fatal("broker changed physical evidence")
+			}
+			b.publishEvent(decoded)
+			b.publishEvent(decoded)
+		case <-time.After(5 * time.Second):
+			t.Fatal("missing physical observation")
+		}
+	}
+	want := Usage{InputTokens: 31, OutputTokens: 5, CacheReadInputTokens: 7}
+	if a.Usage() != want || b.Usage() != want {
+		t.Fatalf("aggregate or replay double count: direct=%+v broker=%+v", a.Usage(), b.Usage())
+	}
+	changed := second
+	changed.Seq++
+	changed.InvocationID = "different-invocation"
+	b.publishEvent(Event{Type: "usage", SessionID: "generation", UsageFact: &changed})
+	if b.UsageError() == nil || b.Usage() != want {
+		t.Fatal("identity mutation accepted")
+	}
 }
 
 func TestUsageActualProducerSocketPumpAndBrokerReplay(t *testing.T) {

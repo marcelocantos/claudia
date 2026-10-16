@@ -1,0 +1,17 @@
+# Provider usage specimens
+
+These are frozen synthetic wire responses, not credential-bearing captures or
+model-generated expectations. Their numeric values are intentional test inputs.
+The real pinned provider request, retry and parser code consumes these bytes.
+
+Anthropic reports disjoint fresh input (21), cache read (7), cache write (0),
+and cumulative output (0 at start, 4 at finish): total input is 28.
+Responses reports inclusive input (28), of which 7 is cache read and 0 cache
+write: fresh input is 21, output is 4, reasoning subset is explicitly 0.
+The failed Responses specimen reports inclusive input 12 and output 0 but no
+cache details: fresh/cache counts must remain unknown; total input stays 12.
+The empty successful response consumed 10 input and 1 output even though the
+adapter's normal policy retries it and discards its assistant message.
+
+Fixtures establish parser behavior and accounting conservation, not that a
+real provider is available or that every provider response supplies these fields.

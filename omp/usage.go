@@ -19,6 +19,8 @@ const UsagePageLimit = 128
 // pointer to zero means an explicitly observed zero. Reasoning is a subset
 // of output, never an additional billable token bucket.
 type UsageCounters struct {
+	// TotalInputTokens includes cached input. It must never be added to cache buckets.
+	TotalInputTokens         *int64 `json:"total_input_tokens,omitempty"`
 	InputTokens              *int64 `json:"input_tokens,omitempty"`
 	OutputTokens             *int64 `json:"output_tokens,omitempty"`
 	CacheReadInputTokens     *int64 `json:"cache_read_input_tokens,omitempty"`
@@ -31,10 +33,15 @@ type UsageRequestRef struct {
 	AttemptID string `json:"attempt_id"`
 }
 
-// UsageFact is an observation of one engine invocation, not a census of
-// hidden HTTP/WebSocket retries. It shares the durable conversation journal
+// UsageFact declares whether it observes an engine invocation or a physical
+// provider attempt. Uninstrumented backends still have invocation-only coverage.
+// It shares the durable conversation journal
 // but never model context. APIEquivalentCostUSD is an estimate, not quota.
 type UsageFact struct {
+	InvocationID         string            `json:"invocation_id,omitempty"`
+	ProviderAttemptID    string            `json:"provider_attempt_id,omitempty"`
+	ProviderRequestID    string            `json:"provider_request_id,omitempty"`
+	ProviderResponseID   string            `json:"provider_response_id,omitempty"`
 	Seq                  uint64            `json:"seq"`
 	CallID               string            `json:"call_id"`
 	Seat                 string            `json:"seat"`
@@ -57,8 +64,13 @@ type UsageFact struct {
 }
 
 func (f *UsageFact) ValidateIdentity(seat, session string) error {
-	if f == nil || f.Seat != seat || f.SessionID != session || strings.TrimSpace(seat) == "" || strings.TrimSpace(session) == "" || f.Seq == 0 || f.CallID == "" || f.Provider == "" || f.Model == "" || f.Requests == nil || f.Coverage != "engine_invocation" || f.CounterSource != "adapter_normalized_positive" {
+	if f == nil || f.Seat != seat || f.SessionID != session || strings.TrimSpace(seat) == "" || strings.TrimSpace(session) == "" || f.Seq == 0 || f.CallID == "" || f.Provider == "" || f.Model == "" || f.Requests == nil {
 		return fmt.Errorf("usage fact: invalid identity or coverage")
+	}
+	invocation := f.Coverage == "engine_invocation" && f.CounterSource == "adapter_normalized_positive" && f.InvocationID == "" && f.ProviderAttemptID == ""
+	attempt := f.Coverage == "provider_attempt" && f.CounterSource == "provider_reported" && strings.TrimSpace(f.InvocationID) != "" && f.ProviderAttemptID == f.CallID
+	if !invocation && !attempt {
+		return fmt.Errorf("usage fact: invalid observation scope")
 	}
 	if f.Kind != "model" && f.Kind != "compaction" {
 		return fmt.Errorf("usage fact: invalid invocation kind")
@@ -87,7 +99,7 @@ func (f *UsageFact) ValidateIdentity(seat, session string) error {
 		}
 		seen[r.RequestID] = true
 	}
-	for _, n := range []*int64{f.Counters.InputTokens, f.Counters.OutputTokens, f.Counters.CacheReadInputTokens, f.Counters.CacheCreationInputTokens, f.Counters.ReasoningTokens, f.ContextTokens} {
+	for _, n := range []*int64{f.Counters.TotalInputTokens, f.Counters.InputTokens, f.Counters.OutputTokens, f.Counters.CacheReadInputTokens, f.Counters.CacheCreationInputTokens, f.Counters.ReasoningTokens, f.ContextTokens} {
 		if n != nil && (*n < 0 || *n > 1<<53-1) {
 			return fmt.Errorf("usage fact: invalid counter")
 		}

@@ -1,25 +1,26 @@
 // Copyright 2026 Marcelo Cantos
 // SPDX-License-Identifier: Apache-2.0
 
-import { completeSimple, streamSimple, type AssistantMessage, type Model } from "@oh-my-pi/pi-ai";
+import { completeSimple, streamSimple, type AssistantMessage, type Model, type ProviderAttemptObservation } from "@oh-my-pi/pi-ai";
 import type { History } from "./maintain.ts";
 
 export const usageFactType = "claudia_usage_v1";
 export const usagePageLimit = 128;
 export type UsageRequestRef = { request_id: string; attempt_id: string };
 export type UsageCounters = {
-  input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number;
+  total_input_tokens?: number; input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number;
   cache_creation_input_tokens?: number; reasoning_tokens?: number;
 };
 export type UsageFact = {
   seq: number; call_id: string; seat: string; session_id: string;
   kind: "model" | "compaction"; state: "started" | "completed" | "failed" | "cancelled" | "unknown";
   provider: string; model: string; turn_id?: string; requests: UsageRequestRef[];
+  invocation_id?: string; provider_attempt_id?: string; provider_request_id?: string; provider_response_id?: string;
   cause?: string; started_at: string; finished_at?: string;
   counters: UsageCounters; context_tokens?: number; api_equivalent_cost_usd?: number;
-  counter_source: "adapter_normalized_positive"; cost_source?: "provider_adapter_estimate";
+  counter_source: "adapter_normalized_positive" | "provider_reported"; cost_source?: "provider_adapter_estimate";
   // One stream/completion invocation can hide several transport attempts.
-  coverage: "engine_invocation";
+  coverage: "engine_invocation" | "provider_attempt";
 };
 export type UsagePage = { seat: string; session_id: string; facts: UsageFact[]; next: number; more: boolean };
 type Attribution = { turn_id?: string; requests: UsageRequestRef[]; cause?: string };
@@ -27,13 +28,14 @@ type Attribution = { turn_id?: string; requests: UsageRequestRef[]; cause?: stri
 const nonempty = (v: unknown): v is string => typeof v === "string" && v.trim().length > 0;
 const natural = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
 const states = new Set(["started", "completed", "failed", "cancelled", "unknown"]);
-const counterKeys = new Set(["input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "reasoning_tokens"]);
+const counterKeys = new Set(["total_input_tokens", "input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "reasoning_tokens"]);
 
 export function validateUsageFact(value: unknown, seat: string, session: string): UsageFact {
   const f = value as UsageFact;
   if (!f || typeof f !== "object" || f.seat !== seat || f.session_id !== session || !natural(f.seq) || f.seq === 0 ||
       !nonempty(f.call_id) || !nonempty(f.provider) || !nonempty(f.model) || !states.has(f.state) ||
-      !["model", "compaction"].includes(f.kind) || f.coverage !== "engine_invocation" || f.counter_source !== "adapter_normalized_positive" ||
+      !["model", "compaction"].includes(f.kind) || !((f.coverage === "engine_invocation" && f.counter_source === "adapter_normalized_positive" && f.invocation_id === undefined && f.provider_attempt_id === undefined) ||
+        (f.coverage === "provider_attempt" && f.counter_source === "provider_reported" && nonempty(f.invocation_id) && nonempty(f.provider_attempt_id) && f.call_id === f.provider_attempt_id)) ||
       !Number.isFinite(Date.parse(f.started_at)) || !Array.isArray(f.requests) || !f.counters || typeof f.counters !== "object") {
     throw new Error("usage journal: invalid identity or fact");
   }
@@ -55,7 +57,7 @@ export function validateUsageFact(value: unknown, seat: string, session: string)
 export function validateUsageTransition(f: UsageFact, next: number, old?: UsageFact): void {
   if (f.seq !== next) throw new Error("usage journal: discontinuous sequence");
   if ((!old && f.state !== "started") || (old && (old.state !== "started" || f.state === "started" ||
-      JSON.stringify({ ...old, seq: 0, state: "", counters: {} }) !== JSON.stringify({ ...f, seq: 0, state: "", counters: {}, finished_at: undefined, context_tokens: undefined, api_equivalent_cost_usd: undefined, cost_source: undefined })))) {
+      JSON.stringify({ ...old, seq: 0, state: "", counters: {} }) !== JSON.stringify({ ...f, seq: 0, state: "", counters: {}, finished_at: undefined, context_tokens: undefined, api_equivalent_cost_usd: undefined, cost_source: undefined, provider_request_id: undefined, provider_response_id: undefined })))) {
     throw new Error("usage journal: conflicting invocation transition");
   }
 }
@@ -118,6 +120,25 @@ export class UsageJournal {
     this.#append(f); return f;
   }
 
+  observer(kind: UsageFact["kind"], model: Model, attribution: Attribution): (event: ProviderAttemptObservation) => void {
+    const invocation = crypto.randomUUID();
+    const starts = new Map<string, UsageFact>();
+    return event => {
+      if (this.#poison) return;
+      if (event.state === "started") {
+        const f: UsageFact = { seq: this.#facts.length + 1, call_id: event.id, provider_attempt_id: event.id, invocation_id: invocation,
+          seat: this.#history.store!.seat, session_id: this.#history.store!.session, kind, state: "started", provider: model.provider, model: model.id,
+          ...structuredClone(attribution), started_at: event.startedAt, counters: {}, counter_source: "provider_reported", coverage: "provider_attempt" };
+        starts.set(event.id, f); this.#append(f); return;
+      }
+      const start = starts.get(event.id);
+      if (!start) { this.#fail("provider attempt finished without a start"); return; }
+      starts.delete(event.id);
+      this.#append({ ...start, seq: this.#facts.length + 1, state: event.state, finished_at: event.finishedAt,
+        counters: structuredClone(event.counters), provider_request_id: event.requestId, provider_response_id: event.responseId });
+    };
+  }
+
   finish(start: UsageFact, message?: AssistantMessage, aborted = false): void {
     if (this.#poison) return;
     const f: UsageFact = { ...start, seq: this.#facts.length + 1, finished_at: new Date().toISOString(),
@@ -147,6 +168,9 @@ export function measuredStream(journal: () => UsageJournal | undefined, attribut
   return ((model, context, options) => {
     const j = journal();
     if (!j) return streamSimple(model, context, options);
+    if (model.api === "anthropic-messages" || model.api === "openai-responses") {
+      return streamSimple(model, context, { ...options, onProviderAttempt: j.observer("model", model, attribution()) });
+    }
     const start = j.begin("model", model, attribution());
     const finish = (message?: AssistantMessage) => {
       j.finish(start, message, options?.signal?.aborted);
@@ -168,6 +192,9 @@ export function measuredStream(journal: () => UsageJournal | undefined, attribut
 export function measuredCompletion(journal: () => UsageJournal | undefined, attribution: () => Attribution, complete: typeof completeSimple = completeSimple): typeof completeSimple {
   return (async (model, context, options) => {
     const j = journal();
+    if (j && (model.api === "anthropic-messages" || model.api === "openai-responses")) {
+      return complete(model, context, { ...options, onProviderAttempt: j.observer("compaction", model, attribution()) });
+    }
     const start = j?.begin("compaction", model, attribution());
     try {
       const result = await complete(model, context, options);

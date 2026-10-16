@@ -79,8 +79,9 @@ func queryBrokerUsage(ctx context.Context, b *brokerClient, q UsageQuery) (*Usag
 // RefreshUsage catches up this handle from the durable journal in bounded
 // pages. It emits previously unseen facts through Event and adds each known
 // counter once to Usage. Context size, reasoning subsets, estimated dollars
-// and unknown counters are never added as token consumption. This is engine
-// invocation coverage only; native compaction and hidden retries remain gaps.
+// and unknown counters are never added as token consumption. TotalInputTokens
+// remains available in the typed facts, not added again to disjoint buckets.
+// Coverage is declared per fact; uninstrumented backends retain retry gaps.
 func (a *Agent) RefreshUsage(ctx context.Context) error {
 	if a == nil || a.ops.usagePage == nil {
 		return fmt.Errorf("backend has no durable usage API")
@@ -121,8 +122,8 @@ func (a *Agent) RefreshUsage(ctx context.Context) error {
 }
 
 // UsageError reports a sticky accounting observation failure on this handle.
-// Nil does not certify completeness: adapter zeros, native compaction and
-// hidden provider transport retries are outside the measured coverage.
+// Nil does not certify completeness: coverage and per-counter availability
+// are declared per fact; uninstrumented backends retain provider retry gaps.
 func (a *Agent) UsageError() error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -153,7 +154,7 @@ func (a *Agent) applyUsageFactLocked(ev *Event) (bool, error) {
 			}
 			return false, nil
 		}
-		if old.State != "started" || f.State == "started" || old.StartedAt != f.StartedAt || old.Provider != f.Provider || old.Model != f.Model || old.Kind != f.Kind || old.TurnID != f.TurnID || old.Cause != f.Cause || !reflect.DeepEqual(old.Requests, f.Requests) {
+		if old.State != "started" || f.State == "started" || old.Coverage != f.Coverage || old.CounterSource != f.CounterSource || old.InvocationID != f.InvocationID || old.ProviderAttemptID != f.ProviderAttemptID || old.StartedAt != f.StartedAt || old.Provider != f.Provider || old.Model != f.Model || old.Kind != f.Kind || old.TurnID != f.TurnID || old.Cause != f.Cause || !reflect.DeepEqual(old.Requests, f.Requests) {
 			return false, fmt.Errorf("usage fact has invalid invocation transition")
 		}
 	}

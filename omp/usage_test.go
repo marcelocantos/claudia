@@ -123,3 +123,36 @@ func TestQueryUsageForwardsDeadline(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestUsageProviderAttemptIdentityAndInclusiveInput(t *testing.T) {
+	total, zero := int64(12), int64(0)
+	f := UsageFact{Seq: 2, CallID: "physical-A", ProviderAttemptID: "physical-A", InvocationID: "engine-A", Seat: "seat", SessionID: "session", Kind: "model", State: "failed", Provider: "xai-oauth", Model: "grok", Requests: []UsageRequestRef{{RequestID: "host-A", AttemptID: "delivery-A"}}, StartedAt: "2026-10-16T01:00:00Z", FinishedAt: "2026-10-16T01:00:01Z", Counters: UsageCounters{TotalInputTokens: &total, OutputTokens: &zero}, CounterSource: "provider_reported", Coverage: "provider_attempt"}
+	raw, err := json.Marshal(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded UsageFact
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if err := decoded.ValidateIdentity("seat", "session"); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Counters.TotalInputTokens == nil || *decoded.Counters.TotalInputTokens != 12 || decoded.Counters.InputTokens != nil || decoded.Counters.OutputTokens == nil || *decoded.Counters.OutputTokens != 0 {
+		t.Fatal("inclusive input, unknown fresh input or explicit output zero lost")
+	}
+	for label, mutate := range map[string]func(*UsageFact){
+		"missing invocation":          func(f *UsageFact) { f.InvocationID = "" },
+		"different physical identity": func(f *UsageFact) { f.ProviderAttemptID = "other" },
+		"synthetic physical evidence": func(f *UsageFact) { f.CounterSource = "adapter_normalized_positive" },
+		"physical IDs on aggregate":   func(f *UsageFact) { f.Coverage = "engine_invocation"; f.CounterSource = "adapter_normalized_positive" },
+	} {
+		t.Run(label, func(t *testing.T) {
+			bad := f
+			mutate(&bad)
+			if bad.ValidateIdentity("seat", "session") == nil {
+				t.Fatal("invalid physical observation accepted")
+			}
+		})
+	}
+}
