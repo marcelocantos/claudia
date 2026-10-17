@@ -7,10 +7,8 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sync"
-	"time"
 )
 
 // codexAppServerTurnSteerParams is turn/steer: fold input into the turn
@@ -64,26 +62,19 @@ func (c *codexAppServerClient) SupersededTurnID() string { return "" }
 // has the method. Its absence is the honest "no turn/steer here".
 const codexSteerSchemaFile = "v2/TurnSteerParams.json"
 
-// codexSteerProbeTimeout bounds the schema-generation probe so a wedged
-// or unexpected binary cannot stall Start.
-const codexSteerProbeTimeout = 10 * time.Second
-
-// codexSteerProbeCache remembers the answer per binary path: the CLI
-// does not grow methods between two Starts of the same install.
+// codexSteerProbeCache remembers a caller-supplied answer per binary path.
+// An uncached path is unsupported. Nothing here runs the Codex CLI.
 var codexSteerProbeCache sync.Map // bin → bool
 
-// codexAppServerSupportsSteer reports whether the Codex CLI at bin lists
-// turn/steer in its app-server protocol. It asks the binary itself, via
-// generate-json-schema into a scratch directory, rather than trusting a
-// version threshold — the CLI ships inside ChatGPT.app and its version
-// string is not the contract, its schema is.
+// codexAppServerSupportsSteer reports whether turn/steer was already
+// recorded for bin. A miss does not run `codex app-server
+// generate-json-schema` and does not create a schema directory.
 func codexAppServerSupportsSteer(bin string) bool {
 	if v, ok := codexSteerProbeCache.Load(bin); ok {
 		return v.(bool)
 	}
-	supported := codexAppServerSupportsSteerFrom(bin, runCodexSchemaProbe)
-	codexSteerProbeCache.Store(bin, supported)
-	return supported
+	codexSteerProbeCache.Store(bin, false)
+	return false
 }
 
 // codexAppServerSupportsSteerFrom is the injectable core: generate runs
@@ -107,18 +98,8 @@ func codexSchemaListsTurnSteer(outDir string) bool {
 	return err == nil && info.Mode().IsRegular() && info.Size() > 0
 }
 
-func runCodexSchemaProbe(bin, outDir string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), codexSteerProbeTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, bin, "app-server", "generate-json-schema", "--out", outDir)
-	cmd.Stdin = nil
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-	return cmd.Run()
-}
-
-// codexTurnCaps is the Codex contract as installed: the provider table's
-// steer claim stands only when the CLI's schema lists turn/steer.
+// codexTurnCaps is the Codex contract for a known steer answer. The
+// provider table's steer claim stands only when that answer is true.
 func codexTurnCaps(steerSupported bool) TurnCaps {
 	caps := ProviderTurnCaps(ProviderCodex)
 	if !steerSupported {

@@ -63,6 +63,38 @@ func TestCodexAppServerSupportsSteerFromSchemaDump(t *testing.T) {
 	}
 }
 
+// The production probe used to exec `codex app-server generate-json-schema`.
+// An uncached path must stay unsupported and must not start that binary
+// or create its scratch directory.
+func TestCodexSchemaProbeDoesNotSpawnCLI(t *testing.T) {
+	binDir := t.TempDir()
+	marker := filepath.Join(binDir, "marker")
+	script := filepath.Join(binDir, "codex")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\ntouch '"+marker+"'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir)
+	t.Setenv("CODEX_BIN", script)
+	t.Setenv("TMPDIR", binDir)
+
+	if codexAppServerSupportsSteer(script) {
+		t.Fatal("uncached install reported steer support")
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("codex CLI ran: %v", err)
+	}
+	leftover, err := filepath.Glob(filepath.Join(binDir, "claudia-codex-schema-*"))
+	if err != nil || len(leftover) != 0 {
+		t.Fatalf("schema directory created: %v %v", leftover, err)
+	}
+	if codexAppServerSupportsSteer(script) {
+		t.Fatal("cached probe flipped to supported")
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("codex CLI ran on the cached call: %v", err)
+	}
+}
+
 func TestCodexTurnCapsFollowInstalledCLI(t *testing.T) {
 	t.Parallel()
 	with := codexTurnCaps(true)

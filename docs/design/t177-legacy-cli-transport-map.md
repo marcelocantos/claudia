@@ -495,8 +495,12 @@ Still present, so the purge is not done:
 - Task mode (`claude -p`, `codex exec`, `grok -p`, `agent --print`) is
   unchanged. §9 Q1 is still an owner question. Judge, Bedrock, and
   Ollama Task backends stay API paths.
-- The 14 `claude` and 2 `grok` `auto_start` grant rows were not
-  reminted or dropped. §9 Q3 is still an owner question.
+- Q3 was answered by 🎯T189: drop, do not remint. The owner-approved
+  13-row inventory is deleted once per state directory before resume
+  (`ba2ecd6`). `1dcd5af` keeps the three personal-work names. Those
+  three are not CLI rows. `codexAppServerSupportsSteer` does not run
+  `codex app-server generate-json-schema`; an uncached binary is
+  unsupported.
 - No full `make gate`, and no fleet spawn across providers.
 
 §10 step 2 (delete the tmux library, the pool, and the live-gate rows
