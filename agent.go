@@ -360,8 +360,11 @@ type Agent struct {
 	armedPrompt    PromptCause
 	// requestPending binds the next provider turn to a host request.
 	// requestByTurn retains bindings across ACP reissues until terminal.
+	// requestRetired keeps those turn ids after the turn closes, so a late
+	// event from a predecessor cannot consume the next host send.
 	requestPending    []string
 	requestByTurn     map[string]string
+	requestRetired    map[string]string
 	requestActiveTurn string
 	// receiptTurnID survives latch consumption so duplicate started receipts
 	// cannot rearm a response already taken by a waiter. Guarded by mu.

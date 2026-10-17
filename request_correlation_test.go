@@ -132,6 +132,61 @@ func TestRequestIDWireRoundTrip(t *testing.T) {
 	}
 }
 
+// A late event from a turn that already stopped is published inside the next
+// Send, before that send's own prompt_accepted. It must keep the first host
+// id. The new acceptance still binds the id queued for this Send.
+func TestRequestIDStalePredecessorDoesNotTakeNextSend(t *testing.T) {
+	a := &Agent{provider: ProviderGrok, alive: true, ready: closedReady(), eventSubs: map[int64]EventFunc{}}
+	var got []Event
+	a.eventSubs[1] = func(ev Event) { got = append(got, ev) }
+	a.ops.send = func(a *Agent, text string) error {
+		if text == "first" {
+			a.publishEvent(acpPromptAcceptedEvent("session", 1))
+			a.publishEvent(Event{Type: "assistant", TurnID: "1", Text: "done", StopReason: "end_turn"})
+			return nil
+		}
+		a.publishEvent(Event{Type: "assistant", TurnID: "1", Text: "late predecessor"})
+		a.publishEvent(acpPromptAcceptedEvent("session", 2))
+		a.publishEvent(Event{Type: "assistant", TurnID: "2", Text: "second", StopReason: "end_turn"})
+		return nil
+	}
+	if err := a.SendWithRequestID("first", "host-A"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.SendWithRequestID("second", "host-B"); err != nil {
+		t.Fatal(err)
+	}
+	var late, acceptedB, terminalA, terminalB Event
+	var sawLate, sawAcceptedB, sawA, sawB bool
+	for _, ev := range got {
+		switch {
+		case ev.TurnID == "1" && ev.Text == "late predecessor":
+			late, sawLate = ev, true
+		case ev.TurnID == "2" && ev.ProgressType == ProgressPromptAccepted:
+			acceptedB, sawAcceptedB = ev, true
+		case ev.TurnID == "1" && ev.IsTerminalStop():
+			terminalA, sawA = ev, true
+		case ev.TurnID == "2" && ev.IsTerminalStop():
+			terminalB, sawB = ev, true
+		}
+	}
+	if !sawA || !sawB || !sawLate || !sawAcceptedB {
+		t.Fatalf("missing events: %+v", got)
+	}
+	if terminalA.RequestID != "host-A" || late.RequestID != "host-A" {
+		t.Fatalf("predecessor took the next id: terminal=%+v late=%+v", terminalA, late)
+	}
+	if acceptedB.RequestID != "host-B" || terminalB.RequestID != "host-B" {
+		t.Fatalf("new send lost its id: accepted=%+v terminal=%+v", acceptedB, terminalB)
+	}
+	a.mu.Lock()
+	pending := len(a.requestPending)
+	a.mu.Unlock()
+	if pending != 0 {
+		t.Fatalf("pending host id left over: %d", pending)
+	}
+}
+
 func TestRequestIDCodexSteerSameProviderTurn(t *testing.T) {
 	a := &Agent{provider: ProviderCodex, alive: true, ready: closedReady(), eventSubs: map[int64]EventFunc{}}
 	var got Event

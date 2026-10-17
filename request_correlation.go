@@ -7,7 +7,9 @@ package claudia
 // provider turn ids at the first event (including ACP prompt_accepted, which
 // can arrive synchronously inside Send). A Cursor reissue publishes another
 // prompt_accepted with no host send: it inherits the still-active request.
-// Provider terminal normalization does not change this mapping.
+// A turn id that already closed stays on its original request, including when
+// the late event is published inside the next Send. Provider terminal
+// normalization does not change this mapping.
 func (a *Agent) queueRequestID(id string) {
 	a.mu.Lock()
 	a.requestPending = append(a.requestPending, id) // empty is a real, uncorrelated send
@@ -34,6 +36,12 @@ func (a *Agent) correlateRequestLocked(ev *Event) {
 	if a.brokerGrant != "" || ev.TurnID == "" {
 		return
 	}
+	// A predecessor turn already closed. Stamp its request and leave the
+	// pending host send for a turn this process has not seen.
+	if id, ok := a.requestRetired[ev.TurnID]; ok {
+		ev.RequestID = id
+		return
+	}
 	if a.requestByTurn == nil {
 		a.requestByTurn = make(map[string]string)
 	}
@@ -55,12 +63,29 @@ func (a *Agent) correlateRequestLocked(ev *Event) {
 	// All supported paths publish an assistant terminal stop for the actual
 	// logical close (or a terminal error without an assistant answer).
 	if ev.IsTerminalStop() || ev.IsError {
-		if ev.TurnID == a.requestActiveTurn {
-			clear(a.requestByTurn)
-			a.requestActiveTurn = ""
-		} else {
-			delete(a.requestByTurn, ev.TurnID)
+		a.retireRequestTurnLocked(ev.TurnID)
+	}
+}
+
+// retireRequestTurnLocked remembers a closed turn's host request. The active
+// turn's close also retires every provider id bound to it, including a Cursor
+// reissue, then drops the live map. A later event on any of those ids must
+// not bind the next queued send.
+func (a *Agent) retireRequestTurnLocked(turnID string) {
+	if a.requestRetired == nil {
+		a.requestRetired = make(map[string]string)
+	}
+	if turnID == a.requestActiveTurn {
+		for turn, id := range a.requestByTurn {
+			a.requestRetired[turn] = id
 		}
+		clear(a.requestByTurn)
+		a.requestActiveTurn = ""
+		return
+	}
+	if id, ok := a.requestByTurn[turnID]; ok {
+		a.requestRetired[turnID] = id
+		delete(a.requestByTurn, turnID)
 	}
 }
 
