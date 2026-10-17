@@ -13,6 +13,12 @@ import (
 	"github.com/marcelocantos/sqlpipe/go/sqlpipe"
 )
 
+func init() {
+	// The daemon calls Registry.ReconcileControlFile and cannot import this
+	// package. Importing this package is what links the call.
+	claudia.SetReconcileControlFile(ReconcileFile)
+}
+
 const (
 	statusRunning         = "running"
 	statusUngranted       = "ungranted"

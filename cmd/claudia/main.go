@@ -40,6 +40,9 @@ import (
 	"time"
 
 	"github.com/marcelocantos/claudia"
+	// controlplane's init links the reconciler daemon.New calls. The daemon
+	// package cannot import it.
+	_ "github.com/marcelocantos/claudia/controlplane"
 	"github.com/marcelocantos/claudia/daemon"
 	"github.com/marcelocantos/claudia/internal/broker"
 	"github.com/marcelocantos/claudia/omp"

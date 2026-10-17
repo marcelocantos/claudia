@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/marcelocantos/claudia"
 	"github.com/marcelocantos/claudia/controlplane"
@@ -23,6 +22,8 @@ import (
 // TestT10749DaemonRestartKeepsSession re-execs this test binary twice.
 // Each child is a new OS process that calls daemon.New. The second process
 // is a bounce: RequireResume stays set, and the session id does not change.
+// The child process exiting is the event this waits on. go test -timeout
+// is the clock.
 func TestT10749DaemonRestartKeepsSession(t *testing.T) {
 	if os.Getenv("T1074_9_CHILD") == "1" {
 		runT10749Child(t)
@@ -55,11 +56,9 @@ func TestT10749DaemonRestartKeepsSession(t *testing.T) {
 	}
 
 	for i := 0; i < 2; i++ {
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestT10749DaemonRestartKeepsSession$", "-test.count=1")
+		cmd := exec.Command(os.Args[0], "-test.run=^TestT10749DaemonRestartKeepsSession$", "-test.count=1")
 		cmd.Env = append(os.Environ(), "T1074_9_CHILD=1", "T1074_9_DIR="+dir, "T1074_9_SEAT=seat-a")
 		out, err := cmd.CombinedOutput()
-		cancel()
 		if err != nil {
 			t.Fatalf("child %d: %v\n%s", i, err, out)
 		}

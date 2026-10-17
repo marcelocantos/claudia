@@ -90,6 +90,25 @@ func TestDaemonImportsOnlyTheLibraryAndTheWire(t *testing.T) {
 		t.Fatalf("the daemon imports module packages other than the library and the wire:\n  %s", strings.Join(bad, "\n  "))
 	}
 
+	// broker serve is the process that calls daemon.New. It imports
+	// controlplane so that package's init links the reconciler. This
+	// package must not import it, and the library must not either,
+	// because controlplane already imports the library.
+	mainFile, err := parser.ParseFile(fset, "../cmd/claudia/main.go", nil, parser.ImportsOnly)
+	if err != nil {
+		t.Fatal(err)
+	}
+	linked := false
+	for _, imp := range mainFile.Imports {
+		path, _ := strconv.Unquote(imp.Path.Value)
+		if path == module+"/controlplane" {
+			linked = true
+		}
+	}
+	if !linked {
+		t.Fatal("cmd/claudia/main.go does not import " + module + "/controlplane; broker serve would start with no reconciler")
+	}
+
 	daemonPath := module + "/daemon"
 	walked := 0
 	err = filepath.WalkDir("..", func(path string, d fs.DirEntry, err error) error {

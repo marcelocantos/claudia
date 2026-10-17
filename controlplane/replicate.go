@@ -31,7 +31,8 @@ const (
 	// IntentTable is the Jevons-owned control intent. One row per operation.
 	IntentTable = "jevons_control_intent"
 	// ClaudiaDBFile is the Claudia-hosted file name inside a shared state directory.
-	ClaudiaDBFile = "claudia-control.db"
+	// The library owns the spelling. This name is the same constant.
+	ClaudiaDBFile = claudia.ClaudiaDBFile
 	// JevonsDBFile is the Jevons-hosted file name beside ClaudiaDBFile.
 	JevonsDBFile = "control-replica.db"
 )

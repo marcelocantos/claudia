@@ -21,7 +21,6 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/marcelocantos/claudia"
-	"github.com/marcelocantos/claudia/controlplane"
 	"github.com/marcelocantos/claudia/internal/broker"
 )
 
@@ -267,8 +266,11 @@ func New(opts Options) (*Daemon, error) {
 		reg.SetLaunchers(opts.launchers)
 	}
 	// Desired rows already on the Claudia file are applied before the socket
-	// listens. A missing file leaves every running seat alone.
-	if err := controlplane.ReconcileFile(context.Background(), filepath.Join(stateDir, controlplane.ClaudiaDBFile), reg); err != nil {
+	// listens. A missing file leaves every running seat alone. The broker
+	// command imports controlplane, whose init links this call. This package
+	// cannot: controlplane already imports the library, and the daemon may
+	// import only the library and the wire.
+	if err := reg.ReconcileControlFile(context.Background(), filepath.Join(stateDir, claudia.ClaudiaDBFile)); err != nil {
 		return nil, fmt.Errorf("broker daemon: control plane: %w", err)
 	}
 	claims, err := loadSeatClaims(filepath.Join(stateDir, claimsFile))
