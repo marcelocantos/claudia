@@ -9,6 +9,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -178,5 +179,76 @@ func TestListCursorModelsRefreshFailureFallsBackToCache(t *testing.T) {
 	}
 	if cat == nil || cat.Source != CursorModelSourceCache || !cat.Stale || cat.Models[0].ID != "stale-ok" {
 		t.Fatalf("catalog = %+v err=%v", cat, err)
+	}
+}
+
+// A nil runner is the production default. Refresh and a past MaxAge must
+// name the refusal and must not start the agent binary.
+func TestListCursorModelsNilRunnerDoesNotSpawnCLI(t *testing.T) {
+	binDir := t.TempDir()
+	marker := filepath.Join(binDir, "marker")
+	script := "#!/bin/sh\ntouch '" + marker + "'\n"
+	for _, name := range []string{"agent", "cursor-agent"} {
+		if err := os.WriteFile(filepath.Join(binDir, name), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", binDir)
+	t.Setenv("CURSOR_BIN", filepath.Join(binDir, "agent"))
+	t.Setenv("TMPDIR", binDir)
+
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "missing.json")
+	cat, err := ListCursorModels(context.Background(), &ListCursorModelsArgs{
+		Refresh:   true,
+		CachePath: missing,
+	})
+	if !errors.Is(err, errCursorModelsCLIRemoved) || !strings.Contains(err.Error(), "embedded snapshot") {
+		t.Fatalf("refresh err = %v", err)
+	}
+	if cat == nil || cat.Source != CursorModelSourceEmbedded || !cat.Stale || len(cat.Models) < 10 {
+		t.Fatalf("catalog = %+v", cat)
+	}
+	if _, statErr := os.Stat(missing); !os.IsNotExist(statErr) {
+		t.Fatalf("refresh wrote a cache: %v", statErr)
+	}
+
+	path := filepath.Join(dir, "cursor-models.json")
+	fetched := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	if err := writeCursorModelsCache(path, cursorModelsCacheFileV1{
+		FetchedAt: fetched,
+		Models:    []CursorModel{{ID: "kept"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cat, err = ListCursorModels(context.Background(), &ListCursorModelsArgs{
+		Refresh:   true,
+		CachePath: path,
+	})
+	if !errors.Is(err, errCursorModelsCLIRemoved) || !strings.Contains(err.Error(), "stale cache") {
+		t.Fatalf("cached refresh err = %v", err)
+	}
+	if cat == nil || cat.Source != CursorModelSourceCache || !cat.Stale || len(cat.Models) != 1 || cat.Models[0].ID != "kept" {
+		t.Fatalf("cached catalog = %+v", cat)
+	}
+
+	cat, err = ListCursorModels(context.Background(), &ListCursorModelsArgs{
+		CachePath: path,
+		MaxAge:    time.Hour,
+		Now:       fetched.Add(2 * time.Hour),
+	})
+	if !errors.Is(err, errCursorModelsCLIRemoved) {
+		t.Fatalf("max-age err = %v", err)
+	}
+	if cat == nil || cat.Source != CursorModelSourceCache || !cat.Stale || cat.Models[0].ID != "kept" {
+		t.Fatalf("max-age catalog = %+v", cat)
+	}
+
+	raw, cliErr := runCursorModelsCLI(context.Background(), &ListCursorModelsArgs{Refresh: true})
+	if raw != nil || !errors.Is(cliErr, errCursorModelsCLIRemoved) {
+		t.Fatalf("runCursorModelsCLI = %q, %v", raw, cliErr)
+	}
+	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+		t.Fatalf("agent CLI ran: %v", statErr)
 	}
 }

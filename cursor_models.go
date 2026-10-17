@@ -4,13 +4,12 @@
 package claudia
 
 import (
-	"bytes"
 	"context"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -27,7 +26,7 @@ const (
 	CursorModelSourceCache CursorModelSource = "cache"
 	// CursorModelSourceEmbedded is the library-shipped fallback snapshot.
 	CursorModelSourceEmbedded CursorModelSource = "embedded"
-	// CursorModelSourceCLI is a fresh `agent models` / `--list-models` run.
+	// CursorModelSourceCLI is a catalog supplied by [ListCursorModelsArgs.RunModels].
 	CursorModelSourceCLI CursorModelSource = "cli"
 )
 
@@ -73,9 +72,11 @@ type cursorModelsCacheFileV1 struct {
 // A nil args value means fully offline: return cache if present, else the
 // embedded snapshot — never spawn the Cursor agent CLI.
 type ListCursorModelsArgs struct {
-	// Refresh forces a CLI refresh and rewrites the cache.
+	// Refresh asks for a catalog update and rewrites the cache when RunModels
+	// succeeds. A nil RunModels refuses and does not spawn the agent CLI.
 	Refresh bool
-	// MaxAge triggers a CLI refresh when the cache is older than this.
+	// MaxAge asks for a catalog update when the cache is older than this.
+	// A nil RunModels refuses the same way as Refresh.
 	// Zero (the default) never auto-refreshes.
 	MaxAge time.Duration
 	// CachePath overrides the cache file location (tests / host-owned paths).
@@ -83,7 +84,8 @@ type ListCursorModelsArgs struct {
 	CachePath string
 	// Now overrides wall clock (tests). Zero uses time.Now.
 	Now time.Time
-	// RunModels, when set, replaces the `agent models` subprocess (tests).
+	// RunModels, when set, supplies the catalog bytes. Nil refuses; it does
+	// not launch `agent models`.
 	RunModels func(ctx context.Context) ([]byte, error)
 }
 
@@ -91,8 +93,9 @@ type ListCursorModelsArgs struct {
 //
 // Offline-first: by default this never runs the agent CLI. It returns the
 // on-disk cache when present, otherwise the embedded snapshot shipped with
-// this library. Pass Refresh: true (or a MaxAge) to update the cache from
-// `agent models`.
+// this library. Refresh or a past MaxAge asks the injected RunModels runner
+// to update the cache. A nil runner refuses and returns the stale cache or
+// the embedded snapshot.
 func ListCursorModels(ctx context.Context, args *ListCursorModelsArgs) (*CursorModelCatalog, error) {
 	if args == nil {
 		args = &ListCursorModelsArgs{}
@@ -189,26 +192,17 @@ func defaultCursorModelsCachePath() (string, error) {
 	return filepath.Join(dir, "claudia", cursorModelsCacheFile), nil
 }
 
+// errCursorModelsCLIRemoved is the refusal for a nil RunModels.
+// The `agent models` subprocess that used to refresh the catalog is gone.
+var errCursorModelsCLIRemoved = errors.New("cursor models refresh: agent CLI removed")
+
+// runCursorModelsCLI returns catalog bytes from an injected runner.
+// A nil runner refuses before any binary lookup or exec.
 func runCursorModelsCLI(ctx context.Context, args *ListCursorModelsArgs) ([]byte, error) {
-	if args.RunModels != nil {
-		return args.RunModels(ctx)
+	if args == nil || args.RunModels == nil {
+		return nil, errCursorModelsCLIRemoved
 	}
-	bin, err := resolveCursorBin()
-	if err != nil {
-		return nil, err
-	}
-	cmd := exec.CommandContext(ctx, bin, "models")
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		msg := strings.TrimSpace(stderr.String())
-		if msg == "" {
-			msg = err.Error()
-		}
-		return nil, fmt.Errorf("%s models: %s", bin, msg)
-	}
-	return stdout.Bytes(), nil
+	return args.RunModels(ctx)
 }
 
 func readCursorModelsCache(path string) (*cursorModelsCacheFileV1, error) {
