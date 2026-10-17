@@ -17,8 +17,6 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/marcelocantos/claudia/internal/broker"
-
-	"github.com/marcelocantos/claudia/internal/tmuxagent"
 )
 
 // AgentDef is the persistent definition of a named agent stored in a [Registry].
@@ -899,16 +897,15 @@ func (r *Registry) StopAll() {
 	}
 }
 
-// reapSessionWindows kills leftover Claude tmux windows for def's
-// session. Grok connect-mode processes are reached via ConnectPID on
-// the next Launch, not here.
+// reapSessionWindows used to kill leftover Claude tmux windows for
+// def's session. It now logs the refusal and does not call tmux.
+// Grok connect-mode processes are reached via ConnectPID on the next
+// Launch, not here.
 func reapSessionWindows(def *AgentDef) {
 	if def == nil || !isClaudeProvider(def.Provider) || def.SessionID == "" {
 		return
 	}
-	if err := tmuxagent.KillWindowsForSession(def.SessionID); err != nil {
-		slog.Warn("reap session windows", "name", def.Name, "session", def.SessionID, "err", err)
-	}
+	slog.Warn("reap session windows refused", "name", def.Name, "session", def.SessionID, "err", ErrLegacyCLISeatTransport)
 }
 
 // EnsureAgent returns the existing [AgentDef] for name if it is already

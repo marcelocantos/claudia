@@ -8,12 +8,11 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/marcelocantos/claudia/internal/wallclockguard"
 )
 
 // acpSteerClient is the seat-side surface both ACP clients share for the
@@ -528,58 +527,43 @@ func assertACPSteerRun(t *testing.T, run *acpSteerRun, marker string) {
 // Whole-client hermetic on the fake peers: the child holds the first
 // prompt, folds the steer in, settles the old id as cancelled and the new
 // id as end_turn.
+
 func TestHermeticACPSteerMidTurn(t *testing.T) {
 	t.Run("cursor", func(t *testing.T) {
-		bin := writeFakeCursorACP(t)
-		t.Setenv("FAKE_ACP_STEER", "1")
-		var mu sync.Mutex
-		var got []Event
-		ctx := wallclockguard.UntilTestTimeout(t)
-		c, err := startCursorACP(ctx, bin, t.TempDir(), "", "", false, nil, nil, func(ev Event) {
-			mu.Lock()
-			got = append(got, ev)
-			mu.Unlock()
-		}, nil)
-		if err != nil {
+		marker := filepath.Join(t.TempDir(), "ran")
+		bin := filepath.Join(t.TempDir(), "bin")
+		if err := os.WriteFile(bin, []byte("#!/bin/sh\ntouch "+marker+"\n"), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		defer c.Close()
-		wire := &acpWireRecorder{}
-		c.mu.Lock()
-		c.stdin = teeWriteCloser{c.stdin, wire}
-		c.mu.Unlock()
-		run := driveACPSteer(t, ctx, c, func() []Event {
-			mu.Lock()
-			defer mu.Unlock()
-			return append([]Event(nil), got...)
-		}, wire, "write a long essay", "stop; reply STEERED")
-		assertACPSteerRun(t, run, "STEERED")
+		c, err := startCursorACP(t.Context(), bin, t.TempDir(), "", "", false, nil, nil, nil, nil)
+		if c != nil {
+			c.Close()
+			t.Fatal("returned a client")
+		}
+		if !errors.Is(err, ErrLegacyCLISeatTransport) {
+			t.Fatalf("startCursorACP = %v, want legacy refusal", err)
+		}
+		if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+			t.Fatalf("executed the binary: %v", statErr)
+		}
 	})
 	t.Run("grok", func(t *testing.T) {
-		bin := writeFakeGrokACP(t)
-		t.Setenv("FAKE_ACP_STEER", "1")
-		var mu sync.Mutex
-		var got []Event
-		ctx := wallclockguard.UntilTestTimeout(t)
-		c, err := startGrokACP(bin, t.TempDir(), "", "", false, nil, nil, func(ev Event) {
-			mu.Lock()
-			got = append(got, ev)
-			mu.Unlock()
-		}, nil)
-		if err != nil {
+		marker := filepath.Join(t.TempDir(), "ran")
+		bin := filepath.Join(t.TempDir(), "bin")
+		if err := os.WriteFile(bin, []byte("#!/bin/sh\ntouch "+marker+"\n"), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		defer c.Close()
-		wire := &acpWireRecorder{}
-		c.mu.Lock()
-		c.stdin = teeWriteCloser{c.stdin, wire}
-		c.mu.Unlock()
-		run := driveACPSteer(t, ctx, c, func() []Event {
-			mu.Lock()
-			defer mu.Unlock()
-			return append([]Event(nil), got...)
-		}, wire, "write a long essay", "stop; reply STEERED")
-		assertACPSteerRun(t, run, "STEERED")
+		c, err := startGrokACP(bin, t.TempDir(), "", "", false, nil, nil, nil, nil)
+		if c != nil {
+			c.Close()
+			t.Fatal("returned a client")
+		}
+		if !errors.Is(err, ErrLegacyCLISeatTransport) {
+			t.Fatalf("startGrokACP = %v, want legacy refusal", err)
+		}
+		if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+			t.Fatalf("executed the binary: %v", statErr)
+		}
 	})
 }
 
@@ -604,14 +588,8 @@ func (t teeWriteCloser) Close() error {
 	return nil
 }
 
-const acpLiveSteerFirst = "Write a 400-word story about a lighthouse keeper, one sentence per line, without using any tools. Do not stop early."
-
-const acpLiveSteerText = "Stop the story right now. Reply with exactly the single word STEERED and nothing else."
-
-// TestCursorSessionLiveSmokeSteer is the 🎯T72.1 owner acceptance on the
-// real Cursor agent: a mid-turn steer changes the reply's direction, with
-// no session/cancel on the wire. Opt-in (spends credit). The name extends
-// TestCursorSessionLiveSmoke so `make live` selects it.
+// TestCursorSessionLiveSmokeSteer keeps its live-gate name. The ACP
+// constructor refuses, so the body asserts that refusal.
 func TestCursorSessionLiveSmokeSteer(t *testing.T) {
 	if os.Getenv("CLAUDIA_CURSOR_LIVE") == "" {
 		t.Skip("CLAUDIA_CURSOR_LIVE not set (this test spends API credit)")
@@ -620,34 +598,14 @@ func TestCursorSessionLiveSmokeSteer(t *testing.T) {
 	if err != nil {
 		t.Skipf("cursor agent binary not found: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
-	defer cancel()
-	var mu sync.Mutex
-	var got []Event
-	c, err := startCursorACP(ctx, bin, t.TempDir(), "", "", false, nil, nil, func(ev Event) {
-		mu.Lock()
-		got = append(got, ev)
-		mu.Unlock()
-	}, nil)
-	if err != nil {
-		t.Fatal(err)
+	c, err := startCursorACP(t.Context(), bin, t.TempDir(), "", "", false, nil, nil, nil, nil)
+	if c != nil || !errors.Is(err, ErrLegacyCLISeatTransport) {
+		t.Fatalf("startCursorACP = (%v, %v), want legacy refusal", c, err)
 	}
-	defer c.Close()
-	wire := &acpWireRecorder{}
-	c.mu.Lock()
-	c.stdin = teeWriteCloser{c.stdin, wire}
-	c.mu.Unlock()
-	run := driveACPSteer(t, ctx, c, func() []Event {
-		mu.Lock()
-		defer mu.Unlock()
-		return append([]Event(nil), got...)
-	}, wire, acpLiveSteerFirst, acpLiveSteerText)
-	logACPSteerRun(t, run)
-	assertACPSteerRun(t, run, "STEERED")
 }
 
-// TestGrokSessionLiveSmokeSteer is the Grok wire for the same change
-// (finish-slice policy: Grok may complete its current slice first).
+// TestGrokSessionLiveSmokeSteer keeps its live-gate name. The ACP
+// constructor refuses, so the body asserts that refusal.
 func TestGrokSessionLiveSmokeSteer(t *testing.T) {
 	if os.Getenv("CLAUDIA_GROK_LIVE") == "" {
 		t.Skip("CLAUDIA_GROK_LIVE not set (this test spends API credit)")
@@ -656,31 +614,10 @@ func TestGrokSessionLiveSmokeSteer(t *testing.T) {
 	if err != nil {
 		t.Skipf("grok binary not found: %v", err)
 	}
-	t.Setenv(EnvGrokConnect, "")
-	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
-	defer cancel()
-	var mu sync.Mutex
-	var got []Event
-	c, err := startGrokACP(bin, t.TempDir(), "", "", false, nil, nil, func(ev Event) {
-		mu.Lock()
-		got = append(got, ev)
-		mu.Unlock()
-	}, nil)
-	if err != nil {
-		t.Fatal(err)
+	c, err := startGrokACP(bin, t.TempDir(), "", "", false, nil, nil, nil, nil)
+	if c != nil || !errors.Is(err, ErrLegacyCLISeatTransport) {
+		t.Fatalf("startGrokACP = (%v, %v), want legacy refusal", c, err)
 	}
-	defer c.Close()
-	wire := &acpWireRecorder{}
-	c.mu.Lock()
-	c.stdin = teeWriteCloser{c.stdin, wire}
-	c.mu.Unlock()
-	run := driveACPSteer(t, ctx, c, func() []Event {
-		mu.Lock()
-		defer mu.Unlock()
-		return append([]Event(nil), got...)
-	}, wire, acpLiveSteerFirst, acpLiveSteerText)
-	logACPSteerRun(t, run)
-	assertACPSteerRun(t, run, "STEERED")
 }
 
 func logACPSteerRun(t *testing.T, run *acpSteerRun) {

@@ -4,15 +4,14 @@
 package tmuxagent
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/marcelocantos/claudia/internal/testctlenv"
-	"github.com/marcelocantos/claudia/internal/wallclockguard"
 )
 
 // testServerSocket points tmuxagent at a private tmux server for the
@@ -78,43 +77,13 @@ func TestEnsureServerStripsTestControlEnv(t *testing.T) {
 
 	// The window is what actually matters: it is the shell a fleet
 	// agent runs `go test ./...` in.
-	workdir, err := os.MkdirTemp("", "clwork")
-	if err != nil {
-		t.Fatalf("temp workdir: %v", err)
+	dump := filepath.Join(t.TempDir(), "env.txt")
+	id, err := SpawnWindow(t.TempDir(), "envprobe", "sh", []string{"-c", "env > " + dump})
+	if id != "" || !errors.Is(err, ErrLegacyCLISeatTransport) {
+		t.Fatalf("SpawnWindow = (%q, %v), want legacy refusal", id, err)
 	}
-	defer os.RemoveAll(workdir)
-
-	dump := filepath.Join(workdir, "env.txt")
-	windowID, err := SpawnWindow(workdir, "envprobe", "sh",
-		[]string{"-c", "env > " + dump + ".tmp && mv " + dump + ".tmp " + dump + " && sleep 30"})
-	if err != nil {
-		t.Fatalf("SpawnWindow: %v", err)
-	}
-	t.Cleanup(func() { _ = KillWindow(windowID) })
-
-	var data []byte
-	backstop := wallclockguard.UntilTestTimeout(t)
-	for {
-		data, err = os.ReadFile(dump)
-		if err == nil {
-			break
-		}
-		if backstop.Err() != nil {
-			t.Fatalf("window never wrote its environment to %s", dump)
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-
-	windowEnv := string(data)
-	for _, name := range testctlenv.All() {
-		for line := range strings.SplitSeq(windowEnv, "\n") {
-			if strings.HasPrefix(line, name+"=") {
-				t.Errorf("agent window inherited %s (%q) — a fleet agent's suite differs from the owner's", name, line)
-			}
-		}
-	}
-	if !strings.Contains(windowEnv, "CLAUDIA_CODEX_AUTH_PATH=/keep/me") {
-		t.Error("agent window lost CLAUDIA_CODEX_AUTH_PATH — the strip is too wide and breaks provider config")
+	if _, statErr := os.Stat(dump); !os.IsNotExist(statErr) {
+		t.Fatalf("SpawnWindow wrote a window environment: %v", statErr)
 	}
 }
 

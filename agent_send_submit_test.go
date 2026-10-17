@@ -6,9 +6,7 @@ package claudia
 import (
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/marcelocantos/claudia/internal/tmuxagent"
@@ -52,43 +50,27 @@ func TestSendPropagatesProviderSendFailure(t *testing.T) {
 // waitContentLanded / ensureSubmitted), so a swallow reintroduced at
 // any link turns this red.
 func TestClaudeSendReportsUnsubmittedTurnThroughRealTmux(t *testing.T) {
-	if _, err := exec.LookPath("tmux"); err != nil {
-		t.Skip("tmux not installed")
+	marker := filepath.Join(t.TempDir(), "ran")
+	bin := filepath.Join(t.TempDir(), "cat")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\ntouch "+marker+"\n"), 0o755); err != nil {
+		t.Fatal(err)
 	}
-	// Isolated server: never touch the live claudia tmux socket. The
-	// socket lives in a short temp path of its own — t.TempDir() encodes
-	// the test name and blows the 104-byte sun_path limit.
-	sockDir, err := os.MkdirTemp("", "t28")
+	sockDir, err := os.MkdirTemp("/tmp", "t28")
 	if err != nil {
-		t.Fatalf("MkdirTemp: %v", err)
+		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(sockDir) })
 	sock := filepath.Join(sockDir, "s.sock")
 	t.Setenv("CLAUDIA_TMUX_SOCKET", sock)
-	if err := tmuxagent.EnsureServer(); err != nil {
-		t.Skipf("cannot start an isolated tmux server: %v", err)
-	}
-	t.Cleanup(func() { _ = exec.Command("tmux", "-S", sock, "kill-server").Run() })
 
-	windowID, err := tmuxagent.SpawnWindow(t.TempDir(), "t28-no-swallow", "cat", nil)
-	if err != nil {
-		t.Fatalf("SpawnWindow: %v", err)
+	id, err := tmuxagent.SpawnWindow(t.TempDir(), "t28-no-swallow", bin, nil)
+	if id != "" || !errors.Is(err, tmuxagent.ErrLegacyCLISeatTransport) {
+		t.Fatalf("SpawnWindow = (%q, %v), want legacy refusal", id, err)
 	}
-	ready := make(chan struct{})
-	close(ready)
-	a := &Agent{
-		provider:     ProviderClaude,
-		alive:        true,
-		ready:        ready,
-		ops:          claudeAgentOps(),
-		tmuxWindowID: windowID,
+	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+		t.Fatalf("SpawnWindow executed the command: %v", statErr)
 	}
-
-	msg := "🎯T28 payload that will never become a turn.\n" +
-		strings.Repeat("padding so the send path takes the bracketed-paste branch.\n", 8)
-	if err := a.Send(msg); err == nil {
-		t.Fatal("Agent.Send returned nil for a payload that never became a turn")
-	} else if !strings.Contains(err.Error(), "turn not submitted") {
-		t.Errorf("error should name the unsubmitted turn: %v", err)
+	if _, statErr := os.Stat(sock); !os.IsNotExist(statErr) {
+		t.Fatalf("SpawnWindow created a tmux socket: %v", statErr)
 	}
 }

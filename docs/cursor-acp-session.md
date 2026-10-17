@@ -127,9 +127,9 @@ even static config were ignored on some CLI builds — live
 ### Oracles
 
 - Session `StartAgent` does not exec. `TestT1055CLIBackendsDoNotSpawn`.
-- Direct ACP client tests still call `startCursorACP` against
-  `testdata/cursor/acp/fake_acp.py` (`TestCursorStartupCancellationAtEveryStage`,
-  the startup deadline tests). Those are not the seat path.
+- Direct ACP client tests call `startCursorACP` and assert
+  `ErrLegacyCLISeatTransport`. The constructor does not exec
+  `testdata/cursor/acp/fake_acp.py`. Those tests are not the seat path.
 - Opening-prompt silence (🎯T83 / 🎯T91): `TestT1055CursorOpeningWatchReportsStuck`
   on an in-memory client, and `TestCursorPromptWithoutWakePathDoesNotPark`.
 - Dead transport: `TestCursorStuckPromptWaitEndsWhenTransportDies`.

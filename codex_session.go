@@ -92,59 +92,10 @@ func codexThreadStartParams(req agentStartRequest) codexAppServerThreadStartPara
 	}
 }
 
+// startCodexAppServer refuses a CLI app-server client. It used to spawn
+// `codex app-server` and run the handshake.
 func startCodexAppServer(bin, workDir, model, sessionID string, requireResume bool, sandbox string, tuning codexSandboxTuning, extraEnv []string, onEvent func(Event), onClose func()) (*codexAppServerClient, error) {
-	cmd := exec.Command(bin, append([]string{"app-server"}, codexSandboxArgs(tuning)...)...)
-	cmd.Dir = workDir
-	if len(extraEnv) > 0 {
-		cmd.Env = appendEnv(nil, extraEnv)
-	}
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return nil, fmt.Errorf("codex app-server stdin: %w", err)
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		_ = stdin.Close()
-		return nil, fmt.Errorf("codex app-server stdout: %w", err)
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		_ = stdin.Close()
-		_ = stdout.Close()
-		return nil, fmt.Errorf("codex app-server stderr: %w", err)
-	}
-	if err := cmd.Start(); err != nil {
-		_ = stdin.Close()
-		_ = stdout.Close()
-		_ = stderr.Close()
-		return nil, fmt.Errorf("start codex app-server: %w", err)
-	}
-
-	c := &codexAppServerClient{
-		cmd:           cmd,
-		stdin:         stdin,
-		stdout:        stdout,
-		stderr:        stderr,
-		sandbox:       resolveCodexSandbox(sandbox),
-		sandboxTuning: tuning,
-		pending:       make(map[int64]chan []byte),
-		exclusiveHome: envValue(extraEnv, "CODEX_HOME"),
-		workDir:       workDir,
-		onEvent:       onEvent,
-		onClose:       onClose,
-	}
-	go c.drainStderr()
-	go c.readLoop()
-
-	if err := c.initialize(); err != nil {
-		c.Close()
-		return nil, err
-	}
-	if err := c.openThread(workDir, model, sessionID, requireResume); err != nil {
-		c.Close()
-		return nil, err
-	}
-	return c, nil
+	return nil, fmt.Errorf("%w: %s", ErrLegacyCLISeatTransport, ProviderCodex)
 }
 
 func (c *codexAppServerClient) ThreadID() string {

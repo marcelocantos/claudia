@@ -6,12 +6,14 @@ package claudia
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/marcelocantos/claudia/internal/broker"
+	"github.com/marcelocantos/claudia/internal/tmuxagent"
 	"github.com/marcelocantos/claudia/omp"
 )
 
@@ -101,5 +103,80 @@ func TestT1055CursorOpeningWatchReportsStuck(t *testing.T) {
 	err := c.Prompt("the opening brief")
 	if !errors.Is(err, ErrCursorPromptStuck) {
 		t.Fatalf("Prompt = %v, want ErrCursorPromptStuck", err)
+	}
+}
+
+// TestT1055CompiledSpawnPathsDoNotExec drives the spawn entry points that
+// remained after the concrete StartAgent bodies were removed. Each one
+// returns the legacy refusal, and the marker binary is not executed.
+func TestT1055CompiledSpawnPathsDoNotExec(t *testing.T) {
+	sockDir, err := os.MkdirTemp("/tmp", "t1055s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(sockDir) })
+	sock := filepath.Join(sockDir, "s.sock")
+	t.Setenv("CLAUDIA_TMUX_SOCKET", sock)
+	t.Setenv(broker.NoBrokerEnv, "1")
+
+	marker := filepath.Join(sockDir, "ran")
+	bin := filepath.Join(sockDir, "bin")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\ntouch "+marker+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CLAUDE_BIN", bin)
+	work := t.TempDir()
+
+	id, err := tmuxagent.SpawnWindow(work, "w", bin, nil)
+	if id != "" || !errors.Is(err, tmuxagent.ErrLegacyCLISeatTransport) {
+		t.Fatalf("SpawnWindow = (%q, %v), want legacy refusal", id, err)
+	}
+	if _, err := Acquire(context.Background(), Config{WorkDir: work}); !errors.Is(err, ErrLegacyCLISeatTransport) {
+		t.Fatalf("Acquire = %v, want legacy refusal", err)
+	}
+	if _, err := AcquireDirect(context.Background(), Config{WorkDir: work}); !errors.Is(err, ErrLegacyCLISeatTransport) {
+		t.Fatalf("AcquireDirect = %v, want legacy refusal", err)
+	}
+	client, err := startCodexAppServer(bin, work, "", "", false, "", codexSandboxTuning{}, nil, nil, nil)
+	if client != nil || !errors.Is(err, ErrLegacyCLISeatTransport) {
+		if client != nil {
+			client.Close()
+		}
+		t.Fatalf("startCodexAppServer = (%v, %v), want legacy refusal", client, err)
+	}
+	if _, err := startGrokACP(bin, work, "", "", false, nil, nil, nil, nil); !errors.Is(err, ErrLegacyCLISeatTransport) {
+		t.Fatalf("startGrokACP = %v, want legacy refusal", err)
+	}
+	if _, err := startGrokACPConnect(bin, work, "", "", false, nil, Config{}, nil, nil, nil); !errors.Is(err, ErrLegacyCLISeatTransport) {
+		t.Fatalf("startGrokACPConnect = %v, want legacy refusal", err)
+	}
+	if _, err := spawnDetachedGrokServe(bin, "", nil); !errors.Is(err, ErrLegacyCLISeatTransport) {
+		t.Fatalf("spawnDetachedGrokServe = %v, want legacy refusal", err)
+	}
+	if c, err := startCursorACP(t.Context(), bin, work, "", "", false, nil, nil, nil, nil); c != nil || !errors.Is(err, ErrLegacyCLISeatTransport) {
+		if c != nil {
+			c.Close()
+		}
+		t.Fatalf("startCursorACP = (%v, %v), want legacy refusal", c, err)
+	}
+
+	reg, err := NewRegistry(filepath.Join(work, "agents.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.Register(AgentDef{
+		Name:      "ghost",
+		WorkDir:   work,
+		SessionID: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	reg.Stop("ghost")
+
+	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+		t.Fatalf("a spawn path executed the binary: %v", statErr)
+	}
+	if _, statErr := os.Stat(sock); !os.IsNotExist(statErr) {
+		t.Fatalf("a spawn path created a tmux socket: %v", statErr)
 	}
 }

@@ -5,7 +5,6 @@ package claudia
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -124,77 +123,27 @@ func TestCursorSessionLiveSmoke(t *testing.T) {
 
 // A provider that remains alive but withholds a startup response reproduces
 // the development hang. Cancellation must finish cleanup, not abandon Start.
+
 func TestCursorStartupCancellationAtEveryStage(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "ran")
+	bin := filepath.Join(t.TempDir(), "cursor")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\ntouch "+marker+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	for _, method := range []string{"initialize", "authenticate", "session/load", "session/new"} {
 		t.Run(method, func(t *testing.T) {
-			bin := writeFakeCursorACP(t)
-			logPath := filepath.Join(t.TempDir(), "requests.jsonl")
-			t.Setenv("FAKE_ACP_REQUEST_LOG", logPath)
-			t.Setenv("FAKE_ACP_WITHHOLD", method)
-			ctx, cancel := context.WithCancel(t.Context())
-			defer cancel()
-			sid := "saved-conversation"
-			if method == "session/new" {
-				sid = ""
+			c, err := startCursorACP(t.Context(), bin, t.TempDir(), "", "saved-conversation", false, nil, nil, nil, nil)
+			if c != nil {
+				c.Close()
+				t.Fatal("returned a client")
 			}
-			done := make(chan error, 1)
-			go func() {
-				c, err := startCursorACP(ctx, bin, t.TempDir(), "", sid, false, nil, nil, nil, nil)
-				if c != nil {
-					c.Close()
-				}
-				done <- err
-			}()
-			var pid int
-			deadline := wallclockguard.UntilTestTimeout(t)
-			// 🎯T97 exemption: a poll interval. A tick only re-reads state; the
-			// wait's one failure is the UntilTestTimeout case, not this clock.
-			tick := time.NewTicker(10 * time.Millisecond)
-			defer tick.Stop()
-		wait:
-			for {
-				select {
-				case <-deadline.Done():
-					t.Fatal("provider did not reach ", method)
-				case err := <-done:
-					t.Fatalf("startup returned before cancellation: %v", err)
-				case <-tick.C:
-					b, _ := os.ReadFile(logPath)
-					for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
-						var req struct {
-							PID    int
-							Method string
-						}
-						if json.Unmarshal([]byte(line), &req) == nil && req.Method == method {
-							pid = req.PID
-							break wait
-						}
-					}
-				}
-			}
-			cancel()
-			select {
-			case err := <-done:
-				if !errors.Is(err, context.Canceled) {
-					t.Fatalf("want cancellation, got %v", err)
-				}
-				if IsCursorResumeDenied(err) {
-					t.Fatalf("cancellation poisoned resume refusal: %v", err)
-				}
-			case <-wallclockguard.UntilTestTimeout(t).Done():
-				t.Fatal("startup cancellation did not finish")
-			}
-			if processAlive(pid) {
-				t.Fatalf("canceled startup left owned process %d alive", pid)
-			}
-			b, err := os.ReadFile(logPath)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if sid != "" && strings.Contains(string(b), `"session/new"`) {
-				t.Fatalf("cancellation reminted saved conversation: %s", b)
+			if !errors.Is(err, ErrLegacyCLISeatTransport) {
+				t.Fatalf("startCursorACP(%s) = %v, want legacy refusal", method, err)
 			}
 		})
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("startCursorACP executed the binary: %v", err)
 	}
 }
 
@@ -240,42 +189,21 @@ func TestCursorRequestCancellationInterruptsBlockedWrite(t *testing.T) {
 }
 
 func TestCursorSuccessfulStartupDisarmsCancellation(t *testing.T) {
-	bin := writeFakeCursorACP(t)
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	events := make(chan Event, 8)
-	c, err := startCursorACP(ctx, bin, t.TempDir(), "", "saved-conversation", true, nil, nil, func(ev Event) { events <- ev }, nil)
-	if err != nil {
+	marker := filepath.Join(t.TempDir(), "ran")
+	bin := filepath.Join(t.TempDir(), "cursor")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\ntouch "+marker+"\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	defer c.Close()
-	cancel()
-	if c.SessionID() != "saved-conversation" {
-		t.Fatalf("changed session: %s", c.SessionID())
+	c, err := startCursorACP(t.Context(), bin, t.TempDir(), "", "saved-conversation", true, nil, nil, nil, nil)
+	if c != nil {
+		c.Close()
+		t.Fatal("returned a client")
 	}
-	if err := c.Prompt("pong"); err != nil {
-		t.Fatalf("parent cancellation killed handed-off session: %v", err)
+	if !errors.Is(err, ErrLegacyCLISeatTransport) {
+		t.Fatalf("startCursorACP = %v, want legacy refusal", err)
 	}
-	deadline := wallclockguard.UntilTestTimeout(t)
-	var reply strings.Builder
-	for {
-		select {
-		case <-deadline.Done():
-			t.Fatal("handed-off session did not complete a fresh reply after cancellation")
-		case ev := <-events:
-			if ev.SessionID != "saved-conversation" || ev.TurnID == "" {
-				continue
-			}
-			if ev.Type == "assistant" {
-				reply.WriteString(ev.Text)
-			}
-			if ev.IsTerminalStop() {
-				if reply.String() != "pong" {
-					t.Fatalf("fresh reply=%q", reply.String())
-				}
-				return
-			}
-		}
+	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+		t.Fatalf("startCursorACP executed the binary: %v", statErr)
 	}
 }
 
@@ -301,45 +229,21 @@ func (d *eventDeadline) Err() error {
 }
 
 func TestCursorStartupDeadlineDoesNotPoisonResume(t *testing.T) {
-	bin := writeFakeCursorACP(t)
-	t.Setenv("FAKE_ACP_WITHHOLD", "session/load")
-	logPath := filepath.Join(t.TempDir(), "requests.jsonl")
-	t.Setenv("FAKE_ACP_REQUEST_LOG", logPath)
-	// The deadline has to expire while the peer is withholding
-	// session/load, because that is the state under test. A 1s
-	// context.WithTimeout used to stand in for it, and on a loaded host it
-	// could expire before the fake had even logged the request — failing
-	// the last assertion below for a reason that was the host's (🎯T97).
-	// So the deadline is an event: it fires once the log shows the
-	// withheld request, and not before.
-	ctx := &eventDeadline{Context: t.Context(), fired: make(chan struct{})}
-	go func() {
-		for {
-			b, _ := os.ReadFile(logPath)
-			if strings.Contains(string(b), `"session/load"`) {
-				close(ctx.fired)
-				return
-			}
-			if t.Context().Err() != nil {
-				return
-			}
-			time.Sleep(5 * time.Millisecond)
-		}
-	}()
-	c, err := startCursorACP(ctx, bin, t.TempDir(), "", "saved-conversation", true, nil, nil, nil, nil)
-	if c != nil {
-		c.Close()
-		t.Fatal("deadline returned a client")
-	}
-	if !errors.Is(err, context.DeadlineExceeded) || IsCursorResumeDenied(err) {
-		t.Fatalf("deadline classified as %v", err)
-	}
-	b, err := os.ReadFile(logPath)
-	if err != nil {
+	marker := filepath.Join(t.TempDir(), "ran")
+	bin := filepath.Join(t.TempDir(), "cursor")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\ntouch "+marker+"\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(b), `"session/load"`) || strings.Contains(string(b), `"session/new"`) {
-		t.Fatalf("did not test saved-session timeout: %s", b)
+	c, err := startCursorACP(t.Context(), bin, t.TempDir(), "", "saved-conversation", true, nil, nil, nil, nil)
+	if c != nil {
+		c.Close()
+		t.Fatal("returned a client")
+	}
+	if !errors.Is(err, ErrLegacyCLISeatTransport) || IsCursorResumeDenied(err) {
+		t.Fatalf("startCursorACP = %v, want legacy refusal", err)
+	}
+	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+		t.Fatalf("startCursorACP executed the binary: %v", statErr)
 	}
 }
 

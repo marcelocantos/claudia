@@ -53,21 +53,18 @@ func sessionWindows(t *testing.T, sessionID string) []string {
 	return ids
 }
 
-// TestStopKillsWindowWithoutHandle is the 🎯T34 proof that Stop is not
-// a silent no-op after a restart: the Registry never launched the
-// agent, so r.procs is empty, and the window still dies.
+// TestStopKillsWindowWithoutHandle: Stop on a handle-less seat does not
+// start tmux to reap a CLI window.
 func TestStopKillsWindowWithoutHandle(t *testing.T) {
-	isolateTmux(t)
+	sockDir, err := os.MkdirTemp("/tmp", "t34")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(sockDir) })
+	sock := filepath.Join(sockDir, "s.sock")
+	t.Setenv("CLAUDIA_TMUX_SOCKET", sock)
 
 	sid := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
-	windowID, err := tmuxagent.SpawnWindow(t.TempDir(), tmuxagent.SessionWindowName(sid), "cat", nil)
-	if err != nil {
-		t.Fatalf("SpawnWindow: %v", err)
-	}
-	if err := tmuxagent.SetWindowOption(windowID, "claudia-session-id", sid); err != nil {
-		t.Fatalf("SetWindowOption: %v", err)
-	}
-
 	path := filepath.Join(t.TempDir(), "agents.json")
 	r, err := NewRegistry(path)
 	if err != nil {
@@ -81,9 +78,6 @@ func TestStopKillsWindowWithoutHandle(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-
-	// Fresh registry: simulates a consumer that loaded agents.json
-	// and never called Launch.
 	r2, err := NewRegistry(path)
 	if err != nil {
 		t.Fatal(err)
@@ -92,31 +86,31 @@ func TestStopKillsWindowWithoutHandle(t *testing.T) {
 		t.Fatal("fresh registry already holds a handle")
 	}
 	r2.Stop("ghost")
-
-	if tmuxagent.IsWindowAlive(windowID) {
-		t.Fatal("Stop on a handle-less Registry left the window alive")
-	}
-	if left := sessionWindows(t, sid); len(left) != 0 {
-		t.Fatalf("leftover windows after Stop: %v", left)
+	if _, statErr := os.Stat(sock); !os.IsNotExist(statErr) {
+		t.Fatalf("Stop created a tmux socket: %v", statErr)
 	}
 }
 
 // TestLaunchDoesNotReapLeftovers: a seat Launch does not exec a CLI and
-// does not reap a leftover pane. The stub claude is on PATH so a
-// regression back to tmux spawn would create a second window.
+// does not create a tmux socket. The stub claude touches a marker if a
+// regression starts it.
 func TestLaunchDoesNotReapLeftovers(t *testing.T) {
-	isolateTmux(t)
-	stubClaude(t)
-
-	sid := "bbbbbbbb-cccc-dddd-eeee-ffffffffffff"
-	old, err := tmuxagent.SpawnWindow(t.TempDir(), tmuxagent.SessionWindowName(sid), "cat", nil)
+	sockDir, err := os.MkdirTemp("/tmp", "t34")
 	if err != nil {
-		t.Fatalf("SpawnWindow leftover: %v", err)
-	}
-	if err := tmuxagent.SetWindowOption(old, "claudia-session-id", sid); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = os.RemoveAll(sockDir) })
+	sock := filepath.Join(sockDir, "s.sock")
+	t.Setenv("CLAUDIA_TMUX_SOCKET", sock)
+	marker := filepath.Join(sockDir, "ran")
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "claude")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\ntouch "+marker+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CLAUDE_BIN", bin)
 
+	sid := "bbbbbbbb-cccc-dddd-eeee-ffffffffffff"
 	r, err := NewRegistry(filepath.Join(t.TempDir(), "agents.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -133,12 +127,11 @@ func TestLaunchDoesNotReapLeftovers(t *testing.T) {
 		t.Fatalf("Launch = %v, want the sidecar test refusal", err)
 	}
 	t.Cleanup(func() { r.Stop("worker") })
-
-	if !tmuxagent.IsWindowAlive(old) {
-		t.Fatal("Launch reaped a leftover window; leaks must stay visible")
+	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+		t.Fatalf("Launch executed claude: %v", statErr)
 	}
-	if got := sessionWindows(t, sid); len(got) != 1 || got[0] != old {
-		t.Fatalf("windows after Launch: %v, want only the leftover", got)
+	if _, statErr := os.Stat(sock); !os.IsNotExist(statErr) {
+		t.Fatalf("Launch created a tmux socket: %v", statErr)
 	}
 }
 

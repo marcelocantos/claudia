@@ -4,15 +4,13 @@
 package tmuxagent
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
-	"time"
-
-	"github.com/marcelocantos/claudia/internal/wallclockguard"
 )
 
 func TestStripClaudeSessionMarkersKeepsConfiguration(t *testing.T) {
@@ -56,34 +54,12 @@ func TestSpawnedWindowCarriesNoClaudeSessionMarker(t *testing.T) {
 		}
 	}
 
-	workdir := t.TempDir()
-	dump := filepath.Join(workdir, "env.txt")
-	windowID, err := SpawnWindow(workdir, "markerprobe", "sh",
-		[]string{"-c", "env > " + dump + ".tmp && mv " + dump + ".tmp " + dump + " && sleep 30"})
-	if err != nil {
-		t.Fatalf("SpawnWindow: %v", err)
+	dump := filepath.Join(t.TempDir(), "env.txt")
+	id, spawnErr := SpawnWindow(t.TempDir(), "markerprobe", "sh", []string{"-c", "env > " + dump})
+	if id != "" || !errors.Is(spawnErr, ErrLegacyCLISeatTransport) {
+		t.Fatalf("SpawnWindow = (%q, %v), want legacy refusal", id, spawnErr)
 	}
-	t.Cleanup(func() { _ = KillWindow(windowID) })
-
-	var data []byte
-	backstop := wallclockguard.UntilTestTimeout(t)
-	for {
-		if data, err = os.ReadFile(dump); err == nil {
-			break
-		}
-		if backstop.Err() != nil {
-			t.Fatalf("window never wrote its environment to %s", dump)
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	for line := range strings.SplitSeq(string(data), "\n") {
-		name, value, _ := strings.Cut(line, "=")
-		// CLAUDECODE is set empty on purpose by SpawnWindow's -e.
-		if slices.Contains(ClaudeSessionMarkers, name) && value != "" {
-			t.Errorf("seat window inherited %s=%q", name, value)
-		}
-	}
-	if !strings.Contains(string(data), "CLAUDE_EFFORT=keep-me") {
-		t.Error("seat window lost CLAUDE_EFFORT — the strip is too wide and drops operator configuration")
+	if _, statErr := os.Stat(dump); !os.IsNotExist(statErr) {
+		t.Fatalf("SpawnWindow wrote a window environment: %v", statErr)
 	}
 }

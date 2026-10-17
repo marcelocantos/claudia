@@ -92,64 +92,10 @@ func grokACPArgs(model string, connect bool) []string {
 	return append(args, "stdio")
 }
 
-// startGrokACP spawns bin (typically the grok CLI) with ACP stdio args,
-// performs initialize + session setup, and returns a ready client.
-//
-// sessionID and requireResume control resume; see openSession. mcpServers
-// are passed on both session/new and session/load.
+// startGrokACP refuses a CLI ACP client. It used to spawn bin with ACP
+// stdio args and perform initialize plus session setup.
 func startGrokACP(bin string, workDir, model, sessionID string, requireResume bool, mcpServers []any, extraEnv []string, onEvent func(Event), onClose func()) (*grokACPClient, error) {
-	cmd := exec.Command(bin, grokACPArgs(model, false)...)
-	cmd.Dir = workDir
-	// Always set Env. A daemon started by brew services has a service PATH
-	// (system directories first, ~/.grok/bin last). The child needs the
-	// user tool directories an interactive StartDirect already has.
-	cmd.Env = grokChildEnv(extraEnv)
-
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return nil, fmt.Errorf("grok acp stdin: %w", err)
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		_ = stdin.Close()
-		return nil, fmt.Errorf("grok acp stdout: %w", err)
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		_ = stdin.Close()
-		_ = stdout.Close()
-		return nil, fmt.Errorf("grok acp stderr: %w", err)
-	}
-	if err := cmd.Start(); err != nil {
-		_ = stdin.Close()
-		_ = stdout.Close()
-		_ = stderr.Close()
-		return nil, fmt.Errorf("start grok acp: %w", err)
-	}
-
-	c := &grokACPClient{
-		cmd:         cmd,
-		stdin:       stdin,
-		stdout:      stdout,
-		stderr:      stderr,
-		ownsProcess: true,
-		pending:     make(map[int64]chan acpRPCMessage),
-		onEvent:     onEvent,
-		onClose:     onClose,
-		sessionID:   sessionID,
-	}
-
-	stderrCap := newGrokStderrCapture()
-	go stderrCap.consume(stderr)
-	go c.readLoop()
-
-	if err := c.initialize(); err != nil {
-		return nil, c.failStart(err, stderrCap)
-	}
-	if err := c.openSession(workDir, sessionID, requireResume, mcpServers); err != nil {
-		return nil, c.failStart(err, stderrCap)
-	}
-	return c, nil
+	return nil, fmt.Errorf("%w: %s", ErrLegacyCLISeatTransport, ProviderGrok)
 }
 
 // failStart kills the child, drains stderr, then reaps it. Wait must run

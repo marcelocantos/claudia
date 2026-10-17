@@ -15,8 +15,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
-
 	"github.com/marcelocantos/claudia/internal/broker"
 	"github.com/marcelocantos/claudia/internal/tmuxagent"
 )
@@ -121,74 +119,18 @@ const poolWindowPrefix = "claudia-pool-"
 // tail it (🎯T78). A pool window without it cannot be observed at all.
 const poolSessionOption = "claudia-session-id"
 
-// Acquire returns an idle agent from the warm pool that matches the
-// given Config, or creates a new one if none is available.
-//
-// Pool key: hash of (workdir, model, disallowTools). Window names
-// follow the pattern claudia-pool-<hash12>.
-//
-// Disposition at release time (via [*Agent.Release]):
-//   - "return": clear the held marker, leave the window running.
-//   - "drop": kill the window.
-//   - "keep_alive_for": clear held, set a deadline for eviction.
-//
-// Config.PoolPolicy controls behaviour when all matching windows are
-// held:
-//   - "spawn" (default): create a new window.
-//   - "wait": block until a window is released (not yet implemented;
-//     treated as "spawn" in this release).
-//   - "error": return an error.
-//
-// Config.PoolCap (0 = unlimited) caps the total number of idle pool
-// windows for this key. When exceeded on Acquire the oldest idle
-// window is evicted before a new one is created.
-//
-// When a claudia daemon is listening, the daemon runs the pool and the
-// returned Agent is a handle onto the warm seat it granted (🎯T64): every
-// consumer on the host draws from, and returns to, the same pool, and a
-// consumer that goes away returns its seats. [AcquireDirect] keeps the
-// pool in this process.
+// Acquire refuses to check out a CLI pool seat. The warm pool minted a
+// tmux window; that transport is gone. The error is
+// [ErrLegacyCLISeatTransport]. [AcquireDirect] is the same refusal in
+// this process.
 func Acquire(ctx context.Context, cfg Config) (*Agent, error) {
-	if usingBroker() {
-		a, err := acquireViaBroker(ctx, cfg)
-		if err == nil || !brokerFellThrough(err) {
-			return a, err
-		}
-	}
-	return AcquireDirect(ctx, cfg)
+	return nil, fmt.Errorf("%w: pool", ErrLegacyCLISeatTransport)
 }
 
 // AcquireDirect is [Acquire] from the pool in this process even when a
-// claudia daemon is listening.
+// claudia daemon is listening. The pool no longer mints a CLI window.
 func AcquireDirect(ctx context.Context, cfg Config) (*Agent, error) {
-	if err := checkTmux(); err != nil {
-		return nil, err
-	}
-	if cfg.WorkDir == "" {
-		cfg.WorkDir = "."
-	}
-	workDir, _ := filepath.Abs(cfg.WorkDir)
-	if resolved, err := filepath.EvalSymlinks(workDir); err == nil {
-		workDir = resolved
-	}
-
-	disallowed := "Agent,SendMessage,EnterWorktree"
-	if len(cfg.DisallowTools) > 0 {
-		disallowed += "," + strings.Join(cfg.DisallowTools, ",")
-	}
-
-	key := poolKeyFor(workDir, cfg.Model, disallowed)
-	windowName := poolWindowPrefix + key
-
-	policy := cfg.PoolPolicy
-	if policy == "" {
-		policy = "spawn"
-	}
-
-	poolMu.Lock()
-	agent, err := acquireLocked(ctx, cfg, workDir, disallowed, windowName, policy)
-	poolMu.Unlock()
-	return agent, err
+	return nil, fmt.Errorf("%w: pool", ErrLegacyCLISeatTransport)
 }
 
 // acquireLocked runs with poolMu held. It lists windows, finds an
@@ -308,70 +250,10 @@ func acquireLocked(ctx context.Context, cfg Config, workDir, disallowed, windowN
 	return spawnPoolWindow(ctx, cfg, workDir, disallowed, windowName)
 }
 
-// spawnPoolWindow creates a new tmux window for the pool, waits for
-// readiness, and returns a ready Agent marked as held.
+// spawnPoolWindow refuses. It used to create a tmux window, wait for
+// readiness, and return a held Agent.
 func spawnPoolWindow(_ context.Context, cfg Config, workDir, disallowed, windowName string) (*Agent, error) {
-	if cfg.PermissionMode == "" {
-		cfg.PermissionMode = "bypassPermissions"
-	}
-
-	// A pool window is spawned with an id we choose, not one Claude mints
-	// for itself, so the transcript it writes is at a path every later
-	// Acquire can compute — in this process or the next one (🎯T78).
-	sessionID := uuid.New().String()
-
-	args := []string{
-		"--permission-mode", cfg.PermissionMode,
-		"--disallowedTools", disallowed,
-		"--session-id", sessionID,
-	}
-	if cfg.MCPConfig != "" {
-		args = append(args, "--mcp-config", cfg.MCPConfig)
-	}
-	if cfg.Model != "" {
-		args = append(args, "--model", cfg.Model)
-	}
-	args = append(args, cfg.ExtraArgs...)
-
-	claudeBin, err := resolveClaudeBin()
-	if err != nil {
-		return nil, err
-	}
-	windowID, err := tmuxagent.SpawnWindow(workDir, windowName, claudeBin, args)
-	if err != nil {
-		return nil, fmt.Errorf("pool spawn: %w", err)
-	}
-
-	// Mark as held immediately so concurrent Acquires don't grab it.
-	if err := tmuxagent.SetWindowOption(windowID, "claudia-held", "1"); err != nil {
-		_ = tmuxagent.KillWindow(windowID)
-		return nil, fmt.Errorf("pool: set held on new window: %w", err)
-	}
-	// Record the session before the long WaitReady below: until this lands,
-	// a sibling process's sweep sees a window it cannot observe.
-	if err := tmuxagent.SetWindowOption(windowID, poolSessionOption, sessionID); err != nil {
-		_ = tmuxagent.KillWindow(windowID)
-		return nil, fmt.Errorf("pool: record session id on new window: %w", err)
-	}
-
-	// Wait for the claude TUI to reach its idle input state before
-	// returning. This is the dominant latency for a cold acquire (~600–700ms)
-	// and ensures that a subsequent warm re-acquire sees an already-ready
-	// window and can return in <100ms.
-	if _, waitErr := tmuxagent.WaitReady(windowID, readyPollInterval, readyOverallTimeout); waitErr != nil {
-		_ = tmuxagent.KillWindow(windowID)
-		return nil, fmt.Errorf("pool: window never became ready: %w", waitErr)
-	}
-
-	slog.Info("pool: cold spawn", "window", windowID)
-
-	// Build and return the Agent (window is already ready).
-	agent, err := buildPoolAgent(cfg, workDir, windowID, sessionID, false)
-	if err != nil {
-		_ = tmuxagent.KillWindow(windowID)
-		return nil, err
-	}
-	return agent, nil
+	return nil, fmt.Errorf("%w: pool", ErrLegacyCLISeatTransport)
 }
 
 // adoptWindow dials control mode and verifies readiness for an

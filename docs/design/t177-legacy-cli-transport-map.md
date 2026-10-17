@@ -402,25 +402,42 @@ stays and does not start a process. `make live` and `AGENTS.md` no
 longer name `TestExclusiveGrokSessionResumeLive`. The gate does not
 require a CLI seat. It requires the tests the lists still name.
 
+`Acquire` and `AcquireDirect` return `ErrLegacyCLISeatTransport` and do
+not call `checkTmux` or spawn. `spawnPoolWindow` returns the same
+error. `acquireLocked` still lists and classifies windows if something
+calls it; the spawn it would make refuses. `daemonAcquire` is
+`AcquireDirect`, so the daemon acquire handler refuses too.
+
+`tmuxagent.SpawnWindow` returns a package-local sentinel with the same
+text and does not exec tmux or the command. Claudia, the probe
+commands, and the tests still import the package, so it stays.
+`EnsureServer`, `KillWindow`, `ListWindows`, and `SendKeys` still exec
+tmux when called directly. That is not the mint path. A fresh grep of
+the Jevons cleanup worktree and the dirty shared clone found no Go
+import of `claudia/internal/tmuxagent` and no `TmuxKillSwitch` or
+`TmuxWindowID` symbol. The earlier claim that Jevons still consumes
+the package does not hold for those trees. Jevons was not edited here.
+
+`reapSessionWindows` logs the refusal and does not call
+`KillWindowsForSession`.
+
+`startCodexAppServer`, `startGrokACP`, `startGrokACPConnect`,
+`spawnDetachedGrokServe`, and `startCursorACP` return
+`ErrLegacyCLISeatTransport` and do not exec.
 `TestHermeticCodexThreadStartTimesOut` still assigns
-`codexAppServerThreadTimeout` and calls `startCodexAppServer`. That
-client is no longer reached from Session `StartAgent`. The bound guard
-fails if nothing shortens the var. Direct `startGrokACP` and
-`startCursorACP` calls in other tests still exec a fake binary. They
-are not the seat `StartAgent` path.
+`codexAppServerThreadTimeout` so the 🎯T93 wiring guard stays armed,
+and asserts the constructor refuses and leaves a marker file untouched.
+Direct `startGrokACP` and `startCursorACP` tests assert the same
+refusal. They are not the seat `StartAgent` path. Session `StartAgent`
+does not call them.
 
 Still present, so the purge is not done:
 
-- `Pool.Acquire` and `AcquireDirect` still call `checkTmux` and spawn.
-- `internal/tmuxagent` stays. Jevons still consumes it (`agenttmux`,
-  `TmuxKillSwitch`, pane census, the upgrade handoff).
-- `reapSessionWindows` still kills leftover Claude tmux windows on stop.
 - Attach, `TermLogPath`, and `Rewind` still compile. They have no
   sidecar equivalent. 🎯T189 says seat removal does not wait for those
   replacements; this slice does not delete them.
-- `planGrokSession`, `acpBind`, the exclusive-home helpers, and
-  `startCodexAppServer` still compile. Session `StartAgent` does not
-  call them.
+- `planGrokSession`, `acpBind`, and the exclusive-home helpers still
+  compile. Session `StartAgent` does not call them.
 - Task mode (`claude -p`, `codex exec`, `grok -p`, `agent --print`) is
   unchanged. §9 Q1 is still an owner question. Judge, Bedrock, and
   Ollama Task backends stay API paths.
@@ -429,6 +446,7 @@ Still present, so the purge is not done:
 - No full `make gate`, and no fleet spawn across providers.
 
 §10 step 2 (delete the tmux library, the pool, and the live-gate rows
-together) stays waiting on jevons no longer spawning a CLI seat, and
-on Q1 and Q3. A provider or scenario with no OMP equivalent is named
-here rather than dropped.
+together) stays waiting on Q1 and Q3. A provider or scenario with no
+OMP equivalent is named here rather than dropped. The live-gate rows
+keep their names and their env gates. When the env is set they assert
+the refusal and return, so `make live` does not start a CLI seat.

@@ -121,91 +121,10 @@ const cursorACPStartupTimeout = 5 * time.Minute
 // writes it.
 var cursorPromptSilenceBound = 120 * time.Second
 
+// startCursorACP refuses a CLI ACP client. It used to spawn the Cursor
+// agent binary and run the handshake.
 func startCursorACP(ctx context.Context, bin string, workDir, model, sessionID string, requireResume bool, mcpServers []any, extraEnv []string, onEvent func(Event), onClose func()) (*cursorACPClient, error) {
-	ctx, cancel := context.WithTimeout(ctx, cursorACPStartupTimeout)
-	defer cancel()
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	cmd := exec.Command(bin, cursorACPArgs(model)...)
-	cmd.Dir = workDir
-	// Same child environment as Grok. Both exec the omp helper, which
-	// needs setsid and the user tool directories a brew service PATH omits.
-	// Claude and Codex do not take this path.
-	cmd.Env = providerChildEnv(extraEnv)
-
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return nil, fmt.Errorf("cursor acp stdin: %w", err)
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		_ = stdin.Close()
-		return nil, fmt.Errorf("cursor acp stdout: %w", err)
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		_ = stdin.Close()
-		_ = stdout.Close()
-		return nil, fmt.Errorf("cursor acp stderr: %w", err)
-	}
-	if err := cmd.Start(); err != nil {
-		_ = stdin.Close()
-		_ = stdout.Close()
-		_ = stderr.Close()
-		return nil, fmt.Errorf("start cursor acp: %w", err)
-	}
-
-	c := &cursorACPClient{
-		cmd:         cmd,
-		stdin:       stdin,
-		stdout:      stdout,
-		stderr:      stderr,
-		ownsProcess: true,
-		pending:     make(map[int64]chan acpRPCMessage),
-		peerWoke:    make(chan struct{}, 1),
-		onEvent:     onEvent,
-		onClose:     onClose,
-		sessionID:   sessionID,
-	}
-
-	stderrCap := newGrokStderrCapture()
-	go stderrCap.consume(stderr)
-	go c.readLoop()
-
-	// Closing the transport does not acquire its write lock, so cancellation
-	// also interrupts a child that has stopped reading stdin.
-	closed := make(chan struct{})
-	stopCancel := context.AfterFunc(ctx, func() {
-		c.Close()
-		close(closed)
-	})
-	defer func() {
-		if stopCancel != nil && !stopCancel() {
-			<-closed
-		}
-	}()
-	if err := c.initialize(ctx); err != nil {
-		return nil, c.failStart(err, stderrCap)
-	}
-	if err := c.authenticate(ctx); err != nil {
-		return nil, c.failStart(err, stderrCap)
-	}
-	if err := c.openSession(ctx, workDir, sessionID, requireResume, mcpServers); err != nil {
-		return nil, c.failStart(err, stderrCap)
-	}
-	// If cancellation won the handoff race, no closed client escapes. Once
-	// disarmed, a later cancellation cannot kill the successfully started agent.
-	if !stopCancel() {
-		<-closed
-		return nil, ctx.Err()
-	}
-	stopCancel = nil
-	if err := ctx.Err(); err != nil {
-		c.Close()
-		return nil, err
-	}
-	return c, nil
+	return nil, fmt.Errorf("%w: %s", ErrLegacyCLISeatTransport, ProviderCursor)
 }
 
 func (c *cursorACPClient) SessionID() string {

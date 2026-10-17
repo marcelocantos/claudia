@@ -1081,7 +1081,9 @@ func (claudeAgentBackend) StartAgent(agentStartRequest) (*agentStart, error) {
 var ErrNoSessionWindow = errors.New("no live tmux window for session")
 
 // ErrLegacyCLISeatTransport refuses a CLI process for a Session seat.
-// Product dispatch, Adopt, and the concrete session backends all return it.
+// Product dispatch, Adopt, the concrete session backends, the pool,
+// SpawnWindow (a same-text sentinel in internal/tmuxagent), reapSessionWindows,
+// the Codex app-server, and the Grok and Cursor ACP constructors all refuse.
 // Task mode is a separate process-per-prompt path and is unchanged.
 var ErrLegacyCLISeatTransport = errors.New("legacy CLI seat transport removed")
 

@@ -4,12 +4,12 @@
 package claudia
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"testing"
 	"time"
 )
@@ -130,28 +130,30 @@ func liveCodexTurn(t *testing.T, agent *Agent, prompt string) error {
 	}
 }
 
-// TestHermeticCodexThreadStartTimesOut drives startCodexAppServer, the
-// handshake client that still owns codexAppServerThreadTimeout. Session
-// StartAgent no longer reaches it. The bound guard requires a hermetic
-// assignment of that var, and the error names the step that expired.
+// TestHermeticCodexThreadStartTimesOut keeps the 🎯T93 assignment of
+// codexAppServerThreadTimeout so the wiring guard can see a shortened
+// later bound. startCodexAppServer returns before that bound is read
+// and does not execute the binary.
 func TestHermeticCodexThreadStartTimesOut(t *testing.T) {
 	const threadBound = 200 * time.Millisecond
 	prev := codexAppServerThreadTimeout
 	codexAppServerThreadTimeout = threadBound
 	t.Cleanup(func() { codexAppServerThreadTimeout = prev })
 
-	bin := writeFakeCodexAppServer(t)
-	t.Setenv("FAKE_CODEX_HANG_START", "1")
-
+	marker := filepath.Join(t.TempDir(), "ran")
+	bin := filepath.Join(t.TempDir(), "codex")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\ntouch "+marker+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	client, err := startCodexAppServer(bin, t.TempDir(), "", "", false, "", codexSandboxTuning{}, nil, nil, nil)
 	if client != nil {
 		client.Close()
+		t.Fatal("refused start returned a client")
 	}
-	if err == nil {
-		t.Fatal("start succeeded against a hanging thread/start")
+	if !errors.Is(err, ErrLegacyCLISeatTransport) {
+		t.Fatalf("start err = %v, want legacy refusal", err)
 	}
-	want := "timeout waiting for thread/start after " + threadBound.String()
-	if !strings.Contains(err.Error(), want) {
-		t.Fatalf("start err = %v, want %q", err, want)
+	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+		t.Fatalf("startCodexAppServer executed the binary: %v", statErr)
 	}
 }

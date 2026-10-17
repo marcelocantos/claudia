@@ -4,89 +4,22 @@
 package tmuxagent
 
 import (
+	"errors"
 	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 )
 
-// SpawnWindow creates a new agent window on the claudia tmux server
-// running the given command with args in workdir. Returns the tmux
-// window ID (e.g. "@3") on success.
-//
-// The command and its arguments are shell-quoted into a single
-// string and passed to tmux new-window as one shell-command argument.
-// tmux forwards the string to `sh -c`, which is the most
-// cross-version-reliable way to launch a program with arguments
-// under tmux: older tmuxes don't all accept argv-splitting after
-// `--`, but every tmux in circulation accepts a single
-// shell-command string.
-//
-// CLAUDECODE is explicitly cleared on the spawned window's
-// environment so Claude Code does not detect itself as nested when
-// the host Go program is itself running inside a Claude Code
-// harness. This mirrors the strip in agent.go:196.
+// ErrLegacyCLISeatTransport refuses to mint a tmux window for a CLI seat.
+// The parent package imports this one, so the sentinel lives here and
+// callers wrap it with claudia.ErrLegacyCLISeatTransport.
+var ErrLegacyCLISeatTransport = errors.New("legacy CLI seat transport removed")
+
+// SpawnWindow used to mint a tmux window running command. A Session seat
+// no longer starts that process. The signature stays so existing callers
+// still build; the error is returned before tmux or command runs.
 func SpawnWindow(workdir, windowName, command string, args []string) (windowID string, err error) {
-	if err := EnsureServer(); err != nil {
-		return "", err
-	}
-	sock := SocketPath()
-
-	absWorkdir, err := filepath.Abs(workdir)
-	if err != nil {
-		return "", fmt.Errorf("resolve workdir: %w", err)
-	}
-	// Resolve symlinks so project-dir escaping matches Claude Code's
-	// canonicalisation. On macOS /var is a symlink to /private/var
-	// and any workdir under /var/folders (including t.TempDir)
-	// produces transcripts under the resolved path. Mirrors
-	// agent.go:138-140.
-	if resolved, err := filepath.EvalSymlinks(absWorkdir); err == nil {
-		absWorkdir = resolved
-	}
-
-	shellCmd := shellJoin(append([]string{command}, args...))
-
-	tmuxArgs := []string{
-		"-S", sock,
-		"new-window",
-		"-d", // don't switch the attached client to the new window
-		"-P", // print the new window's info on stdout
-		"-F", "#{window_id}",
-		"-c", absWorkdir,
-		"-t", anchorSessionName + ":",
-		"-n", windowName,
-		"-e", "CLAUDECODE=",
-		"-e", mcpTimeoutEnv(os.Getenv),
-		shellCmd,
-	}
-
-	out, err := exec.Command("tmux", tmuxArgs...).Output()
-	if err == nil {
-		return strings.TrimSpace(string(out)), nil
-	}
-
-	// 🎯T579: EnsureServer proved a server was up, but the window is
-	// created by a second process a moment later, and in between the
-	// server can go away — the anchor session is reaped, the last
-	// window exits, or a kill-server lands. The failure the fleet sees
-	// is "no server running on <sock>", and because the caller treats
-	// it as a spawn failure the agent never comes back. The socket was
-	// never wrong; the server was gone. Bring it back and try once
-	// more. A second failure is reported as it stands.
-	first := wrapExitErr(err)
-	if !serverGone(first) {
-		return "", fmt.Errorf("tmux new-window: %w", first)
-	}
-	if err := EnsureServer(); err != nil {
-		return "", fmt.Errorf("tmux new-window: %w (restarting server: %v)", first, err)
-	}
-	out, err = exec.Command("tmux", tmuxArgs...).Output()
-	if err != nil {
-		return "", fmt.Errorf("tmux new-window: %w", wrapExitErr(err))
-	}
-	return strings.TrimSpace(string(out)), nil
+	return "", ErrLegacyCLISeatTransport
 }
 
 // serverGone reports a tmux error that means the server on our socket

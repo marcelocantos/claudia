@@ -4,6 +4,7 @@
 package claudia
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -102,54 +103,26 @@ func TestExplainGrokSidecarHandshakeNamesTheHelper(t *testing.T) {
 }
 
 func TestStartGrokACPExplainsSidecarHandshakeOnStderr(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("fake grok uses a POSIX shell")
-	}
-	bin := writeFailingGrok(t, "#!/bin/sh\necho 'omp: sidecar said \"error\", want ready' >&2\nexit 1\n")
+	marker := filepath.Join(t.TempDir(), "ran")
+	bin := writeFailingGrok(t, "#!/bin/sh\ntouch "+marker+"\necho ready >&2\nexit 1\n")
 	_, err := startGrokACP(bin, t.TempDir(), "", "", false, nil, nil, nil, nil)
-	if err == nil {
-		t.Fatal("expected startup failure")
+	if !errors.Is(err, ErrLegacyCLISeatTransport) {
+		t.Fatalf("startGrokACP = %v, want legacy refusal", err)
 	}
-	msg := err.Error()
-	for _, want := range []string{`helper "omp"`, `sidecar said "error", want ready`, "brew services restart claudia", "child stderr:"} {
-		if !strings.Contains(msg, want) {
-			t.Errorf("error %q missing %q", msg, want)
-		}
+	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+		t.Fatalf("startGrokACP executed the binary: %v", statErr)
 	}
 }
 
 func TestStartGrokACPExplainsSidecarHandshakeOnJSONRPC(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("fake grok uses a POSIX shell")
-	}
-	if _, err := exec.LookPath("python3"); err != nil {
-		t.Skip("python3 required")
-	}
-	dir := t.TempDir()
-	py := filepath.Join(dir, "fail.py")
-	script := `import json, sys
-line = sys.stdin.readline()
-msg = json.loads(line) if line else {}
-sys.stdout.write(json.dumps({
-    "jsonrpc": "2.0",
-    "id": msg.get("id"),
-    "error": {"code": -32000, "message": 'omp: sidecar said "error", want ready'},
-}) + "\n")
-sys.stdout.flush()
-`
-	if err := os.WriteFile(py, []byte(script), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	bin := writeFailingGrok(t, "#!/bin/sh\nexec python3 \""+py+"\"\n")
+	marker := filepath.Join(t.TempDir(), "ran")
+	bin := writeFailingGrok(t, "#!/bin/sh\ntouch "+marker+"\nexit 1\n")
 	_, err := startGrokACP(bin, t.TempDir(), "", "", false, nil, nil, nil, nil)
-	if err == nil {
-		t.Fatal("expected startup failure")
+	if !errors.Is(err, ErrLegacyCLISeatTransport) {
+		t.Fatalf("startGrokACP = %v, want legacy refusal", err)
 	}
-	msg := err.Error()
-	for _, want := range []string{"acp initialize:", `helper "omp"`, `sidecar said "error", want ready`, "brew services restart claudia"} {
-		if !strings.Contains(msg, want) {
-			t.Errorf("error %q missing %q", msg, want)
-		}
+	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+		t.Fatalf("startGrokACP executed the binary: %v", statErr)
 	}
 }
 
@@ -223,19 +196,14 @@ func TestProviderChildEnvKeepsHostSetsid(t *testing.T) {
 }
 
 func TestStartCursorACPExplainsSidecarHandshake(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("fake cursor agent uses a POSIX shell")
-	}
-	bin := writeFailingGrok(t, "#!/bin/sh\necho 'omp: sidecar said \"error\", want ready' >&2\nexit 1\n")
+	marker := filepath.Join(t.TempDir(), "ran")
+	bin := writeFailingGrok(t, "#!/bin/sh\ntouch "+marker+"\necho ready >&2\nexit 1\n")
 	_, err := startCursorACP(t.Context(), bin, t.TempDir(), "", "", false, nil, nil, nil, nil)
-	if err == nil {
-		t.Fatal("expected startup failure")
+	if !errors.Is(err, ErrLegacyCLISeatTransport) {
+		t.Fatalf("startCursorACP = %v, want legacy refusal", err)
 	}
-	msg := err.Error()
-	for _, want := range []string{`helper "omp"`, `sidecar said "error", want ready`, "setsid", "Cursor", "child stderr:"} {
-		if !strings.Contains(msg, want) {
-			t.Errorf("error %q missing %q", msg, want)
-		}
+	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+		t.Fatalf("startCursorACP executed the binary: %v", statErr)
 	}
 }
 
