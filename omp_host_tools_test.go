@@ -138,7 +138,7 @@ func TestRunToolRoutesToDiscoveredServer(t *testing.T) {
 
 // An unrouted tool has no implicit consumer endpoint. JEVONS_MCP_URL and
 // the development MCP port are not consulted. A caller that passes a URL
-// to CallJevonsMCP still reaches that server.
+// to CallMCPTool still reaches that server, for any tool name.
 func TestUnroutedToolDoesNotDialImplicitEndpoint(t *testing.T) {
 	var hits int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -157,7 +157,7 @@ func TestUnroutedToolDoesNotDialImplicitEndpoint(t *testing.T) {
 		case "notifications/initialized":
 			w.WriteHeader(http.StatusAccepted)
 		case "tools/call":
-			if req.Params.Name != "jevons_agent_list" {
+			if req.Params.Name != "bash" {
 				t.Errorf("called %q", req.Params.Name)
 			}
 			_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"explicit result"}]}}`)
@@ -191,8 +191,8 @@ func TestUnroutedToolDoesNotDialImplicitEndpoint(t *testing.T) {
 	}
 
 	hits = 0
-	if got := CallJevonsMCP(srv.URL, "jevons_agent_list", "{}"); got != "explicit result" {
-		t.Fatalf("CallJevonsMCP = %q, want the explicit server's result", got)
+	if got := CallMCPTool(srv.URL, "bash", "{}"); got != "explicit result" {
+		t.Fatalf("CallMCPTool = %q, want the explicit server's result", got)
 	}
 	if hits == 0 {
 		t.Fatal("explicit URL was not contacted")

@@ -574,7 +574,7 @@ func TestOMPExecScrubsEnv(t *testing.T) {
 	}
 }
 
-func TestCallJevonsMCPPostsToolsCall(t *testing.T) {
+func TestCallMCPToolPostsAnyName(t *testing.T) {
 	var gotName string
 	ln := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
@@ -584,19 +584,21 @@ func TestCallJevonsMCPPostsToolsCall(t *testing.T) {
 			} `json:"params"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
-		gotName = req.Params.Name
+		if req.Method == "tools/call" {
+			gotName = req.Params.Name
+		}
 		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"ok-from-mcp"}]}}`))
 	}))
 	defer ln.Close()
-	got := CallJevonsMCP(ln.URL, "jevons_agent_list", `{"query":"running"}`)
-	if got != "ok-from-mcp" {
-		t.Fatalf("result = %q", got)
-	}
-	if gotName != "jevons_agent_list" {
-		t.Fatalf("called %q", gotName)
-	}
-	if got := CallJevonsMCP(ln.URL, "bash", "{}"); !strings.Contains(got, "refusing") {
-		t.Fatalf("non-jevons tool: %q", got)
+	for _, name := range []string{"jevons_agent_list", "bash"} {
+		gotName = ""
+		got := CallMCPTool(ln.URL, name, `{"query":"running"}`)
+		if got != "ok-from-mcp" {
+			t.Fatalf("%s result = %q", name, got)
+		}
+		if gotName != name {
+			t.Fatalf("called %q, want %s", gotName, name)
+		}
 	}
 }
 

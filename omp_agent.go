@@ -1283,9 +1283,8 @@ func SetOMPToolExec(fn func(name, callID, args string) string) {
 
 // runTool executes one model tool call for this seat. A tool whose home
 // server was discovered from AgentDef.MCPServers (🎯T871.1) is routed there
-// with a structured tools/call; anything else — in practice jevons_* —
-// still goes through runOMPTool's jevons-only runner, the same boundary
-// resolveFallbackTool enforces in the sidecar (🎯T864.3).
+// with a structured tools/call. Any other name goes through runOMPTool,
+// which refuses when no runner is installed.
 func (c *ompControl) runTool(name, callID, args string) string {
 	if c != nil && c.toolServers != nil {
 		if url, ok := c.toolServers[name]; ok {
@@ -1308,22 +1307,10 @@ func runOMPTool(name, callID, args string) string {
 // DefaultOMPToolExec refuses an unrouted tool call. A neutral runtime
 // has no implicit consumer endpoint: JEVONS_MCP_URL is not read, and
 // the development :13705 path is not a default. A declared
-// AgentDef.MCPServers route uses [CallMCPTool]. A caller that already
-// holds a URL uses [CallJevonsMCP].
+// AgentDef.MCPServers route, and a caller that already holds a URL,
+// uses [CallMCPTool].
 func DefaultOMPToolExec(name, callID, args string) string {
 	return fmt.Sprintf("omp: no tool endpoint configured for %q", name)
-}
-
-// CallJevonsMCP is the production jevons_* runner: one HTTP JSON-RPC
-// tools/call against the daemon's MCP surface. Anything not jevons_* is
-// refused here — that prefix boundary is resolveFallbackTool's (🎯T864.3).
-// A tool routed from AgentDef.MCPServers (🎯T871.1) calls [CallMCPTool]
-// directly and is not subject to this refusal.
-func CallJevonsMCP(mcpURL, name, args string) string {
-	if !strings.HasPrefix(name, "jevons_") {
-		return fmt.Sprintf("omp: refusing non-jevons tool %q", name)
-	}
-	return CallMCPTool(mcpURL, name, args)
 }
 
 // CallMCPTool POSTs a structured JSON-RPC tools/call to an MCP server
