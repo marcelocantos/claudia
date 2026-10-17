@@ -1,21 +1,29 @@
 diff --git a/dist/types/sdk.d.ts b/dist/types/sdk.d.ts
-index 7cbbeb6f12cac7d8f800d9ff152b59df826c21a6..77355cdbc3b8df7c7ac99cc48c8468bbba90db78 100644
+index 7cbbeb6f12cac7d8f800d9ff152b59df826c21a6..5eef9a9d69274bf2374dd8b130f1423c689f0b2d 100644
 --- a/dist/types/sdk.d.ts
 +++ b/dist/types/sdk.d.ts
-@@ -28,6 +28,8 @@ import { BashTool, BUILTIN_TOOLS, createTools, EditTool, EvalTool, GlobTool, Gre
+@@ -28,6 +28,10 @@ import { BashTool, BUILTIN_TOOLS, createTools, EditTool, EvalTool, GlobTool, Gre
  import { EventBus } from "./utils/event-bus.js";
  import { type WorkspaceTree } from "./workspace-tree.js";
  export interface CreateAgentSessionOptions {
++    /** Observe native compaction attempts, which bypass the session side-stream wrapper. */
++    nativeCompactionOptions?: import("./session/agent-session-types.js").AgentSessionConfig["nativeCompactionOptions"];
 +    /** Expand @file mentions by reading local files. Default: true. */
 +    autoReadFileMentions?: boolean;
      /** Working directory for project-local discovery. Default: getProjectDir() */
      cwd?: string;
      /** Additional workspace directories beyond cwd (multi-root), absolute or cwd-relative. */
 diff --git a/dist/types/session/agent-session-types.d.ts b/dist/types/session/agent-session-types.d.ts
-index 2c6158f899173b913efa76420bc8d4b916348862..05f7b5a27088121e033c0edfb16828389cfeed37 100644
+index 2c6158f899173b913efa76420bc8d4b916348862..4744b4b5a4275dd67e537ff788b5df3ea881546e 100644
 --- a/dist/types/session/agent-session-types.d.ts
 +++ b/dist/types/session/agent-session-types.d.ts
-@@ -96,6 +96,8 @@ export interface InitialRetryFallbackState {
+@@ -1,4 +1,5 @@
+ import type { Agent, AgentMessage, AgentTool, AgentToolContext, StreamFn, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
++import type { SummaryOptions } from "@oh-my-pi/pi-agent-core/compaction";
+ import type { Context, Effort, ImageContent, Message, MessageAttribution, Model, OAuthAccountSummary, ServiceTierByFamily, SimpleStreamOptions, ToolChoice } from "@oh-my-pi/pi-ai";
+ import type { postmortem } from "@oh-my-pi/pi-utils";
+ import type { AdvisorConfig } from "@oh-my-pi/pi-tui/overlays/advisor-config";
+@@ -96,6 +97,8 @@ export interface InitialRetryFallbackState {
  /** Dependencies and initial state used to construct an AgentSession. */
  export interface AgentSessionConfig {
      agent: Agent;
@@ -24,20 +32,49 @@ index 2c6158f899173b913efa76420bc8d4b916348862..05f7b5a27088121e033c0edfb1682838
      /** Shared with the provider stream wrapper: current Codex Code Mode tool exposure snapshot for turn metadata. */
      codeModeState?: {
          namespacesInfo?: unknown;
+@@ -208,6 +211,8 @@ export interface AgentSessionConfig {
+     transformProviderContext?: (context: Context, model: Model) => Context | Promise<Context>;
+     /** Stream wrapper for side-channel requests. */
+     sideStreamFn?: StreamFn;
++    /** Native compaction bypasses sideStreamFn. Resolve observation and transport for each actual candidate invocation. */
++    nativeCompactionOptions?: (model: Model) => Pick<SummaryOptions, "onProviderAttempt" | "fetch">;
+     /** Stream wrapper for advisor requests. */
+     advisorStreamFn?: StreamFn;
+     /** Prefer websocket transport for OpenAI Codex requests when supported. */
+diff --git a/dist/types/session/session-maintenance.d.ts b/dist/types/session/session-maintenance.d.ts
+index 1e55b1164b75ec563c5cfe8225e421931d91e448..f2afb8d553887150ae8a5b046ca460af844afecc 100644
+--- a/dist/types/session/session-maintenance.d.ts
++++ b/dist/types/session/session-maintenance.d.ts
+@@ -47,6 +47,7 @@ export interface SessionMaintenanceHost {
+     modelRegistry: ModelRegistry;
+     extensionRunner: ExtensionRunner | undefined;
+     sideStreamFn: StreamFn;
++    nativeCompactionOptions?: (model: Model) => Pick<import("@oh-my-pi/pi-agent-core/compaction").SummaryOptions, "onProviderAttempt" | "fetch">;
+     providerSessionState: Map<string, ProviderSessionState>;
+     preferWebsockets: boolean | undefined;
+     model(): Model | undefined;
 diff --git a/src/sdk.ts b/src/sdk.ts
-index d453f0d8d9d6d524f40cb8ac1f4a4983e77b38a6..7d7100dbed30cf0bbe86e8206f18298a5cceea19 100644
+index d453f0d8d9d6d524f40cb8ac1f4a4983e77b38a6..36744592b104c21432d6bc343b4528a193f1b254 100644
 --- a/src/sdk.ts
 +++ b/src/sdk.ts
-@@ -374,6 +374,8 @@ function applyMCPEnvironment(result: { exaApiKeys: string[] }): void {
+@@ -1,4 +1,5 @@
+ import * as path from "node:path";
++import type { AgentSessionConfig } from "./session/agent-session-types";
+ import {
+ 	Agent,
+ 	type AgentEvent,
+@@ -374,6 +375,10 @@ function applyMCPEnvironment(result: { exaApiKeys: string[] }): void {
  
  // Types
  export interface CreateAgentSessionOptions {
++	/** Observe native compaction attempts, which bypass the session side-stream wrapper. */
++	nativeCompactionOptions?: AgentSessionConfig["nativeCompactionOptions"];
 +	/** Expand @file mentions by reading local files. Default: true. */
 +	autoReadFileMentions?: boolean;
  	/** Working directory for project-local discovery. Default: getProjectDir() */
  	cwd?: string;
  	/** Additional workspace directories beyond cwd (multi-root), absolute or cwd-relative. */
-@@ -3889,6 +3891,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
+@@ -3889,6 +3894,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
  		// block createAgentSession for tens of seconds while the whole file is
  		// streamed and parsed on the main thread.
  		session = new AgentSession({
@@ -45,11 +82,27 @@ index d453f0d8d9d6d524f40cb8ac1f4a4983e77b38a6..7d7100dbed30cf0bbe86e8206f18298a
  			codeModeState,
  			advisorWatchdogPrompt,
  			advisorContextPrompt,
+@@ -3964,6 +3970,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
+ 			onPayload,
+ 			onResponse,
+ 			sideStreamFn: settingsAwareStreamFn,
++			nativeCompactionOptions: options.nativeCompactionOptions,
+ 			advisorStreamFn: settingsAwareStreamFn,
+ 			preferWebsockets: preferOpenAICodexWebsockets,
+ 			convertToLlm: convertToLlmFinal,
 diff --git a/src/session/agent-session-types.ts b/src/session/agent-session-types.ts
-index cae1ed98a92bb34cb5290a2d9741f9b6e4992b01..469ae0742538d8825111805e97b62a7a374ca47e 100644
+index cae1ed98a92bb34cb5290a2d9741f9b6e4992b01..2fa97afca1958bf306bed0574d98d0bd636d5538 100644
 --- a/src/session/agent-session-types.ts
 +++ b/src/session/agent-session-types.ts
-@@ -125,6 +125,8 @@ export interface InitialRetryFallbackState {
+@@ -6,6 +6,7 @@ import type {
+ 	StreamFn,
+ 	ThinkingLevel,
+ } from "@oh-my-pi/pi-agent-core";
++import type { SummaryOptions } from "@oh-my-pi/pi-agent-core/compaction";
+ import type {
+ 	Context,
+ 	Effort,
+@@ -125,6 +126,8 @@ export interface InitialRetryFallbackState {
  /** Dependencies and initial state used to construct an AgentSession. */
  export interface AgentSessionConfig {
  	agent: Agent;
@@ -58,8 +111,17 @@ index cae1ed98a92bb34cb5290a2d9741f9b6e4992b01..469ae0742538d8825111805e97b62a7a
  	/** Shared with the provider stream wrapper: current Codex Code Mode tool exposure snapshot for turn metadata. */
  	codeModeState?: { namespacesInfo?: unknown };
  	sessionManager: SessionManager;
+@@ -232,6 +235,8 @@ export interface AgentSessionConfig {
+ 	transformProviderContext?: (context: Context, model: Model) => Context | Promise<Context>;
+ 	/** Stream wrapper for side-channel requests. */
+ 	sideStreamFn?: StreamFn;
++	/** Native compaction bypasses sideStreamFn. Resolve observation and transport for each actual candidate invocation. */
++	nativeCompactionOptions?: (model: Model) => Pick<SummaryOptions, "onProviderAttempt" | "fetch">;
+ 	/** Stream wrapper for advisor requests. */
+ 	advisorStreamFn?: StreamFn;
+ 	/** Prefer websocket transport for OpenAI Codex requests when supported. */
 diff --git a/src/session/agent-session.ts b/src/session/agent-session.ts
-index 14daeca13832b78fe8dbde5bcd94347b757df663..b0a426d5334762e843e7609150870f45e8018da6 100644
+index 14daeca13832b78fe8dbde5bcd94347b757df663..0b3bd8e69d7984a66b321184f84b5e553a754f10 100644
 --- a/src/session/agent-session.ts
 +++ b/src/session/agent-session.ts
 @@ -568,6 +568,7 @@ export function powerAssertionOptions(mode: "off" | "idle" | "display" | "system
@@ -78,7 +140,15 @@ index 14daeca13832b78fe8dbde5bcd94347b757df663..b0a426d5334762e843e7609150870f45
  		this.tokenRate = new TokenRateMeter(text => this.agent.tokenizer.countTokens(text));
  		this.#reseedTokenRate();
  		this.#codeModeState = config.codeModeState ?? {};
-@@ -6946,7 +6948,7 @@ export class AgentSession {
+@@ -1921,6 +1923,7 @@ export class AgentSession {
+ 			modelRegistry: this.#modelRegistry,
+ 			extensionRunner: this.#extensionRunner,
+ 			sideStreamFn: this.#sideStreamFn,
++			nativeCompactionOptions: config.nativeCompactionOptions,
+ 			providerSessionState: this.#providerSessionState,
+ 			preferWebsockets: this.#preferWebsockets,
+ 			model: () => this.model,
+@@ -6946,7 +6949,7 @@ export class AgentSession {
  			this.#pendingNextTurnMessages = [];
  
  			// Auto-read @filepath mentions
@@ -87,6 +157,45 @@ index 14daeca13832b78fe8dbde5bcd94347b757df663..b0a426d5334762e843e7609150870f45
  			if (fileMentions.length > 0) {
  				const fileMentionMessages = await generateFileMentionMessages(fileMentions, this.sessionManager.getCwd(), {
  					autoResizeImages: this.settings.get("images.autoResize"),
+diff --git a/src/session/session-maintenance.ts b/src/session/session-maintenance.ts
+index 254f658a8e69cc4c2901d61243b0561f123803b9..40da6bd840352383be5a9b64e01f678ed795796b 100644
+--- a/src/session/session-maintenance.ts
++++ b/src/session/session-maintenance.ts
+@@ -380,6 +380,7 @@ export interface SessionMaintenanceHost {
+ 	modelRegistry: ModelRegistry;
+ 	extensionRunner: ExtensionRunner | undefined;
+ 	sideStreamFn: StreamFn;
++	nativeCompactionOptions?: (model: Model) => Pick<SummaryOptions, "onProviderAttempt" | "fetch">;
+ 	providerSessionState: Map<string, ProviderSessionState>;
+ 	preferWebsockets: boolean | undefined;
+ 	model(): Model | undefined;
+@@ -3279,6 +3280,7 @@ export class SessionMaintenance {
+ 					signal,
+ 					{
+ 						...options,
++						...this.#host.nativeCompactionOptions?.(candidate),
+ 						metadata: this.#host.agent.metadataForProvider(candidate.provider),
+ 						convertToLlm: messages => this.#host.convertToLlmForSideRequest(messages),
+ 						telemetry,
+@@ -4673,6 +4675,7 @@ export class SessionMaintenance {
+ 								undefined,
+ 								autoCompactionSignal,
+ 								{
++									...this.#host.nativeCompactionOptions?.(candidate),
+ 									promptOverride: this.#host.obfuscateTextForProvider(compactionPrep.hookPrompt),
+ 									extraContext: compactionPrep.hookContext,
+ 									remoteSystemPrompt: this.#host.agent.state.systemPrompt,
+@@ -4696,6 +4699,10 @@ export class SessionMaintenance {
+ 									// retry too — the budgets would multiply and each outer
+ 									// wait would stack on top of an inner backoff.
+ 									oneshotRetry: false,
++									completeImpl: async (requestModel, requestContext, requestOptions) => {
++										const stream = await this.#host.sideStreamFn(requestModel, requestContext, requestOptions);
++										return stream.result();
++									},
+ 								},
+ 							);
+ 							break;
 diff --git a/src/session/session-persistence.ts b/src/session/session-persistence.ts
 index 6cb1ba0087cf904c28ff696552166698b86d733a..cfb6b8d7bdf6006e8b81bd82f92aa6f806419003 100644
 --- a/src/session/session-persistence.ts
