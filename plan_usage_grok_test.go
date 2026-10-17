@@ -232,6 +232,52 @@ func TestGrokPlanUsage401RotatesTokenAndRetries(t *testing.T) {
 	}
 }
 
+// A nil rotator is the production default. A billing 401 must name the
+// refusal and must not start the grok binary or create its throwaway dir.
+func TestGrokPlanUsage401DoesNotSpawnCLI(t *testing.T) {
+	grokRefreshGate.reset()
+	t.Cleanup(grokRefreshGate.reset)
+	binDir := t.TempDir()
+	marker := filepath.Join(binDir, "marker")
+	script := filepath.Join(binDir, "grok")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\ntouch '"+marker+"'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir)
+	t.Setenv("GROK_BIN", script)
+	t.Setenv("TMPDIR", binDir)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+	authPath := filepath.Join(binDir, "auth.json")
+	tok := strings.Repeat("k", 210)
+	if err := os.WriteFile(authPath, []byte(`{"https://auth.x.ai::client":{"key":"`+tok+`"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pu, err := QueryPlanUsage(context.Background(), &PlanUsageArgs{
+		Provider: ProviderGrok, GrokAuthPath: authPath, GrokBillingURL: srv.URL,
+		Now: time.Date(2026, 9, 16, 12, 5, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pu.Status != PlanUsageUnavailable || !strings.Contains(pu.Reason, "401") || !strings.Contains(pu.Reason, errGrokCLIRefreshRemoved.Error()) {
+		t.Fatalf("status=%q reason=%q, want unavailable 401 naming the CLI refusal", pu.Status, pu.Reason)
+	}
+	if err := defaultGrokTokenRefresh(context.Background()); !errors.Is(err, errGrokCLIRefreshRemoved) {
+		t.Fatalf("defaultGrokTokenRefresh = %v", err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("grok binary ran: %v", err)
+	}
+	leftover, err := filepath.Glob(filepath.Join(binDir, "claudia-grok-token-refresh-*"))
+	if err != nil || len(leftover) != 0 {
+		t.Fatalf("refresh directory created: %v %v", leftover, err)
+	}
+}
+
 func TestGrokPlanUsageNon401DoesNotRotate(t *testing.T) {
 	grokRefreshGate.reset()
 	t.Cleanup(grokRefreshGate.reset)

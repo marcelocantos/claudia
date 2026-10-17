@@ -191,9 +191,9 @@ type PlanUsageArgs struct {
 	// GrokBillingURL overrides the grok billing endpoint (tests).
 	GrokBillingURL string
 	// GrokTokenRefresh rotates the grok login token after a billing 401
-	// (🎯T74). Nil uses defaultGrokTokenRefresh — one headless grok turn,
-	// which rewrites auth.json the way the CLI does on start. Tests and
-	// consumers inject their own; GrokRefreshDisabled turns the hook off.
+	// (🎯T74). Nil refuses and does not spawn a grok process. Tests and
+	// consumers inject their own rotator; GrokRefreshDisabled turns the
+	// hook off.
 	GrokTokenRefresh    func(ctx context.Context) error
 	GrokRefreshDisabled bool
 	// GrokBillingRaw injects a captured billing response for tests, bypassing

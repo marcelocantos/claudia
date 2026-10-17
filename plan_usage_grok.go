@@ -6,13 +6,12 @@ package claudia
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 )
@@ -130,10 +129,10 @@ func queryGrokPlanUsage(ctx context.Context, args *PlanUsageArgs, now time.Time)
 // 🎯T74: xAI issues a six-hour access token plus a refresh token, and the CLI
 // rotates the pair only when it starts. A 401 here therefore usually means
 // "the token expired and nothing has run grok since", not "the login is gone".
-// So a 401 rotates the token through the CLI (args.GrokTokenRefresh; the
-// default runs one headless grok turn), reloads it, and retries once —
-// rate-limited to one rotation per grokRefreshWindow per process. A 401 that
-// survives the rotation, or a rotation that fails, is a loud error naming the
+// A caller-supplied GrokTokenRefresh may rotate and retry once, rate-limited
+// to one rotation per grokRefreshWindow per process. A nil refresh does not
+// spawn a grok process; it fails with the headless-CLI refusal. A 401 that
+// survives a rotation, or a rotation that fails, is a loud error naming the
 // attempt. Any other non-200 stays a loud error with no rotation.
 func fetchGrokBilling(ctx context.Context, args *PlanUsageArgs) ([]byte, error) {
 	tok := args.GrokAccessToken
@@ -215,9 +214,6 @@ func grokBillingGET(ctx context.Context, args *PlanUsageArgs, tok string) (int, 
 // process: a persistent 401 must not spend a model call on every poll.
 const grokRefreshWindow = 10 * time.Minute
 
-// grokOneShotTimeout bounds the headless grok turn.
-const grokOneShotTimeout = 90 * time.Second
-
 type refreshGate struct {
 	mu   sync.Mutex
 	last time.Time
@@ -242,38 +238,15 @@ func (g *refreshGate) reset() {
 
 var grokRefreshGate = &refreshGate{}
 
-// defaultGrokTokenRefresh runs one headless grok turn in a throwaway
-// directory. On start the CLI checks auth.json and, with the token past
-// expires_at, exchanges the refresh token and rewrites the file — the same
-// path an interactive session takes. Verified 2026-09-16: with expires_at in
-// the past, one such call rewrote the token and the next billing GET answered.
-func defaultGrokTokenRefresh(ctx context.Context) error {
-	bin, err := resolveGrokBin()
-	if err != nil {
-		return err
-	}
-	dir, err := os.MkdirTemp("", "claudia-grok-token-refresh-")
-	if err != nil {
-		return err
-	}
-	defer os.RemoveAll(dir)
-	ctx, cancel := context.WithTimeout(ctx, grokOneShotTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, bin,
-		"-p", "Reply with the single word OK.",
-		"--max-turns", "1",
-		"--permission-mode", "bypassPermissions",
-	)
-	cmd.Dir = dir
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		tail := strings.TrimSpace(string(out))
-		if len(tail) > 300 {
-			tail = tail[len(tail)-300:]
-		}
-		return fmt.Errorf("grok one-shot: %w: %s", err, tail)
-	}
-	return nil
+// errGrokCLIRefreshRemoved is the refusal for a nil GrokTokenRefresh.
+// The headless `grok -p` turn that used to rewrite auth.json is gone.
+var errGrokCLIRefreshRemoved = errors.New("grok token refresh: headless CLI turn removed")
+
+// defaultGrokTokenRefresh refuses before it looks up a grok binary or
+// creates a directory. A consumer that can rotate the token sets
+// PlanUsageArgs.GrokTokenRefresh.
+func defaultGrokTokenRefresh(context.Context) error {
+	return errGrokCLIRefreshRemoved
 }
 
 // loadGrokToken reads the grok login access token (the long-lived OIDC "key")
