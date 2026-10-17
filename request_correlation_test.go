@@ -11,6 +11,50 @@ import (
 
 func closedReady() chan struct{} { ch := make(chan struct{}); close(ch); return ch }
 
+// The sidecar names the request on acceptance. Later text for that turn
+// inherits it without consuming a FIFO. A steer moves only the following
+// events. A new process trusts the id on the wire and does not take a
+// pending host send.
+func TestExplicitRequestIDFollowsTurnWithoutFIFO(t *testing.T) {
+	a := &Agent{ops: agentOps{explicitRequestIDs: true}, eventSubs: map[int64]EventFunc{}}
+	var got []Event
+	a.eventSubs[1] = func(ev Event) { got = append(got, ev) }
+	a.requestPending = []string{"host-next"}
+	a.publishEvent(Event{Type: "progress", ProgressType: ProgressPromptAccepted, TurnID: "turn-A", RequestID: "host-A"})
+	a.publishEvent(Event{Type: "assistant", Text: "partial", TurnID: "turn-A"})
+	a.publishEvent(Event{Type: "progress", ProgressType: ProgressPromptAccepted, TurnID: "turn-A", RequestID: "host-B"})
+	a.publishEvent(Event{Type: "assistant", Text: "after-steer", TurnID: "turn-A"})
+	a.publishEvent(Event{Type: "assistant", Text: "done", TurnID: "turn-A", StopReason: "end_turn"})
+	a.publishEvent(Event{Type: "assistant", Text: "late", TurnID: "turn-A", RequestID: "host-C"})
+	if len(got) != 6 {
+		t.Fatalf("published %d events", len(got))
+	}
+	if got[1].RequestID != "host-A" || got[3].RequestID != "host-B" || got[4].RequestID != "host-B" || got[5].RequestID != "host-B" {
+		t.Fatalf("turn identity: %+v", got)
+	}
+	a.mu.Lock()
+	pending := append([]string(nil), a.requestPending...)
+	a.mu.Unlock()
+	if len(pending) != 1 || pending[0] != "host-next" {
+		t.Fatalf("explicit path took the FIFO: %v", pending)
+	}
+
+	restarted := &Agent{ops: agentOps{explicitRequestIDs: true}, eventSubs: map[int64]EventFunc{}}
+	var again []Event
+	restarted.eventSubs[1] = func(ev Event) { again = append(again, ev) }
+	restarted.requestPending = []string{"host-next"}
+	restarted.publishEvent(Event{Type: "assistant", Text: "continued", TurnID: "turn-A", RequestID: "host-B", StopReason: "end_turn"})
+	if len(again) != 1 || again[0].RequestID != "host-B" || again[0].TurnID != "turn-A" {
+		t.Fatalf("restarted event: %+v", again)
+	}
+	restarted.mu.Lock()
+	pending = append([]string(nil), restarted.requestPending...)
+	restarted.mu.Unlock()
+	if len(pending) != 1 || pending[0] != "host-next" {
+		t.Fatalf("restarted path took the FIFO: %v", pending)
+	}
+}
+
 // Real in-process ACP transport: the abandoned delivery answers after the
 // silence-triggered reissue, while the host only supplied one RequestID.
 func TestRequestIDCursorRedeemedReissue(t *testing.T) {

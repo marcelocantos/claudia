@@ -147,6 +147,15 @@ export function createSeatAgent(opts: {
   let unsafe = false;
   let usage: UsageJournal | undefined;
   let rootRequest: string | undefined;
+  // The latest request started on this turn. Text emitted before a steer
+  // already left with the earlier id. A consumer that attaches later reads
+  // the id from the event itself; the previous process's map is not required.
+  const answerRequestID = () => {
+    if (!turn) return undefined;
+    let id = "";
+    for (const next of currentRequests) id = next;
+    return id || rootRequest || undefined;
+  };
   const usageAttribution = () => {
     const ids = new Set(turn && !turn.closed ? currentRequests : []);
     if (rootRequest && turn && !turn.closed) ids.add(rootRequest);
@@ -264,7 +273,7 @@ export function createSeatAgent(opts: {
   const finish = (stop: Stop) => {
     if (!turn || turn.closed) return;
     const tail = flushHold(turn);
-    if (tail) sink.emit({ type: "text", text: tail, turn_id: turn.turn_id });
+    if (tail) sink.emit({ type: "text", text: tail, turn_id: turn.turn_id, request_id: answerRequestID() });
     const digest = closeTurn(turn, stop);
     sink.emit(digest);
   };
@@ -361,7 +370,7 @@ export function createSeatAgent(opts: {
       const delta = event.assistantMessageEvent.delta ?? "";
       if (turn && !turn.closed) {
         const visible = noteDelta(turn, delta);
-        if (visible) sink.emit({ type: "text", text: visible, turn_id: turn.turn_id });
+        if (visible) sink.emit({ type: "text", text: visible, turn_id: turn.turn_id, request_id: answerRequestID() });
         return;
       }
       const stripped = stripStopTokens(delta);
@@ -506,10 +515,10 @@ export function createSeatAgent(opts: {
     cancelledTurns.delete(executionTurn.turn_id);
     if (cancelled) return;
     if (refusal) {
-      sink.emit({ type: "turn_end", turn_id: turn.turn_id, error: refusal, reason: overflow ? ContextOverflow : undefined, snapshot: agent.state });
+      sink.emit({ type: "turn_end", turn_id: turn.turn_id, request_id: answerRequestID(), error: refusal, reason: overflow ? ContextOverflow : undefined, snapshot: agent.state });
       return;
     }
-    sink.emit({ type: "turn_end", turn_id: turn.turn_id, snapshot: agent.state });
+    sink.emit({ type: "turn_end", turn_id: turn.turn_id, request_id: answerRequestID(), snapshot: agent.state });
   };
 
   // The engine can be idle while preparation or receipt cleanup is still

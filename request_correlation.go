@@ -31,7 +31,14 @@ func (a *Agent) discardPendingRequestID(id string) {
 func (a *Agent) correlateRequestLocked(ev *Event) {
 	// Sidecar receipts carry identity on the wire. A queued input may be
 	// absorbed by an existing turn, so no single FIFO/turn binding is valid.
-	if a.ops.explicitRequestIDs || ev.RequestID != "" {
+	// The journal is the restart record. Events after a reconnect name the
+	// request themselves. This map only fills a turn-scoped event that
+	// arrived without one, from an earlier event for that same turn.
+	if a.ops.explicitRequestIDs {
+		a.correlateExplicitLocked(ev)
+		return
+	}
+	if ev.RequestID != "" {
 		return
 	}
 	if a.brokerGrant != "" || ev.TurnID == "" {
@@ -64,6 +71,34 @@ func (a *Agent) correlateRequestLocked(ev *Event) {
 	// All supported paths publish an assistant terminal stop for the actual
 	// logical close (or a terminal error without an assistant answer).
 	if ev.IsTerminalStop() || ev.IsError {
+		a.retireRequestTurnLocked(ev.TurnID)
+	}
+}
+
+// correlateExplicitLocked keeps one host request for each provider turn.
+// A later acceptance on that turn, such as a steer, is the request that
+// following events inherit. A turn that already closed keeps its last
+// request. Nothing is taken from requestPending.
+func (a *Agent) correlateExplicitLocked(ev *Event) {
+	if ev.TurnID == "" {
+		return
+	}
+	if a.requestByTurn == nil {
+		a.requestByTurn = make(map[string]string)
+	}
+	if ev.RequestID != "" {
+		if id, retired := a.requestRetired[ev.TurnID]; retired {
+			ev.RequestID = id
+		} else {
+			a.requestByTurn[ev.TurnID] = ev.RequestID
+			a.requestActiveTurn = ev.TurnID
+		}
+	} else if id, ok := a.requestRetired[ev.TurnID]; ok {
+		ev.RequestID = id
+	} else if id, ok := a.requestByTurn[ev.TurnID]; ok {
+		ev.RequestID = id
+	}
+	if ev.RequestID != "" && (ev.IsTerminalStop() || ev.IsError) {
 		a.retireRequestTurnLocked(ev.TurnID)
 	}
 }

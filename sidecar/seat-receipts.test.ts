@@ -30,6 +30,19 @@ function fixture(storage: SeatStore, handler: (context: Context) => MockResponse
   return { agent, model, events };
 }
 
+test("text and turn_end carry the request the turn is answering, including after a steer", async () => {
+  const f = fixture(store(), () => {
+    if (f.model.calls.length === 1) f.agent.steer("same text", meta("B"));
+    return { content: [f.model.calls.length === 1 ? "from-A" : "from-B"] };
+  });
+  await f.agent.prompt("same text", meta("A"));
+  const text = f.events.filter(e => e.type === "text");
+  const ends = f.events.filter(e => e.type === "turn_end");
+  expect(text.map(e => e.text)).toEqual(["from-A", "from-B"]);
+  expect(text.map(e => [e.request_id, e.turn_id])).toEqual([["A", "turn-A"], ["B", "turn-A"]]);
+  expect(ends.map(e => [e.request_id, e.turn_id])).toEqual([["B", "turn-A"]]);
+});
+
 test("identified prompts deduplicate across acknowledgement loss and restart, not by text", async () => {
   const storage = store();
   const first = fixture(storage);

@@ -25,8 +25,8 @@ func TestOMPAnswerCopiesSidecarTurnID(t *testing.T) {
 		t.Fatalf("published %d events, want 2", len(got))
 	}
 	for _, ev := range got {
-		if ev.TurnID != "owner-turn-42" {
-			t.Errorf("TurnID = %q, want sidecar turn ID", ev.TurnID)
+		if ev.TurnID != "owner-turn-42" || ev.RequestID != "retry-99" {
+			t.Errorf("identity = turn %q request %q, want sidecar turn and request", ev.TurnID, ev.RequestID)
 		}
 	}
 }
