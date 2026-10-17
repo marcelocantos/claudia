@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -425,8 +426,17 @@ func TestRegistryLaunchGoesThroughDaemon(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	def := claudia.AgentDef{Name: "jv-worker", WorkDir: t.TempDir(), SessionID: "sid-jv", Purpose: claudia.PurposeWork, Parent: "jevons-po",
+	// PermissionMode and ExtraArgs are legacy CLI configuration. A sidecar
+	// seat refuses them instead of starting a process that would ignore them.
+	legacy := claudia.AgentDef{Name: "jv-legacy", WorkDir: t.TempDir(), SessionID: "sid-legacy",
 		PermissionMode: "plan", ExtraArgs: []string{"--verbose"}}
+	if err := reg.Register(legacy); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reg.Launch("jv-legacy"); err == nil || !strings.Contains(err.Error(), "PermissionMode") || !strings.Contains(err.Error(), "ExtraArgs") {
+		t.Fatalf("legacy CLI fields launched: %v", err)
+	}
+	def := claudia.AgentDef{Name: "jv-worker", WorkDir: t.TempDir(), SessionID: "sid-jv", Purpose: claudia.PurposeWork, Parent: "jevons-po"}
 	if err := reg.Register(def); err != nil {
 		t.Fatal(err)
 	}
@@ -438,8 +448,8 @@ func TestRegistryLaunchGoesThroughDaemon(t *testing.T) {
 		t.Fatal("Registry.Launch did not go through the daemon")
 	}
 	got := f.seat(0).start().Config
-	if got.PermissionMode != "plan" || len(got.ExtraArgs) != 1 || got.Name != "jv-worker" {
-		t.Fatalf("Session-only fields did not reach the daemon: %+v", got)
+	if got.Name != "jv-worker" {
+		t.Fatalf("daemon seat = %+v", got)
 	}
 	dd := f.d.reg.Def("jv-worker")
 	if dd == nil || dd.Purpose != claudia.PurposeWork || dd.Parent != "jevons-po" || !dd.AutoStart {

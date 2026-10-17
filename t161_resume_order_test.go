@@ -34,10 +34,16 @@ func TestT161ResumeNudgeDoesNotHoldAStartSlot(t *testing.T) {
 		}
 		return StartStub(ctx, cfg, &StubAgentOps{Send: send})
 	}
-	f.open(t, []AgentDef{
+	defs := []AgentDef{
 		{Name: "a-slow-to-ready", WorkDir: t.TempDir(), SessionID: "sid-a", AutoStart: true},
 		{Name: "b-next", WorkDir: t.TempDir(), SessionID: "sid-b", AutoStart: true},
-	})
+	}
+	// ResumeAll sets RequireResume for a persisted session. The stub
+	// refuses to mint when that transcript is missing; these seats have one.
+	for _, def := range defs {
+		writeClaudeSessionJSONL(t, def.SessionID, def.WorkDir)
+	}
+	f.open(t, defs)
 	done := make(chan []ResumeOutcome, 1)
 	go func() {
 		done <- f.reg.ResumeAll(context.Background(), &ResumeArgs{Nudge: "restart-nudge", Concurrency: 1})

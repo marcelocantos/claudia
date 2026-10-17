@@ -77,15 +77,14 @@ func TestCodexCapabilityMatrixIsExplicit(t *testing.T) {
 // declared gap, and calling into it must fail with a typed error rather
 // than inheriting Claude's answer.
 func TestCodexCapabilityGapsVersusClaude(t *testing.T) {
+	// Claude still supports these. The sidecar does not claim the legacy
+	// CLI surfaces (terminal log, permission mode, tool restrictions,
+	// extra args), so those are not a Codex-versus-Claude gap.
 	wantGaps := []Capability{
 		CapabilityRewind,
 		CapabilityCost,
 		CapabilityTmuxAttach,
-		CapabilityTerminalLog,
-		CapabilityPermissionMode,
-		CapabilityToolRestrictions,
 		CapabilityWebSearch,
-		CapabilityExtraArgs,
 	}
 	for _, capability := range wantGaps {
 		if ProviderCapabilityStatus(ProviderClaude, capability) != CapabilitySupported {
@@ -114,8 +113,29 @@ func TestCodexCapabilityGapsVersusClaude(t *testing.T) {
 	if ProviderCapabilityStatus(ProviderClaude, CapabilityImageInput) == CapabilitySupported {
 		t.Error("claude image_input became supported; move it into wantGaps")
 	}
-	if gaps := capabilityGaps(ProviderCodex); len(gaps) != len(wantGaps)+1 {
-		t.Errorf("codex gaps = %v, want the %d declared gaps plus image_input", gaps, len(wantGaps))
+	// Shared gaps are not a Codex indictment: Task has no OMP replacement,
+	// image input is unwired for everyone, and the legacy CLI surfaces
+	// are unsupported for Claude too.
+	wantAll := []Capability{
+		CapabilityTask,
+		CapabilityRewind,
+		CapabilityCost,
+		CapabilityTmuxAttach,
+		CapabilityTerminalLog,
+		CapabilityPermissionMode,
+		CapabilityToolRestrictions,
+		CapabilityImageInput,
+		CapabilityWebSearch,
+		CapabilityExtraArgs,
+	}
+	gaps := capabilityGaps(ProviderCodex)
+	if len(gaps) != len(wantAll) {
+		t.Fatalf("codex gaps = %v, want %v", gaps, wantAll)
+	}
+	for i := range wantAll {
+		if gaps[i] != wantAll[i] {
+			t.Fatalf("codex gaps = %v, want %v", gaps, wantAll)
+		}
 	}
 }
 

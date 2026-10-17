@@ -781,13 +781,15 @@ func startDirectContext(ctx context.Context, cfg Config) (*Agent, error) {
 
 // backendAdmitsResume reports that this backend, not the Claude JSONL
 // file, decides whether a RequireResume seat still has a conversation.
-// The sidecar and a broker-held seat do. A stub does not.
+// The sidecar, a broker-held seat, and any other backend that implements
+// its own start do. A stub and the legacy Claude CLI backend do not:
+// missing JSONL there would mint a replacement transcript.
 func backendAdmitsResume(backend agentBackend) bool {
 	switch backend.(type) {
-	case ompAgentBackend, *brokerAgentBackend:
-		return true
-	default:
+	case *stubAgentBackend, claudeAgentBackend:
 		return false
+	default:
+		return true
 	}
 }
 
@@ -856,14 +858,12 @@ func startWithBackendContext(ctx context.Context, cfg Config, backend agentBacke
 	if useOMP(cfg) && resuming {
 		cfg.RequireResume = true
 	}
-	// FAIL-CLOSED RESUME (Claude): when the caller marked this id as an
-	// existing conversation (RequireResume), missing JSONL must be a hard
-	// error — silently falling through would mint a replacement
-	// conversation and orphan the caller's history (Registry
+	// FAIL-CLOSED RESUME (Claude JSONL): a stub or the legacy Claude CLI
+	// backend would mint a replacement transcript when this file is
+	// missing. The sidecar and a broker-held seat confirm admission
+	// themselves, from their own store, not from this file. Registry
 	// Materialized sets RequireResume only after real conversation
-	// evidence, not bare Start success). The sidecar and a broker-held
-	// seat confirm that admission themselves. Every other backend,
-	// including the stub Start uses in place of a process, refuses here.
+	// evidence, not bare Start success.
 	if provider == ProviderClaude && cfg.RequireResume && !resuming && !backendAdmitsResume(backend) {
 		return nil, fmt.Errorf("session %s: existing conversation required but JSONL not found at %s — refusing to mint a replacement session", sessionID, jsonlPath)
 	}

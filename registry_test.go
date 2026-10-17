@@ -489,19 +489,12 @@ func TestHermeticMaterializeFromJSONLAndRequireResume(t *testing.T) {
 		t.Fatal("Materialized true before JSONL evidence")
 	}
 
-	// Mark without JSONL must refuse (Claude).
-	if err := r.MarkMaterialized(name); err == nil {
-		t.Fatal("MarkMaterialized without JSONL returned nil, want error")
-	}
-
-	// Durable transcript appears (first completed turn).
-	writeClaudeSessionJSONL(t, sid, workDir)
-
+	// The host attests. Claude JSONL is not the seat store.
 	if err := r.MarkMaterialized(name); err != nil {
-		t.Fatalf("MarkMaterialized after JSONL: %v", err)
+		t.Fatalf("MarkMaterialized: %v", err)
 	}
 	if !r.Def(name).Materialized {
-		t.Fatal("Materialized false after MarkMaterialized with JSONL")
+		t.Fatal("Materialized false after host attestation")
 	}
 
 	// Next Launch must RequireResume.
@@ -542,15 +535,13 @@ func TestHermeticMaterializeFromJSONLAndRequireResume(t *testing.T) {
 	}
 }
 
-// 🎯T15 (c): RequireResume still fails closed when Materialized && JSONL missing.
+// 🎯T15 (c): a materialized seat does not mint when nothing can confirm
+// the conversation. The sidecar is that store. Claude JSONL is not.
 func TestHermeticMaterializedRequireResumeFailsClosed(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 	t.Setenv("XDG_STATE_HOME", filepath.Join(tmpHome, "state"))
 
-	// Use real Start path (no fake) so RequireResume fail-closed in
-	// startWithBackend runs before any backend spawn — same as
-	// TestHermeticClaudeRequireResumeFailsClosed, wired through Registry.
 	workDir := t.TempDir()
 	r, err := NewRegistry(filepath.Join(t.TempDir(), "registry.json"))
 	if err != nil {
@@ -568,10 +559,13 @@ func TestHermeticMaterializedRequireResumeFailsClosed(t *testing.T) {
 
 	_, err = r.Launch(name)
 	if err == nil {
-		t.Fatal("Launch with Materialized and missing JSONL returned nil")
+		t.Fatal("Launch with Materialized and no sidecar returned nil")
 	}
-	if !strings.Contains(err.Error(), "refusing to mint") {
-		t.Errorf("error = %v, want refuse-to-mint wording", err)
+	if strings.Contains(err.Error(), "refusing to mint") {
+		t.Fatalf("missing Claude JSONL was treated as the resume store: %v", err)
+	}
+	if !strings.Contains(err.Error(), "CLAUDIA_OMP_SOCKET") {
+		t.Fatalf("error = %v, want the sidecar gate", err)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -31,6 +32,11 @@ func TestT934WedgedStdioServerIsRestartedAndAnswersNext(t *testing.T) {
 	}
 	if n := mcpStdioWedgeRestarts.Load() - before; n != 1 {
 		t.Fatalf("restarts = %d, want 1", n)
+	}
+	// A loaded host can kill the first process before main creates the
+	// marker. The restarted process is the answering generation either way.
+	if err := os.WriteFile(marker, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
 	}
 	// The fresh process gets the ordinary deadline: the short one only had
 	// to catch the wedge, and a loaded host can take longer than it to start

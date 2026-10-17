@@ -43,6 +43,9 @@ func TestResumeAdoptsWithoutNudgeAndEmitsTailEvents(t *testing.T) {
 	adoptable := newSeat()
 	f.adoptHook = func(cfg claudia.Config) (*claudia.Agent, error) {
 		if cfg.Name == "still-there" {
+			// Adopt goes through StartStub, not startSeat. The persisted
+			// session still needs the transcript the stub refuses to mint.
+			f.ensureStubTranscript(cfg)
 			return claudia.StartStub(context.Background(), cfg, adoptable.ops())
 		}
 		return nil, claudia.ErrNoSessionWindow

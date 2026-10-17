@@ -392,11 +392,13 @@ func TestSteerableCoversEveryProvider(t *testing.T) {
 // TestCheckCapabilityFailsClosed: an unknown provider or an unclaimed
 // capability must report unsupported, never inherit Claude's answer.
 func TestCheckCapabilityFailsClosed(t *testing.T) {
-	if err := CheckCapability(ProviderClaude, CapabilityTask); err != nil {
-		t.Errorf("CheckCapability(claude, task) = %v, want nil", err)
-	}
-	if err := CheckCapability("", CapabilityTask); err != nil {
-		t.Errorf("CheckCapability(\"\", task) = %v, want nil (empty means claude)", err)
+	// Task has no OMP replacement (T192). Empty provider is Claude.
+	for _, p := range []Provider{ProviderClaude, ""} {
+		err := CheckCapability(p, CapabilityTask)
+		var capErr *CapabilityError
+		if !errors.As(err, &capErr) || capErr.Status != CapabilityUnsupported {
+			t.Errorf("CheckCapability(%q, task) = %v, want unsupported", p, err)
+		}
 	}
 	for _, tc := range []struct {
 		provider   Provider

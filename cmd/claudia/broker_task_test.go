@@ -27,12 +27,12 @@ func TestBrokerUsageAdmitColumn(t *testing.T) {
 	t.Setenv(broker.NoBrokerEnv, "")
 
 	out := waitUsage(t, func(s string) bool {
-		return strings.Contains(s, "ADMIT") && strings.Contains(s, "yes")
+		return strings.Contains(s, "task_run gate") && strings.Contains(s, claudia.FleetReasonBinaryNotFound)
 	})
-	if !strings.Contains(out, "task_run gate") {
-		t.Fatalf("usage missing admission legend:\n%s", out)
+	if !strings.Contains(out, claudia.ErrTaskCLIRemoved.Error()) {
+		t.Fatalf("usage missing task-removal reason:\n%s", out)
 	}
-	if !usageRowAdmits(out, "claude", "yes") {
+	if !usageRowAdmits(out, "claude", "no") {
 		t.Fatalf("claude row:\n%s", out)
 	}
 }
@@ -48,8 +48,11 @@ func TestBrokerUsageAdmitNoWhenExhausted(t *testing.T) {
 	t.Setenv(broker.NoBrokerEnv, "")
 
 	out := waitUsage(t, func(s string) bool {
-		return strings.Contains(s, "exhausted")
+		return strings.Contains(s, "exhausted") && strings.Contains(s, claudia.FleetReasonBinaryNotFound)
 	})
+	if !strings.Contains(out, claudia.ErrTaskCLIRemoved.Error()) {
+		t.Fatalf("usage missing task-removal reason:\n%s", out)
+	}
 	if !usageRowAdmits(out, "claude", "no") {
 		t.Fatalf("exhausted claude should be ADMIT no:\n%s", out)
 	}
@@ -89,19 +92,21 @@ func TestBrokerUsageJSONListsFleetRoster(t *testing.T) {
 		t.Fatalf("usage json:\n%s", out)
 	}
 	want := []struct {
-		p     claudia.Provider
-		rem   float64
-		admit bool
+		p   claudia.Provider
+		rem float64
 	}{
-		{claudia.ProviderCursor, 12, true},
-		{claudia.ProviderGrok, 81, true},
-		{claudia.ProviderClaude, 40, true},
-		{claudia.ProviderCodex, 0, false},
+		{claudia.ProviderCursor, 12},
+		{claudia.ProviderGrok, 81},
+		{claudia.ProviderClaude, 40},
+		{claudia.ProviderCodex, 0},
 	}
 	for i, w := range want {
 		row := snap.Providers[i]
-		if row.Provider != w.p || row.RemainingPercent == nil || *row.RemainingPercent != w.rem || row.Admit != w.admit {
-			t.Fatalf("providers[%d] = %+v, want %s remaining %v admit %v", i, row, w.p, w.rem, w.admit)
+		if row.Provider != w.p || row.RemainingPercent == nil || *row.RemainingPercent != w.rem || row.Admit {
+			t.Fatalf("providers[%d] = %+v, want %s remaining %v admit false", i, row, w.p, w.rem)
+		}
+		if !strings.HasPrefix(row.Reason, claudia.FleetReasonBinaryNotFound+": ") || !strings.Contains(row.Reason, claudia.ErrTaskCLIRemoved.Error()) {
+			t.Fatalf("providers[%d] reason = %q", i, row.Reason)
 		}
 	}
 	if snap.FetchedAt.IsZero() {

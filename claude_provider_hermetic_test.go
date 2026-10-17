@@ -38,25 +38,21 @@ func TestHermeticClaudeRequireResumeFailsClosed(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", filepath.Join(tmpHome, "state"))
 
 	workDir := t.TempDir()
-	backend := &fakeAgentBackend{name: "fake-claude"}
+	var started bool
 	_, err := startWithBackend(Config{
 		WorkDir:       workDir,
 		SessionID:     "materialized-missing-jsonl",
 		RequireResume: true,
 		TermLogPath:   "-",
-	}, backend)
+	}, &stubAgentBackend{ops: &StubAgentOps{Started: func(StubStart) { started = true }}})
 	if err == nil {
 		t.Fatal("Start with RequireResume and missing JSONL returned nil")
 	}
 	if !strings.Contains(err.Error(), "refusing to mint") {
 		t.Errorf("error = %v, want refuse-to-mint wording", err)
 	}
-	// Backend must not have been asked to spawn.
-	backend.mu.Lock()
-	n := len(backend.requests)
-	backend.mu.Unlock()
-	if n != 0 {
-		t.Errorf("backend StartAgent calls = %d, want 0", n)
+	if started {
+		t.Error("stub StartAgent ran; the JSONL gate must return first")
 	}
 }
 

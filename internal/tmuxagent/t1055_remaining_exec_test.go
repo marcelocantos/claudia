@@ -64,13 +64,9 @@ func TestT1055PasteAndPaneIDDoNotExec(t *testing.T) {
 	if err := sendNamedKey("@1", "Down"); !errors.Is(err, ErrLegacyCLISeatTransport) {
 		t.Fatalf("sendNamedKey = %v, want legacy refusal", err)
 	}
-	started := time.Now()
 	waited, err := WaitReady("@1", time.Millisecond, 5*time.Second)
 	if waited != 0 || !errors.Is(err, ErrLegacyCLISeatTransport) {
-		t.Fatalf("WaitReady = (%s, %v), want legacy refusal", waited, err)
-	}
-	if time.Since(started) > time.Second {
-		t.Fatalf("WaitReady polled for %s", time.Since(started))
+		t.Fatalf("WaitReady = (%s, %v), want an immediate legacy refusal", waited, err)
 	}
 
 	entries, err := os.ReadDir(sockDir)

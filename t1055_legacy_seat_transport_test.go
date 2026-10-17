@@ -70,10 +70,8 @@ func TestT1055FleetSpawnUsesOMPOnly(t *testing.T) {
 
 	ctx := t.Context()
 	for !omp.Listening(ctx, socket) {
-		select {
-		case <-ctx.Done():
-			t.Fatalf("sidecar: %v", ctx.Err())
-		case <-time.After(10 * time.Millisecond):
+		if err := ctx.Err(); err != nil {
+			t.Fatalf("sidecar: %v", err)
 		}
 	}
 

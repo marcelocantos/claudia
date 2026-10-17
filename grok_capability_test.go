@@ -104,7 +104,7 @@ func TestGrokToolRestrictionsReasonNamesTheRealMechanism(t *testing.T) {
 	if !errors.As(err, &capErr) {
 		t.Fatalf("CheckCapability(grok, tool_restrictions) = %T %v, want *CapabilityError", err, err)
 	}
-	for _, want := range []string{"--deny", "--disallowed-tools", "bypassPermissions"} {
+	for _, want := range []string{"--deny", "--disallowed-tools", "legacy Session transport"} {
 		if !strings.Contains(capErr.Reason, want) {
 			t.Errorf("reason does not mention %q, so it reads as a gap in grok "+
 				"rather than in claudia: %q", want, capErr.Reason)

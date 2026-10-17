@@ -143,6 +143,7 @@ func (s *seat) counts() (interrupts, resizes, stops int) {
 
 // fixture is one daemon plus the stub seats it starts.
 type fixture struct {
+	t     *testing.T
 	d     *Daemon
 	sock  string
 	state string
@@ -165,7 +166,7 @@ func newFixture(t *testing.T) *fixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	f := &fixture{sock: filepath.Join(dir, "b.sock"), state: filepath.Join(dir, "state"),
+	f := &fixture{t: t, sock: filepath.Join(dir, "b.sock"), state: filepath.Join(dir, "state"),
 		clock: broker.NewManualClock(time.Date(2026, 9, 12, 9, 0, 0, 0, time.UTC))}
 	t.Setenv(broker.SocketPathEnv, f.sock)
 	t.Setenv(broker.NoBrokerEnv, "")
@@ -178,7 +179,43 @@ func (f *fixture) startSeat(ctx context.Context, cfg claudia.Config) (*claudia.A
 	f.mu.Lock()
 	f.seats = append(f.seats, s)
 	f.mu.Unlock()
+	f.ensureStubTranscript(cfg)
 	return claudia.StartStub(ctx, cfg, s.ops())
+}
+
+// ensureStubTranscript gives a RequireResume Claude stub the conversation
+// file StartStub refuses to mint. ResumeAll sets that flag for a persisted
+// session. The sidecar confirms its own store; this fixture does not.
+func (f *fixture) ensureStubTranscript(cfg claudia.Config) {
+	f.t.Helper()
+	provider := cfg.Provider
+	if provider == "" {
+		provider = claudia.ProviderClaude
+	}
+	if provider != claudia.ProviderClaude || !cfg.RequireResume || cfg.SessionID == "" {
+		return
+	}
+	workDir := cfg.WorkDir
+	if workDir == "" {
+		workDir = "."
+	}
+	if abs, err := filepath.Abs(workDir); err == nil {
+		workDir = abs
+	}
+	if resolved, err := filepath.EvalSymlinks(workDir); err == nil {
+		workDir = resolved
+	}
+	path := claudia.SessionJSONLPath(cfg.SessionID, workDir)
+	if _, err := os.Stat(path); err == nil {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		f.t.Fatalf("stub transcript: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("{}\n"), 0o644); err != nil {
+		f.t.Fatalf("stub transcript: %v", err)
+	}
+	f.t.Cleanup(func() { _ = os.Remove(path) })
 }
 
 func (f *fixture) launchers() *claudia.RegistryLaunchers {
