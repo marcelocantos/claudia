@@ -5,7 +5,6 @@ package tmuxagent
 
 import (
 	"bufio"
-	"fmt"
 	"io"
 	"os/exec"
 	"strings"
@@ -44,52 +43,10 @@ type Control struct {
 	done      chan struct{}
 }
 
-// DialControl starts a tmux control-mode client attached to the
-// claudia-anchor session and filters %output notifications for the
-// given window's active pane. The returned Control delivers the
-// pane's bytes on Bytes() until Close is called or the tmux
-// subprocess exits.
-//
-// Dialing after the window has already produced output is safe —
-// tmux replays the current pane contents as %output on attach, so
-// the history is not lost even if DialControl races with Claude's
-// startup burst.
+// DialControl refuses. It used to start a tmux control-mode client
+// attached to the claudia-anchor session.
 func DialControl(windowID string) (*Control, error) {
-	paneID, err := paneIDFor(windowID)
-	if err != nil {
-		return nil, err
-	}
-
-	sock := SocketPath()
-	cmd := exec.Command("tmux", "-S", sock, "-C", "attach-session", "-t", anchorSessionName)
-
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return nil, fmt.Errorf("stdin pipe: %w", err)
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		stdin.Close()
-		return nil, fmt.Errorf("stdout pipe: %w", err)
-	}
-
-	if err := cmd.Start(); err != nil {
-		stdin.Close()
-		stdout.Close()
-		return nil, fmt.Errorf("start tmux control: %w", err)
-	}
-
-	c := &Control{
-		cmd:    cmd,
-		stdin:  stdin,
-		stdout: stdout,
-		paneID: paneID,
-		bytes:  make(chan []byte, 256),
-		done:   make(chan struct{}),
-	}
-
-	go c.readLoop()
-	return c, nil
+	return nil, ErrLegacyCLISeatTransport
 }
 
 // Bytes returns the channel of decoded pane bytes for this control
@@ -199,13 +156,5 @@ func isOctal(c byte) bool { return c >= '0' && c <= '7' }
 // paneIDFor returns the tmux pane ID (e.g. "%3") of the active pane
 // of the given window.
 func paneIDFor(windowID string) (string, error) {
-	sock := SocketPath()
-	out, err := exec.Command(
-		"tmux", "-S", sock,
-		"display-message", "-p", "-t", windowID, "#{pane_id}",
-	).Output()
-	if err != nil {
-		return "", fmt.Errorf("tmux display-message: %w", wrapExitErr(err))
-	}
-	return strings.TrimSpace(string(out)), nil
+	return "", ErrLegacyCLISeatTransport
 }

@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/marcelocantos/claudia/internal/broker"
-	"github.com/marcelocantos/claudia/internal/tmuxagent"
 )
 
 // This file is broker policy: it decides when a warm pool window has expired
@@ -151,28 +150,7 @@ func adoptWindow(ctx context.Context, cfg Config, workDir, windowID, sessionID s
 	if sessionID == "" {
 		return nil, fmt.Errorf("window %s has no recorded @%s", windowID, poolSessionOption)
 	}
-	// Verify the window is still alive.
-	if !tmuxagent.IsWindowAlive(windowID) {
-		return nil, fmt.Errorf("window %s is no longer alive", windowID)
-	}
-
-	// Check readiness via capture-pane (should be near-instant for a
-	// warm window that's already at the idle input box).
-	frame, err := tmuxagent.CapturePane(windowID)
-	if err != nil {
-		return nil, fmt.Errorf("capture-pane: %w", err)
-	}
-	if !tmuxagent.MatchReady(frame) {
-		// The window may be mid-response from a prior session. Try a
-		// brief wait (up to ~2s) before giving up.
-		_, waitErr := tmuxagent.WaitReady(windowID, 50*time.Millisecond, 2*time.Second)
-		if waitErr != nil {
-			return nil, fmt.Errorf("warm window not ready: %w", waitErr)
-		}
-	}
-	_ = ctx // reserved for future cancellation
-
-	return buildPoolAgent(cfg, workDir, windowID, sessionID, false)
+	return nil, fmt.Errorf("%w: pool", ErrLegacyCLISeatTransport)
 }
 
 // poolTailOffset is where this holder's event stream begins: the end of
@@ -206,74 +184,12 @@ func poolTailOffset(jsonlPath string) int64 {
 // pooled seat (🎯T78). It tails from the transcript's current end, which
 // is what keeps a re-acquired window's event stream this holder's own.
 func buildPoolAgent(cfg Config, workDir, windowID, sessionID string, waitForReady bool) (*Agent, error) {
-	termLogPath := cfg.TermLogPath
-	switch termLogPath {
+	switch cfg.TermLogPath {
 	case "", "-":
-		termLogPath = ""
 	default:
 		return nil, fmt.Errorf("%w: term log", ErrLegacyCLISeatTransport)
 	}
-	jsonlPath := SessionJSONLPath(sessionID, workDir)
-	tailFrom := poolTailOffset(jsonlPath)
-
-	a := &Agent{
-		provider:     ProviderClaude,
-		sessionID:    sessionID,
-		jsonlPath:    jsonlPath,
-		termLogPath:  termLogPath,
-		tmuxWindowID: windowID,
-		ops:          claudeAgentOps(),
-		alive:        true,
-		ready:        make(chan struct{}),
-		poolWindow:   true,
-		poolWorkDir:  workDir,
-		model:        cfg.Model,
-		eventSubs:    make(map[int64]EventFunc),
-	}
-
-	// Dial control mode for terminal byte stream.
-	ctrl, err := tmuxagent.DialControl(windowID)
-	if err != nil {
-		return nil, fmt.Errorf("pool control-mode: %w", err)
-	}
-	a.tmuxCtrl = ctrl
-
-	go func() {
-		for data := range ctrl.Bytes() {
-			a.pushTermOutput(data)
-		}
-		a.markDead()
-	}()
-
-	// Observe the seat the way Start observes one: the transcript is the
-	// event stream WaitForResponse reads, and the pane poll supplies the
-	// provisional ⏺ preview (🎯T51).
-	go a.tailJSONLFrom(tailFrom)
-
-	preview := &tuiPreviewTracker{}
-	// A Start-ed window's pane is empty; a re-acquired pool window's pane
-	// still shows the previous holder's ⏺ blocks. resetTurn arms the
-	// tracker to take its baseline from the first frame it sees, so those
-	// blocks are the floor rather than a preview published to this holder.
-	preview.resetTurn("")
-	a.tuiPreview = preview
-	a.capturePane = func() (string, error) {
-		b, err := tmuxagent.CapturePane(a.tmuxWindowID)
-		if err != nil {
-			return "", err
-		}
-		return string(b), nil
-	}
-	go a.pollTUIPreview()
-
-	if waitForReady {
-		go a.detectReady()
-	} else {
-		// Window is already ready — close the channel immediately.
-		close(a.ready)
-	}
-
-	return a, nil
+	return nil, fmt.Errorf("%w: pool", ErrLegacyCLISeatTransport)
 }
 
 // Release returns or disposes of the agent according to disposition:
@@ -290,56 +206,7 @@ func (a *Agent) Release(disposition string) error {
 		// A daemon-held pooled seat: the daemon runs the pool.
 		return a.ops.release(a, disposition)
 	}
-	windowID := a.tmuxWindowID
-
-	switch {
-	case disposition == "return":
-		// Stop observing before the window is offered to anyone else: the
-		// tailer and the pane poll outlive the control client, and a
-		// returned handle that keeps publishing is the next holder's turn
-		// arriving on the previous holder's subscribers (🎯T78).
-		a.stopPoolObservers()
-		// Close the control client but leave the window alive.
-		if a.tmuxCtrl != nil {
-			a.tmuxCtrl.Close()
-		}
-		if err := tmuxagent.SetWindowOption(windowID, "claudia-held", "0"); err != nil {
-			return fmt.Errorf("pool: clear held: %w", err)
-		}
-		slog.Info("pool: window returned", "window", windowID)
-		return nil
-
-	case disposition == "drop":
-		// Full teardown.
-		a.Stop()
-		slog.Info("pool: window dropped", "window", windowID)
-		return nil
-
-	case strings.HasPrefix(disposition, "keep_alive_for:"):
-		secsStr := strings.TrimPrefix(disposition, "keep_alive_for:")
-		secs, err := strconv.ParseInt(secsStr, 10, 64)
-		if err != nil || secs <= 0 {
-			return fmt.Errorf("pool: invalid keep_alive_for seconds %q", secsStr)
-		}
-		deadline := poolKeepAliveDeadline(poolClock.Now(), secs)
-
-		a.stopPoolObservers()
-		if a.tmuxCtrl != nil {
-			a.tmuxCtrl.Close()
-		}
-		if err := tmuxagent.SetWindowOption(windowID, "claudia-held", "0"); err != nil {
-			return fmt.Errorf("pool: clear held for keep_alive_for: %w", err)
-		}
-		if err := tmuxagent.SetWindowOption(windowID, "claudia-deadline", strconv.FormatInt(deadline, 10)); err != nil {
-			return fmt.Errorf("pool: set deadline: %w", err)
-		}
-		slog.Info("pool: window kept alive with deadline",
-			"window", windowID, "deadline", time.Unix(deadline, 0))
-		return nil
-
-	default:
-		return fmt.Errorf("pool: unknown disposition %q (want: return, drop, keep_alive_for:<secs>)", disposition)
-	}
+	return fmt.Errorf("%w: pool", ErrLegacyCLISeatTransport)
 }
 
 // stopPoolObservers retires this handle's transcript tailer and pane

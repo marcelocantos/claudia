@@ -1077,8 +1077,10 @@ var ErrNoSessionWindow = errors.New("no live tmux window for session")
 
 // ErrLegacyCLISeatTransport refuses a CLI process for a Session seat.
 // Product dispatch, Adopt, the concrete session backends, the pool
-// (including acquireLocked), SpawnWindow, EnsureServer, KillWindow,
-// ListWindows, and SendKeys (tmuxagent sentinels of the same text),
+// (including acquireLocked, adoptWindow, buildPoolAgent, and local
+// Release), SpawnWindow, EnsureServer, KillWindow, ListWindows,
+// SendKeys, CapturePane, SendEscape, SetWindowOption, DialControl,
+// ResizeWindow, and paste (tmuxagent sentinels of the same text),
 // reapSessionWindows, the Codex app-server, the Grok and Cursor ACP
 // constructors, the CLI term-log writer, claudeAgentOps attach, and
 // non-broker Rewind all refuse before they exec or mutate a transcript.

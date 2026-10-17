@@ -674,53 +674,15 @@ func uniquePasteBufferName() string {
 	return fmt.Sprintf("claudia-send-%d-%d", os.Getpid(), pasteBufSeq.Add(1))
 }
 
-// pasteViaBuffer writes msg to a temp file, load-buffers it under a
-// per-send buffer name, and paste-buffers with bracketed-paste (-p)
-// and raw newlines (-r).
+// pasteViaBuffer refuses. It used to load-buffer msg and paste it.
 func pasteViaBuffer(windowID, msg string) error {
-	return pasteViaNamedBuffer(windowID, msg, uniquePasteBufferName(), nil)
+	return ErrLegacyCLISeatTransport
 }
 
-// pasteViaNamedBuffer is the load → optional hook → paste path.
-// betweenLoadAndPaste, when non-nil, runs after a successful load and
-// before paste (hermetic race oracles synchronise here). On paste
-// failure the named buffer is deleted so a miss does not leave orphans
-// (-d only runs on paste success).
+// pasteViaNamedBuffer refuses before it creates a temp file or calls
+// tmux. betweenLoadAndPaste is not run.
 func pasteViaNamedBuffer(windowID, msg, bufName string, betweenLoadAndPaste func()) error {
-	sock := SocketPath()
-	f, err := os.CreateTemp("", "claudia-send-*.txt")
-	if err != nil {
-		return fmt.Errorf("temp paste file: %w", err)
-	}
-	path := f.Name()
-	defer os.Remove(path)
-	if _, err := f.WriteString(msg); err != nil {
-		f.Close()
-		return fmt.Errorf("write paste file: %w", err)
-	}
-	if err := f.Close(); err != nil {
-		return fmt.Errorf("close paste file: %w", err)
-	}
-
-	if out, err := exec.Command(
-		"tmux", "-S", sock,
-		"load-buffer", "-b", bufName, path,
-	).CombinedOutput(); err != nil {
-		return fmt.Errorf("tmux load-buffer: %w: %s", err, out)
-	}
-	if betweenLoadAndPaste != nil {
-		betweenLoadAndPaste()
-	}
-	// -p: bracketed paste; -r: keep LFs (do not rewrite to CR); -d: drop buffer.
-	if out, err := exec.Command(
-		"tmux", "-S", sock,
-		"paste-buffer", "-p", "-r", "-d", "-b", bufName, "-t", windowID,
-	).CombinedOutput(); err != nil {
-		// -d did not run; drop the named buffer so failures stay clean.
-		_ = exec.Command("tmux", "-S", sock, "delete-buffer", "-b", bufName).Run()
-		return fmt.Errorf("tmux paste-buffer: %w: %s", err, out)
-	}
-	return nil
+	return ErrLegacyCLISeatTransport
 }
 
 // sendNamedKey presses one tmux key by name (e.g. "Down"), without -l,
@@ -741,12 +703,5 @@ func sendNamedKey(windowID, key string) error {
 // Uses send-keys without -l so "Escape" is interpreted as the key
 // name rather than typed literally.
 func SendEscape(windowID string) error {
-	sock := SocketPath()
-	if out, err := exec.Command(
-		"tmux", "-S", sock,
-		"send-keys", "-t", windowID, "Escape",
-	).CombinedOutput(); err != nil {
-		return fmt.Errorf("tmux send-keys Escape: %w: %s", err, out)
-	}
-	return nil
+	return ErrLegacyCLISeatTransport
 }

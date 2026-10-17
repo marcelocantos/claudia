@@ -454,16 +454,31 @@ same refusal and does not truncate. `rewindJSONL` remains for its
 direct tests. A daemon-held rewind therefore does not roll a
 transcript back.
 
+`CapturePane`, `SendEscape`, `SetWindowOption`, `DialControl`,
+`ResizeWindow`, and paste return the sentinel before tmux runs. Paste
+returns before `CreateTemp`. `paneIDFor` returns the same sentinel, and
+`DialControl` does not call it. `adoptWindow` still refuses an empty
+session id with the recorded-option error. A recorded session returns
+the pool sentinel before `IsWindowAlive`. `buildPoolAgent` keeps the
+real term-log refusal, then returns the pool sentinel before
+`DialControl` and before it builds an agent or starts a goroutine.
+Local `Release` returns the pool sentinel before `SetWindowOption` or
+`Stop`. A daemon-held seat still calls `ops.release`.
+
 Still present, so the purge is not done:
 
-- These tmux helpers still exec when called: `CapturePane`,
-  `WaitReady`, `SetWindowOption`, `DialControl`, `SendEscape`,
-  `ResizeWindow`, paste, `IsWindowAlive`, `GetWindowOption`.
+- These tmux helpers still exec when called: `IsWindowAlive`,
+  `GetWindowOption`, `sendNamedKey`, `typeLiteral`, and
+  `sendNamedEnter`. `cmd/t28size` has its own `pasteBuffer` and
+  `sendKey`, which still exec; that probe is not the seat path.
+  `WaitReady`'s production driver calls
+  `CapturePane`, which now refuses, so that driver fails closed. The
+  wait loop and the tests that inject a capture function stay.
   `claudeAgentOps` still wires prompt-in-flight, interrupt, resize,
-  and model-switch at those helpers. `adoptWindow`, `buildPoolAgent`'s
-  control-mode dial, and `Release` still call them. They are not on
-  the product start path. `scrubServerEnv` is deleted; it was only
-  reached from `EnsureServer`.
+  and model-switch at the helpers. Prompt-in-flight treats a capture
+  error as false. Model-switch calls `SendKeys`, which already
+  refuses. Interrupt and resize now refuse before tmux runs.
+  `scrubServerEnv` is deleted; it was only reached from `EnsureServer`.
 - Attach, the term-log file, and Rewind have no sidecar equivalent.
   🎯T189 says seat removal does not wait for those replacements. This
   slice fail-closes them. It does not build replacements.

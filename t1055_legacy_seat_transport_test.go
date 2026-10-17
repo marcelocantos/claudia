@@ -304,6 +304,72 @@ func TestT1055LegacySurfacesDoNotExec(t *testing.T) {
 		t.Fatalf("acquireLocked = (%v, %v), want legacy refusal", agent, err)
 	}
 
+	if frame, err := tmuxagent.CapturePane("@1"); frame != nil || !errors.Is(err, tmuxagent.ErrLegacyCLISeatTransport) {
+		t.Fatalf("CapturePane = (%q, %v), want legacy refusal", frame, err)
+	}
+	if err := tmuxagent.SendEscape("@1"); !errors.Is(err, tmuxagent.ErrLegacyCLISeatTransport) {
+		t.Fatalf("SendEscape = %v, want legacy refusal", err)
+	}
+	if err := tmuxagent.SetWindowOption("@1", "claudia-held", "0"); !errors.Is(err, tmuxagent.ErrLegacyCLISeatTransport) {
+		t.Fatalf("SetWindowOption = %v, want legacy refusal", err)
+	}
+	if ctrl, err := tmuxagent.DialControl("@1"); ctrl != nil || !errors.Is(err, tmuxagent.ErrLegacyCLISeatTransport) {
+		t.Fatalf("DialControl = (%v, %v), want legacy refusal", ctrl, err)
+	}
+	if err := tmuxagent.ResizeWindow("@1", 80, 24); !errors.Is(err, tmuxagent.ErrLegacyCLISeatTransport) {
+		t.Fatalf("ResizeWindow = %v, want legacy refusal", err)
+	}
+
+	adopted, err := adoptWindow(context.Background(), Config{}, sockDir, "@7", "sid")
+	if adopted != nil || !errors.Is(err, ErrLegacyCLISeatTransport) {
+		t.Fatalf("adoptWindow = (%v, %v), want legacy refusal", adopted, err)
+	}
+	if _, err := adoptWindow(context.Background(), Config{}, sockDir, "@7", ""); err == nil || !strings.Contains(err.Error(), poolSessionOption) {
+		t.Fatalf("empty session adopt = %v, want %s", err, poolSessionOption)
+	}
+
+	pooled, err := buildPoolAgent(Config{TermLogPath: "-"}, sockDir, "@7", "sid", true)
+	if pooled != nil || !errors.Is(err, ErrLegacyCLISeatTransport) || !strings.Contains(err.Error(), "pool") {
+		t.Fatalf("buildPoolAgent = (%v, %v), want pool refusal", pooled, err)
+	}
+	pooled, err = buildPoolAgent(Config{TermLogPath: realTerm}, sockDir, "@7", "sid", false)
+	if pooled != nil || !errors.Is(err, ErrLegacyCLISeatTransport) || !strings.Contains(err.Error(), "term log") {
+		t.Fatalf("buildPoolAgent term log = (%v, %v), want term-log refusal", pooled, err)
+	}
+	if _, statErr := os.Stat(realTerm); !os.IsNotExist(statErr) {
+		t.Fatalf("buildPoolAgent created a term log: %v", statErr)
+	}
+
+	stopped := false
+	local := &Agent{tmuxWindowID: "@9", ops: agentOps{stop: func(*Agent) { stopped = true }}}
+	for _, disposition := range []string{"return", "drop", "keep_alive_for:30", "nope"} {
+		if err := local.Release(disposition); !errors.Is(err, ErrLegacyCLISeatTransport) {
+			t.Fatalf("Release %q = %v, want legacy refusal", disposition, err)
+		}
+	}
+	if stopped {
+		t.Fatal("local Release called Stop")
+	}
+	released := false
+	brokered := &Agent{ops: agentOps{release: func(_ *Agent, disposition string) error {
+		released = disposition == "return"
+		return nil
+	}}}
+	if err := brokered.Release("return"); err != nil || !released {
+		t.Fatalf("broker Release = %v released=%v", err, released)
+	}
+
+	flying := &Agent{provider: ProviderClaude, tmuxWindowID: "@9", alive: true, ops: claudeAgentOps()}
+	if flying.PromptInFlight() {
+		t.Fatal("PromptInFlight reported a turn without a pane")
+	}
+	if err := flying.Interrupt(); !errors.Is(err, tmuxagent.ErrLegacyCLISeatTransport) {
+		t.Fatalf("Interrupt = %v, want legacy refusal", err)
+	}
+	if err := flying.Resize(80, 24); !errors.Is(err, tmuxagent.ErrLegacyCLISeatTransport) {
+		t.Fatalf("Resize = %v, want legacy refusal", err)
+	}
+
 	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
 		t.Fatalf("a legacy surface executed tmux: %v", statErr)
 	}

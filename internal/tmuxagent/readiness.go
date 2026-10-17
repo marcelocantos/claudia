@@ -6,23 +6,15 @@ package tmuxagent
 import (
 	"bytes"
 	"fmt"
-	"os/exec"
 	"regexp"
 	"strings"
 	"time"
 )
 
-// CapturePane returns the rendered content of the given tmux window's
-// active pane as a single blob via `tmux capture-pane -p`. Includes
-// only the visible viewport (no scrollback), which is what the ready
-// pattern matches against.
+// CapturePane refuses. It used to return the visible viewport of the
+// given tmux window via `tmux capture-pane -p`.
 func CapturePane(windowID string) ([]byte, error) {
-	sock := SocketPath()
-	out, err := exec.Command("tmux", "-S", sock, "capture-pane", "-p", "-t", windowID).Output()
-	if err != nil {
-		return nil, fmt.Errorf("tmux capture-pane %s: %w", windowID, wrapExitErr(err))
-	}
-	return out, nil
+	return nil, ErrLegacyCLISeatTransport
 }
 
 // readyPattern matches Claude Code's idle input box near the bottom
