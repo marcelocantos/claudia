@@ -889,8 +889,13 @@ func (d *Daemon) handleGrant(c *broker.ClientConn, req *broker.Request) {
 		Detail: map[bool]string{true: "reclaimed", false: "started"}[reclaimed]})
 }
 
-// daemonAcquire is how the daemon draws a warm seat: the library's own pool.
-var daemonAcquire = claudia.AcquireDirect
+// daemonAcquire refuses a warm CLI pool seat. The pool minted a tmux
+// window; that transport is deleted, and this path does not launch one.
+func legacyPoolRemoved(context.Context, claudia.Config) (*claudia.Agent, error) {
+	return nil, fmt.Errorf("%w: pool", claudia.ErrLegacyCLISeatTransport)
+}
+
+var daemonAcquire = legacyPoolRemoved
 
 // handleAcquire grants a warm seat from the pool the daemon runs (🎯T64).
 // The seat belongs to this connection until it is released, or until the

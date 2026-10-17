@@ -4,37 +4,41 @@
 package claudia
 
 import (
+	"os"
+	"strings"
 	"testing"
 )
 
-// 🎯T601. Every provider but the tmux Claude session implemented
-// promptInFlight, so Agent.PromptInFlight() hit the nil guard and returned
-// a confident false for Claude — not "unknown", but "no turn is running"
-// while one visibly was. A caller deciding whether an agent is wedged got
-// the wrong answer exactly when a turn was long, which is when it matters.
+// The sidecar seat answers whether a turn is running from its control
+// inflight flag. A nil answer is a confident false, which is the bug
+// 🎯T601 closed for the old tmux session.
 func TestClaudeSessionAnswersPromptInFlight(t *testing.T) {
-	if claudeAgentOps().promptInFlight == nil {
-		t.Fatal("claude tmux session still cannot answer whether a turn is running")
+	src, err := os.ReadFile("omp_agent.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const needle = "promptInFlight: func(*Agent) bool { return ctrl.inflight.Load() }"
+	if !strings.Contains(string(src), needle) {
+		t.Fatal("sidecar seat does not answer promptInFlight from its inflight flag")
 	}
 }
 
-// Every Session provider must answer. A nil here is not a small gap: the
-// call site cannot tell "no" from "cannot say", and the API offers no way
-// to express the difference.
 func TestEverySessionBackendAnswersPromptInFlight(t *testing.T) {
-	if claudeAgentOps().promptInFlight == nil {
-		t.Error("claude: promptInFlight unset — PromptInFlight() will answer false")
+	src, err := os.ReadFile("omp_agent.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(src), "promptInFlight:") {
+		t.Error("sidecar ops leave promptInFlight unset — PromptInFlight() will answer false")
 	}
 }
 
-// A window that is not there is not a turn in flight, and must not panic
-// or shell out.
 func TestPromptInFlightIsFalseWithoutAWindow(t *testing.T) {
-	fn := claudeAgentOps().promptInFlight
-	if fn(nil) {
-		t.Fatal("a nil agent reported a turn in flight")
+	if (&Agent{}).PromptInFlight() {
+		t.Fatal("an agent with no operation reported a turn in flight")
 	}
-	if fn(&Agent{}) {
-		t.Fatal("an agent with no tmux window reported a turn in flight")
+	var a *Agent
+	if a.PromptInFlight() {
+		t.Fatal("a nil agent reported a turn in flight")
 	}
 }

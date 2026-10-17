@@ -4,10 +4,8 @@
 package claudia
 
 import (
-	"context"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -25,70 +23,6 @@ func assistantLine(text string) string {
 // TestClassifyPoolWindow pins the sweep rules 🎯T78 depends on: a window
 // with no recorded session id is unobservable and must never be adopted,
 // while a held one is left to its holder even so.
-func TestClassifyPoolWindow(t *testing.T) {
-	now := time.Unix(1_000_000, 0)
-	past := "999999"
-	future := "1000001"
-
-	cases := []struct {
-		name  string
-		state poolWindowState
-		want  poolDisposition
-	}{
-		{"warm and observable", poolWindowState{sessionID: "sid"}, poolIdle},
-		{"held", poolWindowState{held: true, sessionID: "sid"}, poolHeld},
-		{"no session id", poolWindowState{}, poolBlind},
-		{"blank session id", poolWindowState{sessionID: "  "}, poolBlind},
-		{"held without a session id is still its holder's",
-			poolWindowState{held: true}, poolHeld},
-		{"deadline passed",
-			poolWindowState{sessionID: "sid", deadline: past, hasDeadline: true}, poolExpired},
-		{"deadline passed while held",
-			poolWindowState{held: true, sessionID: "sid", deadline: past, hasDeadline: true}, poolExpired},
-		{"deadline in the future",
-			poolWindowState{sessionID: "sid", deadline: future, hasDeadline: true}, poolIdle},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			if got := classifyPoolWindow(now, c.state); got != c.want {
-				t.Errorf("classifyPoolWindow = %v, want %v", got, c.want)
-			}
-		})
-	}
-}
-
-// TestAdoptWindowRefusesUnrecordedSession is the guard behind the sweep:
-// even if a blind window reached adoption, it is refused rather than
-// handed over as a seat that can never answer.
-func TestAdoptWindowRefusesUnrecordedSession(t *testing.T) {
-	_, err := adoptWindow(context.Background(), Config{}, t.TempDir(), "@7", "")
-	if err == nil {
-		t.Fatal("adoptWindow accepted a window with no recorded session id")
-	}
-	if !strings.Contains(err.Error(), poolSessionOption) {
-		t.Errorf("error %q does not name @%s", err, poolSessionOption)
-	}
-}
-
-// TestPoolTailOffset checks the measurement that decides where a holder's
-// event stream begins.
-func TestPoolTailOffset(t *testing.T) {
-	dir := t.TempDir()
-	missing := filepath.Join(dir, "never-written.jsonl")
-	if got := poolTailOffset(missing); got != 0 {
-		t.Errorf("offset for an absent transcript = %d, want 0", got)
-	}
-
-	path := filepath.Join(dir, "session.jsonl")
-	body := assistantLine("previous holder")
-	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if got, want := poolTailOffset(path), int64(len(body)); got != want {
-		t.Errorf("offset = %d, want %d", got, want)
-	}
-}
-
 // collectEvents subscribes to agent and returns a snapshot function.
 func collectEvents(a *Agent) func() []Event {
 	var (
@@ -164,7 +98,11 @@ func TestTailJSONLFromSkipsPriorHolder(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	offset := poolTailOffset(path)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	offset := info.Size()
 	a := tailFixture(t, path)
 	take := collectEvents(a)
 	go a.tailJSONLFrom(offset)

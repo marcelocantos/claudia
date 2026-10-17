@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/marcelocantos/claudia/internal/tmuxagent"
+	"github.com/marcelocantos/claudia"
 )
 
 // TestT1055ProbePasteDoesNotExec covers the probe's own paste and key
@@ -37,10 +37,10 @@ func TestT1055ProbePasteDoesNotExec(t *testing.T) {
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	if err := pasteBuffer("@1", "hello\nthere"); !errors.Is(err, tmuxagent.ErrLegacyCLISeatTransport) {
+	if err := pasteBuffer("@1", "hello\nthere"); !errors.Is(err, claudia.ErrLegacyCLISeatTransport) {
 		t.Fatalf("pasteBuffer = %v, want legacy refusal", err)
 	}
-	if err := sendKey("@1", "Enter"); !errors.Is(err, tmuxagent.ErrLegacyCLISeatTransport) {
+	if err := sendKey("@1", "Enter"); !errors.Is(err, claudia.ErrLegacyCLISeatTransport) {
 		t.Fatalf("sendKey = %v, want legacy refusal", err)
 	}
 

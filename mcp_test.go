@@ -155,10 +155,6 @@ func TestConfigMCPServersReachClaudeArgvAndGrokACP(t *testing.T) {
 			MCPServers: []MCPServer{{Name: "mnemo", Type: "http", URL: "http://127.0.0.1:7700/mcp"}},
 		},
 	}
-	args := claudeAgentArgs(req)
-	if !argvHolds(args, "--mcp-config") || !argvHolds(args, claudeMCPConfigArg(req)) {
-		t.Fatalf("claude argv missing session mcp sentinel: %v", args)
-	}
 	if claudeMCPConfigArg(req) != "session:mcpServers" {
 		t.Fatalf("claudeMCPConfigArg = %q", claudeMCPConfigArg(req))
 	}

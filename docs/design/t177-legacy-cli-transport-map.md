@@ -536,12 +536,19 @@ Still present, so the purge is not done:
   no OMP Task replacement (🎯T192) and returns `ErrTaskCLIRemoved`.
   Bedrock and Ollama stay API paths. They are not fleet seat
   providers. No fleet provider lacks an OMP seat.
-- The tmux library, the pool, and the concrete backend types still
-  compile and refuse. Deleting them is §10 step 2. No full `make gate`
-  is cited for this statement.
+- `internal/tmuxagent`, `pool.go` (`Acquire` / `AcquireDirect`), and the
+  concrete CLI backend types (`claudeAgentBackend`, `codexAgentBackend`,
+  `grokAgentBackend`, `cursorAgentBackend`, `adoptClaudeBackend`) are
+  deleted. Product dispatch for the fleet CLI ids returns
+  `errorAgentBackend`. The daemon acquire path refuses without a
+  launcher. `Agent.Release` still disposes a broker-held seat and
+  refuses every other seat. No full `make gate` is cited for this
+  statement.
 
-§10 step 2 (delete the tmux library, the pool, and the live-gate rows
-together) stays waiting on Q1 and Q3. A provider or scenario with no
-OMP equivalent is named here rather than dropped. The live-gate rows
-keep their names and their env gates. When the env is set they assert
-the refusal and return, so `make live` does not start a CLI seat.
+The live-gate rows keep their names and their env gates. When the env
+is set they assert the refusal and return, so `make live` does not
+start a CLI seat. §10 step 2 also names capability-claim edits,
+registry and broker-wire fields, grant rows, AGENTS.md, the CI tmux
+install, README, and agents-guide. Those doc and claim edits are not
+this deletion. A provider or scenario with no OMP equivalent is named
+above rather than dropped.

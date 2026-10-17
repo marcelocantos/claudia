@@ -77,7 +77,7 @@ func TestIsCursorResumeDeniedSeesDaemonWrappedError(t *testing.T) {
 }
 
 func TestCursorAgentBackendCapabilities(t *testing.T) {
-	caps := cursorAgentBackend{}.Capabilities()
+	caps := ompAgentBackend{}.Capabilities()
 	if caps.Task || !caps.Session || !caps.Resume {
 		t.Fatalf("capabilities = %+v, want Session+Resume only", caps)
 	}

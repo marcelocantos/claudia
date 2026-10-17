@@ -8,8 +8,6 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
-
-	"github.com/marcelocantos/claudia/internal/tmuxagent"
 )
 
 // These tests are the fake's own oracle: they prove the double actually emits
@@ -94,24 +92,6 @@ func TestFakeClaudeUsageBlocks(t *testing.T) {
 	}
 	if !strings.Contains(string(out), `"cost_usd":0.0451`) {
 		t.Errorf("closing result line missing the scenario cost:\n%s", out)
-	}
-}
-
-// TestFakeClaudeReadinessFramesMatchTheRealMatcher is the load-bearing one: the
-// frames the fake writes are checked against tmuxagent's real readiness
-// matcher, the same code the pool's warm-acquire path calls. Both directions
-// matter — the prompt box must read ready, and the startup splash must NOT
-// (🎯T284: the splash draws an identical box while input is still dead, and a
-// policy loop that fires on it races the TUI).
-func TestFakeClaudeReadinessFramesMatchTheRealMatcher(t *testing.T) {
-	if !tmuxagent.MatchReady(PromptBoxFrame()) {
-		t.Errorf("prompt-box frame is not accepted by tmuxagent.MatchReady:\n%s", PromptBoxFrame())
-	}
-	if tmuxagent.MatchReady(SplashFrame()) {
-		t.Errorf("startup splash frame was accepted as ready:\n%s", SplashFrame())
-	}
-	if !tmuxagent.MatchStartupSplash(SplashFrame()) {
-		t.Errorf("startup splash frame is not recognised as a splash:\n%s", SplashFrame())
 	}
 }
 

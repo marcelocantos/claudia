@@ -13,8 +13,8 @@ import (
 	"github.com/marcelocantos/claudia"
 )
 
-// TestAcquireLive keeps its live-gate name. Acquire refuses a CLI pool
-// seat, so the body asserts that refusal and does not start a daemon.
+// TestAcquireLive keeps its live-gate name. The daemon's acquire path
+// refuses without launching a pool seat.
 func TestAcquireLive(t *testing.T) {
 	if os.Getenv("CLAUDIA_LIVE") == "" {
 		t.Skip("CLAUDIA_LIVE not set (this test starts a real Claude session)")
@@ -24,8 +24,8 @@ func TestAcquireLive(t *testing.T) {
 			t.Skipf("%s not on PATH", bin)
 		}
 	}
-	agent, err := claudia.Acquire(context.Background(), claudia.Config{WorkDir: t.TempDir(), Model: "haiku"})
+	agent, err := daemonAcquire(context.Background(), claudia.Config{WorkDir: t.TempDir(), Model: "haiku"})
 	if agent != nil || !errors.Is(err, claudia.ErrLegacyCLISeatTransport) {
-		t.Fatalf("Acquire = (%v, %v), want legacy refusal", agent, err)
+		t.Fatalf("daemonAcquire = (%v, %v), want legacy refusal", agent, err)
 	}
 }

@@ -258,7 +258,7 @@ func TestT1055RegistryCursorLaunchRefusesCLI(t *testing.T) {
 	t.Setenv(broker.NoBrokerEnv, "1")
 	previousStart := registryStart
 	registryStart = func(ctx context.Context, cfg Config) (*Agent, error) {
-		return startWithBackendContext(ctx, cfg, cursorAgentBackend{})
+		return startWithBackendContext(ctx, cfg, errorAgentBackend{err: ErrLegacyCLISeatTransport})
 	}
 	t.Cleanup(func() { registryStart = previousStart })
 	r, err := NewRegistry(filepath.Join(t.TempDir(), "agents.json"))

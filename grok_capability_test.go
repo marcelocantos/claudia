@@ -67,7 +67,7 @@ func TestGrokCapabilityMatrixMatchesBackendClaims(t *testing.T) {
 	wired := map[Capability]bool{}
 	for _, caps := range []providerCapabilities{
 		taskBackendForProvider(ProviderGrok).Capabilities(),
-		(grokAgentBackend{}).Capabilities(),
+		(ompAgentBackend{}).Capabilities(),
 	} {
 		for capability, ok := range backendCapabilityNames(caps) {
 			wired[capability] = wired[capability] || ok

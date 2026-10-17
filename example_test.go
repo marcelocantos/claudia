@@ -6,7 +6,6 @@ package claudia_test
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -123,22 +122,6 @@ func ExampleAgent_Rewind() {
 		log.Fatal(err)
 	}
 	defer agent.Stop()
-}
-
-// ExampleAcquire shows that the warm pool refuses a CLI seat.
-func ExampleAcquire() {
-	cfg := claudia.Config{
-		WorkDir:    os.TempDir(),
-		Model:      "haiku",
-		PoolPolicy: "spawn",
-	}
-	agent, err := claudia.Acquire(context.Background(), cfg)
-	if agent != nil || !errors.Is(err, claudia.ErrLegacyCLISeatTransport) {
-		log.Fatal(err)
-	}
-	fmt.Println("refused")
-	// Output:
-	// refused
 }
 
 // ExampleNewRegistry demonstrates the Registry: register named agents,

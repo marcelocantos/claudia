@@ -10,17 +10,11 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/marcelocantos/claudia/internal/tmuxagent"
 )
 
-// 🎯T30 acceptance 3 wants the large-payload claim proven on the REAL
-// path — Agent.Send → claudeAgentOps().send → tmuxagent.SendKeys →
-// waitContentLanded / ensureSubmitted, against a live Claude Code — not
-// on captured frames. That costs a real turn per case, so it is gated on
-// CLAUDIA_LIVE_SEND=1 and is residual verification: the committed
-// oracles are the frame replays in internal/tmuxagent
-// (send_t30_large_payload_test.go).
+// 🎯T30 acceptance 3 wants the large-payload claim proven on the real
+// sidecar send path. That costs a real turn per case, so it is gated on
+// CLAUDIA_LIVE_SEND=1.
 //
 // The two verdicts it reads are independent, and 🎯T30 exists because
 // they disagreed: what Send RETURNED, and whether the payload actually
@@ -107,27 +101,13 @@ func t30LivePayload(marker string, size int) string {
 }
 
 func t30WaitTurnRunning(a *Agent) error {
-	windowID := t30WindowID(a.AttachCommand())
 	for range 40 {
-		frame, err := tmuxagent.CapturePane(windowID)
-		if err == nil && tmuxagent.MatchTurnInProgress(frame) {
+		if a.PromptInFlight() {
 			return nil
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
-	return fmt.Errorf("no turn chrome after the busy prompt; the mid-turn case never got a turn to queue behind")
-}
-
-// t30WindowID pulls the tmux target out of Agent.AttachCommand, which
-// renders as `tmux -S <sock> attach -t <windowID>`.
-func t30WindowID(attach string) string {
-	fields := strings.Fields(attach)
-	for i, f := range fields {
-		if f == "-t" && i+1 < len(fields) {
-			return fields[i+1]
-		}
-	}
-	return ""
+	return fmt.Errorf("prompt was not in flight after the busy prompt; the mid-turn case never got a turn to queue behind")
 }
 
 type t30Delivery struct {

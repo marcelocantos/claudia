@@ -21,8 +21,9 @@ import (
 // Two things make it hard to erode. The scanner itself is a pure function with
 // its own table test below, covering both what must trip it and what must not
 // (an over-broad rule that flagged time.Unix would be abandoned within a week).
-// And the enrolment of pool.go is pinned by name, so quietly deleting its
-// marker fails rather than silently shrinking the guarded set.
+// The warm-pool file was the root policy pin. It left with the CLI pool.
+// A new pinned file is named in pinnedPolicyFiles, so dropping its marker
+// fails rather than silently shrinking the guarded set.
 
 // policyRule is one banned construct plus the seam that replaces it.
 type policyRule struct {
@@ -98,11 +99,11 @@ var exemptFiles = map[string]map[string]bool{
 	"internal/broker/clock.go": {"wall clock": true},
 }
 
-// pinnedPolicyFiles must be enrolled at all times. Erosion is the realistic
-// failure mode for a guard like this — someone hits the rule, drops the marker,
-// and the guarded set silently shrinks to nothing. Naming the file here turns
-// that into a build failure.
-var pinnedPolicyFiles = []string{"pool.go"}
+// pinnedPolicyFiles must be enrolled at all times. The only root file that
+// carried the marker was pool.go, deleted with the CLI warm pool. The broker
+// package is still scanned without a pin. A new root policy file is enrolled
+// by adding its name here in the same change that adds the marker.
+var pinnedPolicyFiles []string
 
 // policyPaths returns every file the guard scans: this package (broker policy
 // by construction, minus the Clock seam) plus any file elsewhere in the repo
@@ -150,9 +151,8 @@ func policyPaths(t *testing.T) map[string][]byte {
 		add(filepath.Join(pkgDir, name), false)
 	}
 
-	// Elsewhere in the repo: opt-in by marker. The root package is where the
-	// pre-broker policy code lives (pool.go), and where 🎯T2.1's client shim
-	// will land.
+	// Elsewhere in the repo: opt-in by marker. The root package is where a
+	// future policy file would enrol itself.
 	rootEntries, err := os.ReadDir(root)
 	if err != nil {
 		t.Fatal(err)

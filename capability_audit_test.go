@@ -499,14 +499,16 @@ func sessionMaterialises(provider Provider, field string) bool {
 		switch field {
 		case "WorkDir":
 			return req.WorkDir != ""
+		case "SessionID":
+			return req.SessionID != ""
 		case "RequireResume":
 			return req.Config.RequireResume
-		case "MCPServers":
-			return argvHolds(claudeAgentArgs(req), "--mcp-config")
-		case "MCPExclusive":
-			return argvHolds(claudeAgentArgs(req), "--strict-mcp-config")
+		case "Model":
+			return req.Config.Model != ""
+		case "MCPServers", "MCPExclusive":
+			return claudeMCPConfigArg(req) == "session:mcpServers"
 		default:
-			return argvHolds(claudeAgentArgs(req), sessionNeedle(field, req))
+			return false
 		}
 	case ProviderGrok:
 		plan := planGrokSession(req)

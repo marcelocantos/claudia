@@ -9,8 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/marcelocantos/claudia/internal/tmuxagent"
 )
 
 // isolateTmux points CLAUDIA_TMUX_SOCKET at a short temp path. It does
@@ -36,16 +34,12 @@ func stubClaude(t *testing.T) {
 	t.Setenv("CLAUDE_BIN", bin)
 }
 
+// sessionWindows is the census of CLI windows for a session. The tmux
+// library is deleted, so the list is empty and Stop cannot mint one.
 func sessionWindows(t *testing.T, sessionID string) []string {
 	t.Helper()
-	ids, err := tmuxagent.WindowsForSession(sessionID)
-	if errors.Is(err, tmuxagent.ErrLegacyCLISeatTransport) {
-		return nil
-	}
-	if err != nil {
-		t.Fatalf("WindowsForSession: %v", err)
-	}
-	return ids
+	_ = sessionID
+	return nil
 }
 
 // TestStopKillsWindowWithoutHandle: Stop on a handle-less seat does not

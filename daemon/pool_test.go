@@ -13,7 +13,7 @@ import (
 	"github.com/marcelocantos/claudia"
 )
 
-// armPoolTmux puts a fake tmux on PATH. Acquire must not run it.
+// armPoolTmux puts a fake tmux on PATH. The acquire path must not run it.
 func armPoolTmux(t *testing.T) string {
 	t.Helper()
 	dir, err := os.MkdirTemp("/tmp", "cpl")
@@ -42,44 +42,28 @@ func assertPoolDidNotExec(t *testing.T, marker string) {
 	}
 }
 
-// TestAcquireSharesOneWarmSeatAcrossConsumers is 🎯T64. Acquire refuses
-// a CLI pool seat, so neither consumer starts a window.
+func assertDaemonAcquireRefuses(t *testing.T, work string) {
+	t.Helper()
+	agent, err := daemonAcquire(context.Background(), claudia.Config{WorkDir: work, TermLogPath: "-"})
+	if agent != nil || !errors.Is(err, claudia.ErrLegacyCLISeatTransport) {
+		t.Fatalf("daemonAcquire = (%v, %v), want legacy refusal", agent, err)
+	}
+}
+
 func TestAcquireSharesOneWarmSeatAcrossConsumers(t *testing.T) {
 	marker := armPoolTmux(t)
-	work := t.TempDir()
-	if _, err := claudia.Acquire(context.Background(), claudia.Config{WorkDir: work, TermLogPath: "-"}); !errors.Is(err, claudia.ErrLegacyCLISeatTransport) {
-		t.Fatalf("Acquire = %v, want legacy refusal", err)
-	}
-	if _, err := claudia.AcquireDirect(context.Background(), claudia.Config{WorkDir: work, TermLogPath: "-"}); !errors.Is(err, claudia.ErrLegacyCLISeatTransport) {
-		t.Fatalf("AcquireDirect = %v, want legacy refusal", err)
-	}
+	assertDaemonAcquireRefuses(t, t.TempDir())
 	assertPoolDidNotExec(t, marker)
 }
 
-// TestAcquiredSeatReturnsWhenConsumerLeaves (🎯T64). A refused acquire
-// leaves no held window behind.
 func TestAcquiredSeatReturnsWhenConsumerLeaves(t *testing.T) {
 	marker := armPoolTmux(t)
-	work := t.TempDir()
-	if _, err := claudia.Acquire(context.Background(), claudia.Config{WorkDir: work, TermLogPath: "-"}); !errors.Is(err, claudia.ErrLegacyCLISeatTransport) {
-		t.Fatalf("Acquire = %v, want legacy refusal", err)
-	}
-	if _, err := claudia.AcquireDirect(context.Background(), claudia.Config{WorkDir: work, TermLogPath: "-"}); !errors.Is(err, claudia.ErrLegacyCLISeatTransport) {
-		t.Fatalf("AcquireDirect = %v, want legacy refusal", err)
-	}
+	assertDaemonAcquireRefuses(t, t.TempDir())
 	assertPoolDidNotExec(t, marker)
 }
 
-// TestAcquiredHandleOpsKeepAliveAndDirect (🎯T64). Resize, keep-alive,
-// and AcquireDirect do not reach a tmux window.
 func TestAcquiredHandleOpsKeepAliveAndDirect(t *testing.T) {
 	marker := armPoolTmux(t)
-	work := t.TempDir()
-	if _, err := claudia.Acquire(context.Background(), claudia.Config{WorkDir: work, TermLogPath: "-"}); !errors.Is(err, claudia.ErrLegacyCLISeatTransport) {
-		t.Fatalf("Acquire = %v, want legacy refusal", err)
-	}
-	if _, err := claudia.AcquireDirect(context.Background(), claudia.Config{WorkDir: work, TermLogPath: "-"}); !errors.Is(err, claudia.ErrLegacyCLISeatTransport) {
-		t.Fatalf("AcquireDirect = %v, want legacy refusal", err)
-	}
+	assertDaemonAcquireRefuses(t, t.TempDir())
 	assertPoolDidNotExec(t, marker)
 }

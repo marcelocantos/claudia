@@ -16,12 +16,11 @@
 //     [Agent.WaitForResponse] to block until the next assistant turn
 //     completes. The session persists across consumer restarts.
 //
-// A warm agent pool is available for both modes: [Acquire] checks out a
-// pre-warmed [Agent] from the pool (identified by workdir, model, and
-// allowed tools). Return it with [Agent.Release].
+// There is no CLI warm pool. [Agent.Release] disposes a broker-held seat
+// and refuses every other seat.
 //
-// JSONL transcript tailing drives the event stream regardless of transport.
-// The legacy CLI seat transport does not look up claude or tmux.
+// JSONL transcript tailing drives the event stream. The legacy CLI seat
+// transport does not look up claude or tmux.
 package claudia
 
 import (
@@ -41,8 +40,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-
-	"github.com/marcelocantos/claudia/internal/tmuxagent"
 )
 
 // Config configures a session agent.
@@ -549,14 +546,6 @@ type agentBackend interface {
 	StartAgent(agentStartRequest) (*agentStart, error)
 }
 
-type claudeAgentBackend struct{}
-
-type codexAgentBackend struct{}
-
-type grokAgentBackend struct{}
-
-type cursorAgentBackend struct{}
-
 type errorAgentBackend struct {
 	err error
 }
@@ -574,100 +563,12 @@ func agentBackendForProvider(provider Provider) agentBackend {
 	}
 }
 
-func (claudeAgentBackend) Capabilities() providerCapabilities {
-	return claudeProviderCapabilities()
-}
-
-func (codexAgentBackend) Capabilities() providerCapabilities {
-	return providerCapabilities{
-		Task:    false,
-		Resume:  true,
-		Session: true,
-	}
-}
-
-func (codexAgentBackend) StartAgent(agentStartRequest) (*agentStart, error) {
-	return nil, fmt.Errorf("%w: %s", ErrLegacyCLISeatTransport, ProviderCodex)
-}
-
-func (grokAgentBackend) Capabilities() providerCapabilities {
-	return providerCapabilities{
-		Task:    false,
-		Session: true,
-		Resume:  true,
-	}
-}
-
-func (grokAgentBackend) StartAgent(agentStartRequest) (*agentStart, error) {
-	return nil, fmt.Errorf("%w: %s", ErrLegacyCLISeatTransport, ProviderGrok)
-}
-
-func (cursorAgentBackend) Capabilities() providerCapabilities {
-	return providerCapabilities{
-		Session: true,
-		Resume:  true,
-	}
-}
-
-func (cursorAgentBackend) StartAgent(agentStartRequest) (*agentStart, error) {
-	return nil, fmt.Errorf("%w: %s", ErrLegacyCLISeatTransport, ProviderCursor)
-}
-
 func (b errorAgentBackend) Capabilities() providerCapabilities {
 	return providerCapabilities{}
 }
 
 func (b errorAgentBackend) StartAgent(agentStartRequest) (*agentStart, error) {
 	return nil, b.err
-}
-
-func claudeAgentOps() agentOps {
-	return agentOps{
-		// 🎯T601: a tmux Claude session must answer this from the pane.
-		// Leaving it unset made Agent.PromptInFlight() return a confident
-		// false for every Claude session — not "unknown", but "no turn is
-		// running" while one visibly was. A caller using that to decide
-		// whether an agent is wedged concludes the wrong thing precisely
-		// when a turn is long, which is when it matters.
-		promptInFlight: func(a *Agent) bool {
-			if a == nil || a.tmuxWindowID == "" {
-				return false
-			}
-			frame, err := tmuxagent.CapturePane(a.tmuxWindowID)
-			if err != nil {
-				return false
-			}
-			return tmuxagent.MatchTurnInProgress(frame)
-		},
-		attachCommand: func(a *Agent) string {
-			// Human attach was a tmux incantation. The CLI seat is gone,
-			// so the concrete ops report no command. Injected ops and a
-			// broker-reported attach string are untouched.
-			return ""
-		},
-		interrupt: func(a *Agent) error {
-			return tmuxagent.SendEscape(a.tmuxWindowID)
-		},
-		send: func(a *Agent, msg string) error {
-			return tmuxagent.SendKeys(a.tmuxWindowID, msg)
-		},
-		resize: func(a *Agent, cols, rows uint16) error {
-			return tmuxagent.ResizeWindow(a.tmuxWindowID, cols, rows)
-		},
-		stop: func(a *Agent) {
-			tmuxagent.KillWindow(a.tmuxWindowID)
-			if a.tmuxCtrl != nil {
-				a.tmuxCtrl.Close()
-			}
-		},
-		switchModel: func(a *Agent, provider Provider, model string) error {
-			if err := sameProviderSwitch(a, provider); err != nil {
-				return err
-			}
-			// Claude Code: /model <alias|id> switches the live session model.
-			return tmuxagent.SendKeys(a.tmuxWindowID, "/model "+model)
-		},
-	}
 }
 
 // Start loads a subscription sidecar seat for cfg.Provider. An omitted
@@ -782,11 +683,11 @@ func startDirectContext(ctx context.Context, cfg Config) (*Agent, error) {
 // backendAdmitsResume reports that this backend, not the Claude JSONL
 // file, decides whether a RequireResume seat still has a conversation.
 // The sidecar, a broker-held seat, and any other backend that implements
-// its own start do. A stub and the legacy Claude CLI backend do not:
-// missing JSONL there would mint a replacement transcript.
+// its own start do. A stub does not: missing JSONL there would mint a
+// replacement transcript.
 func backendAdmitsResume(backend agentBackend) bool {
 	switch backend.(type) {
-	case *stubAgentBackend, claudeAgentBackend:
+	case *stubAgentBackend:
 		return false
 	default:
 		return true
@@ -957,11 +858,8 @@ func startWithBackendContext(ctx context.Context, cfg Config, backend agentBacke
 		a.termMu.Unlock()
 	}
 
-	// Store session ID on the window for crash-survival recovery.
 	if start.StoreSessionInWindow {
-		if err := tmuxagent.SetWindowOption(windowID, "claudia-session-id", sessionID); err != nil {
-			slog.Warn("failed to set session ID on tmux window", "err", err)
-		}
+		slog.Warn("session id is not stored on a tmux window; the CLI seat is gone", "session", sessionID)
 	}
 
 	attach := ""
@@ -998,18 +896,6 @@ func startWithBackendContext(ctx context.Context, cfg Config, backend agentBacke
 	if start.TailJSONL {
 		go a.tailJSONLFrom(tailFrom)
 	}
-	// Claude Session: poll capture-pane for provisional ⏺ preview (🎯T51).
-	if start.TailJSONL && windowID != "" {
-		a.tuiPreview = &tuiPreviewTracker{}
-		a.capturePane = func() (string, error) {
-			b, err := tmuxagent.CapturePane(a.tmuxWindowID)
-			if err != nil {
-				return "", err
-			}
-			return string(b), nil
-		}
-		go a.pollTUIPreview()
-	}
 
 	if start.DetectReady != nil {
 		// Synchronous: Grok ACP needs agentRef wired before Send, and
@@ -1021,35 +907,6 @@ func startWithBackendContext(ctx context.Context, cfg Config, backend agentBacke
 	}
 
 	return a, nil
-}
-
-// claudeAgentArgs builds the argv for a tmux-backed Claude Code session.
-// Kept separate from StartAgent so the request-field audit can materialise
-// the request without a tmux server (see capability_audit_test.go).
-func claudeAgentArgs(req agentStartRequest) []string {
-	return claudeAgentArgsWithMCP(req, claudeMCPConfigArg(req))
-}
-
-func claudeAgentArgsWithMCP(req agentStartRequest, mcpConfig string) []string {
-	args := []string{
-		"--permission-mode", req.Config.PermissionMode,
-		"--disallowedTools", req.DisallowedTools,
-	}
-	if req.Resuming {
-		args = append(args, "--resume", req.SessionID)
-	} else {
-		args = append(args, "--session-id", req.SessionID)
-	}
-	if mcpConfig != "" {
-		args = append(args, "--mcp-config", mcpConfig)
-	}
-	if req.Config.MCPExclusive {
-		args = append(args, "--strict-mcp-config")
-	}
-	if req.Config.Model != "" {
-		args = append(args, "--model", req.Config.Model)
-	}
-	return append(args, req.Config.ExtraArgs...)
 }
 
 // sandboxPolicyRequested reports whether the caller asked for ANY Codex
@@ -1068,28 +925,18 @@ func claudeSessionPrecheck(req agentStartRequest) error {
 	return nil
 }
 
-func (claudeAgentBackend) StartAgent(agentStartRequest) (*agentStart, error) {
-	return nil, fmt.Errorf("%w: %s", ErrLegacyCLISeatTransport, ProviderClaude)
-}
-
 // ErrNoSessionWindow is returned by [Adopt] when no live tmux window
 // belongs to the session. Callers that want drain semantics fall back
 // to [Start]; upgrade callers treat it as "this agent actually exited."
 var ErrNoSessionWindow = errors.New("no live tmux window for session")
 
 // ErrLegacyCLISeatTransport refuses a CLI process for a Session seat.
-// Product dispatch, Adopt, the concrete session backends, the pool
-// (including acquireLocked, adoptWindow, buildPoolAgent, and local
-// Release), SpawnWindow, EnsureServer, KillWindow, ListWindows,
-// SendKeys, CapturePane, SendEscape, SetWindowOption, DialControl,
-// ResizeWindow, paste, typeLiteral, sendNamedEnter, sendNamedKey,
-// reapSessionWindows, the Codex app-server, the Grok and Cursor ACP
-// constructors, the CLI term-log writer, claudeAgentOps attach, and
-// non-broker Rewind all refuse before they exec or mutate a transcript.
-// IsWindowAlive reports the window absent, and GetWindowOption reports
-// the option unset, before tmux runs. WaitReady returns before it
-// captures a pane. Task mode is a separate process-per-prompt path
-// and is unchanged.
+// Product dispatch returns [errorAgentBackend] for the fleet CLI ids.
+// The tmux library, the warm pool, and the concrete CLI backend types
+// are deleted. Adopt, the Codex app-server, the Grok and Cursor ACP
+// constructors, the CLI term-log writer, and non-broker Rewind refuse
+// before they exec or mutate a transcript. Task mode is a separate
+// process-per-prompt path and returns [ErrTaskCLIRemoved].
 var ErrLegacyCLISeatTransport = errors.New("legacy CLI seat transport removed")
 
 // Adopt rebuilds an [Agent] handle for a seat the sidecar already has.
@@ -1125,16 +972,6 @@ func Adopt(cfg Config) (*Agent, error) {
 		return nil, fmt.Errorf("%w: provider %s has no adopt path", ErrNoSessionWindow, provider)
 	}
 	return nil, fmt.Errorf("%w: provider %s", ErrLegacyCLISeatTransport, provider)
-}
-
-type adoptClaudeBackend struct{}
-
-func (adoptClaudeBackend) Capabilities() providerCapabilities {
-	return claudeProviderCapabilities()
-}
-
-func (adoptClaudeBackend) StartAgent(agentStartRequest) (*agentStart, error) {
-	return nil, fmt.Errorf("%w: %s", ErrLegacyCLISeatTransport, ProviderClaude)
 }
 
 // grokSessionPlan is everything the Grok Session path derives from a
@@ -2081,10 +1918,8 @@ func (a *Agent) Resize(cols, rows uint16) error {
 	return a.ops.resize(a, cols, rows)
 }
 
-// Stop kills the tmux window, closes the control-mode connection, and
-// flushes the terminal log. It is idempotent. For agents obtained via
-// [Acquire], call [Agent.Release] instead — Stop does not return the
-// window to the pool.
+// Stop closes the control connection and flushes the terminal log.
+// It is idempotent. A broker-held seat is disposed with [Agent.Release].
 func (a *Agent) Stop() {
 	a.stopOnce.Do(func() {
 		a.closeGoal()
@@ -2127,21 +1962,20 @@ func (a *Agent) Rewind(n int, cfg Config) (*Agent, error) {
 	return nil, fmt.Errorf("%w: rewind", ErrLegacyCLISeatTransport)
 }
 
-// detectReady polls capture-pane for Claude Code's idle input box
-// at the bottom of the rendered viewport. The empty-prompt-box regex
-// matches a horizontal rule, the ❯ prompt glyph, another horizontal
-// rule, and up to 5 trailing status lines.
-//
-// This replaces the earlier PTY-silence heuristic. The rendered-frame
-// approach is cleaner: it detects a fixed-point visual state rather
-// than inferring readiness from the absence of byte traffic.
-func (a *Agent) detectReady() {
-	defer close(a.ready)
-
-	_, err := tmuxagent.WaitReady(a.tmuxWindowID, readyPollInterval, readyOverallTimeout)
-	if err != nil {
-		a.readyErr = err
+// Release disposes a broker-held seat through its release hook.
+// Every other seat refuses. There is no CLI pool to return a window to.
+func (a *Agent) Release(disposition string) error {
+	if a.ops.release != nil {
+		return a.ops.release(a, disposition)
 	}
+	return fmt.Errorf("%w: pool", ErrLegacyCLISeatTransport)
+}
+
+// stopPoolObservers retires this handle's transcript tailer. The loop
+// compares the generation it started under against the agent's current
+// one, so bumping it is how a goroutine learns it is no longer the observer.
+func (a *Agent) stopPoolObservers() {
+	a.backendGen.Add(1)
 }
 
 const termBufSize = 128 * 1024 // 128KB ring buffer

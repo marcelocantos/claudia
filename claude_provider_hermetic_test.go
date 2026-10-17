@@ -20,11 +20,6 @@ func TestClaudeProviderCapabilitiesClaimed(t *testing.T) {
 		!caps.Cost || !caps.Permissions || !caps.TmuxAttach || !caps.TerminalBytes {
 		t.Fatalf("claudeProviderCapabilities = %+v, want full matrix true", caps)
 	}
-	// Production backends must agree with the claim.
-
-	if got := (claudeAgentBackend{}).Capabilities(); got != caps {
-		t.Errorf("claudeAgentBackend capabilities = %+v, want %+v", got, caps)
-	}
 }
 
 // Readiness for Cancel/Stop now lives in hermeticTaskWatch

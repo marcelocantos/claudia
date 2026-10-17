@@ -14,28 +14,14 @@ import (
 // `--no-remote-control` / per-pane disable. Session seats do not pass the
 // enable flag; the /rc status chrome cannot be turned off by launch flag
 // (jevons 🎯T565 part c). Product path is wait-out + a named not-ready reason.
-func TestClaudeSessionArgsOmitRemoteControl(t *testing.T) {
-	args := claudeAgentArgs(agentStartRequest{
-		WorkDir:   "/work/t565",
-		SessionID: "00000000-0000-0000-0000-000000000565",
-		Config:    Config{},
-	})
-	for _, a := range args {
-		if strings.Contains(a, "remote-control") {
-			t.Fatalf("session argv must not enable remote control: %v", args)
-		}
-	}
-}
-
-func TestMCPExclusiveClaudeArgvUsesStrictConfig(t *testing.T) {
+func TestMCPExclusiveClaudeMaterialisesSessionMCP(t *testing.T) {
 	req := agentStartRequest{WorkDir: "/work/t45", Config: Config{MCPExclusive: true}}
-	args := claudeAgentArgs(req)
-	if !argvHolds(args, "--strict-mcp-config") || !argvHolds(args, "--mcp-config") {
-		t.Fatalf("exclusive argv missing isolate flags: %v", args)
+	if claudeMCPConfigArg(req) != "session:mcpServers" {
+		t.Fatalf("exclusive sentinel = %q", claudeMCPConfigArg(req))
 	}
-	add := claudeAgentArgs(agentStartRequest{WorkDir: "/work/t45", Config: Config{}})
-	if argvHolds(add, "--strict-mcp-config") {
-		t.Fatalf("additive argv must not isolate: %v", add)
+	add := agentStartRequest{WorkDir: "/work/t45", Config: Config{}}
+	if claudeMCPConfigArg(add) != "" {
+		t.Fatalf("additive sentinel = %q", claudeMCPConfigArg(add))
 	}
 }
 

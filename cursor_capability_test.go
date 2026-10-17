@@ -49,7 +49,7 @@ func TestCursorCapabilityMatrixIsExplicit(t *testing.T) {
 func TestCursorCapabilityMatrixMatchesBackendClaims(t *testing.T) {
 	wired := map[Capability]bool{}
 	for _, caps := range []providerCapabilities{
-		(cursorAgentBackend{}).Capabilities(),
+		(ompAgentBackend{}).Capabilities(),
 		taskBackendForProvider(ProviderCursor).Capabilities(),
 	} {
 		for capability, ok := range backendCapabilityNames(caps) {

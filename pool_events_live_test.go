@@ -4,15 +4,14 @@
 package claudia
 
 import (
-	"context"
 	"errors"
 	"os"
 	"os/exec"
 	"testing"
 )
 
-// TestPoolAgentEventsLive keeps its live-gate name. The direct pool
-// refuses a CLI seat, so the body asserts that refusal.
+// TestPoolAgentEventsLive keeps its live-gate name. The CLI pool entry
+// points are deleted, so the body asserts Release refuses.
 func TestPoolAgentEventsLive(t *testing.T) {
 	if os.Getenv("CLAUDIA_LIVE") == "" {
 		t.Skip("CLAUDIA_LIVE not set (this test starts a real Claude session)")
@@ -22,8 +21,7 @@ func TestPoolAgentEventsLive(t *testing.T) {
 			t.Skipf("%s not on PATH", bin)
 		}
 	}
-	agent, err := AcquireDirect(context.Background(), Config{WorkDir: t.TempDir(), Model: "haiku"})
-	if agent != nil || !errors.Is(err, ErrLegacyCLISeatTransport) {
-		t.Fatalf("AcquireDirect = (%v, %v), want legacy refusal", agent, err)
+	if err := (&Agent{}).Release("return"); !errors.Is(err, ErrLegacyCLISeatTransport) {
+		t.Fatalf("Release = %v, want legacy refusal", err)
 	}
 }

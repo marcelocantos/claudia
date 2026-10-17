@@ -20,8 +20,8 @@ func TestCodexProviderCapabilitiesClaimed(t *testing.T) {
 		t.Errorf("codexTaskBackend capabilities = %+v, want %+v", got, taskWant)
 	}
 	agentWant := providerCapabilities{Resume: true, Session: true}
-	if got := (codexAgentBackend{}).Capabilities(); got != agentWant {
-		t.Errorf("codexAgentBackend capabilities = %+v, want %+v", got, agentWant)
+	if got := (ompAgentBackend{}).Capabilities(); got != agentWant {
+		t.Errorf("ompAgentBackend capabilities = %+v, want %+v", got, agentWant)
 	}
 	if got := ProviderCapabilityStatus(ProviderCodex, CapabilitySession); got != CapabilitySupported {
 		t.Errorf("codex session status = %q, want %q", got, CapabilitySupported)
@@ -146,7 +146,7 @@ func TestCodexCapabilityGapsVersusClaude(t *testing.T) {
 // exists to prevent.
 func TestCodexCapabilityMatrixMatchesBackendClaims(t *testing.T) {
 	task := taskBackendForProvider(ProviderCodex).Capabilities()
-	agent := (codexAgentBackend{}).Capabilities()
+	agent := (ompAgentBackend{}).Capabilities()
 	wired := providerCapabilities{
 		Task:    task.Task || agent.Task,
 		Session: task.Session || agent.Session,

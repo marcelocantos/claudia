@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/marcelocantos/claudia/internal/tmuxagent"
+	"github.com/marcelocantos/claudia"
 )
 
 // The command used to look up claude and spawn it in tmux. A resolvable
@@ -28,7 +28,7 @@ func TestT108ReadyDoesNotSpawnCLI(t *testing.T) {
 	t.Setenv("TMPDIR", binDir)
 
 	err := run()
-	if !errors.Is(err, tmuxagent.ErrLegacyCLISeatTransport) {
+	if !errors.Is(err, claudia.ErrLegacyCLISeatTransport) {
 		t.Fatalf("run = %v", err)
 	}
 	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {

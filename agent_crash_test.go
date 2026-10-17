@@ -11,8 +11,6 @@ import (
 	"os/exec"
 	"testing"
 	"time"
-
-	"github.com/marcelocantos/claudia/internal/tmuxagent"
 )
 
 // TestCrashSurvival used to prove a tmux window outlived its consumer.
@@ -28,10 +26,10 @@ func TestCrashSurvival(t *testing.T) {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not on PATH")
 	}
-	// The CLI window this test used to crash-survive is gone. KillWindow
-	// refuses before tmux runs, so the parent does not spawn the helper.
-	if err := tmuxagent.KillWindow("@1"); !errors.Is(err, tmuxagent.ErrLegacyCLISeatTransport) {
-		t.Fatalf("KillWindow = %v, want legacy refusal", err)
+	// The CLI window this test used to crash-survive is gone. Release
+	// refuses, and the parent does not spawn the helper.
+	if err := (&Agent{}).Release("drop"); !errors.Is(err, ErrLegacyCLISeatTransport) {
+		t.Fatalf("Release = %v, want legacy refusal", err)
 	}
 }
 

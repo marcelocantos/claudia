@@ -2,15 +2,15 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // t108ready used to measure a cold Claude Code seat in tmux (🎯T108).
-// That transport is gone. The command refuses before it looks up claude
-// or tmux, and before it spawns a window.
+// That transport is deleted. The command refuses before it looks up
+// claude or tmux.
 package main
 
 import (
 	"fmt"
 	"os"
 
-	"github.com/marcelocantos/claudia/internal/tmuxagent"
+	"github.com/marcelocantos/claudia"
 )
 
 func main() {
@@ -19,10 +19,8 @@ func main() {
 	}
 }
 
-// run refuses. It does not parse a sample count, look up claude, or
-// call SpawnWindow.
 func run() error {
-	return fmt.Errorf("%w: t108ready", tmuxagent.ErrLegacyCLISeatTransport)
+	return fmt.Errorf("%w: t108ready", claudia.ErrLegacyCLISeatTransport)
 }
 
 func die(format string, args ...any) {

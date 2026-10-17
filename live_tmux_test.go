@@ -8,8 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/marcelocantos/claudia/internal/tmuxagent"
 )
 
 // tmuxSocketEnv is tmuxagent's socket override, named here because the
@@ -107,7 +105,10 @@ func TestPrivateTmuxCleanupLeavesTmuxUnstarted(t *testing.T) {
 }
 
 func TestSeatsRunOnAPrivateTmuxServer(t *testing.T) {
-	got := tmuxagent.SocketPath()
+	got := os.Getenv(tmuxSocketEnv)
+	if strings.TrimSpace(got) == "" {
+		t.Fatal("suite did not set a private tmux socket")
+	}
 	if shared := sharedClaudiaTmuxSocket(); got == shared {
 		t.Fatalf("suite is on the shared claudia tmux socket %s; jevonsd's pane census reaps unregistered windows there", shared)
 	}
