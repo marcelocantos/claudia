@@ -221,6 +221,10 @@ func TestT1055LegacySurfacesDoNotExec(t *testing.T) {
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
+	if err := checkTmux(); !errors.Is(err, ErrLegacyCLISeatTransport) {
+		t.Fatalf("checkTmux = %v, want legacy refusal", err)
+	}
+
 	attached := &Agent{provider: ProviderClaude, tmuxWindowID: "@9", ops: claudeAgentOps()}
 	if got := attached.AttachCommand(); got != "" {
 		t.Fatalf("AttachCommand = %q, want empty", got)

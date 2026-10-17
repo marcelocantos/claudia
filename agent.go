@@ -5,15 +5,14 @@
 //
 // It provides two modes of operation:
 //
-//   - Task mode: [Run] or [NewTask] + [Task.Run] sends a single prompt to
-//     Claude Code and returns the result. Each prompt spawns a new process
-//     with --output-format stream-json. Suitable for one-shot code
-//     generation, analysis, or transformation pipelines where you want
-//     structured event output and automatic token/cost accounting.
+//   - Task mode: [Run] or [NewTask] + [Task.Run] for a subscription CLI
+//     returns [ErrTaskCLIRemoved] before a process is spawned. Bedrock
+//     and Ollama stay API backends.
 //
-//   - Session mode: [Start] spawns a persistent Claude Code process inside
-//     a tmux window on a dedicated claudia tmux server. Use [Agent.Send] to
-//     send messages, [Agent.SubscribeEvents] to observe JSONL events, and
+//   - Session mode: [Start] uses the sidecar for the fleet providers. The
+//     legacy tmux seat transport, including [checkTmux], returns
+//     [ErrLegacyCLISeatTransport] before it looks up tmux. Use [Agent.Send]
+//     to send messages, [Agent.SubscribeEvents] to observe JSONL events, and
 //     [Agent.WaitForResponse] to block until the next assistant turn
 //     completes. The session persists across consumer restarts.
 //
@@ -21,14 +20,8 @@
 // pre-warmed [Agent] from the pool (identified by workdir, model, and
 // allowed tools). Return it with [Agent.Release].
 //
-// The tmux substrate gives agents crash-survival (the agent stays alive if
-// the consumer process dies) and human-attachable observability via
-// [Agent.AttachCommand]. JSONL transcript tailing drives the event stream
-// regardless of transport.
-//
-// The claude binary is located via the CLAUDE_BIN environment variable,
-// then exec.LookPath, then common install dirs (~/.local/bin/claude,
-// ~/.claude/local/claude, /opt/homebrew/bin/claude, /usr/local/bin/claude).
+// JSONL transcript tailing drives the event stream regardless of transport.
+// The legacy CLI seat transport does not look up claude or tmux.
 package claudia
 
 import (
@@ -40,7 +33,6 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -431,12 +423,9 @@ const (
 	readyPollInterval   = 50 * time.Millisecond
 )
 
-// checkTmux returns a clear error if tmux is not on PATH.
+// checkTmux refuses. Session mode does not look up tmux.
 func checkTmux() error {
-	if _, err := exec.LookPath("tmux"); err != nil {
-		return fmt.Errorf("tmux is required for claudia Session mode but was not found on PATH; install it via: brew install tmux (macOS) or apt install tmux (Linux)")
-	}
-	return nil
+	return fmt.Errorf("%w: tmux", ErrLegacyCLISeatTransport)
 }
 
 type agentControl interface {

@@ -496,6 +496,9 @@ Still present, so the purge is not done:
   `ProviderBinaryError` on the Task surface returns that error before
   it looks up `claude`, `codex`, `grok`, or `agent`. Session seats still
   skip the CLI. Bedrock and Ollama stay API paths.
+- `checkTmux` returns `ErrLegacyCLISeatTransport` before `LookPath`.
+  `cmd/t108ready` returns the same error before it looks up `claude`
+  or calls `SpawnWindow`.
 - Q3 was answered by 🎯T189: drop, do not remint. The owner-approved
   13-row inventory is deleted once per state directory before resume
   (`ba2ecd6`). `1dcd5af` keeps the three personal-work names. Those
