@@ -525,7 +525,20 @@ Still present, so the purge is not done:
   this slice does not delete them. `codexAppServerSupportsSteer` does
   not run `codex app-server generate-json-schema`; an uncached binary
   is unsupported.
-- No full `make gate`, and no fleet spawn across providers.
+- A direct `Registry.Launch` of every currently-used fleet provider
+  (`""`, `claude`, `anthropic`, `codex`, `openai-codex`, `grok`,
+  `xai-oauth`, `cursor`) reaches the real sidecar and reports no
+  native window. Fake `claude`, `codex`, `grok`, `agent`,
+  `cursor-agent`, `tmux`, and `security` binaries on `PATH` do not
+  run (`TestT1055FleetSpawnUsesOMPOnly`).
+- Attach, a terminal-log file, and Rewind have no sidecar equivalent.
+  🎯T189: removal does not wait, and those calls refuse. Task mode has
+  no OMP Task replacement (🎯T192) and returns `ErrTaskCLIRemoved`.
+  Bedrock and Ollama stay API paths. They are not fleet seat
+  providers. No fleet provider lacks an OMP seat.
+- The tmux library, the pool, and the concrete backend types still
+  compile and refuse. Deleting them is §10 step 2. No full `make gate`
+  is cited for this statement.
 
 §10 step 2 (delete the tmux library, the pool, and the live-gate rows
 together) stays waiting on Q1 and Q3. A provider or scenario with no

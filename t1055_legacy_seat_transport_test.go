@@ -5,8 +5,11 @@ package claudia
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -16,6 +19,129 @@ import (
 	"github.com/marcelocantos/claudia/internal/tmuxagent"
 	"github.com/marcelocantos/claudia/omp"
 )
+
+// TestT1055FleetSpawnUsesOMPOnly is the fleet spawn for 🎯T1055: one direct
+// Registry.Launch per currently-used provider, against the real sidecar.
+// Subscription CLIs and tmux are first on PATH. A launch that succeeded
+// has no native window, and none of those binaries run.
+//
+// Attach, a terminal-log file, and Rewind have no sidecar equivalent.
+// 🎯T189 says seat removal does not wait for them; those calls refuse.
+// Task mode has no OMP replacement (🎯T192). Bedrock and Ollama stay API
+// paths and are not fleet seat providers.
+func TestT1055FleetSpawnUsesOMPOnly(t *testing.T) {
+	bun, err := exec.LookPath("bun")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.MkdirTemp("/tmp", "t1055f")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+
+	marker := filepath.Join(root, "cli-ran")
+	binDir := filepath.Join(root, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\ntouch '" + marker + "'\n"
+	for _, name := range []string{"claude", "codex", "grok", "agent", "cursor-agent", "tmux", "security"} {
+		if err := os.WriteFile(filepath.Join(binDir, name), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	socket := filepath.Join(root, "omp.sock")
+	cmd := exec.Command(bun, "sidecar/server.ts", socket)
+	cmd.Env = []string{
+		"PATH=" + os.Getenv("PATH"),
+		"HOME=" + root,
+		"CLAUDIA_OMP_SPOOL_DIR=" + filepath.Join(root, "spool"),
+	}
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+
+	ctx := t.Context()
+	for !omp.Listening(ctx, socket) {
+		select {
+		case <-ctx.Done():
+			t.Fatalf("sidecar: %v", ctx.Err())
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	t.Setenv("HOME", root)
+	t.Setenv(omp.SocketEnv, socket)
+	t.Setenv("CLAUDIA_OMP_SPOOL_DIR", filepath.Join(root, "spool"))
+	t.Setenv("CLAUDIA_OMP_NO_REFRESH", "1")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv(broker.NoBrokerEnv, "1")
+	t.Setenv(tmuxSocketEnv, filepath.Join(root, "tmux.sock"))
+
+	omp.ResetKeychainShot()
+	t.Cleanup(omp.ResetKeychainShot)
+	item := omp.Item{Records: map[string]omp.Record{}}
+	for _, p := range []string{omp.Anthropic, omp.OpenAICodex, omp.XAIOAuth, omp.Cursor} {
+		item.Records[p] = omp.Record{AccessToken: "fixture", RefreshToken: "fixture", Expiry: time.Now().Add(time.Hour)}
+	}
+	raw, err := json.Marshal(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := omp.Open(ctx, omp.Store{Run: func(context.Context, string, ...string) ([]byte, error) {
+		return raw, nil
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	providers := []Provider{
+		"", ProviderClaude, Provider(omp.Anthropic),
+		ProviderCodex, Provider(omp.OpenAICodex),
+		ProviderGrok, Provider(omp.XAIOAuth),
+		ProviderCursor,
+	}
+	for i, p := range providers {
+		name := fmt.Sprintf("fleet-%d", i)
+		reg, err := NewRegistry(filepath.Join(root, name+".json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		reg.SetDirect(true)
+		if err := reg.Register(AgentDef{
+			Name: name, SessionID: "fleet", Provider: p, WorkDir: root, TermLogPath: "-",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		a, err := reg.LaunchContext(ctx, name)
+		if err != nil {
+			t.Fatalf("provider %q: %v", p, err)
+		}
+		if a.WindowID() != "" || a.AttachCommand() != "" {
+			t.Fatalf("provider %q launched a native transport: window %q attach %q", p, a.WindowID(), a.AttachCommand())
+		}
+		want := p
+		if p == "" {
+			want = ProviderClaude
+		}
+		if a.Provider() != want {
+			t.Fatalf("provider %q reported %q", p, a.Provider())
+		}
+		reg.Stop(name)
+	}
+	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+		t.Fatalf("fleet spawn executed a CLI: %v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "tmux.sock")); !os.IsNotExist(statErr) {
+		t.Fatalf("fleet spawn created a tmux socket: %v", statErr)
+	}
+}
 
 // TestT1055SessionDispatchIsSidecar drives the backend Start and Registry.Launch
 // select. Fleet ids stay on the sidecar. The CLI fallback refuses.

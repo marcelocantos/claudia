@@ -779,6 +779,18 @@ func startDirectContext(ctx context.Context, cfg Config) (*Agent, error) {
 	return startWithBackendContext(ctx, cfg, agentBackendFor(cfg))
 }
 
+// backendAdmitsResume reports that this backend, not the Claude JSONL
+// file, decides whether a RequireResume seat still has a conversation.
+// The sidecar and a broker-held seat do. A stub does not.
+func backendAdmitsResume(backend agentBackend) bool {
+	switch backend.(type) {
+	case ompAgentBackend, *brokerAgentBackend:
+		return true
+	default:
+		return false
+	}
+}
+
 func startWithBackend(cfg Config, backend agentBackend) (*Agent, error) {
 	return startWithBackendContext(context.Background(), cfg, backend)
 }
@@ -846,12 +858,13 @@ func startWithBackendContext(ctx context.Context, cfg Config, backend agentBacke
 	}
 	// FAIL-CLOSED RESUME (Claude): when the caller marked this id as an
 	// existing conversation (RequireResume), missing JSONL must be a hard
-	// error — silently falling through to --session-id would mint a
-	// replacement conversation and orphan the caller's history (Registry
+	// error — silently falling through would mint a replacement
+	// conversation and orphan the caller's history (Registry
 	// Materialized sets RequireResume only after real conversation
-	// evidence, not bare Start success).
-	// Grok enforces the same policy inside startGrokACP / session/load.
-	if (provider == ProviderClaude) && !useOMP(cfg) && cfg.RequireResume && !resuming {
+	// evidence, not bare Start success). The sidecar and a broker-held
+	// seat confirm that admission themselves. Every other backend,
+	// including the stub Start uses in place of a process, refuses here.
+	if provider == ProviderClaude && cfg.RequireResume && !resuming && !backendAdmitsResume(backend) {
 		return nil, fmt.Errorf("session %s: existing conversation required but JSONL not found at %s — refusing to mint a replacement session", sessionID, jsonlPath)
 	}
 	// A resumed transcript already holds the conversation being resumed.
