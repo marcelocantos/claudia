@@ -3,168 +3,23 @@
 
 package codex
 
-import (
-	"encoding/json"
-	"fmt"
-	"os"
-	"os/exec"
-	"path/filepath"
-	"strings"
-)
+import "os"
 
-const (
-	binEnv      = "CODEX_BIN"
-	binName     = "codex"
-	authPathEnv = "CLAUDIA_CODEX_AUTH_PATH"
-	openaiKey   = "OPENAI_API_KEY"
-)
-
-// ResolveArgs customises binary resolution and auth preflight (tests).
-// Nil is valid (defaults). Prefer a struct over functional options.
+// ResolveArgs is retained so a caller can prove Run performs no binary
+// or credential discovery. The CLI resolver and the subscription auth
+// preflight are deleted. Nil is valid. Prefer a struct over functional
+// options.
 type ResolveArgs struct {
-	// BinPath forces a codex binary path (skips resolution).
+	// BinPath used to force a codex binary path. Run ignores it.
 	BinPath string
-	// AuthPath overrides ~/.codex/auth.json (or CLAUDIA_CODEX_AUTH_PATH).
+	// AuthPath used to override ~/.codex/auth.json. Run ignores it.
 	AuthPath string
-	// Getenv overrides os.Getenv. Nil uses os.Getenv.
+	// Getenv used to override os.Getenv. Run ignores it.
 	Getenv func(string) string
-	// LookPath overrides exec.LookPath. Nil uses exec.LookPath.
+	// LookPath used to override exec.LookPath. Run ignores it.
 	LookPath func(string) (string, error)
-	// Stat overrides os.Stat. Nil uses os.Stat.
+	// Stat used to override os.Stat. Run ignores it.
 	Stat func(string) (os.FileInfo, error)
-	// SkipAuthPreflight skips subscription auth (tests only).
+	// SkipAuthPreflight used to skip subscription auth. Run ignores it.
 	SkipAuthPreflight bool
-}
-
-func getenv(args *ResolveArgs) func(string) string {
-	if args != nil && args.Getenv != nil {
-		return args.Getenv
-	}
-	return os.Getenv
-}
-
-func resolveBin(args *ResolveArgs) (string, error) {
-	if args != nil && strings.TrimSpace(args.BinPath) != "" {
-		return args.BinPath, nil
-	}
-	ge := getenv(args)
-	lookPath := exec.LookPath
-	stat := os.Stat
-	if args != nil {
-		if args.LookPath != nil {
-			lookPath = args.LookPath
-		}
-		if args.Stat != nil {
-			stat = args.Stat
-		}
-	}
-
-	if p := strings.TrimSpace(ge(binEnv)); p != "" {
-		if filepath.IsAbs(p) {
-			if _, err := stat(p); err == nil && !isCmuxCLIShim(p) {
-				return p, nil
-			}
-		} else if abs, err := lookPath(p); err == nil && !isCmuxCLIShim(abs) {
-			return abs, nil
-		}
-	}
-	// Known install dirs come before PATH, as on the seat path
-	// (resolveCodexBin): cmux injects a shim named "codex" that only prints
-	// "codex not found in PATH" and exits 127, and a plain PATH lookup finds
-	// it first (🎯T126).
-	for _, c := range binCandidates() {
-		if c == "" || isCmuxCLIShim(c) {
-			continue
-		}
-		if _, err := stat(c); err == nil {
-			return c, nil
-		}
-	}
-	if p, err := lookPath(binName); err == nil && !isCmuxCLIShim(p) {
-		return p, nil
-	}
-	return "", fmt.Errorf("codex executable not found in PATH or known install dirs (set %s to override)", binEnv)
-}
-
-// isCmuxCLIShim reports a path inside cmux's injected shim directory.
-func isCmuxCLIShim(p string) bool {
-	return strings.Contains(filepath.ToSlash(p), "/cmux-cli-shims/")
-}
-
-// binCandidates mirrors the root package's codexBinCandidates (the seat
-// path). ChatGPT 26.930
-// moved the bundled CLI into Resources/codex-cli/CodexCLI.app.
-func binCandidates() []string {
-	home, _ := os.UserHomeDir()
-	return []string{
-		filepath.Join(home, ".local", "bin", binName),
-		"/opt/homebrew/bin/codex",
-		"/usr/local/bin/codex",
-		filepath.Join(home, ".npm-global", "bin", binName),
-		filepath.Join(home, ".bun", "bin", binName),
-		filepath.Join(home, ".volta", "bin", binName),
-		"/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
-		filepath.Join(home, "Applications", "ChatGPT.app", "Contents", "Resources", "codex-cli", "CodexCLI.app", "Contents", "MacOS", binName),
-		"/Applications/ChatGPT.app/Contents/Resources/codex",
-		"/Applications/Codex.app/Contents/Resources/codex",
-	}
-}
-
-// authFile is the subset of ~/.codex/auth.json needed for subscription preflight.
-type authFile struct {
-	AuthMode     string `json:"auth_mode"`
-	OpenAIAPIKey string `json:"OPENAI_API_KEY"`
-	Tokens       *struct {
-		AccessToken string `json:"access_token"`
-	} `json:"tokens"`
-}
-
-// ensureSubscriptionAuth fails closed unless ChatGPT OAuth is active and
-// OPENAI_API_KEY is not set in the environment (per-token fall-through).
-func ensureSubscriptionAuth(args *ResolveArgs) error {
-	if args != nil && args.SkipAuthPreflight {
-		return nil
-	}
-	ge := getenv(args)
-
-	if strings.TrimSpace(ge(openaiKey)) != "" {
-		return &AuthError{Message: "OPENAI_API_KEY is set — unset it for ChatGPT subscription (no per-token) path"}
-	}
-
-	path := ""
-	if args != nil {
-		path = strings.TrimSpace(args.AuthPath)
-	}
-	if path == "" {
-		path = strings.TrimSpace(ge(authPathEnv))
-	}
-	if path == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return &AuthError{Message: fmt.Sprintf("home dir: %v", err)}
-		}
-		path = filepath.Join(home, ".codex", "auth.json")
-	}
-
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return &AuthError{Message: fmt.Sprintf("read %s: %v (run codex login)", path, err)}
-	}
-	var auth authFile
-	if err := json.Unmarshal(raw, &auth); err != nil {
-		return &AuthError{Message: fmt.Sprintf("parse %s: %v", path, err)}
-	}
-
-	hasToken := auth.Tokens != nil && strings.TrimSpace(auth.Tokens.AccessToken) != ""
-	mode := strings.ToLower(strings.TrimSpace(auth.AuthMode))
-	chatgpt := mode == "chatgpt" || mode == "chat_gpt" || mode == "oauth" || mode == "subscription" ||
-		(mode == "" && hasToken)
-
-	if mode == "apikey" || mode == "api_key" || mode == "api-key" || mode == "openai" {
-		return &AuthError{Message: "auth_mode is apikey (per-token billing); run codex login for ChatGPT subscription"}
-	}
-	if !chatgpt || !hasToken {
-		return &AuthError{Message: "ChatGPT subscription OAuth not confirmed (auth_mode=chatgpt + tokens.access_token required)"}
-	}
-	return nil
 }

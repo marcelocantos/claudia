@@ -594,11 +594,7 @@ func TestCursorSessionLiveSmokeSteer(t *testing.T) {
 	if os.Getenv("CLAUDIA_CURSOR_LIVE") == "" {
 		t.Skip("CLAUDIA_CURSOR_LIVE not set (this test spends API credit)")
 	}
-	bin, err := liveCursorBin()
-	if err != nil {
-		t.Skipf("cursor agent binary not found: %v", err)
-	}
-	c, err := startCursorACP(t.Context(), bin, t.TempDir(), "", "", false, nil, nil, nil, nil)
+	c, err := startCursorACP(t.Context(), "/no/such/cursor-agent", t.TempDir(), "", "", false, nil, nil, nil, nil)
 	if c != nil || !errors.Is(err, ErrLegacyCLISeatTransport) {
 		t.Fatalf("startCursorACP = (%v, %v), want legacy refusal", c, err)
 	}
@@ -610,11 +606,7 @@ func TestGrokSessionLiveSmokeSteer(t *testing.T) {
 	if os.Getenv("CLAUDIA_GROK_LIVE") == "" {
 		t.Skip("CLAUDIA_GROK_LIVE not set (this test spends API credit)")
 	}
-	bin, err := liveGrokBin()
-	if err != nil {
-		t.Skipf("grok binary not found: %v", err)
-	}
-	c, err := startGrokACP(bin, t.TempDir(), "", "", false, nil, nil, nil, nil)
+	c, err := startGrokACP("/no/such/grok", t.TempDir(), "", "", false, nil, nil, nil, nil)
 	if c != nil || !errors.Is(err, ErrLegacyCLISeatTransport) {
 		t.Fatalf("startGrokACP = (%v, %v), want legacy refusal", c, err)
 	}

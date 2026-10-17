@@ -60,7 +60,7 @@ func TestMCPLiveLoadAndSessionSeesMnemo(t *testing.T) {
 		if os.Getenv("CLAUDIA_GROK_LIVE") == "" {
 			t.Skip("CLAUDIA_GROK_LIVE not set")
 		}
-		if _, err := liveGrokBin(); err != nil {
+		if _, err := exec.LookPath("grok"); err != nil {
 			t.Skip(err)
 		}
 		runLiveMCPSeesMnemo(t, Config{
@@ -74,7 +74,7 @@ func TestMCPLiveLoadAndSessionSeesMnemo(t *testing.T) {
 		if os.Getenv("CLAUDIA_CODEX_LIVE") == "" {
 			t.Skip("CLAUDIA_CODEX_LIVE not set")
 		}
-		if _, err := liveCodexBin(); err != nil {
+		if _, err := exec.LookPath("codex"); err != nil {
 			t.Skip(err)
 		}
 		// Exclusive CODEX_HOME so the host's crowded ~/.codex/config.toml
@@ -90,7 +90,7 @@ func TestMCPLiveLoadAndSessionSeesMnemo(t *testing.T) {
 		if os.Getenv("CLAUDIA_CURSOR_LIVE") == "" {
 			t.Skip("CLAUDIA_CURSOR_LIVE not set")
 		}
-		if _, err := liveCursorBin(); err != nil {
+		if _, err := exec.LookPath("cursor-agent"); err != nil {
 			t.Skip(err)
 		}
 		runLiveMCPSeesMnemo(t, Config{
@@ -173,9 +173,9 @@ func TestMCPHostLiveSeatsSeeMnemo(t *testing.T) {
 		found func() error
 	}{
 		{"claude", "CLAUDIA_LIVE", AgentDef{Provider: ProviderClaude, Model: "haiku"}, func() error { _, err := exec.LookPath("claude"); return err }},
-		{"grok", "CLAUDIA_GROK_LIVE", AgentDef{Provider: ProviderGrok}, func() error { _, err := liveGrokBin(); return err }},
-		{"codex", "CLAUDIA_CODEX_LIVE", AgentDef{Provider: ProviderCodex}, func() error { _, err := liveCodexBin(); return err }},
-		{"cursor", "CLAUDIA_CURSOR_LIVE", AgentDef{Provider: ProviderCursor}, func() error { _, err := liveCursorBin(); return err }},
+		{"grok", "CLAUDIA_GROK_LIVE", AgentDef{Provider: ProviderGrok}, func() error { _, err := exec.LookPath("grok"); return err }},
+		{"codex", "CLAUDIA_CODEX_LIVE", AgentDef{Provider: ProviderCodex}, func() error { _, err := exec.LookPath("codex"); return err }},
+		{"cursor", "CLAUDIA_CURSOR_LIVE", AgentDef{Provider: ProviderCursor}, func() error { _, err := exec.LookPath("cursor-agent"); return err }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

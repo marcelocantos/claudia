@@ -102,7 +102,7 @@ func TestCursorSessionLiveSmoke(t *testing.T) {
 	if os.Getenv("CLAUDIA_CURSOR_LIVE") == "" {
 		t.Skip("CLAUDIA_CURSOR_LIVE not set (this test spends API credit)")
 	}
-	if _, err := liveCursorBin(); err != nil {
+	if _, err := exec.LookPath("cursor-agent"); err != nil {
 		t.Skipf("cursor agent binary not found: %v", err)
 	}
 

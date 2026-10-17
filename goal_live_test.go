@@ -58,7 +58,7 @@ func TestGoalJourneyLiveBackends(t *testing.T) {
 			},
 			skip: func(t *testing.T) {
 				t.Helper()
-				if _, err := liveGrokBin(); err != nil {
+				if _, err := exec.LookPath("grok"); err != nil {
 					t.Skipf("grok binary not found: %v", err)
 				}
 			},
@@ -73,7 +73,7 @@ func TestGoalJourneyLiveBackends(t *testing.T) {
 			},
 			skip: func(t *testing.T) {
 				t.Helper()
-				if _, err := liveCursorBin(); err != nil {
+				if _, err := exec.LookPath("cursor-agent"); err != nil {
 					t.Skipf("cursor agent binary not found: %v", err)
 				}
 			},
@@ -88,7 +88,7 @@ func TestGoalJourneyLiveBackends(t *testing.T) {
 			},
 			skip: func(t *testing.T) {
 				t.Helper()
-				if _, err := liveCodexBin(); err != nil {
+				if _, err := exec.LookPath("codex"); err != nil {
 					t.Skipf("codex binary not found: %v", err)
 				}
 			},

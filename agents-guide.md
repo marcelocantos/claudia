@@ -669,12 +669,10 @@ cursor) changes provider or model in place: the sidecar's agent takes
 the new model and converts the history for it on every request. A
 conversation too large for the new model's window is compacted first,
 by the model that wrote it; one that still does not fit refuses the
-switch and leaves the seat where it was. A native CLI seat changes
-model only within its own provider, gated by the `model_switch`
-capability: Claude types `/model <name>` into the live TUI; Codex
-applies the model on the next `turn/start`; Grok and Cursor use ACP
-`session/set_config_option` (legacy `session/set_model` fallback).
-Task-only providers (Bedrock, Ollama) refuse.
+switch and leaves the seat where it was. The CLI seat path is removed.
+There is no native TUI `/model`, no Codex `turn/start` model apply, and
+no ACP `session/set_config_option`. Task-only providers (Bedrock,
+Ollama) stay API paths and refuse a fleet seat switch.
 
 SwitchModel refuses an empty model, a dead agent, or a turn still in
 flight. On success `Agent.Provider()` and `Agent.Model()` name the new
@@ -682,9 +680,8 @@ model and a `Type=system` Event with `ProgressType=model_switch` is
 published, carrying `FromProvider`, `ToProvider`, `FromModel`, and
 `Model`. Switches are never silent. A seat that is not running has its
 definition rewritten instead (`SeatSwitch.Live` is false): its next
-launch resumes the same session on the new model. Only a sidecar seat
-changes provider that way, since a native CLI session belongs to its
-provider. Claudia never switches on its own; the host decides when.
+launch resumes the same session on the new model. Only a sidecar seat changes provider. A native CLI session is not a
+seat. Claudia never switches on its own; the host decides when.
 
 A sidecar seat whose provider refuses a turn (usage limit, rate limit,
 auth) makes `WaitForResponse` return `provider refused the turn:
@@ -974,14 +971,9 @@ Seat driving from the shell is the HEAD CLI in the supported-path
 section above. `claudia --help-agent` prints this guide after the CLI
 usage text.
 
-`Acquire` draws from a pool the daemon runs: every consumer on the
-host shares its warm windows, `Agent.Release` returns or drops the seat
-on the daemon, and a consumer that goes away returns what it held.
-`AcquireDirect` keeps the pool in-process. A pooled agent publishes
-turn events on either path, so `WaitForResponse` and `SubscribeEvents`
-work on it exactly as on a `Start`-ed one; a window returned and
-acquired again gives its new holder that holder's own turns and none
-of the previous holder's (🎯T78). A seat's
+`Acquire` and `AcquireDirect` are gone. Fleet seats are sidecar
+sessions, not a shared pool of warm windows. `Agent.Release` still
+disposes a broker-held seat. A seat's
 Goal loop runs on the daemon; after a terminal turn with no
 `GOAL_STATUS` line it asks the owning handle's `GoalCompleteCheck`
 (set on `Config` or with `SetGoalCompleteCheck`), and with no owner
@@ -991,40 +983,12 @@ Design record: [docs/metaharness.md](docs/metaharness.md).
 
 ## Gotchas
 
-1. **`tmux` must be on `$PATH`; `claude` must be resolvable.** claudia
-   shells out to both CLIs; there is no in-process API. `tmux` 3.0+ is
-   required for Session mode (`brew install tmux` / `apt install tmux`).
-   `claude` is located via `CLAUDE_BIN` (env var, absolute path or
-   PATH-resolvable name), then `exec.LookPath`, then known install
-   dirs (`~/.local/bin/claude`, `~/.claude/local/claude`,
-   `/opt/homebrew/bin/claude`, `/usr/local/bin/claude`). Set
-   `CLAUDE_BIN` when running under launchd / systemd / a Windows
-   Service whose `$PATH` excludes user-local install dirs. Windows is
-   not supported; use WSL. Task mode does not require tmux. Codex
-   resolver checks `CODEX_BIN`, then `codex` on `$PATH`, then known
-   locations including `/Applications/ChatGPT.app/Contents/Resources/codex`
-   (post desktop merger) and the legacy
-   `/Applications/Codex.app/Contents/Resources/codex`. Legacy Codex Session startup runs a subscription auth preflight: ChatGPT OAuth
-   (`auth_mode=chatgpt` + `tokens.access_token` in `~/.codex/auth.json`,
-   or `CLAUDIA_CODEX_AUTH_PATH`) is required; if `OPENAI_API_KEY` is set
-   or auth falls through to API-key mode, the spawn fails closed with a
-   loud warning so the no-per-token path is verified, not assumed.
-   Grok Build CLI resolver checks `GROK_BIN`, then `grok` on `$PATH`,
-   then known locations including `~/.grok/bin/grok`. Broker `Start`
-   runs that CLI inside the daemon. A brew service `PATH` lists system
-   directories first and `~/.grok/bin` last. Claudia moves existing
-   user tool directories to the front of the Grok and Cursor child's
-   `PATH` and, when the host has no `setsid` binary, inserts a perl
-   shim (`~/.local/state/claudia/bin/setsid`) after those directories.
-   Claude and Codex do not
-   use that helper. A handshake status other than `ready`
-   (`omp: sidecar said "error", want ready`) fails the Grok or Cursor
-   grant immediately, with the helper name, that status, and
-   `~/.local/state/claudia/omp-sidecar.log`. When that log contains
-   `command not found: setsid`, restart the daemon on this build so the
-   shim is on the child PATH; `brew install util-linux` is the native
-   binary. The following `write EPIPE` lines are the Node helper
-   writing to a closed pipe.
+1. **The CLI seat path is removed.** Fleet seats are sidecar sessions.
+   Claudia does not locate `claude`, `codex`, `grok`, `agent`, or
+   `cursor-agent`, and a seat does not require `tmux` on `$PATH`.
+   Attach, a terminal-log file, and rewind refuse. Task mode returns
+   `ErrTaskCLIRemoved`. Bedrock and Ollama stay API paths and are not
+   fleet seat providers. Windows is not supported; use WSL.
    Ollama needs a
    reachable daemon (`CLAUDIA_OLLAMA_ENDPOINT`, default
    `http://127.0.0.1:11434`) and a model (`TaskConfig.Model` or
@@ -1035,8 +999,8 @@ Design record: [docs/metaharness.md](docs/metaharness.md).
    | Capability | Claude | Codex | Grok | Bedrock | Ollama |
    |------------|--------|-------|------|---------|--------|
    | Task | Removed | Removed | Removed | ConverseStream | `/api/generate` |
-   | Session | tmux PTY | `codex app-server` | ACP stdio/serve | Unsupported | Unsupported |
-   | Resume | Supported | Session resume | `--resume` / ACP load | Unsupported | Unsupported |
+   | Session | sidecar | sidecar | sidecar | Unsupported | Unsupported |
+   | Resume | Supported | sidecar session | sidecar session | Unsupported | Unsupported |
    | Rewind | Supported | Unsupported | Unsupported | Unsupported | Unsupported |
    | Cost | Supported | tokens only | unsupported | unsupported | unsupported (latency, not money) |
    | tmux attach / terminal log | Supported | Unsupported | Unsupported | Unsupported | Unsupported |
@@ -1045,10 +1009,10 @@ Design record: [docs/metaharness.md](docs/metaharness.md).
    | Sandbox policy | Unsupported | Supported (`SandboxMode` / `ApprovalPolicy`) | Unsupported — **refuses** | Unsupported — **refuses** | Unsupported — **refuses** |
    | Extra args | Supported | Unsupported — **refuses** | Unsupported — **refuses** | Unsupported — **refuses** | Unsupported — **refuses** |
    | Image inputs | Unsupported (no claudia API) | Unsupported | Unsupported | Unsupported | Unsupported |
-   | Model switch | Supported (`/model`) | Supported (next turn/start) | Supported (ACP) | Unsupported | Unsupported |
+   | Model switch | Supported (sidecar) | Supported (sidecar) | Supported (sidecar) | Unsupported | Unsupported |
    | Web search | Supported | Unsupported (does not bind `--search`) | Unsupported | Unsupported | Unsupported |
 
-   Cursor is a sixth Session provider (ACP, like Grok): Task is removed;
+   Cursor is a sixth Session provider (sidecar, like Grok): Task is removed;
    Session, Resume and model switch are Supported; Rewind, ExtraArgs,
    sandbox, and tool restrictions refuse. Query `ProviderCapabilityMatrix`
    rather than this abbreviated table for Cursor.

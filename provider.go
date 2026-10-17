@@ -5,19 +5,6 @@ package claudia
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
-	"strings"
-)
-
-const (
-	codexBinEnv    = "CODEX_BIN"
-	codexBinName   = "codex"
-	grokBinEnv     = "GROK_BIN"
-	grokBinName    = "grok"
-	cursorBinEnv   = "CURSOR_BIN"
-	cursorBinName  = "agent"
-	cursorBinAlias = "cursor-agent"
 )
 
 // Provider identifies the CLI/runtime backing a Task or Agent.
@@ -58,11 +45,12 @@ func SubscriptionSeatProvider(provider Provider) Provider {
 }
 
 const (
-	// ProviderClaude uses Claude Code and is the default when Provider is empty.
+	// ProviderClaude is the Claude subscription seat on the Oh My Pi
+	// sidecar and is the default when Provider is empty.
 	ProviderClaude Provider = "claude"
-	// ProviderCodex uses Codex.
+	// ProviderCodex is the Codex subscription seat on the Oh My Pi sidecar.
 	ProviderCodex Provider = "codex"
-	// ProviderGrok uses the Grok Build CLI (binary name "grok").
+	// ProviderGrok is the Grok subscription seat on the Oh My Pi sidecar.
 	// Distinct from the Realtime voice client in package
 	// github.com/marcelocantos/claudia/grok.
 	ProviderGrok Provider = "grok"
@@ -75,12 +63,9 @@ const (
 	// capability instead of reporting a spend of zero.
 	ProviderOllama Provider = "ollama"
 
-	// ProviderCursor uses the Cursor Agent CLI (binary name
-	// "cursor-agent", often also installed as "agent"). Session mode
-	// speaks ACP over `agent acp` stdio. Task mode uses
-	// `agent --print --output-format stream-json`. Bare "agent" on PATH
-	// is not trusted first: Grok ships its own `~/.grok/bin/agent`, which
-	// rejects Cursor's --force/--trust flags.
+	// ProviderCursor is the Cursor subscription seat on the Oh My Pi
+	// sidecar. The Cursor agent CLI is not located and is not a fleet
+	// seat transport.
 	ProviderCursor Provider = "cursor"
 )
 
@@ -92,174 +77,12 @@ func resolveCodexBin() (string, error) {
 	return "", fmt.Errorf("%w: codex", ErrLegacyCLISeatTransport)
 }
 
-func resolveCodexBinFrom(
-	getenv func(string) string,
-	lookPath func(string) (string, error),
-	stat func(string) (os.FileInfo, error),
-	candidates []string,
-) (string, error) {
-	if p := getenv(codexBinEnv); p != "" {
-		if filepath.IsAbs(p) {
-			if _, err := stat(p); err == nil && !isCmuxCLIShim(p) {
-				return p, nil
-			}
-		} else if abs, err := lookPath(p); err == nil && !isCmuxCLIShim(abs) {
-			return abs, nil
-		}
-	}
-	// Prefer known install dirs over PATH: cmux injects a shim named
-	// "codex" that prints "codex not found in PATH" (exit 127).
-	for _, c := range candidates {
-		if c == "" || isCmuxCLIShim(c) {
-			continue
-		}
-		if _, err := stat(c); err == nil {
-			return c, nil
-		}
-	}
-	if p, err := lookPath(codexBinName); err == nil && !isCmuxCLIShim(p) {
-		return p, nil
-	}
-	return "", fmt.Errorf("codex executable not found in PATH or known install dirs (set %s to override)", codexBinEnv)
-}
-
-// isCmuxCLIShim reports whether p is a cmux-injected CLI wrapper, not
-// the real Codex/Claude binary. Those shims fail with exit 127 when the
-// wrapped tool is absent from the inner PATH.
-func isCmuxCLIShim(p string) bool {
-	return strings.Contains(filepath.ToSlash(p), "/cmux-cli-shims/")
-}
-
-// chatGPTBundledCodex is where ChatGPT.app ships its Codex CLI since
-// ChatGPT 26.930 (installed on Colossus 2026-10-04): a nested helper app,
-// Resources/codex-cli/CodexCLI.app. The bare Resources/codex this list
-// used to name stopped existing with that update, every --pick remaining
-// that chose codex then failed at seat start with "codex executable not
-// found", and the live test that would have said so skipped instead.
-const chatGPTBundledCodex = "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex"
-
-// codexBinCandidates are the install locations a launchd or supervisord
-// daemon cannot find through its own PATH: user-local bin dirs (pipx/npm
-// prefix style, npm-global, bun, volta), Homebrew, and the CLI bundled in
-// the desktop app. codex/resolve.go keeps the same list for the codex
-// package; each package pins the ChatGPT bundle path in its own tests.
-func codexBinCandidates() []string {
-	home, _ := os.UserHomeDir()
-	return []string{
-		filepath.Join(home, ".local", "bin", codexBinName),
-		"/opt/homebrew/bin/codex",
-		"/usr/local/bin/codex",
-		filepath.Join(home, ".npm-global", "bin", codexBinName),
-		filepath.Join(home, ".bun", "bin", codexBinName),
-		filepath.Join(home, ".volta", "bin", codexBinName),
-		// Post 2026-07-09 Codex app → ChatGPT desktop merger: the CLI ships
-		// inside ChatGPT.app — now as a nested helper app, earlier as a bare
-		// Resources/codex. Keep the legacy Codex.app path as a fallback.
-		chatGPTBundledCodex,
-		filepath.Join(home, "Applications", "ChatGPT.app", "Contents", "Resources", "codex-cli", "CodexCLI.app", "Contents", "MacOS", codexBinName),
-		"/Applications/ChatGPT.app/Contents/Resources/codex",
-		"/Applications/Codex.app/Contents/Resources/codex",
-	}
-}
-
 // resolveGrokBin refuses. The subscription CLI is not located.
 func resolveGrokBin() (string, error) {
 	return "", fmt.Errorf("%w: grok", ErrLegacyCLISeatTransport)
 }
 
-func resolveGrokBinFrom(
-	getenv func(string) string,
-	lookPath func(string) (string, error),
-	stat func(string) (os.FileInfo, error),
-	candidates []string,
-) (string, error) {
-	if p := getenv(grokBinEnv); p != "" {
-		if filepath.IsAbs(p) {
-			if _, err := stat(p); err == nil {
-				return p, nil
-			}
-		} else if abs, err := lookPath(p); err == nil {
-			return abs, nil
-		}
-	}
-	if p, err := lookPath(grokBinName); err == nil {
-		return p, nil
-	}
-	for _, c := range candidates {
-		if c == "" {
-			continue
-		}
-		if _, err := stat(c); err == nil {
-			return c, nil
-		}
-	}
-	return "", fmt.Errorf("grok executable not found in PATH or known install dirs (set %s to override)", grokBinEnv)
-}
-
-func grokBinCandidates() []string {
-	home, _ := os.UserHomeDir()
-	return []string{
-		filepath.Join(home, ".grok", "bin", grokBinName),
-		filepath.Join(home, ".local", "bin", grokBinName),
-		"/opt/homebrew/bin/grok",
-		"/usr/local/bin/grok",
-	}
-}
-
 // resolveCursorBin refuses. The subscription CLI is not located.
 func resolveCursorBin() (string, error) {
 	return "", fmt.Errorf("%w: cursor", ErrLegacyCLISeatTransport)
-}
-
-func resolveCursorBinFrom(
-	getenv func(string) string,
-	lookPath func(string) (string, error),
-	stat func(string) (os.FileInfo, error),
-	candidates []string,
-) (string, error) {
-	if p := getenv(cursorBinEnv); p != "" {
-		if filepath.IsAbs(p) {
-			if _, err := stat(p); err == nil {
-				return p, nil
-			}
-		} else if abs, err := lookPath(p); err == nil {
-			return abs, nil
-		}
-	}
-	// Prefer the unambiguous name. Grok also installs a binary named
-	// "agent" earlier on some PATHs (~/.grok/bin before ~/.local/bin).
-	if p, err := lookPath(cursorBinAlias); err == nil && !isGrokAgentPath(p) {
-		return p, nil
-	}
-	for _, c := range candidates {
-		if c == "" || isGrokAgentPath(c) {
-			continue
-		}
-		if _, err := stat(c); err == nil {
-			return c, nil
-		}
-	}
-	if p, err := lookPath(cursorBinName); err == nil && !isGrokAgentPath(p) {
-		return p, nil
-	}
-	return "", fmt.Errorf("cursor agent executable not found in PATH or known install dirs (set %s to override)", cursorBinEnv)
-}
-
-// isGrokAgentPath reports whether p is Grok's `agent` (not Cursor's).
-// Grok installs ~/.grok/bin/agent; Cursor installs cursor-agent and a
-// same-named symlink under ~/.local/bin.
-func isGrokAgentPath(p string) bool {
-	return strings.Contains(filepath.ToSlash(p), "/.grok/")
-}
-
-func cursorBinCandidates() []string {
-	home, _ := os.UserHomeDir()
-	return []string{
-		filepath.Join(home, ".local", "bin", cursorBinName),
-		filepath.Join(home, ".local", "bin", cursorBinAlias),
-		"/opt/homebrew/bin/agent",
-		"/opt/homebrew/bin/cursor-agent",
-		"/usr/local/bin/agent",
-		"/usr/local/bin/cursor-agent",
-	}
 }

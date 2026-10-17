@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -29,7 +30,7 @@ func TestMCPCodexSeatCallsToolLive(t *testing.T) {
 	if os.Getenv("CLAUDIA_CODEX_LIVE") == "" {
 		t.Skip("CLAUDIA_CODEX_LIVE not set")
 	}
-	if _, err := liveCodexBin(); err != nil {
+	if _, err := exec.LookPath("codex"); err != nil {
 		t.Skip(err)
 	}
 

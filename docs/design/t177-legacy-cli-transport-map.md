@@ -501,12 +501,13 @@ Still present, so the purge is not done:
   `cmd/t108ready` returns the same error before it looks up `claude`
   or calls `SpawnWindow`.
 - `resolveClaudeBin`, `resolveCodexBin`, `resolveGrokBin`, and
-  `resolveCursorBin` return `ErrLegacyCLISeatTransport` before
-  `LookPath`, `Stat`, or `CLAUDE_BIN` / `CODEX_BIN` / `GROK_BIN` /
-  `CURSOR_BIN`. `resolve*BinFrom` stays so a live test can decide to
-  skip. Those tests call `liveCodexBin`, `liveGrokBin`,
-  `liveCursorBin`, or `exec.LookPath("claude")`. The product wrappers
-  do not call `*From`.
+  `resolveCursorBin` return `ErrLegacyCLISeatTransport` before any
+  lookup. `resolve*BinFrom`, the install-dir candidate lists, and
+  `liveCodexBin` / `liveGrokBin` / `liveCursorBin` are deleted.
+  `codex.resolveBin` and `ensureSubscriptionAuth` are deleted. A live
+  test that still skips when a non-seat CLI is absent calls
+  `exec.LookPath` itself. Task mode returns `ErrTaskCLIRemoved`
+  without discovering a binary.
 - `loadClaudeOAuthAccessToken` returns before `security`.
   `loadCursorAccessToken` returns before `sqlite3`.
   `listStoreWritersLsof` and `listOrphanCursorACPPs` return before

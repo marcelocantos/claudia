@@ -12,50 +12,6 @@ import (
 	"time"
 )
 
-// ChatGPT 26.930 (Colossus, 2026-10-04) moved its bundled Codex CLI from
-// Resources/codex to Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex.
-// With only the old path listed, a supervisord broker whose PATH has no
-// codex found nothing, and every --pick remaining that chose codex died at
-// seat start. Removing the new candidate turns this red.
-func TestResolveCodexBinFindsChatGPTCodexCLIBundle(t *testing.T) {
-	const want = "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex"
-	errNotFound := errors.New("not found")
-	got, err := resolveCodexBinFrom(
-		func(string) string { return "" },
-		func(string) (string, error) { return "", errNotFound },
-		func(p string) (os.FileInfo, error) {
-			if p == want {
-				return nil, nil
-			}
-			return nil, errNotFound
-		},
-		codexBinCandidates(),
-	)
-	if err != nil || got != want {
-		t.Fatalf("resolveCodexBinFrom = %q, %v; want %q", got, err, want)
-	}
-}
-
-// The user-local dirs a login shell puts on PATH but a launchd or
-// supervisord daemon does not: npm-global, bun, volta, ~/.local/bin.
-func TestCodexBinCandidatesCoverUserLocalInstallDirs(t *testing.T) {
-	home, _ := os.UserHomeDir()
-	have := map[string]bool{}
-	for _, c := range codexBinCandidates() {
-		have[c] = true
-	}
-	for _, dir := range []string{".local/bin", ".npm-global/bin", ".bun/bin", ".volta/bin"} {
-		if p := filepath.Join(home, dir, "codex"); !have[p] {
-			t.Errorf("codexBinCandidates() lacks %s", p)
-		}
-	}
-	for _, p := range []string{"/opt/homebrew/bin/codex", "/usr/local/bin/codex", chatGPTBundledCodex} {
-		if !have[p] {
-			t.Errorf("codexBinCandidates() lacks %s", p)
-		}
-	}
-}
-
 // Seats for Cursor and Grok run in the plan sidecar, and Bedrock/Ollama
 // are API backends: a missing CLI must not exclude them from a seat pick.
 func TestProviderBinaryErrorSurfaces(t *testing.T) {
@@ -75,9 +31,9 @@ func TestProviderBinaryErrorSurfaces(t *testing.T) {
 	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv(codexBinEnv, bin)
+	t.Setenv("CODEX_BIN", bin)
 	if err := ProviderBinaryError(ProviderCodex, true); err != nil {
-		t.Errorf("codex with %s=%s: %v", codexBinEnv, bin, err)
+		t.Errorf("codex with CODEX_BIN=%s: %v", bin, err)
 	}
 }
 
