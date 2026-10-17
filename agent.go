@@ -651,7 +651,10 @@ func claudeAgentOps() agentOps {
 			return tmuxagent.MatchTurnInProgress(frame)
 		},
 		attachCommand: func(a *Agent) string {
-			return fmt.Sprintf("tmux -S %s attach -t %s", tmuxagent.SocketPath(), a.tmuxWindowID)
+			// Human attach was a tmux incantation. The CLI seat is gone,
+			// so the concrete ops report no command. Injected ops and a
+			// broker-reported attach string are untouched.
+			return ""
 		},
 		interrupt: func(a *Agent) error {
 			return tmuxagent.SendEscape(a.tmuxWindowID)
@@ -828,12 +831,16 @@ func startWithBackendContext(ctx context.Context, cfg Config, backend agentBacke
 	}
 	jsonlPath := SessionJSONLPath(sessionID, workDir)
 
+	// "-" disables the log. Empty stays empty: the CLI default used to
+	// create sessionID.term before the backend started. A real path is
+	// the CLI writer and refuses before any directory or file is created.
+	// A broker-supplied path arrives later on start.TermLogPath.
 	termLogPath := cfg.TermLogPath
 	switch termLogPath {
-	case "":
-		termLogPath = filepath.Join(termLogDir(workDir), sessionID+".term")
-	case "-":
+	case "", "-":
 		termLogPath = ""
+	default:
+		return nil, fmt.Errorf("%w: term log", ErrLegacyCLISeatTransport)
 	}
 
 	// If the Claude JSONL already exists, this is a resume. Grok/Codex do
@@ -889,18 +896,6 @@ func startWithBackendContext(ctx context.Context, cfg Config, backend agentBacke
 		model:             cfg.Model,
 		clk:               SystemClock{},
 		turnSilenceBound:  cfg.TurnSilenceBound,
-	}
-
-	// Open terminal log.
-	if termLogPath != "" {
-		if err := os.MkdirAll(filepath.Dir(termLogPath), 0o755); err != nil {
-			slog.Warn("term log mkdir failed", "path", termLogPath, "err", err)
-		} else if f, err := os.OpenFile(termLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); err != nil {
-			slog.Warn("term log open failed", "path", termLogPath, "err", err)
-		} else {
-			a.termLog = f
-			a.termLogLive = true
-		}
 	}
 
 	start, err := backend.StartAgent(agentStartRequest{
@@ -1081,9 +1076,12 @@ func (claudeAgentBackend) StartAgent(agentStartRequest) (*agentStart, error) {
 var ErrNoSessionWindow = errors.New("no live tmux window for session")
 
 // ErrLegacyCLISeatTransport refuses a CLI process for a Session seat.
-// Product dispatch, Adopt, the concrete session backends, the pool,
-// SpawnWindow (a same-text sentinel in internal/tmuxagent), reapSessionWindows,
-// the Codex app-server, and the Grok and Cursor ACP constructors all refuse.
+// Product dispatch, Adopt, the concrete session backends, the pool
+// (including acquireLocked), SpawnWindow, EnsureServer, KillWindow,
+// ListWindows, and SendKeys (tmuxagent sentinels of the same text),
+// reapSessionWindows, the Codex app-server, the Grok and Cursor ACP
+// constructors, the CLI term-log writer, claudeAgentOps attach, and
+// non-broker Rewind all refuse before they exec or mutate a transcript.
 // Task mode is a separate process-per-prompt path and is unchanged.
 var ErrLegacyCLISeatTransport = errors.New("legacy CLI seat transport removed")
 
@@ -2101,30 +2099,13 @@ func (a *Agent) Stop() {
 	})
 }
 
-// Rewind rolls this Session-mode agent back by n user turns and resumes the
-// session, returning a fresh [Agent] positioned at the rewound state. The
-// receiver is stopped: rewinding must kill the live claude process (which holds
-// the conversation in memory and would otherwise re-append the dropped turns),
-// truncate the transcript, then start a new process with --resume — so all
-// derived state (token usage, the JSONL tailer, TUI readiness) is rebuilt by the
-// resume rather than patched in place.
-//
-// cfg supplies the resume parameters (WorkDir, Model, MCPConfig, …) and should
-// match the config the agent was started with; its SessionID is overridden with
-// this agent's session id. Turn-boundary and undo semantics are those of
-// [RewindSession]: tool-result entries are not counted as turns, so a rewind
-// never lands mid-tool-use, and the pre-rewind transcript is backed up.
-//
-// On a seat held by a claudia daemon the daemon rewinds and relaunches it,
-// and the returned Agent is the receiver itself, re-pointed at the relaunched
-// process with its subscriptions kept: the grant never lapses. For a seat a
-// [Registry] launched, use [Registry.Rewind], which keeps the Registry's
-// handle current.
+// Rewind used to roll this Session-mode agent back by n user turns.
+// A seat held by a claudia daemon still asks the daemon, and the
+// returned Agent is the receiver itself. Every other seat refuses
+// before Stop, before the transcript is truncated, and before Start.
+// Capability checks run first, so a provider that cannot rewind still
+// reports that refusal.
 func (a *Agent) Rewind(n int, cfg Config) (*Agent, error) {
-	// Either provider naming a non-Claude runtime is enough to refuse:
-	// rewinding means truncating a Claude-shaped JSONL transcript, which
-	// is meaningless — and, for providers whose state is private,
-	// forbidden — anywhere else.
 	for _, provider := range []Provider{a.provider, cfg.Provider} {
 		if err := CheckCapability(provider, CapabilityRewind); err != nil {
 			return nil, err
@@ -2136,12 +2117,7 @@ func (a *Agent) Rewind(n int, cfg Config) (*Agent, error) {
 		}
 		return a, nil
 	}
-	a.Stop()
-	if _, err := rewindJSONL(a.jsonlPath, n); err != nil {
-		return nil, err
-	}
-	cfg.SessionID = a.sessionID
-	return Start(cfg)
+	return nil, fmt.Errorf("%w: rewind", ErrLegacyCLISeatTransport)
 }
 
 // detectReady polls capture-pane for Claude Code's idle input box

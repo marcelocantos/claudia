@@ -6,7 +6,6 @@ package tmuxagent
 import (
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -85,32 +84,22 @@ func TestT579SpawnWindowRecoversWhenServerVanished(t *testing.T) {
 	}
 }
 
-// TestT579EnsureServerRecreatesReapedAnchor: agent windows are created
-// inside the claudia-anchor session, so an anchor reaped by a pane
-// census leaves new-window failing against a server that is up. Real
-// tmux, throwaway socket.
+// TestT579EnsureServerRecreatesReapedAnchor: EnsureServer must not
+// recreate an anchor session. It returns before tmux runs, so the
+// socket file the server would bind does not appear.
 func TestT579EnsureServerRecreatesReapedAnchor(t *testing.T) {
-	if _, err := exec.LookPath("tmux"); err != nil {
-		t.Skip("tmux not on PATH")
+	dir, err := os.MkdirTemp("/tmp", "t579")
+	if err != nil {
+		t.Fatal(err)
 	}
-	sock := testServerSocket(t)
-	if err := EnsureServer(); err != nil {
-		t.Fatalf("EnsureServer: %v", err)
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	sock := filepath.Join(dir, "s.sock")
+	t.Setenv(tmuxSocketEnvVar, sock)
+	if err := EnsureServer(); !errors.Is(err, ErrLegacyCLISeatTransport) {
+		t.Fatalf("EnsureServer = %v, want legacy refusal", err)
 	}
-
-	// Hold the server up with a second session, then reap the anchor.
-	if out, err := exec.Command("tmux", "-S", sock, "new-session", "-d", "-s", "holder").CombinedOutput(); err != nil {
-		t.Fatalf("holder session: %v: %s", err, out)
-	}
-	if out, err := exec.Command("tmux", "-S", sock, "kill-session", "-t", anchorSessionName).CombinedOutput(); err != nil {
-		t.Fatalf("kill anchor: %v: %s", err, out)
-	}
-
-	if err := EnsureServer(); err != nil {
-		t.Fatalf("EnsureServer with reaped anchor: %v", err)
-	}
-	if err := exec.Command("tmux", "-S", sock, "has-session", "-t", anchorSessionName).Run(); err != nil {
-		t.Fatalf("anchor session not restored: %v", err)
+	if _, statErr := os.Stat(sock); !os.IsNotExist(statErr) {
+		t.Fatalf("EnsureServer created a socket: %v", statErr)
 	}
 	id, err := SpawnWindow(t.TempDir(), "t579", "sleep", []string{"5"})
 	if id != "" || !errors.Is(err, ErrLegacyCLISeatTransport) {
@@ -118,24 +107,24 @@ func TestT579EnsureServerRecreatesReapedAnchor(t *testing.T) {
 	}
 }
 
-// TestT579SpawnWindowSurvivesKilledServer is the end-to-end shape of the
-// production failure against real tmux: the server is killed after
-// EnsureServer and the spawn still lands a window on claudia's socket.
+// TestT579SpawnWindowSurvivesKilledServer: neither EnsureServer nor
+// SpawnWindow restarts a server. The socket file stays absent.
 func TestT579SpawnWindowSurvivesKilledServer(t *testing.T) {
-	if _, err := exec.LookPath("tmux"); err != nil {
-		t.Skip("tmux not on PATH")
+	dir, err := os.MkdirTemp("/tmp", "t579")
+	if err != nil {
+		t.Fatal(err)
 	}
-	sock := testServerSocket(t)
-	if err := EnsureServer(); err != nil {
-		t.Fatalf("EnsureServer: %v", err)
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	sock := filepath.Join(dir, "s.sock")
+	t.Setenv(tmuxSocketEnvVar, sock)
+	if err := EnsureServer(); !errors.Is(err, ErrLegacyCLISeatTransport) {
+		t.Fatalf("EnsureServer = %v, want legacy refusal", err)
 	}
-	_ = exec.Command("tmux", "-S", sock, "kill-server").Run()
-
 	id, err := SpawnWindow(t.TempDir(), "t579", "sleep", []string{"5"})
 	if id != "" || !errors.Is(err, ErrLegacyCLISeatTransport) {
 		t.Fatalf("SpawnWindow = (%q, %v), want legacy refusal", id, err)
 	}
-	if err := exec.Command("tmux", "-S", sock, "has-session", "-t", anchorSessionName).Run(); err == nil {
-		t.Fatal("SpawnWindow restarted the killed server")
+	if _, statErr := os.Stat(sock); !os.IsNotExist(statErr) {
+		t.Fatalf("a refused spawn created a socket: %v", statErr)
 	}
 }

@@ -6,7 +6,6 @@ package tmuxagent
 import (
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -52,32 +51,22 @@ func shellSingleQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-// TestT469PasteFailureDeletesBuffer ensures a failed paste does not
-// leave a named buffer behind (clean rollback residual).
+// TestT469PasteFailureDeletesBuffer: EnsureServer refuses before a paste
+// can load a buffer, and it does not create the socket that buffer would
+// live on.
 func TestT469PasteFailureDeletesBuffer(t *testing.T) {
-	sock := testServerSocket(t)
-	if err := EnsureServer(); err != nil {
-		t.Fatalf("EnsureServer: %v", err)
+	dir, err := os.MkdirTemp("/tmp", "t469")
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	buf := uniquePasteBufferName()
-	err := pasteViaNamedBuffer("@99999-missing", "cleanup-probe", buf, nil)
-	if err == nil {
-		t.Fatal("expected paste to missing window to fail")
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	sock := filepath.Join(dir, "s.sock")
+	t.Setenv(tmuxSocketEnvVar, sock)
+	if err := EnsureServer(); !errors.Is(err, ErrLegacyCLISeatTransport) {
+		t.Fatalf("EnsureServer = %v, want legacy refusal", err)
 	}
-	if isNoBufferErr(err) {
-		t.Fatalf("unexpected no-buffer on missing window: %v", err)
-	}
-
-	out, listErr := exec.Command("tmux", "-S", sock, "list-buffers", "-F", "#{buffer_name}").CombinedOutput()
-	listed := string(out)
-	if listErr != nil && strings.Contains(listed, buf) {
-		t.Fatalf("failed paste left buffer %q listed: %s", buf, listed)
-	}
-	for _, line := range strings.Split(strings.TrimSpace(listed), "\n") {
-		if line == buf {
-			t.Fatalf("failed paste left orphan buffer %q", buf)
-		}
+	if _, statErr := os.Stat(sock); !os.IsNotExist(statErr) {
+		t.Fatalf("EnsureServer created a socket: %v", statErr)
 	}
 }
 

@@ -6,7 +6,6 @@ package claudia
 import (
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -14,24 +13,17 @@ import (
 	"github.com/marcelocantos/claudia/internal/tmuxagent"
 )
 
-// isolateTmux points CLAUDIA_TMUX_SOCKET at a short temp path and
-// tears the server down. t.TempDir() is too long for sun_path.
+// isolateTmux points CLAUDIA_TMUX_SOCKET at a short temp path. It does
+// not start a server: EnsureServer refuses, and a Skip on that error
+// would hide the seats these tests already assert never mint a window.
 func isolateTmux(t *testing.T) {
 	t.Helper()
-	if _, err := exec.LookPath("tmux"); err != nil {
-		t.Skip("tmux not installed")
-	}
-	sockDir, err := os.MkdirTemp("", "t34")
+	sockDir, err := os.MkdirTemp("/tmp", "t34")
 	if err != nil {
 		t.Fatalf("MkdirTemp: %v", err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(sockDir) })
-	sock := filepath.Join(sockDir, "s.sock")
-	t.Setenv("CLAUDIA_TMUX_SOCKET", sock)
-	if err := tmuxagent.EnsureServer(); err != nil {
-		t.Skipf("cannot start an isolated tmux server: %v", err)
-	}
-	t.Cleanup(func() { _ = exec.Command("tmux", "-S", sock, "kill-server").Run() })
+	t.Setenv("CLAUDIA_TMUX_SOCKET", filepath.Join(sockDir, "s.sock"))
 }
 
 func stubClaude(t *testing.T) {
@@ -47,6 +39,9 @@ func stubClaude(t *testing.T) {
 func sessionWindows(t *testing.T, sessionID string) []string {
 	t.Helper()
 	ids, err := tmuxagent.WindowsForSession(sessionID)
+	if errors.Is(err, tmuxagent.ErrLegacyCLISeatTransport) {
+		return nil
+	}
 	if err != nil {
 		t.Fatalf("WindowsForSession: %v", err)
 	}

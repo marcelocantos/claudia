@@ -5,20 +5,18 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
-	"strings"
+	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/marcelocantos/claudia"
 )
 
-// TestRewindLive is 🎯T75.8's live gate: a real Claude seat held by a daemon
-// (in-process, on a temp socket, so it never touches an installed one)
-// remembers two codewords, is rewound by one turn through the consumer's
-// handle, and afterwards recalls the first and not the second. Only a real
-// claude --resume can show the relaunch honours the truncated transcript.
+// TestRewindLive is 🎯T75.8's live gate. After the live skips, Rewind
+// refuses before it stops a seat or truncates a transcript. It does not
+// start claude.
 func TestRewindLive(t *testing.T) {
 	if os.Getenv("CLAUDIA_LIVE") == "" {
 		t.Skip("CLAUDIA_LIVE not set (this test spends API credit)")
@@ -26,46 +24,33 @@ func TestRewindLive(t *testing.T) {
 	if _, err := exec.LookPath("claude"); err != nil {
 		t.Skip("claude binary not on PATH")
 	}
-	startLiveDaemon(t)
-
-	a, err := claudia.Start(claudia.Config{Name: "rewind-live-" + newRunID(), WorkDir: t.TempDir(), Model: "haiku"})
+	// The CLI resume that used to prove a truncated transcript is gone.
+	// Rewind refuses before it stops a seat or writes the file.
+	reg, err := claudia.NewRegistry(filepath.Join(t.TempDir(), "agents.json"))
 	if err != nil {
-		t.Fatalf("Start via daemon: %v", err)
+		t.Fatal(err)
 	}
-	t.Cleanup(a.Stop)
-	if !a.DaemonHeld() {
-		t.Fatal("seat is not daemon-held")
+	work := t.TempDir()
+	if err := reg.Register(claudia.AgentDef{Name: "rewind-live", WorkDir: work, SessionID: "sid-live", TermLogPath: "-"}); err != nil {
+		t.Fatal(err)
 	}
-	turn := func(prompt string) string {
-		t.Helper()
-		if err := a.Send(prompt); err != nil {
-			t.Fatalf("Send: %v", err)
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-		defer cancel()
-		reply, err := a.WaitForResponse(ctx)
-		if err != nil {
-			t.Fatalf("WaitForResponse: %v\nterminal log %s:\n%s", err, a.TermLogPath(), termLogTail(a.TermLogPath()))
-		}
-		return reply
+	path := claudia.SessionJSONLPath("sid-live", work)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
 	}
-	turn("Remember this codeword: ALPHA. Reply with only: ok")
-	turn("Remember this codeword too: BRAVO. Reply with only: ok")
-	sid := a.SessionID()
-
-	got, err := a.Rewind(1, claudia.Config{})
+	const transcript = "ALPHA\nBRAVO\n"
+	if err := os.WriteFile(path, []byte(transcript), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, res, err := reg.Rewind(context.Background(), "rewind-live", 1)
+	if got != nil || res != nil || !errors.Is(err, claudia.ErrLegacyCLISeatTransport) {
+		t.Fatalf("Rewind = (%v, %+v, %v), want legacy refusal", got, res, err)
+	}
+	b, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("Rewind: %v", err)
+		t.Fatal(err)
 	}
-	if got != a || a.SessionID() != sid {
-		t.Fatalf("rewind changed the handle or session: %p/%p %s → %s", got, a, sid, a.SessionID())
-	}
-	recall := strings.ToUpper(turn("List every codeword I have asked you to remember, comma-separated. If none, reply NONE."))
-	t.Logf("post-rewind recall: %q", recall)
-	if !strings.Contains(recall, "ALPHA") {
-		t.Error("the relaunched seat lost the surviving turn (ALPHA)")
-	}
-	if strings.Contains(recall, "BRAVO") {
-		t.Error("the relaunched seat resurfaced the rewound turn (BRAVO)")
+	if string(b) != transcript {
+		t.Fatalf("rewind mutated the transcript:\n%s", b)
 	}
 }

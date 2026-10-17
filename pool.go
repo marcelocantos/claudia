@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -133,121 +132,11 @@ func AcquireDirect(ctx context.Context, cfg Config) (*Agent, error) {
 	return nil, fmt.Errorf("%w: pool", ErrLegacyCLISeatTransport)
 }
 
-// acquireLocked runs with poolMu held. It lists windows, finds an
-// idle match, and either adopts it or spawns a fresh one.
+// acquireLocked used to run with poolMu held: list windows, adopt an
+// idle match, or spawn. It refuses before any of that. Nothing in this
+// package calls it; the body stays so a future caller cannot exec.
 func acquireLocked(ctx context.Context, cfg Config, workDir, disallowed, windowName, policy string) (*Agent, error) {
-	windows, err := tmuxagent.ListWindows()
-	if err != nil {
-		return nil, fmt.Errorf("pool list windows: %w", err)
-	}
-
-	now := poolClock.Now()
-
-	// Collect all windows matching our pool key, categorised by
-	// classifyPoolWindow: idle ones are adopted, held ones are left to
-	// their holders, and expired and blind ones are swept.
-	type candidate struct {
-		windowID  string
-		sessionID string
-	}
-	var idle, held, expired, blind []candidate
-
-	for _, w := range windows {
-		if w.Name != windowName {
-			continue
-		}
-		heldVal, _ := tmuxagent.GetWindowOption(w.ID, "claudia-held")
-		deadlineVal, hasDeadline := tmuxagent.GetWindowOption(w.ID, "claudia-deadline")
-		sidVal, _ := tmuxagent.GetWindowOption(w.ID, poolSessionOption)
-
-		sessionID := strings.TrimSpace(sidVal)
-		c := candidate{windowID: w.ID, sessionID: sessionID}
-		switch classifyPoolWindow(now, poolWindowState{
-			held:        strings.TrimSpace(heldVal) == "1",
-			deadline:    deadlineVal,
-			hasDeadline: hasDeadline,
-			sessionID:   sessionID,
-		}) {
-		case poolExpired:
-			expired = append(expired, c)
-		case poolHeld:
-			held = append(held, c)
-		case poolBlind:
-			// Spawned before 🎯T78, so nothing on the host knows which
-			// transcript it writes. The only window this sweep can race is
-			// a sibling process between new-window and its first
-			// SetWindowOption; that process marks held before the session
-			// id, so the gap is a single tmux round-trip.
-			blind = append(blind, c)
-		default:
-			idle = append(idle, c)
-		}
-	}
-
-	// Sweep expired windows.
-	for _, c := range expired {
-		slog.Debug("pool: evicting expired window", "window", c.windowID)
-		if killErr := tmuxagent.KillWindow(c.windowID); killErr != nil {
-			slog.Warn("pool: kill expired window", "window", c.windowID, "err", killErr)
-		}
-	}
-
-	// Sweep windows with no recorded session: unobservable, never adopted.
-	for _, c := range blind {
-		slog.Info("pool: evicting window with no recorded session id", "window", c.windowID)
-		if killErr := tmuxagent.KillWindow(c.windowID); killErr != nil {
-			slog.Warn("pool: kill unobservable window", "window", c.windowID, "err", killErr)
-		}
-	}
-
-	// Apply pool cap: evict oldest idle windows if needed.
-	if cfg.PoolCap > 0 {
-		total := len(idle) + len(held)
-		evictCount := total - cfg.PoolCap
-		for i := 0; i < evictCount && i < len(idle); i++ {
-			c := idle[i]
-			slog.Debug("pool: evicting idle window (cap)", "window", c.windowID)
-			if killErr := tmuxagent.KillWindow(c.windowID); killErr != nil {
-				slog.Warn("pool: kill cap-evicted window", "window", c.windowID, "err", killErr)
-			}
-			idle = idle[1:]
-		}
-	}
-
-	// Try to adopt an idle window.
-	for _, c := range idle {
-		// Mark as held before releasing the lock (after return).
-		if err := tmuxagent.SetWindowOption(c.windowID, "claudia-held", "1"); err != nil {
-			slog.Warn("pool: failed to mark window held", "window", c.windowID, "err", err)
-			continue
-		}
-
-		agent, err := adoptWindow(ctx, cfg, workDir, c.windowID, c.sessionID)
-		if err != nil {
-			// Adoption failed — unmark and try next.
-			slog.Warn("pool: adopt failed", "window", c.windowID, "err", err)
-			_ = tmuxagent.SetWindowOption(c.windowID, "claudia-held", "0")
-			continue
-		}
-		slog.Info("pool: warm acquire", "window", c.windowID)
-		return agent, nil
-	}
-
-	// No idle window available — consult the policy.
-	if len(idle) == 0 && len(held) > 0 {
-		switch policy {
-		case "error":
-			return nil, fmt.Errorf("pool: all %d window(s) for this key are held and PoolPolicy=error", len(held))
-		case "wait":
-			// Fallthrough to spawn for now; a proper condition variable
-			// would require unlocking, and the pool is process-local anyway.
-			slog.Debug("pool: all windows held, spawning new (wait not fully implemented)")
-		default: // "spawn"
-		}
-	}
-
-	// Spawn a new pool window.
-	return spawnPoolWindow(ctx, cfg, workDir, disallowed, windowName)
+	return nil, fmt.Errorf("%w: pool", ErrLegacyCLISeatTransport)
 }
 
 // spawnPoolWindow refuses. It used to create a tmux window, wait for
@@ -318,8 +207,11 @@ func poolTailOffset(jsonlPath string) int64 {
 // is what keeps a re-acquired window's event stream this holder's own.
 func buildPoolAgent(cfg Config, workDir, windowID, sessionID string, waitForReady bool) (*Agent, error) {
 	termLogPath := cfg.TermLogPath
-	if termLogPath == "-" {
+	switch termLogPath {
+	case "", "-":
 		termLogPath = ""
+	default:
+		return nil, fmt.Errorf("%w: term log", ErrLegacyCLISeatTransport)
 	}
 	jsonlPath := SessionJSONLPath(sessionID, workDir)
 	tailFrom := poolTailOffset(jsonlPath)
@@ -337,18 +229,6 @@ func buildPoolAgent(cfg Config, workDir, windowID, sessionID string, waitForRead
 		poolWorkDir:  workDir,
 		model:        cfg.Model,
 		eventSubs:    make(map[int64]EventFunc),
-	}
-
-	// Open terminal log if configured.
-	if termLogPath != "" {
-		if err := os.MkdirAll(filepath.Dir(termLogPath), 0o755); err != nil {
-			slog.Warn("pool term log mkdir failed", "path", termLogPath, "err", err)
-		} else if f, err := os.OpenFile(termLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); err != nil {
-			slog.Warn("pool term log open failed", "path", termLogPath, "err", err)
-		} else {
-			a.termLog = f
-			a.termLogLive = true
-		}
 	}
 
 	// Dial control mode for terminal byte stream.

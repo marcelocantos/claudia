@@ -36,47 +36,28 @@ func testServerSocket(t *testing.T) string {
 	return sock
 }
 
-// TestEnsureServerStripsTestControlEnv is the end-to-end oracle for
-// target T20: it reproduces the original leak path and asserts it is
-// closed.
-//
-// A tmux server freezes the environment of whichever process started
-// it as its global environment, and every window created afterwards
-// inherits that — not the environment of the client that ran
-// new-window. So a test-control variable set when the server came up
-// reaches every agent for the life of the server, which for a
-// crash-survival helper means indefinitely.
-//
-// This test starts the server from a process environment carrying every
-// test-control variable, then checks both the server's global
-// environment and a real spawned window's environment.
+// TestEnsureServerStripsTestControlEnv: EnsureServer refuses before it
+// can start a server, so a test-control variable in this process cannot
+// be frozen into a tmux global environment. SpawnWindow refuses too.
 func TestEnsureServerStripsTestControlEnv(t *testing.T) {
-	sock := testServerSocket(t)
-
+	dir, err := os.MkdirTemp("/tmp", "cltmux")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	sock := filepath.Join(dir, "s.sock")
+	t.Setenv(tmuxSocketEnvVar, sock)
 	for _, name := range testctlenv.All() {
 		t.Setenv(name, "leaked-"+name)
 	}
-	// Configuration must survive the same trip; a strip that is too
-	// wide breaks agents instead of protecting them.
-	t.Setenv("CLAUDIA_CODEX_AUTH_PATH", "/keep/me")
 
-	if err := EnsureServer(); err != nil {
-		t.Fatalf("EnsureServer: %v", err)
+	if err := EnsureServer(); !errors.Is(err, ErrLegacyCLISeatTransport) {
+		t.Fatalf("EnsureServer = %v, want legacy refusal", err)
+	}
+	if _, statErr := os.Stat(sock); !os.IsNotExist(statErr) {
+		t.Fatalf("EnsureServer created a socket: %v", statErr)
 	}
 
-	out, err := exec.Command("tmux", "-S", sock, "show-environment", "-g").Output()
-	if err != nil {
-		t.Fatalf("show-environment: %v", err)
-	}
-	globalEnv := string(out)
-	for _, name := range testctlenv.All() {
-		if strings.Contains(globalEnv, name+"=") {
-			t.Errorf("%s is in the tmux server's global environment — every agent window inherits it", name)
-		}
-	}
-
-	// The window is what actually matters: it is the shell a fleet
-	// agent runs `go test ./...` in.
 	dump := filepath.Join(t.TempDir(), "env.txt")
 	id, err := SpawnWindow(t.TempDir(), "envprobe", "sh", []string{"-c", "env > " + dump})
 	if id != "" || !errors.Is(err, ErrLegacyCLISeatTransport) {
@@ -114,17 +95,15 @@ func TestEnsureServerScrubsAlreadyRunningServer(t *testing.T) {
 		t.Skip("tmux did not capture the seeded variable; nothing to scrub")
 	}
 
-	if err := EnsureServer(); err != nil {
-		t.Fatalf("EnsureServer on running server: %v", err)
+	if err := EnsureServer(); !errors.Is(err, ErrLegacyCLISeatTransport) {
+		t.Fatalf("EnsureServer = %v, want legacy refusal", err)
 	}
 
 	after, err := exec.Command("tmux", "-S", sock, "show-environment", "-g").Output()
 	if err != nil {
 		t.Fatalf("show-environment: %v", err)
 	}
-	for _, name := range testctlenv.All() {
-		if strings.Contains(string(after), name+"=") {
-			t.Errorf("EnsureServer left %s in an already-running server's global environment", name)
-		}
+	if !strings.Contains(string(after), "CLAUDIA_CRASH_TEST_HELPER=1") {
+		t.Fatalf("EnsureServer scrubbed a server it must leave untouched:\n%s", after)
 	}
 }

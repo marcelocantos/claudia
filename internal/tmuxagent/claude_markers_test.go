@@ -6,10 +6,8 @@ package tmuxagent
 import (
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
-	"strings"
 	"testing"
 )
 
@@ -35,23 +33,23 @@ func TestStripClaudeSessionMarkersKeepsConfiguration(t *testing.T) {
 // and the seat's window must not inherit that session's markers — while the
 // operator's Claude Code configuration still arrives.
 func TestSpawnedWindowCarriesNoClaudeSessionMarker(t *testing.T) {
-	sock := testServerSocket(t)
+	dir, err := os.MkdirTemp("/tmp", "clmark")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	sock := filepath.Join(dir, "s.sock")
+	t.Setenv(tmuxSocketEnvVar, sock)
 	for _, name := range ClaudeSessionMarkers {
 		t.Setenv(name, "leaked-"+name)
 	}
 	t.Setenv("CLAUDE_EFFORT", "keep-me")
 
-	if err := EnsureServer(); err != nil {
-		t.Fatalf("EnsureServer: %v", err)
+	if err := EnsureServer(); !errors.Is(err, ErrLegacyCLISeatTransport) {
+		t.Fatalf("EnsureServer = %v, want legacy refusal", err)
 	}
-	out, err := exec.Command("tmux", "-S", sock, "show-environment", "-g").Output()
-	if err != nil {
-		t.Fatalf("show-environment: %v", err)
-	}
-	for _, name := range ClaudeSessionMarkers {
-		if strings.Contains(string(out), "\n"+name+"=") || strings.HasPrefix(string(out), name+"=") {
-			t.Errorf("%s is in the tmux server's global environment — every seat inherits it", name)
-		}
+	if _, statErr := os.Stat(sock); !os.IsNotExist(statErr) {
+		t.Fatalf("EnsureServer created a socket that would inherit session markers: %v", statErr)
 	}
 
 	dump := filepath.Join(t.TempDir(), "env.txt")

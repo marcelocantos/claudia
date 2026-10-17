@@ -178,19 +178,12 @@ func MatchTurnInProgress(frame []byte) bool {
 	return turnInProgressHint.Match(f) || spinnerLine.Match(f)
 }
 
-// SendKeys delivers msg to the target window and submits the turn.
-//
-// Short single-line messages are typed with send-keys -l (preserves the
-// historical fast path). Multi-line or large messages go through
-// load-buffer + paste-buffer -p -r so Claude Code receives one bracketed
-// paste instead of a keystroke flood.
-//
-// After paste, Enter is sent as a named key (not literal -l CR). If a
-// collapsed paste chip remains, additional Enter presses are issued
-// (bounded). SendKeys returns an error when the turn never begins —
-// silent "keys sent, turn never started" is banned (🎯T305).
+// SendKeys used to deliver msg to a tmux window and submit the turn.
+// A Session seat no longer has that window. The signature stays; the
+// error is returned before tmux runs. sendKeysWith remains for the
+// hermetic paste suite, which injects its own driver.
 func SendKeys(windowID, msg string) error {
-	return sendKeysWith(defaultSendDriver(windowID), msg)
+	return ErrLegacyCLISeatTransport
 }
 
 // sendDriver abstracts tmux side effects so submit/paste logic is hermetic.

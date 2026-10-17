@@ -403,20 +403,20 @@ longer name `TestExclusiveGrokSessionResumeLive`. The gate does not
 require a CLI seat. It requires the tests the lists still name.
 
 `Acquire` and `AcquireDirect` return `ErrLegacyCLISeatTransport` and do
-not call `checkTmux` or spawn. `spawnPoolWindow` returns the same
-error. `acquireLocked` still lists and classifies windows if something
-calls it; the spawn it would make refuses. `daemonAcquire` is
-`AcquireDirect`, so the daemon acquire handler refuses too.
+not call `checkTmux` or spawn. `spawnPoolWindow` and `acquireLocked`
+return the same error. `acquireLocked` does not list, classify, kill,
+or adopt. `daemonAcquire` is `AcquireDirect`, so the daemon acquire
+handler refuses too.
 
-`tmuxagent.SpawnWindow` returns a package-local sentinel with the same
-text and does not exec tmux or the command. Claudia, the probe
-commands, and the tests still import the package, so it stays.
-`EnsureServer`, `KillWindow`, `ListWindows`, and `SendKeys` still exec
-tmux when called directly. That is not the mint path. A fresh grep of
-the Jevons cleanup worktree and the dirty shared clone found no Go
-import of `claudia/internal/tmuxagent` and no `TmuxKillSwitch` or
-`TmuxWindowID` symbol. The earlier claim that Jevons still consumes
-the package does not hold for those trees. Jevons was not edited here.
+`tmuxagent.SpawnWindow`, `EnsureServer`, `KillWindow`, `ListWindows`,
+and `SendKeys` return a package-local sentinel with the same text and
+do not exec tmux. `EnsureServer` does not scrub a server that is
+already up. Claudia, the probe commands, and the tests still import
+the package, so it stays. A fresh grep of the Jevons cleanup worktree
+and the dirty shared clone found no Go import of
+`claudia/internal/tmuxagent` and no `TmuxKillSwitch` or `TmuxWindowID`
+symbol. The earlier claim that Jevons still consumes the package does
+not hold for those trees. Jevons was not edited here.
 
 `reapSessionWindows` logs the refusal and does not call
 `KillWindowsForSession`.
@@ -431,11 +431,42 @@ Direct `startGrokACP` and `startCursorACP` tests assert the same
 refusal. They are not the seat `StartAgent` path. Session `StartAgent`
 does not call them.
 
+`claudeAgentOps.attachCommand` returns an empty string. `Agent.AttachCommand`
+still calls whatever ops the seat carries, so a test-injected hook and a
+broker-reported attach string are unchanged.
+
+The CLI term-log writer no longer defaults an empty `TermLogPath` to a
+`.term` file and no longer creates a directory for a real path.
+`"-"` stays disabled. A real path on `startWithBackendContext` and
+`buildPoolAgent` returns `ErrLegacyCLISeatTransport` before `MkdirAll`
+or `OpenFile`. The `TermLogPath` getter is unchanged. A broker start
+result may still assign `start.TermLogPath`. `normalizeSeatConfig`
+still refuses a real path on the sidecar as a `CapabilityError` naming
+`TermLogPath`, which is what `TestSeatLegacyConfigRefusedBeforeTransport`
+asserts.
+
+Non-broker `Agent.Rewind` and `Registry.Rewind` return
+`ErrLegacyCLISeatTransport` after the capability check and before
+`Stop`, transcript truncation, or `Start`. The broker client branch
+stays: a daemon-held handle still calls `rewindOnBroker`. The daemon's
+own registry seat has no broker grant, so that call now receives the
+same refusal and does not truncate. `rewindJSONL` remains for its
+direct tests. A daemon-held rewind therefore does not roll a
+transcript back.
+
 Still present, so the purge is not done:
 
-- Attach, `TermLogPath`, and `Rewind` still compile. They have no
-  sidecar equivalent. 🎯T189 says seat removal does not wait for those
-  replacements; this slice does not delete them.
+- These tmux helpers still exec when called: `CapturePane`,
+  `WaitReady`, `SetWindowOption`, `DialControl`, `SendEscape`,
+  `ResizeWindow`, paste, `IsWindowAlive`, `GetWindowOption`.
+  `claudeAgentOps` still wires prompt-in-flight, interrupt, resize,
+  and model-switch at those helpers. `adoptWindow`, `buildPoolAgent`'s
+  control-mode dial, and `Release` still call them. They are not on
+  the product start path. `scrubServerEnv` is deleted; it was only
+  reached from `EnsureServer`.
+- Attach, the term-log file, and Rewind have no sidecar equivalent.
+  🎯T189 says seat removal does not wait for those replacements. This
+  slice fail-closes them. It does not build replacements.
 - `planGrokSession`, `acpBind`, and the exclusive-home helpers still
   compile. Session `StartAgent` does not call them.
 - Task mode (`claude -p`, `codex exec`, `grok -p`, `agent --print`) is

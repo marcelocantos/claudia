@@ -4,42 +4,20 @@
 package claudia
 
 import (
-	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/marcelocantos/claudia/internal/tmuxagent"
 )
 
-// TestCrashSurvival is the central property the tmux pivot rests on:
-// if the consumer process dies mid-session, the Claude Code process
-// keeps running inside its tmux window and can be adopted by a fresh
-// consumer.
-//
-// Flow:
-//  1. Parent spawns a child subprocess (re-invoking the test binary
-//     with -test.run=TestCrashSurvivalHelper) which starts a
-//     tmux-backed Agent, prints the window ID and session ID, then
-//     blocks on stdin.
-//  2. Parent reads the window ID and session ID from the child's
-//     stdout.
-//  3. Parent kills the child with SIGKILL — uncontrolled crash, no
-//     defer or cleanup runs.
-//  4. Parent verifies:
-//     a. The tmux window is still alive.
-//     b. capture-pane returns non-empty content (the TUI is still
-//     rendered).
-//     c. The session ID stored in the window's @claudia-session-id
-//     user option matches what the child printed.
-//  5. Parent kills the window to clean up.
-//
-// This test requires CLAUDIA_LIVE=1 plus `claude` and `tmux` on PATH
-// (starts a real Session — live residual; ungated it hung default go test).
+// TestCrashSurvival used to prove a tmux window outlived its consumer.
+// That window is gone. After the live gates, KillWindow refuses and the
+// parent does not spawn the helper. The helper stays for the env pin.
 func TestCrashSurvival(t *testing.T) {
 	if os.Getenv("CLAUDIA_LIVE") == "" {
 		t.Skip("CLAUDIA_LIVE not set (this test starts a real Claude Session)")
@@ -50,98 +28,10 @@ func TestCrashSurvival(t *testing.T) {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not on PATH")
 	}
-
-	workDir := t.TempDir()
-
-	// Spawn a child process that starts an Agent and blocks.
-	child := exec.Command(
-		os.Args[0],
-		"-test.run=^TestCrashSurvivalHelper$",
-		"-test.v",
-	)
-	child.Env = append(os.Environ(),
-		"CLAUDIA_CRASH_TEST_HELPER=1",
-		"CLAUDIA_CRASH_TEST_WORKDIR="+workDir,
-	)
-	childStdout, err := child.StdoutPipe()
-	if err != nil {
-		t.Fatalf("stdout pipe: %v", err)
-	}
-	child.Stderr = os.Stderr
-
-	if err := child.Start(); err != nil {
-		t.Fatalf("start child: %v", err)
-	}
-
-	// Read the window ID and session ID the child prints.
-	scanner := bufio.NewScanner(childStdout)
-
-	readLine := func(prefix string) string {
-		t.Helper()
-		deadline := time.After(60 * time.Second)
-		for {
-			select {
-			case <-deadline:
-				t.Fatalf("timeout waiting for %q from child", prefix)
-			default:
-			}
-			if !scanner.Scan() {
-				t.Fatalf("child stdout closed before %q (err: %v)", prefix, scanner.Err())
-			}
-			line := scanner.Text()
-			t.Logf("child: %s", line)
-			if after, ok := strings.CutPrefix(line, prefix); ok {
-				return after
-			}
-		}
-	}
-
-	windowID := readLine("WINDOW=")
-	sessionID := readLine("SESSION=")
-
-	t.Logf("child reported window=%s session=%s", windowID, sessionID)
-
-	// Kill the child with SIGKILL — no cleanup runs.
-	if err := child.Process.Kill(); err != nil {
-		t.Fatalf("kill child: %v", err)
-	}
-	_ = child.Wait() // reap; exit code is irrelevant
-
-	t.Log("child killed with SIGKILL")
-
-	// Give tmux a moment to notice the client detached (it shouldn't
-	// affect the window, but be fair to the test environment).
-	time.Sleep(200 * time.Millisecond)
-
-	// Verify the window is still alive.
-	if !tmuxagent.IsWindowAlive(windowID) {
-		t.Fatal("tmux window died when consumer was killed — crash survival failed")
-	}
-	t.Log("window still alive after consumer death")
-
-	// Verify capture-pane returns content (TUI is still rendered).
-	frame, err := tmuxagent.CapturePane(windowID)
-	if err != nil {
-		t.Fatalf("capture-pane: %v", err)
-	}
-	if len(strings.TrimSpace(string(frame))) == 0 {
-		t.Fatal("capture-pane returned empty frame — TUI is gone")
-	}
-	t.Logf("capture-pane returned %d bytes", len(frame))
-
-	// Verify the session ID is preserved in the window option.
-	got, ok := tmuxagent.GetWindowOption(windowID, "claudia-session-id")
-	if !ok {
-		t.Fatal("@claudia-session-id not set on window after consumer crash")
-	}
-	if got != sessionID {
-		t.Errorf("session ID mismatch: window has %q, child reported %q", got, sessionID)
-	}
-	t.Log("session ID preserved in tmux window option")
-
-	// Clean up the window.
-	if err := tmuxagent.KillWindow(windowID); err != nil {
-		t.Errorf("cleanup kill-window: %v", err)
+	// The CLI window this test used to crash-survive is gone. KillWindow
+	// refuses before tmux runs, so the parent does not spawn the helper.
+	if err := tmuxagent.KillWindow("@1"); !errors.Is(err, tmuxagent.ErrLegacyCLISeatTransport) {
+		t.Fatalf("KillWindow = %v, want legacy refusal", err)
 	}
 }
 

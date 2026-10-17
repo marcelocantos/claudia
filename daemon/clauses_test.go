@@ -709,38 +709,20 @@ func TestRewindsHeldSeat(t *testing.T) {
 	}
 	transcript := old.JSONLPath()
 	writeTranscript(t, transcript)
-	events := collectEvents(a)
-
 	got, err := a.Rewind(1, claudia.Config{})
-	if err != nil {
-		t.Fatal(err)
+	if got != nil || err == nil || !strings.Contains(err.Error(), "legacy CLI seat transport removed") {
+		t.Fatalf("Rewind = (%v, %v), want the legacy refusal", got, err)
 	}
-	if got != a {
-		t.Fatal("a daemon-held rewind must keep the handle")
-	}
-	next := f.d.reg.Get("seat-rw")
-	if next == nil || next == old {
-		t.Fatalf("daemon registry holds %p, old %p", next, old)
+	if f.d.reg.Get("seat-rw") != old {
+		t.Fatal("rewind replaced the daemon seat")
 	}
 	b, err := os.ReadFile(transcript)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bytes.Contains(b, []byte("CHARLIE")) || !bytes.Contains(b, []byte("turn2")) {
-		t.Fatalf("transcript not rewound:\n%s", b)
+	if !bytes.Contains(b, []byte("CHARLIE")) {
+		t.Fatalf("rewind mutated the transcript:\n%s", b)
 	}
-	if a.SessionID() != "sid-rw" || !a.Alive() {
-		t.Fatalf("handle after rewind: session=%q alive=%v", a.SessionID(), a.Alive())
-	}
-	next.PublishEvent(claudia.Event{Type: "assistant", Text: "after rewind"})
-	waitFor(t, "event from relaunched process", func() bool {
-		for _, ev := range events() {
-			if ev.Text == "after rewind" {
-				return true
-			}
-		}
-		return false
-	})
 }
 
 // TestHonoursOwnerGoalCompleteCheck (🎯T75.9): the daemon's Goal loop asks
@@ -853,13 +835,22 @@ func TestRewindOnHeldSeatRefusesLikeDirectAndReturnsResult(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { reg.Stop("rw-seat") })
-	writeTranscript(t, f.d.reg.Get("rw-seat").JSONLPath())
-	got, res, err := reg.Rewind(context.Background(), "rw-seat", 1)
+	transcript := f.d.reg.Get("rw-seat").JSONLPath()
+	writeTranscript(t, transcript)
+	before, err := os.ReadFile(transcript)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != proc || res == nil || res.TurnsRemoved != 1 || res.BackupPath == "" || res.BytesRemoved <= 0 {
-		t.Fatalf("Registry.Rewind via daemon = handle %p (was %p), result %+v", got, proc, res)
+	got, res, err := reg.Rewind(context.Background(), "rw-seat", 1)
+	if got != proc || res != nil || err == nil || !strings.Contains(err.Error(), "legacy CLI seat transport removed") {
+		t.Fatalf("Registry.Rewind via daemon = handle %p (was %p), result %+v, err %v", got, proc, res, err)
+	}
+	after, err := os.ReadFile(transcript)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) || !bytes.Contains(after, []byte("CHARLIE")) {
+		t.Fatalf("rewind mutated the transcript:\n%s", after)
 	}
 	if def := readGrantsTable(t, f.state)["rw-seat"]; def.SessionID != "sid-rwr" || !def.AutoStart {
 		t.Fatalf("daemon's persisted seat after rewind = %+v", def)

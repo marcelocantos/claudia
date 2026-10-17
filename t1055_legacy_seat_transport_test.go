@@ -180,3 +180,134 @@ func TestT1055CompiledSpawnPathsDoNotExec(t *testing.T) {
 		t.Fatalf("a spawn path created a tmux socket: %v", statErr)
 	}
 }
+
+// recordingBackend records the term-log path the start path handed it.
+// StartAgent succeeding is how an empty or disabled log is distinguished
+// from a real path, which must refuse before this is called.
+type recordingBackend struct {
+	called bool
+	term   string
+}
+
+func (b *recordingBackend) Capabilities() providerCapabilities { return providerCapabilities{} }
+
+func (b *recordingBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
+	b.called = true
+	b.term = req.TermLogPath
+	return &agentStart{}, nil
+}
+
+// TestT1055LegacySurfacesDoNotExec drives Attach, the CLI term-log writer,
+// Rewind, and the tmux entry points that still compiled after the spawn
+// refusals. A fake tmux on PATH would record a call; none of these may
+// make one, create a socket, or change a transcript.
+func TestT1055LegacySurfacesDoNotExec(t *testing.T) {
+	sockDir, err := os.MkdirTemp("/tmp", "t1055s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(sockDir) })
+	sock := filepath.Join(sockDir, "s.sock")
+	t.Setenv("CLAUDIA_TMUX_SOCKET", sock)
+
+	marker := filepath.Join(sockDir, "tmux-ran")
+	binDir := filepath.Join(sockDir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tmux := filepath.Join(binDir, "tmux")
+	if err := os.WriteFile(tmux, []byte("#!/bin/sh\ntouch "+marker+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	attached := &Agent{provider: ProviderClaude, tmuxWindowID: "@9", ops: claudeAgentOps()}
+	if got := attached.AttachCommand(); got != "" {
+		t.Fatalf("AttachCommand = %q, want empty", got)
+	}
+
+	realTerm := filepath.Join(sockDir, "seat.term")
+	refusing := &recordingBackend{}
+	if _, err := startWithBackend(Config{WorkDir: t.TempDir(), SessionID: "sid-term", TermLogPath: realTerm}, refusing); !errors.Is(err, ErrLegacyCLISeatTransport) {
+		t.Fatalf("real TermLogPath = %v, want legacy refusal", err)
+	}
+	if refusing.called {
+		t.Fatal("real TermLogPath reached the backend")
+	}
+	if _, statErr := os.Stat(realTerm); !os.IsNotExist(statErr) {
+		t.Fatalf("term log was created: %v", statErr)
+	}
+
+	for _, disabled := range []string{"", "-"} {
+		work := t.TempDir()
+		rec := &recordingBackend{}
+		agent, err := startWithBackend(Config{WorkDir: work, SessionID: "sid-off", TermLogPath: disabled}, rec)
+		if err != nil {
+			t.Fatalf("TermLogPath %q: %v", disabled, err)
+		}
+		agent.Stop()
+		if !rec.called || rec.term != "" {
+			t.Fatalf("TermLogPath %q handed the backend %q", disabled, rec.term)
+		}
+		resolved, err := filepath.EvalSymlinks(work)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defaultTerm := filepath.Join(termLogDir(resolved), "sid-off.term")
+		if _, statErr := os.Stat(defaultTerm); !os.IsNotExist(statErr) {
+			t.Fatalf("TermLogPath %q created %s: %v", disabled, defaultTerm, statErr)
+		}
+	}
+
+	transcript := filepath.Join(sockDir, "seat.jsonl")
+	const body = "turn\nCHARLIE\n"
+	if err := os.WriteFile(transcript, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	seat := &Agent{provider: ProviderClaude, sessionID: "sid", jsonlPath: transcript}
+	rewound, err := seat.Rewind(1, Config{Provider: ProviderClaude, WorkDir: sockDir})
+	if rewound != nil || !errors.Is(err, ErrLegacyCLISeatTransport) {
+		t.Fatalf("Agent.Rewind = (%v, %v), want legacy refusal", rewound, err)
+	}
+	if got, readErr := os.ReadFile(transcript); readErr != nil || string(got) != body {
+		t.Fatalf("Agent.Rewind changed the transcript: %q %v", got, readErr)
+	}
+
+	reg, err := NewRegistry(filepath.Join(sockDir, "agents.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.Register(AgentDef{Name: "seat", WorkDir: sockDir, SessionID: "sid", TermLogPath: "-"}); err != nil {
+		t.Fatal(err)
+	}
+	next, res, err := reg.Rewind(context.Background(), "seat", 1)
+	if next != nil || res != nil || !errors.Is(err, ErrLegacyCLISeatTransport) {
+		t.Fatalf("Registry.Rewind = (%v, %+v, %v), want legacy refusal", next, res, err)
+	}
+	if got, readErr := os.ReadFile(transcript); readErr != nil || string(got) != body {
+		t.Fatalf("Registry.Rewind changed the transcript: %q %v", got, readErr)
+	}
+
+	if err := tmuxagent.EnsureServer(); !errors.Is(err, tmuxagent.ErrLegacyCLISeatTransport) {
+		t.Fatalf("EnsureServer = %v, want legacy refusal", err)
+	}
+	if err := tmuxagent.KillWindow("@1"); !errors.Is(err, tmuxagent.ErrLegacyCLISeatTransport) {
+		t.Fatalf("KillWindow = %v, want legacy refusal", err)
+	}
+	if windows, err := tmuxagent.ListWindows(); windows != nil || !errors.Is(err, tmuxagent.ErrLegacyCLISeatTransport) {
+		t.Fatalf("ListWindows = (%v, %v), want legacy refusal", windows, err)
+	}
+	if err := tmuxagent.SendKeys("@1", "hi"); !errors.Is(err, tmuxagent.ErrLegacyCLISeatTransport) {
+		t.Fatalf("SendKeys = %v, want legacy refusal", err)
+	}
+	if agent, err := acquireLocked(context.Background(), Config{}, sockDir, "", "w", "spawn"); agent != nil || !errors.Is(err, ErrLegacyCLISeatTransport) {
+		t.Fatalf("acquireLocked = (%v, %v), want legacy refusal", agent, err)
+	}
+
+	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+		t.Fatalf("a legacy surface executed tmux: %v", statErr)
+	}
+	if _, statErr := os.Stat(sock); !os.IsNotExist(statErr) {
+		t.Fatalf("a legacy surface created a tmux socket: %v", statErr)
+	}
+}

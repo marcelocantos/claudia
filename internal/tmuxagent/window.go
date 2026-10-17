@@ -35,21 +35,11 @@ func serverGone(err error) bool {
 		strings.Contains(s, "no such session")
 }
 
-// KillWindow kill-windows the given window ID. Idempotent: a missing
-// window is treated as success, since the post-condition ("window
-// doesn't exist") is already satisfied.
+// KillWindow used to kill-window the given window ID. A Session seat no
+// longer owns a tmux window. The signature stays; the error is returned
+// before tmux runs.
 func KillWindow(windowID string) error {
-	sock := SocketPath()
-	cmd := exec.Command("tmux", "-S", sock, "kill-window", "-t", windowID)
-	out, err := cmd.CombinedOutput()
-	if err == nil {
-		return nil
-	}
-	s := string(out)
-	if strings.Contains(s, "can't find") || strings.Contains(s, "no such") {
-		return nil
-	}
-	return fmt.Errorf("tmux kill-window %s: %w: %s", windowID, err, s)
+	return ErrLegacyCLISeatTransport
 }
 
 // wrapExitErr unwraps *exec.ExitError so the stderr it carries shows

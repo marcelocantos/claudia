@@ -6,12 +6,11 @@ package claudia
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
-	"time"
 )
 
 // writeSeatTranscript puts fixtureLines at the transcript path a seat reads.
@@ -26,8 +25,8 @@ func writeSeatTranscript(t *testing.T, path string) {
 }
 
 // TestRegistryRewindRelaunchesOnTheRewoundTranscript (🎯T75.8): with no
-// daemon, Registry.Rewind stops the seat, truncates by whole user turns,
-// relaunches on the same session, and keeps the relaunched handle.
+// daemon, Registry.Rewind refuses before it stops the seat or truncates
+// the transcript. The relaunch that used to follow the truncation is gone.
 func TestRegistryRewindRelaunchesOnTheRewoundTranscript(t *testing.T) {
 	f := newSeatFixture(t)
 	f.open(t, []AgentDef{{Name: "seat", WorkDir: t.TempDir(), SessionID: "sid-rw"}})
@@ -39,84 +38,59 @@ func TestRegistryRewindRelaunchesOnTheRewoundTranscript(t *testing.T) {
 	oldBackend := f.backends["seat"]
 	f.mu.Unlock()
 	writeSeatTranscript(t, old.JSONLPath())
+	before := mustRead(t, old.JSONLPath())
 
 	next, res, err := f.reg.Rewind(context.Background(), "seat", 1)
-	if err != nil {
-		t.Fatal(err)
+	if next != nil || res != nil || !errors.Is(err, ErrLegacyCLISeatTransport) {
+		t.Fatalf("Rewind = (%v, %+v, %v), want legacy refusal", next, res, err)
 	}
-	if res.TurnsRemoved != 1 || res.SessionID != "sid-rw" || res.BackupPath == "" {
-		t.Fatalf("result = %+v", res)
-	}
-	if next == old || f.reg.Get("seat") != next || next.SessionID() != "sid-rw" {
-		t.Fatalf("registry holds %p (old %p, returned %p) on session %q", f.reg.Get("seat"), old, next, next.SessionID())
+	if f.reg.Get("seat") != old {
+		t.Fatal("rewind replaced the seat")
 	}
 	oldBackend.mu.Lock()
 	stops := oldBackend.stops
 	oldBackend.mu.Unlock()
-	if stops != 1 {
-		t.Fatalf("old process stops = %d, want 1", stops)
+	if stops != 0 {
+		t.Fatalf("old process stops = %d, want 0", stops)
 	}
 	got := mustRead(t, old.JSONLPath())
-	if bytes.Contains(got, []byte("CHARLIE")) || !bytes.Contains(got, []byte("turn2")) {
-		t.Fatalf("transcript not rewound by one turn:\n%s", got)
-	}
-	if req := f.backends["seat"].request(t); !req.Resuming && !req.Config.RequireResume {
-		t.Fatalf("relaunch did not resume the session: %+v", req)
+	if !bytes.Equal(got, before) || !bytes.Contains(got, []byte("CHARLIE")) {
+		t.Fatalf("transcript changed:\n%s", got)
 	}
 }
 
-// TestRegistryRewindHoldsTheSeatAcrossTruncation: a Launch racing a Rewind
-// in the gap between stopping the seat and truncating its transcript cannot
-// start the seat on the old conversation; it waits, and gets the relaunched
-// handle.
+// TestRegistryRewindHoldsTheSeatAcrossTruncation: Rewind returns before
+// the truncation hook, so a Launch parked inside that hook never runs and
+// the transcript is not the thing the seat is waiting on.
 func TestRegistryRewindHoldsTheSeatAcrossTruncation(t *testing.T) {
 	f := newSeatFixture(t)
-	var path string
-	var mu sync.Mutex
-	var untruncatedStarts int
-	launch := registryStart
-	registryStart = func(ctx context.Context, cfg Config) (*Agent, error) {
-		if b, err := os.ReadFile(path); err == nil && bytes.Contains(b, []byte("CHARLIE")) {
-			mu.Lock()
-			untruncatedStarts++
-			mu.Unlock()
-		}
-		return launch(ctx, cfg)
-	}
 	f.open(t, []AgentDef{{Name: "seat", WorkDir: t.TempDir(), SessionID: "sid-race"}})
 	first, err := f.reg.Launch("seat")
 	if err != nil {
 		t.Fatal(err)
 	}
-	path = first.JSONLPath()
-	writeSeatTranscript(t, path)
-	mu.Lock()
-	untruncatedStarts = 0 // the first launch predates the transcript
-	mu.Unlock()
+	writeSeatTranscript(t, first.JSONLPath())
+	before := mustRead(t, first.JSONLPath())
 
-	racer := make(chan *Agent, 1)
+	called := false
 	prev := registryRewindJSONL
 	t.Cleanup(func() { registryRewindJSONL = prev })
 	registryRewindJSONL = func(p string, n int) (*RewindResult, error) {
-		go func() {
-			a, _ := f.reg.Launch("seat")
-			racer <- a
-		}()
-		time.Sleep(50 * time.Millisecond)
+		called = true
 		return prev(p, n)
 	}
 
-	next, _, err := f.reg.Rewind(context.Background(), "seat", 1)
-	if err != nil {
-		t.Fatal(err)
+	next, res, err := f.reg.Rewind(context.Background(), "seat", 1)
+	if next != nil || res != nil || !errors.Is(err, ErrLegacyCLISeatTransport) {
+		t.Fatalf("Rewind = (%v, %+v, %v), want legacy refusal", next, res, err)
 	}
-	raced := <-racer
-	mu.Lock()
-	defer mu.Unlock()
-	if untruncatedStarts != 0 {
-		t.Fatalf("%d start(s) ran on the transcript before truncation", untruncatedStarts)
+	if called {
+		t.Fatal("rewind truncated the transcript")
 	}
-	if raced != next || f.reg.Get("seat") != next {
-		t.Fatal("the racing Launch did not get the rewound seat")
+	if f.reg.Get("seat") != first {
+		t.Fatal("rewind replaced the seat")
+	}
+	if got := mustRead(t, first.JSONLPath()); !bytes.Equal(got, before) || !bytes.Contains(got, []byte("CHARLIE")) {
+		t.Fatalf("transcript changed:\n%s", got)
 	}
 }
