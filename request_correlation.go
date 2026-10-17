@@ -3,13 +3,14 @@
 
 package claudia
 
-// Request correlation is seat-local. The pending FIFO binds host sends to
-// provider turn ids at the first event (including ACP prompt_accepted, which
-// can arrive synchronously inside Send). A Cursor reissue publishes another
-// prompt_accepted with no host send: it inherits the still-active request.
-// A turn id that already closed stays on its original request, including when
-// the late event is published inside the next Send. Provider terminal
-// normalization does not change this mapping.
+// Request correlation is seat-local. A pending host send binds to a provider
+// turn only when that turn is accepted: prompt_accepted (ACP, or the Codex
+// turn/start result), or a Claude user-prompt transcript line. An event whose
+// turn id this process never accepted does not consume the next pending send,
+// even when it is published inside that Send. A Cursor reissue publishes
+// another prompt_accepted with no host send and inherits the still-active
+// request. A turn id that already closed stays on its original request.
+// Provider terminal normalization does not change this mapping.
 func (a *Agent) queueRequestID(id string) {
 	a.mu.Lock()
 	a.requestPending = append(a.requestPending, id) // empty is a real, uncorrelated send
@@ -46,7 +47,7 @@ func (a *Agent) correlateRequestLocked(ev *Event) {
 		a.requestByTurn = make(map[string]string)
 	}
 	id, known := a.requestByTurn[ev.TurnID]
-	if !known && len(a.requestPending) > 0 {
+	if !known && len(a.requestPending) > 0 && eventAcceptsRequest(ev) {
 		id = a.requestPending[0]
 		a.requestPending = a.requestPending[1:]
 		a.requestByTurn[ev.TurnID] = id
@@ -65,6 +66,16 @@ func (a *Agent) correlateRequestLocked(ev *Event) {
 	if ev.IsTerminalStop() || ev.IsError {
 		a.retireRequestTurnLocked(ev.TurnID)
 	}
+}
+
+// eventAcceptsRequest reports whether ev is the provider taking a queued
+// host send onto this turn. A later assistant, tool, or error line is not
+// acceptance, and neither is a Claude tool_result recorded with role user.
+func eventAcceptsRequest(ev *Event) bool {
+	if ev.ProgressType == ProgressPromptAccepted {
+		return true
+	}
+	return isUserPromptLine(ev.Raw)
 }
 
 // retireRequestTurnLocked remembers a closed turn's host request. The active

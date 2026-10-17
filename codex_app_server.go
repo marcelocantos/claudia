@@ -339,6 +339,20 @@ func (ev codexAppServerEvent) agentEvent() (Event, bool) {
 		}, true
 	}
 	switch ev.Method {
+	case "turn/start":
+		// The turn/start result is this turn's acceptance. Item and
+		// turn/completed lines follow it and must not bind a different
+		// host send by carrying the same turn id.
+		if ev.TurnID == "" {
+			return Event{}, false
+		}
+		return Event{
+			Type:         "progress",
+			SessionID:    ev.ThreadID,
+			TurnID:       ev.TurnID,
+			Raw:          ev.Raw,
+			ProgressType: ProgressPromptAccepted,
+		}, true
 	case "thread/start":
 		// Publish resolved model from thread/start so Agent.Model() is set
 		// before the first assistant turn (Codex does not put model on items).

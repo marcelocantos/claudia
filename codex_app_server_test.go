@@ -128,20 +128,23 @@ func TestCodexAppServerEventsCarryTrackedTurnIdentity(t *testing.T) {
 	c.dispatch([]byte(`{"method":"item/completed","params":{"threadId":"thr-identity","item":{"id":"item-outside","type":"agent_message","text":"outside"}}}`))
 	startTurn("turn-2", "item-2", "second", 2)
 
-	if len(got) != 5 {
-		t.Fatalf("events = %d, want 5: %+v", len(got), got)
+	if len(got) != 7 {
+		t.Fatalf("events = %d, want 7: %+v", len(got), got)
 	}
 	checks := []struct {
-		index     int
-		turnID    string
-		messageID string
-		terminal  bool
+		index      int
+		turnID     string
+		messageID  string
+		terminal   bool
+		acceptance bool
 	}{
-		{0, "turn-1", "item-1", false},
-		{1, "turn-1", "", true},
-		{2, "", "item-outside", false},
-		{3, "turn-2", "item-2", false},
-		{4, "turn-2", "", true},
+		{0, "turn-1", "", false, true},
+		{1, "turn-1", "item-1", false, false},
+		{2, "turn-1", "", true, false},
+		{3, "", "item-outside", false, false},
+		{4, "turn-2", "", false, true},
+		{5, "turn-2", "item-2", false, false},
+		{6, "turn-2", "", true, false},
 	}
 	for _, check := range checks {
 		ev := got[check.index]
@@ -152,9 +155,13 @@ func TestCodexAppServerEventsCarryTrackedTurnIdentity(t *testing.T) {
 		if ev.IsTerminalStop() != check.terminal {
 			t.Errorf("event[%d] terminal = %v, want %v", check.index, ev.IsTerminalStop(), check.terminal)
 		}
+		accepted := ev.Type == "progress" && ev.ProgressType == ProgressPromptAccepted
+		if accepted != check.acceptance {
+			t.Errorf("event[%d] acceptance = %v, want %v: %+v", check.index, accepted, check.acceptance, ev)
+		}
 	}
-	if got[0].TurnID == got[3].TurnID {
-		t.Fatalf("consecutive Codex turns share TurnID %q", got[0].TurnID)
+	if got[1].TurnID == got[5].TurnID {
+		t.Fatalf("consecutive Codex turns share TurnID %q", got[1].TurnID)
 	}
 }
 

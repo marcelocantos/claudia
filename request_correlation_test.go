@@ -187,6 +187,176 @@ func TestRequestIDStalePredecessorDoesNotTakeNextSend(t *testing.T) {
 	}
 }
 
+// A turn id this process never accepted is published inside the next Send,
+// before that send's own acceptance. It must not take the queued host id.
+// The acceptance — prompt_accepted, a Codex turn/start result, or a Claude
+// user-prompt line — still binds that id, and the turn's later events keep it.
+func TestRequestIDUnboundTurnDoesNotTakePendingSend(t *testing.T) {
+	t.Run("grok", func(t *testing.T) {
+		a := &Agent{provider: ProviderGrok, alive: true, ready: closedReady(), eventSubs: map[int64]EventFunc{}}
+		var got []Event
+		a.eventSubs[1] = func(ev Event) { got = append(got, ev) }
+		a.ops.send = func(a *Agent, text string) error {
+			if text == "first" {
+				a.publishEvent(acpPromptAcceptedEvent("session", 1))
+				a.publishEvent(Event{Type: "assistant", TurnID: "1", Text: "done", StopReason: "end_turn"})
+				return nil
+			}
+			a.publishEvent(Event{Type: "assistant", TurnID: "fresh-9", Text: "unbound"})
+			a.publishEvent(Event{Type: "system", TurnID: "fresh-err", Text: "nope", IsError: true})
+			a.publishEvent(acpPromptAcceptedEvent("session", 2))
+			a.publishEvent(Event{Type: "assistant", TurnID: "2", Text: "second", StopReason: "end_turn"})
+			return nil
+		}
+		if err := a.SendWithRequestID("first", "host-A"); err != nil {
+			t.Fatal(err)
+		}
+		if err := a.SendWithRequestID("second", "host-B"); err != nil {
+			t.Fatal(err)
+		}
+		var unbound, failed, acceptedB, terminalB Event
+		var sawUnbound, sawFailed, sawAccepted, sawTerminal bool
+		for _, ev := range got {
+			switch {
+			case ev.TurnID == "fresh-9":
+				unbound, sawUnbound = ev, true
+			case ev.TurnID == "fresh-err":
+				failed, sawFailed = ev, true
+			case ev.TurnID == "2" && ev.ProgressType == ProgressPromptAccepted:
+				acceptedB, sawAccepted = ev, true
+			case ev.TurnID == "2" && ev.IsTerminalStop():
+				terminalB, sawTerminal = ev, true
+			}
+		}
+		if !sawUnbound || !sawFailed || !sawAccepted || !sawTerminal {
+			t.Fatalf("missing events: %+v", got)
+		}
+		if unbound.RequestID != "" || failed.RequestID != "" {
+			t.Fatalf("unbound turn took the pending id: unbound=%+v failed=%+v", unbound, failed)
+		}
+		if acceptedB.RequestID != "host-B" || terminalB.RequestID != "host-B" {
+			t.Fatalf("acceptance lost its id: accepted=%+v terminal=%+v", acceptedB, terminalB)
+		}
+		a.mu.Lock()
+		pending := len(a.requestPending)
+		a.mu.Unlock()
+		if pending != 0 {
+			t.Fatalf("pending host id left over: %d", pending)
+		}
+	})
+
+	t.Run("claude-user-line", func(t *testing.T) {
+		a := &Agent{provider: ProviderClaude, alive: true, ready: closedReady(), eventSubs: map[int64]EventFunc{}}
+		var got []Event
+		a.eventSubs[1] = func(ev Event) { got = append(got, ev) }
+		var correlator claudeEventCorrelator
+		publish := func(line string) {
+			a.publishEvent(correlator.correlate(parseEvent(line)))
+		}
+		a.ops.send = func(a *Agent, text string) error {
+			turn := "turn-1"
+			prompt := "first prompt"
+			if text == "second" {
+				turn = "turn-2"
+				prompt = "second prompt"
+				a.publishEvent(Event{Type: "assistant", TurnID: "never-bound", Text: "stray"})
+				tool := correlator.correlate(parseEvent(`{"type":"user","uuid":"tool-line","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}`))
+				tool.TurnID = "tool-turn"
+				a.publishEvent(tool)
+			}
+			publish(`{"type":"user","uuid":"` + turn + `","message":{"content":"` + prompt + `"}}`)
+			publish(`{"type":"assistant","uuid":"rec-` + turn + `","message":{"id":"msg-` + turn + `","stop_reason":"end_turn","content":[{"type":"text","text":"done"}]}}`)
+			return nil
+		}
+		if err := a.SendWithRequestID("first", "host-A"); err != nil {
+			t.Fatal(err)
+		}
+		if err := a.SendWithRequestID("second", "host-B"); err != nil {
+			t.Fatal(err)
+		}
+		var stray, toolLine, promptB, terminalA, terminalB Event
+		var sawStray, sawTool, sawPrompt, sawA, sawB bool
+		for _, ev := range got {
+			switch {
+			case ev.TurnID == "never-bound":
+				stray, sawStray = ev, true
+			case ev.RecordID == "tool-line":
+				toolLine, sawTool = ev, true
+			case ev.RecordID == "turn-2":
+				promptB, sawPrompt = ev, true
+			case ev.TurnID == "turn-1" && ev.IsTerminalStop():
+				terminalA, sawA = ev, true
+			case ev.TurnID == "turn-2" && ev.IsTerminalStop():
+				terminalB, sawB = ev, true
+			}
+		}
+		if !sawStray || !sawTool || !sawPrompt || !sawA || !sawB {
+			t.Fatalf("missing events: %+v", got)
+		}
+		if stray.RequestID != "" || toolLine.RequestID != "" {
+			t.Fatalf("non-acceptance took the pending id: stray=%+v tool=%+v", stray, toolLine)
+		}
+		if promptB.RequestID != "host-B" || terminalB.RequestID != "host-B" || terminalA.RequestID != "host-A" {
+			t.Fatalf("user line lost its id: prompt=%+v terminalA=%+v terminalB=%+v", promptB, terminalA, terminalB)
+		}
+	})
+
+	t.Run("codex-turn-start", func(t *testing.T) {
+		a := &Agent{provider: ProviderCodex, alive: true, ready: closedReady(), eventSubs: map[int64]EventFunc{}}
+		var got []Event
+		a.eventSubs[1] = func(ev Event) { got = append(got, ev) }
+		c := &codexAppServerClient{threadID: "thr", onEvent: a.publishEvent}
+		a.ops.send = func(_ *Agent, text string) error {
+			if text == "second" {
+				c.dispatch([]byte(`{"method":"item/completed","params":{"threadId":"thr","turnId":"turn-stray","item":{"id":"item-stray","type":"agent_message","text":"stray"}}}`))
+			}
+			turn := "turn-1"
+			if text == "second" {
+				turn = "turn-2"
+			}
+			c.dispatch([]byte(`{"id":7,"result":{"turn":{"id":"` + turn + `","status":"inProgress"}}}`))
+			c.dispatch([]byte(`{"method":"item/completed","params":{"threadId":"thr","turnId":"` + turn + `","item":{"id":"item-` + turn + `","type":"agent_message","text":"answer"}}}`))
+			c.dispatch([]byte(`{"method":"turn/completed","params":{"threadId":"thr","turn":{"id":"` + turn + `","status":"completed"}}}`))
+			return nil
+		}
+		if err := a.SendWithRequestID("first", "host-A"); err != nil {
+			t.Fatal(err)
+		}
+		if err := a.SendWithRequestID("second", "host-B"); err != nil {
+			t.Fatal(err)
+		}
+		var stray, acceptedB, terminalA, terminalB Event
+		var sawStray, sawAccepted, sawA, sawB bool
+		for _, ev := range got {
+			switch {
+			case ev.TurnID == "turn-stray":
+				stray, sawStray = ev, true
+			case ev.TurnID == "turn-2" && ev.ProgressType == ProgressPromptAccepted:
+				acceptedB, sawAccepted = ev, true
+			case ev.TurnID == "turn-1" && ev.IsTerminalStop():
+				terminalA, sawA = ev, true
+			case ev.TurnID == "turn-2" && ev.IsTerminalStop():
+				terminalB, sawB = ev, true
+			}
+		}
+		if !sawStray || !sawAccepted || !sawA || !sawB {
+			t.Fatalf("missing events: %+v", got)
+		}
+		if stray.RequestID != "" {
+			t.Fatalf("stray codex item took the pending id: %+v", stray)
+		}
+		if acceptedB.RequestID != "host-B" || terminalB.RequestID != "host-B" || terminalA.RequestID != "host-A" {
+			t.Fatalf("turn/start lost its id: accepted=%+v terminalA=%+v terminalB=%+v", acceptedB, terminalA, terminalB)
+		}
+		a.mu.Lock()
+		pending := len(a.requestPending)
+		a.mu.Unlock()
+		if pending != 0 {
+			t.Fatalf("pending host id left over: %d", pending)
+		}
+	})
+}
+
 func TestRequestIDCodexSteerSameProviderTurn(t *testing.T) {
 	a := &Agent{provider: ProviderCodex, alive: true, ready: closedReady(), eventSubs: map[int64]EventFunc{}}
 	var got Event
