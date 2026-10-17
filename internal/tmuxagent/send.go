@@ -6,7 +6,6 @@ package tmuxagent
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"regexp"
 	"strings"
 	"sync/atomic"
@@ -638,14 +637,7 @@ func composerStateName(s composerState) string {
 }
 
 func typeLiteral(windowID, msg string) error {
-	sock := SocketPath()
-	if out, err := exec.Command(
-		"tmux", "-S", sock,
-		"send-keys", "-t", windowID, "-l", msg,
-	).CombinedOutput(); err != nil {
-		return fmt.Errorf("tmux send-keys (message): %w: %s", err, out)
-	}
-	return nil
+	return ErrLegacyCLISeatTransport
 }
 
 // sendNamedEnter presses the Enter key by name (not send-keys -l "\r").
@@ -653,14 +645,7 @@ func typeLiteral(windowID, msg string) error {
 // literal CR with -l is sometimes absorbed into the paste and never
 // submits (🎯T305).
 func sendNamedEnter(windowID string) error {
-	sock := SocketPath()
-	if out, err := exec.Command(
-		"tmux", "-S", sock,
-		"send-keys", "-t", windowID, "Enter",
-	).CombinedOutput(); err != nil {
-		return fmt.Errorf("tmux send-keys Enter: %w: %s", err, out)
-	}
-	return nil
+	return ErrLegacyCLISeatTransport
 }
 
 // pasteBufSeq distinguishes concurrent pasteViaBuffer calls in one
@@ -688,14 +673,7 @@ func pasteViaNamedBuffer(windowID, msg, bufName string, betweenLoadAndPaste func
 // sendNamedKey presses one tmux key by name (e.g. "Down"), without -l,
 // so tmux sends the key's escape sequence rather than its letters.
 func sendNamedKey(windowID, key string) error {
-	sock := SocketPath()
-	if out, err := exec.Command(
-		"tmux", "-S", sock,
-		"send-keys", "-t", windowID, key,
-	).CombinedOutput(); err != nil {
-		return fmt.Errorf("tmux send-keys %s: %w: %s", key, err, out)
-	}
-	return nil
+	return ErrLegacyCLISeatTransport
 }
 
 // SendEscape sends the Escape key (0x1b) to the target window.

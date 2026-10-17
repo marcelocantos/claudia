@@ -35,7 +35,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -353,46 +352,12 @@ func composerIsEmpty(body []byte) bool {
 }
 
 func sendKey(windowID, key string) error {
-	out, err := exec.Command(
-		"tmux", "-S", tmuxagent.SocketPath(),
-		"send-keys", "-t", windowID, key,
-	).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("tmux send-keys %s: %w: %s", key, err, out)
-	}
-	return nil
+	return tmuxagent.ErrLegacyCLISeatTransport
 }
 
-// pasteBuffer mirrors tmuxagent.pasteViaBuffer exactly — load-buffer
-// from a temp file, then paste-buffer -p -r — so the probe exercises
-// the same bytes the send path delivers.
+// pasteBuffer refuses before it creates a temp file or calls tmux.
 func pasteBuffer(windowID, msg string) error {
-	f, err := os.CreateTemp("", "t28size-*.txt")
-	if err != nil {
-		return err
-	}
-	path := f.Name()
-	defer os.Remove(path)
-	if _, err := f.WriteString(msg); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	sock := tmuxagent.SocketPath()
-	// Unique name per paste — same race class as tmuxagent.pasteViaBuffer
-	// (claudia 🎯T46 / jevons 🎯T469).
-	buf := fmt.Sprintf("t28size-%d-%d", os.Getpid(), time.Now().UnixNano())
-	if out, err := exec.Command("tmux", "-S", sock, "load-buffer", "-b", buf, path).CombinedOutput(); err != nil {
-		return fmt.Errorf("load-buffer: %w: %s", err, out)
-	}
-	if out, err := exec.Command("tmux", "-S", sock,
-		"paste-buffer", "-p", "-r", "-d", "-b", buf, "-t", windowID).CombinedOutput(); err != nil {
-		_ = exec.Command("tmux", "-S", sock, "delete-buffer", "-b", buf).Run()
-		return fmt.Errorf("paste-buffer: %w: %s", err, out)
-	}
-	return nil
+	return tmuxagent.ErrLegacyCLISeatTransport
 }
 
 // windowIDFrom pulls the tmux target out of Agent.AttachCommand, which

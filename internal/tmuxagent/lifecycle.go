@@ -3,32 +3,9 @@
 
 package tmuxagent
 
-import (
-	"os/exec"
-	"strings"
-)
-
-// IsWindowAlive checks whether the given window ID still exists on
-// the claudia tmux server. It uses list-windows to enumerate all
-// windows and checks for an exact ID match. This is more reliable than
-// display-message, which falls back to the active window for bad
-// targets and always exits 0.
+// IsWindowAlive refuses. It used to list tmux windows. A seat no longer
+// has one, so this reports the window absent before tmux runs.
 func IsWindowAlive(windowID string) bool {
-	sock := SocketPath()
-	out, err := exec.Command(
-		"tmux", "-S", sock,
-		"list-windows", "-a",
-		"-F", "#{window_id}",
-	).Output()
-	if err != nil {
-		// Server not running or other error — window can't be alive.
-		return false
-	}
-	for _, line := range strings.Split(string(out), "\n") {
-		if strings.TrimSpace(line) == windowID {
-			return true
-		}
-	}
 	return false
 }
 
@@ -43,17 +20,8 @@ func SetWindowOption(windowID, key, value string) error {
 	return ErrLegacyCLISeatTransport
 }
 
-// GetWindowOption reads a user-defined option from the window.
-// Returns the value and true if set, or ("", false) if unset.
+// GetWindowOption refuses. It used to read a tmux user option.
+// An option that was not read is ("", false).
 func GetWindowOption(windowID, key string) (string, bool) {
-	sock := SocketPath()
-	out, err := exec.Command(
-		"tmux", "-S", sock,
-		"show-options", "-wv", "-t", windowID,
-		"@"+key,
-	).Output()
-	if err != nil {
-		return "", false
-	}
-	return strings.TrimSpace(string(out)), true
+	return "", false
 }

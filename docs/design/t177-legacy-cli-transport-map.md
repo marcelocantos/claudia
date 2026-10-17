@@ -465,13 +465,16 @@ real term-log refusal, then returns the pool sentinel before
 Local `Release` returns the pool sentinel before `SetWindowOption` or
 `Stop`. A daemon-held seat still calls `ops.release`.
 
+`IsWindowAlive` reports the window absent and `GetWindowOption`
+reports the option unset, both before tmux runs. `typeLiteral`,
+`sendNamedEnter`, and `sendNamedKey` return the sentinel. `cmd/t28size`
+`pasteBuffer` returns before `CreateTemp`, and its `sendKey` returns
+the same sentinel. Hermetic `sendKeysWith` tests still inject their
+own driver.
+
 Still present, so the purge is not done:
 
-- These tmux helpers still exec when called: `IsWindowAlive`,
-  `GetWindowOption`, `sendNamedKey`, `typeLiteral`, and
-  `sendNamedEnter`. `cmd/t28size` has its own `pasteBuffer` and
-  `sendKey`, which still exec; that probe is not the seat path.
-  `WaitReady`'s production driver calls
+- `WaitReady`'s production driver calls
   `CapturePane`, which now refuses, so that driver fails closed. The
   wait loop and the tests that inject a capture function stay.
   `claudeAgentOps` still wires prompt-in-flight, interrupt, resize,

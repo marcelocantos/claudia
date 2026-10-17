@@ -1080,11 +1080,13 @@ var ErrNoSessionWindow = errors.New("no live tmux window for session")
 // (including acquireLocked, adoptWindow, buildPoolAgent, and local
 // Release), SpawnWindow, EnsureServer, KillWindow, ListWindows,
 // SendKeys, CapturePane, SendEscape, SetWindowOption, DialControl,
-// ResizeWindow, and paste (tmuxagent sentinels of the same text),
+// ResizeWindow, paste, typeLiteral, sendNamedEnter, sendNamedKey,
 // reapSessionWindows, the Codex app-server, the Grok and Cursor ACP
 // constructors, the CLI term-log writer, claudeAgentOps attach, and
 // non-broker Rewind all refuse before they exec or mutate a transcript.
-// Task mode is a separate process-per-prompt path and is unchanged.
+// IsWindowAlive reports the window absent, and GetWindowOption reports
+// the option unset, before tmux runs. Task mode is a separate
+// process-per-prompt path and is unchanged.
 var ErrLegacyCLISeatTransport = errors.New("legacy CLI seat transport removed")
 
 // Adopt rebuilds an [Agent] handle for a seat the sidecar already has.

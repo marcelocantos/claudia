@@ -48,6 +48,21 @@ func TestT1055PasteAndPaneIDDoNotExec(t *testing.T) {
 	if id, err := paneIDFor("@1"); id != "" || !errors.Is(err, ErrLegacyCLISeatTransport) {
 		t.Fatalf("paneIDFor = (%q, %v), want legacy refusal", id, err)
 	}
+	if IsWindowAlive("@1") {
+		t.Fatal("IsWindowAlive reported a window")
+	}
+	if value, ok := GetWindowOption("@1", "claudia-session-id"); ok || value != "" {
+		t.Fatalf("GetWindowOption = (%q, %v), want unset", value, ok)
+	}
+	if err := typeLiteral("@1", "hi"); !errors.Is(err, ErrLegacyCLISeatTransport) {
+		t.Fatalf("typeLiteral = %v, want legacy refusal", err)
+	}
+	if err := sendNamedEnter("@1"); !errors.Is(err, ErrLegacyCLISeatTransport) {
+		t.Fatalf("sendNamedEnter = %v, want legacy refusal", err)
+	}
+	if err := sendNamedKey("@1", "Down"); !errors.Is(err, ErrLegacyCLISeatTransport) {
+		t.Fatalf("sendNamedKey = %v, want legacy refusal", err)
+	}
 
 	entries, err := os.ReadDir(sockDir)
 	if err != nil {
