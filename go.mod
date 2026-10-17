@@ -11,6 +11,7 @@ require (
 	github.com/aws/aws-sdk-go-v2 v1.43.3
 	github.com/aws/aws-sdk-go-v2/config v1.32.34
 	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.57.0
+	github.com/marcelocantos/sqlpipe/go/sqlpipe v0.31.0
 	golang.org/x/sys v0.43.0
 )
 
@@ -28,4 +29,5 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.38.3 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.45.3 // indirect
 	github.com/aws/smithy-go v1.27.6 // indirect
+	github.com/pierrec/lz4/v4 v4.1.25 // indirect
 )
