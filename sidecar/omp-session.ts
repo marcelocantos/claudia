@@ -14,7 +14,10 @@ import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
 import type { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { getAgentDir, getBaseConfigRoot } from "@oh-my-pi/pi-utils/dirs";
 import { isAbsolute, join, relative, sep } from "node:path";
-import type { ReceiptMessage } from "./receipts.ts";
+import { cursorExecHandlers } from "./cursorexec.ts";
+import type { SandboxPolicy } from "./execution.ts";
+import { ReceiptJournal, type ReceiptMessage } from "./receipts.ts";
+import { toolResultBound } from "./truncate.ts";
 
 // Pass this same converter to the injected Agent. Stock custom-message
 // conversion discards details; host request identity must survive into the
@@ -57,6 +60,56 @@ export interface OmpSessionOptions {
   // Mandatory: without it the SDK uses its default transport and the attempt
   // never reaches the host's usage journal.
   nativeCompactionOptions: NonNullable<AgentSessionConfig["nativeCompactionOptions"]>;
+  // Seat working directory for the execution-policy Cursor handlers. The
+  // coding-agent tool registry is not a substitute: built-ins stay empty.
+  cwd: string;
+  policy?: () => SandboxPolicy | undefined;
+  // Production journal. Dispatch starts a receipt before the provider call
+  // and finishes it when that agent run ends.
+  receipts: ReceiptJournal;
+}
+
+// The Agent stores Cursor exec handlers only at construction, and the loop
+// copies that private field into the provider stream options. Overwrite the
+// options on the way through so an SDK session cannot answer a Cursor frame
+// with "Tool not available" or with the coding-agent registry bridge.
+function bindSdkDispatch(opts: OmpSessionOptions) {
+  if (!isAbsolute(opts.cwd)) throw new Error("OMP session cwd must be absolute");
+  const handlers = cursorExecHandlers(
+    () => opts.cwd,
+    () => toolResultBound(opts.agent.state.model?.contextWindow ?? 0),
+    () => opts.policy?.(),
+  );
+  const inner = opts.agent.streamFn.bind(opts.agent);
+  opts.agent.streamFn = (model, context, options) => inner(model, context, {
+    ...options,
+    cursorExecHandlers: handlers,
+  });
+  const open = new Set<string>();
+  let turns = 0;
+  opts.agent.addBeforeModelCall(context => {
+    opts.receipts.assertHealthy();
+    const ids: string[] = [];
+    for (const message of context.messages) {
+      const id = (message as ReceiptMessage).claudiaRequest?.request_id;
+      if (!id) continue;
+      const state = opts.receipts.query(id).state;
+      if (state === "accepted" || state === "started") ids.push(id);
+    }
+    if (ids.length === 0) return;
+    opts.receipts.start(ids, `sdk-turn-${++turns}`);
+    for (const id of ids) open.add(id);
+  });
+  opts.agent.subscribe(event => {
+    if (event.type !== "agent_end") return;
+    const messages = (event as { messages?: { role?: string; stopReason?: string; errorMessage?: string }[] }).messages ?? [];
+    const aborted = messages.some(message => message.role === "assistant" && message.stopReason === "aborted");
+    const failed = messages.some(message => message.role === "assistant" && (message.stopReason === "error" || Boolean(message.errorMessage)));
+    const ids = [...open];
+    open.clear();
+    if (ids.length === 0) return;
+    opts.receipts.finish(ids, aborted ? "cancelled" : failed ? "failed" : "completed", aborted ? "cancelled" : failed ? "provider_error" : undefined);
+  });
 }
 
 export async function createOmpSession(opts: OmpSessionOptions) {
@@ -64,6 +117,8 @@ export async function createOmpSession(opts: OmpSessionOptions) {
   if (typeof opts.sideStreamFn !== "function") throw new Error("OMP session requires an observed sideStreamFn");
   if (typeof opts.nativeCompactionOptions !== "function") throw new Error("OMP session requires observed native compaction options");
   if (opts.agent.state.isStreaming) throw new Error("OMP session cannot adopt a running Agent");
+  if (!(opts.receipts instanceof ReceiptJournal)) throw new Error("OMP session requires the production receipt journal");
+  bindSdkDispatch(opts);
   for (const dir of [getAgentDir(), getBaseConfigRoot()]) {
     const suffix = relative(opts.stateDir, dir);
     if (suffix === ".." || suffix.startsWith(`..${sep}`) || isAbsolute(suffix)) {

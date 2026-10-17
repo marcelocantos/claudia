@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import type { CursorExecHandlers } from "@oh-my-pi/pi-ai";
 // Block unexpected auxiliary network work before loading the SDK.
 globalThis.fetch = (async () => { throw new Error("unexpected fixture network request"); }) as typeof fetch;
 const { Agent } = await import("@oh-my-pi/pi-agent-core");
@@ -52,7 +53,17 @@ const makeAgent = () => new Agent({
   getApiKey: () => token,
   convertToLlm: convertOmpMessages,
 });
-const agent = makeAgent();
+let dispatchedHandlers: CursorExecHandlers | undefined;
+const agent = new Agent({
+  initialState: { model, systemPrompt: ["Reply OK."], tools: [] },
+  cwd,
+  getApiKey: () => token,
+  convertToLlm: convertOmpMessages,
+  streamFn: (m, c, o) => {
+    dispatchedHandlers = o?.cursorExecHandlers;
+    return streamSimple(m, c, o);
+  },
+});
 const journalOptions = { root: join(root, "sessions"), seat: "fixture-seat", session: "fixture-generation", cwd };
 const journal = await OMPJournal.open(journalOptions);
 const manager = journal.manager;
@@ -61,20 +72,22 @@ let observedRequests: unknown[] = [];
 agent.addBeforeModelCall(context => {
   observedRequests = context.messages.filter(message => "claudiaRequest" in message)
     .map(message => message.claudiaRequest);
-  const ids = observedRequests.map(request => (request as { request_id: string }).request_id)
-    .filter(id => receipts.query(id).state === "accepted");
-  if (ids.length) receipts.start(ids, `sdk-turn-${expectedDispatch}`);
 });
 const tokens = new Map<string, string>();
 const tokenFor = (provider: string) => provider === model.provider ? token : tokens.get(provider);
 const nativeCompactionOptions = () => {
   throw new Error("native compaction is not part of this fixture");
 };
-const adapter = await createOmpSession({ agent, sessionManager: manager, stateDir: root, tokenFor, sideStreamFn: streamSimple, nativeCompactionOptions });
+const policy = () => ({ mode: "workspace-write" as const, protected: [join(cwd, ".git")] });
+const adapter = await createOmpSession({
+  agent, sessionManager: manager, stateDir: root, tokenFor, sideStreamFn: streamSimple, nativeCompactionOptions,
+  cwd, policy, receipts,
+});
 let raw: InstanceType<typeof AgentSession> | undefined;
 try {
   await assert.rejects(createOmpSession({ agent: makeAgent(), sessionManager: SessionManager.inMemory(cwd),
-    stateDir: join(root, "wrong-root"), tokenFor, sideStreamFn: streamSimple, nativeCompactionOptions }), /outside the explicit state root/);
+    stateDir: join(root, "wrong-root"), tokenFor, sideStreamFn: streamSimple, nativeCompactionOptions,
+    cwd, receipts }), /outside the explicit state root/);
   await assert.rejects(createOmpSession({ agent: makeAgent(), sessionManager: SessionManager.inMemory(cwd),
     stateDir: root, tokenFor, sideStreamFn: undefined!, nativeCompactionOptions }), /requires an observed sideStreamFn/);
   await assert.rejects(createOmpSession({ agent: makeAgent(), sessionManager: SessionManager.inMemory(cwd),
@@ -118,7 +131,7 @@ try {
   assert.equal(await adapter.session.promptCustomMessage({
     customType: "claudia-request", content: `Read @${outside}`, display: true, attribution: "user", details,
   }), true);
-  receipts.finish([details.request_id], "completed");
+  assert.equal(receipts.query(details.request_id).state, "completed");
   assert.deepEqual(observedRequests, [details]);
   assert.equal(contexts.length, 1);
   assert.equal(JSON.stringify(contexts[0]).includes(secret), false);
@@ -126,6 +139,71 @@ try {
   assert.equal(JSON.stringify(manager.getEntries()).includes(secret), false);
   assert.match(JSON.stringify(contexts[0]), /Read @/);
   assert.equal(agent.state.tools.length, 0);
+  assert.equal(adapter.settings.get("memory.backend"), "off");
+  assert.equal(adapter.settings.get("memories.enabled"), false);
+  assert.equal(adapter.settings.get("advisor.enabled"), false);
+  assert.equal(adapter.settings.get("prewalk.enabled"), false);
+  assert.equal(adapter.settings.get("async.enabled"), false);
+  assert.equal(adapter.settings.get("goal.enabled"), false);
+  assert.equal(adapter.settings.get("retry.enabled"), false);
+  const handlers = dispatchedHandlers;
+  assert.ok(handlers, "SDK dispatch installed no Cursor exec handlers");
+  for (const name of ["read", "ls", "grep", "write", "delete", "shell", "piRead", "piBash", "piEdit", "piWrite", "piGrep", "piFind", "piLs"] as const) {
+    assert.equal(typeof handlers[name], "function", name);
+  }
+  assert.equal(handlers.shellStream, undefined);
+  const { resolveExecHandler } = await import("@oh-my-pi/pi-ai/providers/cursor");
+  const missing = await resolveExecHandler(
+    { path: "absent.txt", toolCallId: "missing" },
+    undefined,
+    undefined,
+    () => "ok",
+    (reason: string) => reason,
+    (error: string) => error,
+    { toolCallId: "missing", toolName: "read" },
+  );
+  assert.equal(missing.execResult, "Tool not available");
+  assert.match(JSON.stringify(missing.toolResult), /Tool not available/);
+  mkdirSync(join(cwd, ".git"));
+  const wrote = await handlers.write({ path: "note.txt", fileText: "sdk-handler-body\n", toolCallId: "w1" });
+  assert.equal(wrote.isError, false);
+  assert.equal(readFileSync(join(cwd, "note.txt"), "utf8"), "sdk-handler-body\n");
+  const readBack = await handlers.read({ path: "note.txt", toolCallId: "r1" });
+  assert.equal(readBack.isError, false);
+  assert.equal(JSON.stringify(readBack).includes("Tool not available"), false);
+  assert.match(JSON.stringify(readBack), /sdk-handler-body/);
+  const listed = await handlers.ls({ path: ".", toolCallId: "ls1" });
+  assert.match(JSON.stringify(listed), /note.txt/);
+  const found = await handlers.grep({ pattern: "sdk-handler-body", path: ".", toolCallId: "g1" });
+  assert.match(JSON.stringify(found), /note.txt/);
+  const ranged = await handlers.piRead({ toolCallId: "pr", args: { path: "note.txt", offset: 1, limit: 1 } });
+  assert.equal(ranged.isError, false);
+  assert.match(JSON.stringify(ranged), /sdk-handler-body/);
+  const edited = await handlers.piEdit({ toolCallId: "pe", args: { path: "note.txt", edits: [{ oldText: "body", newText: "edited" }] } });
+  assert.equal(edited.isError, false);
+  assert.match(readFileSync(join(cwd, "note.txt"), "utf8"), /sdk-handler-edited/);
+  const piWrote = await handlers.piWrite({ toolCallId: "pw", args: { path: "pi.txt", content: "pi-write\n" } });
+  assert.equal(piWrote.isError, false);
+  const piGrep = await handlers.piGrep({ toolCallId: "pg", args: { pattern: "pi-write", path: "." } });
+  assert.match(JSON.stringify(piGrep), /pi.txt/);
+  const piFind = await handlers.piFind({ toolCallId: "pf", args: { pattern: "pi.txt" } });
+  assert.match(JSON.stringify(piFind), /pi.txt/);
+  const piLs = await handlers.piLs({ toolCallId: "pl", args: {} });
+  assert.match(JSON.stringify(piLs), /pi.txt/);
+  const piBash = await handlers.piBash({ toolCallId: "pb", args: { command: "printf pi-bash" } });
+  assert.equal(piBash.isError, false);
+  assert.match(JSON.stringify(piBash), /pi-bash/);
+  const ran = await handlers.shell({ command: "pwd", toolCallId: "s1" });
+  assert.equal(ran.isError, false);
+  assert.match(JSON.stringify(ran), /work/);
+  const removed = await handlers.delete({ path: "note.txt", toolCallId: "d1" });
+  assert.equal(removed.isError, false);
+  const protectedWrite = await handlers.write({ path: ".git/HEAD", fileText: "no\n", toolCallId: "deny" });
+  assert.equal(protectedWrite.isError, true);
+  assert.match(JSON.stringify(protectedWrite), /protected/);
+  const escaped = await handlers.read({ path: outside, toolCallId: "esc" });
+  assert.equal(escaped.isError, true);
+  assert.match(JSON.stringify(escaped), /escapes working directory/);
   // Repeated payloads are distinct requests. Identity follows the custom
   // message itself, not text matching or the newest queue slot.
   const second = { request_id: "request-B", attempt_id: "attempt-two" };
@@ -133,7 +211,7 @@ try {
   expectedDispatch = second.request_id;
   await adapter.session.promptCustomMessage({ customType: "claudia-request",
     content: `Read @${outside}`, display: true, attribution: "user", details: second });
-  receipts.finish([second.request_id], "completed");
+  assert.equal(receipts.query(second.request_id).state, "completed");
   assert.deepEqual(observedRequests, [details, second]);
   assert.equal(contexts.length, 2);
   assert.equal(JSON.stringify(contexts).includes(secret), false);
@@ -172,8 +250,10 @@ try {
 const reopened = await OMPJournal.open({ ...journalOptions, requireResume: true });
 const restoredAgent = makeAgent();
 assert.equal(restoredAgent.state.messages.length, 0);
+const restoredReceipts = new ReceiptJournal(reopened);
 const restored = await createOmpSession({ agent: restoredAgent, sessionManager: reopened.manager,
-  stateDir: root, tokenFor, sideStreamFn: streamSimple, nativeCompactionOptions });
+  stateDir: root, tokenFor, sideStreamFn: streamSimple, nativeCompactionOptions,
+  cwd, policy, receipts: restoredReceipts });
 try {
   assert.equal(new ReceiptJournal(reopened).query("request-A").state, "completed");
   assert.equal(new ReceiptJournal(reopened).query("request-B").state, "completed");

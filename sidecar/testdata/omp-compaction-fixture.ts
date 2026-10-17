@@ -14,6 +14,7 @@ const { type } = await import("@oh-my-pi/omptype");
 const { getBundledModel } = await import("@oh-my-pi/pi-catalog/models");
 const { createOmpSession, convertOmpMessages } = await import("../omp-session.ts");
 const { OMPJournal } = await import("../omp-journal.ts");
+const { ReceiptJournal } = await import("../receipts.ts");
 const { UsageJournal, measuredStream, observedNativeCompaction } = await import("../usage.ts");
 const [root, backend, scenario] = process.argv.slice(2);
 const automatic = scenario.startsWith("auto-");
@@ -109,6 +110,7 @@ const agent = new Agent({ initialState: { model, tools: mid ? [fixtureTool] : []
 });
 const adapter = await createOmpSession({ agent, sessionManager: journal.manager, stateDir: root,
   tokenFor: provider => provider === model.provider ? brokerToken : undefined,
+  cwd, receipts: new ReceiptJournal(journal),
   sideStreamFn: (m, c, o) => { activeKind = "compaction"; return measuredSide(m, c, { ...o, fetch: fakeFetch }); },
   nativeCompactionOptions: candidate => {
     factoryModels.push(candidate.id);
