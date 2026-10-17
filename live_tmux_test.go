@@ -57,11 +57,19 @@ func usePrivateTmuxServer() func() {
 		return func() {}
 	}
 	_ = os.Setenv(tmuxSocketEnv, socket)
-	return func() {
-		// Kill the server, not just the windows: the anchor session holds
-		// it open, so removing the directory alone would leave a tmux
-		// server and its agent processes running after the suite exits.
-		_ = exec.Command("tmux", "-S", socket, "kill-server").Run()
+	return func() { stopPrivateTmuxServer(socket, dir) }
+}
+
+// stopPrivateTmuxServer removes the private socket directory. It calls
+// tmux only when a socket file is already there, which a hermetic run
+// never creates.
+func stopPrivateTmuxServer(socket, dir string) {
+	if socket != "" {
+		if _, err := os.Stat(socket); err == nil {
+			_ = exec.Command("tmux", "-S", socket, "kill-server").Run()
+		}
+	}
+	if dir != "" {
 		_ = os.RemoveAll(dir)
 	}
 }
@@ -80,6 +88,27 @@ func sharedClaudiaTmuxSocket() string {
 // in the hermetic gate as well as under a live gate, so a change that drops
 // the TestMain wiring is caught by `make gate` and not only by a live run
 // that happens to overlap a census tick.
+func TestPrivateTmuxCleanupLeavesTmuxUnstarted(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "clt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	marker := filepath.Join(dir, "ran")
+	bin := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "tmux"), []byte("#!/bin/sh\ntouch "+marker+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	stopPrivateTmuxServer(filepath.Join(dir, "tmux.sock"), "")
+	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+		t.Fatalf("cleanup executed tmux: %v", statErr)
+	}
+}
+
 func TestSeatsRunOnAPrivateTmuxServer(t *testing.T) {
 	got := tmuxagent.SocketPath()
 	if shared := sharedClaudiaTmuxSocket(); got == shared {

@@ -366,23 +366,10 @@ type readyDriver struct {
 	now func() time.Time
 }
 
-// WaitReady polls capture-pane at `poll` intervals until MatchReady
-// returns true or `timeout` elapses. Returns the elapsed time on
-// success, or an error describing the last failure state on timeout.
-//
-// If a startup selection menu is detected (MatchStartupMenu) — Claude
-// Code's stale-session resume/summary prompt (🎯T6) or the first-open
-// trust-folder dialog (🎯T87) — WaitReady auto-confirms the highlighted
-// default by pressing Enter, up to maxMenuDismissals times, so a
-// long-lived registered agent doesn't wedge at the menu. If the menu
-// never clears, the timeout error says so explicitly rather than
-// emitting the generic "ready pattern did not match" message.
+// WaitReady refuses before it captures a pane or presses a key. The
+// injected-driver loop remains for the hermetic frame tests.
 func WaitReady(windowID string, poll, timeout time.Duration) (time.Duration, error) {
-	return waitReadyLoop(readyDriver{
-		capture:   func() ([]byte, error) { return CapturePane(windowID) },
-		sendEnter: func() error { return SendKeys(windowID, "") }, // empty msg → bare Enter (select default)
-		sendKey:   func(key string) error { return sendNamedKey(windowID, key) },
-	}, poll, timeout, menuSettleDelay)
+	return 0, ErrLegacyCLISeatTransport
 }
 
 func waitReadyLoop(d readyDriver, poll, timeout, menuSettle time.Duration) (time.Duration, error) {

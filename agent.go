@@ -1085,8 +1085,9 @@ var ErrNoSessionWindow = errors.New("no live tmux window for session")
 // constructors, the CLI term-log writer, claudeAgentOps attach, and
 // non-broker Rewind all refuse before they exec or mutate a transcript.
 // IsWindowAlive reports the window absent, and GetWindowOption reports
-// the option unset, before tmux runs. Task mode is a separate
-// process-per-prompt path and is unchanged.
+// the option unset, before tmux runs. WaitReady returns before it
+// captures a pane. Task mode is a separate process-per-prompt path
+// and is unchanged.
 var ErrLegacyCLISeatTransport = errors.New("legacy CLI seat transport removed")
 
 // Adopt rebuilds an [Agent] handle for a seat the sidecar already has.

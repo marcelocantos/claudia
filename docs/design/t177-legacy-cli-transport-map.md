@@ -472,16 +472,21 @@ reports the option unset, both before tmux runs. `typeLiteral`,
 the same sentinel. Hermetic `sendKeysWith` tests still inject their
 own driver.
 
+`WaitReady` returns the sentinel before it builds a capture driver,
+so it does not poll. The injected-driver loop stays.
+`TestEnsureServerScrubsAlreadyRunningServer` no longer starts a
+server. Hermetic pool acquire tests no longer list windows. The
+suite's private-socket cleanup calls tmux only when a socket file
+already exists.
+
 Still present, so the purge is not done:
 
-- `WaitReady`'s production driver calls
-  `CapturePane`, which now refuses, so that driver fails closed. The
-  wait loop and the tests that inject a capture function stay.
-  `claudeAgentOps` still wires prompt-in-flight, interrupt, resize,
+- `claudeAgentOps` still wires prompt-in-flight, interrupt, resize,
   and model-switch at the helpers. Prompt-in-flight treats a capture
   error as false. Model-switch calls `SendKeys`, which already
   refuses. Interrupt and resize now refuse before tmux runs.
   `scrubServerEnv` is deleted; it was only reached from `EnsureServer`.
+  A live-gated helper still kill-servers when its socket file exists.
 - Attach, the term-log file, and Rewind have no sidecar equivalent.
   🎯T189 says seat removal does not wait for those replacements. This
   slice fail-closes them. It does not build replacements.

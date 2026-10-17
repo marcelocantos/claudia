@@ -475,7 +475,12 @@ func startLiveDaemon(t *testing.T) *Daemon {
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	tmuxSock := filepath.Join(dir, "tmux.sock")
 	t.Setenv("CLAUDIA_TMUX_SOCKET", tmuxSock)
-	t.Cleanup(func() { _ = exec.Command("tmux", "-S", tmuxSock, "kill-server").Run() })
+	t.Cleanup(func() {
+		if _, err := os.Stat(tmuxSock); err != nil {
+			return
+		}
+		_ = exec.Command("tmux", "-S", tmuxSock, "kill-server").Run()
+	})
 	sock := filepath.Join(dir, "b.sock")
 	d, err := New(Options{
 		SocketPath: sock, StateDir: filepath.Join(dir, "state"),

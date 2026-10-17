@@ -6,35 +6,11 @@ package tmuxagent
 import (
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/marcelocantos/claudia/internal/testctlenv"
 )
-
-// testServerSocket points tmuxagent at a private tmux server for the
-// duration of the test and tears it down afterwards. The socket lives
-// in a short temp dir because AF_UNIX paths are capped near 104 bytes
-// on macOS and t.TempDir()'s name is built from the test name.
-func testServerSocket(t *testing.T) string {
-	t.Helper()
-	if _, err := exec.LookPath("tmux"); err != nil {
-		t.Skip("tmux not on PATH")
-	}
-	dir, err := os.MkdirTemp("", "cltmux")
-	if err != nil {
-		t.Fatalf("temp dir: %v", err)
-	}
-	sock := filepath.Join(dir, "s.sock")
-	t.Setenv(tmuxSocketEnvVar, sock)
-	t.Cleanup(func() {
-		_ = exec.Command("tmux", "-S", sock, "kill-server").Run()
-		_ = os.RemoveAll(dir)
-	})
-	return sock
-}
 
 // TestEnsureServerStripsTestControlEnv: EnsureServer refuses before it
 // can start a server, so a test-control variable in this process cannot
@@ -68,42 +44,36 @@ func TestEnsureServerStripsTestControlEnv(t *testing.T) {
 	}
 }
 
-// TestEnsureServerScrubsAlreadyRunningServer covers the healing path:
-// a server that came up before this guard existed (or was started by
-// anything else) still carries the stale variables, and claudia must
-// clean it rather than leave it poisoned until the next reboot. This
-// is the case that was live on the owner's machine — a server started
-// weeks earlier by a crash-test helper.
+// TestEnsureServerScrubsAlreadyRunningServer keeps its name. EnsureServer
+// returns before tmux, so it cannot start a server and cannot scrub one.
+// A fake tmux on PATH would record a call.
 func TestEnsureServerScrubsAlreadyRunningServer(t *testing.T) {
-	sock := testServerSocket(t)
-
-	// Bring a server up the old way: full environment, nothing stripped.
-	start := exec.Command("tmux", "-S", sock, "new-session", "-d", "-s", anchorSessionName)
-	start.Env = append(os.Environ(),
-		"CLAUDIA_CRASH_TEST_HELPER=1",
-		"CLAUDIA_CRASH_TEST_WORKDIR=/tmp/stale",
-	)
-	if out, err := start.CombinedOutput(); err != nil {
-		t.Fatalf("seed server: %v: %s", err, out)
-	}
-
-	before, err := exec.Command("tmux", "-S", sock, "show-environment", "-g").Output()
+	dir, err := os.MkdirTemp("/tmp", "cltmux")
 	if err != nil {
-		t.Fatalf("show-environment: %v", err)
+		t.Fatal(err)
 	}
-	if !strings.Contains(string(before), "CLAUDIA_CRASH_TEST_HELPER=1") {
-		t.Skip("tmux did not capture the seeded variable; nothing to scrub")
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	sock := filepath.Join(dir, "s.sock")
+	t.Setenv(tmuxSocketEnvVar, sock)
+
+	marker := filepath.Join(dir, "tmux-ran")
+	binDir := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
 	}
+	tmux := filepath.Join(binDir, "tmux")
+	if err := os.WriteFile(tmux, []byte("#!/bin/sh\ntouch "+marker+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	if err := EnsureServer(); !errors.Is(err, ErrLegacyCLISeatTransport) {
 		t.Fatalf("EnsureServer = %v, want legacy refusal", err)
 	}
-
-	after, err := exec.Command("tmux", "-S", sock, "show-environment", "-g").Output()
-	if err != nil {
-		t.Fatalf("show-environment: %v", err)
+	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+		t.Fatalf("EnsureServer executed tmux: %v", statErr)
 	}
-	if !strings.Contains(string(after), "CLAUDIA_CRASH_TEST_HELPER=1") {
-		t.Fatalf("EnsureServer scrubbed a server it must leave untouched:\n%s", after)
+	if _, statErr := os.Stat(sock); !os.IsNotExist(statErr) {
+		t.Fatalf("EnsureServer created a socket: %v", statErr)
 	}
 }
