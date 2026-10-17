@@ -125,9 +125,77 @@ func TestRunToolRoutesToDiscoveredServer(t *testing.T) {
 	}
 
 	// A name the discovery never routed still falls back to the jevons-only
-	// runner (🎯T864.3): it does not silently reach the fixture server.
-	if got := ctrl.runTool("jevons_never_advertised", "call-2", "{}"); strings.Contains(got, "fixture result") {
-		t.Fatalf("an unrouted name must not reach the fixture server: %q", got)
+	// runner (🎯T864.3): it does not silently reach the fixture server,
+	// and that runner does not invent an endpoint.
+	prevExec := ompToolExec
+	ompToolExec = nil
+	t.Cleanup(func() { ompToolExec = prevExec })
+	got = ctrl.runTool("jevons_never_advertised", "call-2", "{}")
+	if strings.Contains(got, "fixture result") || !strings.Contains(got, "no tool endpoint configured") {
+		t.Fatalf("unrouted name = %q, want a refusal that did not reach the fixture", got)
+	}
+}
+
+// An unrouted tool has no implicit consumer endpoint. JEVONS_MCP_URL and
+// the development MCP port are not consulted. A caller that passes a URL
+// to CallJevonsMCP still reaches that server.
+func TestUnroutedToolDoesNotDialImplicitEndpoint(t *testing.T) {
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		var req struct {
+			Method string `json:"method"`
+			Params struct {
+				Name string `json:"name"`
+			} `json:"params"`
+		}
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &req)
+		switch req.Method {
+		case "initialize":
+			_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-03-26"}}`)
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
+		case "tools/call":
+			if req.Params.Name != "jevons_agent_list" {
+				t.Errorf("called %q", req.Params.Name)
+			}
+			_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"explicit result"}]}}`)
+		default:
+			t.Errorf("unexpected method %q", req.Method)
+		}
+	}))
+	defer srv.Close()
+
+	prev := ompToolExec
+	t.Cleanup(func() { ompToolExec = prev })
+
+	for _, env := range []string{srv.URL, ""} {
+		t.Setenv("JEVONS_MCP_URL", env)
+		hits = 0
+		ompToolExec = nil
+		if got := DefaultOMPToolExec("jevons_agent_list", "call-1", "{}"); got != `omp: no tool endpoint configured for "jevons_agent_list"` {
+			t.Fatalf("JEVONS_MCP_URL=%q DefaultOMPToolExec = %q", env, got)
+		}
+		ctrl := &ompControl{}
+		if got := ctrl.runTool("jevons_agent_list", "call-2", "{}"); got != `omp: no tool endpoint configured for "jevons_agent_list"` {
+			t.Fatalf("JEVONS_MCP_URL=%q nil runner = %q", env, got)
+		}
+		ompToolExec = DefaultOMPToolExec
+		if got := ctrl.runTool("jevons_agent_list", "call-3", "{}"); got != `omp: no tool endpoint configured for "jevons_agent_list"` {
+			t.Fatalf("JEVONS_MCP_URL=%q installed runner = %q", env, got)
+		}
+		if hits != 0 {
+			t.Fatalf("JEVONS_MCP_URL=%q dialed the implicit server %d times", env, hits)
+		}
+	}
+
+	hits = 0
+	if got := CallJevonsMCP(srv.URL, "jevons_agent_list", "{}"); got != "explicit result" {
+		t.Fatalf("CallJevonsMCP = %q, want the explicit server's result", got)
+	}
+	if hits == 0 {
+		t.Fatal("explicit URL was not contacted")
 	}
 }
 

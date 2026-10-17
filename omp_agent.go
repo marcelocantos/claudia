@@ -509,8 +509,9 @@ type ompControl struct {
 	// sandbox is the seat's tool policy; a reload sends it again (🎯T178).
 	sandbox *omp.Sandbox
 	// toolServers routes a model tool name to the AgentDef.MCPServers URL
-	// that declared it (🎯T871.1). A name absent here (jevons_* offered via
-	// resolveFallbackTool, or a legacy caller) falls back to runOMPTool.
+	// that declared it (🎯T871.1). A name absent here (a jevons_* name the
+	// host did not list, or a legacy caller) falls back to runOMPTool,
+	// which refuses unless the process installed an explicit runner.
 	toolServers map[string]string
 	// toolNames maps an advertised tool name to the server's own name for
 	// it, where the provider needed it renamed (🎯T146).
@@ -1272,9 +1273,10 @@ func ompRecoveryLogin(interactive bool) omp.Login {
 	return login
 }
 
-// SetOMPToolExec installs the jevons_* callback the sidecar invokes
-// (🎯T865). Production brokers set this to an HTTP tools/call against
-// the live jevonsmcp URL.
+// SetOMPToolExec installs the callback the sidecar invokes for a tool
+// the seat did not route to a declared server (🎯T865). The broker
+// installs [DefaultOMPToolExec], which refuses. A declared
+// AgentDef.MCPServers route never reaches this callback.
 func SetOMPToolExec(fn func(name, callID, args string) string) {
 	ompToolExec = fn
 }
@@ -1303,14 +1305,13 @@ func runOMPTool(name, callID, args string) string {
 	return DefaultOMPToolExec(name, callID, args)
 }
 
-// DefaultOMPToolExec POSTs a JSON-RPC tools/call to the jevons MCP
-// endpoint. JEVONS_MCP_URL wins; otherwise the development :13705 path.
+// DefaultOMPToolExec refuses an unrouted tool call. A neutral runtime
+// has no implicit consumer endpoint: JEVONS_MCP_URL is not read, and
+// the development :13705 path is not a default. A declared
+// AgentDef.MCPServers route uses [CallMCPTool]. A caller that already
+// holds a URL uses [CallJevonsMCP].
 func DefaultOMPToolExec(name, callID, args string) string {
-	url := strings.TrimSpace(os.Getenv("JEVONS_MCP_URL"))
-	if url == "" {
-		url = "http://127.0.0.1:13705/mcp"
-	}
-	return CallJevonsMCP(url, name, args)
+	return fmt.Sprintf("omp: no tool endpoint configured for %q", name)
 }
 
 // CallJevonsMCP is the production jevons_* runner: one HTTP JSON-RPC
