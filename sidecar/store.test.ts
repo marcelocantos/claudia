@@ -4,7 +4,7 @@
 // is a hard error, never a silent empty conversation.
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "node:net";
@@ -307,6 +307,66 @@ describe("sidecar restart (🎯T151)", () => {
     }
     throw new Error("sidecar never answered");
   }
+
+  function spoolLines(dir: string): string[] {
+    const spool = join(dir, "spool");
+    const lines: string[] = [];
+    for (const name of readdirSync(spool)) {
+      if (!name.startsWith("events-") || !name.endsWith(".log")) continue;
+      for (const line of readFileSync(join(spool, name), "utf8").split("\n")) {
+        if (line.trim()) lines.push(line);
+      }
+    }
+    return lines;
+  }
+
+  test("spool diagnostic records the receipt and not the agent snapshot", async () => {
+    const dir = tempDir();
+    const sock = join(dir, "omp.sock");
+    const receiptStore = new SeatStore(join(dir, "omp-seats"), "po", "s1");
+    new ReceiptJournal(new History(receiptStore)).accept("SECRET-PAYLOAD", { request_id: "host-request", session_id: "s1" }, "prompt");
+    const conversation = new SeatStore(join(dir, "omp-seats"), "viewer", "s2");
+    const t = Date.now();
+    conversation.rewrite([{
+      type: "message",
+      id: "a",
+      parentId: null,
+      timestamp: new Date(t).toISOString(),
+      message: { role: "user", content: "DISTINCTIVE-CONVERSATION-BODY", timestamp: t },
+    } as SessionEntry]);
+    const proc = startSidecar(sock);
+    try {
+      // Query the unloaded receipt. Loading that seat would queue the
+      // accepted input, and abort would then dispatch it.
+      const queried = await ask(sock, [{ op: "receipt", seat: "po", session_id: "s1", request_id: "host-request", rpc_id: "query-1" }],
+        e => e.type === "receipt" || e.type === "error");
+      expect(queried[0].type).toBe("receipt");
+      const loaded = await ask(sock, [{
+        op: "load", seat: "viewer", provider: "anthropic", model: "claude-sonnet-5", token: "t", cwd: dir, session_id: "s2",
+      }], e => e.type === "ready" || e.type === "error");
+      expect(loaded[0].type).toBe("ready");
+      const ended = await ask(sock, [{ op: "abort", seat: "viewer" }], e => e.type === "turn_end" || e.type === "error");
+      expect(ended.at(-1)?.type).toBe("turn_end");
+      expect(JSON.stringify(ended.at(-1)?.snapshot)).toContain("DISTINCTIVE-CONVERSATION-BODY");
+      const lines = spoolLines(dir);
+      const receiptLine = lines.find(line => { try { return JSON.parse(line).type === "receipt"; } catch { return false; } });
+      expect(receiptLine).toBeTruthy();
+      const receipt = JSON.parse(receiptLine!);
+      expect(receipt.request_id).toBe("host-request");
+      expect(receipt.receipt).toMatchObject({ request_id: "host-request", state: "accepted", session_id: "s1" });
+      expect(receipt.receipt.text).toBeUndefined();
+      const turns = lines.filter(line => { try { return JSON.parse(line).type === "turn_end"; } catch { return false; } });
+      expect(turns.length).toBeGreaterThan(0);
+      for (const line of lines) {
+        expect(line.includes("snapshot")).toBe(false);
+        expect(line.includes("SECRET-PAYLOAD")).toBe(false);
+        expect(line.includes("DISTINCTIVE-CONVERSATION-BODY")).toBe(false);
+      }
+    } finally {
+      proc.kill();
+      await proc.exited;
+    }
+  });
 
   test("receipt query reads an unloaded durable session without loading or modifying it", async () => {
     const dir = tempDir();

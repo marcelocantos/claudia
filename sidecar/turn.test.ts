@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Spool } from "./spool.ts";
+import { Spool, spoolReceipt } from "./spool.ts";
 import {
   beginTurn,
   classifyCause,
@@ -113,6 +113,27 @@ describe("digest", () => {
     expect(rec.session_id).toBe("same-session");
     expect(rec.tool_calls).toBe(0);
     expect(line.includes("snapshot")).toBe(false);
+    const bounded = spoolReceipt({
+      request_id: "host-request",
+      state: "accepted",
+      text: "SECRET-PAYLOAD",
+      snapshot: { messages: ["DISTINCTIVE-CONVERSATION-BODY"] },
+      turn_ids: ["t1"],
+    });
+    const diagnostic = spool.append({
+      ts: "2026-09-26T01:37:41.000Z",
+      seat: "jevons",
+      type: "receipt",
+      snapshot: { messages: [{ content: "DISTINCTIVE-CONVERSATION-BODY" }] },
+      request_id: "host-request",
+      receipt: bounded,
+    }, new Date("2026-09-26T01:37:41.000Z"));
+    const diagnosticLine = readFileSync(diagnostic, "utf8").trim().split("\n").at(-1)!;
+    const diagnosticRec = JSON.parse(diagnosticLine);
+    expect(diagnosticRec.receipt).toEqual({ request_id: "host-request", state: "accepted", turn_ids: ["t1"] });
+    expect(diagnosticLine.includes("snapshot")).toBe(false);
+    expect(diagnosticLine.includes("SECRET-PAYLOAD")).toBe(false);
+    expect(diagnosticLine.includes("DISTINCTIVE-CONVERSATION-BODY")).toBe(false);
     const typeAt = line.indexOf('"type"');
     expect(typeAt).toBeGreaterThan(0);
     expect(typeAt).toBeLessThan(80);

@@ -6,6 +6,74 @@ import { isAbsolute, join } from "node:path";
 import { homedir } from "node:os";
 import type { UsageFact } from "./usage.ts";
 
+// A diagnostic receipt is the durable request fact, not the message it
+// accepted. Unknown fields are dropped so a snapshot or payload cannot
+// ride along under another name.
+export type SpoolReceipt = {
+  request_id: string;
+  session_id?: string;
+  seat?: string;
+  state: string;
+  attempt_id?: string;
+  turn_ids?: string[];
+  reason?: string;
+  accepted_at?: string;
+  updated_at?: string;
+};
+
+const diagnosticStates = new Set(["accepted", "started", "completed", "cancelled", "failed", "unknown"]);
+const diagnosticIDLimit = 128;
+const diagnosticReasonLimit = 200;
+const diagnosticTurnLimit = 32;
+
+function diagnosticID(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const id = value.trim();
+  if (!id || id.length > diagnosticIDLimit) return undefined;
+  return id;
+}
+
+function diagnosticText(value: unknown, limit: number): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const text = value.trim();
+  if (!text || text.length > limit) return undefined;
+  return text;
+}
+
+// spoolReceipt keeps identity and state from a socket receipt. A receipt
+// that is not that shape is omitted rather than stored whole.
+export function spoolReceipt(value: unknown): SpoolReceipt | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  const request_id = diagnosticID(raw.request_id);
+  const state = diagnosticText(raw.state, diagnosticIDLimit);
+  if (!request_id || !state || !diagnosticStates.has(state)) return undefined;
+  const receipt: SpoolReceipt = { request_id, state };
+  const session_id = diagnosticID(raw.session_id);
+  const seat = diagnosticID(raw.seat);
+  const attempt_id = diagnosticID(raw.attempt_id);
+  const reason = diagnosticText(raw.reason, diagnosticReasonLimit);
+  const accepted_at = diagnosticText(raw.accepted_at, diagnosticIDLimit);
+  const updated_at = diagnosticText(raw.updated_at, diagnosticIDLimit);
+  if (session_id) receipt.session_id = session_id;
+  if (seat) receipt.seat = seat;
+  if (attempt_id) receipt.attempt_id = attempt_id;
+  if (reason) receipt.reason = reason;
+  if (accepted_at) receipt.accepted_at = accepted_at;
+  if (updated_at) receipt.updated_at = updated_at;
+  if (Array.isArray(raw.turn_ids)) {
+    const turn_ids: string[] = [];
+    for (const id of raw.turn_ids) {
+      const turn = diagnosticID(id);
+      if (!turn) return undefined;
+      turn_ids.push(turn);
+      if (turn_ids.length > diagnosticTurnLimit) return undefined;
+    }
+    if (turn_ids.length > 0) receipt.turn_ids = turn_ids;
+  }
+  return receipt;
+}
+
 export type SpoolRecord = {
   ts: string;
   seat: string;
@@ -15,8 +83,12 @@ export type SpoolRecord = {
   name?: string;
   provider?: string;
   model?: string;
+  // Accepted by older callers. append does not persist it: the live socket
+  // still carries the agent state, and the spool is not a second journal.
   snapshot?: unknown;
   usage_fact?: UsageFact;
+  request_id?: string;
+  receipt?: SpoolReceipt;
   turn_id?: string;
   session_id?: string;
   cause?: string;
@@ -101,8 +173,8 @@ export class Spool {
       this.closed.add(this.liveDay);
       this.liveDay = fileDay;
     }
-    // type sits ahead of snapshot so a search can name the line
-    // without reading the agent state (🎯T870).
+    // type sits near the front so a search can name the line without
+    // reading a payload (🎯T870). Agent snapshots are not persisted.
     const line = JSON.stringify({
       ts,
       seat: rec.seat,
@@ -122,10 +194,11 @@ export class Spool {
       text: rec.text,
       call_id: rec.call_id,
       usage_fact: rec.usage_fact,
+      request_id: rec.request_id,
+      receipt: rec.receipt,
       name: rec.name,
       provider: rec.provider,
       model: rec.model,
-      snapshot: rec.snapshot,
     }) + "\n";
     const path = this.pathForDay(fileDay);
     appendFileSync(path, line);

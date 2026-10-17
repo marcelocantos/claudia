@@ -14,7 +14,7 @@ import { createServer } from "node:net";
 import { unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createSeatAgent, type HostTool, type SeatAgent } from "./seat.ts";
-import { defaultWriter } from "./spool.ts";
+import { defaultWriter, spoolReceipt } from "./spool.ts";
 import { claimSocket } from "./singleton.ts";
 import { PlanTokens } from "./plantokens.ts";
 import { HOST_CONNECTION_LOST, HostCalls } from "./hostcalls.ts";
@@ -154,8 +154,9 @@ const server = createServer((socket) => {
           name: str("name"),
           provider: loaded?.provider,
           model: loaded?.model,
-          snapshot: ev.snapshot,
           usage_fact: ev.usage_fact as import("./usage.ts").UsageFact | undefined,
+          request_id: str("request_id"),
+          receipt: spoolReceipt(ev.receipt),
           turn_id: str("turn_id"),
           session_id: str("session_id"),
           cause: str("cause"),
