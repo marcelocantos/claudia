@@ -574,14 +574,10 @@ type errorAgentBackend struct {
 
 func agentBackendForProvider(provider Provider) agentBackend {
 	switch provider {
-	case "", ProviderClaude:
-		return claudeAgentBackend{}
-	case ProviderCodex:
-		return codexAgentBackend{}
-	case ProviderGrok:
-		return grokAgentBackend{}
-	case ProviderCursor:
-		return cursorAgentBackend{}
+	case "", ProviderClaude, ProviderCodex, ProviderGrok, ProviderCursor:
+		// Fleet ids are sidecar aliases. A caller that reaches this
+		// fallback without useOMP must not grow a CLI process.
+		return errorAgentBackend{err: fmt.Errorf("%w: %s", ErrLegacyCLISeatTransport, provider)}
 	case ProviderBedrock:
 		return errorAgentBackend{err: CheckCapability(ProviderBedrock, CapabilitySession)}
 	default:
@@ -1122,9 +1118,14 @@ func (claudeAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error)
 // to [Start]; upgrade callers treat it as "this agent actually exited."
 var ErrNoSessionWindow = errors.New("no live tmux window for session")
 
-// Adopt rebuilds an [Agent] handle for a still-running Claude tmux
-// window (or a Grok connect-mode serve). It does not spawn. Missing
-// process is [ErrNoSessionWindow], not a silent Start.
+// ErrLegacyCLISeatTransport refuses a CLI process for a Session seat
+// that the product dispatcher or Adopt would otherwise have started.
+// The concrete session backends remain callable for their own tests.
+// Task mode is a separate process-per-prompt path and is unchanged.
+var ErrLegacyCLISeatTransport = errors.New("legacy CLI seat transport removed")
+
+// Adopt rebuilds an [Agent] handle for a seat the sidecar already has.
+// It does not spawn a CLI process. A miss is an error, not a silent Start.
 func Adopt(cfg Config) (*Agent, error) {
 	var err error
 	cfg, err = normalizeSeatConfig(cfg)
@@ -1155,7 +1156,7 @@ func Adopt(cfg Config) (*Agent, error) {
 	if provider != ProviderClaude && cfg.Provider != "" {
 		return nil, fmt.Errorf("%w: provider %s has no adopt path", ErrNoSessionWindow, provider)
 	}
-	return startWithBackend(cfg, adoptClaudeBackend{})
+	return nil, fmt.Errorf("%w: provider %s", ErrLegacyCLISeatTransport, provider)
 }
 
 type adoptClaudeBackend struct{}

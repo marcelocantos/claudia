@@ -371,3 +371,93 @@ moved. jevons' 🎯T1055 implementer should not delete `agenttmux`,
 step 2 lands, and claudia should not land step 2 until jevons' step 0
 has been observed for the fleet (otherwise a stray `claude` id becomes
 a hard start failure instead of a tmux pane).
+
+## 11. Current HEAD (2026-10-17)
+
+Sections 1–10 are the 2026-10-10 inventory against `bd19d57`. They stay
+as written. This section is the first seat-transport slice on top of
+`01542f0`. It does not achieve 🎯T1055.
+
+`ompProviderID` is already total for the fleet ids, so the §5 dispatch
+gap was closed before this slice. `""`, `claude`, and `anthropic` select
+the sidecar as `anthropic`. `codex` and `openai-codex` select
+`openai-codex`. `cursor` selects `cursor`. `grok` and `xai-oauth` select
+`xai-oauth`. `agentBackendFor` returns `ompAgentBackend` for all of
+those, so Start and a normal Launch never reach the CLI fallback.
+
+This slice fail-closes the two product entries that could still select
+a CLI seat. It does not delete the spawn bodies.
+
+- `agentBackendForProvider` returns `ErrLegacyCLISeatTransport` for
+  `""`, `claude`, `codex`, `grok`, and `cursor`. `agentBackendFor`
+  still returns `ompAgentBackend` for those ids, so Start and Launch
+  do not reach this fallback.
+- `Adopt`'s last line used to call `adoptClaudeBackend`. It now returns
+  `ErrLegacyCLISeatTransport`. A sidecar `AdoptOnly` miss is still
+  `ErrNoSessionWindow`. A non-claude provider with no sidecar route
+  still returns `ErrNoSessionWindow`. `normalizeSeatConfig` still
+  refuses `GrokConnect`, `ConnectURL`, and `ConnectPID` on a sidecar
+  seat before any process starts. Registry adopt of cursor plus
+  `ConnectPID` still reaps writers and returns `ErrNoSessionWindow`
+  from the registry switch.
+
+The concrete `StartAgent` methods still exec. `startCodexAgent`,
+`startGrokAgent`, `startCursorAgent`, `attachClaudeWindow`, and
+`adoptClaudeBackend` stay, because their hermetic tests still call
+them. The gate does not require those tests. `go test` runs them only
+while they are in the package.
+
+`verify-mutation-evidence` requires a test only when
+`mutation-evidence.json` names it, and an absent name is a failed
+entry. Four cursor tests are named:
+`TestCursorStuckFirstPromptFailsTypedAndLeavesSeatUsable`,
+`TestCursorSlowFirstPromptIsNotStuck`,
+`TestCursorStuckPromptErrorNamesBothDeliveries` (🎯T91, the
+`watch := false` edit in `cursorACPClient`), and
+`TestCursorWaitForResponseAfterTurnEndedStillReturnsTheReply`
+(🎯T98, one of two red witnesses for `WaitForResponse`).
+`TestCursorPromptWithoutWakePathDoesNotPark` is the other 🎯T91
+alarm and does not start a process. `make live` names
+`TestExclusiveGrokSessionResumeLive`; `livegate` fails if that
+`-run` alternative matches nothing. Those lists are edited in the
+commit that deletes the tests. They are not a rule that a seat must
+still exec a CLI. The other legacy session suites are not on either
+list.
+
+Oracles that drive the product entries: `TestT1055SessionDispatchIsSidecar`
+and `TestT1055RegistryAdoptClaudeConnectDoesNotUseCLI`. The old
+tmux-pane oracles `TestLaunchDoesNotReapLeftovers`,
+`TestAdoptReusesWindow`, and `TestAdoptOrLaunchFallsBackToLaunch` now
+drive `Registry.Launch` / `Adopt` / `AdoptOrLaunch` and assert that no
+CLI window appears. On `01542f0` those three already failed with the
+sidecar test-binary refusal, because dispatch had already left tmux.
+`TestStopAllKillsWhatThisProcessStarted` asserts `StartAll` creates
+none. Still green beside them:
+`TestClaudeProviderCapabilitiesClaimed`,
+`TestCodexProviderCapabilitiesClaimed`,
+`TestRegistryAdoptCursorPIDDoesNotStart`,
+`TestT869AdoptOnlyDoesNotStartASidecar`, `TestAdoptFailsWhenGone`, and
+`TestStopKillsWindowWithoutHandle` (stop still reaps a pane someone
+else spawned).
+
+Still present, so the purge is not done:
+
+- The concrete session backends still spawn when a test selects them.
+- `Pool.Acquire` and `AcquireDirect` still call `checkTmux` and spawn.
+- `internal/tmuxagent` stays. Jevons still consumes it (`agenttmux`,
+  `TmuxKillSwitch`, pane census, the upgrade handoff).
+- `reapSessionWindows` still kills leftover Claude tmux windows on stop.
+- Attach, `TermLogPath`, and `Rewind` still compile. They have no
+  sidecar equivalent. 🎯T189 says seat removal does not wait for those
+  replacements; this slice does not delete them.
+- Task mode (`claude -p`, `codex exec`, `grok -p`, `agent --print`) is
+  unchanged. §9 Q1 is still an owner question. Judge, Bedrock, and
+  Ollama Task backends stay API paths.
+- The 14 `claude` and 2 `grok` `auto_start` grant rows were not
+  reminted or dropped. §9 Q3 is still an owner question.
+- No full `make gate`, and no fleet spawn across providers.
+
+§10 step 2 (delete the tmux library, the pool, and the live-gate rows
+together) stays waiting on jevons no longer spawning a CLI seat, and
+on Q1 and Q3. A provider or scenario with no OMP equivalent is named
+here rather than dropped.

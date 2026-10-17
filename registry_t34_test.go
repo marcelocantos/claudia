@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/marcelocantos/claudia/internal/tmuxagent"
@@ -100,8 +101,9 @@ func TestStopKillsWindowWithoutHandle(t *testing.T) {
 	}
 }
 
-// TestLaunchDoesNotReapLeftovers: ordinary start creates. A leftover
-// from a leaky previous exit stays up so the leak is visible.
+// TestLaunchDoesNotReapLeftovers: a seat Launch does not exec a CLI and
+// does not reap a leftover pane. The stub claude is on PATH so a
+// regression back to tmux spawn would create a second window.
 func TestLaunchDoesNotReapLeftovers(t *testing.T) {
 	isolateTmux(t)
 	stubClaude(t)
@@ -127,21 +129,22 @@ func TestLaunchDoesNotReapLeftovers(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.Launch("worker"); err != nil {
-		t.Fatalf("Launch: %v", err)
+	if _, err := r.Launch("worker"); err == nil || !strings.Contains(err.Error(), "never uses the real sidecar socket") {
+		t.Fatalf("Launch = %v, want the sidecar test refusal", err)
 	}
 	t.Cleanup(func() { r.Stop("worker") })
 
 	if !tmuxagent.IsWindowAlive(old) {
 		t.Fatal("Launch reaped a leftover window; leaks must stay visible")
 	}
-	if got := sessionWindows(t, sid); len(got) != 2 {
-		t.Fatalf("windows after Launch: %v, want leftover + new", got)
+	if got := sessionWindows(t, sid); len(got) != 1 || got[0] != old {
+		t.Fatalf("windows after Launch: %v, want only the leftover", got)
 	}
 }
 
-// TestStopAllKillsWhatThisProcessStarted is the drain-exit oracle:
-// StartAll then StopAll leaves no window this process created.
+// TestStopAllKillsWhatThisProcessStarted: StartAll of a fleet seat does
+// not exec a CLI. StopAll still leaves no window. The stub claude is on
+// PATH so a regression back to tmux spawn fails this before StopAll.
 func TestStopAllKillsWhatThisProcessStarted(t *testing.T) {
 	isolateTmux(t)
 	stubClaude(t)
@@ -168,6 +171,11 @@ func TestStopAllKillsWhatThisProcessStarted(t *testing.T) {
 		}
 	}
 	r.StartAll()
+	for _, sid := range sids {
+		if got := sessionWindows(t, sid); len(got) != 0 {
+			t.Fatalf("StartAll spawned %v for %s", got, sid)
+		}
+	}
 	r.StopAll()
 
 	for _, sid := range sids {
@@ -177,8 +185,9 @@ func TestStopAllKillsWhatThisProcessStarted(t *testing.T) {
 	}
 }
 
-// TestAdoptReusesWindow: upgrade boot. Drop the Registry, Adopt, same
-// window, count stays 1.
+// TestAdoptReusesWindow: upgrade boot must not attach a CLI pane. Launch
+// and Adopt both refuse without a sidecar, and neither creates a window.
+// The stub claude is on PATH so a regression back to tmux spawn fails.
 func TestAdoptReusesWindow(t *testing.T) {
 	isolateTmux(t)
 	stubClaude(t)
@@ -197,29 +206,21 @@ func TestAdoptReusesWindow(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	first, err := r.Launch("keep")
-	if err != nil {
-		t.Fatalf("Launch: %v", err)
-	}
-	old := first.WindowID()
-	if old == "" {
-		t.Fatal("Launch did not record a window id")
+	if _, err := r.Launch("keep"); err == nil || !strings.Contains(err.Error(), "never uses the real sidecar socket") {
+		t.Fatalf("Launch = %v, want the sidecar test refusal", err)
 	}
 
 	r2, err := NewRegistry(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := r2.Adopt("keep")
-	if err != nil {
-		t.Fatalf("Adopt: %v", err)
+	_, err = r2.Adopt("keep")
+	if !errors.Is(err, ErrNoSessionWindow) {
+		t.Fatalf("Adopt = %v, want ErrNoSessionWindow", err)
 	}
 	t.Cleanup(func() { r2.Stop("keep") })
-	if second.WindowID() != old {
-		t.Fatalf("Adopt window %q, want leftover %q", second.WindowID(), old)
-	}
-	if got := sessionWindows(t, sid); len(got) != 1 || got[0] != old {
-		t.Fatalf("windows after Adopt: %v, want [%s]", got, old)
+	if got := sessionWindows(t, sid); len(got) != 0 {
+		t.Fatalf("windows after Adopt: %v, want none", got)
 	}
 }
 
@@ -258,15 +259,11 @@ func TestAdoptOrLaunchFallsBackToLaunch(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	a, err := r.AdoptOrLaunch("fresh")
-	if err != nil {
-		t.Fatalf("AdoptOrLaunch: %v", err)
+	if _, err := r.AdoptOrLaunch("fresh"); err == nil || !strings.Contains(err.Error(), "never uses the real sidecar socket") {
+		t.Fatalf("AdoptOrLaunch = %v, want the sidecar test refusal", err)
 	}
 	t.Cleanup(func() { r.Stop("fresh") })
-	if a.WindowID() == "" {
-		t.Fatal("fallback Launch produced no window")
-	}
-	if got := sessionWindows(t, sid); len(got) != 1 {
-		t.Fatalf("windows: %v", got)
+	if got := sessionWindows(t, sid); len(got) != 0 {
+		t.Fatalf("windows: %v, want none", got)
 	}
 }
