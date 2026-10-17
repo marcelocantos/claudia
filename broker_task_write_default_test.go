@@ -118,7 +118,7 @@ func TestCodexBrokerGrantWriteDefaultLiveSmoke(t *testing.T) {
 	if os.Getenv("CLAUDIA_CODEX_LIVE") == "" {
 		t.Skip("CLAUDIA_CODEX_LIVE not set (this test spends API credit)")
 	}
-	if _, err := resolveCodexBin(); err != nil {
+	if _, err := liveCodexBin(); err != nil {
 		t.Skipf("codex binary not found: %v", err)
 	}
 	repo := t109Repo(t)

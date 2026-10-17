@@ -476,8 +476,9 @@ own driver.
 so it does not poll. The injected-driver loop stays.
 `TestEnsureServerScrubsAlreadyRunningServer` no longer starts a
 server. Hermetic pool acquire tests no longer list windows. The
-suite's private-socket cleanup calls tmux only when a socket file
-already exists.
+suite's private-socket cleanup removes its directory and does not run
+tmux, including when the socket file is already there.
+`releasePrivateTmuxSocket` does nothing.
 
 Still present, so the purge is not done:
 
@@ -486,7 +487,7 @@ Still present, so the purge is not done:
   error as false. Model-switch calls `SendKeys`, which already
   refuses. Interrupt and resize now refuse before tmux runs.
   `scrubServerEnv` is deleted; it was only reached from `EnsureServer`.
-  A live-gated helper still kill-servers when its socket file exists.
+  Neither private-socket helper runs `tmux kill-server`.
 - Attach, the term-log file, and Rewind have no sidecar equivalent.
   🎯T189 says seat removal does not wait for those replacements. This
   slice fail-closes them. It does not build replacements.
@@ -499,12 +500,31 @@ Still present, so the purge is not done:
 - `checkTmux` returns `ErrLegacyCLISeatTransport` before `LookPath`.
   `cmd/t108ready` returns the same error before it looks up `claude`
   or calls `SpawnWindow`.
+- `resolveClaudeBin`, `resolveCodexBin`, `resolveGrokBin`, and
+  `resolveCursorBin` return `ErrLegacyCLISeatTransport` before
+  `LookPath`, `Stat`, or `CLAUDE_BIN` / `CODEX_BIN` / `GROK_BIN` /
+  `CURSOR_BIN`. `resolve*BinFrom` stays so a live test can decide to
+  skip. Those tests call `liveCodexBin`, `liveGrokBin`,
+  `liveCursorBin`, or `exec.LookPath("claude")`. The product wrappers
+  do not call `*From`.
+- `loadClaudeOAuthAccessToken` returns before `security`.
+  `loadCursorAccessToken` returns before `sqlite3`.
+  `listStoreWritersLsof` and `listOrphanCursorACPPs` return before
+  `lsof` and `ps`. A caller-supplied token, `CLAUDIA_CLAUDE_OAUTH_TOKEN`,
+  `CURSOR_API_KEY`, and the broker plan store stay ahead of those
+  probes. Bun login and the OMP keychain path stay; they are the
+  product auth runtime, not the subscription CLI seat.
+- Sidecar `resolveFallbackTool` returns undefined for every name,
+  including one that starts with `jevons_`. `applyTools` still maps
+  every tool the host declared.
 - Q3 was answered by 🎯T189: drop, do not remint. The owner-approved
   13-row inventory is deleted once per state directory before resume
-  (`ba2ecd6`). `1dcd5af` keeps the three personal-work names. Those
-  three are not CLI rows. `codexAppServerSupportsSteer` does not run
-  `codex app-server generate-json-schema`; an uncached binary is
-  unsupported.
+  (`ba2ecd6`). `1dcd5af` keeps `pimp-arrai-779-native`,
+  `pimp-xbnf-phase0`, and `pimp-vellum-housekeeping-katex` as
+  `openai-codex` auto_start seats. Those three are not CLI rows and
+  this slice does not delete them. `codexAppServerSupportsSteer` does
+  not run `codex app-server generate-json-schema`; an uncached binary
+  is unsupported.
 - No full `make gate`, and no fleet spawn across providers.
 
 §10 step 2 (delete the tmux library, the pool, and the live-gate rows

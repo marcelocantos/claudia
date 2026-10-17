@@ -11,8 +11,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 )
@@ -194,39 +192,8 @@ func fetchCursorPeriodUsage(ctx context.Context, args *PlanUsageArgs) ([]byte, e
 	return body, nil
 }
 
-// loadCursorAccessToken reads the Cursor IDE session token from
-// state.vscdb (key cursorAuth/accessToken) via sqlite3(1). The CLI's
-// CURSOR_API_KEY is preferred; this is a fallback for hosts already
-// signed into the desktop app. CursorAuthPath overrides the db path.
+// loadCursorAccessToken refuses. Plan usage reads CURSOR_API_KEY or a
+// token the caller already holds. It does not run sqlite3.
 func loadCursorAccessToken(path string) (string, error) {
-	if path == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("locate home for cursor auth: %w", err)
-		}
-		path = filepath.Join(home, "Library", "Application Support", "Cursor", "User", "globalStorage", "state.vscdb")
-		if _, err := os.Stat(path); err != nil {
-			path = filepath.Join(home, ".config", "Cursor", "User", "globalStorage", "state.vscdb")
-		}
-	}
-	if _, err := os.Stat(path); err != nil {
-		return "", fmt.Errorf("read cursor auth (set %s or run `agent login`): %w", cursorAPIKeyEnv, err)
-	}
-	sqlite3, err := exec.LookPath("sqlite3")
-	if err != nil {
-		return "", fmt.Errorf("sqlite3 not on PATH to read %s (set %s instead)", path, cursorAPIKeyEnv)
-	}
-	// Apple's /usr/bin/sqlite3 -readonly cannot open Cursor's state.vscdb
-	// (SQLITE_CANTOPEN / exit 14). URI mode=ro opens the same file.
-	uri := "file:" + path + "?mode=ro"
-	cmd := exec.Command(sqlite3, uri, `SELECT value FROM ItemTable WHERE key = 'cursorAuth/accessToken' LIMIT 1;`)
-	out, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("read cursor auth db: %w", err)
-	}
-	tok := strings.TrimSpace(string(out))
-	if tok == "" {
-		return "", fmt.Errorf("no cursorAuth/accessToken in %s (set %s or sign in to Cursor)", path, cursorAPIKeyEnv)
-	}
-	return tok, nil
+	return "", fmt.Errorf("cursor auth db probe removed; set %s", cursorAPIKeyEnv)
 }

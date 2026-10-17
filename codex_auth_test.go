@@ -5,6 +5,7 @@ package claudia
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -167,35 +168,20 @@ func TestEnsureCodexSubscriptionAuth(t *testing.T) {
 }
 
 func TestCodexBinCandidatesResolveOnThisHost(t *testing.T) {
-	// Integration-ish: when ChatGPT.app is installed (owner fleet), resolveCodexBin
-	// must find it without CODEX_BIN. Skip if neither app bundle exists.
-	// ChatGPT 26.930 moved the CLI to codex-cli/CodexCLI.app; while this
-	// test knew only the old bare Resources/codex it skipped on exactly the
-	// host where resolution had broken.
-	bundled := chatGPTBundledCodex
-	chatgpt := "/Applications/ChatGPT.app/Contents/Resources/codex"
-	legacy := "/Applications/Codex.app/Contents/Resources/codex"
-	present := false
-	for _, p := range []string{bundled, chatgpt, legacy} {
-		if _, err := os.Stat(p); err == nil {
-			present = true
-		}
+	// A present ChatGPT or Codex app bundle used to win resolution.
+	// The product resolver now refuses before it stats those paths.
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "marker")
+	fake := filepath.Join(dir, "codex")
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\ntouch '"+marker+"'\n"), 0o755); err != nil {
+		t.Fatal(err)
 	}
-	if !present {
-		t.Skip("no ChatGPT.app or Codex.app codex binary present")
+	t.Setenv("CODEX_BIN", fake)
+	t.Setenv("PATH", dir)
+	if _, err := resolveCodexBin(); !errors.Is(err, ErrLegacyCLISeatTransport) {
+		t.Fatalf("resolveCodexBin = %v, want legacy refusal", err)
 	}
-	t.Setenv("CODEX_BIN", "")
-	// Clear PATH codex if any so we exercise candidates.
-	t.Setenv("PATH", "/usr/bin:/bin")
-	got, err := resolveCodexBin()
-	if err != nil {
-		t.Fatalf("resolveCodexBin: %v", err)
-	}
-	if got != bundled && got != chatgpt && got != legacy {
-		// Still OK if LookPath found something else first; only fail when
-		// candidates should have won (PATH has no codex).
-		if _, err := os.Stat(got); err != nil {
-			t.Fatalf("resolved path missing: %s", got)
-		}
+	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+		t.Fatalf("resolveCodexBin started codex: %v", statErr)
 	}
 }

@@ -7,33 +7,34 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 )
 
-// An lsof that never answers must not hold the caller: the probe is bounded
-// and reports nothing it could not establish.
+// The store probe used to run lsof. A resolvable lsof and ps must still
+// produce no pids, and neither binary runs.
 func TestListStoreWritersLsofIsBounded(t *testing.T) {
 	dir := t.TempDir()
 	store := filepath.Join(dir, "store.db")
 	if err := os.WriteFile(store, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	hang := filepath.Join(dir, "lsof")
-	if err := os.WriteFile(hang, []byte("#!/bin/sh\nexec sleep 60\n"), 0o755); err != nil {
-		t.Fatal(err)
+	marker := filepath.Join(dir, "marker")
+	script := "#!/bin/sh\ntouch '" + marker + "'\n"
+	for _, name := range []string{"lsof", "ps"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
-	oldCmd, oldTimeout := lsofCommand, lsofTimeout
-	lsofCommand, lsofTimeout = hang, 200*time.Millisecond
-	defer func() { lsofCommand, lsofTimeout = oldCmd, oldTimeout }()
-	start := time.Now()
+	oldCmd := lsofCommand
+	lsofCommand = filepath.Join(dir, "lsof")
+	t.Cleanup(func() { lsofCommand = oldCmd })
+	t.Setenv("PATH", dir)
 	if pids := listStoreWritersLsof(store); len(pids) != 0 {
-		t.Fatalf("a probe that timed out reported pids: %v", pids)
+		t.Fatalf("lsof probe reported pids: %v", pids)
 	}
-	// 🎯T97 exemption: an upper bound on a ratio. The probe is bounded at
-	// 200ms and the fake hangs for 60s, so 5s is 25x the healthy path and
-	// a twelfth of the defect; only a host that stalls a timer-driven kill
-	// for seconds could cross it.
-	if elapsed := time.Since(start); elapsed > 5*time.Second {
-		t.Fatalf("store probe blocked for %s; it must be bounded", elapsed)
+	if pids := listOrphanCursorACPPs(); len(pids) != 0 {
+		t.Fatalf("ps probe reported pids: %v", pids)
+	}
+	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+		t.Fatalf("reap probe started a command: %v", statErr)
 	}
 }

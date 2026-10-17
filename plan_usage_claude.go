@@ -10,7 +10,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
 
@@ -298,38 +297,10 @@ func mapClaudeWindow(name PlanWindowName, w *claudeOAuthWindow) *PlanWindow {
 	return out
 }
 
-// loadClaudeOAuthAccessToken reads the Claude Code OAuth access token from the
-// macOS keychain service used by the official CLI. Other platforms return an
-// error directing the host to set CLAUDIA_CLAUDE_OAUTH_TOKEN.
+// loadClaudeOAuthAccessToken refuses. Plan usage reads a token the caller
+// already holds, or the broker's plan store. It does not run security(1).
 func loadClaudeOAuthAccessToken() (string, error) {
-	// Prefer security(1) on macOS — same store Claude Code uses.
-	if _, err := exec.LookPath("security"); err == nil {
-		cmd := exec.Command("security", "find-generic-password", "-s", claudeKeychainService, "-w")
-		out, err := cmd.Output()
-		if err == nil {
-			raw := strings.TrimSpace(string(out))
-			if raw == "" {
-				return "", fmt.Errorf("empty keychain item %q", claudeKeychainService)
-			}
-			var creds struct {
-				ClaudeAiOauth *struct {
-					AccessToken string `json:"accessToken"`
-				} `json:"claudeAiOauth"`
-			}
-			if err := json.Unmarshal([]byte(raw), &creds); err != nil {
-				// Some installs store a bare token; accept that too.
-				if strings.HasPrefix(raw, "sk-ant-") || strings.HasPrefix(raw, "eyJ") {
-					return raw, nil
-				}
-				return "", fmt.Errorf("parse keychain credentials: %w", err)
-			}
-			if creds.ClaudeAiOauth != nil && creds.ClaudeAiOauth.AccessToken != "" {
-				return creds.ClaudeAiOauth.AccessToken, nil
-			}
-			return "", fmt.Errorf("keychain item %q has no claudeAiOauth.accessToken", claudeKeychainService)
-		}
-	}
-	return "", fmt.Errorf("no Claude OAuth token (set %s or sign in with Claude Code)", claudeOAuthTokenEnv)
+	return "", fmt.Errorf("claude keychain probe removed; set %s", claudeOAuthTokenEnv)
 }
 
 func truncateForReason(b []byte, n int) string {

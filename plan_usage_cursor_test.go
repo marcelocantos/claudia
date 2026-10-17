@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os/exec"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -187,21 +187,20 @@ func TestQueryPlanUsageCursorHTTPUnauthorizedUnavailable(t *testing.T) {
 }
 
 func TestLoadCursorAccessTokenURIMode(t *testing.T) {
-	sqlite3, err := exec.LookPath("sqlite3")
-	if err != nil {
-		t.Skip("sqlite3 not on PATH")
-	}
-	path := filepath.Join(t.TempDir(), "state.vscdb")
-	create := exec.Command(sqlite3, path,
-		`CREATE TABLE ItemTable (key TEXT, value TEXT); INSERT INTO ItemTable VALUES ('cursorAuth/accessToken', 'test-cursor-token');`)
-	if out, err := create.CombinedOutput(); err != nil {
-		t.Fatalf("create fixture: %v %s", err, out)
-	}
-	tok, err := loadCursorAccessToken(path)
-	if err != nil {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "marker")
+	if err := os.WriteFile(filepath.Join(dir, "sqlite3"), []byte("#!/bin/sh\ntouch '"+marker+"'\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if tok != "test-cursor-token" {
-		t.Fatalf("token %q", tok)
+	t.Setenv("PATH", dir)
+	path := filepath.Join(dir, "state.vscdb")
+	if err := os.WriteFile(path, []byte("not a database"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadCursorAccessToken(path); err == nil || !strings.Contains(err.Error(), "probe removed") {
+		t.Fatalf("loadCursorAccessToken = %v", err)
+	}
+	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+		t.Fatalf("loadCursorAccessToken started sqlite3: %v", statErr)
 	}
 }

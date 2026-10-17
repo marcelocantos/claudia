@@ -4,12 +4,9 @@
 package claudia
 
 import (
-	"bytes"
-	"context"
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -140,64 +137,15 @@ var lsofTimeout = 3 * time.Second
 // lsofCommand is the probe binary; tests replace it.
 var lsofCommand = "lsof"
 
-// listStoreWritersLsof lists processes holding store.db or its -wal/-shm, in
-// one bounded lsof call. A probe that does not answer in time returns no
-// pids: nothing can be reaped that could not be identified, and callers
-// that must not open a held store check again and fail closed.
+// listStoreWritersLsof refuses to probe. The cursor CLI transport is gone,
+// so this does not run lsof.
 func listStoreWritersLsof(path string) []int {
-	if path == "" {
-		return nil
-	}
-	var args []string
-	for _, p := range []string{path, path + "-wal", path + "-shm"} {
-		if _, err := os.Stat(p); err == nil {
-			args = append(args, p)
-		}
-	}
-	if len(args) == 0 {
-		return nil
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), lsofTimeout)
-	defer cancel()
-	out, _ := exec.CommandContext(ctx, lsofCommand, append([]string{"-t", "--"}, args...)...).Output()
-	if ctx.Err() != nil {
-		slog.Warn("cursor reap: lsof did not answer in time; nothing reaped", "path", path, "timeout", lsofTimeout)
-		return nil
-	}
-	var pids []int
-	seen := map[int]struct{}{}
-	for _, line := range strings.Split(string(out), "\n") {
-		pid, err := strconv.Atoi(strings.TrimSpace(line))
-		if err != nil || pid <= 1 {
-			continue
-		}
-		if _, ok := seen[pid]; ok {
-			continue
-		}
-		seen[pid] = struct{}{}
-		pids = append(pids, pid)
-	}
-	return pids
+	return nil
 }
 
+// listOrphanCursorACPPs refuses to scan. It does not run ps.
 func listOrphanCursorACPPs() []int {
-	out, err := exec.Command("ps", "-ax", "-o", "pid=,ppid=,command=").Output()
-	if err != nil {
-		return nil
-	}
-	var pids []int
-	for _, line := range bytes.Split(out, []byte("\n")) {
-		s := strings.TrimSpace(string(line))
-		if s == "" {
-			continue
-		}
-		pid, ppid, cmd, ok := parsePSLine(s)
-		if !ok || !IsOrphanCursorACP(ppid, cmd) {
-			continue
-		}
-		pids = append(pids, pid)
-	}
-	return pids
+	return nil
 }
 
 func parsePSLine(line string) (pid, ppid int, command string, ok bool) {

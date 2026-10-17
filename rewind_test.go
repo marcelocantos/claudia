@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -157,7 +158,7 @@ func TestRewindSessionLive(t *testing.T) {
 	if os.Getenv("CLAUDIA_LIVE") == "" {
 		t.Skip("CLAUDIA_LIVE not set (this test spends API credit)")
 	}
-	if _, err := resolveClaudeBin(); err != nil {
+	if _, err := exec.LookPath("claude"); err != nil {
 		t.Skip("claude binary not found")
 	}
 

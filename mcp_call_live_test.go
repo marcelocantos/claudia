@@ -29,7 +29,7 @@ func TestMCPCodexSeatCallsToolLive(t *testing.T) {
 	if os.Getenv("CLAUDIA_CODEX_LIVE") == "" {
 		t.Skip("CLAUDIA_CODEX_LIVE not set")
 	}
-	if _, err := resolveCodexBin(); err != nil {
+	if _, err := liveCodexBin(); err != nil {
 		t.Skip(err)
 	}
 

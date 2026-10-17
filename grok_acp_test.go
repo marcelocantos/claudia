@@ -100,7 +100,7 @@ func TestGrokSessionLiveSmoke(t *testing.T) {
 	if os.Getenv("CLAUDIA_GROK_LIVE") == "" {
 		t.Skip("CLAUDIA_GROK_LIVE not set (this test spends API credit)")
 	}
-	if _, err := resolveGrokBin(); err != nil {
+	if _, err := liveGrokBin(); err != nil {
 		t.Skipf("grok binary not found: %v", err)
 	}
 

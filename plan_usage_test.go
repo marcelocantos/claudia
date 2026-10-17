@@ -15,6 +15,24 @@ import (
 	"time"
 )
 
+func TestLoadClaudeOAuthAccessTokenDoesNotProbeKeychain(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "marker")
+	script := "#!/bin/sh\ntouch '" + marker + "'\n"
+	if err := os.WriteFile(filepath.Join(dir, "security"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	t.Setenv(claudeOAuthTokenEnv, "")
+	_, err := loadClaudeOAuthAccessToken()
+	if err == nil || !strings.Contains(err.Error(), "probe removed") {
+		t.Fatalf("loadClaudeOAuthAccessToken = %v", err)
+	}
+	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+		t.Fatalf("loadClaudeOAuthAccessToken started security: %v", statErr)
+	}
+}
+
 func TestParseClaudeOAuthUsageAvailable(t *testing.T) {
 	body := []byte(`{
 		"five_hour": {

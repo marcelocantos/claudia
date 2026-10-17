@@ -6,6 +6,7 @@ package claudia
 import (
 	"context"
 	"os"
+	"os/exec"
 	"regexp"
 	"strings"
 	"testing"
@@ -259,7 +260,7 @@ func TestModelObservableLive(t *testing.T) {
 	if os.Getenv("CLAUDIA_LIVE") == "" {
 		t.Skip("CLAUDIA_LIVE not set (this test spends API credit)")
 	}
-	if _, err := resolveClaudeBin(); err != nil {
+	if _, err := exec.LookPath("claude"); err != nil {
 		t.Skip("claude binary not found")
 	}
 	task := NewTask(TaskConfig{ID: "model-obs", WorkDir: t.TempDir(), Model: "fable"})
@@ -282,7 +283,7 @@ func TestModelNotFoundLiveFailLoud(t *testing.T) {
 	if os.Getenv("CLAUDIA_LIVE") == "" {
 		t.Skip("CLAUDIA_LIVE not set")
 	}
-	if _, err := resolveClaudeBin(); err != nil {
+	if _, err := exec.LookPath("claude"); err != nil {
 		t.Skip("claude binary not found")
 	}
 	const bad = "definitely-not-a-real-model-xyzzy"

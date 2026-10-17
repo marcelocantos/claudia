@@ -6,7 +6,6 @@ package claudia
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -88,8 +87,9 @@ const (
 // Capability reporting (Capability, CapabilityStatus, CapabilityError,
 // the provider claim matrix) lives in capability.go.
 
+// resolveCodexBin refuses. The subscription CLI is not located.
 func resolveCodexBin() (string, error) {
-	return resolveCodexBinFrom(os.Getenv, exec.LookPath, os.Stat, codexBinCandidates())
+	return "", fmt.Errorf("%w: codex", ErrLegacyCLISeatTransport)
 }
 
 func resolveCodexBinFrom(
@@ -162,8 +162,9 @@ func codexBinCandidates() []string {
 	}
 }
 
+// resolveGrokBin refuses. The subscription CLI is not located.
 func resolveGrokBin() (string, error) {
-	return resolveGrokBinFrom(os.Getenv, exec.LookPath, os.Stat, grokBinCandidates())
+	return "", fmt.Errorf("%w: grok", ErrLegacyCLISeatTransport)
 }
 
 func resolveGrokBinFrom(
@@ -205,8 +206,9 @@ func grokBinCandidates() []string {
 	}
 }
 
+// resolveCursorBin refuses. The subscription CLI is not located.
 func resolveCursorBin() (string, error) {
-	return resolveCursorBinFrom(os.Getenv, exec.LookPath, os.Stat, cursorBinCandidates())
+	return "", fmt.Errorf("%w: cursor", ErrLegacyCLISeatTransport)
 }
 
 func resolveCursorBinFrom(

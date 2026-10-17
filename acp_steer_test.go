@@ -594,7 +594,7 @@ func TestCursorSessionLiveSmokeSteer(t *testing.T) {
 	if os.Getenv("CLAUDIA_CURSOR_LIVE") == "" {
 		t.Skip("CLAUDIA_CURSOR_LIVE not set (this test spends API credit)")
 	}
-	bin, err := resolveCursorBin()
+	bin, err := liveCursorBin()
 	if err != nil {
 		t.Skipf("cursor agent binary not found: %v", err)
 	}
@@ -610,7 +610,7 @@ func TestGrokSessionLiveSmokeSteer(t *testing.T) {
 	if os.Getenv("CLAUDIA_GROK_LIVE") == "" {
 		t.Skip("CLAUDIA_GROK_LIVE not set (this test spends API credit)")
 	}
-	bin, err := resolveGrokBin()
+	bin, err := liveGrokBin()
 	if err != nil {
 		t.Skipf("grok binary not found: %v", err)
 	}

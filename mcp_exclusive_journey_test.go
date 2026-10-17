@@ -20,7 +20,7 @@ import (
 // does not dial dead HTTP servers from ~/.claude.json and kill the worker.
 // Sequence: prepare home → grok inspect → no enabled [claude] MCP.
 func TestMCPExclusiveGrokInspectJourney(t *testing.T) {
-	bin, err := resolveGrokBin()
+	bin, err := liveGrokBin()
 	if err != nil {
 		t.Skipf("grok binary not found: %v", err)
 	}
@@ -78,7 +78,7 @@ func TestMCPExclusiveSessionRoundTrip(t *testing.T) {
 	if os.Getenv("CLAUDIA_GROK_LIVE") == "" {
 		t.Skip("CLAUDIA_GROK_LIVE not set (this test spends API credit)")
 	}
-	if _, err := resolveGrokBin(); err != nil {
+	if _, err := liveGrokBin(); err != nil {
 		t.Skipf("grok binary not found: %v", err)
 	}
 	t.Setenv("CLAUDIA_GROK_CONNECT", "0")
@@ -162,7 +162,7 @@ func TestMCPExclusiveCursorSessionRoundTrip(t *testing.T) {
 	if os.Getenv("CLAUDIA_CURSOR_LIVE") == "" {
 		t.Skip("CLAUDIA_CURSOR_LIVE not set (this test spends API credit)")
 	}
-	if _, err := resolveCursorBin(); err != nil {
+	if _, err := liveCursorBin(); err != nil {
 		t.Skipf("cursor agent binary not found: %v", err)
 	}
 	token := fmt.Sprintf("claudia-ping-%d", time.Now().Unix()%100000)

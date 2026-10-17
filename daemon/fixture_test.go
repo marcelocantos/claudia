@@ -475,12 +475,7 @@ func startLiveDaemon(t *testing.T) *Daemon {
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	tmuxSock := filepath.Join(dir, "tmux.sock")
 	t.Setenv("CLAUDIA_TMUX_SOCKET", tmuxSock)
-	t.Cleanup(func() {
-		if _, err := os.Stat(tmuxSock); err != nil {
-			return
-		}
-		_ = exec.Command("tmux", "-S", tmuxSock, "kill-server").Run()
-	})
+	t.Cleanup(func() { releasePrivateTmuxSocket(tmuxSock) })
 	sock := filepath.Join(dir, "b.sock")
 	d, err := New(Options{
 		SocketPath: sock, StateDir: filepath.Join(dir, "state"),
@@ -494,6 +489,32 @@ func startLiveDaemon(t *testing.T) *Daemon {
 	t.Setenv(broker.SocketPathEnv, sock)
 	t.Setenv(broker.NoBrokerEnv, "")
 	return d
+}
+
+// releasePrivateTmuxSocket does not run tmux. A socket file left behind
+// is not a reason to exec kill-server.
+func releasePrivateTmuxSocket(socket string) {}
+
+func TestReleasePrivateTmuxSocketDoesNotKill(t *testing.T) {
+	dir := t.TempDir()
+	sock := filepath.Join(dir, "tmux.sock")
+	if err := os.WriteFile(sock, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(dir, "marker")
+	bin := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\ntouch '" + marker + "'\n"
+	if err := os.WriteFile(filepath.Join(bin, "tmux"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	releasePrivateTmuxSocket(sock)
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("cleanup executed tmux: %v", err)
+	}
 }
 
 // termLogTail returns the last few KB of a terminal log.

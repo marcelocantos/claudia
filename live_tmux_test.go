@@ -5,7 +5,6 @@ package claudia
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -60,15 +59,9 @@ func usePrivateTmuxServer() func() {
 	return func() { stopPrivateTmuxServer(socket, dir) }
 }
 
-// stopPrivateTmuxServer removes the private socket directory. It calls
-// tmux only when a socket file is already there, which a hermetic run
-// never creates.
+// stopPrivateTmuxServer removes the private socket directory. It does not
+// run tmux, including when the socket file is already there.
 func stopPrivateTmuxServer(socket, dir string) {
-	if socket != "" {
-		if _, err := os.Stat(socket); err == nil {
-			_ = exec.Command("tmux", "-S", socket, "kill-server").Run()
-		}
-	}
 	if dir != "" {
 		_ = os.RemoveAll(dir)
 	}
@@ -102,8 +95,12 @@ func TestPrivateTmuxCleanupLeavesTmuxUnstarted(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(bin, "tmux"), []byte("#!/bin/sh\ntouch "+marker+"\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	sock := filepath.Join(dir, "tmux.sock")
+	if err := os.WriteFile(sock, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	stopPrivateTmuxServer(filepath.Join(dir, "tmux.sock"), "")
+	stopPrivateTmuxServer(sock, "")
 	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
 		t.Fatalf("cleanup executed tmux: %v", statErr)
 	}

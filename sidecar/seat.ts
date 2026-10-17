@@ -162,7 +162,7 @@ export function createSeatAgent(opts: {
       systemPrompt: [
         "You are a coding agent hosted by Claudia.",
         "You have Bash, Read, Write, Glob, and Grep in the seat working directory.",
-        "Your host may add its own tools (jevons_*) for fleet actions such as messaging or starting agents; use those to act, not prose that names them.",
+        "Your host may add its own tools for fleet actions such as messaging or starting agents; use those to act, not prose that names them.",
         "Use them. Do not emit XML tool_call prose.",
       ],
       model,
@@ -177,16 +177,9 @@ export function createSeatAgent(opts: {
     // A compaction summary must reach the provider; the Agent's default
     // converter drops roles it does not know (🎯T150).
     convertToLlm: seatConvertToLlm,
-    resolveFallbackTool: (name: string) => {
-      if (!name.startsWith("jevons_")) return undefined;
-      return jevonsTool(
-        name,
-        (id, toolName, args) => sink.callTool(id, toolName, args),
-        undefined,
-        undefined,
-        () => toolResultBound(agent.state.model?.contextWindow ?? 0),
-      );
-    },
+    // An unlisted name is not a tool. The host declares every tool the
+    // model may call. There is no consumer-prefix fallback.
+    resolveFallbackTool: (_name: string) => undefined,
   });
   const boundOf = () => toolResultBound(agent.state.model?.contextWindow ?? 0);
   const callBack = (id: string, toolName: string, args: string) => sink.callTool(id, toolName, args);
@@ -198,9 +191,8 @@ export function createSeatAgent(opts: {
     lastHost = host;
     // Every tool the host offers is model-visible (T871.1): the host
     // discovered it from AgentDef.MCPServers and already decided which
-    // server executes it. resolveFallbackTool below stays jevons_*-only
-    // (T864.3) — it only fires for a jevons_* name the host did not list
-    // here, never for these explicit tools.
+    // server executes it. An unlisted name, including a consumer-prefixed
+    // one, is not invented here.
     const hosted = (host ?? []).map((t) => jevonsTool(t.name, callBack, t.description, t.input_schema, boundOf));
     const own = codingTools(() => cwd, boundOf, () => sandbox);
     ownToolNames = new Set(own.map((t) => t.name));

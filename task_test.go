@@ -818,92 +818,29 @@ func TestTaskStop(t *testing.T) {
 }
 
 func TestResolveClaudeBin(t *testing.T) {
-	// Build a sandbox directory containing a fake "claude" executable
-	// so we can drive the resolver without depending on the host's
-	// real claude install.
 	dir := t.TempDir()
-	fake := filepath.Join(dir, "claude")
-	if err := os.WriteFile(fake, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatalf("write fake claude: %v", err)
+	marker := filepath.Join(dir, "marker")
+	script := "#!/bin/sh\ntouch '" + marker + "'\n"
+	for _, name := range []string{"claude", "codex", "grok", "agent", "cursor-agent"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
-
-	// Snapshot and isolate env: clear CLAUDE_BIN, replace PATH with a
-	// directory that doesn't contain claude. Restore on test exit.
-	t.Setenv("CLAUDE_BIN", "")
-	emptyDir := t.TempDir()
-	t.Setenv("PATH", emptyDir)
-
-	t.Run("CLAUDE_BIN absolute path that exists is honoured", func(t *testing.T) {
-		t.Setenv("CLAUDE_BIN", fake)
-		got, err := resolveClaudeBin()
-		if err != nil {
-			t.Fatalf("resolveClaudeBin: %v", err)
+	t.Setenv("PATH", dir)
+	t.Setenv("CLAUDE_BIN", filepath.Join(dir, "claude"))
+	t.Setenv("CODEX_BIN", filepath.Join(dir, "codex"))
+	t.Setenv("GROK_BIN", filepath.Join(dir, "grok"))
+	t.Setenv("CURSOR_BIN", filepath.Join(dir, "cursor-agent"))
+	for _, resolve := range []func() (string, error){
+		resolveClaudeBin, resolveCodexBin, resolveGrokBin, resolveCursorBin,
+	} {
+		if _, err := resolve(); !errors.Is(err, ErrLegacyCLISeatTransport) {
+			t.Fatalf("resolve = %v, want legacy refusal", err)
 		}
-		if got != fake {
-			t.Errorf("got %q, want %q", got, fake)
-		}
-	})
-
-	t.Run("CLAUDE_BIN relative name is resolved via PATH", func(t *testing.T) {
-		// Add the fake's directory to PATH so LookPath finds it.
-		t.Setenv("CLAUDE_BIN", "claude")
-		t.Setenv("PATH", dir)
-		got, err := resolveClaudeBin()
-		if err != nil {
-			t.Fatalf("resolveClaudeBin: %v", err)
-		}
-		if got != fake {
-			t.Errorf("got %q, want %q", got, fake)
-		}
-	})
-
-	t.Run("CLAUDE_BIN absolute path that doesn't exist falls through", func(t *testing.T) {
-		t.Setenv("CLAUDE_BIN", filepath.Join(dir, "missing-claude"))
-		// Put the fake on PATH so LookPath catches it as the fallback.
-		t.Setenv("PATH", dir)
-		got, err := resolveClaudeBin()
-		if err != nil {
-			t.Fatalf("resolveClaudeBin: %v", err)
-		}
-		if got != fake {
-			t.Errorf("got %q, want %q (expected PATH fallback)", got, fake)
-		}
-	})
-
-	t.Run("PATH lookup wins when CLAUDE_BIN unset", func(t *testing.T) {
-		t.Setenv("CLAUDE_BIN", "")
-		t.Setenv("PATH", dir)
-		got, err := resolveClaudeBin()
-		if err != nil {
-			t.Fatalf("resolveClaudeBin: %v", err)
-		}
-		if got != fake {
-			t.Errorf("got %q, want %q", got, fake)
-		}
-	})
-
-	t.Run("missing everywhere returns error mentioning CLAUDE_BIN", func(t *testing.T) {
-		t.Setenv("CLAUDE_BIN", "")
-		t.Setenv("PATH", emptyDir)
-		// Steer HOME at a directory with no candidate paths so
-		// the known-install-dirs fallback also misses. The
-		// hardcoded /opt/homebrew and /usr/local candidates are
-		// out of our control, so skip if either exists with a
-		// claude binary on this host.
-		t.Setenv("HOME", emptyDir)
-		for _, sys := range []string{"/opt/homebrew/bin/claude", "/usr/local/bin/claude"} {
-			if _, err := os.Stat(sys); err == nil {
-				t.Skipf("system has %s; cannot test miss path", sys)
-			}
-		}
-		_, err := resolveClaudeBin()
-		if err == nil {
-			t.Fatal("expected error when claude is absent from PATH and known dirs")
-		}
-		if !strings.Contains(err.Error(), "CLAUDE_BIN") {
-			t.Errorf("error %q does not mention CLAUDE_BIN", err.Error())
-		}
-	})
+	}
+	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+		t.Fatalf("resolver started a CLI: %v", statErr)
+	}
 }
 
 // TestForwardTaskStreamOversizedLine reproduces 🎯T133: a Claude Task
