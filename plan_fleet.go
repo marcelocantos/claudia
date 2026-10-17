@@ -58,11 +58,10 @@ func FleetExclusionReason(detail string) string {
 }
 
 // ProviderBinaryError reports whether provider can start on this host.
-// It is nil when the provider's backend on that surface runs no local
-// CLI — session seats for Cursor and Grok run in the plan sidecar, and
-// Bedrock and Ollama are API backends — or when the CLI resolves the way
-// the backend itself will resolve it (env override, known install dirs,
-// PATH). Otherwise it is the resolver's own "executable not found" error.
+// Session seats for the fleet providers run in the plan sidecar, so this
+// does not look up a CLI for them. The Task surface no longer resolves or
+// launches a subscription CLI: those providers return [ErrTaskCLIRemoved]
+// before any binary lookup. Bedrock and Ollama stay API backends.
 // session selects the Session (seat) surface; false is the Task surface.
 func ProviderBinaryError(provider Provider, session bool) error {
 	if session && useOMP(Config{Provider: provider}) {
@@ -72,18 +71,12 @@ func ProviderBinaryError(provider Provider, session bool) error {
 		}
 		return nil
 	}
-	var err error
 	switch provider {
-	case "", ProviderClaude:
-		_, err = resolveClaudeBin()
-	case ProviderCodex:
-		_, err = resolveCodexBin()
-	case ProviderGrok:
-		_, err = resolveGrokBin()
-	case ProviderCursor:
-		_, err = resolveCursorBin()
+	case "", ProviderClaude, ProviderCodex, ProviderGrok, ProviderCursor,
+		"anthropic", "openai-codex", "xai-oauth":
+		return fmt.Errorf("%w: provider %q", ErrTaskCLIRemoved, provider)
 	}
-	return err
+	return nil
 }
 
 // ExcludeUnlaunchable marks each row of snap whose provider is a key of

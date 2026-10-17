@@ -492,9 +492,10 @@ Still present, so the purge is not done:
   slice fail-closes them. It does not build replacements.
 - `planGrokSession`, `acpBind`, and the exclusive-home helpers still
   compile. Session `StartAgent` does not call them.
-- Task mode (`claude -p`, `codex exec`, `grok -p`, `agent --print`) is
-  unchanged. §9 Q1 is still an owner question. Judge, Bedrock, and
-  Ollama Task backends stay API paths.
+- Task subscription launchers return `ErrTaskCLIRemoved` (`b165d7f`).
+  `ProviderBinaryError` on the Task surface returns that error before
+  it looks up `claude`, `codex`, `grok`, or `agent`. Session seats still
+  skip the CLI. Bedrock and Ollama stay API paths.
 - Q3 was answered by 🎯T189: drop, do not remint. The owner-approved
   13-row inventory is deleted once per state directory before resume
   (`ba2ecd6`). `1dcd5af` keeps the three personal-work names. Those

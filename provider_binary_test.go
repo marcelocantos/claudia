@@ -81,6 +81,46 @@ func TestProviderBinaryErrorSurfaces(t *testing.T) {
 	}
 }
 
+// The Task surface is the production caller that used to resolve a
+// subscription CLI. It must name the removal and must not look up or
+// start claude, codex, grok, or agent. A session check still does not.
+func TestTaskSurfaceBinaryErrorDoesNotResolveCLI(t *testing.T) {
+	binDir := t.TempDir()
+	marker := filepath.Join(binDir, "marker")
+	script := "#!/bin/sh\ntouch '" + marker + "'\n"
+	for _, name := range []string{"claude", "codex", "grok", "agent", "cursor-agent"} {
+		if err := os.WriteFile(filepath.Join(binDir, name), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", binDir)
+	t.Setenv("CLAUDE_BIN", filepath.Join(binDir, "claude"))
+	t.Setenv("CODEX_BIN", filepath.Join(binDir, "codex"))
+	t.Setenv("GROK_BIN", filepath.Join(binDir, "grok"))
+	t.Setenv("CURSOR_BIN", filepath.Join(binDir, "agent"))
+	t.Setenv("TMPDIR", binDir)
+
+	for _, p := range []Provider{"", ProviderClaude, ProviderCodex, ProviderGrok, ProviderCursor, "anthropic", "openai-codex", "xai-oauth"} {
+		err := ProviderBinaryError(p, false)
+		if !errors.Is(err, ErrTaskCLIRemoved) {
+			t.Fatalf("%q task: %v", p, err)
+		}
+	}
+	for _, p := range []Provider{ProviderClaude, ProviderCodex, ProviderGrok, ProviderCursor} {
+		if err := ProviderBinaryError(p, true); err != nil {
+			t.Fatalf("%s session: %v, want nil", p, err)
+		}
+	}
+	for _, p := range []Provider{ProviderBedrock, ProviderOllama} {
+		if err := ProviderBinaryError(p, false); err != nil {
+			t.Fatalf("%s task: %v, want nil", p, err)
+		}
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("subscription CLI was resolved or started: %v", err)
+	}
+}
+
 func TestExcludeUnlaunchableMarksRowNotAdmitted(t *testing.T) {
 	pct := 97.0
 	usage := []PlanUsage{{Provider: ProviderCodex, Status: PlanUsageAvailable,

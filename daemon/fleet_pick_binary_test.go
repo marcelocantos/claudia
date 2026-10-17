@@ -5,6 +5,8 @@ package daemon
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -100,5 +102,52 @@ func TestUsageReportsUnlaunchableProviders(t *testing.T) {
 		if row.Provider != claudia.ProviderCodex && !row.Admit {
 			t.Fatalf("%s row not admitted: %+v", row.Provider, row)
 		}
+	}
+}
+
+// The usage roster asks the Task surface with the daemon's own resolver.
+// That resolver is ProviderBinaryError when no test stub is installed.
+// A subscription CLI on PATH must not be started, and each fleet provider
+// is reported unlaunchable with the Task-removal error.
+func TestUsageTaskSurfaceDoesNotResolveCLI(t *testing.T) {
+	binDir := t.TempDir()
+	marker := filepath.Join(binDir, "marker")
+	script := "#!/bin/sh\ntouch '" + marker + "'\n"
+	for _, name := range []string{"claude", "codex", "grok", "agent", "cursor-agent"} {
+		if err := os.WriteFile(filepath.Join(binDir, name), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", binDir)
+	t.Setenv("CLAUDE_BIN", filepath.Join(binDir, "claude"))
+	t.Setenv("CODEX_BIN", filepath.Join(binDir, "codex"))
+	t.Setenv("GROK_BIN", filepath.Join(binDir, "grok"))
+	t.Setenv("CURSOR_BIN", filepath.Join(binDir, "agent"))
+	t.Setenv("TMPDIR", binDir)
+
+	f := newFixture(t)
+	opts := f.options(fleetSnap(t, 15, 40, 30, 97))
+	opts.DisableResume = true
+	opts.resolveBinary = nil
+	f.bootWith(t, opts)
+	waitFor(t, "usage fetched", func() bool { return f.fetchCount() >= 1 })
+
+	c, err := broker.Dial(f.sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	resp := rawCall(t, c, &broker.Request{ID: "u-task", Type: broker.TypeUsage, Usage: &broker.UsageRequest{}})
+	if resp.Usage == nil {
+		t.Fatalf("usage answered %s: %+v", resp.Type, resp.Error)
+	}
+	for _, name := range []string{"cursor", "grok", "claude", "codex"} {
+		reason := resp.Usage.Unlaunchable[name]
+		if !strings.Contains(reason, claudia.ErrTaskCLIRemoved.Error()) {
+			t.Fatalf("unlaunchable[%s] = %q", name, reason)
+		}
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("subscription CLI was resolved or started: %v", err)
 	}
 }
