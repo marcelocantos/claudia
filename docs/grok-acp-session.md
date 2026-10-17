@@ -156,11 +156,10 @@ through omp. A helper that still answers `error` names itself; read
 
 ### Oracles
 
-- Hermetic: `testdata/grok/acp/fake_acp.py` + `TestHermeticGrokSession*`  
-- Resume identity (🎯T35): `TestHermeticGrokLoadFailsClosedWhenRequireResume`,
-  `TestHermeticGrokRequireResumeWithMCPFailsClosed`,
-  `TestHermeticGrokRequireResumeWithMCPKeepsSessionID`,
-  `TestHermeticGrokLoadFallsThroughForMintedID`,
-  `TestHermeticGrokTooledUnmaterializedLoads`,
-  `TestHermeticGrokTooledUnmaterializedFallsThrough`  
-- Live (optional): real `grok agent stdio` via installed CLI and auth  
+- Session `StartAgent` does not exec. `TestT1055CLIBackendsDoNotSpawn`.
+  The CLI session hermetics (`TestHermeticGrokSession*`, the RequireResume
+  load tests) are removed.
+- Direct `startGrokACP` client tests still use `testdata/grok/acp/fake_acp.py`.
+  Those are not the seat path.
+- Live Task smoke: `TestGrokSessionLiveSmoke` (`CLAUDIA_GROK_LIVE=1`).
+  `TestExclusiveGrokSessionResumeLive` is removed.  

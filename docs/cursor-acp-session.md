@@ -126,17 +126,15 @@ even static config were ignored on some CLI builds — live
 
 ### Oracles
 
-- Hermetic Session: `testdata/cursor/acp/fake_acp.py` + `TestHermeticCursorSession*`
-- Streamed chunk join (🎯T79): `TestHermeticCursorSessionMultiChunkReply`
-  (`FAKE_ACP_CHUNKS`) and the pure `TestAppendTurnText`
-- Stuck opening prompt (🎯T83): `TestCursorStuckFirstPrompt*`,
-  `TestCursorSlowFirstPromptIsNotStuck`, `TestCursorSecondPromptIsNotWatched`
-  (`FAKE_ACP_WITHHOLD`, `FAKE_ACP_SWALLOW_FIRST_PROMPT`,
-  `FAKE_ACP_PROMPT_DELAY_MS`)
+- Session `StartAgent` does not exec. `TestT1055CLIBackendsDoNotSpawn`.
+- Direct ACP client tests still call `startCursorACP` against
+  `testdata/cursor/acp/fake_acp.py` (`TestCursorStartupCancellationAtEveryStage`,
+  the startup deadline tests). Those are not the seat path.
+- Opening-prompt silence (🎯T83 / 🎯T91): `TestT1055CursorOpeningWatchReportsStuck`
+  on an in-memory client, and `TestCursorPromptWithoutWakePathDoesNotPark`.
+- Dead transport: `TestCursorStuckPromptWaitEndsWhenTransportDies`.
 - Hermetic Task: `testdata/cursor/print/fake_print.py` + `TestHermeticCursorTaskRun`
-- Resume identity: `TestHermeticCursorLoadFailsClosedWhenRequireResume`,
-  `TestHermeticCursorLoadFallsThroughForMintedID`
-- Permissions: `TestHermeticCursorHyphenPermissionOptionID`
+- The CLI resume and hyphen-permission seat tests are removed.
 - Exclusive MCP: `TestMCPExclusiveCursorProjectMCPJourney` (project
   mcp.json, no HOME rewrite)
 - Live (optional): `CLAUDIA_CURSOR_LIVE=1` — Task + Session smoke, goal

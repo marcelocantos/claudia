@@ -4,55 +4,11 @@
 package claudia
 
 import (
-	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync/atomic"
 	"testing"
-	"time"
-
-	"github.com/google/uuid"
 )
-
-func TestExclusiveGrokHomeSurvivesAgentStopAndReturnedID(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	t.Setenv("GROK_BIN", writeFakeGrokACP(t))
-	t.Setenv("FAKE_ACP_REJECT_LOAD", "1")
-	cfg := Config{Provider: ProviderGrok, WorkDir: t.TempDir(), SessionID: "requested-id", MCPExclusive: true, TermLogPath: "-"}
-	agent, err := startLegacyGrokSession(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer agent.Stop()
-	sid := agent.SessionID()
-	if sid == cfg.SessionID {
-		t.Fatal("fixture did not replace requested ID")
-	}
-	home := exclusiveGrokHomeDir(sid)
-	marker := filepath.Join(home, "conversation-evidence")
-	if err := os.WriteFile(marker, []byte("retained"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	agent.Stop()
-	if b, err := os.ReadFile(marker); err != nil || string(b) != "retained" {
-		t.Fatalf("Stop lost provider storage: %q %v", b, err)
-	}
-	t.Setenv("FAKE_ACP_REJECT_LOAD", "")
-	cfg.SessionID, cfg.RequireResume = sid, true
-	next, err := startLegacyGrokSession(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer next.Stop()
-	if next.SessionID() != sid {
-		t.Fatalf("resume changed session: %s", next.SessionID())
-	}
-	if b, err := os.ReadFile(marker); err != nil || string(b) != "retained" {
-		t.Fatalf("restart lost provider storage: %q %v", b, err)
-	}
-}
 
 func TestExclusiveGrokHomeRejectsMissingInvalidAndCollidingState(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
@@ -125,102 +81,6 @@ func TestExclusiveGrokHomeRefreshKeepsConversationAndExcludesUserMCP(t *testing.
 	}
 	if b, err := os.ReadFile(filepath.Join(home, "session-data")); err != nil || string(b) != "keep" {
 		t.Fatalf("refresh lost session: %q %v", b, err)
-	}
-}
-
-// Real provider persistence is the oracle: the successor is never told the
-// retained fact. Run both retained ACP modes, stdio and detached serve.
-func TestExclusiveGrokSessionResumeLive(t *testing.T) {
-	if os.Getenv("CLAUDIA_GROK_LIVE") == "" {
-		t.Skip("CLAUDIA_GROK_LIVE not set")
-	}
-	for _, connect := range []bool{false, true} {
-		t.Run(fmt.Sprint(connect), func(t *testing.T) {
-			t.Setenv("XDG_STATE_HOME", t.TempDir())
-			t.Setenv(EnvGrokConnect, "0")
-			ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
-			defer cancel()
-			cfg := Config{Provider: ProviderGrok, WorkDir: t.TempDir(), MCPExclusive: true, GrokConnect: connect, TermLogPath: "-"}
-			agent, err := startLegacyGrokSession(cfg)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer agent.Stop()
-			direct := func(a *Agent, prompt, expected string) {
-				t.Helper()
-				if err := a.WaitReady(ctx); err != nil {
-					t.Fatal(err)
-				}
-				// Subscribe before Send; replay without a live prompt identity does
-				// not count. Grok sends append fragments, including empty terminals.
-				const eventBuffer = 256
-				events := make(chan Event, eventBuffer)
-				var overflow atomic.Bool
-				sub := a.SubscribeEvents(func(ev Event) {
-					select {
-					case events <- ev:
-					default:
-						overflow.Store(true)
-					}
-				})
-				defer a.UnsubscribeEvents(sub)
-				if err := a.Send(prompt); err != nil {
-					t.Fatal(err)
-				}
-				var text strings.Builder
-				turn := ""
-				for {
-					select {
-					case <-ctx.Done():
-						t.Fatal(ctx.Err())
-					case ev := <-events:
-						if overflow.Load() {
-							t.Fatal("provider event observation overflowed")
-						}
-						if ev.SessionID != a.SessionID() || ev.TurnID == "" {
-							continue
-						}
-						if turn == "" {
-							turn = ev.TurnID
-						}
-						if ev.TurnID != turn {
-							t.Fatal("multiple provider turns in one direct")
-						}
-						if ev.Type == "assistant" {
-							text.WriteString(ev.Text)
-						}
-						if ev.IsTerminalStop() {
-							if strings.TrimSpace(text.String()) != expected {
-								t.Fatalf("reply=%q, want=%q", text.String(), expected)
-							}
-							return
-						}
-					}
-				}
-			}
-			secret, ack := "remember-"+uuid.NewString(), "stored-"+uuid.NewString()
-			direct(agent, "Remember this fact for my next question: "+secret+". Reply with exactly: "+ack, ack)
-			sid := agent.SessionID()
-			original, err := filepath.EvalSymlinks(exclusiveGrokHomeDir(sid))
-			if err != nil {
-				t.Fatal(err)
-			}
-			agent.Stop()
-			if _, err := os.Stat(original); err != nil {
-				t.Fatalf("Stop removed provider home: %v", err)
-			}
-			cfg.SessionID, cfg.RequireResume = sid, true
-			next, err := startLegacyGrokSession(cfg)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer next.Stop()
-			if next.SessionID() != sid {
-				t.Fatalf("changed session: %s", next.SessionID())
-			}
-			challenge := "now-" + uuid.NewString()
-			direct(next, "What fact did I ask you to remember? Reply with exactly two words: that fact, then "+challenge+". No other text.", secret+" "+challenge)
-		})
 	}
 }
 

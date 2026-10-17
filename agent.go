@@ -597,8 +597,8 @@ func (codexAgentBackend) Capabilities() providerCapabilities {
 	}
 }
 
-func (codexAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
-	return startCodexAgent(req)
+func (codexAgentBackend) StartAgent(agentStartRequest) (*agentStart, error) {
+	return nil, fmt.Errorf("%w: %s", ErrLegacyCLISeatTransport, ProviderCodex)
 }
 
 func (grokAgentBackend) Capabilities() providerCapabilities {
@@ -609,8 +609,8 @@ func (grokAgentBackend) Capabilities() providerCapabilities {
 	}
 }
 
-func (grokAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
-	return startGrokAgent(req)
+func (grokAgentBackend) StartAgent(agentStartRequest) (*agentStart, error) {
+	return nil, fmt.Errorf("%w: %s", ErrLegacyCLISeatTransport, ProviderGrok)
 }
 
 func (cursorAgentBackend) Capabilities() providerCapabilities {
@@ -620,8 +620,8 @@ func (cursorAgentBackend) Capabilities() providerCapabilities {
 	}
 }
 
-func (cursorAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
-	return startCursorAgent(req)
+func (cursorAgentBackend) StartAgent(agentStartRequest) (*agentStart, error) {
+	return nil, fmt.Errorf("%w: %s", ErrLegacyCLISeatTransport, ProviderCursor)
 }
 
 func (b errorAgentBackend) Capabilities() providerCapabilities {
@@ -1071,46 +1071,8 @@ func claudeSessionPrecheck(req agentStartRequest) error {
 	return nil
 }
 
-func (claudeAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
-	if err := claudeSessionPrecheck(req); err != nil {
-		return nil, err
-	}
-	if err := checkTmux(); err != nil {
-		return nil, err
-	}
-
-	mcpArg, mcpCleanup, err := prepareClaudeMCPConfig(req.Config)
-	if err != nil {
-		return nil, fmt.Errorf("session mcp: %w", err)
-	}
-	args := claudeAgentArgsWithMCP(req, mcpArg)
-
-	windowName := tmuxagent.SessionWindowName(req.SessionID)
-	claudeBin, err := resolveClaudeBin()
-	if err != nil {
-		if mcpCleanup != nil {
-			mcpCleanup()
-		}
-		return nil, err
-	}
-	windowID, err := tmuxagent.SpawnWindow(req.WorkDir, windowName, claudeBin, args)
-	if err != nil {
-		if mcpCleanup != nil {
-			mcpCleanup()
-		}
-		return nil, fmt.Errorf("tmux spawn: %w", err)
-	}
-
-	start, err := attachClaudeWindow(windowID)
-	if err != nil {
-		tmuxagent.KillWindow(windowID)
-		if mcpCleanup != nil {
-			mcpCleanup()
-		}
-		return nil, err
-	}
-	start.Cleanup = mcpCleanup
-	return start, nil
+func (claudeAgentBackend) StartAgent(agentStartRequest) (*agentStart, error) {
+	return nil, fmt.Errorf("%w: %s", ErrLegacyCLISeatTransport, ProviderClaude)
 }
 
 // ErrNoSessionWindow is returned by [Adopt] when no live tmux window
@@ -1118,9 +1080,8 @@ func (claudeAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error)
 // to [Start]; upgrade callers treat it as "this agent actually exited."
 var ErrNoSessionWindow = errors.New("no live tmux window for session")
 
-// ErrLegacyCLISeatTransport refuses a CLI process for a Session seat
-// that the product dispatcher or Adopt would otherwise have started.
-// The concrete session backends remain callable for their own tests.
+// ErrLegacyCLISeatTransport refuses a CLI process for a Session seat.
+// Product dispatch, Adopt, and the concrete session backends all return it.
 // Task mode is a separate process-per-prompt path and is unchanged.
 var ErrLegacyCLISeatTransport = errors.New("legacy CLI seat transport removed")
 
@@ -1165,42 +1126,8 @@ func (adoptClaudeBackend) Capabilities() providerCapabilities {
 	return claudeProviderCapabilities()
 }
 
-func (adoptClaudeBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
-	if err := checkTmux(); err != nil {
-		return nil, err
-	}
-	if req.SessionID == "" {
-		return nil, ErrNoSessionWindow
-	}
-	ids, err := tmuxagent.WindowsForSession(req.SessionID)
-	if err != nil {
-		return nil, err
-	}
-	if len(ids) == 0 {
-		return nil, fmt.Errorf("%w: %s", ErrNoSessionWindow, req.SessionID)
-	}
-	return attachClaudeWindow(ids[0])
-}
-
-func attachClaudeWindow(windowID string) (*agentStart, error) {
-	if !tmuxagent.IsWindowAlive(windowID) {
-		return nil, fmt.Errorf("%w: window %s gone", ErrNoSessionWindow, windowID)
-	}
-	ctrl, err := tmuxagent.DialControl(windowID)
-	if err != nil {
-		return nil, fmt.Errorf("tmux control-mode: %w", err)
-	}
-	return &agentStart{
-		WindowID:             windowID,
-		WindowAlive:          tmuxagent.IsWindowAlive,
-		Control:              ctrl,
-		Ops:                  claudeAgentOps(),
-		TailJSONL:            true,
-		StoreSessionInWindow: true,
-		DetectReady: func(a *Agent) {
-			go a.detectReady()
-		},
-	}, nil
+func (adoptClaudeBackend) StartAgent(agentStartRequest) (*agentStart, error) {
+	return nil, fmt.Errorf("%w: %s", ErrLegacyCLISeatTransport, ProviderClaude)
 }
 
 // grokSessionPlan is everything the Grok Session path derives from a
@@ -1322,209 +1249,6 @@ func (b *acpBind) onClose() {
 func (b *acpBind) attach(a *Agent) {
 	b.gen.Store(a.backendGen.Load())
 	b.ref.Store(a)
-}
-
-func startCodexAgent(req agentStartRequest) (*agentStart, error) {
-	if err := codexSessionPrecheck(req); err != nil {
-		return nil, err
-	}
-	if _, err := ensureCodexSubscriptionAuth(nil); err != nil {
-		return nil, err
-	}
-	bin, err := resolveCodexBin()
-	if err != nil {
-		return nil, err
-	}
-	// The steer claim is per install: only a CLI whose app-server schema
-	// lists turn/steer gets the mechanism wired (🎯T72.2).
-	steerSupported := codexAppServerSupportsSteer(bin)
-
-	sandboxTuning, err := codexSandboxTuningFor(req)
-	if err != nil {
-		return nil, err
-	}
-
-	var bind acpBind
-
-	var extraEnv []string
-	var mcpCleanup func()
-	var exclusiveHome string
-	if needsSessionMCPMaterialization(req.Config) {
-		home, cleanup, herr := exclusiveCodexHomeForStart(req.SessionID, req.Config.RequireResume, mergeMCPServers(req.Config), sandboxTuning)
-		if herr != nil {
-			return nil, herr
-		}
-		exclusiveHome = home
-		mcpCleanup = cleanup
-		extraEnv = exclusiveEnv("CODEX_HOME", home)
-	}
-	client, err := startCodexAppServer(bin, req.WorkDir, req.Config.Model, req.SessionID, req.Config.RequireResume, req.Config.SandboxMode,
-		sandboxTuning, extraEnv, bind.onEvent, bind.onClose)
-	if err != nil {
-		if mcpCleanup != nil {
-			mcpCleanup()
-		}
-		if req.Config.RequireResume && exclusiveHome != "" {
-			return nil, fmt.Errorf("%w — exclusive CODEX_HOME %s", err, exclusiveHome)
-		}
-		return nil, err
-	}
-	sid := client.ThreadID()
-	if exclusiveHome != "" && sid != "" {
-		if err := publishExclusiveCodexHome(exclusiveHome, sid); err != nil {
-			slog.Error("publish exclusive CODEX_HOME", "src", exclusiveHome, "session", sid, "err", err)
-		}
-		mcpCleanup = exclusiveCodexHomeCleanup(exclusiveHome, sid, mcpCleanup)
-	}
-	ops := agentOps{
-		attachCommand: func(*Agent) string { return "" },
-		interrupt: func(*Agent) error {
-			return client.Interrupt()
-		},
-		send: func(_ *Agent, msg string) error {
-			return client.Prompt(msg)
-		},
-		stop: func(*Agent) {
-			client.Close()
-		},
-		promptInFlight: func(*Agent) bool {
-			return client.promptInFlight()
-		},
-		switchModel: func(a *Agent, provider Provider, model string) error {
-			if err := sameProviderSwitch(a, provider); err != nil {
-				return err
-			}
-			return client.SetModel(model)
-		},
-		turnCaps: func(*Agent) TurnCaps {
-			return codexTurnCaps(steerSupported)
-		},
-	}
-	if steerSupported {
-		ops.steer = steerOp(client)
-	}
-	return &agentStart{
-		Cleanup:   mcpCleanup,
-		WindowID:  "codex-app-server-" + sid,
-		Ops:       ops,
-		TailJSONL: false,
-		SessionID: sid,
-		DetectReady: func(a *Agent) {
-			bind.attach(a)
-			if m := client.Model(); m != "" {
-				a.publishEvent(Event{Type: "system", Model: m})
-			}
-			close(a.ready)
-		},
-	}, nil
-}
-
-// startGrokAgent launches Grok Build over ACP. Default is parent-owned
-// `grok agent stdio`. Connect-mode (Config.GrokConnect / CLAUDIA_GROK_CONNECT
-// / ConnectURL) uses detached `grok agent serve` + WebSocket so the agent
-// process survives consumer restart (jevons 🎯T40).
-func startGrokAgent(req agentStartRequest) (*agentStart, error) {
-	if err := grokSessionPrecheck(req); err != nil {
-		return nil, err
-	}
-
-	bin, err := resolveGrokBin()
-	if err != nil {
-		return nil, err
-	}
-
-	plan := planGrokSession(req)
-	preferID := plan.PreferSessionID
-
-	// Client is closed via ops.stop. publishEvent is wired once Agent exists;
-	// we stash a pointer-to-func that Start fills after construction by
-	// closing ready immediately and using ops that capture the client.
-	var bind acpBind
-
-	var extraEnv []string
-	var grokHome string
-	if req.Config.MCPExclusive {
-		home, herr := exclusiveGrokHomeForStart(preferID, plan.RequireResume || req.Config.ConnectURL != "")
-		if herr != nil {
-			return nil, herr
-		}
-		grokHome = home
-		extraEnv = exclusiveEnv("GROK_HOME", home)
-		slog.Info("grok MCPExclusive", "GROK_HOME", home)
-	}
-
-	var client *grokACPClient
-	if plan.Connect {
-		client, err = startGrokACPConnect(bin, plan.WorkDir, plan.Model, preferID, plan.RequireResume, plan.MCPServers, req.Config, extraEnv, bind.onEvent, bind.onClose)
-	} else {
-		client, err = startGrokACP(bin, plan.WorkDir, plan.Model, preferID, plan.RequireResume, plan.MCPServers, extraEnv, bind.onEvent, bind.onClose)
-	}
-	if err != nil {
-		return nil, err
-	}
-
-	sid := client.SessionID()
-	if grokHome != "" {
-		if err := publishExclusiveGrokHome(grokHome, sid); err != nil {
-			client.Close()
-			return nil, err
-		}
-	}
-	windowID := "grok-acp-" + sid
-	if client.ConnectURL() != "" {
-		windowID = "grok-serve-" + sid
-	}
-	ops := agentOps{
-		attachCommand: func(*Agent) string {
-			// Connect-mode: no TUI; surface endpoint for operators.
-			if u := client.ConnectURL(); u != "" {
-				return "grok-serve " + u
-			}
-			return ""
-		},
-		interrupt: func(*Agent) error {
-			return client.Cancel()
-		},
-		send: func(_ *Agent, msg string) error {
-			// Non-blocking: streams + terminal stop arrive via onEvent.
-			return client.Prompt(msg)
-		},
-		resize: nil, // unsupported over ACP
-		stop: func(*Agent) {
-			client.Close()
-		},
-		promptInFlight: func(*Agent) bool {
-			return client.promptInFlight()
-		},
-		switchModel: func(a *Agent, provider Provider, model string) error {
-			if err := sameProviderSwitch(a, provider); err != nil {
-				return err
-			}
-			return client.SetModel(model)
-		},
-		// Nil until grokACPClient satisfies turnSteerer (🎯T72.1); then
-		// this same line wires Steer without an edit here.
-		steer: steerOp(client),
-	}
-
-	return &agentStart{
-		WindowID:   windowID,
-		Ops:        ops,
-		TailJSONL:  false,
-		SessionID:  sid,
-		ConnectURL: client.ConnectURL(),
-		ConnectPID: client.ConnectPID(),
-		// Leave JSONLPath empty: Grok Session is not a Claude JSONL transcript.
-		DetectReady: func(a *Agent) {
-			// Must run before Send: wire publishEvent target, then mark ready.
-			bind.attach(a)
-			select {
-			case <-a.ready:
-			default:
-				close(a.ready)
-			}
-		},
-	}, nil
 }
 
 // Run sends a single prompt to a new Session-mode agent, waits for

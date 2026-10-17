@@ -249,7 +249,6 @@
         }
       ],
       "tests": [
-        {"name": "TestCursorWaitForResponseAfterTurnEndedStillReturnsTheReply", "expect": "red"},
         {"name": "TestWaitForResponseSeesTurnPublishedBeforeItSubscribed", "expect": "red"},
         {"name": "TestWaitForResponseIgnoresEventsFromBeforeTheSubmit", "expect": "green"}
       ],
@@ -411,10 +410,9 @@
         }
       ],
       "tests": [
-        {"name": "TestCursorPromptWithoutWakePathDoesNotPark", "expect": "red"},
-        {"name": "TestCursorStuckFirstPromptFailsTypedAndLeavesSeatUsable", "expect": "green"}
+        {"name": "TestCursorPromptWithoutWakePathDoesNotPark", "expect": "red"}
       ],
-      "note": "The green is 🎯T83's oracle on a transport-owning client, where the watch arms under both the fix and the mutation. That shows the red pins the wake-path condition specifically, not the watch as a whole. When claudia-po hand-ran this at e18806d it also turned TestACPSteerPromptIDStack and TestT50_2PromptAcceptedBeforeWriteAndPermissionBeforeReply red, in 0.00s: awaitPeerActivity's own nil-wake guard turns the old hang into a fast failure. Those two are not declared, because they bite through that second line of defence and not through this condition."
+      "note": "The red builds a cursor client with no peer wake path and requires Prompt to return at once. Arming the watch without that path makes the call fail. The transport-owning session oracles that used to be the green control started a CLI seat and are gone. When claudia-po hand-ran this at e18806d it also turned TestACPSteerPromptIDStack and TestT50_2PromptAcceptedBeforeWriteAndPermissionBeforeReply red, in 0.00s: awaitPeerActivity's own nil-wake guard turns the old hang into a fast failure. Those two are not declared, because they bite through that second line of defence and not through this condition."
     },
     {
       "target": "T91",
@@ -449,12 +447,10 @@
         }
       ],
       "tests": [
-        {"name": "TestCursorStuckFirstPromptFailsTypedAndLeavesSeatUsable", "expect": "red"},
-        {"name": "TestCursorSlowFirstPromptIsNotStuck", "expect": "red"},
-        {"name": "TestCursorStuckPromptErrorNamesBothDeliveries", "expect": "red"},
+        {"name": "TestT1055CursorOpeningWatchReportsStuck", "expect": "red"},
         {"name": "TestCursorPromptWithoutWakePathDoesNotPark", "expect": "green"}
       ],
-      "note": "This is the most load-bearing of 🎯T91's mutations: it is the one that proves the 🎯T83 oracles still see the watch after 🎯T91 narrowed when it arms. The green is 🎯T91's own no-wake-path test. That path never arms the watch, so the test is indifferent to this mutation, and the reds belong to 🎯T83's mechanism, not to 🎯T91's."
+      "note": "The red builds an in-memory cursor client that has a peer wake path and never receives a message, then requires ErrCursorPromptStuck. watch := false makes Prompt return nil at once. The green is the no-wake-path test: that client never arms the watch, so this mutation does not change it. The CLI session oracles that used to carry the red started a process and are gone."
     },
     {
       "target": "T91",

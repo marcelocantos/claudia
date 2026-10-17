@@ -19,21 +19,6 @@ import (
 	"github.com/marcelocantos/claudia/omp"
 )
 
-// startLegacyCodexSession drives the legacy `codex app-server` backend directly.
-// Since 🎯T178 a Codex Session seat goes through the sidecar, so Start no
-// longer reaches this backend; its own tests keep covering it until 🎯T192
-// removes it.
-func startLegacyCodexSession(cfg Config) (*Agent, error) {
-	if cfg.Provider == "" {
-		cfg.Provider = ProviderCodex
-	}
-	return startWithBackend(cfg, codexAgentBackend{})
-}
-
-// ompFixture is a fake subscription sidecar: it answers load and adopt with
-// ready (echoing the sandbox mode it was asked for, as the real sidecar does
-// since 🎯T178) and answers each prompt with one text and a turn_end stamped
-// with the prompt's turn (🎯T179).
 type ompFixture struct {
 	loads   chan omp.Message
 	prompts chan omp.Message

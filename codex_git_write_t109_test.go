@@ -11,7 +11,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 )
@@ -172,117 +171,6 @@ func t109LastArgv(t *testing.T, path string) []string {
 	return argv
 }
 
-// The whole path: Start in a repo with workspace-write puts the grant on
-// the app-server's argv, and the (fake) app-server echoes it back.
-func TestT109HermeticStartGrantsTheRepoGitDir(t *testing.T) {
-	bin := writeFakeCodexAppServer(t)
-	t.Setenv("CODEX_BIN", bin)
-	writeFakeCodexSubscriptionAuth(t)
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	argvLog := filepath.Join(t.TempDir(), "argv.json")
-	t.Setenv("FAKE_CODEX_LAST_ARGV", argvLog)
-	repo := t109Repo(t)
-
-	agent, err := startLegacyCodexSession(Config{
-		Provider:        ProviderCodex,
-		WorkDir:         repo,
-		SandboxMode:     "workspace-write",
-		SandboxGitWrite: true,
-		TermLogPath:     "-",
-	})
-	if err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	defer agent.Stop()
-
-	want := []string{"app-server", "-c", "sandbox_workspace_write.writable_roots=[" + strconv.Quote(filepath.Join(repo, ".git")) + "]"}
-	if got := t109LastArgv(t, argvLog); !slices.Equal(got, want) {
-		t.Fatalf("app-server argv = %q, want %q", got, want)
-	}
-	// A bare seat keeps its threads in the user's CODEX_HOME. The grant
-	// must not move it into a private one, or its next resume finds none.
-	if dirExists(exclusiveCodexHomeDir(agent.SessionID())) {
-		t.Fatal("the git grant gave a bare seat a private CODEX_HOME")
-	}
-}
-
-// A read-only seat is not given write access to anything, .git included.
-func TestT109ReadOnlySeatGetsNoGitGrant(t *testing.T) {
-	bin := writeFakeCodexAppServer(t)
-	t.Setenv("CODEX_BIN", bin)
-	writeFakeCodexSubscriptionAuth(t)
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	argvLog := filepath.Join(t.TempDir(), "argv.json")
-	t.Setenv("FAKE_CODEX_LAST_ARGV", argvLog)
-
-	agent, err := startLegacyCodexSession(Config{Provider: ProviderCodex, WorkDir: t109Repo(t), TermLogPath: "-"})
-	if err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	defer agent.Stop()
-	if got := t109LastArgv(t, argvLog); !slices.Equal(got, []string{"app-server"}) {
-		t.Fatalf("read-only app-server argv = %q, want a bare app-server", got)
-	}
-}
-
-// The caller's own roots live in config.toml, and `-c` replaces that list.
-// A seat with both must end up with both.
-func TestT109HermeticGrantKeepsTheCallersRoots(t *testing.T) {
-	bin := writeFakeCodexAppServer(t)
-	t.Setenv("CODEX_BIN", bin)
-	writeFakeCodexSubscriptionAuth(t)
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	argvLog := filepath.Join(t.TempDir(), "argv.json")
-	t.Setenv("FAKE_CODEX_LAST_ARGV", argvLog)
-	repo := t109Repo(t)
-	gates := filepath.Join(t.TempDir(), "gates")
-
-	agent, err := startLegacyCodexSession(Config{
-		Provider:             ProviderCodex,
-		WorkDir:              repo,
-		SandboxMode:          "workspace-write",
-		SandboxGitWrite:      true,
-		SandboxWritableRoots: []string{gates},
-		TermLogPath:          "-",
-	})
-	if err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	defer agent.Stop()
-	want := "sandbox_workspace_write.writable_roots=[" + strconv.Quote(gates) + ", " + strconv.Quote(filepath.Join(repo, ".git")) + "]"
-	if got := t109LastArgv(t, argvLog); !slices.Contains(got, want) {
-		t.Fatalf("app-server argv = %q, want it to carry %s", got, want)
-	}
-}
-
-// A CLI that ignores the override leaves .git read-only. Start must say so
-// rather than hand back a seat that cannot commit.
-func TestT109HermeticStartRefusesWhenTheGrantIsIgnored(t *testing.T) {
-	bin := writeFakeCodexAppServer(t)
-	t.Setenv("CODEX_BIN", bin)
-	writeFakeCodexSubscriptionAuth(t)
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	t.Setenv("FAKE_CODEX_DROP_WRITABLE_ROOTS", "1")
-	repo := t109Repo(t)
-
-	agent, err := startLegacyCodexSession(Config{
-		Provider:        ProviderCodex,
-		WorkDir:         repo,
-		SandboxMode:     "workspace-write",
-		SandboxGitWrite: true,
-		TermLogPath:     "-",
-	})
-	if err == nil {
-		agent.Stop()
-		t.Fatal("Start succeeded with .git left read-only")
-	}
-	for _, want := range []string{filepath.Join(repo, ".git"), "read-only"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("refusal does not name %q: %v", want, err)
-		}
-	}
-}
-
 // t112CaptureLogs routes slog into a buffer for the rest of the test.
 func t112CaptureLogs(t *testing.T) *bytes.Buffer {
 	t.Helper()
@@ -291,40 +179,6 @@ func t112CaptureLogs(t *testing.T) *bytes.Buffer {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
 	t.Cleanup(func() { slog.SetDefault(old) })
 	return &logs
-}
-
-// The default arm: no SandboxGitWrite, no grant — and no silence either.
-// The seat starts, .git keeps Codex's protection, and the log names the
-// directory and the field that would lift it.
-func TestT112DefaultKeepsGitProtectedAndSaysSo(t *testing.T) {
-	bin := writeFakeCodexAppServer(t)
-	t.Setenv("CODEX_BIN", bin)
-	writeFakeCodexSubscriptionAuth(t)
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	argvLog := filepath.Join(t.TempDir(), "argv.json")
-	t.Setenv("FAKE_CODEX_LAST_ARGV", argvLog)
-	logs := t112CaptureLogs(t)
-	repo := t109Repo(t)
-
-	agent, err := startLegacyCodexSession(Config{
-		Provider:    ProviderCodex,
-		WorkDir:     repo,
-		SandboxMode: "workspace-write",
-		TermLogPath: "-",
-	})
-	if err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	defer agent.Stop()
-
-	if got := t109LastArgv(t, argvLog); !slices.Equal(got, []string{"app-server"}) {
-		t.Fatalf("app-server argv = %q: .git was granted to a seat that did not ask for it", got)
-	}
-	for _, want := range []string{".git stays read-only", filepath.Join(repo, ".git"), "SandboxGitWrite"} {
-		if !strings.Contains(logs.String(), want) {
-			t.Fatalf("log does not mention %q — a read-only .git must not be silent:\n%s", want, logs)
-		}
-	}
 }
 
 // Outside a repository there is no .git to protect and nothing to say.

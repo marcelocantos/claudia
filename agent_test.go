@@ -390,20 +390,6 @@ func TestStartWithBackendRejectsEmptyStart(t *testing.T) {
 	}
 }
 
-func TestStartGrokSessionNonExecutableBinary(t *testing.T) {
-	// Absolute path that exists but is not executable so resolve returns it
-	// and spawn fails (no fallthrough to a host grok install).
-	t.Setenv("GROK_BIN", t.TempDir())
-	_, err := startLegacyGrokSession(Config{Provider: ProviderGrok, WorkDir: t.TempDir(), TermLogPath: "-"})
-	if err == nil {
-		t.Fatal("Start returned nil error for non-executable GROK_BIN")
-	}
-	var capErr *CapabilityError
-	if errors.As(err, &capErr) {
-		t.Fatalf("unexpected CapabilityError: %+v", capErr)
-	}
-}
-
 func TestCodexRewindFailsWithCapabilityError(t *testing.T) {
 	agent := &Agent{provider: ProviderCodex}
 	_, err := agent.Rewind(1, Config{Provider: ProviderCodex})

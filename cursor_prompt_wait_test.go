@@ -4,8 +4,6 @@
 package claudia
 
 import (
-	"errors"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -141,43 +139,5 @@ func TestAwaitPeerActivityReportsTransportClosed(t *testing.T) {
 	}
 	if got := out.String(); !strings.Contains(got, "transport closed") {
 		t.Errorf("outcome %q does not distinguish a dead peer from a silent one", got)
-	}
-}
-
-// 🎯T91's second half: when a real peer genuinely goes silent, the error
-// says what was waited for. The old text gave a session and a duration,
-// which left the reader unable to tell a swallowed delivery from a dead
-// transport without going back to the wire.
-func TestCursorStuckPromptErrorNamesBothDeliveries(t *testing.T) {
-	shortenCursorSilenceBound(t, 150*time.Millisecond)
-	bin := writeFakeCursorACP(t)
-	t.Setenv("CURSOR_BIN", bin)
-	t.Setenv("FAKE_ACP_WITHHOLD", "session/prompt")
-
-	agent, err := startLegacyCursorSession(Config{Provider: ProviderCursor, WorkDir: t.TempDir(), TermLogPath: "-"})
-	if err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	defer agent.Stop()
-
-	err = agent.Send("the opening brief")
-	if !errors.Is(err, ErrCursorPromptStuck) {
-		t.Fatalf("Send err = %v, want errors.Is ErrCursorPromptStuck", err)
-	}
-	msg := err.Error()
-	for _, want := range []string{"two deliveries", "no inbound message"} {
-		if !strings.Contains(msg, want) {
-			t.Errorf("error %q is missing %q: it does not report what the wait observed", msg, want)
-		}
-	}
-	// Both prompt ids, so the reader can find each delivery on the wire.
-	var ids int
-	for i := 1; i <= 8; i++ {
-		if strings.Contains(msg, "prompt "+strconv.Itoa(i)+":") {
-			ids++
-		}
-	}
-	if ids != 2 {
-		t.Errorf("error %q names %d prompt ids, want both deliveries", msg, ids)
 	}
 }

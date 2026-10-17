@@ -6,16 +6,15 @@ package claudia
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/marcelocantos/claudia/internal/broker"
 	"github.com/marcelocantos/claudia/internal/wallclockguard"
 )
 
@@ -255,64 +254,30 @@ func TestRegistryDefinitionSnapshotsOwnMCPData(t *testing.T) {
 	}
 }
 
-func TestRegistryCursorStopCancelsActualACPStartup(t *testing.T) {
-	// The product Cursor route now uses the sidecar. This test exercises
-	// cancellation of the retained ACP transport, so select it explicitly.
+func TestT1055RegistryCursorLaunchRefusesCLI(t *testing.T) {
+	t.Setenv(broker.NoBrokerEnv, "1")
 	previousStart := registryStart
 	registryStart = func(ctx context.Context, cfg Config) (*Agent, error) {
 		return startWithBackendContext(ctx, cfg, cursorAgentBackend{})
 	}
 	t.Cleanup(func() { registryStart = previousStart })
-	t.Setenv("CURSOR_BIN", writeFakeCursorACP(t))
-	t.Setenv("FAKE_ACP_WITHHOLD", "session/load")
-	logPath := filepath.Join(t.TempDir(), "requests.jsonl")
-	t.Setenv("FAKE_ACP_REQUEST_LOG", logPath)
 	r, err := NewRegistry(filepath.Join(t.TempDir(), "agents.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	const sid = "saved-cursor-conversation"
-	if err := r.Register(AgentDef{Name: "cursor", SessionID: sid, Provider: ProviderCursor, WorkDir: t.TempDir(), Materialized: true}); err != nil {
+	if err := r.Register(AgentDef{
+		Name: "cursor", SessionID: sid, Provider: ProviderCursor,
+		WorkDir: t.TempDir(), Materialized: true,
+	}); err != nil {
 		t.Fatal(err)
 	}
-	done := make(chan error, 1)
-	go func() { _, err := r.Launch("cursor"); done <- err }()
-	deadline := wallclockguard.UntilTestTimeout(t)
-	// 🎯T97 exemption: a poll interval. A tick only re-reads state; the
-	// wait's one failure is the UntilTestTimeout case, not this clock.
-	tick := time.NewTicker(10 * time.Millisecond)
-	defer tick.Stop()
-	pid := 0
-waitLoad:
-	for {
-		select {
-		case <-deadline.Done():
-			t.Fatal("Cursor did not reach saved-session load")
-		case <-tick.C:
-			b, _ := os.ReadFile(logPath)
-			for _, line := range strings.Split(string(b), "\n") {
-				var row struct {
-					PID    int
-					Method string
-				}
-				if json.Unmarshal([]byte(line), &row) == nil && row.Method == "session/load" {
-					pid = row.PID
-					break waitLoad
-				}
-			}
-		}
+	_, err = r.Launch("cursor")
+	if !errors.Is(err, ErrLegacyCLISeatTransport) {
+		t.Fatalf("launch = %v, want legacy CLI seat refusal", err)
 	}
-	stopped := make(chan struct{})
-	go func() { r.Stop("cursor"); close(stopped) }()
-	lifecycleAwait(t, stopped)
-	if err := lifecycleAwait(t, done); !errors.Is(err, context.Canceled) {
-		t.Fatalf("startup error=%v", err)
-	}
-	if r.Get("cursor") != nil || r.ResumeDenied("cursor") != nil || r.Def("cursor").SessionID != sid {
-		t.Fatal("stop published a handle, changed identity, or poisoned resume")
-	}
-	if processAlive(pid) {
-		t.Fatalf("startup process %d survived Stop", pid)
+	if r.Get("cursor") != nil || r.Def("cursor").SessionID != sid {
+		t.Fatal("refusal published a handle or changed the session id")
 	}
 }
 

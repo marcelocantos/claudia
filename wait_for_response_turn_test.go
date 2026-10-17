@@ -49,53 +49,6 @@ func awaitTerminalAssistant(t *testing.T, a *Agent) <-chan struct{} {
 	return done
 }
 
-// 🎯T98, the park that stopped `make gate` finishing at all.
-//
-// Send on a Cursor opening prompt does not return until the peer has said
-// something (🎯T83's silence watch), so by the time the caller reaches
-// WaitForResponse the peer may already have streamed its reply AND its
-// end_turn. WaitForResponse subscribed to future events only, so it
-// waited for a turn that was over, and nothing was left that could end
-// that wait.
-//
-// Alone the caller usually wins the race and the test it broke passed in
-// 1.36s. In-suite it lost: TestCursorSlowFirstPromptIsNotStuck sat 9m12s
-// in (*Agent).WaitForResponse — cursor_stuck_prompt_test.go:87 into
-// agent.go:1864 — and took the root package's 10m alarm with it (gate
-// 06df1f3b, load average 232-257).
-func TestCursorWaitForResponseAfterTurnEndedStillReturnsTheReply(t *testing.T) {
-	bin := writeFakeCursorACP(t)
-	t.Setenv("CURSOR_BIN", bin)
-
-	agent, err := startLegacyCursorSession(Config{Provider: ProviderCursor, WorkDir: t.TempDir(), TermLogPath: "-"})
-	if err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	defer agent.Stop()
-
-	terminal := awaitTerminalAssistant(t, agent)
-	if err := agent.Send("Reply with exactly: pong"); err != nil {
-		t.Fatalf("Send: %v", err)
-	}
-	select {
-	case <-terminal:
-	case <-time.After(peerSpeaksFailsafe):
-		t.Fatal("the fake peer never published a terminal assistant event, so this test " +
-			"cannot decide 🎯T98 either way")
-	}
-
-	ctx, cancel := context.WithTimeout(t.Context(), turnAlreadyOverFailsafe)
-	defer cancel()
-	text, err := agent.WaitForResponse(ctx)
-	if err != nil {
-		t.Fatalf("WaitForResponse on a turn that has already ended: %v — the caller "+
-			"that submitted the turn cannot observe its own reply", err)
-	}
-	if !strings.Contains(text, "pong") {
-		t.Fatalf("reply %q, want pong", text)
-	}
-}
-
 // The same invariant with no provider at all, so a regression is
 // attributed to the Agent's turn bookkeeping rather than to whichever
 // backend happened to answer quickly.
