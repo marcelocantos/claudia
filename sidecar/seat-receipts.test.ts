@@ -150,6 +150,29 @@ test("execution cause follows the provider flag, not words in the error", async 
   expect(decoy.model.calls[0].context.messages.some(m => String(m.content).includes("plain"))).toBe(true);
 });
 
+test("a failed submission keeps its typed cause across a model switch", async () => {
+  const storage = store();
+  const failed = createMockModel({ id: "a", provider: "mock", handler: () => ({ stopReason: "error", errorMessage: "usage_limit_reached" }) });
+  const next = createMockModel({ id: "b", provider: "other", handler: () => ({ content: ["ok"] }) });
+  const agent = createSeatAgent({ provider: failed.provider, model: failed.id, token: "t", cwd: dirname(storage.path), modelOverride: failed,
+    resolveModelOverride: () => next, store: storage, emit: () => {}, callTool: async () => "" });
+  await agent.prompt("limited", meta("A"));
+  const before = agent.receipt("A");
+  expect(before).toMatchObject({ state: "failed", cause: "capacity", reason: "capacity_unavailable" });
+  await agent.switchModel(next.provider, next.id);
+  expect(agent.receipt("A")).toEqual(before);
+  await agent.prompt("later", meta("B"));
+  expect(agent.receipt("A")).toEqual(before);
+  expect(agent.receipt("B").state).toBe("completed");
+  expect(agent.receipt("B").cause).toBeUndefined();
+  expect(next.calls[0].context.messages.some(m => String(m.content).includes("later"))).toBe(true);
+  expect(failed.calls.length).toBe(1);
+  const recovered = fixture(storage);
+  expect(recovered.agent.receipt("A")).toEqual(before);
+  expect(recovered.agent.receipt("B").state).toBe("completed");
+  expect(recovered.agent.receipt("B").cause).toBeUndefined();
+});
+
 test("cancellation settles only inputs dispatched in the cancelled turn", async () => {
   const f = fixture(store(), () => {
     f.agent.abort();

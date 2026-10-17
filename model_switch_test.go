@@ -85,6 +85,9 @@ func TestSwitchModelPublishesSwitchEventAndRecords(t *testing.T) {
 		got[0].ToProvider != "openai-codex" || got[0].FromModel != "claude-sonnet-5" || got[0].Model != "gpt-5.5" {
 		t.Fatalf("events = %+v", got)
 	}
+	if got[0].RequestID != "" || got[0].Receipt != nil {
+		t.Fatalf("switch carried a request receipt: %+v", got[0])
+	}
 }
 
 // A native CLI backend changes model only within its provider.
