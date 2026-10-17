@@ -116,7 +116,9 @@ function bindSdkDispatch(opts: OmpSessionOptions) {
     const ids = [...open];
     open.clear();
     if (ids.length === 0) return;
-    opts.receipts.finish(ids, aborted ? "cancelled" : failed ? "failed" : "completed", aborted ? "cancelled" : failed ? "provider_error" : undefined);
+    const state = aborted ? "cancelled" : failed ? "failed" : "completed";
+    opts.receipts.finish(ids, state, aborted ? "cancelled" : failed ? "provider_error" : undefined,
+      aborted ? "cancellation" : failed ? "failure" : undefined);
   });
 }
 

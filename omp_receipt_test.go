@@ -74,6 +74,56 @@ func replyReceipt(t *testing.T, c net.Conn, ev omp.Event) {
 	}
 }
 
+func TestReceiptCauseAgreesWithStateAndIgnoresReasonProse(t *testing.T) {
+	base := testReceipt("A")
+	base.State = ReceiptFailed
+	base.TurnIDs = []string{"turn-A"}
+	base.Reason = "401 unauthorized"
+	base.Cause = ReceiptCauseAuth
+	if err := base.ValidateIdentity(base.Seat, base.SessionID, base.RequestID); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got RequestReceipt
+	if err := json.Unmarshal(raw, &got); err != nil || got.Cause != ReceiptCauseAuth || got.Reason != "401 unauthorized" {
+		t.Fatalf("round trip cause=%q reason=%q err=%v", got.Cause, got.Reason, err)
+	}
+	prose := *base
+	prose.Cause = ""
+	prose.Reason = "auth_unavailable"
+	if err := prose.ValidateIdentity(prose.Seat, prose.SessionID, prose.RequestID); err != nil || prose.Cause != "" {
+		t.Fatalf("prose invented a cause: %+v %v", prose, err)
+	}
+	base.Cause = ReceiptCauseCancellation
+	if err := base.ValidateIdentity(base.Seat, base.SessionID, base.RequestID); err == nil {
+		t.Fatal("cancellation accepted on a failed receipt")
+	}
+	completed := testReceipt("B")
+	completed.Cause = ReceiptCauseFailure
+	if err := completed.ValidateIdentity(completed.Seat, completed.SessionID, completed.RequestID); err == nil {
+		t.Fatal("failure cause accepted on an accepted receipt")
+	}
+	unknown := testReceipt("C")
+	unknown.State = ReceiptUnknown
+	unknown.Cause = ReceiptCauseUnknown
+	unknown.Reason = "interrupted"
+	if err := unknown.ValidateIdentity(unknown.Seat, unknown.SessionID, unknown.RequestID); err != nil {
+		t.Fatal(err)
+	}
+	unknown.Cause = ""
+	unknown.Reason = "auth_unavailable"
+	if err := unknown.ValidateIdentity(unknown.Seat, unknown.SessionID, unknown.RequestID); err != nil || unknown.Cause != "" {
+		t.Fatalf("unknown prose invented a cause: %+v %v", unknown, err)
+	}
+	unknown.Cause = ReceiptCauseFailure
+	if err := unknown.ValidateIdentity(unknown.Seat, unknown.SessionID, unknown.RequestID); err == nil {
+		t.Fatal("failure cause accepted on an unknown receipt")
+	}
+}
+
 func TestIdentifiedSidecarSendWaitsForMatchingDurableReceipt(t *testing.T) {
 	for _, op := range []string{omp.OpPrompt, omp.OpSteer} {
 		t.Run(op, func(t *testing.T) {

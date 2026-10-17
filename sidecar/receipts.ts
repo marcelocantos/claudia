@@ -8,6 +8,7 @@ export const requestFactType = "claudia_request_v1";
 export type ReceiptDelivery = "prompt" | "steer";
 export type ReceiptTerminalState = "completed" | "cancelled" | "failed";
 export type ReceiptState = "accepted" | "started" | ReceiptTerminalState | "unknown";
+export type ReceiptCause = "auth" | "capacity" | "cancellation" | "failure" | "unknown";
 export type ReceiptMeta = { request_id: string; session_id: string; attempt_id?: string };
 export type ReceiptMessage = UserMessage & { claudiaRequest: { request_id: string; attempt_id: string } };
 export type RequestReceipt = {
@@ -17,6 +18,7 @@ export type RequestReceipt = {
   state: ReceiptState;
   attempt_id: string;
   turn_ids: string[];
+  cause?: ReceiptCause;
   reason?: string;
   // Unknown queries for IDs not in the journal have no acceptance time.
   accepted_at?: string;
@@ -32,6 +34,20 @@ export type PendingReceipt = { message: ReceiptMessage; delivery: ReceiptDeliver
 
 const states = new Set<ReceiptState>(["accepted", "started", "completed", "cancelled", "failed", "unknown"]);
 const terminals = new Set<ReceiptState>(["completed", "cancelled", "failed"]);
+const causes = new Set<ReceiptCause>(["auth", "capacity", "cancellation", "failure", "unknown"]);
+
+function causeAgrees(state: ReceiptState, cause: ReceiptCause): boolean {
+  switch (state) {
+    case "cancelled":
+      return cause === "cancellation";
+    case "failed":
+      return cause === "auth" || cause === "capacity" || cause === "failure";
+    case "unknown":
+      return cause === "unknown";
+    default:
+      return false;
+  }
+}
 const nonempty = (v: unknown): v is string => typeof v === "string" && v.trim().length > 0;
 const timestamp = (v: unknown): v is string => typeof v === "string" && Number.isFinite(Date.parse(v));
 
@@ -59,6 +75,7 @@ export class ReceiptJournal {
       if (fact.receipt.state === "started") {
         fact.receipt.state = "unknown";
         fact.receipt.reason = "interrupted";
+        fact.receipt.cause = "unknown";
       }
     }
   }
@@ -131,9 +148,12 @@ export class ReceiptJournal {
     }
   }
 
-  finish(ids: string[], state: ReceiptTerminalState, reason?: string): void {
+  finish(ids: string[], state: ReceiptTerminalState, reason?: string, cause?: ReceiptCause): void {
     this.#writable();
-    if (!terminals.has(state) || (reason !== undefined && typeof reason !== "string")) throw new Error("request journal: invalid settlement");
+    if (!terminals.has(state) || (reason !== undefined && typeof reason !== "string") ||
+        (cause !== undefined && (!causes.has(cause) || !causeAgrees(state, cause)))) {
+      throw new Error("request journal: invalid settlement");
+    }
     for (const old of this.#selected(ids)) {
       // A turn ending cannot discharge an input still waiting in its queue.
       if (old.receipt.state !== "started") continue;
@@ -141,6 +161,7 @@ export class ReceiptJournal {
       fact.receipt.state = state;
       fact.receipt.updated_at = new Date(Math.max(Date.now(), Date.parse(old.receipt.updated_at!))).toISOString();
       if (reason !== undefined) fact.receipt.reason = reason;
+      if (cause !== undefined) fact.receipt.cause = cause;
       this.#persist(fact);
     }
   }
@@ -187,6 +208,7 @@ export class ReceiptJournal {
         new Set(r.turn_ids).size !== r.turn_ids.length || !timestamp(r.accepted_at) || !timestamp(r.updated_at) ||
         Date.parse(r.updated_at) < Date.parse(r.accepted_at) ||
         (r.reason !== undefined && typeof r.reason !== "string") ||
+        (r.cause !== undefined && (typeof r.cause !== "string" || !causes.has(r.cause) || !causeAgrees(r.state, r.cause))) ||
         (r.state === "accepted" ? r.turn_ids.length !== 0 : r.turn_ids.length === 0)) {
       throw new Error("request journal: corrupt request fact");
     }

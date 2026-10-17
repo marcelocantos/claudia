@@ -104,12 +104,30 @@ describe("durable request receipts", () => {
     journal.start(["request-1"], "turn-1");
     const before = readFileSync(store.path, "utf8");
     const restored = reopen(store).journal;
-    expect(restored.query("request-1")).toMatchObject({ state: "unknown", reason: "interrupted", turn_ids: ["turn-1"] });
+    expect(restored.query("request-1")).toMatchObject({ state: "unknown", reason: "interrupted", cause: "unknown", turn_ids: ["turn-1"] });
     expect(restored.pending()).toEqual([]);
     expect(restored.accept("may have external effects", meta(), "steer")).toMatchObject({ fresh: false, receipt: { state: "unknown" } });
     expect(() => restored.start(["request-1"], "turn-2")).toThrow("cannot be replayed");
     restored.finish(["request-1"], "completed");
     expect(readFileSync(store.path, "utf8")).toBe(before);
+  });
+
+  test("a typed cause survives reopening and prose does not invent one", () => {
+    const { store, journal } = fixture();
+    journal.accept("limited", meta("a"), "prompt");
+    journal.start(["a"], "turn-1");
+    journal.finish(["a"], "failed", "401 unauthorized", "auth");
+    expect(reopen(store).journal.query("a")).toMatchObject({ state: "failed", cause: "auth", reason: "401 unauthorized" });
+    const prose = fixture();
+    prose.journal.accept("decoy", meta("b"), "prompt");
+    prose.journal.start(["b"], "turn-1");
+    prose.journal.finish(["b"], "failed", "the author mentioned auth_unavailable");
+    expect(prose.journal.query("b").cause).toBeUndefined();
+    expect(() => prose.journal.finish(["b"], "failed", "no", "cancellation")).toThrow("invalid settlement");
+    const waiting = fixture();
+    waiting.journal.accept("queued", meta("c"), "steer");
+    waiting.journal.start(["c"], "turn-1");
+    expect(() => waiting.journal.finish(["c"], "completed", undefined, "failure")).toThrow("invalid settlement");
   });
 
   test("unknown queries are explicit and legacy sessions without stores cannot accept identified requests", () => {

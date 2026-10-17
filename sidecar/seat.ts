@@ -12,7 +12,7 @@ import { capToolText, toolResultBound } from "./truncate.ts";
 import { awaitHostCall } from "./hostcalls.ts";
 import { ContextOverflow, isOverflow, History, Maintenance, seatConvertToLlm, type MaintenanceHost } from "./maintain.ts";
 import type { SeatStore } from "./store.ts";
-import { ReceiptJournal, type RequestReceipt, type ReceiptMessage, type ReceiptTerminalState } from "./receipts.ts";
+import { ReceiptJournal, type RequestReceipt, type ReceiptCause, type ReceiptMessage, type ReceiptTerminalState } from "./receipts.ts";
 import { UsageJournal, measuredStream, measuredCompletion, type UsageFact, type UsagePage } from "./usage.ts";
 import {
   beginTurn,
@@ -299,10 +299,10 @@ export function createSeatAgent(opts: {
       else agent.followUp(item.message);
     }
   }
-  const settleRequests = (ids: Set<string>, state: ReceiptTerminalState, reason?: string) => {
+  const settleRequests = (ids: Set<string>, state: ReceiptTerminalState, reason?: string, cause?: ReceiptCause) => {
     if (ids.size === 0) return;
     const started = [...ids].filter(id => receipts.query(id).state === "started");
-    receipts.finish([...ids], state, reason);
+    receipts.finish([...ids], state, reason, cause);
     for (const id of started) sink.emit({ type: "receipt", request_id: id, receipt: receipts.query(id) });
   };
   agent.addBeforeModelCall((context) => {
@@ -477,7 +477,8 @@ export function createSeatAgent(opts: {
         }
       }
       settleRequests(executionRequests, cancelledTurns.has(executionTurn.turn_id) ? "cancelled" : "failed",
-        cancelledTurns.has(executionTurn.turn_id) ? "cancelled" : "execution_error");
+        cancelledTurns.has(executionTurn.turn_id) ? "cancelled" : "execution_error",
+        cancelledTurns.has(executionTurn.turn_id) ? "cancellation" : "failure");
       cancelledTurns.delete(executionTurn.turn_id);
       finish("error");
       throw err;
@@ -487,13 +488,21 @@ export function createSeatAgent(opts: {
       maint.persist();
     }
     const errorID = refusal ? classifyMessage(agent.state.messages.at(-1) as AssistantMessage) : undefined;
+    const cancelledTurn = cancelledTurns.has(executionTurn.turn_id);
+    const authFailed = authRefusal(refusal) || hasFlag(errorID, Flag.AuthFailed) || hasFlag(errorID, Flag.OAuthExpiry);
+    const capacityFailed = hasFlag(errorID, Flag.UsageLimit);
     const failureReason = !refusal ? undefined : overflow ? ContextOverflow
-      : authRefusal(refusal) || hasFlag(errorID, Flag.AuthFailed) || hasFlag(errorID, Flag.OAuthExpiry) ? "auth_unavailable"
-      : hasFlag(errorID, Flag.UsageLimit) ? "capacity_unavailable"
+      : authFailed ? "auth_unavailable"
+      : capacityFailed ? "capacity_unavailable"
       : hasFlag(errorID, Flag.Timeout) ? "provider_timeout"
       : hasFlag(errorID, Flag.Transient) ? "provider_unavailable" : "provider_refusal";
-    settleRequests(executionRequests, cancelledTurns.has(executionTurn.turn_id) ? "cancelled" : refusal ? "failed" : "completed",
-      cancelledTurns.has(executionTurn.turn_id) ? "cancelled" : failureReason);
+    const failureCause: ReceiptCause | undefined = cancelledTurn ? "cancellation"
+      : !refusal ? undefined
+      : authFailed ? "auth"
+      : capacityFailed ? "capacity"
+      : "failure";
+    settleRequests(executionRequests, cancelledTurn ? "cancelled" : refusal ? "failed" : "completed",
+      cancelledTurn ? "cancelled" : failureReason, failureCause);
     cancelledTurns.delete(executionTurn.turn_id);
     if (cancelled) return;
     if (refusal) {

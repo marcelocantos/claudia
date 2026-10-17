@@ -90,6 +90,8 @@ test("an unconsumed follow-up survives terminal failure and restart without bein
   });
   await first.agent.prompt("original", meta("A"));
   expect(first.agent.receipt("A").state).toBe("failed");
+  expect(first.agent.receipt("A").cause).toBe("failure");
+  expect(first.agent.receipt("A").reason).not.toBe("auth");
   expect(first.agent.receipt("B").state).toBe("accepted");
   const second = fixture(storage);
   expect(second.model.calls.length).toBe(0);
@@ -107,6 +109,7 @@ test("a restart during dispatch exposes uncertainty and never automatically repl
     recovered = fixture(storage);
     expect(recovered.agent.receipt("A").state).toBe("unknown");
     expect(recovered.agent.receipt("A").reason).toBe("interrupted");
+    expect(recovered.agent.receipt("A").cause).toBe("unknown");
     return { content: ["ok"] };
   });
   await first.agent.prompt("effect", meta("A"));
@@ -131,6 +134,22 @@ test("acceptance and dispatch persistence failures prevent provider calls", asyn
   }
 });
 
+test("execution cause follows the provider flag, not words in the error", async () => {
+  const capacity = fixture(store(), () => ({ stopReason: "error", errorMessage: "usage_limit_reached" }));
+  await capacity.agent.prompt("limited", meta("A"));
+  expect(capacity.agent.receipt("A")).toMatchObject({ state: "failed", cause: "capacity", reason: "capacity_unavailable" });
+
+  const auth = fixture(store(), () => ({ stopReason: "error", errorMessage: "401 unauthorized" }));
+  await auth.agent.prompt("denied", meta("A"));
+  expect(auth.agent.receipt("A")).toMatchObject({ state: "failed", cause: "auth", reason: "auth_unavailable" });
+
+  const decoy = fixture(store(), () => ({ stopReason: "error", errorMessage: "the author asked for a different model" }));
+  await decoy.agent.prompt("plain", meta("A"));
+  expect(decoy.agent.receipt("A").cause).toBe("failure");
+  expect(decoy.agent.receipt("A").reason).not.toContain("auth");
+  expect(decoy.model.calls[0].context.messages.some(m => String(m.content).includes("plain"))).toBe(true);
+});
+
 test("cancellation settles only inputs dispatched in the cancelled turn", async () => {
   const f = fixture(store(), () => {
     f.agent.abort();
@@ -138,6 +157,7 @@ test("cancellation settles only inputs dispatched in the cancelled turn", async 
   });
   await f.agent.prompt("work", meta("A"));
   expect(f.agent.receipt("A").state).toBe("cancelled");
+  expect(f.agent.receipt("A").cause).toBe("cancellation");
 });
 
 test("an uncertain restored tool batch cannot execute while draining an accepted follow-up", async () => {

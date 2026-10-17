@@ -24,6 +24,20 @@ const (
 	ReceiptUnknown   ReceiptState = "unknown"
 )
 
+// ReceiptCause is the typed execution outcome on a receipt. It is not the
+// provider's rendered error text. Empty means the producer did not classify
+// a cause; callers must not invent one by reading Reason.
+type ReceiptCause string
+
+const (
+	ReceiptCauseNone         ReceiptCause = ""
+	ReceiptCauseAuth         ReceiptCause = "auth"
+	ReceiptCauseCapacity     ReceiptCause = "capacity"
+	ReceiptCauseCancellation ReceiptCause = "cancellation"
+	ReceiptCauseFailure      ReceiptCause = "failure"
+	ReceiptCauseUnknown      ReceiptCause = "unknown"
+)
+
 // RequestReceipt identifies an obligation within one durable seat generation.
 // Unknown (including not_found) is uncertainty, never permission to replay.
 type RequestReceipt struct {
@@ -33,6 +47,7 @@ type RequestReceipt struct {
 	State      ReceiptState `json:"state"`
 	AttemptID  string       `json:"attempt_id"`
 	TurnIDs    []string     `json:"turn_ids"`
+	Cause      ReceiptCause `json:"cause,omitempty"`
 	Reason     string       `json:"reason,omitempty"`
 	AcceptedAt string       `json:"accepted_at,omitempty"`
 	UpdatedAt  string       `json:"updated_at,omitempty"`
@@ -86,7 +101,9 @@ func (r *RequestReceipt) ValidateIdentity(seat, session, request string) error {
 	}
 	switch r.State {
 	case ReceiptUnknown:
-		return nil
+		// Completeness does not apply: an unknown fact may have no attempt or
+		// timestamps. The typed cause still has to agree with that state.
+		return validateReceiptCause(r.State, r.Cause)
 	case ReceiptAccepted, ReceiptStarted, ReceiptCompleted, ReceiptCancelled, ReceiptFailed:
 	default:
 		return fmt.Errorf("invalid receipt state %q", r.State)
@@ -105,6 +122,39 @@ func (r *RequestReceipt) ValidateIdentity(seat, session, request string) error {
 	}
 	if (r.State == ReceiptAccepted) != (len(r.TurnIDs) == 0) {
 		return fmt.Errorf("receipt state and turn identities disagree")
+	}
+	if err := validateReceiptCause(r.State, r.Cause); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateReceiptCause checks the typed cause against the state. An empty
+// cause stays valid so a receipt written before the field existed still
+// loads. Reason is not consulted.
+func validateReceiptCause(state ReceiptState, cause ReceiptCause) error {
+	switch cause {
+	case ReceiptCauseNone, ReceiptCauseAuth, ReceiptCauseCapacity, ReceiptCauseCancellation, ReceiptCauseFailure, ReceiptCauseUnknown:
+	default:
+		return fmt.Errorf("invalid receipt cause %q", cause)
+	}
+	switch state {
+	case ReceiptAccepted, ReceiptStarted, ReceiptCompleted:
+		if cause != ReceiptCauseNone {
+			return fmt.Errorf("receipt cause %q on state %s", cause, state)
+		}
+	case ReceiptCancelled:
+		if cause != ReceiptCauseNone && cause != ReceiptCauseCancellation {
+			return fmt.Errorf("receipt cause %q on state %s", cause, state)
+		}
+	case ReceiptFailed:
+		if cause != ReceiptCauseNone && cause != ReceiptCauseAuth && cause != ReceiptCauseCapacity && cause != ReceiptCauseFailure {
+			return fmt.Errorf("receipt cause %q on state %s", cause, state)
+		}
+	case ReceiptUnknown:
+		if cause != ReceiptCauseNone && cause != ReceiptCauseUnknown {
+			return fmt.Errorf("receipt cause %q on state %s", cause, state)
+		}
 	}
 	return nil
 }

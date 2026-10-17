@@ -32,6 +32,17 @@ const (
 	ReceiptUnknown   = omp.ReceiptUnknown
 )
 
+type ReceiptCause = omp.ReceiptCause
+
+const (
+	ReceiptCauseNone         = omp.ReceiptCauseNone
+	ReceiptCauseAuth         = omp.ReceiptCauseAuth
+	ReceiptCauseCapacity     = omp.ReceiptCauseCapacity
+	ReceiptCauseCancellation = omp.ReceiptCauseCancellation
+	ReceiptCauseFailure      = omp.ReceiptCauseFailure
+	ReceiptCauseUnknown      = omp.ReceiptCauseUnknown
+)
+
 // ErrReceiptUncertain means acceptance cannot be established. Query the same
 // request ID; neither this error nor a not_found receipt authorises replay.
 var ErrReceiptUncertain = errors.New("request receipt uncertain")
