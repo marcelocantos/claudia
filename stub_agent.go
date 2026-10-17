@@ -37,10 +37,11 @@ func NewStubAgent(fn func(string) error) *Agent {
 }
 
 // StubAgentOps names the verbs a stub answers. Every field is optional:
-// a nil Send succeeds and discards; a nil Steer makes [Agent.Steer]
-// report [ErrSteerUnsupported]; a nil Interrupt makes [Agent.Interrupt]
-// refuse; nil TurnPhase reads [TurnIdle]; nil TurnCaps reads the
-// provider contract ([ProviderTurnCaps]) minus whatever is unwired.
+// a nil Send succeeds and discards; a nil SendWithRequestID keeps that
+// Send and drops the host id; a nil Steer makes [Agent.Steer] report
+// [ErrSteerUnsupported]; a nil Interrupt makes [Agent.Interrupt] refuse;
+// nil TurnPhase reads [TurnIdle]; nil TurnCaps reads the provider
+// contract ([ProviderTurnCaps]) minus whatever is unwired.
 //
 // It is an args struct rather than functional options by house rule
 // (go.md); every hook is visible in one place and a zero field is the
@@ -48,12 +49,15 @@ func NewStubAgent(fn func(string) error) *Agent {
 type StubAgentOps struct {
 	// Provider the stub reports; empty means Claude. [StartStub] reports
 	// Config.Provider instead.
-	Provider  Provider
-	Send      func(text string) error
-	Steer     func(text string) (DeliveryOutcome, error)
-	Interrupt func() error
-	TurnPhase func() TurnPhase
-	TurnCaps  func() TurnCaps
+	Provider Provider
+	Send     func(text string) error
+	// SendWithRequestID receives the host request id. Nil keeps today's
+	// Send: [Agent.SendWithRequestID] drops the id and calls Send.
+	SendWithRequestID func(text, requestID string) error
+	Steer             func(text string) (DeliveryOutcome, error)
+	Interrupt         func() error
+	TurnPhase         func() TurnPhase
+	TurnCaps          func() TurnCaps
 
 	// The fields below are used by [StartStub] only.
 
@@ -100,6 +104,17 @@ func StartStub(ctx context.Context, cfg Config, ops *StubAgentOps) (*Agent, erro
 	return startWithBackendContext(ctx, cfg, &stubAgentBackend{ops: ops})
 }
 
+// sendWithRequestIDOp is nil when the stub has no request-id hook, so
+// [Agent.SendWithRequestID] keeps calling Send and dropping the id.
+func sendWithRequestIDOp(o *StubAgentOps) func(*Agent, string, string) error {
+	if o == nil || o.SendWithRequestID == nil {
+		return nil
+	}
+	return func(_ *Agent, text, id string) error {
+		return o.SendWithRequestID(text, id)
+	}
+}
+
 type stubAgentBackend struct{ ops *StubAgentOps }
 
 func (b *stubAgentBackend) Capabilities() providerCapabilities {
@@ -125,6 +140,7 @@ func (b *stubAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error
 			}
 			return o.Send(text)
 		},
+		sendWithRequestID: sendWithRequestIDOp(o),
 		resize: func(_ *Agent, cols, rows uint16) error {
 			if o.Resize == nil {
 				return nil
@@ -243,13 +259,18 @@ func (b *stubTaskBackend) RunTask(ctx context.Context, req taskRunRequest) (*tas
 // NewStubAgentOps is [NewStubAgent] with every delivery verb observable
 // (🎯T72.2): a dependent package can assert which of Send / Steer /
 // Interrupt a broker or host path actually ran, on the same
-// [Agent.SendMode] path the product uses. args may be nil.
+// [Agent.SendMode] path the product uses. A non-nil SendWithRequestID
+// is the hook [Agent.SendWithRequestID] calls, so a host can see the
+// request id that method received. args may be nil.
 func NewStubAgentOps(args *StubAgentOps) *Agent {
 	if args == nil {
 		args = &StubAgentOps{}
 	}
 	a := NewStubAgent(args.Send)
 	a.provider = args.Provider
+	if hook := sendWithRequestIDOp(args); hook != nil {
+		a.ops.sendWithRequestID = hook
+	}
 	if args.Steer != nil {
 		a.ops.steer = func(_ *Agent, text string) (DeliveryOutcome, error) { return args.Steer(text) }
 	}
