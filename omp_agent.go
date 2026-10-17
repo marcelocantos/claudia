@@ -627,6 +627,7 @@ func (c *ompControl) pump(a *Agent) {
 				a.publishEvent(Event{Type: "usage_error", Text: err.Error(), SessionID: c.sessionID})
 				continue
 			}
+			RecordObservedUsage(ev.UsageFact)
 			a.publishEvent(Event{Type: "usage", SessionID: c.sessionID, UsageFact: ev.UsageFact})
 		case "usage_error":
 			a.publishEvent(Event{Type: "usage_error", Text: ev.Text, SessionID: c.sessionID})
@@ -635,6 +636,7 @@ func (c *ompControl) pump(a *Agent) {
 				slog.Warn("omp refused receipt", "seat", c.seat, "error", err)
 				continue
 			}
+			RecordObservedReceipt(ev.Receipt)
 			if ev.Receipt.State == ReceiptStarted {
 				c.inflight.Store(true)
 			}
@@ -649,6 +651,7 @@ func (c *ompControl) pump(a *Agent) {
 					slog.Warn("omp refused acceptance receipt", "seat", c.seat, "error", err)
 					continue
 				}
+				RecordObservedReceipt(ev.Receipt)
 				if ev.Receipt.State != ReceiptAccepted && ev.Receipt.State != ReceiptStarted {
 					// Replaying an ACK for a terminal or uncertain obligation
 					// does not mean that a new model turn was accepted.
