@@ -23,7 +23,7 @@ export type UsageFact = {
   coverage: "engine_invocation" | "provider_attempt";
 };
 export type UsagePage = { seat: string; session_id: string; facts: UsageFact[]; next: number; more: boolean };
-type Attribution = { turn_id?: string; requests: UsageRequestRef[]; cause?: string };
+export type Attribution = { turn_id?: string; requests: UsageRequestRef[]; cause?: string };
 
 // JSON persistence drops undefined keys. Keep the live fact in that same shape
 // so a reopen compares equal to the page that was just recorded.
@@ -187,14 +187,20 @@ export function observedNativeCompaction(
   });
 }
 
-// Observe the original stream's result without proxying its iterator, local
-// tool-work signal, cancellation or retry policy.
-export function measuredStream(journal: () => UsageJournal | undefined, attribution: () => Attribution, kind: UsageFact["kind"] = "model"): typeof streamSimple {
+const instrumentedUsage = (api: string) => api === "anthropic-messages" || api === "openai-responses" || api === "openai-codex-responses" || api === "cursor-agent";
+
+// Observe one stream invocation. `inner` is the seat's real transport,
+// including any fetch or exec handlers already on the options. This does
+// not add a second provider call.
+export function measureDispatch(journal: () => UsageJournal | undefined, attribution: () => Attribution, inner: typeof streamSimple, kind: UsageFact["kind"] = "model"): typeof streamSimple {
   return ((model, context, options) => {
     const j = journal();
-    if (!j) return streamSimple(model, context, options);
-    if (model.api === "anthropic-messages" || model.api === "openai-responses" || model.api === "openai-codex-responses" || model.api === "cursor-agent") {
-      return streamSimple(model, context, { ...options, onProviderAttempt: j.observer(kind, model, attribution()) });
+    if (!j) return inner(model, context, options);
+    if (instrumentedUsage(model.api)) {
+      const observer = j.observer(kind, model, attribution());
+      const previous = options?.onProviderAttempt;
+      const onProviderAttempt = previous ? (event: Parameters<NonNullable<typeof previous>>[0]) => { observer(event); previous(event); } : observer;
+      return inner(model, context, { ...options, onProviderAttempt });
     }
     const start = j.begin(kind, model, attribution());
     const finish = (message?: AssistantMessage) => {
@@ -204,7 +210,7 @@ export function measuredStream(journal: () => UsageJournal | undefined, attribut
     // return measured usage afterward. An abandoned result remains started
     // and incomplete, just like a process interruption.
     try {
-      const stream = streamSimple(model, context, options);
+      const stream = inner(model, context, options);
       void stream.result().then(finish, () => finish());
       return stream;
     } catch (err) {
@@ -212,6 +218,12 @@ export function measuredStream(journal: () => UsageJournal | undefined, attribut
       throw err;
     }
   }) as typeof streamSimple;
+}
+
+// Observe the original stream's result without proxying its iterator, local
+// tool-work signal, cancellation or retry policy.
+export function measuredStream(journal: () => UsageJournal | undefined, attribution: () => Attribution, kind: UsageFact["kind"] = "model"): typeof streamSimple {
+  return measureDispatch(journal, attribution, streamSimple, kind);
 }
 
 export function measuredCompletion(journal: () => UsageJournal | undefined, attribution: () => Attribution, complete: typeof completeSimple = completeSimple): typeof completeSimple {

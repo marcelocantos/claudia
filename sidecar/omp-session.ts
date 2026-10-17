@@ -18,6 +18,7 @@ import { cursorExecHandlers } from "./cursorexec.ts";
 import type { SandboxPolicy } from "./execution.ts";
 import { ReceiptJournal, type ReceiptMessage } from "./receipts.ts";
 import { toolResultBound } from "./truncate.ts";
+import { measureDispatch, UsageJournal, type Attribution } from "./usage.ts";
 
 // Pass this same converter to the injected Agent. Stock custom-message
 // conversion discards details; host request identity must survive into the
@@ -67,6 +68,12 @@ export interface OmpSessionOptions {
   // Production journal. Dispatch starts a receipt before the provider call
   // and finishes it when that agent run ends.
   receipts: ReceiptJournal;
+  // Same history as receipts. The model stream records one fact per
+  // invocation; side and native compaction stay on the host's own wrappers.
+  usage: UsageJournal;
+  // Read when the model stream starts, after the receipt start below.
+  // The host supplies turn, cause and request refs.
+  usageAttribution: () => Attribution;
 }
 
 // The Agent stores Cursor exec handlers only at construction, and the loop
@@ -81,7 +88,8 @@ function bindSdkDispatch(opts: OmpSessionOptions) {
     () => opts.policy?.(),
   );
   const inner = opts.agent.streamFn.bind(opts.agent);
-  opts.agent.streamFn = (model, context, options) => inner(model, context, {
+  const measured = measureDispatch(() => opts.usage, opts.usageAttribution, inner);
+  opts.agent.streamFn = (model, context, options) => measured(model, context, {
     ...options,
     cursorExecHandlers: handlers,
   });
@@ -118,6 +126,8 @@ export async function createOmpSession(opts: OmpSessionOptions) {
   if (typeof opts.nativeCompactionOptions !== "function") throw new Error("OMP session requires observed native compaction options");
   if (opts.agent.state.isStreaming) throw new Error("OMP session cannot adopt a running Agent");
   if (!(opts.receipts instanceof ReceiptJournal)) throw new Error("OMP session requires the production receipt journal");
+  if (!(opts.usage instanceof UsageJournal)) throw new Error("OMP session requires the production usage journal");
+  if (typeof opts.usageAttribution !== "function") throw new Error("OMP session requires usage attribution");
   bindSdkDispatch(opts);
   for (const dir of [getAgentDir(), getBaseConfigRoot()]) {
     const suffix = relative(opts.stateDir, dir);

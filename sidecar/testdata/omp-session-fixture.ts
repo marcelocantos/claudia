@@ -16,6 +16,7 @@ const { parseSessionContent } = await import("@oh-my-pi/pi-coding-agent/session/
 const { createOmpSession, convertOmpMessages } = await import("../omp-session.ts");
 const { OMPJournal } = await import("../omp-journal.ts");
 const { ReceiptJournal, requestFactType } = await import("../receipts.ts");
+const { UsageJournal, usageFactType } = await import("../usage.ts");
 
 const root = process.argv[2];
 const cwd = join(root, "work");
@@ -39,6 +40,17 @@ const model = createMockModel({
         .map(entry => entry.data as { receipt: { request_id: string; state: string } })
         .filter(fact => fact.receipt.request_id === expectedDispatch);
       assert.deepEqual(facts.map(fact => fact.receipt.state), ["accepted", "started"]);
+      const usageFacts = persisted.entries.filter(entry => entry.type === "custom" && entry.customType === usageFactType)
+        .map(entry => entry.data as { state: string; requests: { request_id: string; attempt_id: string }[]; counters: Record<string, number>; coverage: string })
+        .filter(fact => fact.requests.some(ref => ref.request_id === expectedDispatch));
+      assert.equal(usageFacts.length, 1);
+      assert.equal(usageFacts[0].state, "started");
+      assert.equal(usageFacts[0].coverage, "engine_invocation");
+      assert.deepEqual(usageFacts[0].counters, {});
+      assert.deepEqual(usageFacts[0].requests, [{
+        request_id: expectedDispatch,
+        attempt_id: expectedDispatch === "request-A" ? "attempt-one" : "attempt-two",
+      }]);
       assert.ok(context.messages.some(message => "claudiaRequest" in message &&
         (message.claudiaRequest as { request_id: string }).request_id === expectedDispatch));
     }
@@ -68,6 +80,16 @@ const journalOptions = { root: join(root, "sessions"), seat: "fixture-seat", ses
 const journal = await OMPJournal.open(journalOptions);
 const manager = journal.manager;
 const receipts = new ReceiptJournal(journal);
+const usage = new UsageJournal(journal, () => {}, message => { throw new Error(message); });
+// Attribution is the receipt journal at dispatch, after start() and before
+// the provider handler. It is not a copy of the prompt text.
+const usageAttribution = () => ({
+  turn_id: "fixture-turn",
+  requests: ["request-A", "request-B"].flatMap(id => {
+    const receipt = receipts.query(id);
+    return receipt.state === "started" ? [{ request_id: receipt.request_id, attempt_id: receipt.attempt_id }] : [];
+  }),
+});
 let observedRequests: unknown[] = [];
 agent.addBeforeModelCall(context => {
   observedRequests = context.messages.filter(message => "claudiaRequest" in message)
@@ -81,13 +103,16 @@ const nativeCompactionOptions = () => {
 const policy = () => ({ mode: "workspace-write" as const, protected: [join(cwd, ".git")] });
 const adapter = await createOmpSession({
   agent, sessionManager: manager, stateDir: root, tokenFor, sideStreamFn: streamSimple, nativeCompactionOptions,
-  cwd, policy, receipts,
+  cwd, policy, receipts, usage, usageAttribution,
 });
 let raw: InstanceType<typeof AgentSession> | undefined;
 try {
   await assert.rejects(createOmpSession({ agent: makeAgent(), sessionManager: SessionManager.inMemory(cwd),
     stateDir: join(root, "wrong-root"), tokenFor, sideStreamFn: streamSimple, nativeCompactionOptions,
-    cwd, receipts }), /outside the explicit state root/);
+    cwd, receipts, usage, usageAttribution }), /outside the explicit state root/);
+  await assert.rejects(createOmpSession({ agent: makeAgent(), sessionManager: SessionManager.inMemory(cwd),
+    stateDir: root, tokenFor, sideStreamFn: streamSimple, nativeCompactionOptions,
+    cwd, receipts, usageAttribution }), /production usage journal/);
   await assert.rejects(createOmpSession({ agent: makeAgent(), sessionManager: SessionManager.inMemory(cwd),
     stateDir: root, tokenFor, sideStreamFn: undefined!, nativeCompactionOptions }), /requires an observed sideStreamFn/);
   await assert.rejects(createOmpSession({ agent: makeAgent(), sessionManager: SessionManager.inMemory(cwd),
@@ -132,6 +157,8 @@ try {
     customType: "claudia-request", content: `Read @${outside}`, display: true, attribution: "user", details,
   }), true);
   assert.equal(receipts.query(details.request_id).state, "completed");
+  assert.equal(usage.page().facts.filter(fact => fact.state === "completed").length, 1);
+  assert.deepEqual(usage.page().facts.filter(fact => fact.state === "completed")[0].counters, { input_tokens: 10, output_tokens: 1 });
   assert.deepEqual(observedRequests, [details]);
   assert.equal(contexts.length, 1);
   assert.equal(JSON.stringify(contexts[0]).includes(secret), false);
@@ -212,6 +239,15 @@ try {
   await adapter.session.promptCustomMessage({ customType: "claudia-request",
     content: `Read @${outside}`, display: true, attribution: "user", details: second });
   assert.equal(receipts.query(second.request_id).state, "completed");
+  const completed = usage.page().facts.filter(fact => fact.state === "completed");
+  assert.equal(completed.length, 2);
+  assert.equal(new Set(completed.map(fact => fact.call_id)).size, 2);
+  assert.equal(completed.reduce((sum, fact) => sum + (fact.counters.input_tokens ?? 0), 0), 20);
+  assert.equal(completed.reduce((sum, fact) => sum + (fact.counters.output_tokens ?? 0), 0), 2);
+  assert.deepEqual(completed.map(fact => fact.requests), [
+    [{ request_id: "request-A", attempt_id: "attempt-one" }],
+    [{ request_id: "request-B", attempt_id: "attempt-two" }],
+  ]);
   assert.deepEqual(observedRequests, [details, second]);
   assert.equal(contexts.length, 2);
   assert.equal(JSON.stringify(contexts).includes(secret), false);
@@ -251,9 +287,12 @@ const reopened = await OMPJournal.open({ ...journalOptions, requireResume: true 
 const restoredAgent = makeAgent();
 assert.equal(restoredAgent.state.messages.length, 0);
 const restoredReceipts = new ReceiptJournal(reopened);
+const restoredUsage = new UsageJournal(reopened, () => {}, message => { throw new Error(message); });
 const restored = await createOmpSession({ agent: restoredAgent, sessionManager: reopened.manager,
   stateDir: root, tokenFor, sideStreamFn: streamSimple, nativeCompactionOptions,
-  cwd, policy, receipts: restoredReceipts });
+  cwd, policy, receipts: restoredReceipts, usage: restoredUsage,
+  usageAttribution: () => ({ turn_id: "restored-turn", requests: [] }),
+});
 try {
   assert.equal(new ReceiptJournal(reopened).query("request-A").state, "completed");
   assert.equal(new ReceiptJournal(reopened).query("request-B").state, "completed");
@@ -271,6 +310,8 @@ try {
     content: "must not dispatch", display: true, attribution: "user",
     details: { request_id: "revoked", attempt_id: "revoked-attempt" } }), /API key|credential/i);
   assert.equal(contexts.length, 3);
+  assert.equal(restoredUsage.page().facts.filter(fact => fact.state === "completed").length, 2);
+  assert.equal(restoredUsage.page().facts.filter(fact => fact.state === "started").length, 2);
 } finally {
   await restored.dispose();
   await reopened.close();

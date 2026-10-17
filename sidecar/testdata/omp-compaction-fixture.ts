@@ -10,6 +10,7 @@ import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 // explicit fake fetch below, after all SDK state paths were isolated by parent.
 globalThis.fetch = (async () => { throw new Error("unexpected global network request"); }) as typeof fetch;
 const { Agent } = await import("@oh-my-pi/pi-agent-core");
+const { streamSimple } = await import("@oh-my-pi/pi-ai");
 const { type } = await import("@oh-my-pi/omptype");
 const { getBundledModel } = await import("@oh-my-pi/pi-catalog/models");
 const { createOmpSession, convertOmpMessages } = await import("../omp-session.ts");
@@ -82,7 +83,6 @@ const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => 
     headers: { "content-type": route === "v1" ? "application/json" : "text/event-stream", "x-request-id": `sdk-${calls.length}` },
   });
 }) as typeof fetch;
-const measuredModel = measuredStream(() => usage, attribution);
 const measuredSide = measuredStream(() => usage, attribution, "compaction");
 const fixtureTool = {
   name: "fixture_tool", label: "fixture", description: "Continues the current provider turn.",
@@ -106,11 +106,11 @@ const toolCallSse = [
 ].join("\n");
 const agent = new Agent({ initialState: { model, tools: mid ? [fixtureTool] : [], systemPrompt: ["Reply OK."] }, cwd,
   getApiKey: () => "stale-agent-token", convertToLlm: convertOmpMessages,
-  streamFn: (m, c, o) => { activeKind = "model"; return measuredModel(m, c, { ...o, fetch: fakeFetch }); },
+  streamFn: (m, c, o) => { activeKind = "model"; return streamSimple(m, c, { ...o, fetch: fakeFetch }); },
 });
 const adapter = await createOmpSession({ agent, sessionManager: journal.manager, stateDir: root,
   tokenFor: provider => provider === model.provider ? brokerToken : undefined,
-  cwd, receipts: new ReceiptJournal(journal),
+  cwd, receipts: new ReceiptJournal(journal), usage, usageAttribution: attribution,
   sideStreamFn: (m, c, o) => { activeKind = "compaction"; return measuredSide(m, c, { ...o, fetch: fakeFetch }); },
   nativeCompactionOptions: candidate => {
     factoryModels.push(candidate.id);
