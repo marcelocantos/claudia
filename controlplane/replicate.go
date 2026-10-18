@@ -10,10 +10,16 @@ package controlplane
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/marcelocantos/claudia"
 	"github.com/marcelocantos/sqlpipe/go/sqlpipe"
 )
+
+// ShutdownReceiptReason is why a broker stop marks a receipt the sidecar
+// left started. The sidecar process exits with the broker, so that row
+// will not reach a later terminal fact.
+const ShutdownReceiptReason = "broker shutdown"
 
 const (
 	// UsageTable is the Claudia-owned stream of uniquely identified usage facts.
@@ -185,4 +191,49 @@ func PublishReceipt(db *sqlpipe.Database, receipt *claudia.RequestReceipt) error
 		ON CONFLICT(seat, session_id, request_id) DO UPDATE SET
 		  state = excluded.state, receipt_json = excluded.receipt_json`,
 		receipt.Seat, receipt.SessionID, receipt.RequestID, string(receipt.State), string(body))
+}
+
+// CancelStartedReceipts marks every started receipt cancelled. Accepted,
+// completed, failed, and already-cancelled rows stay as they are. The
+// broker calls this from the publisher closer, before the file is released.
+func CancelStartedReceipts(db *sqlpipe.Database, reason string) error {
+	if db == nil {
+		return fmt.Errorf("control plane: nil database")
+	}
+	if reason == "" {
+		reason = ShutdownReceiptReason
+	}
+	qr, err := db.Query(`SELECT receipt_json FROM `+ReceiptTable+` WHERE state = ?`, string(claudia.ReceiptStarted))
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	for _, row := range qr.Rows {
+		if len(row) != 1 {
+			return fmt.Errorf("control plane: started receipt row shape")
+		}
+		body, ok := row[0].(string)
+		if !ok {
+			return fmt.Errorf("control plane: receipt_json type %T", row[0])
+		}
+		var receipt claudia.RequestReceipt
+		if err := json.Unmarshal([]byte(body), &receipt); err != nil {
+			return fmt.Errorf("control plane: started receipt json: %w", err)
+		}
+		if receipt.State != claudia.ReceiptStarted {
+			continue
+		}
+		receipt.State = claudia.ReceiptCancelled
+		receipt.Cause = claudia.ReceiptCauseCancellation
+		receipt.Reason = reason
+		if prev, perr := time.Parse(time.RFC3339Nano, receipt.UpdatedAt); perr == nil && !now.After(prev) {
+			receipt.UpdatedAt = prev.Add(time.Nanosecond).Format(time.RFC3339Nano)
+		} else {
+			receipt.UpdatedAt = now.Format(time.RFC3339Nano)
+		}
+		if err := PublishReceipt(db, &receipt); err != nil {
+			return err
+		}
+	}
+	return nil
 }

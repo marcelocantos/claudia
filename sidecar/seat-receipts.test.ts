@@ -186,6 +186,17 @@ test("a failed submission keeps its typed cause across a model switch", async ()
   expect(recovered.agent.receipt("B").cause).toBeUndefined();
 });
 
+test("cancelOpenReceipts finishes a started receipt and the turn settle does not reopen it", async () => {
+  const f = fixture(store(), () => {
+    expect(f.agent.receipt("A").state).toBe("started");
+    f.agent.cancelOpenReceipts();
+    expect(f.agent.receipt("A")).toMatchObject({ state: "cancelled", cause: "cancellation", reason: "cancelled" });
+    return { content: ["after cancel"] };
+  });
+  await f.agent.prompt("work", meta("A"));
+  expect(f.agent.receipt("A")).toMatchObject({ state: "cancelled", cause: "cancellation" });
+});
+
 test("cancellation settles only inputs dispatched in the cancelled turn", async () => {
   const f = fixture(store(), () => {
     f.agent.abort();

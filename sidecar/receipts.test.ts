@@ -87,6 +87,25 @@ describe("durable request receipts", () => {
     expect(reopen(store).journal.query("a")).toEqual(settled);
   });
 
+  test("startedIDs settles only the open receipt and leaves accepted and completed", () => {
+    const { store, journal } = fixture();
+    journal.accept("running", meta("a"), "prompt");
+    journal.accept("queued", meta("b"), "steer");
+    journal.accept("done", meta("c"), "prompt");
+    journal.start(["a"], "turn-1");
+    journal.start(["c"], "turn-2");
+    journal.finish(["c"], "completed");
+    const ids = journal.startedIDs();
+    expect(ids).toEqual(["a"]);
+    journal.finish(ids, "cancelled", "cancelled", "cancellation");
+    const restored = reopen(store).journal;
+    expect(restored.query("a")).toMatchObject({ state: "cancelled", cause: "cancellation", reason: "cancelled", turn_ids: ["turn-1"] });
+    expect(restored.query("b").state).toBe("accepted");
+    expect(restored.query("c").state).toBe("completed");
+    expect(restored.pending().map(p => p.receipt.request_id)).toEqual(["b"]);
+    expect(restored.startedIDs()).toEqual([]);
+  });
+
   test.each(["cancelled", "failed"] as const)("%s settles started inputs without settling the waiting queue", state => {
     const { store, journal } = fixture();
     journal.accept("running", meta("a"), "prompt");

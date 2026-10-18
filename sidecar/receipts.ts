@@ -148,6 +148,16 @@ export class ReceiptJournal {
     }
   }
 
+  // startedIDs are the obligations a turn began and has not settled.
+  // Process exit and abort use this list. Accepted inputs are not on it.
+  startedIDs(): string[] {
+    const ids: string[] = [];
+    for (const fact of this.#facts.values()) {
+      if (fact.receipt.state === "started") ids.push(fact.receipt.request_id);
+    }
+    return ids;
+  }
+
   finish(ids: string[], state: ReceiptTerminalState, reason?: string, cause?: ReceiptCause): void {
     this.#writable();
     if (!terminals.has(state) || (reason !== undefined && typeof reason !== "string") ||

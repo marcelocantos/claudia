@@ -46,6 +46,12 @@ if (!claimSocket(sock)) {
 // Holding the lock, a socket file left here is stale.
 try { unlinkSync(sock); } catch { /* absent */ }
 
+// finishStartedOnExit is installed once the seat map exists. A lifeline
+// EOF means the broker is gone. Finish started receipts in the journal
+// before this process exits. The broker's own closer settles the control
+// file; this keeps the journal from reopening those rows as unknown.
+let finishStartedOnExit = (): void => {};
+
 // 🎯T166: started with a lifeline, the sidecar lives only as long as the
 // process that started it. Only that process holds the pipe's write end;
 // when it exits, however it exits, stdin reaches EOF and the sidecar goes
@@ -53,6 +59,11 @@ try { unlinkSync(sock); } catch { /* absent */ }
 // Seat conversations are written synchronously, so nothing is lost.
 if (process.argv.includes("--lifeline=stdin")) {
   const gone = () => {
+    try {
+      finishStartedOnExit();
+    } catch (err) {
+      console.error("sidecar: could not finish started receipts", err);
+    }
     console.error("sidecar: the process that started it is gone; exiting");
     process.exit(0);
   };
@@ -118,6 +129,9 @@ type Seat = {
 };
 
 const seats = new Map<string, Seat>();
+finishStartedOnExit = () => {
+  for (const loaded of seats.values()) loaded.agent.cancelOpenReceipts();
+};
 const historicalUsage = new HistoricalUsageReader();
 
 process.on("uncaughtException", (err: NodeJS.ErrnoException) => {
@@ -358,6 +372,7 @@ async function handle(
     return;
   }
   if (msg.op === "drop") {
+    loaded.agent.cancelOpenReceipts();
     loaded.agent.abort();
     seats.delete(seat);
     write({ seat, type: "dropped" });

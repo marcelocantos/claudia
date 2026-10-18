@@ -56,6 +56,9 @@ export type SeatAgent = {
   prompt: (text: string, meta?: PromptMeta) => Promise<void>;
   steer: (text: string, meta?: PromptMeta) => void;
   abort: () => void;
+  // cancelOpenReceipts finishes every started receipt as cancelled.
+  // Abort, drop, and process exit call it. Accepted inputs stay accepted.
+  cancelOpenReceipts: () => void;
   receipt: (requestId: string) => RequestReceipt;
   usage: (after?: number, limit?: number) => UsagePage;
   // switchModel moves the seat to another provider or model between turns,
@@ -351,6 +354,12 @@ export function createSeatAgent(opts: {
     receipts.finish([...ids], state, reason, cause);
     for (const id of started) sink.emit({ type: "receipt", request_id: id, receipt: receipts.query(id) });
   };
+  const cancelOpenReceipts = () => {
+    const ids = receipts.startedIDs();
+    if (ids.length === 0) return;
+    receipts.finish(ids, "cancelled", "cancelled", "cancellation");
+    for (const id of ids) sink.emit({ type: "receipt", request_id: id, receipt: receipts.query(id) });
+  };
   agent.addBeforeModelCall((context) => {
     receipts.assertHealthy();
     // Input events are emitted after this gate on the first call. Inspect
@@ -629,7 +638,9 @@ export function createSeatAgent(opts: {
       pending.add(message);
       sink.emit({ type: "accepted", request_id: meta?.request_id, rpc_id: meta?.rpc_id, receipt: accepted?.receipt });
     },
+    cancelOpenReceipts,
     abort: () => {
+      cancelOpenReceipts();
       const interruptedTurn = turnDone ?? Promise.resolve();
       cancelled = true;
       if (turn && !turn.closed) cancelledTurns.add(turn.turn_id);

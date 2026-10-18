@@ -81,6 +81,77 @@ func TestT10749ExistingFilePublishesReceipt(t *testing.T) {
 	}
 }
 
+// TestBrokerCloseCancelsStartedReceipts drives daemon.Close, the broker
+// stop path. A started receipt becomes cancelled. An accepted receipt and
+// a completed receipt stay as they were.
+func TestBrokerCloseCancelsStartedReceipts(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, controlplane.ClaudiaDBFile)
+	plane, err := controlplane.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := plane.Close(); err != nil {
+		t.Fatal(err)
+	}
+	sock := filepath.Join("/tmp", fmt.Sprintf("t1074-cancel-started-%d.sock", os.Getpid()))
+	_ = os.Remove(sock)
+	t.Cleanup(func() { _ = os.Remove(sock) })
+	d, err := New(Options{
+		SocketPath:     sock,
+		StateDir:       dir,
+		UsageFetch:     func(context.Context) ([]claudia.PlanUsage, error) { return nil, nil },
+		DisableResume:  true,
+		DisableIntel:   true,
+		DisableMCPHost: true,
+		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stamp := "2026-10-16T01:00:00.000000000Z"
+	started := &claudia.RequestReceipt{
+		RequestID: "logical-S", SessionID: "generation", Seat: "seat",
+		State: claudia.ReceiptStarted, AttemptID: "attempt-S", TurnIDs: []string{"turn-S"},
+		AcceptedAt: stamp, UpdatedAt: stamp,
+	}
+	accepted := &claudia.RequestReceipt{
+		RequestID: "logical-A", SessionID: "generation", Seat: "seat",
+		State: claudia.ReceiptAccepted, AttemptID: "attempt-A", TurnIDs: []string{},
+		AcceptedAt: stamp, UpdatedAt: stamp,
+	}
+	completed := &claudia.RequestReceipt{
+		RequestID: "logical-C", SessionID: "generation", Seat: "seat",
+		State: claudia.ReceiptCompleted, AttemptID: "attempt-C", TurnIDs: []string{"turn-C"},
+		AcceptedAt: stamp, UpdatedAt: stamp,
+	}
+	claudia.RecordObservedReceipt(started)
+	claudia.RecordObservedReceipt(accepted)
+	claudia.RecordObservedReceipt(completed)
+	if got := readStoredReceipt(t, path, started.Seat, started.SessionID, started.RequestID); got.State != claudia.ReceiptStarted {
+		t.Fatalf("before close = %+v", got)
+	}
+	if err := d.Close(); err != nil {
+		t.Fatal(err)
+	}
+	got := readStoredReceipt(t, path, started.Seat, started.SessionID, started.RequestID)
+	if got.State != claudia.ReceiptCancelled || got.Cause != claudia.ReceiptCauseCancellation || got.Reason != controlplane.ShutdownReceiptReason {
+		t.Fatalf("started receipt after close = %+v", got)
+	}
+	if got.AttemptID != started.AttemptID || len(got.TurnIDs) != 1 || got.TurnIDs[0] != "turn-S" {
+		t.Fatalf("identity after close = %+v", got)
+	}
+	if got.UpdatedAt == stamp {
+		t.Fatalf("updated_at stayed %s", got.UpdatedAt)
+	}
+	if acc := readStoredReceipt(t, path, accepted.Seat, accepted.SessionID, accepted.RequestID); acc.State != claudia.ReceiptAccepted || acc.Cause != "" {
+		t.Fatalf("accepted receipt after close = %+v", acc)
+	}
+	if comp := readStoredReceipt(t, path, completed.Seat, completed.SessionID, completed.RequestID); comp.State != claudia.ReceiptCompleted || comp.Cause != "" {
+		t.Fatalf("completed receipt after close = %+v", comp)
+	}
+}
+
 func readStoredReceipt(t *testing.T, path, seat, session, request string) claudia.RequestReceipt {
 	t.Helper()
 	db, err := sqlpipe.OpenDatabase(path)

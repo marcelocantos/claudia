@@ -114,7 +114,16 @@ func PublishFile(path string) (func() error, error) {
 	}
 	Bind(plane)
 	return func() error {
+		// The sidecar exits with this process. A receipt it left started
+		// has no later terminal fact. Settle those rows before unbinding
+		// so the file a later snapshot reads is not an open obligation.
+		err := plane.WithDB(func(db *sqlpipe.Database) error {
+			return CancelStartedReceipts(db, ShutdownReceiptReason)
+		})
 		Bind(nil)
-		return plane.Close()
+		if cerr := plane.Close(); err == nil {
+			err = cerr
+		}
+		return err
 	}, nil
 }
