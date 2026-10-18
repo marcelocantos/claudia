@@ -1291,7 +1291,7 @@ func (c *ompControl) runTool(name, callID, args string) string {
 			if orig, renamed := c.toolNames[name]; renamed {
 				name = orig
 			}
-			return CallMCPTool(url, name, args)
+			return callMCPTool(url, name, args, c.seat)
 		}
 	}
 	return runOMPTool(name, callID, args)
@@ -1313,10 +1313,18 @@ func DefaultOMPToolExec(name, callID, args string) string {
 	return fmt.Sprintf("omp: no tool endpoint configured for %q", name)
 }
 
+// jevonsSeatHeader names the calling seat. It matches Jevons
+// mcpserver.SeatHeader. Claudia does not import Jevons.
+const jevonsSeatHeader = "X-Jevons-Agent"
+
 // CallMCPTool POSTs a structured JSON-RPC tools/call to an MCP server
 // (🎯T871.1). No name prefix is required: the caller already decided this
 // tool belongs to this server, via [hostTools]'s discovered route.
 func CallMCPTool(mcpURL, name, args string) string {
+	return callMCPTool(mcpURL, name, args, "")
+}
+
+func callMCPTool(mcpURL, name, args, seat string) string {
 	var arguments any
 	if strings.TrimSpace(args) == "" {
 		arguments = map[string]any{}
@@ -1347,7 +1355,7 @@ func CallMCPTool(mcpURL, name, args string) string {
 	if session != "" {
 		defer mcpEndSession(mcpURL, session)
 	}
-	raw, _, cause, err := mcpPost(ctx, mcpURL, session, body)
+	raw, _, cause, err := mcpPost(ctx, mcpURL, session, body, seat)
 	if cause != "" {
 		return fmt.Sprintf("omp: %s call failed (%s): %v", name, cause, err)
 	}
@@ -1709,7 +1717,7 @@ func listMCPTools(ctx context.Context, mcpURL string) ([]hostJevonsTool, string,
 		// ignores it.
 		defer mcpEndSession(mcpURL, session)
 	}
-	raw, _, cause, err := mcpPost(ctx, mcpURL, session, []byte(`{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`))
+	raw, _, cause, err := mcpPost(ctx, mcpURL, session, []byte(`{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`), "")
 	if cause != "" {
 		return nil, cause, fmt.Errorf("tools/list: %w", err)
 	}
@@ -1749,14 +1757,14 @@ func (e *mcpSessionError) Unwrap() error { return e.err }
 // assigned ("" for a server that keeps none).
 func mcpOpenSession(ctx context.Context, mcpURL string) (string, error) {
 	initialize := []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"claudia-omp","version":"` + Version + `"}}}`)
-	raw, session, cause, err := mcpPost(ctx, mcpURL, "", initialize)
+	raw, session, cause, err := mcpPost(ctx, mcpURL, "", initialize, "")
 	if cause != "" {
 		return "", &mcpSessionError{cause, fmt.Errorf("initialize: %w", err)}
 	}
 	if cause, err := mcpRPCError(raw); cause != "" {
 		return "", &mcpSessionError{cause, fmt.Errorf("initialize: %w", err)}
 	}
-	if _, _, cause, err := mcpPost(ctx, mcpURL, session, []byte(`{"jsonrpc":"2.0","method":"notifications/initialized"}`)); cause != "" {
+	if _, _, cause, err := mcpPost(ctx, mcpURL, session, []byte(`{"jsonrpc":"2.0","method":"notifications/initialized"}`), ""); cause != "" {
 		if session != "" {
 			mcpEndSession(mcpURL, session)
 		}
@@ -1769,13 +1777,16 @@ func mcpOpenSession(ctx context.Context, mcpURL string) (string, error) {
 // reply's JSON (the last SSE event when the server streams), the session id
 // the server assigned, and a cause when it failed. A notification's reply
 // may be empty.
-func mcpPost(ctx context.Context, mcpURL, session string, body []byte) ([]byte, string, string, error) {
+func mcpPost(ctx context.Context, mcpURL, session string, body []byte, seat string) ([]byte, string, string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, mcpURL, bytes.NewReader(body))
 	if err != nil {
 		return nil, "", toolsCauseTransport, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
+	if seat != "" {
+		req.Header.Set(jevonsSeatHeader, seat)
+	}
 	if session != "" {
 		req.Header.Set("Mcp-Session-Id", session)
 	}
