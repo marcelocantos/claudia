@@ -4,8 +4,9 @@
 import { AuthRetry, authRefusal, type RetryReply } from "./authretry.ts";
 import { Agent, unpairedToolCallTail, type AgentTool } from "@oh-my-pi/pi-agent-core";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
-import type { AssistantMessage, Model } from "@oh-my-pi/pi-ai";
+import type { AssistantMessage, CursorExecHandlers, CursorMcpCall, Model, ToolResultMessage } from "@oh-my-pi/pi-ai";
 import { classifyMessage, Flag, is as hasFlag } from "@oh-my-pi/pi-ai/error";
+import crypto from "node:crypto";
 import { cursorExecHandlers } from "./cursorexec.ts";
 import { adoptSeatSession } from "./omp-session.ts";
 import { basename, dirname, isAbsolute, join } from "node:path";
@@ -168,6 +169,13 @@ export function createSeatAgent(opts: {
     };
   };
   const model = opts.modelOverride ?? resolveModel(opts.provider, opts.model);
+  // The bound and the tool list close over `agent` and run only after it exists.
+  const execHandlers = cursorExecHandlers(
+    () => cwd,
+    () => toolResultBound(agent.state.model?.contextWindow ?? 0),
+    () => sandbox,
+  );
+  bindListedMcp(execHandlers, () => agent.state.tools);
   const agent = new Agent({
     initialState: {
       systemPrompt: [
@@ -182,8 +190,11 @@ export function createSeatAgent(opts: {
     cwdResolver: () => cwd || undefined,
     streamFn: measuredStream(() => usage, usageAttribution),
     // Cursor's native tools come back as exec frames, not tool calls; without
-    // handlers each answered "Tool not available" (2026-10-13).
-    cursorExecHandlers: cursorExecHandlers(() => cwd, () => toolResultBound(agent.state.model?.contextWindow ?? 0), () => sandbox),
+    // handlers each answered "Tool not available" (2026-10-13). Listed tools
+    // arrive on that same channel as MCP frames. bindListedMcp runs the seat
+    // tool; without it the provider answers tool-not-found and the host never
+    // sees tool_call (2026-10-18 isolate).
+    cursorExecHandlers: execHandlers,
     getApiKey: async () => { attemptToken = replayToken || token; replayToken = ""; requestCount++; return attemptToken; },
     // A compaction summary must reach the provider; the Agent's default
     // converter drops roles it does not know (🎯T150).
@@ -693,6 +704,30 @@ function resolveModel(provider: string, model: string) {
     throw new Error(`unknown model ${provider}/${model}`);
   }
   return found;
+}
+
+// Cursor delivers a model-listed tool as an MCP exec frame on the open
+// stream, and runs it here rather than in the agent loop. The lookup is
+// live: the host can replace the tool list after the seat is built.
+function bindListedMcp(handlers: CursorExecHandlers, toolsOf: () => AgentTool[]): void {
+  const answer = (id: string, name: string, text: string, isError: boolean): ToolResultMessage => ({
+    role: "toolResult",
+    toolCallId: id,
+    toolName: name,
+    content: [{ type: "text", text }],
+    isError,
+    timestamp: Date.now(),
+  });
+  handlers.mcp = async (call: CursorMcpCall) => {
+    const name = call.toolName || call.name;
+    const id = call.toolCallId || crypto.randomUUID();
+    const tool = toolsOf().find((candidate) => candidate.name === name);
+    if (!tool) return answer(id, name, `Tool ${name} is not available`, true);
+    const executed = await tool.execute(id, call.args ?? {});
+    const text = executed.content.filter((block) => block.type === "text").map((block) => block.text).join("");
+    return answer(id, name, text, executed.isError === true);
+  };
+  handlers.mcpApprovalPreflight = async (call) => toolsOf().some((candidate) => candidate.name === (call.toolName || call.name));
 }
 
 function jevonsTool(
