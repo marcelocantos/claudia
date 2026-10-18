@@ -6,7 +6,7 @@ import type { Dir } from "node:fs";
 import { lstat, open, opendir, realpath } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
-import { SeatStore, validateStoreHeader } from "./store.ts";
+import { SeatStore, seatRuntimeDirName, validateStoreHeader } from "./store.ts";
 
 // Enumeration retains only two directory streams and one retry page per scan.
 // Limits cover scanned entries (not only matching histories), encoded strings,
@@ -92,6 +92,8 @@ export class GenerationDiscovery {
         if (!s.seat) {
           const entry = await s.root!.read(); check();
           if (!entry) { s.ended = true; break; }
+          // The SDK model cache shares the history root and is not a seat.
+          if (entry.name === seatRuntimeDirName && entry.isDirectory() && !entry.isSymbolicLink()) continue;
           if (!entry.isDirectory() || entry.isSymbolicLink()) {
             issue(entry.name, "unexpected_entry", "history root entry is not a regular seat directory"); continue;
           }

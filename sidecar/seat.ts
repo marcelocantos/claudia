@@ -8,12 +8,12 @@ import type { AssistantMessage, Model } from "@oh-my-pi/pi-ai";
 import { classifyMessage, Flag, is as hasFlag } from "@oh-my-pi/pi-ai/error";
 import { cursorExecHandlers } from "./cursorexec.ts";
 import { adoptSeatSession } from "./omp-session.ts";
-import { dirname, isAbsolute, join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { codingTools, type SandboxPolicy } from "./coding.ts";
 import { capToolText, toolResultBound } from "./truncate.ts";
 import { awaitHostCall } from "./hostcalls.ts";
 import { ContextOverflow, isOverflow, History, Maintenance, seatConvertToLlm, type MaintenanceHost } from "./maintain.ts";
-import type { SeatStore } from "./store.ts";
+import { seatRuntimeDirName, type SeatStore } from "./store.ts";
 import { ReceiptJournal, type RequestReceipt, type ReceiptCause, type ReceiptMessage, type ReceiptTerminalState } from "./receipts.ts";
 import { UsageJournal, measuredStream, measuredCompletion, type UsageFact, type UsagePage } from "./usage.ts";
 import {
@@ -276,7 +276,10 @@ export function createSeatAgent(opts: {
     : adoptSeatSession({
       agent,
       cwd,
-      stateDir: join(dirname(opts.store.path), "omp-session"),
+      // Beside the seat directory, not inside it. A file inside the seat
+      // directory is conversation history to the host, and generation
+      // discovery reports any non-journal entry as an incomplete inventory.
+      stateDir: join(dirname(dirname(opts.store.path)), seatRuntimeDirName, basename(dirname(opts.store.path))),
       tokenFor: () => token,
       receipts,
       usage,
