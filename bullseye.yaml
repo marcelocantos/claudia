@@ -2780,6 +2780,53 @@ targets:
     - plan-usage
     origin: manual
     discovered: 2026-10-14
+  T197:
+    name: Claudia reaches the macOS Keychain only through in-process SecItem calls, never /usr/bin/security
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - '`plan_usage_claude.go` (`security find-generic-password -s "Claude Code-credentials" -w`) and `omp/cred.go` (find/add-generic-password via `security -i`) are replaced by Security.framework SecItemCopyMatching/SecItemAdd/SecItemUpdate via cgo'
+    - '`git grep -nE "exec.Command(Context)?\(.*\"security\""` finds nothing in non-test code, and `strings` on the release darwin binary finds no `find-generic-password` / `add-generic-password`'
+    - The darwin build is CGO_ENABLED=1 (release-package.sh and the Homebrew formula). Linux and Windows variants sit behind build tags. Avoiding cgo is not a reason to keep the shell-out
+    - '`claudia-plan-credentials` is re-created by the signed broker so its ACL names the broker''s DR and not `/usr/bin/security`. No item is created with `-A`'
+    - No secret ever appears in argv, environment of child processes, or logs (tests pin this)
+    context: 'Audit 17 Oct 2026: claudia shells out to /usr/bin/security. Items created that way trust /usr/bin/security, so any process running as the owner (every agent) can read them silently with `security find-generic-password -w`. T131 kept tokens out of argv, but the ACL still binds to the wrong program. Standing rule from Marcelo (18 Oct): macOS tools call Security.framework directly with cgo (SecItem) instead of shelling out; use per-platform variants behind build tags. Related: T139 (user presence, set aside), think T31.'
+    tags:
+    - security
+    - keychain-audit-2026-10-17
+    origin: manual
+    discovered: 2026-10-18
+  T198:
+    name: The Claudia broker binary is signed with the hardened runtime and a stable identity, so Keychain trust survives rebuilds deliberately
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - release-package.sh signs the darwin binary with `codesign --force --options runtime --sign "<stable identity>" --identifier com.marcelocantos.claudia` and the published bottle keeps that signature (no ad-hoc re-sign by Homebrew relocation)
+    - '`codesign -dvvv $(brew --prefix)/bin/claudia` shows `flags=0x10000(runtime)`, identifier `com.marcelocantos.claudia` and a non-ad-hoc Authority; no disable-library-validation, allow-dyld-environment-variables, allow-unsigned-executable-memory or get-task-allow'
+    - '`codesign -d -r-` shows a team-pinned DR; the `-T <broker>` ACL no longer pins a cdhash that changes every build'
+    - The formula `test do` block fails if the installed binary is ad-hoc or lacks the runtime flag
+    context: 'Audit 17 Oct 2026: brew claudia 0.53.0 and ~/.local/bin/claudia-* are ad-hoc linker-signed (`Identifier=a.out`, DR = cdhash), with no hardened runtime. The `-T <broker>` ACL therefore pins a cdhash that changes on every rebuild, and the process holding plan credentials can be injected.'
+    tags:
+    - security
+    - keychain-audit-2026-10-17
+    origin: manual
+    discovered: 2026-10-18
+  T199:
+    name: Library consumers of claudia do not link the Claude Code credential reader
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - The Keychain reader for `Claude Code-credentials` and the plan-credential store live in a package that only the broker command imports
+    - '`go version -m` + `strings` on ytt and spyder release binaries show no Claude credential Keychain code path after they bump claudia'
+    context: 'Audit 17 Oct 2026: the `security find-generic-password` path from plan_usage_claude.go is compiled into ytt (brew 0.17.0) and spyder (brew 0.97.0) because they import the claudia module, so tools with no need for the owner''s Claude token can read it.'
+    tags:
+    - security
+    - keychain-audit-2026-10-17
+    origin: manual
+    discovered: 2026-10-18
   T2:
     name: 'Claudia is a long-running metaharness: it owns agent lifecycles across every provider and keeps each grant''s plan-contract true; consumers name seats and write turns'
     status: converging
