@@ -69,8 +69,11 @@ func TestCauseFromProviderCodeIgnoresSentences(t *testing.T) {
 	if got := CauseFromProviderCode("rate_limit"); got != CauseRateLimit {
 		t.Fatalf("rate_limit = %q", got)
 	}
-	if got := CauseFromProviderCode("billing_error"); got != CauseRateLimit {
+	if got := CauseFromProviderCode("billing_error"); got != CauseSpendWall {
 		t.Fatalf("billing_error = %q", got)
+	}
+	if CauseSpendWall != "spend_wall" {
+		t.Fatalf("spend wall spelling %q", CauseSpendWall)
 	}
 	if got := CauseFromProviderCode("authentication_failed"); got != CauseAuth {
 		t.Fatalf("authentication_failed = %q", got)

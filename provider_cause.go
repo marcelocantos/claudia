@@ -22,8 +22,11 @@ const (
 	CauseTurnIdle ProviderCause = "turn_idle"
 	// CauseAuth is a provider authentication or authorization refusal.
 	CauseAuth ProviderCause = "auth"
-	// CauseRateLimit is a throttle, quota, or billing refusal.
+	// CauseRateLimit is a throttle or quota refusal. A billing refusal is
+	// CauseSpendWall, not this.
 	CauseRateLimit ProviderCause = "rate_limit"
+	// CauseSpendWall is an account spend or billing refusal.
+	CauseSpendWall ProviderCause = "spend_wall"
 	// CauseBackendUnavailable is a provider outage or transport failure.
 	CauseBackendUnavailable ProviderCause = "backend_unavailable"
 	// CauseClientBug is a local request the provider rejected as invalid.
@@ -35,8 +38,10 @@ const (
 // consulted. An unrecognised code has no cause.
 func CauseFromProviderCode(code string) ProviderCause {
 	switch code {
-	case "rate_limit", "billing_error":
+	case "rate_limit":
 		return CauseRateLimit
+	case "billing_error":
+		return CauseSpendWall
 	case "authentication_failed", "authentication_error":
 		return CauseAuth
 	case "model_not_found":

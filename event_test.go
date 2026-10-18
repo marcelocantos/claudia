@@ -19,6 +19,11 @@ func TestParseEventProviderCodeStampsReason(t *testing.T) {
 	if ev.IsError || ev.Reason != "" {
 		t.Fatalf("prose: IsError=%v Reason=%q", ev.IsError, ev.Reason)
 	}
+	bill := `{"type":"assistant","message":{"content":[{"type":"text","text":"You've hit your monthly spend limit"}]},"error":"billing_error"}`
+	ev = parseEvent(bill)
+	if !ev.IsError || ev.Reason != string(CauseSpendWall) {
+		t.Fatalf("billing_error: IsError=%v Reason=%q", ev.IsError, ev.Reason)
+	}
 	unknown := `{"type":"assistant","message":{"content":[{"type":"text","text":"nope"}]},"error":"not_a_real_code"}`
 	ev = parseEvent(unknown)
 	if !ev.IsError || ev.Reason != "" {
