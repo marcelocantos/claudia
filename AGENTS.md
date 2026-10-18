@@ -268,7 +268,7 @@ builds, vets, and refuses a push unless that attestation names the tree of
 the tip commit going out (earlier commits are not checked; the attestation
 is never committed) — it does not re-run the gate, which takes ~25
 minutes, longer than GitHub keeps an idle SSH connection.
-Do not wait on `.github/workflows/test.yml`. `make live` remains a
+There is no GitHub Actions CI. `make live` remains a
 release-time owner gate for backend-behaviour changes. `/release` on
 this repo: commit prep on master, `make gate` (and `make live` if the
 diff touched a provider wire), `git push origin master`,

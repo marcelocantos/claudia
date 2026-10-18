@@ -1,4 +1,4 @@
-# Hermetic owner gate (🎯T48). Same suite as .github/workflows/test.yml.
+# Hermetic owner gate (🎯T48). There is no GitHub Actions CI; this is the gate.
 # On success it attests the tree it measured (scripts/gate-attest.sh);
 # pre-push checks that attestation rather than re-running the gate, which
 # takes ~25 minutes — longer than GitHub keeps an idle SSH connection open.
@@ -73,7 +73,7 @@ verify-stability:
 # unwired oracle: it applies the decay each entry declares (8c5e04a's landed=true
 # for T28) and requires it to be invisible to the suites AND to make this check
 # go red. A check that cannot be shown to fail is not evidence either.
-# CI runs this in .github/workflows/test.yml.
+# `make gate` runs this.
 .PHONY: verify-mutation-evidence
 verify-mutation-evidence:
 	@scripts/check-mutation-evidence.py
@@ -120,7 +120,7 @@ live-usage:
 # Model-check the broker lifecycle spec (T2.0/T2.8 oracle). The correct config
 # must be green AND every fault-injection mutant must be caught — a spec that
 # stays green on known-broken code is toothless. Requires Java + tla2tools.jar
-# (see scripts/tlc.sh). CI runs this in .github/workflows/specs.yml.
+# (see scripts/tlc.sh). Run it before a release (`make gate-full`).
 .PHONY: supervisor-install supervisor-status
 supervisor-install:
 	@supervisor/install.sh
