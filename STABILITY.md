@@ -132,8 +132,6 @@ release it claims to describe.
 | `NewMCPProxy` | `NewMCPProxy(args *MCPProxyArgs) (*MCPProxy, error)` | Fluid |
 | `NewRegistry` | `NewRegistry(path string) (*Registry, error)` | Stable |
 | `NewTask` | `NewTask(cfg TaskConfig) *Task` — Bedrock/Ollama only; removed CLI providers refuse on Run | Stable |
-| `ErrTaskCLIRemoved` | Named removed-transport sentinel, shared with `codex.ErrTaskCLIRemoved` | Stable |
-| `TaskProviderError` | `(provider Provider) error` — reports unavailable Task transport before dispatch | Fluid |
 | `ParseCursorTaskLine` | `ParseCursorTaskLine(line []byte) []TaskEvent` — Cursor `--print` stream-json; camelCase usage | Fluid |
 | `ParseGoalStatus` | `ParseGoalStatus(text string) (string, bool)` — whole-line `GOAL_STATUS: complete` or `blocked` | Fluid |
 | `ParseTaskLine` | `ParseTaskLine(line []byte) []TaskEvent` | Stable |
