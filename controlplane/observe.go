@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/marcelocantos/claudia"
+	"github.com/marcelocantos/claudia/omp"
 	"github.com/marcelocantos/sqlpipe/go/sqlpipe"
 )
 
@@ -113,10 +114,19 @@ func PublishFile(path string) (func() error, error) {
 		return nil, err
 	}
 	Bind(plane)
+	// The serving sidecar can die while this process stays up (a kill,
+	// a crash). Its Wait path is the only observer that still runs.
+	// Broker shutdown below still settles anything that exit missed.
+	omp.SetServingExitHook(func(int) {
+		_ = plane.WithDB(func(db *sqlpipe.Database) error {
+			return CancelStartedReceipts(db, SidecarExitReceiptReason)
+		})
+	})
 	return func() error {
-		// The sidecar exits with this process. A receipt it left started
-		// has no later terminal fact. Settle those rows before unbinding
-		// so the file a later snapshot reads is not an open obligation.
+		omp.SetServingExitHook(nil)
+		// A receipt left started has no later terminal fact once this
+		// process is gone. Settle those rows before unbinding so the
+		// file a later snapshot reads is not an open obligation.
 		err := plane.WithDB(func(db *sqlpipe.Database) error {
 			return CancelStartedReceipts(db, ShutdownReceiptReason)
 		})

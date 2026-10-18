@@ -17,9 +17,14 @@ import (
 )
 
 // ShutdownReceiptReason is why a broker stop marks a receipt the sidecar
-// left started. The sidecar process exits with the broker, so that row
-// will not reach a later terminal fact.
+// left started. The publisher closer runs it as this process exits.
 const ShutdownReceiptReason = "broker shutdown"
+
+// SidecarExitReceiptReason is why the broker marks a receipt started when
+// the serving sidecar process exits and this broker stays up. That child
+// will not write a later terminal fact. Broker shutdown remains a separate
+// reason for whatever is still started when the publisher closes.
+const SidecarExitReceiptReason = "sidecar exited"
 
 const (
 	// UsageTable is the Claudia-owned stream of uniquely identified usage facts.
@@ -195,7 +200,8 @@ func PublishReceipt(db *sqlpipe.Database, receipt *claudia.RequestReceipt) error
 
 // CancelStartedReceipts marks every started receipt cancelled. Accepted,
 // completed, failed, and already-cancelled rows stay as they are. The
-// broker calls this from the publisher closer, before the file is released.
+// broker calls this from the publisher closer, and when the serving
+// sidecar exits while the broker stays up.
 func CancelStartedReceipts(db *sqlpipe.Database, reason string) error {
 	if db == nil {
 		return fmt.Errorf("control plane: nil database")

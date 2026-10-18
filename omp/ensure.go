@@ -97,6 +97,24 @@ const LifelineArg = "--lifeline=stdin"
 // ensureMu). StopUnowned leaves them alone.
 var started = map[int]bool{}
 
+// serving holds pids of those sidecars that won the socket. A redundant
+// child exits without serving and must not settle receipts that still
+// belong to the sidecar holding the lock (🎯T145).
+var serving = map[int]bool{}
+
+// onServingExit runs after a serving sidecar process has exited.
+// The control-plane publisher registers receipt settlement here and
+// clears it when the publisher closes. Nil means there is nothing to do.
+var onServingExit func(pid int)
+
+// SetServingExitHook installs the callback for a serving sidecar's exit.
+// A nil hook disables it. The callback runs without ensureMu held.
+func SetServingExitHook(fn func(pid int)) {
+	ensureMu.Lock()
+	onServingExit = fn
+	ensureMu.Unlock()
+}
+
 // Ensure starts a Bun sidecar if the socket is not already accepting.
 //
 // The sidecar is this process's child and lives only as long as it
@@ -165,11 +183,7 @@ func Ensure(ctx context.Context) (string, error) {
 	// no finalizer closes it early.
 	go func() {
 		_ = cmd.Wait()
-		_ = hold.Close()
-		_ = logf.Close()
-		ensureMu.Lock()
-		delete(started, pid)
-		ensureMu.Unlock()
+		releaseStartedSidecar(pid, hold, logf)
 	}()
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
@@ -177,6 +191,12 @@ func Ensure(ctx context.Context) (string, error) {
 			return "", ctx.Err()
 		}
 		if Listening(ctx, path) {
+			// The winner wrote the pid file before it listened. A child
+			// that lost the lock never matches, so its later exit is not
+			// this socket's serving sidecar.
+			if pidFileNames(path, pid) {
+				serving[pid] = true
+			}
 			return path, nil
 		}
 		time.Sleep(50 * time.Millisecond)
@@ -256,6 +276,37 @@ func socketLockFree(path string) (bool, error) {
 }
 
 func pidPath(socket string) string { return socket + ".pid" }
+
+func pidFileNames(socket string, pid int) bool {
+	raw, err := os.ReadFile(pidPath(socket))
+	if err != nil {
+		return false
+	}
+	got, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	return err == nil && got == pid
+}
+
+// releaseStartedSidecar runs after a child this process started has exited.
+// Only a sidecar that had won the socket notifies the exit hook. The hook
+// settles receipts that child can no longer finish; the broker process
+// itself is still running.
+func releaseStartedSidecar(pid int, hold, logf *os.File) {
+	if hold != nil {
+		_ = hold.Close()
+	}
+	if logf != nil {
+		_ = logf.Close()
+	}
+	ensureMu.Lock()
+	delete(started, pid)
+	served := serving[pid]
+	delete(serving, pid)
+	hook := onServingExit
+	ensureMu.Unlock()
+	if served && hook != nil {
+		hook(pid)
+	}
+}
 
 func itoa(n int) string { return strconv.Itoa(n) }
 
