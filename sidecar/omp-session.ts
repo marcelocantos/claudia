@@ -4,21 +4,22 @@
 // Claudia supplies transport, credentials and tool policy. OMP owns the session
 // loop and context maintenance; this module does not run a second turn loop.
 import type { Agent, AgentMessage, StreamFn } from "@oh-my-pi/pi-agent-core";
-import { AuthStorage, type Model } from "@oh-my-pi/pi-ai";
+import { AuthStorage, streamSimple, type Model } from "@oh-my-pi/pi-ai";
 import { copyPerCallContextMessage } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { AgentSessionConfig } from "@oh-my-pi/pi-coding-agent/session/agent-session-types";
 import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
-import type { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { getAgentDir, getBaseConfigRoot } from "@oh-my-pi/pi-utils/dirs";
+import { mkdirSync } from "node:fs";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { cursorExecHandlers } from "./cursorexec.ts";
 import type { SandboxPolicy } from "./execution.ts";
 import { ReceiptJournal, type ReceiptMessage } from "./receipts.ts";
 import { toolResultBound } from "./truncate.ts";
-import { measureDispatch, UsageJournal, type Attribution } from "./usage.ts";
+import { measureDispatch, observedNativeCompaction, UsageJournal, type Attribution } from "./usage.ts";
 
 // Pass this same converter to the injected Agent. Stock custom-message
 // conversion discards details; host request identity must survive into the
@@ -74,6 +75,12 @@ export interface OmpSessionOptions {
   // Read when the model stream starts, after the receipt start below.
   // The host supplies turn, cause and request refs.
   usageAttribution: () => Attribution;
+  // The seat already owns the turn loop, Cursor handlers, usage measurement,
+  // receipt bookends, credential callback, and message list. Adopt the
+  // session without replacing those. The process-wide SDK directory guard
+  // does not apply: this seat's store is not that directory, and the
+  // session below uses in-memory settings plus this stateDir.
+  preserveSeatLoop?: boolean;
 }
 
 // The Agent stores Cursor exec handlers only at construction, and the loop
@@ -130,8 +137,9 @@ export async function createOmpSession(opts: OmpSessionOptions) {
   if (!(opts.receipts instanceof ReceiptJournal)) throw new Error("OMP session requires the production receipt journal");
   if (!(opts.usage instanceof UsageJournal)) throw new Error("OMP session requires the production usage journal");
   if (typeof opts.usageAttribution !== "function") throw new Error("OMP session requires usage attribution");
-  bindSdkDispatch(opts);
-  for (const dir of [getAgentDir(), getBaseConfigRoot()]) {
+  const preserveSeatLoop = opts.preserveSeatLoop === true;
+  if (!preserveSeatLoop) bindSdkDispatch(opts);
+  if (!preserveSeatLoop) for (const dir of [getAgentDir(), getBaseConfigRoot()]) {
     const suffix = relative(opts.stateDir, dir);
     if (suffix === ".." || suffix.startsWith(`..${sep}`) || isAbsolute(suffix)) {
       throw new Error(`OMP SDK directory is outside the explicit state root: ${dir}`);
@@ -159,8 +167,10 @@ export async function createOmpSession(opts: OmpSessionOptions) {
     "retry.waitForUsageReset": false,
     "codexResets.autoRedeem": false,
     "claudeResets.autoRedeem": false,
-    "compaction.enabled": true,
-    "compaction.midTurnEnabled": true,
+    // The seat's Maintenance pass remains the compactor when the seat owns
+    // the loop. A second SDK compactor would fold the same turn twice.
+    "compaction.enabled": !preserveSeatLoop,
+    "compaction.midTurnEnabled": !preserveSeatLoop,
     "compaction.asyncEnabled": false,
     "compaction.idleEnabled": false,
     "compaction.experimentalContextManagement": false,
@@ -231,10 +241,17 @@ export async function createOmpSession(opts: OmpSessionOptions) {
     };
     // The agent loop does not consult the registry key. One broker callback
     // authorizes both paths; a stale callback captured at construction cannot.
-    opts.agent.getApiKey = (model) => syncToken(model.provider);
-    // Direct construction does not perform the SDK factory's restore step.
-    // The canonical manager owns context, including compaction and branching.
-    opts.agent.replaceMessages(opts.sessionManager.buildSessionContext().messages);
+    // A seat-owned loop keeps the callback that counts attempts and replays
+    // the rotated token. Replacing it breaks auth recovery.
+    const previousStream = opts.agent.streamFn;
+    const previousKey = opts.agent.getApiKey;
+    const previousPrepare = opts.agent.prepareQueuedMessages;
+    if (!preserveSeatLoop) {
+      opts.agent.getApiKey = (model) => syncToken(model.provider);
+      // Direct construction does not perform the SDK factory's restore step.
+      // The canonical manager owns context, including compaction and branching.
+      opts.agent.replaceMessages(opts.sessionManager.buildSessionContext().messages);
+    }
     const session = new AgentSession({
       agent: opts.agent,
       sessionManager: opts.sessionManager,
@@ -257,6 +274,14 @@ export async function createOmpSession(opts: OmpSessionOptions) {
       nativeCompactionOptions: opts.nativeCompactionOptions,
       convertToLlm: convertOmpMessages,
     });
+    if (preserveSeatLoop) {
+      // AgentSession installs its own queue preparer, which rebuilds user
+      // text and drops the host request on the message. The seat's steering
+      // order and receipt identity depend on the preparer it already had.
+      opts.agent.streamFn = previousStream;
+      opts.agent.getApiKey = previousKey;
+      opts.agent.prepareQueuedMessages = previousPrepare;
+    }
     let disposal: Promise<void> | undefined;
     return {
       session,
@@ -271,4 +296,33 @@ export async function createOmpSession(opts: OmpSessionOptions) {
     auth.close();
     throw error;
   }
+}
+
+// The production seat keeps calling Agent.prompt with the host message.
+// AgentSession is adopted beside that loop. It does not submit text, replace
+// the stream, or bookend receipts; the seat already does those.
+export function adoptSeatSession(opts: {
+  agent: Agent;
+  cwd: string;
+  stateDir: string;
+  tokenFor: (provider: string) => string | undefined;
+  receipts: ReceiptJournal;
+  usage: UsageJournal;
+  usageAttribution: () => Attribution;
+}) {
+  if (!isAbsolute(opts.cwd)) throw new Error("OMP seat cwd must be absolute");
+  mkdirSync(opts.stateDir, { recursive: true });
+  return createOmpSession({
+    agent: opts.agent,
+    sessionManager: SessionManager.inMemory(opts.cwd),
+    stateDir: opts.stateDir,
+    cwd: opts.cwd,
+    tokenFor: opts.tokenFor,
+    sideStreamFn: streamSimple,
+    nativeCompactionOptions: observedNativeCompaction(opts.usage, opts.usageAttribution, fetch),
+    receipts: opts.receipts,
+    usage: opts.usage,
+    usageAttribution: opts.usageAttribution,
+    preserveSeatLoop: true,
+  });
 }

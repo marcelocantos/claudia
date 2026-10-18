@@ -7,6 +7,8 @@ import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import type { AssistantMessage, Model } from "@oh-my-pi/pi-ai";
 import { classifyMessage, Flag, is as hasFlag } from "@oh-my-pi/pi-ai/error";
 import { cursorExecHandlers } from "./cursorexec.ts";
+import { adoptSeatSession } from "./omp-session.ts";
+import { dirname, isAbsolute, join } from "node:path";
 import { codingTools, type SandboxPolicy } from "./coding.ts";
 import { capToolText, toolResultBound } from "./truncate.ts";
 import { awaitHostCall } from "./hostcalls.ts";
@@ -250,7 +252,7 @@ export function createSeatAgent(opts: {
   // Between tool calls, when the loop is about to call the model again: the
   // CLI's mid-turn pass. The live array is the loop's own, so a compaction is
   // spliced into it for the next request.
-  agent.setOnTurnEnd(async (messages, signal, context) => {
+  const onTurnEnd: Parameters<typeof agent.setOnTurnEnd>[0] = async (messages, signal, context) => {
     // Every finished model call is durable before the next one (🎯T151).
     maint.persist(messages);
     if (signal?.aborted || !context?.willContinue || maint.compacting) return;
@@ -261,7 +263,28 @@ export function createSeatAgent(opts: {
     if (signal?.aborted) return;
     const compacted = agent.state.messages;
     if (compacted !== messages) messages.splice(0, messages.length, ...compacted);
-  });
+  };
+  agent.setOnTurnEnd(onTurnEnd);
+  // AgentSession overwrites the turn-end hook while it constructs. Restore
+  // the seat hook before any prompt runs. Seats without a store have no
+  // usage journal, so they keep the current engine only.
+  // A resolved promise still yields. Mid-turn prompt and steer must keep
+  // their accepted order, so a prompt does not await once adoption finished.
+  let sessionSettled = !(usage && opts.store && isAbsolute(cwd));
+  const sessionReady = sessionSettled
+    ? Promise.resolve()
+    : adoptSeatSession({
+      agent,
+      cwd,
+      stateDir: join(dirname(opts.store.path), "omp-session"),
+      tokenFor: () => token,
+      receipts,
+      usage,
+      usageAttribution,
+    }).then(() => {
+      agent.setOnTurnEnd(onTurnEnd);
+      sessionSettled = true;
+    });
   // overflowRefusal is the last message when the provider refused the turn
   // as longer than the window, or undefined.
   const overflowRefusal = () => {
@@ -544,6 +567,7 @@ export function createSeatAgent(opts: {
     },
     authRetry: (reply) => recovery.receive(reply),
     prompt: async (text: string, meta?: PromptMeta) => {
+      if (!sessionSettled) await sessionReady;
       receipts.assertHealthy();
       assertRestorableExecution();
       const accepted = meta?.request_id ? receipts.accept(text, meta as typeof meta & { request_id: string; session_id: string }, "prompt") : undefined;
@@ -603,6 +627,7 @@ export function createSeatAgent(opts: {
       // queues survive abort; once the aborted run has unwound, run what is
       // queued as its own turn instead of leaving it for a later prompt.
       void agent.waitForIdle().then(async () => {
+        if (!sessionSettled) await sessionReady;
         await interruptedTurn;
         await retryDone;
         if (!agent.hasQueuedMessages() || agent.state.isStreaming || turnDone) return;
@@ -614,6 +639,7 @@ export function createSeatAgent(opts: {
       });
     },
     switchModel: async (provider: string, modelId: string) => {
+      if (!sessionSettled) await sessionReady;
       assertRestorableExecution();
       if (turnDone || agent.state.isStreaming) {
         throw new Error("switch refused: a turn is running");

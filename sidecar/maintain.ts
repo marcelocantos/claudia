@@ -355,9 +355,14 @@ export class History {
 }
 
 // messageKey identifies a message by content: its role, time and a hash of
-// the whole message. Two copies of one message share it.
+// the message. Two copies of one message share it. AgentSession stamps
+// completedAt and contextSnapshot on its own assistant copy after the
+// turn-end hook has already journaled the engine's copy, so those fields
+// are left out of the hash. They are not a second transcript message.
 function messageKey(m: AgentMessage): string {
-  return `${m.role}|${typeof m.timestamp === "number" ? m.timestamp : ""}|${Bun.hash(JSON.stringify(m))}`;
+  const stamp = m as AgentMessage & { completedAt?: unknown; contextSnapshot?: unknown };
+  const { completedAt: _completedAt, contextSnapshot: _contextSnapshot, ...body } = stamp;
+  return `${m.role}|${typeof m.timestamp === "number" ? m.timestamp : ""}|${Bun.hash(JSON.stringify(body))}`;
 }
 
 // openAiRemotePayload reads a validated OpenAI Responses replacement history
