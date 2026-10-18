@@ -20,6 +20,8 @@ const ClaudiaDBFile = "claudia-control.db"
 var (
 	controlReconcileMu sync.Mutex
 	controlReconcile   func(ctx context.Context, path string, reg *Registry) error
+	controlPublishMu   sync.Mutex
+	controlPublish     func(path string) (func() error, error)
 )
 
 // SetReconcileControlFile installs the startup reconciler. A nil function
@@ -28,6 +30,29 @@ func SetReconcileControlFile(fn func(ctx context.Context, path string, reg *Regi
 	controlReconcileMu.Lock()
 	controlReconcile = fn
 	controlReconcileMu.Unlock()
+}
+
+// SetPublishControlFile installs the startup publisher. A nil function
+// clears it. The controlplane package registers PublishFile from init.
+// PublishFile returns the function that unbinds the seat pump and closes
+// the plane.
+func SetPublishControlFile(fn func(path string) (func() error, error)) {
+	controlPublishMu.Lock()
+	controlPublish = fn
+	controlPublishMu.Unlock()
+}
+
+// OpenControlPublisher binds the seat pump to an existing control file.
+// A missing file returns a nil closer and is not created. No linked
+// publisher is a wiring error, not a missing file.
+func OpenControlPublisher(path string) (func() error, error) {
+	controlPublishMu.Lock()
+	fn := controlPublish
+	controlPublishMu.Unlock()
+	if fn == nil {
+		return nil, fmt.Errorf("control plane: publisher not linked")
+	}
+	return fn(path)
 }
 
 // ReconcileControlFile applies desired rows already stored at path.

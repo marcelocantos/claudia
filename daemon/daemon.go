@@ -162,7 +162,10 @@ type Daemon struct {
 	// stateDir is the resolved state directory. opts.StateDir is empty on a
 	// default serve and must not be read after construction.
 	stateDir string
-	mcp      *claudia.MCPHost
+	// closePlane unbinds the seat-pump publisher and closes the control file.
+	// Nil when that file was absent at startup: New does not create it.
+	closePlane func() error
+	mcp        *claudia.MCPHost
 	// seatSub is the daemon's subscription to its Registry's seat events.
 	seatSub int64
 	// claims records when each grant last had a consumer (🎯T161).
@@ -270,9 +273,24 @@ func New(opts Options) (*Daemon, error) {
 	// command imports controlplane, whose init links this call. This package
 	// cannot: controlplane already imports the library, and the daemon may
 	// import only the library and the wire.
-	if err := reg.ReconcileControlFile(context.Background(), filepath.Join(stateDir, claudia.ClaudiaDBFile)); err != nil {
+	controlPath := filepath.Join(stateDir, claudia.ClaudiaDBFile)
+	if err := reg.ReconcileControlFile(context.Background(), controlPath); err != nil {
 		return nil, fmt.Errorf("broker daemon: control plane: %w", err)
 	}
+	// An existing file becomes the seat-pump publisher for this process.
+	// A missing file stays missing: creating it here would invent a pair
+	// Jevons has not opened. The broker command imports controlplane, whose
+	// init links this call. This package cannot import that package.
+	closePlane, err := claudia.OpenControlPublisher(controlPath)
+	if err != nil {
+		return nil, fmt.Errorf("broker daemon: control plane publisher: %w", err)
+	}
+	planeHeld := true
+	defer func() {
+		if planeHeld && closePlane != nil {
+			_ = closePlane()
+		}
+	}()
 	claims, err := loadSeatClaims(filepath.Join(stateDir, claimsFile))
 	if err != nil {
 		return nil, fmt.Errorf("broker daemon: claims: %w", err)
@@ -365,6 +383,8 @@ func New(opts Options) (*Daemon, error) {
 		close(d.resumeDone)
 	}
 	log.Info("claudia broker serving", "socket", path, "state", stateDir)
+	d.closePlane = closePlane
+	planeHeld = false
 	return d, nil
 }
 
@@ -402,6 +422,12 @@ func (d *Daemon) Close() error {
 		if cerr := d.mcp.Close(); err == nil {
 			err = cerr
 		}
+	}
+	if d.closePlane != nil {
+		if cerr := d.closePlane(); err == nil {
+			err = cerr
+		}
+		d.closePlane = nil
 	}
 	return err
 }

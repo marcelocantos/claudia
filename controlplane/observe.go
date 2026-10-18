@@ -5,6 +5,7 @@ package controlplane
 
 import (
 	"fmt"
+	"os"
 	"sync"
 
 	"github.com/marcelocantos/claudia"
@@ -94,4 +95,26 @@ func Bind(p *Plane) {
 		return
 	}
 	claudia.SetControlPlaneObservers(p.PublishUsage, p.PublishReceipt)
+}
+
+// PublishFile opens path when the file already exists and binds it as the
+// seat-pump publisher. A missing file is left missing. The returned function
+// unbinds the pump and closes the plane. The broker holds that function for
+// the process lifetime.
+func PublishFile(path string) (func() error, error) {
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	plane, err := Open(path)
+	if err != nil {
+		return nil, err
+	}
+	Bind(plane)
+	return func() error {
+		Bind(nil)
+		return plane.Close()
+	}, nil
 }

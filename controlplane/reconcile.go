@@ -14,9 +14,11 @@ import (
 )
 
 func init() {
-	// The daemon calls Registry.ReconcileControlFile and cannot import this
-	// package. Importing this package is what links the call.
+	// The daemon calls Registry.ReconcileControlFile and OpenControlPublisher
+	// and cannot import this package. Importing this package is what links
+	// both calls.
 	claudia.SetReconcileControlFile(ReconcileFile)
+	claudia.SetPublishControlFile(PublishFile)
 }
 
 const (
