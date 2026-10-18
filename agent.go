@@ -1393,7 +1393,7 @@ func (a *Agent) Interrupt() error {
 	alive := a.alive
 	a.mu.Unlock()
 	if !alive {
-		return fmt.Errorf("claude process not running")
+		return ErrProcessNotRunning
 	}
 	if a.ops.interrupt == nil {
 		return unsupportedCapability(a.provider, "interrupt", "provider did not supply an interrupt operation")

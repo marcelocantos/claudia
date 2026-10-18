@@ -466,7 +466,7 @@ func (t *Task) Run(ctx context.Context, prompt string) (<-chan TaskEvent, error)
 	t.mu.Lock()
 	if t.status == TaskStatusRunning {
 		t.mu.Unlock()
-		return nil, fmt.Errorf("task %s is busy", t.id)
+		return nil, caused(CauseBusy, fmt.Sprintf("task %s is busy", t.id), nil)
 	}
 	if t.status == TaskStatusStopped {
 		t.mu.Unlock()

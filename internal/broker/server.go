@@ -4,6 +4,7 @@
 package broker
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -88,16 +89,38 @@ func (c *ClientConn) Reply(resp *Response) error { return c.WriteResponse(resp) 
 
 // Fail writes a typed refusal for request id. A non-ProtocolError becomes
 // CodeAgentFailed carrying the error text, so a provider failure reaches the
-// client as the provider's own words rather than "malformed".
+// client as the provider's own words rather than "malformed". A provider
+// cause, when the error has one, is copied onto Value. Field stays empty,
+// so Error's rendered sentence does not change.
 func (c *ClientConn) Fail(id string, err error) bool {
-	pe, ok := err.(*ProtocolError)
-	if !ok {
-		pe = &ProtocolError{Code: CodeAgentFailed, Msg: err.Error()}
-	}
+	pe := agentFailed(err)
 	if pe.ID == "" {
 		pe.ID = id
 	}
 	return c.WriteResponse(&Response{ID: pe.ID, Type: TypeError, Error: pe.Wire()}) == nil
+}
+
+// agentFailed is the CodeAgentFailed refusal for a provider error.
+// A *ProtocolError is returned as itself. Anything else keeps its text and,
+// when it carries ProviderCause, that code. Prose with no cause stays empty.
+func agentFailed(err error) *ProtocolError {
+	if pe, ok := err.(*ProtocolError); ok {
+		return pe
+	}
+	pe := &ProtocolError{Code: CodeAgentFailed, Msg: err.Error()}
+	if cause := providerCause(err); cause != "" {
+		pe.Value = cause
+	}
+	return pe
+}
+
+func providerCause(err error) string {
+	type causer interface{ ProviderCause() string }
+	var c causer
+	if err == nil || !errors.As(err, &c) || c == nil {
+		return ""
+	}
+	return c.ProviderCause()
 }
 
 // Server accepts broker connections on a Unix socket.

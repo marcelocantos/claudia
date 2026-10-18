@@ -5,7 +5,6 @@ package claudia
 
 import (
 	"encoding/json"
-	"errors"
 	"strconv"
 )
 
@@ -13,8 +12,8 @@ import (
 // turn is already running on an ACP session (🎯T72.1). The host decides
 // what to do with the text — queue it, steer, or interrupt — so the client
 // never auto-steers. The message keeps the historical "prompt already in
-// flight" wording that jevons classifies as busy (agenterr.IsPromptBusy).
-var ErrTurnInFlight = errors.New("prompt already in flight")
+// flight" wording. The cause is CauseTurnInFlight, not that sentence.
+var ErrTurnInFlight error = caused(CauseTurnInFlight, "prompt already in flight", nil)
 
 // acpSteerMechanism names how ACP steer is delivered: a second
 // session/prompt written while the first is still running, whose id

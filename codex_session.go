@@ -122,7 +122,7 @@ func (c *codexAppServerClient) SetModel(model string) error {
 		return fmt.Errorf("codex app-server: client closed")
 	}
 	if c.inFlight {
-		return fmt.Errorf("codex app-server: turn already in flight")
+		return caused(CauseTurnInFlight, "codex app-server: turn already in flight", ErrTurnInFlight)
 	}
 	c.model = model
 	return nil
@@ -551,7 +551,7 @@ func (c *codexAppServerClient) Prompt(text string) error {
 	}
 	if c.inFlight {
 		c.mu.Unlock()
-		return fmt.Errorf("codex app-server: turn already in flight")
+		return caused(CauseTurnInFlight, "codex app-server: turn already in flight", ErrTurnInFlight)
 	}
 	c.inFlight = true
 	c.turnID = ""

@@ -77,10 +77,10 @@ var (
 	// provider cannot steer at all ([TurnCaps].CanSteer false on its
 	// contract) or the mechanism is not wired for this handle. The caller
 	// queues, or interrupts and resubmits.
-	ErrSteerUnsupported = errors.New("steer unsupported")
+	ErrSteerUnsupported = caused(CauseSteerUnsupported, "steer unsupported", nil)
 	// ErrTurnIdle: [Agent.Steer] was called with no turn open. Steer folds
 	// text into a running turn; an idle seat wants [Agent.Send].
-	ErrTurnIdle = errors.New("no turn in flight to steer")
+	ErrTurnIdle = caused(CauseTurnIdle, "no turn in flight to steer", nil)
 	// ErrQueueHostSide: [DeliveryQueue] was requested. claudia holds no
 	// queue; the text was not sent and the caller keeps it.
 	ErrQueueHostSide = errors.New("queue is host-side; text not sent")
@@ -281,7 +281,7 @@ func (a *Agent) deliverable() error {
 	alive := a.alive
 	a.mu.Unlock()
 	if !alive {
-		return fmt.Errorf("claude process not running")
+		return ErrProcessNotRunning
 	}
 	return nil
 }

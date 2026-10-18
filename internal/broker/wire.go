@@ -460,6 +460,17 @@ func (e *ProtocolError) Error() string {
 	return fmt.Sprintf("broker protocol: %s: %s", e.Code, e.Msg)
 }
 
+// ProviderCause is the stable provider-failure code carried in Value when
+// Code is CodeAgentFailed and Field is empty. Other codes use Value as the
+// offending value, and those are not a cause. An empty string means the
+// refusal did not name one. Callers switch on this, not on Error.
+func (e *ProtocolError) ProviderCause() string {
+	if e == nil || e.Code != CodeAgentFailed || e.Field != "" {
+		return ""
+	}
+	return e.Value
+}
+
 // Unwrap names the sentinel behind a code that has one, so errors.Is works on
 // a refusal this process raised and, identically, on one it decoded off the
 // wire: the code is the identity, so a client can match a remote broker's
