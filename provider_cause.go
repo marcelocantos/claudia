@@ -20,7 +20,33 @@ const (
 	CauseSteerUnsupported ProviderCause = "steer_unsupported"
 	// CauseTurnIdle is a steer with no open turn.
 	CauseTurnIdle ProviderCause = "turn_idle"
+	// CauseAuth is a provider authentication or authorization refusal.
+	CauseAuth ProviderCause = "auth"
+	// CauseRateLimit is a throttle, quota, or billing refusal.
+	CauseRateLimit ProviderCause = "rate_limit"
+	// CauseBackendUnavailable is a provider outage or transport failure.
+	CauseBackendUnavailable ProviderCause = "backend_unavailable"
+	// CauseClientBug is a local request the provider rejected as invalid.
+	CauseClientBug ProviderCause = "client_bug"
 )
+
+// CauseFromProviderCode maps a provider's own error code onto a cause.
+// The code is the field the provider sent. The sentence beside it is not
+// consulted. An unrecognised code has no cause.
+func CauseFromProviderCode(code string) ProviderCause {
+	switch code {
+	case "rate_limit", "billing_error":
+		return CauseRateLimit
+	case "authentication_failed", "authentication_error":
+		return CauseAuth
+	case "model_not_found":
+		return CauseClientBug
+	case "overloaded_error", "internal_error":
+		return CauseBackendUnavailable
+	default:
+		return ""
+	}
+}
 
 // causedError is a provider failure whose cause is a code.
 // Text is the historical sentence. It is not consulted by a control.

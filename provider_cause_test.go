@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+
+	"github.com/marcelocantos/claudia/codex"
 )
 
 func TestProviderCauseSentinelsKeepTheirText(t *testing.T) {
@@ -43,5 +45,52 @@ func TestProviderCauseSentinelsKeepTheirText(t *testing.T) {
 	var c interface{ ProviderCause() string }
 	if errors.As(plain, &c) {
 		t.Fatal("prose 401 carried a cause")
+	}
+}
+
+func TestCodexAuthAndRateLimitCarryCauses(t *testing.T) {
+	auth := &codex.AuthError{Message: "401 unauthorized"}
+	if got := auth.ProviderCause(); got != string(CauseAuth) {
+		t.Fatalf("auth cause %q", got)
+	}
+	if auth.Error() != "codex: auth error: 401 unauthorized" {
+		t.Fatalf("auth text changed: %q", auth.Error())
+	}
+	limit := &codex.RateLimitError{Message: "slow down"}
+	if got := limit.ProviderCause(); got != string(CauseRateLimit) {
+		t.Fatalf("rate cause %q", got)
+	}
+	if limit.Error() != "codex: rate limit: slow down" {
+		t.Fatalf("rate text changed: %q", limit.Error())
+	}
+}
+
+func TestCauseFromProviderCodeIgnoresSentences(t *testing.T) {
+	if got := CauseFromProviderCode("rate_limit"); got != CauseRateLimit {
+		t.Fatalf("rate_limit = %q", got)
+	}
+	if got := CauseFromProviderCode("billing_error"); got != CauseRateLimit {
+		t.Fatalf("billing_error = %q", got)
+	}
+	if got := CauseFromProviderCode("authentication_failed"); got != CauseAuth {
+		t.Fatalf("authentication_failed = %q", got)
+	}
+	if got := CauseFromProviderCode("authentication_error"); got != CauseAuth {
+		t.Fatalf("authentication_error = %q", got)
+	}
+	if got := CauseFromProviderCode("model_not_found"); got != CauseClientBug {
+		t.Fatalf("model_not_found = %q", got)
+	}
+	if got := CauseFromProviderCode("overloaded_error"); got != CauseBackendUnavailable {
+		t.Fatalf("overloaded_error = %q", got)
+	}
+	if got := CauseFromProviderCode("internal_error"); got != CauseBackendUnavailable {
+		t.Fatalf("internal_error = %q", got)
+	}
+	if got := CauseFromProviderCode("401 Unauthorized"); got != "" {
+		t.Fatalf("sentence mapped to %q", got)
+	}
+	if got := CauseFromProviderCode("you are rate limited"); got != "" {
+		t.Fatalf("sentence mapped to %q", got)
 	}
 }

@@ -25,6 +25,14 @@ func (e *AuthError) Error() string {
 	return "codex: auth error: " + e.Message
 }
 
+// ProviderCause is the stable auth code. The sentence is not the cause.
+func (e *AuthError) ProviderCause() string {
+	if e == nil {
+		return ""
+	}
+	return "auth"
+}
+
 // RateLimitError is a throttle / rate-limit / usage-cap failure from Codex.
 type RateLimitError struct {
 	Message string
@@ -38,6 +46,14 @@ func (e *RateLimitError) Error() string {
 		return "codex: rate limit"
 	}
 	return "codex: rate limit: " + e.Message
+}
+
+// ProviderCause is the stable rate-limit code. The sentence is not the cause.
+func (e *RateLimitError) ProviderCause() string {
+	if e == nil {
+		return ""
+	}
+	return "rate_limit"
 }
 
 // ExitError is a non-zero process exit from `codex exec` when no structured

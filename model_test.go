@@ -39,6 +39,9 @@ func TestParseEventModelNotFoundIsError(t *testing.T) {
 	if !ev.IsError {
 		t.Fatal("model_not_found assistant must set IsError")
 	}
+	if ev.Reason != string(CauseClientBug) {
+		t.Fatalf("Reason = %q, want %s", ev.Reason, CauseClientBug)
+	}
 	if !strings.Contains(ev.Text, "definitely-not-a-real-model-xyzzy") {
 		t.Fatalf("error text must name the model, got %q", ev.Text)
 	}

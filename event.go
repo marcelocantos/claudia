@@ -242,6 +242,9 @@ func parseEvent(line string) Event {
 		}
 		if errStr, ok := entry["error"].(string); ok && errStr != "" {
 			ev.IsError = true
+			if ev.Reason == "" {
+				ev.Reason = string(CauseFromProviderCode(errStr))
+			}
 		}
 		if u, ok := entry["usage"].(map[string]any); ok {
 			ev.Usage.InputTokens = int(jsonFloat(u, "input_tokens"))

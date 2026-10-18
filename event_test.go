@@ -8,6 +8,24 @@ import (
 	"testing"
 )
 
+func TestParseEventProviderCodeStampsReason(t *testing.T) {
+	rate := `{"type":"assistant","message":{"content":[{"type":"text","text":"slow down"}]},"error":"rate_limit"}`
+	ev := parseEvent(rate)
+	if !ev.IsError || ev.Reason != string(CauseRateLimit) {
+		t.Fatalf("rate_limit: IsError=%v Reason=%q", ev.IsError, ev.Reason)
+	}
+	prose := `{"type":"assistant","message":{"content":[{"type":"text","text":"401 Unauthorized"}]}}`
+	ev = parseEvent(prose)
+	if ev.IsError || ev.Reason != "" {
+		t.Fatalf("prose: IsError=%v Reason=%q", ev.IsError, ev.Reason)
+	}
+	unknown := `{"type":"assistant","message":{"content":[{"type":"text","text":"nope"}]},"error":"not_a_real_code"}`
+	ev = parseEvent(unknown)
+	if !ev.IsError || ev.Reason != "" {
+		t.Fatalf("unknown code: IsError=%v Reason=%q", ev.IsError, ev.Reason)
+	}
+}
+
 func TestParseEventAssistantText(t *testing.T) {
 	msg := map[string]any{
 		"type": "assistant",
