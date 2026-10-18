@@ -380,4 +380,4 @@ are possible until 1.0 locks in a backwards-compatibility contract.
 ## Licence
 
 Apache 2.0 — see [LICENSE](LICENSE). Notices and licence terms for
-linked dependencies are in [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES).
+linked dependencies are in [NOTICE](NOTICE).
