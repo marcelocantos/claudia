@@ -198,6 +198,17 @@ func PublishReceipt(db *sqlpipe.Database, receipt *claudia.RequestReceipt) error
 		receipt.Seat, receipt.SessionID, receipt.RequestID, string(receipt.State), string(body))
 }
 
+// SettleStartedObligations cancels receipts and usage facts left started.
+// Accepted receipts stay accepted. Completed, failed, already-cancelled,
+// and unknown rows stay. The publisher closer and the serving-sidecar
+// exit hook are the callers.
+func SettleStartedObligations(db *sqlpipe.Database, reason string) error {
+	if err := CancelStartedReceipts(db, reason); err != nil {
+		return err
+	}
+	return CancelStartedUsageFacts(db, reason)
+}
+
 // CancelStartedReceipts marks every started receipt cancelled. Accepted,
 // completed, failed, and already-cancelled rows stay as they are. The
 // broker calls this from the publisher closer, and when the serving
@@ -238,6 +249,56 @@ func CancelStartedReceipts(db *sqlpipe.Database, reason string) error {
 			receipt.UpdatedAt = now.Format(time.RFC3339Nano)
 		}
 		if err := PublishReceipt(db, &receipt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// CancelStartedUsageFacts marks every started usage fact cancelled.
+// A started fact has no counters and no finish time; once the sidecar
+// that owned it is gone, that fact will not gain either. Completed,
+// failed, cancelled, and unknown facts stay as they are. There is no
+// accepted usage state.
+func CancelStartedUsageFacts(db *sqlpipe.Database, reason string) error {
+	if db == nil {
+		return fmt.Errorf("control plane: nil database")
+	}
+	if reason == "" {
+		reason = ShutdownReceiptReason
+	}
+	qr, err := db.Query(`SELECT fact_json FROM ` + UsageTable)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	for _, row := range qr.Rows {
+		if len(row) != 1 {
+			return fmt.Errorf("control plane: usage fact row shape")
+		}
+		body, ok := row[0].(string)
+		if !ok {
+			return fmt.Errorf("control plane: fact_json type %T", row[0])
+		}
+		var fact claudia.UsageFact
+		if err := json.Unmarshal([]byte(body), &fact); err != nil {
+			return fmt.Errorf("control plane: usage fact json: %w", err)
+		}
+		if fact.State != "started" {
+			continue
+		}
+		fact.State = "cancelled"
+		if fact.Cause == "" {
+			fact.Cause = reason
+		}
+		start, perr := time.Parse(time.RFC3339Nano, fact.StartedAt)
+		switch {
+		case perr == nil && !now.After(start):
+			fact.FinishedAt = start.Add(time.Nanosecond).Format(time.RFC3339Nano)
+		default:
+			fact.FinishedAt = now.Format(time.RFC3339Nano)
+		}
+		if err := PublishUsageFacts(db, []claudia.UsageFact{fact}); err != nil {
 			return err
 		}
 	}

@@ -4,6 +4,7 @@
 package controlplane
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"testing"
 
@@ -59,6 +60,60 @@ func TestPublishUsageFactAndReceiptRoundTrip(t *testing.T) {
 	if n := countRows(t, db, UsageTable); n != 1 {
 		t.Fatalf("republish changed usage row count to %d", n)
 	}
+}
+
+func TestCancelStartedUsageFactsLeavesFinishedFacts(t *testing.T) {
+	db := openFileDB(t)
+	started := claudia.UsageFact{
+		Seq: 1, CallID: "call-1", Seat: "seat", SessionID: "generation",
+		Kind: "model", State: "started", Provider: "openai", Model: "gpt-5.5",
+		Requests:      []claudia.UsageRequestRef{{RequestID: "logical-U", AttemptID: "attempt-U"}},
+		StartedAt:     "2026-10-16T01:00:00Z",
+		CounterSource: "adapter_normalized_positive",
+		Coverage:      "engine_invocation",
+	}
+	completed := started
+	completed.Seq = 2
+	completed.CallID = "call-2"
+	completed.State = "completed"
+	completed.FinishedAt = "2026-10-16T01:00:01Z"
+	if err := PublishUsageFacts(db, []claudia.UsageFact{started, completed}); err != nil {
+		t.Fatal(err)
+	}
+	if err := CancelStartedUsageFacts(db, SidecarExitReceiptReason); err != nil {
+		t.Fatal(err)
+	}
+	got := readUsage(t, db, 1)
+	if got.State != "cancelled" || got.Cause != SidecarExitReceiptReason || got.FinishedAt == "" || got.CallID != "call-1" {
+		t.Fatalf("started usage after cancel = %+v", got)
+	}
+	done := readUsage(t, db, 2)
+	if done.State != "completed" || done.FinishedAt != completed.FinishedAt || done.Cause != "" {
+		t.Fatalf("completed usage after cancel = %+v", done)
+	}
+	if n := countRows(t, db, UsageTable); n != 2 {
+		t.Fatalf("usage rows = %d", n)
+	}
+}
+
+func readUsage(t *testing.T, db *sqlpipe.Database, seq int64) claudia.UsageFact {
+	t.Helper()
+	qr, err := db.Query(`SELECT fact_json FROM `+UsageTable+` WHERE seq = ?`, seq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(qr.Rows) != 1 || len(qr.Rows[0]) != 1 {
+		t.Fatalf("usage rows = %+v", qr.Rows)
+	}
+	body, ok := qr.Rows[0][0].(string)
+	if !ok {
+		t.Fatalf("fact_json type %T", qr.Rows[0][0])
+	}
+	var fact claudia.UsageFact
+	if err := json.Unmarshal([]byte(body), &fact); err != nil {
+		t.Fatal(err)
+	}
+	return fact
 }
 
 func openFileDB(t *testing.T) *sqlpipe.Database {

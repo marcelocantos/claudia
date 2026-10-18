@@ -119,16 +119,17 @@ func PublishFile(path string) (func() error, error) {
 	// Broker shutdown below still settles anything that exit missed.
 	omp.SetServingExitHook(func(int) {
 		_ = plane.WithDB(func(db *sqlpipe.Database) error {
-			return CancelStartedReceipts(db, SidecarExitReceiptReason)
+			return SettleStartedObligations(db, SidecarExitReceiptReason)
 		})
 	})
 	return func() error {
 		omp.SetServingExitHook(nil)
-		// A receipt left started has no later terminal fact once this
-		// process is gone. Settle those rows before unbinding so the
-		// file a later snapshot reads is not an open obligation.
+		// A receipt or usage fact left started has no later terminal
+		// fact once this process is gone. Settle those rows before
+		// unbinding so the file a later snapshot reads is not an open
+		// obligation. Accepted receipts stay accepted.
 		err := plane.WithDB(func(db *sqlpipe.Database) error {
-			return CancelStartedReceipts(db, ShutdownReceiptReason)
+			return SettleStartedObligations(db, ShutdownReceiptReason)
 		})
 		Bind(nil)
 		if cerr := plane.Close(); err == nil {
