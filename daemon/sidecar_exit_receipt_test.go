@@ -106,6 +106,7 @@ func TestServingSidecarExitCancelsStartedReceipt(t *testing.T) {
 		if got.State == claudia.ReceiptCancelled {
 			break
 		}
+		// 🎯T97 exemption: a failsafe on the receipt becoming cancelled. The stored state is the verdict; the clock only turns a hang into a failure.
 		if time.Now().After(deadline) {
 			t.Fatalf("started receipt after sidecar kill = %+v, want cancelled", got)
 		}
