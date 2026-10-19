@@ -149,9 +149,12 @@ func ompSandboxFor(cfg Config) (*omp.Sandbox, error) {
 			gitRoots = nil
 		}
 		if cfg.SandboxGitWrite {
-			if len(gitRoots) == 0 {
-				return nil, fmt.Errorf("omp: sandbox git write: %s is not in a git repository", cfg.WorkDir)
-			}
+			// A workdir git answers "not a repository" for has no git
+			// directory to grant, and none to protect either: the grant is
+			// empty, as it is on the direct Codex route (codexSandboxTuningFor,
+			// TestT112DefaultIsQuietOutsideARepository; 🎯T200). Only an unresolvable
+			// workdir is refused, above. Refusing here turned every code
+			// worker spawned outside a repository into a failed launch.
 			sb.WritableRoots = append(sb.WritableRoots, gitRoots...)
 		} else {
 			sb.Protected = gitRoots
