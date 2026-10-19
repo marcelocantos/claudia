@@ -90,20 +90,37 @@ func TestMCPHostStdioPreInitializeDiscoverAnsweredByHost(t *testing.T) {
 	}
 }
 
+// The deadline under test belongs to the unanswered request alone. Starting
+// the fixture and getting its initialize answered is the readiness signal,
+// and it runs under the ordinary deadline: a process a loaded host is slow to
+// spawn is not a request that went unanswered. Only then is the short
+// deadline armed, so what fires at it is the dropped request and nothing
+// else, and the ping that proves the backend is free runs under the ordinary
+// deadline again, since a slow answer there is not what this test judges.
 func TestMCPHostStdioUnansweredRequestFailsAtItsDeadlineAndFreesTheBackend(t *testing.T) {
-	prev := mcpStdioRequestTimeout
-	mcpStdioRequestTimeout = 300 * time.Millisecond
-	t.Cleanup(func() { mcpStdioRequestTimeout = prev })
+	const deadline = 300 * time.Millisecond
+	ordinary := mcpStdioRequestTimeout
+	t.Cleanup(func() { mcpStdioRequestTimeout = ordinary })
 	url := fixtureURL(t)
 	if r := postMCP(t, url, fixtureInit); r.body["result"] == nil {
 		t.Fatalf("initialize: %v", r.body)
 	}
+	mcpStdioRequestTimeout = deadline
 	dropped := postMCP(t, url, `{"jsonrpc":"2.0","id":7,"method":"nobody/answers"}`)
+	mcpStdioRequestTimeout = ordinary
 	if dropped.status != http.StatusOK || errorCode(t, dropped) != mcpStdioTimeoutCode || string(dropped.body["id"]) != "7" {
 		t.Fatalf("unanswered: status %d body %v", dropped.status, dropped.body)
 	}
-	if dropped.elapsed > 3*time.Second {
-		t.Fatalf("unanswered request took %s, deadline was %s", dropped.elapsed, mcpStdioRequestTimeout)
+	// The deadline is what ended the request: not before it, which would
+	// mean something else failed it, and long before the ordinary one,
+	// which would mean the short deadline was not the one in force. A slow
+	// host only stretches the time between the two, so neither side is a
+	// guess about its speed.
+	if dropped.elapsed < deadline {
+		t.Fatalf("unanswered request failed after %s, before its %s deadline", dropped.elapsed, deadline)
+	}
+	if dropped.elapsed >= ordinary/2 {
+		t.Fatalf("unanswered request took %s: the %s deadline did not fire, the ordinary %s one did", dropped.elapsed, deadline, ordinary)
 	}
 	ping := postMCP(t, url, `{"jsonrpc":"2.0","id":8,"method":"ping"}`)
 	if ping.status != http.StatusOK || ping.body["result"] == nil {
