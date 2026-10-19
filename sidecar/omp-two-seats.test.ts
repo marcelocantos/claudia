@@ -327,3 +327,61 @@ test("process-global SDK settings are refused on a seat; per-seat settings stay 
     await seatB.dispose();
   }
 });
+
+// An abort that lands while the SDK compacts before a prompt makes
+// AgentSession drop that prompt (promptCustomMessage resolves false). The
+// accepted request never reached the engine; it must stay an obligation and
+// be served in this process, after what was already queued.
+test("a prompt the SDK drops during an aborted pre-prompt compaction is still served", async () => {
+  const { createMockModel, registerMockApi } = await import("@oh-my-pi/pi-ai/providers/mock");
+  const { createSeatAgent } = await import("./seat.ts");
+  const { SeatStore } = await import("./store.ts");
+  const { History } = await import("./maintain.ts");
+  registerMockApi();
+  const root = mkdtempSync(join(tmpdir(), "cl-dropped-"));
+  dirs.push(root);
+  const storage = new SeatStore(root, "worker", "session");
+  const history = new History(storage);
+  const large = "the quick brown fox jumps over the lazy dog. ".repeat(1200);
+  for (let i = 0; i < 8; i++) history.sync([
+    { role: "user", content: `${i}: ${large}`, timestamp: i * 2 },
+    { role: "assistant", content: [{ type: "text", text: "ok" }], api: "mock", provider: "mock", model: "mock", timestamp: i * 2 + 1,
+      usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop" } as never,
+  ]);
+  history.persist();
+  const preparing = Promise.withResolvers<void>();
+  const releasePreparation = Promise.withResolvers<void>();
+  const done = Promise.withResolvers<void>();
+  const finished = new Set<string>();
+  const model = createMockModel({ contextWindow: 60_000, handler: () => ({ content: ["ok"] }) });
+  let preparations = 0;
+  const meta = (id: string) => ({ request_id: id, session_id: "session", attempt_id: `attempt-${id}` });
+  const agent = createSeatAgent({ provider: "mock", model: "mock", token: "t", cwd: root, store: storage, modelOverride: model,
+    emit: e => {
+      if (e.type === "receipt" && e.receipt?.state === "completed") finished.add(e.request_id!);
+      if (finished.size === 3) done.resolve();
+    }, callTool: async () => "", maintenance: {
+      nativeEligible: () => false,
+      compactImpl: (async (prep: any) => {
+        if (++preparations === 1) {
+          preparing.resolve();
+          await releasePreparation.promise;
+          throw new Error("cancelled preparation");
+        }
+        return { summary: "earlier work", firstKeptEntryId: prep.firstKeptEntryId, tokensBefore: prep.tokensBefore };
+      }) as never,
+    } });
+  const first = agent.prompt("A", meta("A"));
+  await preparing.promise;
+  await agent.prompt("B", meta("B"));
+  agent.abort();
+  await agent.prompt("C", meta("C"));
+  releasePreparation.resolve();
+  await first;
+  await Promise.race([done.promise, Bun.sleep(10_000).then(() => { throw new Error(`not all served: ${[...finished]}`); })]);
+  for (const id of ["A", "B", "C"]) expect(agent.receipt(id).state).toBe("completed");
+  const users = (m: any) => m.claudiaRequest?.request_id;
+  const served = model.calls.map(c => c.context.messages.map(users).filter(Boolean).at(-1));
+  expect(served.includes("A")).toBe(true);
+  expect(served.indexOf("A")).toBeGreaterThan(served.indexOf("B"));
+}, 20_000);

@@ -98,6 +98,12 @@ export interface OmpSessionOptions {
   onReceipt?: (requestId: string, phase: "started" | "finished") => void;
   // Classify a terminal settle. Defaults to aborted/failed/completed from the
   // last assistant message.
+  // The host's compaction body. The SDK auto-compaction path passes no
+  // instructions (customInstructions: undefined) and has no setting for
+  // them; its only host seam is an extension's session_before_compact
+  // hook, which replaces the summary wholesale. The SDK keeps the triggers
+  // (threshold, overflow, mid-turn) and the commit.
+  beforeCompact?: (event: { preparation: unknown; signal: AbortSignal }) => Promise<{ compaction: unknown } | undefined>;
   // undefined: not over for the host yet; the receipts stay open.
   settle?: (messages: readonly AgentMessage[]) => { state: ReceiptTerminalState; reason?: string; cause?: ReceiptCause } | undefined;
 }
@@ -116,6 +122,26 @@ export const processGlobalSettingKeys: readonly string[] = [
 // the Code Mode keys fire module-level signals that every live session
 // subscribes to. Each subscriber re-reads its own Settings, so no value
 // crosses seats, but one seat's change wakes every other seat's handler.
+
+// A minimal stand-in for the SDK's ExtensionRunner: one handler,
+// session_before_compact, and inert answers for the calls AgentSession
+// makes on a runner (pinned to 18.2.11 by reading agent-session.ts,
+// bash-runner.ts, eval-runner.ts and session-maintenance.ts).
+function compactionHookRunner(hook: NonNullable<OmpSessionOptions["beforeCompact"]>) {
+  return {
+    hasHandlers: (type: string) => type === "session_before_compact",
+    emit: async (event: { type: string; preparation?: unknown; signal?: AbortSignal }) =>
+      event.type === "session_before_compact" ? hook({ preparation: event.preparation, signal: event.signal ?? new AbortController().signal }) : undefined,
+    emitError: () => {},
+    getCommand: () => undefined,
+    createCommandContext: () => { throw new Error("Claudia seats have no extension commands"); },
+    runScoped: <T>(fn: () => T) => fn(),
+    emitUserBash: async () => undefined,
+    emitUserPython: async () => undefined,
+    emitSessionStop: async () => undefined,
+    emitBeforeAgentStart: async () => undefined,
+  };
+}
 
 // Refuse process-global keys on this seat's Settings instance. The SDK's own
 // runtime set/override calls (steering mode, browser, skillful) are not in
@@ -350,6 +376,7 @@ export async function createOmpSession(opts: OmpSessionOptions) {
       sideStreamFn: opts.sideStreamFn,
       nativeCompactionOptions: opts.nativeCompactionOptions,
       convertToLlm: convertOmpMessages,
+      ...(opts.beforeCompact ? { extensionRunner: compactionHookRunner(opts.beforeCompact) as never } : {}),
     });
     const detachSettle = attachSettle?.(session);
     if (preserveSeatLoop) {

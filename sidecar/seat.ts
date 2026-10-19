@@ -17,10 +17,11 @@ import { basename, dirname, isAbsolute, join } from "node:path";
 import { codingTools, type SandboxPolicy } from "./coding.ts";
 import { capToolText, toolResultBound } from "./truncate.ts";
 import { awaitHostCall } from "./hostcalls.ts";
-import { ContextOverflow, isOverflow, History } from "./maintain.ts";
+import { compact as engineCompact, DEFAULT_COMPACTION_SETTINGS, shouldCompact, shouldUseProviderNativeCompaction, type CompactionPreparation, type SummaryOptions } from "@oh-my-pi/pi-agent-core";
+import { ContextOverflow, isOverflow, History, pinsIn, preserveRule, seatConvertToLlm } from "./maintain.ts";
 import { seatRuntimeDirName, type SeatStore } from "./store.ts";
 import { ReceiptJournal, type RequestReceipt, type ReceiptCause, type ReceiptMessage, type ReceiptTerminalState } from "./receipts.ts";
-import { UsageJournal, measureDispatch, observedNativeCompaction, type UsageFact, type UsagePage } from "./usage.ts";
+import { UsageJournal, measureDispatch, measuredCompletion, observedNativeCompaction, type UsageFact, type UsagePage } from "./usage.ts";
 import {
   beginTurn,
   closeTurn,
@@ -114,15 +115,16 @@ export function createSeatAgent(opts: {
   modelOverride?: Model;
   // resolveModelOverride replaces the catalog lookup a switch makes (tests).
   resolveModelOverride?: (provider: string, model: string) => Model;
-  // The seat's own compaction seams are gone: the SDK session compacts.
-  // Accepted and ignored so older callers still type-check.
-  maintenance?: unknown;
+  // Test seams for the summary the seat supplies to the SDK's compaction
+  // hook: the engine call, extra summary options (a fake completion), and
+  // whether a model may take the provider-native lane.
+  maintenance?: { compactImpl?: typeof engineCompact; summaryOptions?: Partial<SummaryOptions>; nativeEligible?: (model: Model, s: unknown) => boolean };
   // store keeps the conversation across a sidecar restart (🎯T151). A seat
   // loaded with a store that already holds its session resumes from it.
   store?: SeatStore;
   requireResume?: boolean;
-  // preserve and pins steered the seat's own compaction (🎯T152). The SDK
-  // compactor has no per-call instructions; they are kept but unused.
+  // preserve and pins steer compaction (🎯T152): what the summary must
+  // keep, and facts carried verbatim after it. setContext replaces them.
   preserve?: string;
   pins?: string[];
   // sandbox limits the seat's own tools (🎯T178). Absent: unchanged.
@@ -145,6 +147,8 @@ export function createSeatAgent(opts: {
   let sandbox = opts.sandbox;
   let token = opts.token;
   let cwd = opts.cwd;
+  let preserve = opts.preserve;
+  let pins = opts.pins;
   let sessionId = "";
   let turn: OpenTurn | null = null;
   const sink = { emit: opts.emit, callTool: opts.callTool };
@@ -258,6 +262,21 @@ export function createSeatAgent(opts: {
   const pending = new Set<unknown>();
   const heldSteering: AgentMessage[] = [];
   const refusalHeld = { steer: [] as AgentMessage[], followUp: [] as AgentMessage[] };
+  // While an abort unwinds, the queues are the seat's, not the session's:
+  // AgentSession drains a stranded queue as soon as the aborted run settles,
+  // inside the turn the host just cancelled. The seat serves them after the
+  // unwind as their own turn (interrupt-deliver), as it did before.
+  let unwinding = false;
+  const abortHeld = { steer: [] as AgentMessage[], followUp: [] as AgentMessage[] };
+  const enqueueFollowUp = (m: AgentMessage) => retrying ? heldFollowUps.push(m) : unwinding ? abortHeld.followUp.push(m) : agent.followUp(m);
+  // The unwind is over once nothing runs: the held queues go back to the
+  // engine, ahead of anything queued since.
+  const finishUnwind = () => {
+    if (!unwinding) return;
+    unwinding = false;
+    agent.replaceQueues([...abortHeld.steer.splice(0), ...agent.peekSteeringQueue()], [...abortHeld.followUp.splice(0), ...agent.peekFollowUpQueue()]);
+  };
+  const enqueueSteer = (m: AgentMessage) => retrying ? heldSteering.push(m) : unwinding ? abortHeld.steer.push(m) : agent.steer(m);
   const heldFollowUps: AgentMessage[] = [];
 
   // Accepted inputs that never reached dispatch remain obligations after a
@@ -309,7 +328,8 @@ export function createSeatAgent(opts: {
 
   // Failure classification shared by the SDK settle and the turn end.
   const classify = (messages: readonly AgentMessage[]): { state: ReceiptTerminalState; reason?: string; cause?: ReceiptCause } => {
-    if (turn && cancelledTurns.has(turn.turn_id)) return { state: "cancelled", reason: "cancelled", cause: "cancellation" };
+    // Requests open when the host aborted were cancelled by abort() itself.
+    // Anything settling later ran after the abort and has its own outcome.
     const last = [...messages].reverse().find(m => m.role === "assistant") as AssistantMessage | undefined;
     if (last?.stopReason === "aborted") return { state: "cancelled", reason: "cancelled", cause: "cancellation" };
     if (!last || (last.stopReason !== "error" && !last.errorMessage)) return { state: "completed" };
@@ -401,6 +421,26 @@ export function createSeatAgent(opts: {
   const restoredContext = [...agent.state.messages];
   let adapter: Awaited<ReturnType<typeof createOmpSession>> | undefined;
   let compactionReason = "threshold";
+  let compactionPhase = "pre_turn";
+  let compactionWarned = false;
+  let overflowRefusal: AgentMessage | undefined;
+  // Mirror an SDK compaction into the durable store, so a restart rebuilds
+  // the compacted context and does not resend what was folded.
+  const mirrorCompaction = (result: unknown, method: "remote" | "soft") => {
+    history.sync(agent.state.messages.filter(m => m.role !== "compactionSummary"));
+    const firstKept = agent.state.messages.find(m => m.role !== "compactionSummary");
+    const r = result as Parameters<History["appendCompaction"]>[0];
+    history.appendCompaction({ ...r, firstKeptEntryId: (firstKept && history.idOf(firstKept)) ?? "" }, method);
+    history.persist();
+  };
+  // Local estimate of the next request: system prompt, tool schemas and
+  // messages (the seat compactor's measure).
+  const storedTokens = () => {
+    const prefix = [...(agent.state.systemPrompt ?? [])];
+    for (const t of agent.state.tools ?? []) prefix.push(t.name, t.description ?? "", JSON.stringify(t.parameters ?? {}));
+    return agent.tokenizer.countTokens(prefix) + agent.tokenizer.countMessages(agent.state.messages, { excludeEncryptedReasoning: true });
+  };
+  let forceLocalSummary = false;
   const sessionReady = createOmpSession({
     agent,
     sessionManager,
@@ -429,6 +469,40 @@ export function createSeatAgent(opts: {
         sink.emit({ type: "receipt", request_id: id, receipt: receipts.query(id) });
       }
     },
+    // The SDK decides when to compact; the seat writes the summary, with the
+    // host's preserve rule and pins (🎯T152), through the one hook the SDK
+    // offers for that.
+    beforeCompact: async ({ preparation, signal }) => {
+      const m = agent.state.model;
+      if (!m) return undefined;
+      const hostPreserve = preserve?.trim();
+      const instructions = hostPreserve ? `${preserveRule}\n${hostPreserve}` : preserveRule;
+      const prep = preparation as CompactionPreparation;
+      const nativeEligible = opts.maintenance?.nativeEligible ?? shouldUseProviderNativeCompaction;
+      const remote = !forceLocalSummary && Boolean((prep as { settings?: { remoteEnabled?: boolean } }).settings?.remoteEnabled) && nativeEligible(m, (prep as { settings?: unknown }).settings);
+      const result = await (opts.maintenance?.compactImpl ?? engineCompact)(
+        remote ? prep : { ...prep, settings: { ...(prep as { settings: object }).settings, remoteEnabled: false } } as CompactionPreparation,
+        m, token, instructions, signal, {
+          convertToLlm: seatConvertToLlm,
+          remoteSystemPrompt: agent.state.systemPrompt,
+          initiatorOverride: "agent",
+          tools: agent.state.tools,
+          oneshotRetry: false,
+          ...opts.maintenance?.summaryOptions,
+          completeImpl: measuredCompletion(() => usage.durable ? usage : undefined, usageAttribution, opts.maintenance?.summaryOptions?.completeImpl),
+          onProviderAttempt: usage.durable ? usage.observer("compaction", m, usageAttribution()) : undefined,
+        });
+      // Pins already carried, those the conversation marked, and the host's,
+      // each once, verbatim after the summary.
+      const carried = (history.latestCompaction()?.details as { claudiaPins?: string[] } | undefined)?.claudiaPins ?? [];
+      const all = [...new Set([...carried, ...pinsIn(agent.state.messages), ...(pins ?? [])])];
+      if (all.length === 0) return { compaction: result };
+      return { compaction: {
+        ...result,
+        summary: `${result.summary}\n\nPinned facts, kept verbatim across context compaction (🎯T152):\n${all.map(p => `- ${p}`).join("\n")}`,
+        details: { ...(result.details as object | undefined), claudiaPins: all },
+      } };
+    },
     settle: (messages) => {
       const verdict = classify(messages);
       // A first-attempt auth refusal is the seat's to retry with a rotated
@@ -447,21 +521,42 @@ export function createSeatAgent(opts: {
       return countedToken();
     };
     session.subscribe(event => {
-      if (event.type !== "auto_compaction_end" || event.aborted || !event.result) return;
+      if (event.type !== "auto_compaction_end" || event.aborted) return;
+      // An overflow the SDK compacted to retry: the refusal was taken back
+      // from the context, and it leaves the store too, so a restart does not
+      // resume it. A refusal that ends the turn stays.
+      if (event.willRetry && overflowRefusal) {
+        history.forget(overflowRefusal);
+        history.persist();
+      }
+      overflowRefusal = undefined;
       const method = event.action === "remote" ? "remote" : event.action === "context-full" ? "soft" : event.action;
-      sink.emit({ type: "compacted", text: `${compactionReason}: context ${event.result.tokensBefore} tokens before; method ${method}` });
-      // Mirror the SDK's compaction into the durable store, so a restart
-      // rebuilds the compacted context and does not resend what was folded.
-      history.sync(agent.state.messages.filter(m => m.role !== "compactionSummary"));
-      const firstKept = agent.state.messages.find(m => m.role !== "compactionSummary");
-      const result = event.result as unknown as Parameters<History["appendCompaction"]>[0];
-      history.appendCompaction({ ...result, firstKeptEntryId: (firstKept && history.idOf(firstKept)) ?? "" },
-        event.action === "remote" ? "remote" : "soft");
-      history.persist();
+      if (!event.result) {
+        // A pass that could not fold anything. Said once per dead end, as the
+        // seat compactor did; the next successful compaction re-arms it.
+        if (event.errorMessage && !compactionWarned) {
+          compactionWarned = true;
+          sink.emit({ type: "compaction_warning", text: `${compactionReason} (${compactionPhase}): ${event.errorMessage}` });
+        }
+        return;
+      }
+      compactionWarned = false;
+      sink.emit({ type: "compacted", text: `${compactionReason} (${compactionPhase}): context ${event.result.tokensBefore} tokens before; method ${method}` });
+      mirrorCompaction(event.result, method === "remote" ? "remote" : "soft");
     });
     session.subscribe(event => {
       if (event.type === "auto_compaction_start") {
         compactionReason = event.reason;
+        // The SDK may already have taken the refusal out of the live context;
+        // the store's newest message is the one to take back.
+        history.persist(agent.state.messages);
+        const lastEntry = [...history.entries].reverse().find(e => e.type === "message") as { message?: AgentMessage } | undefined;
+        const last = lastEntry?.message as AssistantMessage | undefined;
+        overflowRefusal = event.reason === "overflow" && last?.role === "assistant" && last.stopReason === "error" ? last : undefined;
+        // The SDK does not name the phase. Read it from where the seat is:
+        // inside a running agent loop is mid-turn; before this turn's first
+        // model call is pre-turn; otherwise the turn has answered.
+        compactionPhase = agent.state.isStreaming ? "mid_turn" : requestCount === 0 ? "pre_turn" : "post_turn";
         sink.emit({ type: "compacting", text: `${event.reason}: method ${event.action === "context-full" ? "soft" : event.action}` });
       }
     });
@@ -503,7 +598,18 @@ export function createSeatAgent(opts: {
     try {
       const before = new Set(agent.state.messages);
       runInvoked = true;
-      await run();
+      const dispatched = await run();
+      // AgentSession drops a prompt whose setup was cancelled (an abort
+      // during pre-prompt compaction) and returns false. The accepted input
+      // never reached the engine; keep it queued, as the seat compactor's
+      // failure path did, so it is not stranded until a restart.
+      if (dispatched === false && accepted && receipts.query(accepted.request_id).state === "accepted") {
+        const waiting = receipts.pending().find(item => item.receipt.request_id === accepted.request_id);
+        if (waiting) {
+          enqueueFollowUp(hostMessage(waiting.message));
+          pending.add(accepted.request_id);
+        }
+      }
       await session.waitForIdle();
       if (refusalHeld.steer.length || refusalHeld.followUp.length) {
         agent.replaceQueues([...refusalHeld.steer.splice(0), ...agent.peekSteeringQueue()], [...refusalHeld.followUp.splice(0), ...agent.peekFollowUpQueue()]);
@@ -617,12 +723,12 @@ export function createSeatAgent(opts: {
         return;
       }
       const message = accepted ? hostMessage(accepted.message) : plainMessage(text);
-      if (busy() || agent.hasQueuedMessages()) {
-        if (retrying) heldFollowUps.push(message);
-        else agent.followUp(message);
+      if (unwinding && !busy()) finishUnwind();
+      if (busy() || unwinding || agent.hasQueuedMessages()) {
+        enqueueFollowUp(message);
         pending.add(accepted ? accepted.receipt.request_id : message);
         sink.emit({ type: "accepted", request_id: meta?.request_id, rpc_id: meta?.rpc_id, receipt: accepted?.receipt });
-        if (!busy()) await runTurn("", meta, () => agent.continue());
+        if (!busy() && !unwinding) await runTurn("", meta, () => agent.continue());
         return;
       }
       await runTurn(text, meta, () => message.role === "custom"
@@ -638,8 +744,7 @@ export function createSeatAgent(opts: {
         return;
       }
       const message = accepted ? hostMessage(accepted.message) : plainMessage(text);
-      if (retrying) heldSteering.push(message);
-      else agent.steer(message);
+      enqueueSteer(message);
       pending.add(accepted ? accepted.receipt.request_id : message);
       sink.emit({ type: "accepted", request_id: meta?.request_id, rpc_id: meta?.rpc_id, receipt: accepted?.receipt });
     },
@@ -650,6 +755,10 @@ export function createSeatAgent(opts: {
       cancelled = true;
       if (turn && !turn.closed) cancelledTurns.add(turn.turn_id);
       recovery.cancel();
+      abortHeld.steer.push(...agent.peekSteeringQueue());
+      abortHeld.followUp.push(...agent.peekFollowUpQueue());
+      agent.replaceQueues([], []);
+      unwinding = true;
       if (session) void session.abort().catch(err => sink.emit({ type: "error", text: err instanceof Error ? err.message : String(err) }));
       else agent.abort();
       finish("abort");
@@ -660,7 +769,10 @@ export function createSeatAgent(opts: {
         await session?.waitForIdle();
         await interruptedTurn;
         await retryDone;
-        if (!agent.hasQueuedMessages() || busy()) return;
+        await session?.waitForIdle();
+        if (busy()) return;
+        finishUnwind();
+        if (!agent.hasQueuedMessages()) return;
         try {
           await runTurn("", { cause: "interrupt-deliver" }, () => agent.continue());
         } catch (err) {
@@ -675,9 +787,28 @@ export function createSeatAgent(opts: {
         throw new Error("switch refused: a turn is running");
       }
       const next = (opts.resolveModelOverride ?? resolveModel)(provider, modelId);
+      // A conversation too large for next's window is folded first, by the
+      // model that wrote it, with a local summary only: a native payload
+      // would be foreign to the model taking over (🎯T195). The SDK's
+      // setModel does not do this; its manual compact() does the fold and
+      // calls the same summary hook.
+      const window = next.contextWindow ?? 0;
+      const fits = () => window <= 0 || !shouldCompact(storedTokens(), window, DEFAULT_COMPACTION_SETTINGS);
+      if (!fits()) {
+        forceLocalSummary = true;
+        try {
+          const result = await created.session.compact();
+          mirrorCompaction(result, "soft");
+        } catch (err) {
+          sink.emit({ type: "compaction_warning", text: `switch: compaction failed: ${err instanceof Error ? err.message : String(err)}` });
+        } finally {
+          forceLocalSummary = false;
+        }
+        if (!fits()) {
+          throw new Error(`switch refused: the conversation (${storedTokens()} tokens) does not fit ${next.provider}/${next.id} (${window}) even after compaction`);
+        }
+      }
       // The SDK's model switch validates a credential for the target first.
-      // There is no fit-compaction on switch: the next prompt's compaction
-      // or overflow path owns an oversized transcript (SDK setModel contract).
       created.syncToken(next.provider);
       await created.session.setModel(next, "default", { persist: false });
     },
@@ -700,7 +831,10 @@ export function createSeatAgent(opts: {
     },
     setHostTools: (tools) => applyTools(tools),
     restored,
-    setContext: (_preserve, _pins) => {},
+    setContext: (nextPreserve, nextPins) => {
+      preserve = nextPreserve;
+      pins = nextPins;
+    },
     sdk: () => adapter,
   };
 }
