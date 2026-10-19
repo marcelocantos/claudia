@@ -110,6 +110,12 @@ export class UsageJournal {
     }
   }
 
+  // A journal without a seat/session store cannot record facts. Dispatch
+  // wrappers skip it rather than poisoning it on the first call.
+  get durable(): boolean {
+    return Boolean(this.#history.store);
+  }
+
   #fail(err: unknown): void {
     this.#poison = String(err);
     this.#error(`usage accounting unavailable: ${this.#poison}`);

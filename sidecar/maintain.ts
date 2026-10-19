@@ -272,6 +272,11 @@ export class History {
     this.#byKey.delete(messageKey(message));
   }
 
+  // idOf is the entry id recorded for a message, by identity or content.
+  idOf(message: AgentMessage): string | undefined {
+    return this.#ids.get(message) ?? this.#byKey.get(messageKey(message));
+  }
+
   // latestCompaction is the newest compaction entry, if any.
   latestCompaction(): CompactionEntry | undefined {
     for (let i = this.entries.length - 1; i >= 0; i--) {

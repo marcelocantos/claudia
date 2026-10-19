@@ -106,6 +106,8 @@ type Line = {
   cursor?: string;
   after?: number;
   limit?: number;
+  // This seat's SDK compaction threshold (compaction.thresholdTokens).
+  compact_at_tokens?: number;
 };
 
 // planTokens is each plan's current access token, keyed by provider.
@@ -341,6 +343,7 @@ async function handle(
       preserve: msg.preserve,
       pins: msg.pins,
       sandbox: msg.sandbox,
+      compactAtTokens: msg.compact_at_tokens,
     });
     seats.set(seat, {
       session_id: msg.session_id,
@@ -354,6 +357,12 @@ async function handle(
       calls,
     });
     write({ seat, type: "ready", how: "launched", resume_checked: msg.require_resume === true, restored: agent.restored, bound_tools: agent.boundToolNames(), sandbox: agent.sandboxMode() });
+    return;
+  }
+  if (msg.op === "sdk_probe" && process.env.CLAUDIA_SIDECAR_SDK_PROBE === "1") {
+    // Test-only introspection of the SDK sessions this process hosts. Off
+    // unless the process was started with the probe variable.
+    write({ type: "sdk_probe", rpc_id: msg.rpc_id, sdk_probe: await sdkProbe() });
     return;
   }
   const loaded = seats.get(seat);
@@ -436,6 +445,36 @@ async function switchIfAsked(
     console.error(`sidecar: ${seat} re-attached on ${existing.provider}/${existing.model}; not switched to ${msg.provider}/${msg.model}: ${out.refused}`);
   }
   return true;
+}
+
+async function sdkProbe() {
+  const { AgentRegistry } = await import("@oh-my-pi/pi-coding-agent/registry/agent-registry");
+  const registry = AgentRegistry.global();
+  const out: Record<string, unknown> = {
+    registry_ids: registry.list().map((ref: { id: string }) => ref.id),
+  };
+  const sessions = new Set<unknown>();
+  const settingsSet = new Set<unknown>();
+  const registries = new Set<unknown>();
+  const agents = new Set<unknown>();
+  const perSeat: Record<string, unknown> = {};
+  for (const [name, loaded] of seats) {
+    const sdk = loaded.agent.sdk?.();
+    if (!sdk) { perSeat[name] = null; continue; }
+    sessions.add(sdk.session);
+    settingsSet.add(sdk.settings);
+    registries.add(sdk.session.modelRegistry);
+    agents.add(sdk.session.agent);
+    perSeat[name] = {
+      threshold_tokens: sdk.settings.get("compaction.thresholdTokens" as never),
+      compaction_enabled: sdk.settings.get("compaction.enabled" as never),
+      agent_id: sdk.session.getAgentId() ?? null,
+      session_id: sdk.session.sessionId,
+    };
+  }
+  out.seats = perSeat;
+  out.distinct = { sessions: sessions.size, settings: settingsSet.size, model_registries: registries.size, agents: agents.size };
+  return out;
 }
 
 function promptMeta(msg: Line) {

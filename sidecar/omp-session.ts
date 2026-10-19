@@ -4,7 +4,7 @@
 // Claudia supplies transport, credentials and tool policy. OMP owns the session
 // loop and context maintenance; this module does not run a second turn loop.
 import type { Agent, AgentMessage, StreamFn } from "@oh-my-pi/pi-agent-core";
-import { AuthStorage, streamSimple, type Model } from "@oh-my-pi/pi-ai";
+import { AuthStorage, streamSimple, type CursorExecHandlers, type Model } from "@oh-my-pi/pi-ai";
 import { copyPerCallContextMessage } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
@@ -17,7 +17,7 @@ import { mkdirSync } from "node:fs";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { cursorExecHandlers } from "./cursorexec.ts";
 import type { SandboxPolicy } from "./execution.ts";
-import { ReceiptJournal, type ReceiptMessage } from "./receipts.ts";
+import { ReceiptJournal, type ReceiptCause, type ReceiptMessage, type ReceiptTerminalState } from "./receipts.ts";
 import { toolResultBound } from "./truncate.ts";
 import { measureDispatch, observedNativeCompaction, UsageJournal, type Attribution } from "./usage.ts";
 
@@ -81,21 +81,77 @@ export interface OmpSessionOptions {
   // does not apply: this seat's store is not that directory, and the
   // session below uses in-memory settings plus this stateDir.
   preserveSeatLoop?: boolean;
+  // Process-wide SDK directory root. The SDK resolves its agent and config
+  // directories once per process, so several seats in one sidecar cannot
+  // each own them. Defaults to stateDir (one session per process).
+  // null: the caller accepts the process's own SDK directories (no guard).
+  sdkRoot?: string | null;
+  // Per-seat SDK setting overrides. Keys that the SDK applies process-wide
+  // through its setting hooks are refused (see processGlobalSettingKeys).
+  settings?: Record<string, unknown>;
+  // Host Cursor exec handlers, when the host binds more than the policy
+  // handlers (listed MCP tools). Defaults to the policy handlers.
+  cursorExecHandlers?: CursorExecHandlers;
+  // Turn identity recorded on receipt start, and a notice per receipt
+  // transition, so the host can tell its consumer.
+  turnId?: () => string;
+  onReceipt?: (requestId: string, phase: "started" | "finished") => void;
+  // Classify a terminal settle. Defaults to aborted/failed/completed from the
+  // last assistant message.
+  // undefined: not over for the host yet; the receipts stay open.
+  settle?: (messages: readonly AgentMessage[]) => { state: ReceiptTerminalState; reason?: string; cause?: ReceiptCause } | undefined;
+}
+
+// SETTING_HOOKS in pi-coding-agent/config/settings.ts that write
+// process-wide state when a setting is set or overridden on ANY Settings
+// instance, isolated ones included. One seat changing one of these changes
+// every seat in the process. The SDK does not export the hook table, so the
+// list is pinned to 18.2.11 by hand.
+export const processGlobalSettingKeys: readonly string[] = [
+  "providers.maxInFlightRequests", // pi-ai stream.ts configuredProviderMaxInFlightRequests
+  "secrets.enabled", // pi-ai transform-messages.ts credentialRedactionEnabled
+  "worktree.base", // pi-utils dirs.ts worktreesDirOverride
+];
+// Not refused: provider.appendOnlyContext, modelRoles, extendedContext and
+// the Code Mode keys fire module-level signals that every live session
+// subscribes to. Each subscriber re-reads its own Settings, so no value
+// crosses seats, but one seat's change wakes every other seat's handler.
+
+// Refuse process-global keys on this seat's Settings instance. The SDK's own
+// runtime set/override calls (steering mode, browser, skillful) are not in
+// the list and still work.
+function guardProcessGlobalSettings(settings: Settings): void {
+  for (const method of ["set", "override", "clearOverride"] as const) {
+    const original = (settings as unknown as Record<string, (...args: unknown[]) => unknown>)[method].bind(settings);
+    (settings as unknown as Record<string, unknown>)[method] = (path: string, ...rest: unknown[]) => {
+      if (processGlobalSettingKeys.includes(path)) {
+        throw new Error(`OMP setting ${path} is process-wide in the SDK; a seat may not change it`);
+      }
+      return original(path, ...rest);
+    };
+  }
 }
 
 // The Agent stores Cursor exec handlers only at construction, and the loop
 // copies that private field into the provider stream options. Overwrite the
 // options on the way through so an SDK session cannot answer a Cursor frame
 // with "Tool not available" or with the coding-agent registry bridge.
+//
+// Receipts start at the pre-model gate and finish on the SESSION's terminal
+// agent_end, not the core one. The core Agent ends a run before AgentSession
+// decides whether to continue the same host request (overflow compaction and
+// retry, a queued steer or follow-up that arrived after the last queue poll).
+// AgentSession re-emits that end with isTerminal: false; only the terminal
+// end may settle the request.
 function bindSdkDispatch(opts: OmpSessionOptions) {
   if (!isAbsolute(opts.cwd)) throw new Error("OMP session cwd must be absolute");
-  const handlers = cursorExecHandlers(
+  const handlers = opts.cursorExecHandlers ?? cursorExecHandlers(
     () => opts.cwd,
     () => toolResultBound(opts.agent.state.model?.contextWindow ?? 0),
     () => opts.policy?.(),
   );
   const inner = opts.agent.streamFn.bind(opts.agent);
-  const measured = measureDispatch(() => opts.usage, opts.usageAttribution, inner);
+  const measured = measureDispatch(() => opts.usage.durable ? opts.usage : undefined, opts.usageAttribution, inner);
   opts.agent.streamFn = (model, context, options) => measured(model, context, {
     ...options,
     cursorExecHandlers: handlers,
@@ -112,20 +168,30 @@ function bindSdkDispatch(opts: OmpSessionOptions) {
       if (state === "accepted" || state === "started") ids.push(id);
     }
     if (ids.length === 0) return;
-    opts.receipts.start(ids, `sdk-turn-${++turns}`);
+    const turnID = opts.turnId?.() || `sdk-turn-${++turns}`;
+    const fresh = ids.filter(id => !opts.receipts.query(id).turn_ids.includes(turnID));
+    opts.receipts.start(ids, turnID);
     for (const id of ids) open.add(id);
+    for (const id of fresh) opts.onReceipt?.(id, "started");
   });
-  opts.agent.subscribe(event => {
-    if (event.type !== "agent_end") return;
-    const messages = (event as { messages?: { role?: string; stopReason?: string; errorMessage?: string }[] }).messages ?? [];
-    const aborted = messages.some(message => message.role === "assistant" && message.stopReason === "aborted");
-    const failed = messages.some(message => message.role === "assistant" && (message.stopReason === "error" || Boolean(message.errorMessage)));
-    const ids = [...open];
+  const settleDefault = (messages: readonly AgentMessage[]) => {
+    const assistants = messages as { role?: string; stopReason?: string; errorMessage?: string }[];
+    const aborted = assistants.some(message => message.role === "assistant" && message.stopReason === "aborted");
+    const failed = assistants.some(message => message.role === "assistant" && (message.stopReason === "error" || Boolean(message.errorMessage)));
+    return aborted ? { state: "cancelled" as const, reason: "cancelled", cause: "cancellation" as const }
+      : failed ? { state: "failed" as const, reason: "provider_error", cause: "failure" as const }
+      : { state: "completed" as const };
+  };
+  return (session: AgentSession) => session.subscribe(event => {
+    if (event.type !== "agent_end" || (event as { isTerminal?: boolean }).isTerminal === false) return;
+    const ids = [...open].filter(id => opts.receipts.query(id).state === "started");
+    if (ids.length === 0) { open.clear(); return; }
+    const messages = (event as { messages?: AgentMessage[] }).messages ?? [];
+    const verdict = (opts.settle ?? settleDefault)(messages);
+    if (!verdict) return;
     open.clear();
-    if (ids.length === 0) return;
-    const state = aborted ? "cancelled" : failed ? "failed" : "completed";
-    opts.receipts.finish(ids, state, aborted ? "cancelled" : failed ? "provider_error" : undefined,
-      aborted ? "cancellation" : failed ? "failure" : undefined);
+    opts.receipts.finish(ids, verdict.state, verdict.reason, verdict.cause);
+    for (const id of ids) opts.onReceipt?.(id, "finished");
   });
 }
 
@@ -138,13 +204,18 @@ export async function createOmpSession(opts: OmpSessionOptions) {
   if (!(opts.usage instanceof UsageJournal)) throw new Error("OMP session requires the production usage journal");
   if (typeof opts.usageAttribution !== "function") throw new Error("OMP session requires usage attribution");
   const preserveSeatLoop = opts.preserveSeatLoop === true;
-  if (!preserveSeatLoop) bindSdkDispatch(opts);
-  if (!preserveSeatLoop) for (const dir of [getAgentDir(), getBaseConfigRoot()]) {
-    const suffix = relative(opts.stateDir, dir);
+  const sdkRoot = opts.sdkRoot === undefined ? opts.stateDir : opts.sdkRoot;
+  if (sdkRoot !== null && !isAbsolute(sdkRoot)) throw new Error("OMP session sdkRoot must be absolute");
+  if (!preserveSeatLoop && sdkRoot !== null) for (const dir of [getAgentDir(), getBaseConfigRoot()]) {
+    const suffix = relative(sdkRoot, dir);
     if (suffix === ".." || suffix.startsWith(`..${sep}`) || isAbsolute(suffix)) {
       throw new Error(`OMP SDK directory is outside the explicit state root: ${dir}`);
     }
   }
+  for (const key of Object.keys(opts.settings ?? {})) {
+    if (processGlobalSettingKeys.includes(key)) throw new Error(`OMP setting ${key} is process-wide in the SDK; a seat may not set it`);
+  }
+  const attachSettle = preserveSeatLoop ? undefined : bindSdkDispatch(opts);
   const settings = Settings.isolated({
     // Even ignoreLocalModelConfig registries add these implicit keyless
     // endpoints; none is an authenticated broker-selected compaction route.
@@ -174,7 +245,13 @@ export async function createOmpSession(opts: OmpSessionOptions) {
     "compaction.asyncEnabled": false,
     "compaction.idleEnabled": false,
     "compaction.experimentalContextManagement": false,
+    // The SDK default tries snapcompact (bitmap archives) and handoff (a
+    // handoff document plus an automatic continuation turn) before a
+    // summary. A host request must not gain a turn it did not ask for.
+    "compaction.methodOrder": ["remote", "soft"],
+    ...opts.settings,
   });
+  guardProcessGlobalSettings(settings);
   const noAuxiliaryFetch: typeof fetch = async () => {
     throw new Error("Claudia does not permit auxiliary SDK network discovery or credential requests");
   };
@@ -274,6 +351,7 @@ export async function createOmpSession(opts: OmpSessionOptions) {
       nativeCompactionOptions: opts.nativeCompactionOptions,
       convertToLlm: convertOmpMessages,
     });
+    const detachSettle = attachSettle?.(session);
     if (preserveSeatLoop) {
       // AgentSession installs its own queue preparer, which rebuilds user
       // text and drops the host request on the message. The seat's steering
@@ -289,7 +367,7 @@ export async function createOmpSession(opts: OmpSessionOptions) {
       syncToken,
       getApiKey: (model: Model) => syncToken(model.provider),
       dispose: () => disposal ??= (async () => {
-        try { await session.dispose(); } finally { auth.close(); }
+        try { detachSettle?.(); await session.dispose(); } finally { auth.close(); }
       })(),
     };
   } catch (error) {
