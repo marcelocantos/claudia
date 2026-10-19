@@ -36,7 +36,16 @@ type linkSide struct {
 // Each process applies the other's changesets to its own file. Neither ever
 // opens the other's file. A fresh link starts with sqlpipe's handshake diff,
 // so rows committed while no link was up are delivered on the next one.
-func runLink(conn net.Conn, done <-chan struct{}, side linkSide) error {
+// A link stopped by done returns nil: closing conn is how done stops it, so
+// whatever read or write that close interrupts is the stop, not a failure.
+func runLink(conn net.Conn, done <-chan struct{}, side linkSide) (err error) {
+	defer func() {
+		select {
+		case <-done:
+			err = nil
+		default:
+		}
+	}()
 	defer conn.Close()
 	stop := make(chan struct{})
 	defer close(stop)
