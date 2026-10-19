@@ -11,7 +11,7 @@ require (
 	github.com/aws/aws-sdk-go-v2 v1.43.3
 	github.com/aws/aws-sdk-go-v2/config v1.32.34
 	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.57.0
-	github.com/marcelocantos/sqlpipe/go/sqlpipe v0.32.0
+	github.com/marcelocantos/sqlpipe/go/sqlpipe v0.33.0
 	golang.org/x/sys v0.43.0
 )
 
