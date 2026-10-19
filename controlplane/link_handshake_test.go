@@ -189,8 +189,11 @@ func (p *frameProxy) handshakeOver(link int) bool {
 	return ackedBy[true] && ackedBy[false]
 }
 
-func usageFact(seat, callID string) *claudia.UsageFact {
-	return &claudia.UsageFact{Seq: 1, CallID: callID, Seat: seat, SessionID: "s",
+// usageFact is one completed call at seq for seat. A seq carries exactly one
+// fact per seat and session, which the publisher enforces, so two calls on one
+// seat need two seqs.
+func usageFact(seat, callID string, seq uint64) *claudia.UsageFact {
+	return &claudia.UsageFact{Seq: seq, CallID: callID, Seat: seat, SessionID: "s",
 		Kind: "model", State: "completed", Provider: "openai", Model: "m",
 		Requests:  []claudia.UsageRequestRef{{RequestID: "r-" + callID, AttemptID: "a"}},
 		StartedAt: "2026-10-19T00:00:00Z", FinishedAt: "2026-10-19T00:00:01Z",
@@ -295,7 +298,7 @@ func handshakeWrites(t *testing.T, k int, redial bool) int {
 	}
 	// Rows each side holds and the other lacks, so the handshake runs a
 	// real diff in both directions.
-	claudia.RecordObservedUsage(usageFact("seat-0", "call-before"))
+	claudia.RecordObservedUsage(usageFact("seat-0", "call-before", 1))
 	consumerWrite("seat-before")
 
 	underTest := 0
@@ -311,7 +314,7 @@ func handshakeWrites(t *testing.T, k int, redial bool) int {
 		})
 		proxy.drop()
 		_ = first.wait() // a cut wire; how Link reports it is not under test
-		claudia.RecordObservedUsage(usageFact("seat-0", "call-down"))
+		claudia.RecordObservedUsage(usageFact("seat-0", "call-down", 2))
 		consumerWrite("seat-down")
 		underTest = 1
 	}
@@ -324,7 +327,7 @@ func handshakeWrites(t *testing.T, k int, redial bool) int {
 			return
 		}
 		fired = true
-		claudia.RecordObservedUsage(usageFact("seat-1", callID))
+		claudia.RecordObservedUsage(usageFact("seat-1", callID, 1))
 		if err := r.Write(func(db *sqlpipe.Database) error { return PublishDesiredSeat(db, desired(seat, 1, 1)) }); err != nil {
 			t.Error(err)
 		}
@@ -363,7 +366,7 @@ func handshakeWrites(t *testing.T, k int, redial bool) int {
 		return brokerHasSeat(t, seat)
 	})
 	// The link is live: later writes on both sides flow on it.
-	claudia.RecordObservedUsage(usageFact("seat-2", "call-after"))
+	claudia.RecordObservedUsage(usageFact("seat-2", "call-after", 1))
 	consumerWrite("seat-after")
 	eventually(t, "call-after on the live link", func() bool {
 		link.requireUp(t, "call-after")
