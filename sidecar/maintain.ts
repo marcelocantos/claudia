@@ -355,10 +355,11 @@ export class History {
 }
 
 // messageKey identifies a message by content: its role, time and a hash of
-// the message. Two copies of one message share it. AgentSession stamps
-// completedAt and contextSnapshot on its own assistant copy after the
-// turn-end hook has already journaled the engine's copy, so those fields
-// are left out of the hash. They are not a second transcript message.
+// the message. Two copies of one message share it. The coding-agent session
+// that v0.54-v0.58 adopted beside the seat stamped completedAt and
+// contextSnapshot on its own assistant copy after the turn-end hook had
+// journaled the engine's copy. Those fields stay out of the hash so a store
+// written then still resumes each message once.
 function messageKey(m: AgentMessage): string {
   const stamp = m as AgentMessage & { completedAt?: unknown; contextSnapshot?: unknown };
   const { completedAt: _completedAt, contextSnapshot: _contextSnapshot, ...body } = stamp;

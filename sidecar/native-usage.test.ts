@@ -117,3 +117,17 @@ test("successful native response with no raw usage retains unknown dimensions", 
   expect(r.compaction[0].state).toBe("completed");
   expect(r.compaction[0].counters).toEqual({});
 });
+
+// Ported from the coding-agent SDK compaction fixture removed by 🎯T1074.12:
+// the threshold is crossed inside the tool loop, so native compaction runs
+// from the bare seat's turn-end hook, attributed to the open turn.
+test("mid-turn native compaction is observed once between two model calls of the same turn", async () => {
+  const r = await fixture("mid");
+  expect(r.calls).toEqual(["model", "v2", "model"]);
+  expect(r.finals.map(f => f.kind)).toEqual(["model", "compaction", "model"]);
+  expect(r.finals[0].counters.total_input_tokens).toBe(90_000);
+  expect(r.compaction).toHaveLength(1);
+  expect(r.compaction[0]).toMatchObject({ state: "completed", provider_response_id: "compact_v2", counters: { total_input_tokens: 100, input_tokens: 60, output_tokens: 7, cache_read_input_tokens: 40, cache_creation_input_tokens: 0, reasoning_tokens: 0 } });
+  expect(new Set(r.finals.map(f => f.invocation_id)).size).toBe(3);
+  expect(r.events.some(e => e.type === "compacted" && e.text?.includes("method remote"))).toBe(true);
+});

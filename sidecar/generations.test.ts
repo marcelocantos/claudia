@@ -6,7 +6,7 @@ import { mkdtemp, mkdir, writeFile, appendFile, readFile, rm, symlink, chmod } f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GenerationDiscovery, generationLimits, type GenerationPage } from "./generations.ts";
-import { seatRuntimeDirName } from "./store.ts";
+import { legacyRuntimeDirName } from "./store.ts";
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => { setSystemTime(); for (const clean of cleanups.splice(0).reverse()) await clean(); });
@@ -28,10 +28,10 @@ async function scan(reader: GenerationDiscovery, limit = 2) {
   return pages;
 }
 
-test("the SDK runtime directory is not a seat and leaves the inventory complete", async () => {
+test("a leftover v0.54-v0.58 SDK runtime directory is not a seat and leaves the inventory complete", async () => {
   const f = await fixture();
   await history(f.root, "po", "s1");
-  const runtime = join(f.root, seatRuntimeDirName, "po");
+  const runtime = join(f.root, legacyRuntimeDirName, "po");
   await mkdir(runtime, { recursive: true });
   await writeFile(join(runtime, "models.db"), "not history");
   const pages = await scan(f.reader);

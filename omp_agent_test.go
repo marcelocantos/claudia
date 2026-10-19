@@ -481,6 +481,15 @@ func TestOMPSidecarPromptCallsPiAgentCore(t *testing.T) {
 	if strings.Contains(src, `@oh-my-pi/pi-natives`) || strings.Contains(src, `@oh-my-pi/pi-coding-agent`) {
 		t.Fatal("sidecar must not load pi-natives or omp's tools")
 	}
+	// Seats run on bare pi-agent-core; the coding-agent SDK is not a
+	// dependency (🎯T1074.12, docs/design/omp-coding-agent-sdk.md).
+	manifest, err := os.ReadFile("sidecar/package.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(manifest), `@oh-my-pi/pi-coding-agent`) {
+		t.Fatal("sidecar/package.json must not depend on the coding-agent SDK")
+	}
 	if !strings.Contains(src, `from "./coding.ts"`) || !strings.Contains(src, "const own = codingTools(() => cwd, boundOf, () => sandbox);") || !strings.Contains(src, "agent.setTools([...own, ...hosted])") {
 		t.Fatal("seat.ts must advertise host coding tools (Bash/Read/Write/Glob/Grep) beside the host's jevons_* tools (🎯T886)")
 	}

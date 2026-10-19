@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createMockModel, registerMockApi, type MockResponse } from "@oh-my-pi/pi-ai/providers/mock";
@@ -11,7 +11,8 @@ import type { SessionEntry } from "@oh-my-pi/pi-agent-core";
 import { createSeatAgent, type SeatEvent } from "./seat.ts";
 import { SeatStore } from "./store.ts";
 import { History } from "./maintain.ts";
-import { ReceiptJournal } from "./receipts.ts";
+import { ReceiptJournal, requestFactType } from "./receipts.ts";
+import { usageFactType } from "./usage.ts";
 
 registerMockApi();
 const roots: string[] = [];
@@ -402,4 +403,55 @@ test("abort and prompt drains wait for outer preparation and receipt cleanup", a
     releaseModel.resolve();
     await first.catch(() => {});
   }
+});
+
+// Ported from the coding-agent SDK fixture removed by 🎯T1074.12: the same
+// dispatch-time properties, now on the bare pi-agent-core seat.
+test("dispatch finds its receipt started and its usage fact open on disk, with the seat's Cursor handlers on the stream", async () => {
+  const storage = store();
+  // A working directory apart from the seat directory, which holds history.
+  const cwd = mkdtempSync(join(tmpdir(), "claudia-receipts-work-"));
+  const outside = mkdtempSync(join(tmpdir(), "claudia-receipts-outside-"));
+  roots.push(cwd, outside);
+  writeFileSync(join(cwd, "note.txt"), "seat-handler-body\n");
+  const onDisk = () => readFileSync(storage.path, "utf8").trim().split("\n").map(line => JSON.parse(line))
+    .filter(entry => entry.type === "custom");
+  let checked = 0;
+  const model = createMockModel({ handler: context => {
+    // Read the journal file itself at the provider boundary: no in-memory
+    // receipt or usage page stands in for what reached disk before dispatch.
+    const entries = onDisk();
+    const receipts = entries.filter(e => e.customType === requestFactType && e.data.receipt.request_id === "A");
+    expect(receipts.map(e => e.data.receipt.state)).toEqual(["accepted", "started"]);
+    const usage = entries.filter(e => e.customType === usageFactType && e.data.requests.some((r: { request_id: string }) => r.request_id === "A"));
+    expect(usage.map(e => e.data)).toMatchObject([{ state: "started", coverage: "engine_invocation", counters: {},
+      turn_id: "turn-A", requests: [{ request_id: "A", attempt_id: "attempt-A" }] }]);
+    expect(context.messages.filter(m => (m as any).claudiaRequest?.request_id === "A").map(m => (m as any).claudiaRequest))
+      .toEqual([{ request_id: "A", attempt_id: "attempt-A" }]);
+    checked++;
+    return { content: ["ok"], usage: { input: 10, output: 1 } };
+  } });
+  const f = { model, agent: createSeatAgent({ provider: "mock", model: "mock", token: "test", cwd, modelOverride: model,
+    store: storage, emit: () => {}, callTool: async () => "" }) };
+  await f.agent.prompt("read the note", meta("A"));
+  expect(checked).toBe(1);
+  expect(f.agent.receipt("A").state).toBe("completed");
+  const completed = f.agent.usage().facts.filter(fact => fact.state === "completed");
+  expect(completed).toHaveLength(1);
+  expect(completed[0]).toMatchObject({ requests: [{ request_id: "A", attempt_id: "attempt-A" }] });
+  expect(completed[0].counters).toMatchObject({ input_tokens: 10, output_tokens: 1 });
+  // Cursor answers its native tools through exec handlers on the stream
+  // options. Each must reach the seat's own policy, not "Tool not available".
+  const handlers = f.model.calls[0].options?.cursorExecHandlers as any;
+  expect(handlers).toBeDefined();
+  for (const name of ["read", "ls", "grep", "write", "delete", "shell", "piRead", "piBash", "piEdit", "piWrite", "piGrep", "piFind", "piLs"]) {
+    expect(typeof handlers[name]).toBe("function");
+  }
+  const read = await handlers.read({ path: "note.txt", toolCallId: "r1" });
+  expect(read.isError).toBe(false);
+  expect(JSON.stringify(read)).toContain("seat-handler-body");
+  expect(JSON.stringify(read)).not.toContain("Tool not available");
+  const escaped = await handlers.read({ path: join(outside, "x"), toolCallId: "esc" });
+  expect(escaped.isError).toBe(true);
+  expect(JSON.stringify(escaped)).toContain("escapes working directory");
 });

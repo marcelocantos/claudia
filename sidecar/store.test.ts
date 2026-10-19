@@ -12,7 +12,7 @@ import { compact as engineCompact, type SessionEntry } from "@oh-my-pi/pi-agent-
 import { createMockModel, registerMockApi, type MockResponse } from "@oh-my-pi/pi-ai/providers/mock";
 import type { AssistantMessage, Context, Model } from "@oh-my-pi/pi-ai";
 import { createSeatAgent, type SeatEvent } from "./seat.ts";
-import { SeatStore, seatRuntimeDirName } from "./store.ts";
+import { SeatStore } from "./store.ts";
 import { History } from "./maintain.ts";
 import { ReceiptJournal } from "./receipts.ts";
 
@@ -122,12 +122,12 @@ describe("durable seat conversations (🎯T151)", () => {
     expect(roles).toEqual(["user", "assistant", "user", "assistant"]);
   });
 
-  test("the SDK cache is not an entry in the seat directory", async () => {
+  test("a seat writes nothing beside its journal", async () => {
     const root = tempDir();
     const first = seat(new SeatStore(root, "po", "s1"), ok);
     await first.agent.prompt("one");
     expect(readdirSync(join(root, "po")).sort()).toEqual(["s1.jsonl"]);
-    expect(readdirSync(join(root, seatRuntimeDirName)).sort()).toEqual(["po"]);
+    expect(readdirSync(root).sort()).toEqual(["po"]);
   });
 
   test("a store that already holds a message twice resumes it once, and is rewritten clean", async () => {

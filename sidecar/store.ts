@@ -47,12 +47,13 @@ function safeName(s: string): string {
   return s.replace(/[^A-Za-z0-9._-]/g, "_");
 }
 
-// seatRuntimeDirName is the SDK model cache under the history root. The
-// leading tilde cannot be produced by safeName and is rejected as a seat
-// identity, so this directory is never a conversation. Generation discovery
-// skips it. Jevons treats every entry inside a seat directory as history,
-// so the cache must not live there either.
-export const seatRuntimeDirName = "~omp-runtime";
+// legacyRuntimeDirName is where v0.54-v0.58 kept the coding-agent SDK's model
+// cache, under the history root. Nothing creates it now, but a history root
+// those versions used may still hold one. The leading tilde cannot be
+// produced by safeName and is rejected as a seat identity, so it is never a
+// conversation, and generation discovery skips it rather than reporting the
+// inventory incomplete.
+export const legacyRuntimeDirName = "~omp-runtime";
 
 export class SeatStore {
   readonly path: string;

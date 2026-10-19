@@ -173,20 +173,6 @@ export class UsageJournal {
   }
 }
 
-// The SDK asks for native compaction options once per candidate and reuses that
-// observer for every physical attempt. Read the host's active turn here: a
-// later turn must not keep the attribution captured when the session was built.
-export function observedNativeCompaction(
-  journal: UsageJournal,
-  attribution: () => Attribution,
-  transport: typeof fetch,
-) {
-  return (candidate: Model) => ({
-    fetch: transport,
-    onProviderAttempt: journal.observer("compaction", candidate, attribution()),
-  });
-}
-
 const instrumentedUsage = (api: string) => api === "anthropic-messages" || api === "openai-responses" || api === "openai-codex-responses" || api === "cursor-agent";
 
 // Observe one stream invocation. `inner` is the seat's real transport,
