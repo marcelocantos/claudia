@@ -258,7 +258,8 @@ describe("durable seat conversations (🎯T151)", () => {
 
 // A real sidecar process: restart it under a stored seat and read back what
 // it rebuilt. `abort` answers with the seat's full state, so no provider
-// call is needed.
+// call is needed: with no turn open that answer is the `aborted`
+// acknowledgement, not a turn_end, which would name no turn.
 describe("post-bind tool attestation (🎯T173)", () => {
   test("names come from the model-bound state, including after rebind", () => {
     const agent = createSeatAgent({
@@ -353,8 +354,8 @@ describe("sidecar restart (🎯T151)", () => {
         op: "load", seat: "viewer", provider: "anthropic", model: "claude-sonnet-5", token: "t", cwd: dir, session_id: "s2",
       }], e => e.type === "ready" || e.type === "error");
       expect(loaded[0].type).toBe("ready");
-      const ended = await ask(sock, [{ op: "abort", seat: "viewer" }], e => e.type === "turn_end" || e.type === "error");
-      expect(ended.at(-1)?.type).toBe("turn_end");
+      const ended = await ask(sock, [{ op: "abort", seat: "viewer" }], e => e.type === "aborted" || e.type === "turn_end" || e.type === "error");
+      expect(ended.at(-1)?.type).toBe("aborted");
       expect(JSON.stringify(ended.at(-1)?.snapshot)).toContain("DISTINCTIVE-CONVERSATION-BODY");
       const lines = spoolLines(dir);
       const receiptLine = lines.find(line => { try { return JSON.parse(line).type === "receipt"; } catch { return false; } });
@@ -363,7 +364,7 @@ describe("sidecar restart (🎯T151)", () => {
       expect(receipt.request_id).toBe("host-request");
       expect(receipt.receipt).toMatchObject({ request_id: "host-request", state: "accepted", session_id: "s1" });
       expect(receipt.receipt.text).toBeUndefined();
-      const turns = lines.filter(line => { try { return JSON.parse(line).type === "turn_end"; } catch { return false; } });
+      const turns = lines.filter(line => { try { return JSON.parse(line).type === "aborted"; } catch { return false; } });
       expect(turns.length).toBeGreaterThan(0);
       for (const line of lines) {
         expect(line.includes("snapshot")).toBe(false);
@@ -392,8 +393,10 @@ describe("sidecar restart (🎯T151)", () => {
       expect((out[0].receipt as { state: string }).state).toBe("accepted");
       expect(readFileSync(storage.path)).toEqual(before);
       // Query did not mint a seat: even an abort still finds no loaded agent.
-      const absent = await ask(sock, [{ op: "abort", seat: "po" }], e => e.type === "error" || e.type === "turn_end");
-      expect(absent[0].type).toBe("error");
+      // An abort with no rpc and no turn is the seat's error, never a
+      // turn's answer.
+      const absent = await ask(sock, [{ op: "abort", seat: "po" }], e => e.type === "error" || e.type === "seat_error" || e.type === "turn_end");
+      expect(absent[0].type).toBe("seat_error");
       expect(absent[0].text).toBe("seat is not loaded");
       for (const op of ["prompt", "steer", "adopt", "load"]) {
         const rejected = await ask(sock, [{ op, seat: "absent", session_id: "s1", request_id: "host-request", rpc_id: `rejected-${op}` }], e => e.type === "error");
@@ -472,7 +475,7 @@ describe("sidecar restart (🎯T151)", () => {
     for (let run = 0; run < 2; run++) {
       const proc = startSidecar(sock);
       try {
-        const out = await ask(sock, [load, { op: "abort", seat: "po" }], (ev) => ev.type === "turn_end");
+        const out = await ask(sock, [load, { op: "abort", seat: "po" }], (ev) => ev.type === "aborted");
         expect(out[0].type).toBe("ready");
         // The host words its restart note by this (jevons 🎯T929).
         expect(out[0].restored).toBe(true);

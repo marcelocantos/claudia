@@ -233,7 +233,7 @@ test("real unloaded sidecar usage route honors deadlines and keeps the seat unlo
       catch { await Bun.sleep(20); }
     }
     expect(ready).toBe(true);
-    const expired = await ask({ op: "usage", seat: "seat", session_id: "session", expires_at: Date.now() - 1 });
+    const expired = await ask({ op: "usage", seat: "seat", session_id: "session", rpc_id: "expired", expires_at: Date.now() - 1 });
     expect(expired.type).toBe("error"); expect(expired.text).toContain("deadline");
     // Both requests enter the actual server on one socket batch. A cold
     // usage read must yield before its response, allowing an unrelated
@@ -268,7 +268,7 @@ test("real unloaded sidecar usage route honors deadlines and keeps the seat unlo
     }
     expect(facts).toEqual(f.facts);
     const absent = await ask({ op: "abort", seat: "seat" });
-    expect(absent.type).toBe("error"); expect(absent.text).toBe("seat is not loaded");
+    expect(absent.type).toBe("seat_error"); expect(absent.text).toBe("seat is not loaded");
     expect(readFileSync(stored.path)).toEqual(before);
   } finally {
     proc.kill(); await proc.exited;

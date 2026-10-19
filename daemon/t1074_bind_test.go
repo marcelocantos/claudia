@@ -19,22 +19,15 @@ import (
 )
 
 // TestT10749ExistingFilePublishesReceipt drives daemon.New, the constructor
-// broker serve uses. An existing control file is bound, so a seat-pump
-// receipt lands in that file and a second open can read it. Closing the
-// daemon unbinds the pump: a later receipt does not.
+// broker serve uses. The broker opens its own control file and binds it, so
+// a seat-pump receipt lands in that file and a reader can see it. Closing
+// the daemon unbinds the pump: a later receipt does not.
 func TestT10749ExistingFilePublishesReceipt(t *testing.T) {
 	if os.Getenv("T1074_9_CHILD") == "1" {
 		t.Skip("restart child")
 	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, controlplane.ClaudiaDBFile)
-	plane, err := controlplane.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := plane.Close(); err != nil {
-		t.Fatal(err)
-	}
 
 	sock := filepath.Join("/tmp", fmt.Sprintf("t10749-bind-%d.sock", os.Getpid()))
 	_ = os.Remove(sock)
@@ -87,13 +80,6 @@ func TestT10749ExistingFilePublishesReceipt(t *testing.T) {
 func TestBrokerCloseCancelsStartedReceipts(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, controlplane.ClaudiaDBFile)
-	plane, err := controlplane.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := plane.Close(); err != nil {
-		t.Fatal(err)
-	}
 	sock := filepath.Join("/tmp", fmt.Sprintf("t1074-cancel-started-%d.sock", os.Getpid()))
 	_ = os.Remove(sock)
 	t.Cleanup(func() { _ = os.Remove(sock) })

@@ -1,10 +1,14 @@
 // Copyright 2026 Marcelo Cantos
 // SPDX-License-Identifier: Apache-2.0
 
-// Package controlplane is the shared Jevons–Claudia sqlpipe pair.
-// Each table has one writer. Claudia writes usage, receipts, seat status,
-// and control outcomes. Jevons writes desired seats, grants, and control
-// intents. A cross-write is rejected. Per-seat MCP pairs are not this file.
+// Package controlplane is the Jevons–Claudia sqlpipe pair: two databases,
+// one per process, each written only by its own process. The claudia broker
+// owns ClaudiaDBFile and writes usage, receipts, seat status and control
+// outcomes there. A consumer (Jevons) owns its own file (JevonsDBFile in its
+// own state directory) and writes desired seats, grants and control intents
+// there. Changesets cross between the two processes over the broker's
+// control socket (claudia.ControlSocketPath, Replica.Link); neither process opens the other's file.
+// A cross-write is rejected. Per-seat MCP pairs are not this file.
 package controlplane
 
 import (
@@ -41,10 +45,11 @@ const (
 	GrantTable = "jevons_grant"
 	// IntentTable is the Jevons-owned control intent. One row per operation.
 	IntentTable = "jevons_control_intent"
-	// ClaudiaDBFile is the Claudia-hosted file name inside a shared state directory.
-	// The library owns the spelling. This name is the same constant.
+	// ClaudiaDBFile is the broker's own file name inside the broker's state
+	// directory. The library owns the spelling. This name is the same constant.
 	ClaudiaDBFile = claudia.ClaudiaDBFile
-	// JevonsDBFile is the Jevons-hosted file name beside ClaudiaDBFile.
+	// JevonsDBFile is the consumer's own file name, in the consumer's own
+	// state directory.
 	JevonsDBFile = "control-replica.db"
 )
 

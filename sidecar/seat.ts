@@ -47,13 +47,28 @@ export type SeatEvent = {
 };
 
 export type SeatEmit = (ev: SeatEvent) => void;
+
+// EndedTurn identifies the turn an abort closed.
+export type EndedTurn = { turn_id: string; request_id?: string };
+
+// TurnError is a turn's own failure after it began: the host hears it as that
+// turn's error, not as a reply to the request that opened it (whose waiter
+// has already taken the acceptance).
+export type TurnError = Error & { turn_id: string };
+
+export function turnOf(err: unknown): string | undefined {
+  const id = (err as { turn_id?: unknown } | null)?.turn_id;
+  return typeof id === "string" && id.trim() ? id : undefined;
+}
 export type SeatCallTool = (callId: string, name: string, args: string) => Promise<string>;
 
 export type SeatAgent = {
   authRetry: (reply: RetryReply) => void;
   prompt: (text: string, meta?: PromptMeta) => Promise<void>;
   steer: (text: string, meta?: PromptMeta) => void;
-  abort: () => void;
+  // abort ends the open turn and names it, so the host hears that turn end
+  // as itself; undefined when no turn was open, and nothing ended.
+  abort: () => EndedTurn | undefined;
   // cancelOpenReceipts finishes every started receipt as cancelled.
   // Abort, drop, and process exit call it. Accepted inputs stay accepted.
   cancelOpenReceipts: () => void;
@@ -284,6 +299,28 @@ export function createSeatAgent(opts: {
     return isOverflow(last, maint.window()) ? (last as { errorMessage?: string }) : undefined;
   };
 
+  // closeAbortedTail answers an input the abort stopped before the model
+  // answered it, in the shape pi-agent-core's own pre-call gate uses. Left
+  // as the transcript's tail, the next continue() (the abort's queue drain)
+  // sent that cancelled input to the model again, ahead of the message the
+  // host had sent next (jevons J3-cancel-and-send, 2026-10-19).
+  const closeAbortedTail = () => {
+    const last = agent.state.messages.at(-1);
+    if (!last || last.role === "assistant") return;
+    const current = agent.state.model;
+    agent.appendMessage({
+      role: "assistant",
+      content: [{ type: "text", text: "" }],
+      api: current.api,
+      provider: current.provider,
+      model: current.id,
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      stopReason: "aborted",
+      errorMessage: "aborted by the host before the model answered",
+      timestamp: Date.now(),
+    } as AssistantMessage);
+  };
+
   const finish = (stop: Stop) => {
     if (!turn || turn.closed) return;
     const tail = flushHold(turn);
@@ -301,6 +338,15 @@ export function createSeatAgent(opts: {
   let turnDone: Promise<void> | undefined;
   const heldSteering: Parameters<typeof agent.steer>[0][] = [];
   const heldFollowUps: Parameters<typeof agent.followUp>[0][] = [];
+  // The turn identity the host gave a prompt that had to wait behind a
+  // running turn. The turn that later takes it from the queue runs under
+  // that identity, so the host hears the reply as the turn it opened; a
+  // minted id was a turn the host never sent (jevons J3, 2026-10-19).
+  const queuedTurnIDs = new WeakMap<object, string>();
+  const queuedHeadTurnID = () => {
+    const head = agent.peekSteeringQueue()[0] ?? agent.peekFollowUpQueue()[0];
+    return head ? queuedTurnIDs.get(head) : undefined;
+  };
 
   // Accepted inputs that never reached dispatch remain obligations after a
   // restart. Rebuild only that queue; a started/unknown request is never
@@ -434,6 +480,7 @@ export function createSeatAgent(opts: {
       const before = new Set(agent.state.messages);
       runInvoked = true;
       await run();
+      if (cancelled) closeAbortedTail();
       const failed = agent.state.messages.at(-1);
       const authError = turnRefusal(agent.state);
       if (failed && !before.has(failed) && authRefusal(authError) && requestCount === 1 &&
@@ -544,12 +591,27 @@ export function createSeatAgent(opts: {
   // The engine can be idle while preparation or receipt cleanup is still
   // running. Serialize that whole interval, including after abort closed the
   // digest, so an earlier turn cannot overwrite the next turn's identity.
+  //
+  // An error after the turn began is that turn's (TurnError). An aborted
+  // turn has already ended as itself, so what its unwinding throws is not a
+  // second end: it is logged, not answered.
   const runTurn = async (text: string, meta: PromptMeta | undefined, run: () => Promise<void>, accepted?: RequestReceipt) => {
     if (turnDone) throw new Error("a turn is still unwinding");
     let releaseTurn!: () => void;
     turnDone = new Promise<void>(resolve => { releaseTurn = resolve; });
+    const previous = turn;
     try {
       await executeTurn(text, meta, run, accepted);
+    } catch (err) {
+      const begun = turn !== previous && turn ? turn.turn_id : undefined;
+      if (!begun) throw err;
+      if (cancelled) {
+        console.error(`sidecar: aborted turn ${begun} unwound with an error: ${err instanceof Error ? err.message : String(err)}`);
+        return;
+      }
+      const tagged = (err instanceof Error ? err : new Error(String(err))) as TurnError;
+      tagged.turn_id = begun;
+      throw tagged;
     } finally {
       turnDone = undefined;
       releaseTurn();
@@ -570,7 +632,7 @@ export function createSeatAgent(opts: {
       if (accepted && !accepted.fresh) {
         sink.emit({ type: "accepted", request_id: meta!.request_id, rpc_id: meta?.rpc_id, receipt: accepted.receipt });
         if (accepted.receipt.state === "accepted" && !turnDone && !retrying && !agent.state.isStreaming && agent.hasQueuedMessages()) {
-          await runTurn("", meta, () => agent.continue());
+          await runTurn("", { ...meta, turn_id: queuedHeadTurnID() ?? meta?.turn_id }, () => agent.continue());
         }
         return;
       }
@@ -583,6 +645,7 @@ export function createSeatAgent(opts: {
       // is still finishing, where prompt() throws AgentBusyError.
       if (turnDone || retrying || agent.state.isStreaming || agent.hasQueuedMessages()) {
         const enqueue = retrying ? (m: Parameters<typeof agent.followUp>[0]) => heldFollowUps.push(m) : (m: Parameters<typeof agent.followUp>[0]) => agent.followUp(m);
+        if (meta?.turn_id) queuedTurnIDs.set(message, meta.turn_id);
         enqueue(message);
         pending.add(message);
         // Say at once that it was accepted: a host that waits for a first
@@ -590,8 +653,9 @@ export function createSeatAgent(opts: {
         sink.emit({ type: "accepted", request_id: meta?.request_id, rpc_id: meta?.rpc_id, receipt: accepted?.receipt });
         // A terminal refusal leaves accepted inputs queued. A later prompt
         // joins behind them rather than jumping ahead via agent.prompt().
+        // The turn opens on the oldest of them, under its identity.
         if (!turnDone && !retrying && !agent.state.isStreaming) {
-          await runTurn("", meta, () => agent.continue());
+          await runTurn("", { ...meta, turn_id: queuedHeadTurnID() ?? meta?.turn_id }, () => agent.continue());
         }
         return;
       }
@@ -616,7 +680,8 @@ export function createSeatAgent(opts: {
       cancelOpenReceipts();
       const interruptedTurn = turnDone ?? Promise.resolve();
       cancelled = true;
-      if (turn && !turn.closed) cancelledTurns.add(turn.turn_id);
+      const ended: EndedTurn | undefined = turn && !turn.closed ? { turn_id: turn.turn_id, request_id: answerRequestID() } : undefined;
+      if (ended) cancelledTurns.add(ended.turn_id);
       recovery.cancel();
       maint.abort();
       agent.abort();
@@ -629,11 +694,15 @@ export function createSeatAgent(opts: {
         await retryDone;
         if (!agent.hasQueuedMessages() || agent.state.isStreaming || turnDone) return;
         try {
-          await runTurn("", { cause: "interrupt-deliver" }, () => agent.continue());
+          await runTurn("", { cause: "interrupt-deliver", turn_id: queuedHeadTurnID() }, () => agent.continue());
         } catch (err) {
-          sink.emit({ type: "error", text: err instanceof Error ? err.message : String(err) });
+          // A turn that began fails as itself. One that never began belongs
+          // to no turn: it is the seat's, not an answer (seat_error).
+          const turnID = turnOf(err);
+          sink.emit({ type: turnID ? "error" : "seat_error", turn_id: turnID, text: err instanceof Error ? err.message : String(err) });
         }
       });
+      return ended;
     },
     switchModel: async (provider: string, modelId: string) => {
       assertRestorableExecution();

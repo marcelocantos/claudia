@@ -1453,6 +1453,9 @@ func (a *Agent) SendWithRequestID(msg, requestID string) error {
 	// Only a started receipt identifies a new turn whose output we should keep.
 	if requestID == "" || !a.SupportsReceipts() {
 		a.beginTurn()
+	} else {
+		a.retireEndedTurnFor(requestID)
+		defer a.retireEndedTurnFor(requestID)
 	}
 	cause, ok := a.takePromptCause()
 	a.noteArmed(cause, ok)

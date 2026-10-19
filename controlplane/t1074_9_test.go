@@ -55,56 +55,6 @@ func TestT10749RejectsCredentialsAndCrossWrites(t *testing.T) {
 	}
 }
 
-func TestT10749SyncLockedDeliversBothWaysOnce(t *testing.T) {
-	dir := t.TempDir()
-	jevons := openNamedDB(t, filepath.Join(dir, JevonsDBFile))
-	seat := DesiredSeat{
-		Seat: "seat-a", Generation: 1, Revision: 1, Provider: "grok", Model: "m",
-		WorkDir: t.TempDir(), ConfigJSON: `{"model":"m"}`,
-	}
-	if err := PublishDesiredSeat(jevons, seat); err != nil {
-		t.Fatal(err)
-	}
-	if err := PublishGrant(jevons, Grant{Seat: "seat-a", GrantID: "g", Revision: 1, Scope: `{"name":"read"}`}); err != nil {
-		t.Fatal(err)
-	}
-	// The Claudia file is opened only after the desired row is committed.
-	claudiaDB := openNamedDB(t, filepath.Join(dir, ClaudiaDBFile))
-	if err := SyncLocked(claudiaDB, jevons); err != nil {
-		t.Fatal(err)
-	}
-	if err := SyncLocked(claudiaDB, jevons); err != nil {
-		t.Fatal(err)
-	}
-	got, err := DesiredSeats(claudiaDB)
-	if err != nil || len(got) != 1 || got[0].Seat != "seat-a" || got[0].Generation != 1 || got[0].ConfigJSON != `{"model":"m"}` {
-		t.Fatalf("delivered desired = %+v %v", got, err)
-	}
-	grants, err := Grants(claudiaDB)
-	if err != nil || len(grants) != 1 || grants[0].GrantID != "g" {
-		t.Fatalf("delivered grants = %+v %v", grants, err)
-	}
-	if err := PublishSeatStatus(claudiaDB, SeatStatus{
-		Seat: "seat-a", SessionID: "sess", Generation: 1, Revision: 1, RuntimeID: "sess", State: statusRunning, StatusJSON: `{"provider":"grok","model":"m"}`,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := SyncLocked(claudiaDB, jevons); err != nil {
-		t.Fatal(err)
-	}
-	if err := SyncLocked(claudiaDB, jevons); err != nil {
-		t.Fatal(err)
-	}
-	statuses, err := SeatStatuses(jevons)
-	if err != nil || statuses["seat-a"].SessionID != "sess" || statuses["seat-a"].State != statusRunning {
-		t.Fatalf("delivered status = %+v %v", statuses, err)
-	}
-	again, err := SeatStatuses(claudiaDB)
-	if err != nil || len(again) != 1 {
-		t.Fatalf("status row count = %+v %v", again, err)
-	}
-}
-
 func TestT10749OwnershipAndSubscription(t *testing.T) {
 	if ApproveClaudia(nil) || ApproveClaudia(map[string]bool{}) || ApproveClaudia(map[string]bool{DesiredSeatTable: true}) {
 		t.Fatal("non-claudia claim was approved")
@@ -378,14 +328,17 @@ func TestT10749ReconcileSeatAndIntent(t *testing.T) {
 		}
 	})
 
-	t.Run("missing file leaves a running seat", func(t *testing.T) {
+	t.Run("a freshly created broker file leaves a running seat", func(t *testing.T) {
 		reg, _ := testRegistry(t)
 		launchNamed(t, reg, "other")
-		if err := ReconcileFile(context.Background(), filepath.Join(t.TempDir(), "missing.db"), reg); err != nil {
+		asBroker(t)
+		dbPath, sock := brokerDirs(t)
+		publishOwned(t, dbPath, sock)
+		if err := ReconcileFile(context.Background(), dbPath, reg); err != nil {
 			t.Fatal(err)
 		}
 		if !alive(reg, "other") {
-			t.Fatal("missing control file stopped the seat")
+			t.Fatal("an empty control file stopped the seat")
 		}
 	})
 

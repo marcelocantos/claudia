@@ -9,7 +9,7 @@ import (
 )
 
 // Observers publish sidecar usage facts and request receipts into the
-// Claudia-owned control-plane file. The seat event pump calls
+// broker's own control-plane file. Only the broker installs them. The seat event pump calls
 // RecordObservedUsage and RecordObservedReceipt after it accepts the
 // event's identity. A nil observer leaves that stream unrecorded, and a
 // write error does not drop the event from the seat.
