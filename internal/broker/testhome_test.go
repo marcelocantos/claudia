@@ -1,0 +1,8 @@
+// Copyright 2026 Marcelo Cantos
+// SPDX-License-Identifier: Apache-2.0
+
+package broker
+
+// Every test here runs on a private HOME, never the owner's claudia state
+// directory. internal/testhome ratchets this.
+import _ "github.com/marcelocantos/claudia/internal/testhome"

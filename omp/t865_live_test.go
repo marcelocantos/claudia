@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/marcelocantos/claudia/internal/testhome"
 )
 
 func TestT865LiveKeychainACLTrustsOnlyBroker(t *testing.T) {
@@ -196,7 +198,14 @@ func TestT865LiveKeychainItemExists(t *testing.T) {
 	if _, err := exec.LookPath("security"); err != nil {
 		t.Skip("security(1) not on PATH")
 	}
-	out, err := exec.Command("security", "find-generic-password", "-a", "claudia", "-s", KeychainService).CombinedOutput()
+	// This reads the owner's login keychain, which security(1) finds through
+	// HOME; the suite runs on a private one (internal/testhome), so hand the
+	// lookup the account's real home. Read-only: nothing is written there.
+	cmd := exec.Command("security", "find-generic-password", "-a", "claudia", "-s", KeychainService)
+	if home := os.Getenv(testhome.AccountHomeEnv); home != "" {
+		cmd.Env = append(os.Environ(), "HOME="+home)
+	}
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("live %s item missing: %s: %v", KeychainService, out, err)
 	}
