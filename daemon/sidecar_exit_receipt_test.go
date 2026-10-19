@@ -86,7 +86,6 @@ func TestServingSidecarExitCancelsStartedReceipt(t *testing.T) {
 	}
 	claudia.RecordObservedReceipt(started)
 	claudia.RecordObservedReceipt(accepted)
-	recordUsagePair(t)
 
 	pid := sidecarPID(t, socket)
 	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
@@ -114,7 +113,6 @@ func TestServingSidecarExitCancelsStartedReceipt(t *testing.T) {
 	if acc := readStoredReceipt(t, path, accepted.Seat, accepted.SessionID, accepted.RequestID); acc.State != claudia.ReceiptAccepted || acc.Cause != "" {
 		t.Fatalf("accepted receipt after sidecar exit = %+v", acc)
 	}
-	assertUsageSettled(t, path, controlplane.SidecarExitReceiptReason)
 	// The daemon is still the publisher. A later receipt lands without
 	// closing it, which is the opposite of broker shutdown.
 	later := &claudia.RequestReceipt{

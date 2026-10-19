@@ -71,6 +71,15 @@ Callers still bind the first fact to the expected seat/session and make their
 own projection and cursor writes transactional. They must not maintain their
 own mutable-field exclusions or add full snapshots on replay.
 
+The broker's control file (`controlplane.UsageTable`) mirrors the journal.
+Each `(seat, session_id, seq)` is written once: republishing the same fact
+is a no-op, and the writer refuses a different fact at a stored seq or a
+fact that breaks this transition contract against a stored fact of the same
+call. Sidecar exit and broker shutdown settle started request receipts only.
+They never rewrite or append a usage fact, because an exit observes no
+provider call and the seq belongs to the journal. A call left started by an
+exit stays started: incomplete, with unknown consumption.
+
 Counters and estimated dollars are optional. An absent counter is unknown;
 a present zero can represent a measured zero in the typed contract. The
 unpatched backends observe positive adapter-normalized counters because

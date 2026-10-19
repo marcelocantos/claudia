@@ -179,7 +179,7 @@ func (p *plane) serve(ln net.Listener, done <-chan struct{}) {
 // consumer peer link on socket (claudia.ControlSocketPath of the broker
 // socket). It refuses unless this
 // process is the broker daemon, and refuses a second owner. The returned
-// function settles started obligations, stops the link, unbinds the pump
+// function settles started receipts, stops the link, unbinds the pump
 // and releases the file. The broker holds it for the process lifetime.
 func PublishFile(path, sock string) (func() error, error) {
 	p, err := openOwner(path)
@@ -218,10 +218,10 @@ func PublishFile(path, sock string) (func() error, error) {
 
 func closeOwned(p *plane, ln net.Listener, sock string, done chan struct{}) error {
 	omp.SetServingExitHook(nil)
-	// A receipt or usage fact left started has no later terminal fact once
-	// this process is gone. Settle those rows before unbinding so the file a
-	// later snapshot reads is not an open obligation. Accepted receipts stay
-	// accepted.
+	// A receipt left started has no later terminal fact once this process is
+	// gone. Settle those rows before unbinding so the file a later snapshot
+	// reads is not an open obligation. Accepted receipts stay accepted. Usage
+	// facts are left as the journal wrote them (see SettleStartedObligations).
 	err := p.withDB(func(db *sqlpipe.Database) error {
 		return SettleStartedObligations(db, ShutdownReceiptReason)
 	})
