@@ -47,13 +47,6 @@ func TestServingSidecarExitCancelsStartedReceipt(t *testing.T) {
 	t.Setenv("CLAUDIA_OMP_NO_REFRESH", "1")
 
 	path := filepath.Join(dir, controlplane.ClaudiaDBFile)
-	plane, err := controlplane.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := plane.Close(); err != nil {
-		t.Fatal(err)
-	}
 	brokerSock := filepath.Join(dir, "broker.sock")
 	d, err := New(Options{
 		SocketPath:     brokerSock,

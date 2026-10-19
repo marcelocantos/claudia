@@ -268,20 +268,15 @@ func New(opts Options) (*Daemon, error) {
 	if opts.launchers != nil {
 		reg.SetLaunchers(opts.launchers)
 	}
-	// Desired rows already on the Claudia file are applied before the socket
-	// listens. A missing file leaves every running seat alone. The broker
-	// command imports controlplane, whose init links this call. This package
-	// cannot: controlplane already imports the library, and the daemon may
-	// import only the library and the wire.
+	// The Claudia control file is this broker's own, and this process is its
+	// only writer (🎯T1074.9). Opening it creates it when absent, binds it as
+	// the seat-pump publisher and serves the consumer's sqlpipe link beside
+	// it; a second owner is refused. The broker command imports controlplane,
+	// whose init links these calls. This package cannot: controlplane
+	// already imports the library, and the daemon may import only the
+	// library and the wire.
 	controlPath := filepath.Join(stateDir, claudia.ClaudiaDBFile)
-	if err := reg.ReconcileControlFile(context.Background(), controlPath); err != nil {
-		return nil, fmt.Errorf("broker daemon: control plane: %w", err)
-	}
-	// An existing file becomes the seat-pump publisher for this process.
-	// A missing file stays missing: creating it here would invent a pair
-	// Jevons has not opened. The broker command imports controlplane, whose
-	// init links this call. This package cannot import that package.
-	closePlane, err := claudia.OpenControlPublisher(controlPath)
+	closePlane, err := claudia.OpenControlPublisher(controlPath, claudia.ControlSocketPath(path))
 	if err != nil {
 		return nil, fmt.Errorf("broker daemon: control plane publisher: %w", err)
 	}
@@ -291,6 +286,11 @@ func New(opts Options) (*Daemon, error) {
 			_ = closePlane()
 		}
 	}()
+	// Desired rows the consumer's link delivered earlier are applied before
+	// the socket listens. None leaves every running seat alone.
+	if err := reg.ReconcileControlFile(context.Background(), controlPath); err != nil {
+		return nil, fmt.Errorf("broker daemon: control plane: %w", err)
+	}
 	claims, err := loadSeatClaims(filepath.Join(stateDir, claimsFile))
 	if err != nil {
 		return nil, fmt.Errorf("broker daemon: claims: %w", err)

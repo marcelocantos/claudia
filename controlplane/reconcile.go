@@ -7,7 +7,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 
 	"github.com/marcelocantos/claudia"
 	"github.com/marcelocantos/sqlpipe/go/sqlpipe"
@@ -33,25 +32,20 @@ const (
 	outcomeRejected  = "rejected"
 )
 
-// ReconcileFile opens the Claudia-hosted file when it exists and reconciles
-// reg to the desired rows already stored there. A missing file is not an
-// error and does not stop seats: a Jevons outage leaves Claudia running.
+// ReconcileFile reconciles reg to the desired rows already stored in this
+// broker's own control file, through the connection PublishFile opened. It
+// never opens a second connection: the owner plane is the file's one
+// writer. Desired rows reach the file from the consumer's link. With none
+// there, every running seat is left alone, so a Jevons outage leaves
+// Claudia running.
 func ReconcileFile(ctx context.Context, path string, reg *claudia.Registry) error {
-	if _, err := os.Stat(path); err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
+	ownedMu.Lock()
+	p, at := owned, ownedPath
+	ownedMu.Unlock()
+	if p == nil || at != path {
+		return fmt.Errorf("%w: reconcile of %s before this broker opened it (PublishFile)", ErrNotOwner, path)
 	}
-	db, err := sqlpipe.OpenDatabase(path)
-	if err != nil {
-		return err
-	}
-	defer db.Close()
-	if err := EnsureSchema(db); err != nil {
-		return err
-	}
-	return Reconcile(ctx, db, reg)
+	return reconcile(ctx, p.withDB, reg)
 }
 
 // Reconcile reads desired state, grants, and control intents from db and
@@ -62,27 +56,45 @@ func Reconcile(ctx context.Context, db *sqlpipe.Database, reg *claudia.Registry)
 	if db == nil || reg == nil {
 		return fmt.Errorf("control plane: nil reconcile")
 	}
+	return reconcile(ctx, func(fn func(*sqlpipe.Database) error) error { return fn(db) }, reg)
+}
+
+// dbRun runs one step against the file under its writer's lock. Reconcile
+// takes the lock per step, never across a registry call: a seat launch can
+// publish through the same owner plane, and holding the lock across it
+// would deadlock the seat pump on its own broker.
+type dbRun func(func(*sqlpipe.Database) error) error
+
+func reconcile(ctx context.Context, run dbRun, reg *claudia.Registry) error {
+	if reg == nil {
+		return fmt.Errorf("control plane: nil reconcile")
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	desired, err := DesiredSeats(db)
-	if err != nil {
+	var (
+		desired  []DesiredSeat
+		grants   []Grant
+		statuses map[string]SeatStatus
+		intents  []ControlIntent
+		outcomes map[string]ControlOutcome
+	)
+	if err := run(func(db *sqlpipe.Database) (err error) {
+		if desired, err = DesiredSeats(db); err != nil {
+			return err
+		}
+		if grants, err = Grants(db); err != nil {
+			return err
+		}
+		if statuses, err = SeatStatuses(db); err != nil {
+			return err
+		}
+		if intents, err = ControlIntents(db); err != nil {
+			return err
+		}
+		outcomes, err = ControlOutcomes(db)
 		return err
-	}
-	grants, err := Grants(db)
-	if err != nil {
-		return err
-	}
-	statuses, err := SeatStatuses(db)
-	if err != nil {
-		return err
-	}
-	intents, err := ControlIntents(db)
-	if err != nil {
-		return err
-	}
-	outcomes, err := ControlOutcomes(db)
-	if err != nil {
+	}); err != nil {
 		return err
 	}
 	granted := map[string]bool{}
@@ -93,7 +105,7 @@ func Reconcile(ctx context.Context, db *sqlpipe.Database, reg *claudia.Registry)
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		status, err := reconcileSeat(ctx, db, reg, seat, granted[seat.Seat], statuses[seat.Seat])
+		status, err := reconcileSeat(ctx, run, reg, seat, granted[seat.Seat], statuses[seat.Seat])
 		if err != nil {
 			return err
 		}
@@ -103,7 +115,7 @@ func Reconcile(ctx context.Context, db *sqlpipe.Database, reg *claudia.Registry)
 		if _, done := outcomes[intent.OperationID]; done {
 			continue
 		}
-		outcome, err := reconcileIntent(db, reg, intent, statuses[intent.Seat])
+		outcome, err := reconcileIntent(run, reg, intent, statuses[intent.Seat])
 		if err != nil {
 			return err
 		}
@@ -112,13 +124,13 @@ func Reconcile(ctx context.Context, db *sqlpipe.Database, reg *claudia.Registry)
 	return nil
 }
 
-func reconcileSeat(ctx context.Context, db *sqlpipe.Database, reg *claudia.Registry, seat DesiredSeat, granted bool, prev SeatStatus) (SeatStatus, error) {
+func reconcileSeat(ctx context.Context, run dbRun, reg *claudia.Registry, seat DesiredSeat, granted bool, prev SeatStatus) (SeatStatus, error) {
 	if !granted {
 		status := SeatStatus{
 			Seat: seat.Seat, SessionID: prev.SessionID, Generation: seat.Generation, Revision: seat.Revision,
 			RuntimeID: prev.RuntimeID, State: statusUngranted, StatusJSON: statusBody(seat),
 		}
-		if err := PublishSeatStatus(db, status); err != nil {
+		if err := run(func(db *sqlpipe.Database) error { return PublishSeatStatus(db, status) }); err != nil {
 			return SeatStatus{}, err
 		}
 		return status, nil
@@ -161,13 +173,13 @@ func reconcileSeat(ctx context.Context, db *sqlpipe.Database, reg *claudia.Regis
 		Seat: seat.Seat, SessionID: sessionID, Generation: seat.Generation, Revision: seat.Revision,
 		RuntimeID: runtimeID, State: state, StatusJSON: statusBody(seat),
 	}
-	if err := PublishSeatStatus(db, status); err != nil {
+	if err := run(func(db *sqlpipe.Database) error { return PublishSeatStatus(db, status) }); err != nil {
 		return SeatStatus{}, err
 	}
 	return status, nil
 }
 
-func reconcileIntent(db *sqlpipe.Database, reg *claudia.Registry, intent ControlIntent, status SeatStatus) (ControlOutcome, error) {
+func reconcileIntent(run dbRun, reg *claudia.Registry, intent ControlIntent, status SeatStatus) (ControlOutcome, error) {
 	outcome := ControlOutcome{OperationID: intent.OperationID, Seat: intent.Seat, Generation: intent.Generation}
 	if status.Generation != intent.Generation || status.State == "" {
 		outcome.Outcome = outcomeStale
@@ -183,7 +195,7 @@ func reconcileIntent(db *sqlpipe.Database, reg *claudia.Registry, intent Control
 			outcome.Reason = "stopped"
 			stopped := status
 			stopped.State = statusStopped
-			if err := PublishSeatStatus(db, stopped); err != nil {
+			if err := run(func(db *sqlpipe.Database) error { return PublishSeatStatus(db, stopped) }); err != nil {
 				return ControlOutcome{}, err
 			}
 		case "external":
@@ -194,7 +206,7 @@ func reconcileIntent(db *sqlpipe.Database, reg *claudia.Registry, intent Control
 			outcome.Reason = "unknown kind"
 		}
 	}
-	if err := PublishControlOutcome(db, outcome); err != nil {
+	if err := run(func(db *sqlpipe.Database) error { return PublishControlOutcome(db, outcome) }); err != nil {
 		return ControlOutcome{}, err
 	}
 	return outcome, nil
