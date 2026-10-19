@@ -114,7 +114,6 @@ func TestBrokerCloseCancelsStartedReceipts(t *testing.T) {
 	claudia.RecordObservedReceipt(started)
 	claudia.RecordObservedReceipt(accepted)
 	claudia.RecordObservedReceipt(completed)
-	recordUsagePair(t)
 	if got := readStoredReceipt(t, path, started.Seat, started.SessionID, started.RequestID); got.State != claudia.ReceiptStarted {
 		t.Fatalf("before close = %+v", got)
 	}
@@ -137,63 +136,6 @@ func TestBrokerCloseCancelsStartedReceipts(t *testing.T) {
 	if comp := readStoredReceipt(t, path, completed.Seat, completed.SessionID, completed.RequestID); comp.State != claudia.ReceiptCompleted || comp.Cause != "" {
 		t.Fatalf("completed receipt after close = %+v", comp)
 	}
-	assertUsageSettled(t, path, controlplane.ShutdownReceiptReason)
-}
-
-func recordUsagePair(t *testing.T) {
-	t.Helper()
-	started := claudia.UsageFact{
-		Seq: 1, CallID: "call-1", Seat: "seat", SessionID: "generation",
-		Kind: "model", State: "started", Provider: "openai", Model: "gpt-5.5",
-		Requests:      []claudia.UsageRequestRef{{RequestID: "logical-U", AttemptID: "attempt-U"}},
-		StartedAt:     "2026-10-16T01:00:00Z",
-		CounterSource: "adapter_normalized_positive",
-		Coverage:      "engine_invocation",
-	}
-	completed := started
-	completed.Seq = 2
-	completed.CallID = "call-2"
-	completed.State = "completed"
-	completed.FinishedAt = "2026-10-16T01:00:01Z"
-	claudia.RecordObservedUsage(&started)
-	claudia.RecordObservedUsage(&completed)
-}
-
-func assertUsageSettled(t *testing.T, path, reason string) {
-	t.Helper()
-	got := readStoredUsage(t, path, 1)
-	if got.State != "cancelled" || got.Cause != reason || got.FinishedAt == "" || got.CallID != "call-1" {
-		t.Fatalf("started usage after settle = %+v, want cause %q", got, reason)
-	}
-	done := readStoredUsage(t, path, 2)
-	if done.State != "completed" || done.Cause != "" || done.FinishedAt != "2026-10-16T01:00:01Z" {
-		t.Fatalf("completed usage after settle = %+v", done)
-	}
-}
-
-func readStoredUsage(t *testing.T, path string, seq int64) claudia.UsageFact {
-	t.Helper()
-	db, err := sqlpipe.OpenDatabase(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	qr, err := db.Query(`SELECT fact_json FROM claudia_usage_fact WHERE seq = ?`, seq)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(qr.Rows) != 1 || len(qr.Rows[0]) != 1 {
-		t.Fatalf("usage rows = %+v", qr.Rows)
-	}
-	body, ok := qr.Rows[0][0].(string)
-	if !ok {
-		t.Fatalf("fact_json type %T", qr.Rows[0][0])
-	}
-	var fact claudia.UsageFact
-	if err := json.Unmarshal([]byte(body), &fact); err != nil {
-		t.Fatal(err)
-	}
-	return fact
 }
 
 func readStoredReceipt(t *testing.T, path, seat, session, request string) claudia.RequestReceipt {

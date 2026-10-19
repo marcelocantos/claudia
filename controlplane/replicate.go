@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/marcelocantos/claudia"
+	"github.com/marcelocantos/claudia/omp"
 	"github.com/marcelocantos/sqlpipe/go/sqlpipe"
 )
 
@@ -157,9 +158,14 @@ func EnsureSchema(db *sqlpipe.Database) error {
 	return db.Exec(Schema)
 }
 
-// PublishUsageFacts validates each fact and upserts it by seat, session, and seq.
-// A later observation of the same seq replaces the stored JSON. An invalid fact
-// writes nothing from that fact onward; earlier facts in the slice stay written.
+// PublishUsageFacts validates each fact and inserts it by seat, session, and
+// seq. The control file mirrors the seat's conversation journal, which owns
+// the seq: a seq is written once. Republishing the same fact is a no-op; a
+// different fact at a stored seq, or a fact that breaks the per-call
+// transition contract against a stored fact of the same call, is refused
+// with omp.ValidateUsageTransition, the rule every consumer replays with.
+// An invalid fact writes nothing from that fact onward; earlier facts in the
+// slice stay written.
 func PublishUsageFacts(db *sqlpipe.Database, facts []claudia.UsageFact) error {
 	if db == nil {
 		return fmt.Errorf("control plane: nil database")
@@ -169,14 +175,45 @@ func PublishUsageFacts(db *sqlpipe.Database, facts []claudia.UsageFact) error {
 		if err := f.ValidateIdentity(f.Seat, f.SessionID); err != nil {
 			return err
 		}
+		qr, err := db.Query(`SELECT fact_json FROM `+UsageTable+` WHERE seat = ? AND session_id = ? AND (seq = ? OR call_id = ?)`,
+			f.Seat, f.SessionID, int64(f.Seq), f.CallID)
+		if err != nil {
+			return err
+		}
+		duplicate := false
+		for _, row := range qr.Rows {
+			if len(row) != 1 {
+				return fmt.Errorf("control plane: usage fact row shape")
+			}
+			body, ok := row[0].(string)
+			if !ok {
+				return fmt.Errorf("control plane: fact_json type %T", row[0])
+			}
+			var stored claudia.UsageFact
+			if err := json.Unmarshal([]byte(body), &stored); err != nil {
+				return fmt.Errorf("control plane: stored usage fact json: %w", err)
+			}
+			// The transition contract takes the older fact first.
+			previous, incoming := &stored, f
+			if f.Seq < stored.Seq {
+				previous, incoming = f, &stored
+			}
+			if _, err := omp.ValidateUsageTransition(previous, incoming); err != nil {
+				return fmt.Errorf("control plane: usage fact seq %d call %s: %w", f.Seq, f.CallID, err)
+			}
+			if stored.Seq == f.Seq {
+				duplicate = true
+			}
+		}
+		if duplicate {
+			continue
+		}
 		body, err := json.Marshal(f)
 		if err != nil {
 			return err
 		}
 		if err := ExecOwned(db, WriterClaudia, UsageTable, `INSERT INTO claudia_usage_fact (seat, session_id, seq, call_id, kind, fact_json)
-			VALUES (?, ?, ?, ?, ?, ?)
-			ON CONFLICT(seat, session_id, seq) DO UPDATE SET
-			  call_id = excluded.call_id, kind = excluded.kind, fact_json = excluded.fact_json`,
+			VALUES (?, ?, ?, ?, ?, ?)`,
 			f.Seat, f.SessionID, int64(f.Seq), f.CallID, f.Kind, string(body)); err != nil {
 			return err
 		}
@@ -203,15 +240,18 @@ func PublishReceipt(db *sqlpipe.Database, receipt *claudia.RequestReceipt) error
 		receipt.Seat, receipt.SessionID, receipt.RequestID, string(receipt.State), string(body))
 }
 
-// SettleStartedObligations cancels receipts and usage facts left started.
-// Accepted receipts stay accepted. Completed, failed, already-cancelled,
-// and unknown rows stay. The publisher closer and the serving-sidecar
-// exit hook are the callers.
+// SettleStartedObligations cancels receipts left started. Accepted
+// receipts stay accepted. Completed, failed, already-cancelled, and unknown
+// receipts stay. The publisher closer and the serving-sidecar exit hook are
+// the callers.
+//
+// Usage facts are not settled here, or anywhere outside the seat's journal.
+// A usage fact's seq belongs to that journal and is written once; an exit is
+// not an observation of any provider call. A call whose terminal fact was
+// never appended stays started, which the usage contract defines as
+// incomplete with unknown consumption (docs/usage-accounting.md).
 func SettleStartedObligations(db *sqlpipe.Database, reason string) error {
-	if err := CancelStartedReceipts(db, reason); err != nil {
-		return err
-	}
-	return CancelStartedUsageFacts(db, reason)
+	return CancelStartedReceipts(db, reason)
 }
 
 // CancelStartedReceipts marks every started receipt cancelled. Accepted,
@@ -254,56 +294,6 @@ func CancelStartedReceipts(db *sqlpipe.Database, reason string) error {
 			receipt.UpdatedAt = now.Format(time.RFC3339Nano)
 		}
 		if err := PublishReceipt(db, &receipt); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// CancelStartedUsageFacts marks every started usage fact cancelled.
-// A started fact has no counters and no finish time; once the sidecar
-// that owned it is gone, that fact will not gain either. Completed,
-// failed, cancelled, and unknown facts stay as they are. There is no
-// accepted usage state.
-func CancelStartedUsageFacts(db *sqlpipe.Database, reason string) error {
-	if db == nil {
-		return fmt.Errorf("control plane: nil database")
-	}
-	if reason == "" {
-		reason = ShutdownReceiptReason
-	}
-	qr, err := db.Query(`SELECT fact_json FROM ` + UsageTable)
-	if err != nil {
-		return err
-	}
-	now := time.Now().UTC()
-	for _, row := range qr.Rows {
-		if len(row) != 1 {
-			return fmt.Errorf("control plane: usage fact row shape")
-		}
-		body, ok := row[0].(string)
-		if !ok {
-			return fmt.Errorf("control plane: fact_json type %T", row[0])
-		}
-		var fact claudia.UsageFact
-		if err := json.Unmarshal([]byte(body), &fact); err != nil {
-			return fmt.Errorf("control plane: usage fact json: %w", err)
-		}
-		if fact.State != "started" {
-			continue
-		}
-		fact.State = "cancelled"
-		if fact.Cause == "" {
-			fact.Cause = reason
-		}
-		start, perr := time.Parse(time.RFC3339Nano, fact.StartedAt)
-		switch {
-		case perr == nil && !now.After(start):
-			fact.FinishedAt = start.Add(time.Nanosecond).Format(time.RFC3339Nano)
-		default:
-			fact.FinishedAt = now.Format(time.RFC3339Nano)
-		}
-		if err := PublishUsageFacts(db, []claudia.UsageFact{fact}); err != nil {
 			return err
 		}
 	}
