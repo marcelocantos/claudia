@@ -326,7 +326,9 @@ test("accepted input survives cancelled pre-dispatch compaction without requirin
         return { summary: "earlier work", firstKeptEntryId: prep.firstKeptEntryId, tokensBefore: prep.tokensBefore };
       }) as never,
     } });
-  await expect(agent.prompt("new obligation", meta("A"))).rejects.toThrow("cancelled preparation");
+  // The abort already ended the turn as itself; what its preparation threw
+  // while unwinding is not a second end, so the prompt resolves.
+  await agent.prompt("new obligation", meta("A"));
   expect(agent.receipt("A").state).toBe("accepted");
   expect(model.calls.length).toBe(0);
   await agent.prompt("new obligation", meta("A"));
@@ -388,7 +390,8 @@ test("abort and prompt drains wait for outer preparation and receipt cleanup", a
     await Bun.sleep(10);
     expect(model.calls.length).toBe(0);
     releasePreparation.resolve();
-    expect((await rejected)?.message).toBe("cancelled preparation");
+    // Aborted: the unwind error is logged, not a second end of turn-A.
+    expect(await rejected).toBeUndefined();
     await modelStarted.promise;
     const bTurn = agent.receipt("B").turn_ids.at(-1)!;
     expect(bTurn).not.toBe("turn-A");

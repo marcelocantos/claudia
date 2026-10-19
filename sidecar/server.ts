@@ -13,7 +13,7 @@ import { switchOnLoad } from "./loadswitch.ts";
 import { createServer } from "node:net";
 import { unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { createSeatAgent, type HostTool, type SeatAgent } from "./seat.ts";
+import { createSeatAgent, turnOf, type HostTool, type SeatAgent } from "./seat.ts";
 import { defaultWriter, spoolReceipt } from "./spool.ts";
 import { claimSocket } from "./singleton.ts";
 import { PlanTokens } from "./plantokens.ts";
@@ -210,9 +210,10 @@ const server = createServer((socket) => {
         return answer;
       };
       void handle(msg, seat, write, callTool, calls, disconnected.signal).catch((err: unknown) => {
-        write({ seat, type: "error", request_id: msg.request_id, rpc_id: msg.rpc_id,
+        write(errorEvent(msg, seat, err instanceof Error ? err.message : String(err), {
+          turn_id: turnOf(err),
           reason: err instanceof Error && "reason" in err && typeof err.reason === "string" ? err.reason : undefined,
-          text: err instanceof Error ? err.message : String(err) });
+        }));
       });
     }
   });
@@ -276,18 +277,17 @@ async function handle(
     // A seat that is not already running is not created (🎯T869). ResumeAll
     // treats that as a miss and launches, and only the launch is nudged.
     if (!msg.token) {
-      write({ seat, type: "error", request_id: msg.request_id, rpc_id: msg.rpc_id, text: "adopt without an access token" });
+      write(errorEvent(msg, seat, "adopt without an access token"));
       return;
     }
     const existing = seats.get(seat);
     if (!existing) {
-      write({ seat, type: "error", request_id: msg.request_id, rpc_id: msg.rpc_id, text: "seat is not loaded" });
+      write(errorEvent(msg, seat, "seat is not loaded"));
       return;
     }
     if (msg.session_id && existing.session_id !== msg.session_id) throw Object.assign(new Error("adopt seat identity mismatch"), { reason: "seat_identity_mismatch" });
     if (existing.provider !== msg.provider) {
-      write({ seat, type: "error", request_id: msg.request_id, rpc_id: msg.rpc_id, reason: "seat_identity_mismatch",
-        text: `loaded seat is ${existing.provider}; registry asked for ${msg.provider ?? ""}` });
+      write(errorEvent(msg, seat, `loaded seat is ${existing.provider}; registry asked for ${msg.provider ?? ""}`, { reason: "seat_identity_mismatch" }));
       return;
     }
     if (!(await switchIfAsked(existing, msg, seat, write))) return;
@@ -297,7 +297,7 @@ async function handle(
   }
   if (msg.op === "load") {
     if (!msg.token) {
-      write({ seat, type: "error", request_id: msg.request_id, rpc_id: msg.rpc_id, text: "load without an access token" });
+      write(errorEvent(msg, seat, "load without an access token"));
       return;
     }
     const existing = seats.get(seat);
@@ -358,7 +358,7 @@ async function handle(
   }
   const loaded = seats.get(seat);
   if (!loaded) {
-    write({ seat, type: "error", request_id: msg.request_id, rpc_id: msg.rpc_id, text: "seat is not loaded" });
+    write(errorEvent(msg, seat, "seat is not loaded"));
     return;
   }
   if (msg.session_id && loaded.session_id !== msg.session_id) throw new Error("request seat identity mismatch");
@@ -367,8 +367,13 @@ async function handle(
     return;
   }
   if (msg.op === "abort") {
-    loaded.agent.abort();
-    write({ seat, type: "turn_end", text: "aborted", snapshot: loaded.agent.snapshot() });
+    // The open turn ends, and the host hears it end as that turn. With no
+    // turn open nothing ended: the abort is acknowledged, and an
+    // acknowledgement is not a turn's answer (the host refuses a turn_end
+    // that names no turn).
+    const ended = loaded.agent.abort();
+    if (ended) write({ seat, type: "turn_end", turn_id: ended.turn_id, request_id: ended.request_id, text: "aborted", snapshot: loaded.agent.snapshot() });
+    else write({ seat, type: "aborted", snapshot: loaded.agent.snapshot() });
     return;
   }
   if (msg.op === "drop") {
@@ -429,13 +434,30 @@ async function switchIfAsked(
 ): Promise<boolean> {
   const out = await switchOnLoad(existing, msg, (provider, model) => existing.agent.switchModel(provider, model));
   if (!out.ok) {
-    write({ seat, type: "error", reason: "switch_refused", request_id: msg.request_id, rpc_id: msg.rpc_id, text: out.error });
+    write(errorEvent(msg, seat, out.error, { reason: "switch_refused" }));
     return false;
   }
   if (out.refused) {
     console.error(`sidecar: ${seat} re-attached on ${existing.provider}/${existing.model}; not switched to ${msg.provider}/${msg.model}: ${out.refused}`);
   }
   return true;
+}
+
+// errorEvent is a failure in the one shape the host's pump routes
+// (omp_agent.go). A turn that began fails as that turn. A request the host
+// is waiting on gets its rpc reply. A prompt that failed before its turn
+// began fails as the turn the host opened for it. A load or adopt is
+// answered as the reply to that load (the host reads it before its pump
+// starts, or a switch by its request id). Anything else belongs to no turn
+// and no waiter: a seat_error, which the host logs and never reads as a
+// turn's answer.
+function errorEvent(msg: Line, seat: string, text: string, opts: { turn_id?: string; reason?: string } = {}): Record<string, unknown> {
+  const base = { seat, request_id: msg.request_id, reason: opts.reason, text };
+  if (opts.turn_id) return { ...base, type: "error", turn_id: opts.turn_id };
+  if (msg.rpc_id) return { ...base, type: "error", rpc_id: msg.rpc_id };
+  if (msg.op === "prompt" && msg.turn_id) return { ...base, type: "error", turn_id: msg.turn_id };
+  if (msg.op === "load" || msg.op === "adopt") return { ...base, type: "error" };
+  return { ...base, type: "seat_error" };
 }
 
 function promptMeta(msg: Line) {

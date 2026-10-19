@@ -220,9 +220,11 @@ func TestBrokerRestartRebindsSeat(t *testing.T) {
 	if err := second.Send(Message{Op: OpAbort, Seat: "jevons"}); err != nil {
 		t.Fatal(err)
 	}
+	// No turn is open, so the abort's answer is its acknowledgement; it must
+	// reach the connection that just loaded the seat.
 	got := recvUntil(t, second)
-	if got.Type != "turn_end" {
-		t.Fatalf("abort after broker restart = %+v, want turn_end on the new connection", got)
+	if got.Type != "aborted" {
+		t.Fatalf("abort after broker restart = %+v, want aborted on the new connection", got)
 	}
 }
 

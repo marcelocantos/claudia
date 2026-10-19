@@ -719,6 +719,17 @@ func (c *ompControl) pump(a *Agent) {
 				ToolTitle:    ev.Name,
 				Text:         ev.Text,
 			})
+		case "aborted":
+			// An abort found no turn open: nothing ended, so nothing is
+			// answered. The turn an abort does end arrives as its turn_end,
+			// under its own turn_id.
+		case "seat_error":
+			// A failure that belongs to no turn and no waiter (an abort of a
+			// seat the sidecar no longer holds, a queue drain that could not
+			// begin a turn). It is said, but it is not any turn's answer:
+			// publishing it as one ended whichever wait happened to be open.
+			slog.Error("omp sidecar seat error", "seat", c.seat, "reason", ev.Reason, "error", ev.Text)
+			a.publishEvent(Event{Type: "system", Text: "omp sidecar: " + ev.Text, SessionID: c.sessionID})
 		case "turn_end", "error":
 			c.inflight.Store(false)
 			// Only this turn's own error says whether the token was refused

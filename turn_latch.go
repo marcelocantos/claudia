@@ -55,6 +55,9 @@ type turnLatch struct {
 	text     *strings.Builder
 	terminal bool
 	err      error
+	// requests are the identified requests whose started receipt named
+	// this turn: the sends this turn answers.
+	requests map[string]bool
 }
 
 // turnSoFar is a latch handed to one waiter. Empty when no submit has
@@ -73,6 +76,23 @@ func (a *Agent) beginTurn() {
 	a.mu.Unlock()
 }
 
+// retireEndedTurnFor disarms a latched turn that has already ended and
+// that requestID never started in. An identified send arms the latch on its
+// own started receipt, so such a turn is nobody's: left armed, an aborted
+// turn whose waiter had gone was handed to the next send's wait, which
+// returned the old turn's "aborted" ahead of its own reply (jevons
+// J3-cancel-and-send, 2026-10-19). The send calls it before the write and
+// again once admission returns, because the old turn's end can arrive while
+// the send waits for admission. A turn still running is kept: a request
+// absorbed into it is answered by it.
+func (a *Agent) retireEndedTurnFor(requestID string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.turn.armed && (a.turn.terminal || a.turn.err != nil) && !a.turn.requests[requestID] {
+		a.turn = turnLatch{}
+	}
+}
+
 // recordTurnEventLocked folds ev into the armed turn. It mirrors
 // WaitForResponse's subscriber exactly; the two must agree, or a waiter
 // that arrives late gets a different answer from one that arrived early.
@@ -82,6 +102,12 @@ func (a *Agent) recordTurnEventLocked(ev Event) {
 		if turnID != a.receiptTurnID {
 			a.receiptTurnID = turnID
 			a.turn = turnLatch{armed: true, text: &strings.Builder{}}
+		}
+		if a.turn.armed && ev.Receipt.RequestID != "" {
+			if a.turn.requests == nil {
+				a.turn.requests = make(map[string]bool)
+			}
+			a.turn.requests[ev.Receipt.RequestID] = true
 		}
 	}
 	if !a.turn.armed {
