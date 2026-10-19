@@ -400,6 +400,7 @@ export function createSeatAgent(opts: {
   // the refused request. Keep the context the store restored.
   const restoredContext = [...agent.state.messages];
   let adapter: Awaited<ReturnType<typeof createOmpSession>> | undefined;
+  let compactionReason = "threshold";
   const sessionReady = createOmpSession({
     agent,
     sessionManager,
@@ -447,7 +448,8 @@ export function createSeatAgent(opts: {
     };
     session.subscribe(event => {
       if (event.type !== "auto_compaction_end" || event.aborted || !event.result) return;
-      sink.emit({ type: "compacted", text: `${event.action}: context ${event.result.tokensBefore} tokens before` });
+      const method = event.action === "remote" ? "remote" : event.action === "context-full" ? "soft" : event.action;
+      sink.emit({ type: "compacted", text: `${compactionReason}: context ${event.result.tokensBefore} tokens before; method ${method}` });
       // Mirror the SDK's compaction into the durable store, so a restart
       // rebuilds the compacted context and does not resend what was folded.
       history.sync(agent.state.messages.filter(m => m.role !== "compactionSummary"));
@@ -458,7 +460,10 @@ export function createSeatAgent(opts: {
       history.persist();
     });
     session.subscribe(event => {
-      if (event.type === "auto_compaction_start") sink.emit({ type: "compacting", text: `${event.reason}: ${event.action}` });
+      if (event.type === "auto_compaction_start") {
+        compactionReason = event.reason;
+        sink.emit({ type: "compacting", text: `${event.reason}: method ${event.action === "context-full" ? "soft" : event.action}` });
+      }
     });
   });
   let sessionError: unknown;
