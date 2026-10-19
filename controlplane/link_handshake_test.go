@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/marcelocantos/claudia"
 	"github.com/marcelocantos/sqlpipe/go/sqlpipe"
@@ -166,20 +165,28 @@ func (p *frameProxy) framesOn(link int) int {
 	return n
 }
 
-// deliveryBudget bounds how long a live link may take to deliver one write.
-// Delivery is a frame or two on a local socket; a write still missing after
-// this is not coming without a reconnect.
-const deliveryBudget = 10 * time.Second
-
-func soon(t *testing.T, what string, cond func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(deliveryBudget)
-	for !cond() {
-		if time.Now().After(deadline) {
-			t.Fatalf("%s: not within %s", what, deliveryBudget)
+// handshakeOver reports whether both directions of a link have finished
+// their handshake: each side has sent its diff and the other has acked it.
+func (p *frameProxy) handshakeOver(link int) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	diffTo := map[bool]bool{}  // a DiffReady went toward the consumer (true) or broker
+	ackedBy := map[bool]bool{} // that diff's receiver has acked it
+	for _, r := range p.log {
+		if r.link != link {
+			continue
 		}
-		time.Sleep(5 * time.Millisecond)
+		switch r.msg.Payload.(type) {
+		case sqlpipe.DiffReadyMsg:
+			diffTo[r.toConsumer] = true
+		case sqlpipe.AckMsg:
+			// An ack travels back the other way from the diff it answers.
+			if diffTo[!r.toConsumer] {
+				ackedBy[!r.toConsumer] = true
+			}
+		}
 	}
+	return ackedBy[true] && ackedBy[false]
 }
 
 func usageFact(seat, callID string) *claudia.UsageFact {
@@ -294,11 +301,11 @@ func handshakeWrites(t *testing.T, k int, redial bool) int {
 	underTest := 0
 	if redial {
 		first := linkOnce(t, r, proxy.path)
-		soon(t, "call-before on the first link", func() bool {
+		eventually(t, "call-before on the first link", func() bool {
 			first.requireUp(t, "call-before")
 			return consumerHasCall(t, r, "call-before")
 		})
-		soon(t, "seat-before on the first link", func() bool {
+		eventually(t, "seat-before on the first link", func() bool {
 			first.requireUp(t, "seat-before")
 			return brokerHasSeat(t, "seat-before")
 		})
@@ -329,7 +336,7 @@ func handshakeWrites(t *testing.T, k int, redial bool) int {
 		want = append(want, "call-down", "seat-down")
 	}
 	for _, row := range want {
-		soon(t, row+" on the link under test", func() bool {
+		eventually(t, row+" on the link under test", func() bool {
 			link.requireUp(t, row)
 			if row[:4] == "call" {
 				return consumerHasCall(t, r, row)
@@ -337,38 +344,32 @@ func handshakeWrites(t *testing.T, k int, redial bool) int {
 			return brokerHasSeat(t, row)
 		})
 	}
-	// The handshake is over once no frame has moved for a while.
-	frames := -1
-	for frames != proxy.framesOn(underTest) {
-		frames = proxy.framesOn(underTest)
-		time.Sleep(100 * time.Millisecond)
-	}
 	if k < 0 {
-		return frames
+		eventually(t, "the handshake to finish", func() bool { return proxy.handshakeOver(underTest) })
+		return proxy.framesOn(underTest)
 	}
-	proxy.mu.Lock()
-	didFire := fired
-	proxy.mu.Unlock()
-	if !didFire {
-		t.Fatalf("the handshake ended after %d frames, before frame %d", frames, k)
-	}
+	eventually(t, fmt.Sprintf("frame %d of the handshake", k), func() bool {
+		proxy.mu.Lock()
+		defer proxy.mu.Unlock()
+		return fired
+	})
 
-	soon(t, callID+" at the consumer", func() bool {
+	eventually(t, callID+" at the consumer", func() bool {
 		link.requireUp(t, callID)
 		return consumerHasCall(t, r, callID)
 	})
-	soon(t, seat+" at the broker", func() bool {
+	eventually(t, seat+" at the broker", func() bool {
 		link.requireUp(t, seat)
 		return brokerHasSeat(t, seat)
 	})
 	// The link is live: later writes on both sides flow on it.
 	claudia.RecordObservedUsage(usageFact("seat-2", "call-after"))
 	consumerWrite("seat-after")
-	soon(t, "call-after on the live link", func() bool {
+	eventually(t, "call-after on the live link", func() bool {
 		link.requireUp(t, "call-after")
 		return consumerHasCall(t, r, "call-after")
 	})
-	soon(t, "seat-after on the live link", func() bool {
+	eventually(t, "seat-after on the live link", func() bool {
 		link.requireUp(t, "seat-after")
 		return brokerHasSeat(t, "seat-after")
 	})
@@ -386,7 +387,7 @@ func handshakeWrites(t *testing.T, k int, redial bool) int {
 			t.Errorf("%s crossed the wire %d times (%v), want exactly once", c.needle, n, where)
 		}
 	}
-	return frames
+	return proxy.framesOn(underTest)
 }
 
 // A write committed on either side while a fresh link is mid-handshake is
