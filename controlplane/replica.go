@@ -75,6 +75,9 @@ func (r *Replica) Link(ctx context.Context, socket string) error {
 	var d net.Dialer
 	conn, err := d.DialContext(ctx, "unix", socket)
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil // stopped before the link was up
+		}
 		return fmt.Errorf("control plane: dial broker: %w", err)
 	}
 	return runLink(conn, ctx.Done(), linkSide{
