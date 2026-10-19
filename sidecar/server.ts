@@ -141,6 +141,11 @@ process.on("uncaughtException", (err: NodeJS.ErrnoException) => {
 
 const server = createServer((socket) => {
   let buf = "";
+  // Seats this connection has already sent a load or adopt for. The first
+  // is the host's launch or re-attach, which it reads the reply to before
+  // its pump starts; any later one is a reload (a token refresh), which
+  // nothing waits on.
+  const loadedOnConnection = new Set<string>();
   const calls = new HostCalls();
   const disconnected = new AbortController();
   socket.on("error", () => {});
@@ -204,6 +209,12 @@ const server = createServer((socket) => {
       let msg: Line;
       try { msg = JSON.parse(raw); } catch { continue; }
       const seat = msg.seat ?? "";
+      if (msg.op === "load" || msg.op === "adopt") {
+        if (msg.request_id || !loadedOnConnection.has(seat)) awaitedLoads.add(msg);
+        loadedOnConnection.add(seat);
+      } else if (msg.op === "drop") {
+        loadedOnConnection.delete(seat);
+      }
       const callTool = (callId: string, name: string, args: string) => {
         const answer = calls.open(callId, seat);
         write({ type: "tool_call", call_id: callId, name, text: args });
@@ -443,20 +454,27 @@ async function switchIfAsked(
   return true;
 }
 
+// awaitedLoads are the load and adopt messages a host is waiting on the
+// reply to: a switch (it names a request id) and the first load or adopt on a
+// connection. A reload is neither.
+const awaitedLoads = new WeakSet<Line>();
+
 // errorEvent is a failure in the one shape the host's pump routes
 // (omp_agent.go). A turn that began fails as that turn. A request the host
 // is waiting on gets its rpc reply. A prompt that failed before its turn
-// began fails as the turn the host opened for it. A load or adopt is
-// answered as the reply to that load (the host reads it before its pump
-// starts, or a switch by its request id). Anything else belongs to no turn
-// and no waiter: a seat_error, which the host logs and never reads as a
-// turn's answer.
+// began fails as the turn the host opened for it. A load or adopt the host
+// is waiting on (awaitedLoads) is answered as the reply to that load: the
+// host reads it before its pump starts, or a switch by its request id.
+// Anything else belongs to no turn and no waiter: a seat_error, which the
+// host logs and never reads as a turn's answer. A failed reload is such an
+// error; sent as an `error` it reached the pump with no turn and ended
+// whichever wait was open.
 function errorEvent(msg: Line, seat: string, text: string, opts: { turn_id?: string; reason?: string } = {}): Record<string, unknown> {
   const base = { seat, request_id: msg.request_id, reason: opts.reason, text };
   if (opts.turn_id) return { ...base, type: "error", turn_id: opts.turn_id };
   if (msg.rpc_id) return { ...base, type: "error", rpc_id: msg.rpc_id };
   if (msg.op === "prompt" && msg.turn_id) return { ...base, type: "error", turn_id: msg.turn_id };
-  if (msg.op === "load" || msg.op === "adopt") return { ...base, type: "error" };
+  if ((msg.op === "load" || msg.op === "adopt") && awaitedLoads.has(msg)) return { ...base, type: "error" };
   return { ...base, type: "seat_error" };
 }
 

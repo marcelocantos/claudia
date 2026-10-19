@@ -178,3 +178,58 @@ test("an unidentified prompt aborted mid-turn ends under the turn_id the host ga
   expectEveryAnswerNamesItsTurn(host);
   host.close();
 });
+
+// A reload is a load of a seat the connection already loaded: the host's
+// token refresh sends one with no request id and reads no reply, because its
+// pump is already running. When it fails, the failure belongs to no turn and
+// to no waiter. It used to go out as an `error` with no turn_id, which the
+// pump refused as an identity-less answer and published as a failed turn,
+// ending whichever wait was open (the same defect as the abort's turn_end).
+
+test("a failed reload during a turn is a seat_error, and the turn is not ended by it", async () => {
+  const { dir, sock } = await startSidecar();
+  const host = await dial(sock);
+  await loadSeat(host, dir, "reloaded", "s1");
+  host.send(prompt("reloaded", "s1", "r1", "T1", "HOLD while the token reloads"));
+  await host.next("r1 started", e => e.type === "receipt" && e.request_id === "r1" && e.receipt?.state === "started");
+
+  // The reload carries no token, so the sidecar refuses it.
+  host.send({ op: "load", seat: "reloaded", session_id: "s1", provider: "anthropic", model: "claude-sonnet-5" });
+  const refused = await host.next("seat_error", e => e.type === "seat_error", 3000);
+  expect(refused.text).toBe("load without an access token");
+  expect(refused.turn_id).toBeUndefined();
+
+  // The turn it interrupted is still running, and ends only as itself.
+  host.send({ op: "abort", seat: "reloaded" });
+  const end = await host.next("T1 turn_end", e => e.type === "turn_end" && !e.rpc_id);
+  expect(end.turn_id).toBe("T1");
+  expect(host.events.filter(e => e.type === "error")).toEqual([]);
+  expectEveryAnswerNamesItsTurn(host);
+  host.close();
+});
+
+test("a reload naming another session is a seat_error with its reason, not an anonymous error", async () => {
+  const { dir, sock } = await startSidecar();
+  const host = await dial(sock);
+  await loadSeat(host, dir, "reloaded", "s1");
+  host.send({ op: "load", seat: "reloaded", session_id: "other", provider: "anthropic", model: "claude-sonnet-5", token: "fixture", cwd: dir });
+  const refused = await host.next("seat_error", e => e.type === "seat_error", 3000);
+  expect(refused.reason).toBe("seat_identity_mismatch");
+  // The seat is untouched: it takes a turn under its own session.
+  host.send(prompt("reloaded", "s1", "r1", "T1", "after a refused reload"));
+  const r1 = await host.next("r1 settled", settled("r1"));
+  expect(r1.receipt.state).toBe("completed");
+  expect(host.events.filter(e => e.type === "error")).toEqual([]);
+  expectEveryAnswerNamesItsTurn(host);
+  host.close();
+});
+
+test("the first load on a connection is still answered as the load's own reply", async () => {
+  const { dir, sock } = await startSidecar();
+  const host = await dial(sock);
+  host.send({ op: "load", seat: "fresh", session_id: "s1", provider: "anthropic", model: "claude-sonnet-5", cwd: dir });
+  const reply = await host.next("load reply", e => e.type === "ready" || e.type === "error" || e.type === "seat_error");
+  expect(reply.type).toBe("error");
+  expect(reply.text).toBe("load without an access token");
+  host.close();
+});

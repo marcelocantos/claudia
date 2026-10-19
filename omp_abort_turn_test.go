@@ -34,20 +34,24 @@ func TestOMPAbortThenSendThroughRealSidecar(t *testing.T) {
 	}
 }
 
-func ompAbortThenSend(t *testing.T, waitFirst bool) {
+// startAbortSidecar runs the unchanged sidecar server on the mock API (the
+// abort-provider fixture) on a private socket, points this package at it, and
+// returns the context and work directory a seat on it uses. The sidecar ends
+// with the test.
+func startAbortSidecar(t *testing.T) (context.Context, string) {
+	t.Helper()
 	bun, err := exec.LookPath("bun")
 	if err != nil {
 		t.Skip("fixture integration requires bun; no protocol evidence without it")
 	}
 	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
 	dir := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", filepath.Join(dir, "state"))
 	socketDir, err := os.MkdirTemp(os.TempDir(), "j3-")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.RemoveAll(socketDir)
+	t.Cleanup(func() { os.RemoveAll(socketDir) })
 	sock := filepath.Join(socketDir, "s.sock")
 	script, _ := filepath.Abs("sidecar/server.ts")
 	if err := omp.EnsureDeps(ctx, script); err != nil {
@@ -65,14 +69,14 @@ func ompAbortThenSend(t *testing.T, waitFirst bool) {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	defer func() {
+	t.Cleanup(func() {
 		_ = life.Close()
 		cancel()
 		_ = cmd.Wait()
 		if t.Failed() {
 			t.Log(childLog.String())
 		}
-	}()
+	})
 	waitFor(t, "disposable sidecar listening", func() bool { return omp.Listening(ctx, sock) })
 	if api, err := os.ReadFile(filepath.Join(socketDir, "mock-api-ready")); err != nil || string(api) != "mock\n" {
 		t.Fatalf("fixture did not select the mock API: %q %v", api, err)
@@ -81,6 +85,11 @@ func ompAbortThenSend(t *testing.T, waitFirst bool) {
 	var refreshes atomic.Int32
 	t141Plan(t, "fixture", &refreshes, "fixture")
 
+	return ctx, dir
+}
+
+func ompAbortThenSend(t *testing.T, waitFirst bool) {
+	ctx, dir := startAbortSidecar(t)
 	a, err := StartDirect(Config{Name: "j3-owner", Provider: Provider(omp.Anthropic), Model: "claude-sonnet-5", WorkDir: dir, TermLogPath: "-"})
 	if err != nil {
 		t.Fatal(err)
@@ -184,6 +193,101 @@ func ompAbortThenSend(t *testing.T, waitFirst bool) {
 		}
 		if e.Type == "assistant" && e.TurnID == "" {
 			t.Errorf("answer without turn identity: %+v", e)
+		}
+	}
+}
+
+// TestOMPFailedReloadDuringATurnDoesNotEndTheTurn is the reload half of the
+// same defect, through the real sidecar, the pump and publishOMPAnswer. A
+// token refresh reloads a seat with a load nothing waits on. When the
+// sidecar refuses it, the refusal belongs to no turn: it must reach the host
+// as a logged seat_error, not as an identity-less `error` that the pump
+// publishes as a failed turn and that ends the wait of the turn then running.
+func TestOMPFailedReloadDuringATurnDoesNotEndTheTurn(t *testing.T) {
+	ctx, dir := startAbortSidecar(t)
+	a, err := StartDirect(Config{Name: "reload-owner", Provider: Provider(omp.Anthropic), Model: "claude-sonnet-5", WorkDir: dir, TermLogPath: "-"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Stop()
+	if err := a.WaitReady(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ctrl, ok := a.tmuxCtrl.(*ompControl)
+	if !ok {
+		t.Fatalf("seat control is %T, want *ompControl", a.tmuxCtrl)
+	}
+
+	var mu sync.Mutex
+	var events []Event
+	started := make(chan struct{}, 1)
+	refused := make(chan struct{}, 1)
+	sub := a.SubscribeEvents(func(e Event) {
+		mu.Lock()
+		events = append(events, e)
+		mu.Unlock()
+		if e.Type == "receipt" && e.Receipt != nil && e.Receipt.State == ReceiptStarted {
+			select {
+			case started <- struct{}{}:
+			default:
+			}
+		}
+		if e.Type == "system" && strings.Contains(e.Text, "load without an access token") {
+			select {
+			case refused <- struct{}{}:
+			default:
+			}
+		}
+	})
+	defer a.UnsubscribeEvents(sub)
+
+	if err := a.SendWithRequestID("HOLD while the token reloads", "r1"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-ctx.Done():
+		t.Fatal("r1 never started")
+	}
+	type waited struct {
+		reply string
+		err   error
+	}
+	done := make(chan waited, 1)
+	go func() { r, err := a.WaitForResponse(ctx); done <- waited{r, err} }()
+
+	// The reload carries no token, so the sidecar refuses it.
+	ctrl.reload("")
+	select {
+	case <-refused:
+	case w := <-done:
+		t.Fatalf("the wait for the running turn ended on the reload's refusal: reply %q, err %v", w.reply, w.err)
+	case <-ctx.Done():
+		t.Fatal("the reload's refusal never reached the host as a seat error")
+	}
+	select {
+	case w := <-done:
+		t.Fatalf("the wait for the running turn ended on the reload's refusal: reply %q, err %v", w.reply, w.err)
+	default:
+	}
+
+	// The turn is still running and ends only as itself.
+	if err := a.Interrupt(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case w := <-done:
+		if w.err != nil {
+			t.Fatalf("the interrupted turn's wait failed: %v", w.err)
+		}
+	case <-ctx.Done():
+		t.Fatal("the interrupted turn's wait never returned")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for _, e := range events {
+		if e.IsError || strings.Contains(e.Text, ErrOMPMissingTurnID.Error()) {
+			t.Errorf("error event published: %+v", e)
 		}
 	}
 }
