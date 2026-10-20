@@ -95,9 +95,17 @@ Always fetched. The surface is the undocumented dashboard RPC the
 Cursor billing UI reads; it is private and unversioned. A break is
 unavailable-with-reason — fix the parser, do not gate the read.
 
-- Auth: `CURSOR_API_KEY` or `PlanUsageArgs.CursorAccessToken`, then
-  the Cursor IDE `state.vscdb` key `cursorAuth/accessToken` via
-  `sqlite3` when present.
+- Auth: `PlanUsageArgs.CursorAccessToken`, then `CURSOR_API_KEY`, then
+  the Cursor IDE session token: `ItemTable` key `cursorAuth/accessToken`
+  in `~/Library/Application Support/Cursor/User/globalStorage/state.vscdb`
+  (`~/.config/Cursor/…` on Linux; `PlanUsageArgs.CursorAuthPath`
+  overrides). The read uses the SQLite linked into claudia (sqlpipe), not
+  `sqlite3(1)`, and never opens the IDE's file in place: that SQLite opens
+  read-write without URI support, and a read-write connection can
+  checkpoint or delete the IDE's `-wal`. The file and its `-wal` are
+  copied into a private temp directory, read, and removed. A missing file
+  or key is unavailable with a reason naming the path. Plan usage is not a
+  seat, so the legacy CLI-transport refusals (`af439b7`) do not apply.
 - Only a **billing-cycle** included pool is published (mapped onto
   the longer `weekly` window with `LimitWindow` from
   `billingCycleStart`/`billingCycleEnd`). There is no rolling

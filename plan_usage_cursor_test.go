@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/marcelocantos/sqlpipe/go/sqlpipe"
 )
 
 func TestParseCursorPeriodUsageAvailable(t *testing.T) {
@@ -186,21 +188,197 @@ func TestQueryPlanUsageCursorHTTPUnauthorizedUnavailable(t *testing.T) {
 	}
 }
 
-func TestLoadCursorAccessTokenURIMode(t *testing.T) {
-	dir := t.TempDir()
-	marker := filepath.Join(dir, "marker")
-	if err := os.WriteFile(filepath.Join(dir, "sqlite3"), []byte("#!/bin/sh\ntouch '"+marker+"'\n"), 0o755); err != nil {
+// writeCursorStateDB builds a state.vscdb fixture shaped like the Cursor
+// IDE's: ItemTable(key, value) in WAL mode. The returned handle stays open
+// until the test ends, so the rows live only in the -wal file, which is
+// where a running IDE keeps its recent writes.
+func writeCursorStateDB(t *testing.T, path string, rows map[string]string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("PATH", dir)
-	path := filepath.Join(dir, "state.vscdb")
-	if err := os.WriteFile(path, []byte("not a database"), 0o600); err != nil {
+	db, err := sqlpipe.OpenDatabase(path)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := loadCursorAccessToken(path); err == nil || !strings.Contains(err.Error(), "probe removed") {
-		t.Fatalf("loadCursorAccessToken = %v", err)
+	t.Cleanup(func() { _ = db.Close() })
+	if err := db.Exec(`PRAGMA journal_mode = WAL`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`CREATE TABLE ItemTable (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB)`); err != nil {
+		t.Fatal(err)
+	}
+	for k, v := range rows {
+		if err := db.Exec(`INSERT INTO ItemTable (key, value) VALUES (?, ?)`, k, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// fileDigests reads every file beside path that shares its name, so a
+// test can prove the reader wrote none of them.
+func fileDigests(t *testing.T, path string) map[string]string {
+	t.Helper()
+	matches, err := filepath.Glob(path + "*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]string{}
+	for _, m := range matches {
+		b, err := os.ReadFile(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out[filepath.Base(m)] = string(b)
+	}
+	return out
+}
+
+func TestLoadCursorAccessTokenReadsStateDB(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	path := filepath.Join(t.TempDir(), "state.vscdb")
+	writeCursorStateDB(t, path, map[string]string{
+		"cursorAuth/accessToken":  "fixture-access-token",
+		"cursorAuth/refreshToken": "fixture-refresh-token",
+	})
+	before := fileDigests(t, path)
+	if _, ok := before["state.vscdb-wal"]; !ok {
+		t.Fatalf("fixture has no WAL; files %v", before)
+	}
+	// af439b7 stopped plan usage shelling out; the restored read stays
+	// in-process. A sqlite3 on PATH that leaves a marker proves it.
+	bin := t.TempDir()
+	marker := filepath.Join(bin, "marker")
+	if err := os.WriteFile(filepath.Join(bin, "sqlite3"), []byte("#!/bin/sh\ntouch '"+marker+"'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+
+	tok, err := loadCursorAccessToken(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tok != "fixture-access-token" {
+		t.Fatalf("token %q", tok)
+	}
+	after := fileDigests(t, path)
+	if len(after) != len(before) {
+		t.Fatalf("reader changed the file set: before %d files, after %d", len(before), len(after))
+	}
+	for name, b := range before {
+		if after[name] != b {
+			t.Errorf("reader modified %s", name)
+		}
+	}
+	if left, _ := os.ReadDir(tmp); len(left) != 0 {
+		t.Errorf("reader left %d entries in TMPDIR", len(left))
 	}
 	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
-		t.Fatalf("loadCursorAccessToken started sqlite3: %v", statErr)
+		t.Errorf("reader started sqlite3: %v", statErr)
+	}
+}
+
+func TestLoadCursorAccessTokenDefaultPathUnderHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path := filepath.Join(home, "Library", "Application Support", "Cursor", "User", "globalStorage", "state.vscdb")
+	writeCursorStateDB(t, path, map[string]string{"cursorAuth/accessToken": "home-token"})
+	tok, err := loadCursorAccessToken("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tok != "home-token" {
+		t.Fatalf("token %q", tok)
+	}
+}
+
+func TestLoadCursorAccessTokenKeyAbsent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.vscdb")
+	writeCursorStateDB(t, path, map[string]string{"cursorAuth/cachedEmail": "someone@example.com"})
+	tok, err := loadCursorAccessToken(path)
+	if err == nil {
+		t.Fatalf("no error; token %q", tok)
+	}
+	if !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), "cursorAuth/accessToken") {
+		t.Fatalf("error does not name the path and key: %v", err)
+	}
+}
+
+func TestLoadCursorAccessTokenFileAbsent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "absent", "state.vscdb")
+	_, err := loadCursorAccessToken(path)
+	if err == nil {
+		t.Fatal("no error for a missing state.vscdb")
+	}
+	if !strings.Contains(err.Error(), path) {
+		t.Fatalf("error does not name the path: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Dir(path)); !os.IsNotExist(statErr) {
+		t.Fatalf("reader created the missing directory: %v", statErr)
+	}
+}
+
+// The token reaches the billing endpoint from whichever source wins:
+// PlanUsageArgs.CursorAccessToken, then CURSOR_API_KEY, then state.vscdb.
+func TestQueryPlanUsageCursorTokenPrecedence(t *testing.T) {
+	var seen string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = r.Header.Get("Authorization")
+		_, _ = w.Write([]byte(`{"planUsage":{"totalPercentUsed":30},"membershipType":"pro"}`))
+	}))
+	defer srv.Close()
+	path := filepath.Join(t.TempDir(), "state.vscdb")
+	writeCursorStateDB(t, path, map[string]string{"cursorAuth/accessToken": "db-token"})
+
+	for _, tc := range []struct {
+		name, arg, env, want string
+	}{
+		{"state db", "", "", "Bearer db-token"},
+		{"env beats state db", "", "env-token", "Bearer env-token"},
+		{"arg beats env", "arg-token", "env-token", "Bearer arg-token"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			seen = ""
+			t.Setenv(cursorAPIKeyEnv, tc.env)
+			pu, err := QueryPlanUsage(context.Background(), &PlanUsageArgs{
+				Provider:          ProviderCursor,
+				HTTPClient:        srv.Client(),
+				CursorAccessToken: tc.arg,
+				CursorAuthPath:    path,
+				CursorUsageURL:    srv.URL,
+				Now:               time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if pu.Status != PlanUsageAvailable {
+				t.Fatalf("Status=%q Reason=%q", pu.Status, pu.Reason)
+			}
+			if seen != tc.want {
+				t.Fatalf("Authorization %q, want %q", seen, tc.want)
+			}
+		})
+	}
+}
+
+// A host with no token anywhere gets a reading that says where it looked.
+func TestQueryPlanUsageCursorMissingStateDBReasonNamesPath(t *testing.T) {
+	t.Setenv(cursorAPIKeyEnv, "")
+	path := filepath.Join(t.TempDir(), "state.vscdb")
+	pu, err := QueryPlanUsage(context.Background(), &PlanUsageArgs{
+		Provider:       ProviderCursor,
+		CursorAuthPath: path,
+		CursorUsageURL: "http://127.0.0.1:1/unreachable",
+		Now:            time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pu.Status != PlanUsageUnavailable {
+		t.Fatalf("Status=%q", pu.Status)
+	}
+	if !strings.Contains(pu.Reason, path) || !strings.Contains(pu.Reason, cursorAPIKeyEnv) {
+		t.Fatalf("Reason does not name the path and the env override: %q", pu.Reason)
 	}
 }

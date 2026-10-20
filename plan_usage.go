@@ -202,10 +202,14 @@ type PlanUsageArgs struct {
 	// CursorUnstableUsage is ignored. Cursor usage is always fetched; a
 	// break is unavailable-with-reason. Kept so Fluid callers still compile.
 	CursorUnstableUsage bool
-	// CursorAccessToken overrides the Cursor session token
-	// (default: CURSOR_API_KEY, then the IDE state.vscdb).
+	// CursorAccessToken overrides the Cursor session token. Empty falls
+	// back to CURSOR_API_KEY, then to ItemTable key cursorAuth/accessToken
+	// in the Cursor IDE's state.vscdb, read from a private copy with the
+	// linked SQLite (never sqlite3(1), never the IDE's file in place).
 	CursorAccessToken string
 	// CursorAuthPath overrides the path to Cursor state.vscdb (tests).
+	// Default: ~/Library/Application Support/Cursor/User/globalStorage/
+	// state.vscdb, else ~/.config/Cursor/User/globalStorage/state.vscdb.
 	CursorAuthPath string
 	// CursorUsageURL overrides the Cursor usage endpoint (tests).
 	CursorUsageURL string

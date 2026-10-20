@@ -7,12 +7,17 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/marcelocantos/sqlpipe/go/sqlpipe"
 )
 
 // cursorPeriodUsageURL is the undocumented DashboardService RPC the Cursor
@@ -192,8 +197,90 @@ func fetchCursorPeriodUsage(ctx context.Context, args *PlanUsageArgs) ([]byte, e
 	return body, nil
 }
 
-// loadCursorAccessToken refuses. Plan usage reads CURSOR_API_KEY or a
-// token the caller already holds. It does not run sqlite3.
+// cursorAccessTokenKey is the ItemTable row in the Cursor IDE's
+// state.vscdb that holds the signed-in session token.
+const cursorAccessTokenKey = "cursorAuth/accessToken"
+
+// loadCursorAccessToken reads the Cursor IDE session token from
+// state.vscdb (ItemTable key cursorAuth/accessToken) with the SQLite
+// linked into this binary — no sqlite3(1). path overrides the default
+// location (PlanUsageArgs.CursorAuthPath).
+//
+// The IDE's file is never opened by SQLite. The bundled SQLite opens
+// read-write and does not parse URI filenames, so mode=ro is not
+// available, and a read-write connection can checkpoint or delete the
+// IDE's -wal on close. Instead the file and its -wal are copied into a
+// private temporary directory, read there, and removed. The -wal is
+// what holds a running IDE's recent writes; -shm is rebuilt from it.
+//
+// Errors name the path and never carry the token.
 func loadCursorAccessToken(path string) (string, error) {
-	return "", fmt.Errorf("cursor auth db probe removed; set %s", cursorAPIKeyEnv)
+	if path == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("locate home for the Cursor IDE session (set %s): %w", cursorAPIKeyEnv, err)
+		}
+		path = filepath.Join(home, "Library", "Application Support", "Cursor", "User", "globalStorage", "state.vscdb")
+		if _, err := os.Stat(path); err != nil {
+			linux := filepath.Join(home, ".config", "Cursor", "User", "globalStorage", "state.vscdb")
+			if _, lerr := os.Stat(linux); lerr == nil {
+				path = linux
+			}
+		}
+	}
+	if _, err := os.Stat(path); err != nil {
+		return "", fmt.Errorf("no Cursor IDE session at %s (set %s or sign in to Cursor): %w", path, cursorAPIKeyEnv, err)
+	}
+
+	dir, err := os.MkdirTemp("", "claudia-cursor-auth-")
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", path, err)
+	}
+	defer os.RemoveAll(dir)
+	copyPath := filepath.Join(dir, "state.vscdb")
+	if err := copyFileIfPresent(path, copyPath, true); err != nil {
+		return "", fmt.Errorf("read %s: %w", path, err)
+	}
+	if err := copyFileIfPresent(path+"-wal", copyPath+"-wal", false); err != nil {
+		return "", fmt.Errorf("read %s-wal: %w", path, err)
+	}
+
+	db, err := sqlpipe.OpenDatabase(copyPath)
+	if err != nil {
+		return "", fmt.Errorf("open %s: %w", path, err)
+	}
+	defer db.Close()
+	tok := ""
+	for row := range db.Rows(`SELECT value FROM ItemTable WHERE key = ? LIMIT 1`, cursorAccessTokenKey) {
+		if err := row.Err(); err != nil {
+			return "", fmt.Errorf("query %s: %w", path, err)
+		}
+		tok = strings.TrimSpace(row.Text(0))
+	}
+	if tok == "" {
+		return "", fmt.Errorf("no %s in %s (set %s or sign in to Cursor)", cursorAccessTokenKey, path, cursorAPIKeyEnv)
+	}
+	return tok, nil
+}
+
+// copyFileIfPresent copies src to a new 0600 file at dst. A missing src is
+// an error only when required.
+func copyFileIfPresent(src, dst string, required bool) error {
+	in, err := os.Open(src)
+	if err != nil {
+		if !required && errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		return err
+	}
+	return out.Close()
 }

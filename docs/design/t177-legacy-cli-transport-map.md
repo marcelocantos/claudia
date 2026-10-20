@@ -509,7 +509,9 @@ Still present, so the purge is not done:
   `exec.LookPath` itself. Task mode returns `ErrTaskCLIRemoved`
   without discovering a binary.
 - `loadClaudeOAuthAccessToken` returns before `security`.
-  `loadCursorAccessToken` returns before `sqlite3`.
+  `loadCursorAccessToken` does not run `sqlite3`; it reads a private
+  copy of the IDE's `state.vscdb` with the linked SQLite (plan usage
+  is not a seat, so the fallback was restored without the exec).
   `listStoreWritersLsof` and `listOrphanCursorACPPs` return before
   `lsof` and `ps`. A caller-supplied token, `CLAUDIA_CLAUDE_OAUTH_TOKEN`,
   `CURSOR_API_KEY`, and the broker plan store stay ahead of those
