@@ -32,7 +32,11 @@ import (
 	"github.com/marcelocantos/claudia/omp"
 )
 
-var ErrSeatIdentityMismatch = errors.New("omp: loaded seat differs from registered provider or purpose")
+// ErrSeatIdentityMismatch is the sidecar refusing a seat because a seat of
+// that name is already loaded under another session (server.ts checks the
+// session, not the provider or purpose). A fresh start replaces such a seat;
+// a start that requires its conversation, and an adopt, get this (jevons 🎯T1096).
+var ErrSeatIdentityMismatch = errors.New("omp: seat is loaded in the sidecar under another session")
 var ErrNoSubscriptionModel = errors.New("omp: no provider-local subscription session model")
 
 // ErrOMPCodexSandboxUnsupported refuses a Codex sandbox or approval setting
@@ -333,7 +337,7 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 	if sessionID == "" {
 		sessionID = uuid.NewString()
 	}
-	if err := conn.Send(omp.Message{
+	load := omp.Message{
 		Op:            op,
 		Seat:          req.Config.Name,
 		Provider:      provider,
@@ -346,7 +350,8 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 		Pins:          req.Config.ContextPins,
 		Tools:         tools,
 		Sandbox:       sandbox,
-	}); err != nil {
+	}
+	if err := conn.Send(load); err != nil {
 		conn.Close()
 		return nil, err
 	}
@@ -365,10 +370,26 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 		}
 		return nil, err
 	}
+	// jevons 🎯T1096: the name is loaded in the sidecar under another session — a
+	// seat removed while its removal never reached the sidecar, or one this
+	// name held before it was registered afresh. A fresh start is a new seat
+	// under that name: the stale one is unloaded and the load is sent again.
+	// Its conversation stays on disk under its own session. A start that
+	// requires its conversation replaces nothing.
+	if ev.Type != "ready" && ev.Reason == "seat_identity_mismatch" && op == omp.OpLoad && !req.Config.RequireResume {
+		slog.Warn("omp: replacing a stale sidecar seat loaded under another session",
+			"seat", req.Config.Name, "session", sessionID)
+		ev, err = replaceStaleOMPSeat(conn, load)
+		if err != nil {
+			conn.Close()
+			return nil, err
+		}
+	}
 	if ev.Type != "ready" {
 		conn.Close()
 		if ev.Reason == "seat_identity_mismatch" {
-			return nil, fmt.Errorf("%w: %s", ErrSeatIdentityMismatch, ev.Text)
+			return nil, fmt.Errorf("%w: seat %q is already loaded there, and this start requires the conversation of session %s, so it was not replaced; remove the seat (jevons_agent_kill) so the name starts fresh, or start under another name: %s",
+				ErrSeatIdentityMismatch, req.Config.Name, sessionID, ev.Text)
 		}
 		if req.Config.AdoptOnly {
 			return nil, fmt.Errorf("%w: %s", ErrNoSessionWindow, req.Config.Name)
@@ -492,6 +513,13 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 			},
 			promptInFlight: func(*Agent) bool { return ctrl.inflight.Load() },
 			openTurnID:     func(*Agent) string { return ctrl.openTurnID() },
+			// A removed seat is unloaded from the sidecar, which otherwise
+			// keeps it, and its turn, running after the host lets go
+			// (jevons 🎯T1096). It names its own session, so a successor already
+			// loaded under the name is not dropped.
+			discard: func(*Agent) {
+				_ = ctrl.send(omp.Message{Op: omp.OpDrop, Seat: ctrl.seat, SessionID: sessionID})
+			},
 			stop: func(*Agent) {
 				ompSeats.Delete(ctrl)
 				conn.Close()
@@ -511,6 +539,31 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 		},
 	}, nil
 }
+
+// replaceStaleOMPSeat unloads whatever seat holds load's name in the
+// sidecar and sends load again, returning the sidecar's answer to it
+// (jevons 🎯T1096). The drop names no session: the stale seat's is not known here.
+func replaceStaleOMPSeat(conn *omp.Conn, load omp.Message) (omp.Event, error) {
+	_ = conn.SetDeadline(time.Now().Add(replaceStaleSeatTimeout))
+	if err := conn.Send(omp.Message{Op: omp.OpDrop, Seat: load.Seat}); err != nil {
+		return omp.Event{}, err
+	}
+	// "dropped", or an error when the seat went in the meantime: either way
+	// the reload says what the sidecar holds now.
+	if _, err := conn.Recv(); err != nil {
+		return omp.Event{}, fmt.Errorf("omp: unloading stale seat %q: %w", load.Seat, err)
+	}
+	// The reload waits as long as the first load did.
+	_ = conn.SetDeadline(time.Time{})
+	if err := conn.Send(load); err != nil {
+		return omp.Event{}, err
+	}
+	return conn.Recv()
+}
+
+// replaceStaleSeatTimeout bounds unloading a stale seat, so a wedged
+// sidecar fails the start rather than holding it.
+const replaceStaleSeatTimeout = 10 * time.Second
 
 type ompControl struct {
 	conn      *omp.Conn

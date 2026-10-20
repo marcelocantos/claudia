@@ -84,7 +84,14 @@ func startFakeSidecar(t *testing.T, reply []string) *fakeSidecar {
 		}
 	}()
 	t.Setenv("CLAUDIA_OMP_SOCKET", socket)
+	stubOMPPlans(t)
+	return f
+}
 
+// stubOMPPlans puts anthropic and openai-codex plan tokens in a fake
+// Keychain and opens the plans, so a direct start reaches the sidecar.
+func stubOMPPlans(t *testing.T) {
+	t.Helper()
 	exp := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
 	blob := `{"records":{` +
 		`"anthropic":{"refresh_token":"r","access_token":"plan-token","expiry":"` + exp + `"},` +
@@ -94,7 +101,6 @@ func startFakeSidecar(t *testing.T, reply []string) *fakeSidecar {
 	if err := OpenOMPPlans(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	return f
 }
 
 // withTurnID stamps the prompt's turn identity onto a fixture event, as the

@@ -18,9 +18,11 @@ import (
 	"github.com/marcelocantos/claudia/omp"
 )
 
-// No prompt is sent: this exercises real load/adopt/store admission through
-// both SDK and daemon, with fake credentials and no provider request.
-func TestSeatResumeActualSidecarDirectAndBroker(t *testing.T) {
+// bootOnActualSidecar runs the real sidecar (bun sidecar/server.ts) on a
+// fresh socket with fixture plan tokens, and boots the daemon on it with
+// direct starts. It returns the fixture, its root and the sidecar socket.
+func bootOnActualSidecar(t *testing.T) (*fixture, string, string) {
+	t.Helper()
 	f := newFixture(t)
 	root := filepath.Dir(f.sock)
 	t.Setenv("HOME", root)
@@ -63,6 +65,14 @@ func TestSeatResumeActualSidecarDirectAndBroker(t *testing.T) {
 	opts.DisableResume = true
 	opts.launchers = &claudia.RegistryLaunchers{Start: claudia.StartDirectContext, Adopt: claudia.Adopt}
 	f.bootWith(t, opts)
+	return f, root, socket
+}
+
+// No prompt is sent: this exercises real load/adopt/store admission through
+// both SDK and daemon, with fake credentials and no provider request.
+func TestSeatResumeActualSidecarDirectAndBroker(t *testing.T) {
+	_, root, socket := bootOnActualSidecar(t)
+	ctx := t.Context()
 	drop := func(name string) {
 		t.Helper()
 		c, err := net.Dial("unix", socket)

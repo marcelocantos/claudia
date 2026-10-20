@@ -74,6 +74,8 @@ type brokerAgentBackend struct {
 	name   string
 	attach string
 	gone   bool
+	// discard marks the coming stop as a removal (jevons 🎯T1096).
+	discard bool
 	// grantDef is the encoded definition this handle granted with, kept so
 	// a detach can be answered by re-claiming the grant by name (🎯T124).
 	grantDef json.RawMessage
@@ -276,9 +278,16 @@ func (b *brokerAgentBackend) ops() agentOps {
 			_, err := b.opCall(&broker.Request{Type: broker.TypeResize, Resize: &broker.ResizeRequest{Name: b.named().Name, Cols: cols, Rows: rows}})
 			return err
 		},
+		discard: func(*Agent) {
+			b.mu.Lock()
+			b.discard = true
+			b.mu.Unlock()
+		},
 		stop: func(*Agent) {
-			_, err := b.opCall(&broker.Request{Type: broker.TypeRelease,
-				Release: &broker.ReleaseRequest{Name: b.named().Name, Disposition: broker.DispositionStop}})
+			b.mu.Lock()
+			discard := b.discard
+			b.mu.Unlock()
+			err := releaseStop(b.opCall, b.named().Name, discard)
 			if err != nil && !errors.Is(err, errBrokerClosed) {
 				slog.Warn("broker release failed", "grant", b.named().Name, "err", err)
 			}
@@ -355,6 +364,22 @@ func (b *brokerAgentBackend) switchModel(_ *Agent, provider Provider, model stri
 	_, err := b.client.call(ctx, &broker.Request{Type: broker.TypeSetModel, SetModel: &broker.SetModelRequest{
 		Name: b.named().Name, Provider: broker.Provider(provider), Model: model,
 	}})
+	return err
+}
+
+// releaseStop stops a granted seat, as a removal when discard is set
+// (jevons 🎯T1096). A daemon that predates ReleaseRequest.Discard refuses the
+// field (its decoder is strict), and the seat must still stop, so the
+// release is sent again as the plain stop that daemon understands.
+func releaseStop(call func(*broker.Request) (*broker.Response, error), name string, discard bool) error {
+	req := &broker.ReleaseRequest{Name: name, Disposition: broker.DispositionStop, Discard: discard}
+	_, err := call(&broker.Request{Type: broker.TypeRelease, Release: req})
+	var pe *broker.ProtocolError
+	if discard && errors.As(err, &pe) && pe.Code == broker.CodeUnknownField && pe.Field == "discard" {
+		plain := *req
+		plain.Discard = false
+		_, err = call(&broker.Request{Type: broker.TypeRelease, Release: &plain})
+	}
 	return err
 }
 

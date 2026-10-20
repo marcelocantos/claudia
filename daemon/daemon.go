@@ -1300,7 +1300,14 @@ func (d *Daemon) handleRelease(c *broker.ClientConn, req *broker.Request) {
 			delete(d.grants, name)
 		}
 		d.mu.Unlock()
-		if err := d.reg.Remove(name); err != nil {
+		// A host's removal frees the name on the backend too; a plain stop
+		// leaves the backend's seat for a later start of the same session
+		// to adopt, as before (jevons 🎯T1096).
+		remove := d.reg.RemoveKeepingBackend
+		if req.Release.Discard {
+			remove = d.reg.Remove
+		}
+		if err := remove(name); err != nil {
 			d.log.Warn("release stop", "grant", name, "err", err)
 		}
 		d.emit(broker.EventMessage{Kind: broker.EventRelease, Name: name})
