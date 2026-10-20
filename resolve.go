@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"sort"
 	"strings"
 	"time"
@@ -44,9 +45,18 @@ type ModelPredicates struct {
 	// with headroom beats a greener Grok. Hot/exhausted preferred dests
 	// still yield.
 	PreferProvider Provider
-	// TieBreak is ordered provider preference only for an undecided catalog
-	// slack tie. Unlike PreferProvider, it cannot bypass band or pressure.
+	// TieBreak is an ordered provider preference on the catalog path
+	// (🎯T172, widened by 🎯T203). The first listed provider whose row is
+	// in the leader's dest band and within catalogTieBreakReach of its
+	// pressure wins. Unlike PreferProvider it cannot cross a band, beat a
+	// decided pressure gap, or reach an ineligible row. Without it, a
+	// near-equal choice goes to the better-ranked row and an exact tie
+	// is drawn at random — never an error.
 	TieBreak []Provider
+	// Rand draws the winner of an exact catalog ranking tie: it returns a
+	// value in [0, n). Nil uses math/rand/v2, which is seeded from the
+	// runtime. Tests pin it; it is not on the broker wire.
+	Rand func(n int) int
 	// ExcludeProviders drops those backends (ladder walk).
 	ExcludeProviders []Provider
 	// RequireUsage drops catalog rows with no snapshot or an unpublished
@@ -214,12 +224,20 @@ func Resolve(ctx context.Context, pred ModelPredicates) (ModelPick, error) {
 		} else if has {
 			band = ClassifyPlan(u, now, pred.Thresholds).Weekly
 		}
-		candidates = append(candidates, catalogCand{row: row, band: band, pressure: pressure, pinned: pinned, pinReason: pin.Reason})
+		weeklyLeft, sessionLeft := unknownHeadroom, unknownHeadroom
+		if has {
+			weeklyLeft, sessionLeft = rowHeadroom(u, row.Model)
+		}
+		candidates = append(candidates, catalogCand{
+			row: row, band: band, pressure: pressure,
+			weeklyLeft: weeklyLeft, sessionLeft: sessionLeft,
+			pinned: pinned, pinReason: pin.Reason,
+		})
 	}
 	if len(rejected) > 0 {
 		slog.Debug("resolve: catalog rejections", "rejected", rejected, "kept", len(candidates))
 	}
-	best, err := pickCatalog(candidates, pred.PreferProvider, pred.TieBreak)
+	best, err := pickCatalog(candidates, pred.PreferProvider, pred.TieBreak, pred.Rand)
 	if err != nil {
 		if len(rejected) > 0 {
 			return ModelPick{}, fmt.Errorf("%w (tried %d catalog rows: %s)", err, len(rejected), strings.Join(rejected, "; "))
@@ -229,6 +247,12 @@ func Resolve(ctx context.Context, pred ModelPredicates) (ModelPick, error) {
 	reason := fmt.Sprintf("quality=%s access=%s band=%s", best.row.Quality, best.row.Access, best.band)
 	if pred.PreferProvider != "" && best.row.Provider == pred.PreferProvider {
 		reason += " prefer_provider"
+	}
+	if best.tieBreak {
+		reason += " tie_break"
+	}
+	if best.drawnOf > 1 {
+		reason += fmt.Sprintf(" drawn_of=%d", best.drawnOf)
 	}
 	if best.pinned {
 		reason += " owner_override"
@@ -251,15 +275,39 @@ type catalogCand struct {
 	row      CatalogModel
 	band     PlanBand
 	pressure float64
+	// weeklyLeft and sessionLeft are percent remaining (0–100) on this
+	// row's weekly allowance — the tighter of the plan window and a
+	// model-scoped window (🎯T86) — and on the session window.
+	// unknownHeadroom when the provider published no number.
+	weeklyLeft  float64
+	sessionLeft float64
 	// pinned is 🎯T1013.1: an owner dest-band override on this provider.
 	// A pinned candidate wins pickCatalog outright, before the normal
 	// dest-band ranking is even consulted.
 	pinned    bool
 	pinReason string
+	// tieBreak and drawnOf record how pickCatalog decided, for the
+	// pick's Reason: TieBreak moved the pick off the ranked leader, or
+	// the pick was drawn at random from drawnOf exactly tied rows.
+	tieBreak bool
+	drawnOf  int
 }
 
-// ErrTokenTied reports the catalog candidates left undecided by band and
-// pressure. IDs are sorted provider/model identifiers, not catalog order.
+// unknownHeadroom ranks an unpublished headroom below any published
+// number, including 0%.
+const unknownHeadroom = -1.0
+
+// catalogTieBreakReach is how far (in pressure, ln units) behind the
+// ranked leader a TieBreak-named row may sit and still be chosen. It is
+// the old 0.05 slack epsilon (🎯T172): a gap that small is noise in a
+// reading the vendor rounds to whole percent, so a caller's preference
+// may settle it. A wider gap is a real pacing difference and stands.
+const catalogTieBreakReach = 0.05
+
+// ErrTokenTied reported catalog candidates left undecided by band and
+// pressure. Since 🎯T203 Resolve never returns it: a near tie is ranked
+// by continuous pressure and headroom, and an exact tie is drawn at
+// random. The type stays so callers that match it still compile.
 type ErrTokenTied struct {
 	IDs []string
 }
@@ -268,7 +316,53 @@ func (e *ErrTokenTied) Error() string {
 	return fmt.Sprintf("resolve: token-tied models %s; set TieBreak", strings.Join(e.IDs, " "))
 }
 
-func pickCatalog(cands []catalogCand, prefer Provider, tieBreak []Provider) (catalogCand, error) {
+// catalogRank orders two catalog candidates (🎯T203). Keys, in order:
+//
+//  1. Dest band rank: locked, then under, then ok (🎯T693). Spend
+//     surplus that will otherwise expire before work that can wait.
+//  2. Weekly pressure, lower first — the Spend Pressure Map's
+//     ln(current pace / required pace), continuous. No dead band: two
+//     readings 0.01 apart are ranked, not tied.
+//  3. Weekly headroom (percent left on this row), more first. Mostly
+//     decides when a model-scoped window is tighter than the plan's.
+//  4. Session headroom, more first.
+//
+// It returns <0 when a ranks above b, >0 when below, 0 for an exact tie
+// on every key. Unpublished rows have pressure 0 and unknown headroom,
+// so a pool of them ties exactly — which is what the random draw is for.
+func catalogRank(a, b catalogCand) int {
+	ar, aDest := destBandRank(a.band)
+	br, bDest := destBandRank(b.band)
+	if !aDest {
+		ar = 3
+	}
+	if !bDest {
+		br = 3
+	}
+	switch {
+	case ar != br:
+		return ar - br
+	case a.pressure < b.pressure:
+		return -1
+	case a.pressure > b.pressure:
+		return 1
+	case a.weeklyLeft > b.weeklyLeft:
+		return -1
+	case a.weeklyLeft < b.weeklyLeft:
+		return 1
+	case a.sessionLeft > b.sessionLeft:
+		return -1
+	case a.sessionLeft < b.sessionLeft:
+		return 1
+	}
+	return 0
+}
+
+func catalogID(c catalogCand) string {
+	return string(c.row.Provider) + "/" + c.row.Model
+}
+
+func pickCatalog(cands []catalogCand, prefer Provider, tieBreak []Provider, draw func(int) int) (catalogCand, error) {
 	if len(cands) == 0 {
 		return catalogCand{}, fmt.Errorf("resolve: no catalog model matches predicates")
 	}
@@ -325,36 +419,90 @@ func pickCatalog(cands []catalogCand, prefer Provider, tieBreak []Provider) (cat
 			pool = pref
 		}
 	}
-	best := pool[0]
-	for _, c := range pool[1:] {
-		if better, ok := destBetter(c.band, c.pressure, best.band, best.pressure); ok && better {
-			best = c
+	// 🎯T203: rank, never refuse. Catalog id is only the sort's last key
+	// so the ranked slice does not depend on the order candidates arrived
+	// in; it never decides between rows that tie on every signal.
+	pool = append([]catalogCand(nil), pool...)
+	sort.SliceStable(pool, func(i, j int) bool {
+		if r := catalogRank(pool[i], pool[j]); r != 0 {
+			return r < 0
 		}
+		return catalogID(pool[i]) < catalogID(pool[j])
+	})
+	leader := pool[0]
+	tied := 1
+	for tied < len(pool) && catalogRank(pool[tied], leader) == 0 {
+		tied++
 	}
-	var slack []catalogCand
-	for _, c := range pool {
-		if _, decided := destBetter(c.band, c.pressure, best.band, best.pressure); !decided {
-			slack = append(slack, c)
-		}
-	}
-	if len(slack) == 1 {
-		return slack[0], nil
-	}
-	// Only the undecided set can be broken: a named provider outside
-	// slack must not outrank a better band or decided pressure.
+	_, leaderDest := destBandRank(leader.band)
 	for _, p := range tieBreak {
-		for _, c := range slack {
-			if c.row.Provider == p {
+		for _, c := range pool {
+			if c.row.Provider != p {
+				continue
+			}
+			_, cDest := destBandRank(c.band)
+			sameBand := c.band == leader.band || (!cDest && !leaderDest)
+			if sameBand && c.pressure <= leader.pressure+catalogTieBreakReach {
+				c.tieBreak = c.row != leader.row || tied > 1
 				return c, nil
 			}
 		}
 	}
-	ids := make([]string, len(slack))
-	for i, c := range slack {
-		ids[i] = string(c.row.Provider) + "/" + c.row.Model
+	if tied == 1 {
+		return leader, nil
 	}
-	sort.Strings(ids)
-	return catalogCand{}, &ErrTokenTied{IDs: ids}
+	// The owner's rule: rows equal on every signal split the mints
+	// between them at random rather than by a fixed order.
+	if draw == nil {
+		draw = rand.IntN
+	}
+	i := draw(tied)
+	if i < 0 || i >= tied {
+		return catalogCand{}, fmt.Errorf("resolve: tie draw %d outside [0, %d)", i, tied)
+	}
+	ids := make([]string, tied)
+	for k := range tied {
+		ids[k] = catalogID(pool[k])
+	}
+	slog.Info("resolve: exact catalog tie drawn at random", "tied", ids, "drawn", ids[i])
+	pick := pool[i]
+	pick.drawnOf = tied
+	return pick, nil
+}
+
+// rowHeadroom is this row's percent left on its weekly allowance (the
+// tighter of the plan window and a 🎯T86 model-scoped window) and on the
+// session window. Either is unknownHeadroom when not published.
+func rowHeadroom(u PlanUsage, model string) (weekly, session float64) {
+	weekly, session = unknownHeadroom, unknownHeadroom
+	if u.Status != PlanUsageAvailable {
+		return weekly, session
+	}
+	left := func(w PlanWindow) (float64, bool) {
+		if w.RemainingPercent != nil {
+			return *w.RemainingPercent, true
+		}
+		if w.UsedPercent != nil {
+			return 100 - *w.UsedPercent, true
+		}
+		return 0, false
+	}
+	if w, ok := primaryAllowanceWindow(u); ok {
+		if v, ok := left(w); ok {
+			weekly = v
+		}
+	}
+	if w := ModelWindowFor(u, model); w != nil {
+		if v, ok := left(*w); ok && (weekly == unknownHeadroom || v < weekly) {
+			weekly = v
+		}
+	}
+	if w, ok := windowNamed(u, PlanWindowSession); ok {
+		if v, ok := left(w); ok {
+			session = v
+		}
+	}
+	return weekly, session
 }
 
 // IsDestBand reports a published band that may receive new work.

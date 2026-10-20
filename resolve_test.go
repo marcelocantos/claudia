@@ -5,7 +5,6 @@ package claudia
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -320,23 +319,35 @@ func TestResolveCatalogPathPrefersPlanSlack(t *testing.T) {
 	}
 }
 
-func TestResolveStandardFailsClosedWhenSlackTied(t *testing.T) {
-	_, err := Resolve(context.Background(), ModelPredicates{
-		Mode:       CapabilitySession,
-		Quality:    ModelQualityStandard,
-		PreferPlan: true,
-		Usage:      []PlanUsage{},
-	})
-	if err == nil {
-		t.Fatal("equal slack must not pick by catalog order")
-	}
-	var tied *ErrTokenTied
-	if !errors.As(err, &tied) || len(tied.IDs) < 2 {
-		t.Fatalf("want typed tie with candidates, got %v", err)
+// 🎯T203: equal slack is not an error and not catalog order. With no
+// usage published anywhere every standard plan row ties exactly, and the
+// pick is drawn from the injected source over the rows in id order.
+func TestResolveStandardDrawsWhenSlackTied(t *testing.T) {
+	want := []string{"claude/claude-sonnet-5", "codex/gpt-6-sol", "cursor/composer-2.5", "grok/grok-4.5"}
+	for i, id := range want {
+		var n int
+		got, err := Resolve(context.Background(), ModelPredicates{
+			Mode:       CapabilitySession,
+			Quality:    ModelQualityStandard,
+			PreferPlan: true,
+			Usage:      []PlanUsage{},
+			Rand:       func(k int) int { n = k; return i },
+		})
+		if err != nil {
+			t.Fatalf("equal slack must not refuse: %v", err)
+		}
+		if n != len(want) {
+			t.Fatalf("draw over %d rows, want %d", n, len(want))
+		}
+		if string(got.Provider)+"/"+got.Model != id || !strings.Contains(got.Reason, "drawn_of=4") {
+			t.Fatalf("draw %d: got %+v, want %s", i, got, id)
+		}
 	}
 }
 
-// 🎯T172: TieBreak is only a last-mile decision among band/pressure ties.
+// 🎯T172 / 🎯T203: TieBreak settles a near-equal choice inside the
+// leader's band; it cannot beat band, a decided pressure gap, or reach a
+// row outside the candidates.
 func TestResolveCatalogTieBreak(t *testing.T) {
 	now := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
 	reset := now.Add(3*24*time.Hour + 12*time.Hour)
@@ -344,29 +355,24 @@ func TestResolveCatalogTieBreak(t *testing.T) {
 		return PlanUsage{Provider: p, Status: PlanUsageAvailable, Windows: []PlanWindow{{Name: PlanWindowWeekly, UsedPercent: floatPtr(used), RemainingPercent: floatPtr(100 - used), ResetsAt: &reset, LimitWindow: defaultWeeklyWindow}}}
 	}
 	pred := ModelPredicates{Mode: CapabilitySession, Quality: ModelQualityStandard, PreferPlan: true, Now: now, ExcludeProviders: []Provider{ProviderCodex, ProviderCursor}, Usage: []PlanUsage{weekly(ProviderClaude, 50), weekly(ProviderGrok, 50.1)}}
-	if a, b := weeklyPressure(pred.Usage[0], now, nil), weeklyPressure(pred.Usage[1], now, nil); a == b || a-b >= 0.05 || b-a >= 0.05 {
-		t.Fatalf("fixture needs distinct pressure within 0.05: %v %v", a, b)
+	if a, b := weeklyPressure(pred.Usage[0], now, nil), weeklyPressure(pred.Usage[1], now, nil); a == b || a-b >= catalogTieBreakReach || b-a >= catalogTieBreakReach {
+		t.Fatalf("fixture needs distinct pressure within reach: %v %v", a, b)
 	}
-	checkTie := func() {
+	checkRanked := func() {
 		t.Helper()
-		_, err := Resolve(context.Background(), pred)
-		var tied *ErrTokenTied
-		if !errors.As(err, &tied) {
-			t.Fatalf("want typed tie, got %v", err)
-		}
-		want := []string{"claude/claude-sonnet-5", "grok/grok-4.5"}
-		if len(tied.IDs) != len(want) || tied.IDs[0] != want[0] || tied.IDs[1] != want[1] {
-			t.Fatalf("tied IDs = %v, want %v", tied.IDs, want)
+		got, err := Resolve(context.Background(), pred)
+		if err != nil || got.Provider != ProviderClaude {
+			t.Fatalf("lower pressure must win without TieBreak: %+v (%v)", got, err)
 		}
 	}
-	checkTie()
+	checkRanked()
 	pred.TieBreak = []Provider{ProviderGrok}
 	got, err := Resolve(context.Background(), pred)
-	if err != nil || got.Provider != ProviderGrok {
+	if err != nil || got.Provider != ProviderGrok || !strings.Contains(got.Reason, "tie_break") {
 		t.Fatalf("Grok tie break: %+v (%v)", got, err)
 	}
 	pred.TieBreak = []Provider{ProviderCursor}
-	checkTie() // Cursor exists in catalog but is not in the tie.
+	checkRanked() // Cursor exists in catalog but is not a candidate.
 	pred.TieBreak = []Provider{ProviderCursor, ProviderGrok, ProviderClaude}
 	got, err = Resolve(context.Background(), pred)
 	if err != nil || got.Provider != ProviderGrok {
@@ -386,9 +392,9 @@ func TestPickCatalogTieBreakCannotBeatPressure(t *testing.T) {
 		{row: CatalogModel{Provider: ProviderGrok, Model: "grok-4.5"}, band: PlanBandOK, pressure: 0.2},
 		{row: CatalogModel{Provider: ProviderCodex, Model: "gpt-6-sol"}, band: PlanBandOK, pressure: 0.01},
 	}
-	got, err := pickCatalog(cands, "", []Provider{ProviderGrok, ProviderCodex})
+	got, err := pickCatalog(cands, "", []Provider{ProviderGrok, ProviderCodex}, nil)
 	if err != nil || got.row.Provider != ProviderCodex {
-		t.Fatalf("tie break outside slack beat pressure: %+v (%v)", got, err)
+		t.Fatalf("tie break outside reach beat pressure: %+v (%v)", got, err)
 	}
 }
 

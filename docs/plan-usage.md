@@ -135,11 +135,51 @@ and session-low/exhausted and 429 reasons; unpublished usage stays eligible.
 
 `Resolve` picks a catalog `(Provider, Model)` from predicates. It does not
 `Start` or `SwitchModel`. The catalog is a set: available-tokens
-is a veto, then lower plan slack wins; `PreferProvider` only breaks a
-slack tie. With `Purpose` (or wire `skill`) set it reads the 🎯T71 intel
+is a veto, then the survivors are ranked (below). `PreferProvider`
+filters the pool to one provider before ranking; `TieBreak` biases
+within reach of the leader. With `Purpose` (or wire `skill`) set it reads the 🎯T71 intel
 series and also returns `Effort`. A purpose with no catalog-overlapping
 observations is interpreted as `general` (`purpose_fallback_from` on the
 pick). See [model-intel.md](model-intel.md).
+
+### Catalog placement ranking (🎯T203)
+
+Eligibility is unchanged and comes first: quality shelf, mode, plan
+access, exclusions and owner keep-off overrides, `Background`,
+`RequireUsage`, and available tokens (plan and model-scoped). An owner
+dest-band override pins its provider. Otherwise the pool is the
+dest-band rows (locked / under / ok), or, when no row is a published
+dest, the unpublished rows. `PreferProvider` narrows the pool to its
+provider when that provider is in it.
+
+The pool is then ranked by these keys, in order:
+
+| Key | Better | Why |
+|---|---|---|
+| Dest band | locked, under, ok | Surplus that expires unused goes first (🎯T693). |
+| Weekly pressure | lower | The Spend Pressure Map's `ln(current pace / required pace)`. It is continuous, so readings 0.01 apart are ranked, not tied. |
+| Weekly headroom | more percent left | The tighter of the plan window and a model-scoped window (🎯T86). |
+| Session headroom | more percent left | Mostly separates rows whose weekly readings are identical. |
+
+Before 🎯T203, weekly pressures within 0.05 of each other were
+"undecided", and with no `TieBreak` Resolve returned `ErrTokenTied`.
+Jevons never sends `TieBreak`, so a provider-less mint failed whenever
+two plans were both eligible (2026-10-20, claude/claude-sonnet-5 vs
+codex/gpt-6-sol). That dead band is gone. Its only remaining use is
+`TieBreak`'s reach: the first `TieBreak` provider whose row has the
+leader's band and pressure no more than 0.05 above the leader's wins
+(`tie_break` in the pick's Reason). A preference can settle a gap that
+small, which is noise in a reading the vendor rounds to whole percent.
+It cannot settle a real pacing difference, cross a band, or reach an
+ineligible row.
+
+Rows equal on every key are drawn at random (`math/rand/v2`; the
+`Rand` predicate pins the draw in tests), so mints spread evenly over
+them. The draw is logged with the tied ids and the winner, and the pick's
+Reason carries `drawn_of=N`. The common case is no usage published at
+all, where every shelf row ties. `ErrTokenTied` is no longer returned;
+the type stays for callers that match it. Resolve refuses only when no
+row is eligible.
 
 ## Fleet roster and pick by remaining
 

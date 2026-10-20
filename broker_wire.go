@@ -289,9 +289,10 @@ type predicatesWire struct {
 	// PreferProvider/ExcludeProviders — the daemon does not have its own
 	// copy of the owner's overrides.
 	OwnerOverride map[Provider]OwnerOverride `json:"owner_override,omitempty"`
-	// TieBreak (🎯T172): the caller's ordered provider preference for an
-	// undecided catalog slack tie. A caller input like PreferProvider; a
-	// brokered Resolve without it reports a tie the caller already settled.
+	// TieBreak (🎯T172 / 🎯T203): the caller's ordered provider preference
+	// among catalog rows within reach of the ranked leader. A caller input
+	// like PreferProvider; a brokered Resolve without it ranks (and draws
+	// an exact tie) as the daemon would for any caller.
 	TieBreak []Provider `json:"tie_break,omitempty"`
 }
 
@@ -302,6 +303,7 @@ var predicatesNotOnWire = map[string]string{
 	"Cache": "the daemon is the cache",
 	"Intel": "the daemon reads StateDir/model-intel",
 	"Now":   "the daemon reads its own clock",
+	"Rand":  "the daemon draws exact ties from its own source",
 }
 
 // EncodePredicatesWire is the portable half of ModelPredicates in its

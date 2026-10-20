@@ -26,17 +26,20 @@ misses the floor or is token-exhausted fails closed; it does not yield
 to general.
 
 Available-tokens still veto weekly-hot, session-low, and exhausted.
-Among the rest, lower plan pressure (blue/purple slack) ranks first —
-on the catalog path too, not only when a purpose series is present.
-A published band beats unpublished (pressure 0 is unknown, not blue).
-Catalog rows that match the quality shelf stay eligible even when AA
-has no score for them. On the catalog path, `TieBreak` is an ordered
-provider list consulted only when band and pressure leave multiple
-candidates within the slack epsilon.
-The first matching tied provider wins; with no match, the tie fails closed
-(the catalog is a set, not a ranking). `PreferProvider` is different: it
-filters token-eligible rows before band/pressure selection, so it can beat
-a greener provider and is not a tie-break-only setting.
+Among the rest the catalog path ranks (🎯T203); it never refuses because
+two rows look alike. See [Catalog placement ranking](plan-usage.md#catalog-placement-ranking-t203)
+for the keys. In short: dest band (locked, under, ok), then continuous
+weekly pressure, then weekly headroom, then session headroom, and an
+exact tie on all four is drawn at random. A published band beats
+unpublished (pressure 0 is unknown, not blue). Catalog rows that match
+the quality shelf stay eligible even when AA has no score for them.
+`TieBreak` is an ordered provider preference: the first listed provider
+whose row shares the leader's band and sits within 0.05 of its pressure
+wins. It cannot cross a band or overturn a larger pressure gap.
+`PreferProvider` is different: it filters token-eligible rows before
+ranking, so it can beat a greener provider.
+The intel path (`Purpose`, pins) still ranks band, then pressure with a
+0.05 dead band, then research cost; it does not draw.
 Research cost is the next key on the intel path only.
 
 ## Store
