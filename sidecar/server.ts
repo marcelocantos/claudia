@@ -303,7 +303,17 @@ async function handle(
     }
     if (!(await switchIfAsked(existing, msg, seat, write))) return;
     rebindSeat(existing, msg, seat, write, callTool, calls);
-    write({ seat, type: "ready", how: "adopted", resume_checked: msg.require_resume === true, bound_tools: existing.agent.boundToolNames(), sandbox: existing.agent.sandboxMode() });
+    write({
+      seat,
+      type: "ready",
+      how: "adopted",
+      resume_checked: msg.require_resume === true,
+      bound_tools: existing.agent.boundToolNames(),
+      sandbox: existing.agent.sandboxMode(),
+      // 🎯T202: names a turn already running when this seat is reattached
+      // mid-turn, so the host does not start believing it is idle.
+      turn_id: existing.agent.openTurnID(),
+    });
     return;
   }
   if (msg.op === "load") {
@@ -331,6 +341,9 @@ async function handle(
         model: existing.model,
         bound_tools: existing.agent.boundToolNames(),
         sandbox: existing.agent.sandboxMode(),
+        // 🎯T202: a load that finds this seat already running (same host
+        // process, or a reload after a switch) may find a turn still open.
+        turn_id: existing.agent.openTurnID(),
       });
       return;
     }

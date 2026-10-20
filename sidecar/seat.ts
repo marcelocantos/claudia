@@ -87,6 +87,12 @@ export type SeatAgent = {
   snapshot: () => unknown;
   // Read the model-visible list after setTools, not the host offer.
   boundToolNames: () => string[];
+  // openTurnID names the turn presently open on this seat, or undefined
+  // when none is (🎯T202). The host reads it on ready (adopt, and load of
+  // an already-running seat) so a reattach mid-turn can report in-flight
+  // from its very first read, instead of waiting for a later
+  // accepted/receipt event the sidecar emits only once per turn-start.
+  openTurnID: () => string | undefined;
   // rebind points events and tool calls at the connection that just
   // loaded the seat. A broker restart dials a new socket; the Agent
   // stays, and the new socket has to hear it (🎯T868).
@@ -724,6 +730,7 @@ export function createSeatAgent(opts: {
     },
     snapshot: () => agent.state,
     boundToolNames: () => (agent.state.tools ?? []).map((tool) => tool.name),
+    openTurnID: () => (turn && !turn.closed ? turn.turn_id : undefined),
     rebind: (emit, callTool) => {
       sink.emit = emit;
       sink.callTool = callTool;

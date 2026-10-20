@@ -446,6 +446,11 @@ type agentOps struct {
 	reclaim func() error
 	// promptInFlight is optional (Grok ACP). Nil → always false.
 	promptInFlight func(*Agent) bool
+	// openTurnID names the turn promptInFlight reports open, when the
+	// backend can say so (sidecar seats, 🎯T202). Nil or "" → unknown or
+	// idle; callers must not infer idle from an empty string alone unless
+	// promptInFlight() is also false.
+	openTurnID func(*Agent) string
 	// switchModel moves the seat to provider and model in place, keeping
 	// its conversation (🎯T195). A sidecar seat can change provider; the
 	// native CLI backends only change model within their own provider.
@@ -1409,6 +1414,17 @@ func (a *Agent) PromptInFlight() bool {
 		return false
 	}
 	return a.ops.promptInFlight(a)
+}
+
+// OpenTurnID names the turn PromptInFlight reports open, when the backend
+// can say so (🎯T202: a sidecar seat reattached mid-turn knows the running
+// turn's id from the moment it reconnects, not only once a later event
+// names one). "" when there is no open turn, or the backend cannot name it.
+func (a *Agent) OpenTurnID() string {
+	if a == nil || a.ops.openTurnID == nil {
+		return ""
+	}
+	return a.ops.openTurnID(a)
 }
 
 // Send writes a user message to the Claude process and submits it.

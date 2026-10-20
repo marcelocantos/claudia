@@ -676,3 +676,196 @@ func TestOMPNoGoOAuthClient(t *testing.T) {
 	}
 	check("omp_agent.go")
 }
+
+// TestT202ReattachMidTurnReportsInFlight: a seat re-attached (adopted)
+// while a turn is already running on the sidecar must report that turn
+// open — including naming it — from the very first read after the adopt,
+// not only once a later accepted/receipt event names one (🎯T202).
+func TestT202ReattachMidTurnReportsInFlight(t *testing.T) {
+	socket := filepath.Join(os.TempDir(), fmt.Sprintf("claudia-omp-t202-%d.sock", os.Getpid()))
+	t.Cleanup(func() { os.Remove(socket) })
+	ln, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	const runningTurn = "turn-already-running"
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				r := bufio.NewReader(conn)
+				line, err := r.ReadBytes('\n')
+				if err != nil {
+					return
+				}
+				var msg omp.Message
+				if json.Unmarshal(line, &msg) != nil || msg.Op != omp.OpAdopt {
+					return
+				}
+				// The fix under test: a reattach's ready reply names the
+				// turn the sidecar is already mid-way through, exactly the
+				// fact a sidecar predating 🎯T202 omits.
+				_, _ = conn.Write([]byte(fmt.Sprintf("{\"type\":\"ready\",\"how\":\"adopted\",\"turn_id\":%q}\n", runningTurn)))
+				select {}
+			}()
+		}
+	}()
+
+	exp := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	blob := `{"records":{"anthropic":{"refresh_token":"r","access_token":"token","expiry":"` + exp + `"}}}`
+	ompKeychain = func(context.Context, string, ...string) ([]byte, error) { return []byte(blob), nil }
+	t.Cleanup(func() { ompKeychain = nil; omp.ResetKeychainShot() })
+	if err := OpenOMPPlans(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(omp.SocketEnv, socket)
+
+	agent, err := StartDirect(Config{
+		Name:        "seat",
+		Provider:    ProviderClaude,
+		WorkDir:     t.TempDir(),
+		TermLogPath: "-",
+		AdoptOnly:   true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(agent.Stop)
+
+	// The very first read, with no further event exchanged on the pump,
+	// must already say in-flight and name the running turn. Before the
+	// fix this read false (the atomic bool is zero-valued at Start, and
+	// nothing flips it until a later accepted/receipt event — which this
+	// reattach will never see, since the prompt that opened the turn was
+	// sent to a different host process).
+	if !agent.PromptInFlight() {
+		t.Fatal("PromptInFlight() = false immediately after adopting a seat mid-turn, want true")
+	}
+	if got := agent.OpenTurnID(); got != runningTurn {
+		t.Fatalf("OpenTurnID() = %q, want %q", got, runningTurn)
+	}
+}
+
+// TestT202ReattachUnknownOldSidecarBiasesInFlight: a sidecar that predates
+// 🎯T202 sends no turn_id at all on an adopted ready. That must not read as
+// "idle" — the field's absence is indistinguishable from a genuinely idle
+// reattach, and biasing idle reproduced the queued-behind-a-running-turn
+// incident this target exists to fix. A freshly launched seat (never
+// adopted) is unaffected: it cannot have a turn yet.
+func TestT202ReattachUnknownOldSidecarBiasesInFlight(t *testing.T) {
+	socket := filepath.Join(os.TempDir(), fmt.Sprintf("claudia-omp-t202-old-%d.sock", os.Getpid()))
+	t.Cleanup(func() { os.Remove(socket) })
+	ln, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				r := bufio.NewReader(conn)
+				if _, err := r.ReadBytes('\n'); err != nil {
+					return
+				}
+				// An old sidecar's adopted ready: no turn_id field at all.
+				_, _ = conn.Write([]byte("{\"type\":\"ready\",\"how\":\"adopted\"}\n"))
+				select {}
+			}()
+		}
+	}()
+
+	exp := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	blob := `{"records":{"anthropic":{"refresh_token":"r","access_token":"token","expiry":"` + exp + `"}}}`
+	ompKeychain = func(context.Context, string, ...string) ([]byte, error) { return []byte(blob), nil }
+	t.Cleanup(func() { ompKeychain = nil; omp.ResetKeychainShot() })
+	if err := OpenOMPPlans(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(omp.SocketEnv, socket)
+
+	agent, err := StartDirect(Config{
+		Name:        "seat",
+		Provider:    ProviderClaude,
+		WorkDir:     t.TempDir(),
+		TermLogPath: "-",
+		AdoptOnly:   true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(agent.Stop)
+
+	if !agent.PromptInFlight() {
+		t.Fatal("PromptInFlight() = false adopting a seat an old sidecar reports no turn_id for, want true (safe bias, 🎯T202)")
+	}
+	if got := agent.OpenTurnID(); got != "" {
+		t.Fatalf("OpenTurnID() = %q, want \"\" (unknown, old sidecar never named one)", got)
+	}
+}
+
+// TestT202LaunchedSeatStartsIdle confirms the 🎯T202 safe bias is scoped to
+// a reattach (how != "launched"): a freshly minted seat cannot have a turn
+// running yet and must still start idle.
+func TestT202LaunchedSeatStartsIdle(t *testing.T) {
+	socket := filepath.Join(os.TempDir(), fmt.Sprintf("claudia-omp-t202-launch-%d.sock", os.Getpid()))
+	t.Cleanup(func() { os.Remove(socket) })
+	ln, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				r := bufio.NewReader(conn)
+				if _, err := r.ReadBytes('\n'); err != nil {
+					return
+				}
+				_, _ = conn.Write([]byte("{\"type\":\"ready\",\"how\":\"launched\"}\n"))
+				select {}
+			}()
+		}
+	}()
+
+	exp := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	blob := `{"records":{"anthropic":{"refresh_token":"r","access_token":"token","expiry":"` + exp + `"}}}`
+	ompKeychain = func(context.Context, string, ...string) ([]byte, error) { return []byte(blob), nil }
+	t.Cleanup(func() { ompKeychain = nil; omp.ResetKeychainShot() })
+	if err := OpenOMPPlans(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(omp.SocketEnv, socket)
+
+	agent, err := StartDirect(Config{
+		Name:        "seat",
+		Provider:    ProviderClaude,
+		WorkDir:     t.TempDir(),
+		TermLogPath: "-",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(agent.Stop)
+
+	if agent.PromptInFlight() {
+		t.Fatal("PromptInFlight() = true for a freshly launched seat, want false")
+	}
+	if got := agent.OpenTurnID(); got != "" {
+		t.Fatalf("OpenTurnID() = %q, want \"\" for a freshly launched seat", got)
+	}
+}

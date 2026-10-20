@@ -417,6 +417,27 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 		tools: tools, toolServers: toolRoutes, toolNames: toolNames,
 		sandbox: sandbox,
 	}
+	// A reattach (adopt, or a load that found this seat already running in
+	// the sidecar's memory) may find a turn already open from before this
+	// host process existed (🎯T202). ev.TurnID names it when the sidecar
+	// reports it (seat.ts openTurnID -> server.ts ready reply). "adopted"
+	// and "switched" are the sidecar's own words for those two reattach
+	// shapes (server.ts), distinct from "launched" for a brand new seat
+	// that cannot have a turn yet — and from an empty/unset How, which a
+	// bare fake-sidecar reply in older tests uses and which is not a claim
+	// about reattach either way.
+	//
+	// A sidecar old enough to omit turn_id on a reattach, and a sidecar new
+	// enough to report "" because the reattached seat really is idle,
+	// marshal identically; the two are not distinguishable here, and the
+	// 2026-10-20 T1091 incident (an owner message queued six minutes behind
+	// a turn the host believed did not exist) is the cost of guessing wrong
+	// in the other direction. So any reattach ("adopted"/"switched") biases
+	// in-flight true regardless of whether ev.TurnID itself is empty; only
+	// an actual turn_end/error narrows it back to idle (🎯T202 safe bias).
+	if ev.How == "adopted" || ev.How == "switched" {
+		ctrl.setOpenTurn(true, ev.TurnID)
+	}
 	ompSeats.Store(ctrl, struct{}{})
 	return &agentStart{
 		Control:            ctrl,
@@ -470,6 +491,7 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 				return ctrl.switchModel(provider, model)
 			},
 			promptInFlight: func(*Agent) bool { return ctrl.inflight.Load() },
+			openTurnID:     func(*Agent) string { return ctrl.openTurnID() },
 			stop: func(*Agent) {
 				ompSeats.Delete(ctrl)
 				conn.Close()
@@ -521,6 +543,12 @@ type ompControl struct {
 	toolNames map[string]string
 	mu        sync.Mutex
 	inflight  atomic.Bool
+	// turnID is the running turn's id, when known (🎯T202). Set alongside
+	// inflight so a reattach that learns of a turn from the sidecar's ready
+	// reply, not just from a later accepted/receipt, can name it too. Read
+	// and written under mu; "" does not by itself mean idle — check
+	// inflight.
+	turnID string
 	// lastRefresh is when this seat last refreshed a rejected token (under mu).
 	lastRefresh time.Time
 }
@@ -584,6 +612,33 @@ func (c *ompControl) send(msg omp.Message) error {
 	return c.conn.Send(msg)
 }
 
+// setOpenTurn records whether a turn is open and, when known, its id
+// (🎯T202). inflight is the atomic callers already read through
+// promptInFlight; turnID is kept alongside it under mu so the two never
+// disagree about which turn, if any, is running.
+func (c *ompControl) setOpenTurn(open bool, turnID string) {
+	c.inflight.Store(open)
+	c.mu.Lock()
+	if open {
+		if turnID != "" {
+			c.turnID = turnID
+		}
+	} else {
+		c.turnID = ""
+	}
+	c.mu.Unlock()
+}
+
+// openTurnID is the Ops.openTurnID hook (🎯T202). "" means idle, or a turn
+// is open but the sidecar has not yet named it (reattach to an old sidecar,
+// or to a genuinely idle seat that marshal identically) — callers check
+// inflight (via PromptInFlight) rather than treat "" as proof of idle.
+func (c *ompControl) openTurnID() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.turnID
+}
+
 func (c *ompControl) pump(a *Agent) {
 	defer close(c.bytes)
 	c.mu.Lock()
@@ -642,7 +697,7 @@ func (c *ompControl) pump(a *Agent) {
 			}
 			RecordObservedReceipt(ev.Receipt)
 			if ev.Receipt.State == ReceiptStarted {
-				c.inflight.Store(true)
+				c.setOpenTurn(true, ev.TurnID)
 			}
 			a.publishEvent(Event{Type: "receipt", RequestID: ev.RequestID, SessionID: c.sessionID, Receipt: ev.Receipt})
 		case "auth_retry":
@@ -669,7 +724,7 @@ func (c *ompControl) pump(a *Agent) {
 			// includes the turn a hard-stop starts to deliver what was
 			// queued (🎯T138), which no send of ours opened.
 			if ev.Receipt == nil || ev.Receipt.State == ReceiptAccepted || ev.Receipt.State == ReceiptStarted {
-				c.inflight.Store(true)
+				c.setOpenTurn(true, ev.TurnID)
 			}
 			a.publishEvent(Event{Type: "progress", ProgressType: ProgressPromptAccepted, TurnID: ev.TurnID, RequestID: ev.RequestID, Receipt: ev.Receipt})
 		case "absorbed":
@@ -734,7 +789,7 @@ func (c *ompControl) pump(a *Agent) {
 			slog.Error("omp sidecar seat error", "seat", c.seat, "reason", ev.Reason, "error", ev.Text)
 			a.publishEvent(Event{Type: "system", Text: "omp sidecar: " + ev.Text, SessionID: c.sessionID})
 		case "turn_end", "error":
-			c.inflight.Store(false)
+			c.setOpenTurn(false, "")
 			// Only this turn's own error says whether the token was refused
 			// (🎯T165). The snapshot is the whole conversation and a turn
 			// end's text is the reply: a seat whose history holds an old 401,
