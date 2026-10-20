@@ -421,10 +421,29 @@ func (r *Registry) registerLocked(def AgentDef) error {
 	return r.save()
 }
 
-// Remove removes an agent definition and stops it if running.
+// Remove removes an agent definition and stops it if running. The name is
+// then free: what outlives the seat's process on the backend — a sidecar
+// seat stays loaded after its host lets go — is let go of too, so a later
+// start under the name is a new seat (jevons 🎯T1096).
 func (r *Registry) Remove(name string) error {
-	return r.stopLifecycle(name, true)
+	return r.stopLifecycle(name, removeDiscard)
 }
+
+// RemoveKeepingBackend is Remove without letting go of the backend's seat:
+// a later start of the same session may adopt it. A claudia daemon uses it
+// for a host's plain stop, which reaches it as a removal of its grant.
+func (r *Registry) RemoveKeepingBackend(name string) error {
+	return r.stopLifecycle(name, removeKeep)
+}
+
+// stopKind is what a stop does with the seat's definition and backend state.
+type stopKind int
+
+const (
+	stopOnly      stopKind = iota // stop the handle; the definition stays
+	removeKeep                    // and remove the definition
+	removeDiscard                 // and let go of the backend's seat
+)
 
 // registryStart is the Session entrypoint used by [Registry.Launch].
 // Production points at [StartContext]; hermetic tests may override it.
@@ -749,22 +768,23 @@ func claudeSessionEvidence(provider Provider, sessionID, workDir string) bool {
 // durable serve process and clears ConnectURL/ConnectPID so the next
 // Launch does not reattach to a dead endpoint.
 func (r *Registry) Stop(name string) {
-	if err := r.stopLifecycle(name, false); err != nil {
+	if err := r.stopLifecycle(name, stopOnly); err != nil {
 		slog.Warn("persist agent stop", "name", name, "err", err)
 	}
 }
 
-func (r *Registry) stopLifecycle(name string, remove bool) error {
+func (r *Registry) stopLifecycle(name string, kind stopKind) error {
 	_, _, finish, err := r.beginLifecycle(context.Background(), name, true)
 	if err != nil {
 		return err
 	}
 	defer finish()
-	return r.stopHeld(name, remove)
+	return r.stopHeld(name, kind)
 }
 
 // stopHeld is the body of a stop under a reservation the caller holds.
-func (r *Registry) stopHeld(name string, remove bool) error {
+func (r *Registry) stopHeld(name string, kind stopKind) error {
+	remove := kind != stopOnly
 	r.mu.Lock()
 	proc := r.procs[name]
 	var def *AgentDef
@@ -774,6 +794,11 @@ func (r *Registry) stopHeld(name string, remove bool) error {
 	}
 	r.mu.Unlock()
 	if proc != nil {
+		// A removed name must not stay held by the seat that had it
+		// (jevons 🎯T1096): a later start under it is a new seat.
+		if kind == removeDiscard {
+			proc.discardBackend()
+		}
 		proc.Stop()
 	} else if def != nil {
 		reapSessionWindows(def)

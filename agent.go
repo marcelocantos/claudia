@@ -441,6 +441,12 @@ type agentOps struct {
 	usagePage          func(context.Context, *Agent, uint64, int) (*UsagePage, error)
 	resize             func(*Agent, uint16, uint16) error
 	stop               func(*Agent)
+	// discard is optional: it runs before stop when the seat is removed, not
+	// merely stopped, and lets go of whatever outlives this handle on the
+	// backend's side. A sidecar seat stays loaded in the sidecar when its
+	// host connection closes, so a removed name would otherwise stay held
+	// by its old session (jevons 🎯T1096).
+	discard func(*Agent)
 	// reclaim is set only by the broker backend: it makes sure this
 	// handle's connection owns the seat's grant on the daemon (🎯T124).
 	reclaim func() error
@@ -1958,6 +1964,14 @@ func (a *Agent) Stop() {
 		}
 		a.termMu.Unlock()
 	})
+}
+
+// discardBackend lets go of the seat's backend-side state ahead of a
+// removal's Stop (jevons 🎯T1096). It is a no-op for backends that keep none.
+func (a *Agent) discardBackend() {
+	if a.ops.discard != nil {
+		a.ops.discard(a)
+	}
 }
 
 // Rewind used to roll this Session-mode agent back by n user turns.

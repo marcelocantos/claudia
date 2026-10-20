@@ -33,7 +33,7 @@ func (h grantsHandler) HandleRequest(c *broker.ClientConn, req *broker.Request) 
 
 func (grantsHandler) ConnClosed(*broker.ClientConn) {}
 
-func startGrantsBroker(t *testing.T, h grantsHandler) {
+func startGrantsBroker(t *testing.T, h broker.Handler) {
 	t.Helper()
 	dir, err := os.MkdirTemp("/tmp", "cb")
 	if err != nil {
@@ -95,5 +95,45 @@ func TestStopBrokerSeatReleasesWithStop(t *testing.T) {
 	r := <-released
 	if r.Name != "orphan" || r.Disposition != broker.DispositionStop || r.Force {
 		t.Fatalf("release = %+v, want a plain stop of orphan", r)
+	}
+}
+
+// discardRefusingHandler is a daemon from before ReleaseRequest.Discard:
+// its strict decoder refuses the field.
+type discardRefusingHandler struct{ released chan *broker.ReleaseRequest }
+
+func (h discardRefusingHandler) HandleRequest(c *broker.ClientConn, req *broker.Request) bool {
+	if req.Type != broker.TypeRelease {
+		return false
+	}
+	h.released <- req.Release
+	if req.Release.Discard {
+		_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeUnknownField, Field: "discard", Msg: `release body has no field "discard"`})
+		return true
+	}
+	_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeReleased,
+		Released: &broker.ReleaseResponse{Name: req.Release.Name, Disposition: req.Release.Disposition}})
+	return true
+}
+
+func (discardRefusingHandler) ConnClosed(*broker.ClientConn) {}
+
+// jevons 🎯T1096: a removal asks the daemon to discard the seat; a daemon that
+// cannot is still asked to stop it, rather than the seat being left running.
+func TestT1096RemovalStillStopsOnADaemonWithoutDiscard(t *testing.T) {
+	released := make(chan *broker.ReleaseRequest, 2)
+	startGrantsBroker(t, discardRefusingHandler{released: released})
+	client, err := dialBroker()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	call := func(req *broker.Request) (*broker.Response, error) { return client.call(context.Background(), req) }
+	if err := releaseStop(call, "w", true); err != nil {
+		t.Fatalf("removal on an old daemon: %v", err)
+	}
+	first, second := <-released, <-released
+	if !first.Discard || second.Discard || second.Disposition != broker.DispositionStop || second.Name != "w" {
+		t.Fatalf("releases = %+v, %+v; want a discard, then a plain stop of w", first, second)
 	}
 }

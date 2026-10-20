@@ -287,6 +287,11 @@ type ReleaseRequest struct {
 	// clear a grant another connection owns (🎯T124). The old owner is sent
 	// agent_detached; the seat process keeps running and can be re-granted.
 	Force bool `json:"force,omitempty"`
+	// Discard, with DispositionStop, says the host removed the seat rather
+	// than stopped it: the daemon also lets go of what outlives the seat's
+	// process on the backend, so its name is free for a new seat
+	// (jevons 🎯T1096). A daemon that predates it stops the seat as before.
+	Discard bool `json:"discard,omitempty"`
 }
 
 // Validate checks the request is well formed on the wire. Whether this broker
