@@ -20,6 +20,14 @@ const (
 	codexWhamUsageURL   = "https://chatgpt.com/backend-api/wham/usage"
 	codexAccessTokenEnv = "CLAUDIA_CODEX_ACCESS_TOKEN"
 	codexAccountIDEnv   = "CLAUDIA_CODEX_ACCOUNT_ID"
+
+	// codexAccountCreditsPerAUDMajor converts ChatGPT wham/usage account credits
+	// (spend_control.individual_limit limit/used strings) to AUD major units for
+	// 🎯jevons/T967.3. OpenAI publishes those limits in credit units (Codex
+	// SpendControlLimitDetails; live team specimen in steipete/CodexBar#2736).
+	// The AU ChatGPT overage list price reviewed 2026-09-30 is A$0.01 per
+	// account credit; hermetic fixtures use the same factor.
+	codexAccountCreditsPerAUDMajor = 0.01
 )
 
 // codexWhamUsage is the subset of ChatGPT Codex wham/usage we map.
@@ -28,18 +36,40 @@ const (
 type codexWhamUsage struct {
 	PlanType  string          `json:"plan_type"`
 	RateLimit *codexRateLimit `json:"rate_limit"`
-	// Credits carries the supplementary balance wham/usage already
-	// publishes alongside rate_limit — previously fetched and discarded
-	// unparsed. See [PlanCredits].
+	// Credits is parsed for overage-limit flags only — never surfaced as a raw
+	// balance on usage UI (🎯jevons/T967.3 / parent 🎯T967 non-money rule).
 	Credits *codexCredits `json:"credits"`
+	// SpendControl carries the monthly overage pool when enabled (live probe
+	// 2026-10-22: individual_limit null on pro with overage off; team specimen
+	// CodexBar#2736 nests limit/used under spend_control.individual_limit).
+	SpendControl *codexSpendControl `json:"spend_control"`
+	// RateLimitReachedType is non-null while the account is spending past a
+	// rate-limit window into credits/overage (Codex RateLimitReachedKind).
+	RateLimitReachedType *codexRateLimitReachedType `json:"rate_limit_reached_type"`
 }
 
 // codexCredits mirrors wham/usage's "credits" object. balance arrives as
 // a JSON string (e.g. "50794.5836695000"), hence stringOrFloat.
 type codexCredits struct {
-	HasCredits bool          `json:"has_credits"`
-	Unlimited  bool          `json:"unlimited"`
-	Balance    stringOrFloat `json:"balance"`
+	HasCredits          bool          `json:"has_credits"`
+	Unlimited           bool          `json:"unlimited"`
+	OverageLimitReached bool          `json:"overage_limit_reached"`
+	Balance             stringOrFloat `json:"balance"`
+}
+
+type codexSpendControl struct {
+	Reached         bool                  `json:"reached"`
+	IndividualLimit *codexIndividualLimit `json:"individual_limit"`
+}
+
+type codexIndividualLimit struct {
+	Limit   string `json:"limit"`
+	Used    string `json:"used"`
+	UsedPct int    `json:"used_percent"`
+}
+
+type codexRateLimitReachedType struct {
+	Kind string `json:"kind"`
 }
 
 type codexRateLimit struct {
@@ -207,19 +237,55 @@ func parseCodexWhamUsage(body []byte, now time.Time) (PlanUsage, error) {
 	add(raw.RateLimit.PrimaryWindow)
 	add(raw.RateLimit.SecondaryWindow)
 
-	if raw.Credits != nil && raw.Credits.HasCredits {
-		pu.Credits = &PlanCredits{
-			HasCredits: raw.Credits.HasCredits,
-			Unlimited:  raw.Credits.Unlimited,
-			Balance:    float64(raw.Credits.Balance),
-		}
-	}
+	pu.Spend = mapCodexOverageSpend(raw.SpendControl, raw.Credits, raw.RateLimitReachedType)
 
 	if len(pu.Windows) > 0 {
 		pu.Status = PlanUsageAvailable
 		pu.Reason = ""
 	}
 	return pu, nil
+}
+
+
+func mapCodexOverageSpend(sc *codexSpendControl, credits *codexCredits, reached *codexRateLimitReachedType) *PlanSpend {
+	if sc == nil || sc.IndividualLimit == nil {
+		return nil
+	}
+	lim := sc.IndividualLimit
+	usedCredits, errU := strconv.ParseFloat(strings.TrimSpace(lim.Used), 64)
+	limitCredits, errL := strconv.ParseFloat(strings.TrimSpace(lim.Limit), 64)
+	if errU != nil || errL != nil {
+		return nil
+	}
+	out := &PlanSpend{
+		Enabled: true,
+		Used:    codexCreditsToAUDMoney(usedCredits),
+		Limit:   codexCreditsToAUDMoney(limitCredits),
+	}
+	if lim.UsedPct > 0 {
+		pct := float64(lim.UsedPct)
+		out.Percent = &pct
+	}
+	out.LimitReached = sc.Reached
+	if credits != nil && credits.OverageLimitReached {
+		out.LimitReached = true
+	}
+	if reached != nil && strings.TrimSpace(reached.Kind) != "" {
+		out.LimitReached = true
+	}
+	return out
+}
+
+func codexCreditsToAUDMoney(credits float64) *PlanMoney {
+	if credits < 0 {
+		credits = 0
+	}
+	aud := credits * codexAccountCreditsPerAUDMajor
+	minor := int64(aud * 100)
+	if minor < 0 {
+		minor = 0
+	}
+	return &PlanMoney{AmountMinor: minor, Exponent: 2, Currency: "AUD"}
 }
 
 func loadCodexChatGPTTokens(authPath string) (accessToken, accountID string, err error) {
