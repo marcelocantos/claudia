@@ -15,7 +15,7 @@ import { unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createSeatAgent, turnOf, type HostTool, type SeatAgent } from "./seat.ts";
 import { defaultWriter, spoolReceipt } from "./spool.ts";
-import { claimSocket } from "./singleton.ts";
+import { claimSocket, holderDescription } from "./singleton.ts";
 import { PlanTokens } from "./plantokens.ts";
 import { HOST_CONNECTION_LOST, HostCalls } from "./hostcalls.ts";
 import { SeatStore } from "./store.ts";
@@ -40,7 +40,7 @@ if (!sock) {
 }
 // 🎯T145: another live sidecar owns this socket; leave it alone.
 if (!claimSocket(sock)) {
-  console.error(`sidecar: ${sock} is served by another sidecar; exiting`);
+  console.error(`sidecar: ${sock} is served by another sidecar (${holderDescription(sock)}); exiting`);
   process.exit(0);
 }
 // Holding the lock, a socket file left here is stale.

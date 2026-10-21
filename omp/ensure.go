@@ -28,6 +28,29 @@ const (
 	stateSubdir = "claudia"
 )
 
+// SocketInStateDir is the default sidecar socket for a broker state directory.
+func SocketInStateDir(stateDir string) (string, error) {
+	abs, err := filepath.Abs(filepath.Join(stateDir, socketName))
+	if err != nil {
+		return "", fmt.Errorf("omp: sidecar socket in %q: %w", stateDir, err)
+	}
+	return abs, nil
+}
+
+// EnsureSocketEnv pins CLAUDIA_OMP_SOCKET to [SocketInStateDir] when unset,
+// so a broker started with -state-dir does not reach into the default home
+// state tree (🎯T208).
+func EnsureSocketEnv(stateDir string) error {
+	if strings.TrimSpace(os.Getenv(SocketEnv)) != "" {
+		return nil
+	}
+	sock, err := SocketInStateDir(stateDir)
+	if err != nil {
+		return err
+	}
+	return os.Setenv(SocketEnv, sock)
+}
+
 // SocketPath is the sidecar's listen address. CLAUDIA_OMP_SOCKET wins.
 func SocketPath() (string, error) {
 	if p := strings.TrimSpace(os.Getenv(SocketEnv)); p != "" {
