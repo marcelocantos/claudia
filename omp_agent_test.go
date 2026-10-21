@@ -490,7 +490,7 @@ func TestOMPSidecarPromptCallsPiAgentCore(t *testing.T) {
 	if strings.Contains(string(manifest), `@oh-my-pi/pi-coding-agent`) {
 		t.Fatal("sidecar/package.json must not depend on the coding-agent SDK")
 	}
-	if !strings.Contains(src, `from "./coding.ts"`) || !strings.Contains(src, "const own = codingTools(() => cwd, boundOf, () => sandbox);") || !strings.Contains(src, "agent.setTools([...own, ...hosted])") {
+	if !strings.Contains(src, `from "./coding.ts"`) || !strings.Contains(src, "const own = codingTools(() => cwd, boundOf, policyOf);") || !strings.Contains(src, "agent.setTools([...own, ...hosted])") {
 		t.Fatal("seat.ts must advertise host coding tools (Bash/Read/Write/Glob/Grep) beside the host's jevons_* tools (🎯T886)")
 	}
 	coding, err := os.ReadFile("sidecar/coding.ts")

@@ -120,6 +120,7 @@ var sessionFieldFates = map[Provider]map[string]fieldDecl{
 		"AdoptOnly":            {fateLocal, "sidecar-only adoption gate; never sent to a vendor CLI"},
 		"ContextPreserve":      {fateLocal, "subscription-sidecar compaction steer (🎯T152); a vendor CLI manages its own context"},
 		"ContextPins":          {fateLocal, "subscription-sidecar pinned facts (🎯T152); a vendor CLI manages its own context"},
+		"ProtectedPaths":       {fateConsumed, "OMP sidecar load protected_paths (🎯T209)"},
 	},
 	ProviderGrok: {
 		"Provider":             {fateLocal, "selects this path"},
@@ -152,6 +153,7 @@ var sessionFieldFates = map[Provider]map[string]fieldDecl{
 		"AdoptOnly":            {fateLocal, "sidecar-only adoption gate; never sent to a vendor CLI"},
 		"ContextPreserve":      {fateLocal, "subscription-sidecar compaction steer (🎯T152); a vendor CLI manages its own context"},
 		"ContextPins":          {fateLocal, "subscription-sidecar pinned facts (🎯T152); a vendor CLI manages its own context"},
+		"ProtectedPaths":       {fateConsumed, "OMP sidecar load protected_paths (🎯T209)"},
 	},
 	ProviderCodex: {
 		"Provider":             {fateLocal, "selects this path"},
@@ -184,6 +186,7 @@ var sessionFieldFates = map[Provider]map[string]fieldDecl{
 		"AdoptOnly":            {fateLocal, "sidecar-only adoption gate; never sent to a vendor CLI"},
 		"ContextPreserve":      {fateLocal, "subscription-sidecar compaction steer (🎯T152); a vendor CLI manages its own context"},
 		"ContextPins":          {fateLocal, "subscription-sidecar pinned facts (🎯T152); a vendor CLI manages its own context"},
+		"ProtectedPaths":       {fateConsumed, "OMP sidecar load protected_paths (🎯T209)"},
 	},
 	ProviderCursor: {
 		"Provider":             {fateLocal, "selects this path"},
@@ -216,6 +219,7 @@ var sessionFieldFates = map[Provider]map[string]fieldDecl{
 		"AdoptOnly":            {fateLocal, "sidecar-only adoption gate; never sent to a vendor CLI"},
 		"ContextPreserve":      {fateLocal, "subscription-sidecar compaction steer (🎯T152); a vendor CLI manages its own context"},
 		"ContextPins":          {fateLocal, "subscription-sidecar pinned facts (🎯T152); a vendor CLI manages its own context"},
+		"ProtectedPaths":       {fateConsumed, "OMP sidecar load protected_paths (🎯T209)"},
 	},
 }
 
@@ -438,8 +442,16 @@ func sessionStartRequest(field string) agentStartRequest {
 		req.Config.ConnectPID = 1
 	case "ConnectURL":
 		req.Config.ConnectURL = "ws://127.0.0.1:9/ws"
+	case "ProtectedPaths":
+		req.Config.ProtectedPaths = []ProtectedPathRule{{Pattern: "**/t24-protected.yaml", Reason: "t24"}}
 	}
 	return req
+}
+
+
+func sessionMaterialisesProtectedPaths(req agentStartRequest) bool {
+	rules := ompProtectedPathRules(req.Config)
+	return len(rules) == 1 && rules[0].Pattern == "**/t24-protected.yaml"
 }
 
 func sessionMaterialises(provider Provider, field string) bool {
@@ -492,6 +504,8 @@ func sessionMaterialises(provider Provider, field string) bool {
 				return strings.Contains(toml, "/tmp/claudia-t24-gates")
 			}
 			return strings.Contains(toml, "network_access = true")
+		case "ProtectedPaths":
+			return sessionMaterialisesProtectedPaths(req)
 		default:
 			return false
 		}
@@ -507,6 +521,8 @@ func sessionMaterialises(provider Provider, field string) bool {
 			return req.Config.Model != ""
 		case "MCPServers", "MCPExclusive":
 			return claudeMCPConfigArg(req) == "session:mcpServers"
+		case "ProtectedPaths":
+			return sessionMaterialisesProtectedPaths(req)
 		default:
 			return false
 		}
@@ -529,6 +545,8 @@ func sessionMaterialises(provider Provider, field string) bool {
 			return planGrokSession(req).GrokHome != ""
 		case "GrokConnect", "ConnectURL":
 			return plan.Connect
+		case "ProtectedPaths":
+			return sessionMaterialisesProtectedPaths(req)
 		default:
 			return argvHolds(plan.Args, sessionNeedle(field, req))
 		}
@@ -549,6 +567,8 @@ func sessionMaterialises(provider Provider, field string) bool {
 			return len(resolveACPMCPServers(req.Config)) > 0
 		case "MCPExclusive":
 			return plan.MCPExclusive
+		case "ProtectedPaths":
+			return sessionMaterialisesProtectedPaths(req)
 		default:
 			return argvHolds(plan.Args, sessionNeedle(field, req))
 		}
