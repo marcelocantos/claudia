@@ -6,7 +6,8 @@
 // without touching the socket the first one is serving.
 
 import { dlopen, FFIType } from "bun:ffi";
-import { openSync, writeFileSync } from "node:fs";
+import { execSync } from "node:child_process";
+import { openSync, readFileSync, writeFileSync } from "node:fs";
 
 const LOCK_EX = 2;
 const LOCK_NB = 4;
@@ -29,4 +30,16 @@ export function claimSocket(sock: string): boolean {
 
 export function holdsSocket(): boolean {
   return held !== undefined;
+}
+
+/** Names the live sidecar holding sock's lock, for a redundant start (🎯T208). */
+export function holderDescription(sock: string): string {
+  try {
+    const pid = Number.parseInt(readFileSync(sock + ".pid", "utf8").trim(), 10);
+    if (!Number.isFinite(pid) || pid <= 1) return "holder unknown";
+    const ppid = execSync(`ps -o ppid= -p ${pid}`, { encoding: "utf8" }).trim();
+    return `holder pid=${pid} parent=${ppid}`;
+  } catch {
+    return "holder unknown";
+  }
 }

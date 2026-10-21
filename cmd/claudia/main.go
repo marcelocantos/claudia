@@ -264,6 +264,21 @@ func serve(args []string) error {
 	}
 	refreshCancel()
 
+	sidecarState := *stateDir
+	if sidecarState == "" {
+		sd, err := broker.StateDir()
+		if err != nil {
+			return err
+		}
+		sidecarState = sd
+	}
+	if err := os.MkdirAll(sidecarState, 0o700); err != nil {
+		return fmt.Errorf("broker: state dir: %w", err)
+	}
+	if err := omp.EnsureSocketEnv(sidecarState); err != nil {
+		return fmt.Errorf("broker: sidecar socket: %w", err)
+	}
+
 	d, err := daemon.New(daemon.Options{
 		MCPSeedStateDirs:         consumer.MCPSeedStateDirs,
 		MCPConsumerOwnedPrefixes: consumer.MCPConsumerOwnedPrefixes,

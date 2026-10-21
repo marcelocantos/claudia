@@ -366,3 +366,32 @@ func hfsCompressed(t *testing.T, path string) bool {
 	const ufCompressed = 0x20
 	return flags&ufCompressed != 0
 }
+
+// 🎯T208: a broker's resolved state dir becomes the sidecar socket when the
+// env is unset; an explicit CLAUDIA_OMP_SOCKET is left alone.
+func TestEnsureSocketEnvPinsStateDir(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "omp-t208-env-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	want, err := SocketInStateDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(SocketEnv, "")
+	if err := EnsureSocketEnv(dir); err != nil {
+		t.Fatal(err)
+	}
+	if got := os.Getenv(SocketEnv); got != want {
+		t.Fatalf("CLAUDIA_OMP_SOCKET = %q, want %q", got, want)
+	}
+	override := filepath.Join(dir, "other.sock")
+	t.Setenv(SocketEnv, override)
+	if err := EnsureSocketEnv(dir); err != nil {
+		t.Fatal(err)
+	}
+	if got := os.Getenv(SocketEnv); got != override {
+		t.Fatalf("explicit socket was overwritten: %q", got)
+	}
+}

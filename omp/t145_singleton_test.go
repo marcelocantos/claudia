@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -36,6 +37,11 @@ func t145Env(t *testing.T) string {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	socket := filepath.Join(dir, "omp.sock")
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller")
+	}
+	t.Setenv("CLAUDIA_OMP_SERVER", filepath.Join(filepath.Dir(file), "..", "sidecar", "server.ts"))
 	t.Setenv(SocketEnv, socket)
 	t.Setenv("CLAUDIA_OMP_SPOOL_DIR", filepath.Join(dir, "spool"))
 	return socket
@@ -93,8 +99,11 @@ func TestT145OnlyOneSidecarServesASocket(t *testing.T) {
 	if err := cmd.Run(); err != nil { // it must exit, and cleanly
 		t.Fatalf("second sidecar: %v\n%s", err, stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "served by another sidecar") {
-		t.Fatalf("second sidecar did not say why it left: %q", stderr.String())
+	if msg := stderr.String(); !strings.Contains(msg, "served by another sidecar") {
+		t.Fatalf("second sidecar did not say why it left: %q", msg)
+	}
+	if !strings.Contains(stderr.String(), "holder pid="+strconv.Itoa(first)) {
+		t.Fatalf("second sidecar did not name the holder: %q", stderr.String())
 	}
 	t145Serves(ctx, t, socket)
 	if got := t145Pid(t, socket); got != first {
