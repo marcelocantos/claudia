@@ -53,6 +53,10 @@ type seatClaim struct {
 	// record. Its unclaimed time counts from here, so a ledger that
 	// predates a grant never condemns it on first sight.
 	Seen time.Time `json:"seen,omitzero"`
+	// StoodDown is when a consumer last parked or reaped the grant. A broker
+	// restart does not materialise stood-down seats until a consumer holds
+	// them again (🎯T207).
+	StoodDown time.Time `json:"stood_down,omitzero"`
 }
 
 type claimsDoc struct {
@@ -104,6 +108,24 @@ func (c *seatClaims) held(at time.Time, names ...string) error {
 		if at.After(claim.Held) {
 			claim.Held = at
 		}
+		claim.StoodDown = time.Time{}
+		c.seats[name] = claim
+	}
+	return c.saveLocked()
+}
+
+// standDown records that a consumer parked or reaped names at at.
+func (c *seatClaims) standDown(at time.Time, names ...string) error {
+	if len(names) == 0 {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, name := range names {
+		claim := c.seats[name]
+		if claim.StoodDown.IsZero() || at.After(claim.StoodDown) {
+			claim.StoodDown = at
+		}
 		c.seats[name] = claim
 	}
 	return c.saveLocked()
@@ -141,6 +163,10 @@ func (c *seatClaims) resumeOrder(now time.Time, unclaimedAfter time.Duration, na
 	var held, unheld []string
 	for _, name := range names {
 		claim := c.seats[name]
+		if !claim.StoodDown.IsZero() {
+			left = append(left, name)
+			continue
+		}
 		last := claim.Held
 		if last.IsZero() {
 			last = claim.Seen

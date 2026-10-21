@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 
 	"github.com/marcelocantos/claudia"
 	"github.com/marcelocantos/sqlpipe/go/sqlpipe"
@@ -45,7 +46,11 @@ func ReconcileFile(ctx context.Context, path string, reg *claudia.Registry) erro
 	if p == nil || at != path {
 		return fmt.Errorf("%w: reconcile of %s before this broker opened it (PublishFile)", ErrNotOwner, path)
 	}
-	return reconcile(ctx, p.withDB, reg)
+	stoodDown, err := claudia.StoodDownSeats(filepath.Join(filepath.Dir(path), claudia.ClaimsFile))
+	if err != nil {
+		return fmt.Errorf("control plane: claims: %w", err)
+	}
+	return reconcile(ctx, p.withDB, reg, stoodDown)
 }
 
 // Reconcile reads desired state, grants, and control intents from db and
@@ -56,7 +61,7 @@ func Reconcile(ctx context.Context, db *sqlpipe.Database, reg *claudia.Registry)
 	if db == nil || reg == nil {
 		return fmt.Errorf("control plane: nil reconcile")
 	}
-	return reconcile(ctx, func(fn func(*sqlpipe.Database) error) error { return fn(db) }, reg)
+	return reconcile(ctx, func(fn func(*sqlpipe.Database) error) error { return fn(db) }, reg, nil)
 }
 
 // dbRun runs one step against the file under its writer's lock. Reconcile
@@ -65,7 +70,7 @@ func Reconcile(ctx context.Context, db *sqlpipe.Database, reg *claudia.Registry)
 // would deadlock the seat pump on its own broker.
 type dbRun func(func(*sqlpipe.Database) error) error
 
-func reconcile(ctx context.Context, run dbRun, reg *claudia.Registry) error {
+func reconcile(ctx context.Context, run dbRun, reg *claudia.Registry, stoodDown map[string]bool) error {
 	if reg == nil {
 		return fmt.Errorf("control plane: nil reconcile")
 	}
@@ -105,7 +110,7 @@ func reconcile(ctx context.Context, run dbRun, reg *claudia.Registry) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		status, err := reconcileSeat(ctx, run, reg, seat, granted[seat.Seat], statuses[seat.Seat])
+		status, err := reconcileSeat(ctx, run, reg, seat, granted[seat.Seat], stoodDown[seat.Seat], statuses[seat.Seat])
 		if err != nil {
 			return err
 		}
@@ -124,8 +129,8 @@ func reconcile(ctx context.Context, run dbRun, reg *claudia.Registry) error {
 	return nil
 }
 
-func reconcileSeat(ctx context.Context, run dbRun, reg *claudia.Registry, seat DesiredSeat, granted bool, prev SeatStatus) (SeatStatus, error) {
-	if !granted {
+func reconcileSeat(ctx context.Context, run dbRun, reg *claudia.Registry, seat DesiredSeat, granted bool, stoodDown bool, prev SeatStatus) (SeatStatus, error) {
+	if !granted || stoodDown {
 		status := SeatStatus{
 			Seat: seat.Seat, SessionID: prev.SessionID, Generation: seat.Generation, Revision: seat.Revision,
 			RuntimeID: prev.RuntimeID, State: statusUngranted, StatusJSON: statusBody(seat),

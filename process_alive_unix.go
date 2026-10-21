@@ -10,6 +10,9 @@ import (
 	"syscall"
 )
 
+// ProcessAlive reports whether pid is a live OS process (best-effort).
+func ProcessAlive(pid int) bool { return processAliveImpl(pid) }
+
 func processAliveImpl(pid int) bool {
 	if pid <= 0 {
 		return false

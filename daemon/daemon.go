@@ -1274,19 +1274,15 @@ func (d *Daemon) handleRelease(c *broker.ClientConn, req *broker.Request) {
 	switch req.Release.Disposition {
 	case broker.DispositionDetach:
 		var displaced *broker.ClientConn
-		wasHeld := false
 		if g != nil {
 			if g.owner != c {
 				displaced = g.owner
 			}
-			wasHeld = g.owner != nil
 			d.detachLocked(g)
 			d.noteUnownedLocked(name)
 		}
 		d.mu.Unlock()
-		if wasHeld {
-			d.noteHeld(name)
-		}
+		d.standDown(name)
 		// An operator's forced detach must not leave the old owner sending
 		// on a grant it no longer holds without knowing why (🎯T124).
 		d.notifyDetached(displaced, name, "released by an operator on another connection")
@@ -1300,6 +1296,7 @@ func (d *Daemon) handleRelease(c *broker.ClientConn, req *broker.Request) {
 			delete(d.grants, name)
 		}
 		d.mu.Unlock()
+		d.standDown(name)
 		// A host's removal frees the name on the backend too; a plain stop
 		// leaves the backend's seat for a later start of the same session
 		// to adopt, as before (jevons 🎯T1096).
@@ -1926,6 +1923,14 @@ func (d *Daemon) resumeSeats() {
 // next restart's resume; a write that fails costs that order, not the grant.
 func (d *Daemon) noteHeld(names ...string) {
 	if err := d.claims.held(d.clock.Now(), names...); err != nil {
+		d.log.Warn("claim ledger not saved", "err", err)
+	}
+}
+
+// standDown records that a consumer parked or reaped names. The next broker
+// boot leaves them unmaterialised until a consumer holds them again.
+func (d *Daemon) standDown(names ...string) {
+	if err := d.claims.standDown(d.clock.Now(), names...); err != nil {
 		d.log.Warn("claim ledger not saved", "err", err)
 	}
 }

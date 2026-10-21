@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/marcelocantos/claudia"
 	"github.com/marcelocantos/claudia/internal/broker"
@@ -143,26 +144,86 @@ func (p *plane) publishReceipt(receipt *claudia.RequestReceipt) error {
 	return p.withDB(func(db *sqlpipe.Database) error { return PublishReceipt(db, receipt) })
 }
 
+// linkPeerAlive is overridden in tests to simulate a dead consumer peer.
+var linkPeerAlive = claudia.ProcessAlive
+
+// consumerLinkSlot admits one live consumer control link. When a new
+// consumer dials while the slot is taken, a dead peer is evicted so a
+// restarted consumer can relink immediately (🎯T207).
+type consumerLinkSlot struct {
+	mu   sync.Mutex
+	busy bool
+	conn net.Conn
+	pid  int
+}
+
+func (s *consumerLinkSlot) evictStale() {
+	s.mu.Lock()
+	if !s.busy || s.conn == nil {
+		s.mu.Unlock()
+		return
+	}
+	if s.pid > 0 && linkPeerAlive(s.pid) {
+		s.mu.Unlock()
+		return
+	}
+	_ = s.conn.Close()
+	s.mu.Unlock()
+}
+
+func (s *consumerLinkSlot) begin(conn net.Conn) bool {
+	pid := broker.PeerPID(conn)
+	for i := 0; i < 2000; i++ {
+		s.mu.Lock()
+		switch {
+		case !s.busy:
+			s.busy = true
+			s.conn = conn
+			s.pid = pid
+			s.mu.Unlock()
+			return true
+		case s.pid > 0 && linkPeerAlive(s.pid):
+			s.mu.Unlock()
+			return false
+		default:
+			if s.conn != nil {
+				_ = s.conn.Close()
+			}
+			s.mu.Unlock()
+			time.Sleep(time.Millisecond)
+		}
+	}
+	return false
+}
+
+func (s *consumerLinkSlot) end() {
+	s.mu.Lock()
+	s.busy = false
+	s.conn, s.pid = nil, 0
+	s.mu.Unlock()
+}
+
 // serve answers consumer links on ln, one at a time, until ln closes. The
 // broker is the sqlpipe client of each link: it claims the Claudia tables,
 // and the consumer approves that claim.
 func (p *plane) serve(ln net.Listener, done <-chan struct{}) {
-	var active sync.Mutex
+	var slot consumerLinkSlot
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
 			return
 		}
-		if !active.TryLock() {
+		slot.evictStale()
+		if !slot.begin(conn) {
 			// One consumer writes the Jevons tables. A second link would
 			// be a second writer of them.
 			slog.Warn("control plane: refused a second consumer link while one is live")
 			_ = conn.Close()
 			continue
 		}
-		go func() {
-			defer active.Unlock()
-			err := runLink(conn, done, linkSide{
+		go func(c net.Conn) {
+			defer slot.end()
+			err := runLink(c, done, linkSide{
 				lock:   &p.mu,
 				db:     func() *sqlpipe.Database { return p.db },
 				flush:  p.flush,
@@ -170,7 +231,7 @@ func (p *plane) serve(ln net.Listener, done <-chan struct{}) {
 				client: true,
 			})
 			slog.Info("control plane: consumer link ended", "err", err)
-		}()
+		}(conn)
 	}
 }
 
