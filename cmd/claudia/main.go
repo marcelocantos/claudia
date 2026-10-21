@@ -282,6 +282,7 @@ func serve(args []string) error {
 	d, err := daemon.New(daemon.Options{
 		MCPSeedStateDirs:         consumer.MCPSeedStateDirs,
 		MCPConsumerOwnedPrefixes: consumer.MCPConsumerOwnedPrefixes,
+		ConsumerStateDir:         consumer.ConsumerStateDir,
 		SocketPath:               *socket,
 		StateDir:                 *stateDir,
 		UsageTTL:                 *usageTTL,

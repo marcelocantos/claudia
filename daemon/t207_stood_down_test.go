@@ -4,6 +4,7 @@
 package daemon
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -62,5 +63,54 @@ func TestT207ResumeOrderSkipsStoodDown(t *testing.T) {
 	resume, left := c.resumeOrder(now, time.Hour, []string{"held", "parked"})
 	if len(resume) != 1 || resume[0] != "held" || len(left) != 1 || left[0] != "parked" {
 		t.Fatalf("resume=%v left=%v", resume, left)
+	}
+}
+
+// 🎯T207: consumer fleet intent (parked/reaped) is merged into claims at boot.
+func TestT207BrokerRestartSkipsIntentParkedSeat(t *testing.T) {
+	f := newFixture(t)
+	starts := recordStarts(f)
+	now := f.clock.Now()
+	writeGrantsTable(t, f.state, autoStart(t, "parked-worker", "kept-worker"))
+	writeClaims(t, f.state, map[string]seatClaim{
+		"kept-worker":   {Held: now.Add(-time.Minute)},
+		"parked-worker": {Held: now.Add(-time.Hour)},
+	})
+	consumerRoot := t.TempDir()
+	intentDir := filepath.Join(consumerRoot, "fleet")
+	if err := os.MkdirAll(intentDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	intent := `{"agents":{"parked-worker":{"state":"parked"}}}`
+	if err := os.WriteFile(filepath.Join(intentDir, "intent.json"), []byte(intent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	opts := f.options(nil)
+	opts.RestartNudge = "-"
+	opts.ResumeConcurrency = 1
+	opts.ConsumerStateDir = consumerRoot
+	f.bootWith(t, opts)
+	<-f.d.resumeDone
+	if got := strings.Join(starts(), ","); got != "kept-worker" {
+		t.Fatalf("resume starts = %q, want only kept-worker", got)
+	}
+}
+
+func TestTouchHeldPreservesStoodDown(t *testing.T) {
+	now := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
+	dir := t.TempDir()
+	writeClaims(t, dir, map[string]seatClaim{
+		"parked": {Held: now.Add(-time.Hour), StoodDown: now},
+	})
+	c, err := loadSeatClaims(filepath.Join(dir, claimsFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.touchHeld(now.Add(-time.Minute), "parked"); err != nil {
+		t.Fatal(err)
+	}
+	claim := c.seats["parked"]
+	if claim.StoodDown.IsZero() {
+		t.Fatal("touchHeld cleared stood_down")
 	}
 }

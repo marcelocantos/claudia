@@ -30,4 +30,5 @@ func bindMCPConsumerFlags(fs *flag.FlagSet, opts *daemon.Options) {
 		opts.MCPConsumerOwnedPrefixes = append(opts.MCPConsumerOwnedPrefixes, value)
 		return nil
 	})
+	fs.StringVar(&opts.ConsumerStateDir, "consumer-state-dir", "", "Jevons state directory; fleet/intent.json is merged into claims at boot so parked/reaped seats are not resumed (🎯T207); default CLAUDIA_CONSUMER_STATE_DIR")
 }

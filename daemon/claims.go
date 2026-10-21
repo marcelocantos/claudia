@@ -96,7 +96,8 @@ func loadSeatClaims(path string) (*seatClaims, error) {
 	return c, nil
 }
 
-// held stamps names as owned by a consumer at at.
+// held stamps names as owned by a consumer at at and clears a prior
+// stand-down: the consumer is taking the grant again.
 func (c *seatClaims) held(at time.Time, names ...string) error {
 	if len(names) == 0 {
 		return nil
@@ -109,6 +110,25 @@ func (c *seatClaims) held(at time.Time, names ...string) error {
 			claim.Held = at
 		}
 		claim.StoodDown = time.Time{}
+		c.seats[name] = claim
+	}
+	return c.saveLocked()
+}
+
+// touchHeld updates the last-held time without lifting stand-down. A
+// consumer disconnect that leaves seats running must not erase an earlier
+// park/reap recorded in the ledger (🎯T207).
+func (c *seatClaims) touchHeld(at time.Time, names ...string) error {
+	if len(names) == 0 {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, name := range names {
+		claim := c.seats[name]
+		if at.After(claim.Held) {
+			claim.Held = at
+		}
 		c.seats[name] = claim
 	}
 	return c.saveLocked()

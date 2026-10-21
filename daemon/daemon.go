@@ -117,6 +117,11 @@ type Options struct {
 	DisableIntel bool
 	// IntelRefresh replaces RefreshModelIntel (tests).
 	IntelRefresh func(context.Context) error
+	// ConsumerStateDir, when set, is the Jevons (or other consumer) state
+	// directory whose fleet/intent.json is merged into the claim ledger at
+	// boot so parked/reaped seats are not resumed (🎯T207). When empty,
+	// CLAUDIA_CONSUMER_STATE_DIR is used if set.
+	ConsumerStateDir string
 }
 
 // Daemon internals.
@@ -318,6 +323,7 @@ func New(opts Options) (*Daemon, error) {
 		checks:   map[string]pendingGoalCheck{},
 		claims:   claims,
 	}
+	d.mergeConsumerIntentStandDown()
 	d.ctx, d.cancel = context.WithCancel(context.Background())
 	d.resumeDone = make(chan struct{})
 	d.usage = claudia.NewPlanUsageMonitor(&claudia.PlanUsageMonitorArgs{
@@ -599,7 +605,7 @@ func (d *Daemon) ConnClosed(c *broker.ClientConn) {
 		}
 	}
 	d.mu.Unlock()
-	d.noteHeld(append(append([]string(nil), detached...), ephemeral...)...)
+	d.touchHeld(append(append([]string(nil), detached...), ephemeral...)...)
 	for _, name := range detached {
 		d.log.Info("consumer connection closed; seat kept running", "grant", name)
 		d.emit(broker.EventMessage{Kind: broker.EventDetach, Name: name})
@@ -1923,6 +1929,13 @@ func (d *Daemon) resumeSeats() {
 // next restart's resume; a write that fails costs that order, not the grant.
 func (d *Daemon) noteHeld(names ...string) {
 	if err := d.claims.held(d.clock.Now(), names...); err != nil {
+		d.log.Warn("claim ledger not saved", "err", err)
+	}
+}
+
+// touchHeld updates last-held without lifting stand-down (🎯T207).
+func (d *Daemon) touchHeld(names ...string) {
+	if err := d.claims.touchHeld(d.clock.Now(), names...); err != nil {
 		d.log.Warn("claim ledger not saved", "err", err)
 	}
 }
