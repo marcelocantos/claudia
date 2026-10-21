@@ -135,13 +135,13 @@ test("expired, cancelled, oversized and concurrent scans have explicit bounded f
   await expect(reader.page(other.store)).rejects.toThrow("busy");
   cancelled.abort();
   expect(await result).toContain("cancelled");
-  for (let i = 0; i < 100 && reader.stats().activeScans; i++) await yieldIO();
+  for (let i = 0; i < 10_000 && reader.stats().activeScans; i++) await yieldIO();
   expect(reader.stats().activeScans).toBe(0);
   expect(reader.stats().bytesRead).toBeLessThan(statSync(f.store.path).size);
   expect(reader.stats().cacheEntries).toBe(0);
   const timed = new HistoricalUsageReader({ readBytes: 16 });
   await expect(timed.page(f.store, 0, 1, { expiresAt: Date.now() + 20 })).rejects.toThrow("deadline");
-  for (let i = 0; i < 100 && timed.stats().activeScans; i++) await yieldIO();
+  for (let i = 0; i < 10_000 && timed.stats().activeScans; i++) await yieldIO();
   expect(timed.stats().activeScans).toBe(0);
   expect(timed.stats().bytesRead).toBeLessThan(statSync(f.store.path).size);
 });

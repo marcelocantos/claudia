@@ -151,7 +151,10 @@ export function createSeatAgent(opts: {
     // Reuse the receipt journal's validation and recovery classification.
     const pending = new ReceiptJournal(history).pending();
     if (history.rebuild(opts.provider).length === 0 && pending.length === 0) {
-      throw new Error("existing conversation required for this seat and session; refusing to mint a replacement session");
+      const storePath = opts.store?.path ?? "(no store path)";
+      throw new Error(
+        `existing conversation required for this seat and session; store ${storePath} has no message records; refusing to mint a replacement session`,
+      );
     }
   }
   let sandbox = opts.sandbox;
@@ -285,9 +288,14 @@ export function createSeatAgent(opts: {
   // Between tool calls, when the loop is about to call the model again: the
   // CLI's mid-turn pass. The live array is the loop's own, so a compaction is
   // spliced into it for the next request.
+  // Cursor exec-channel tool results land on agent.state before the loop's
+  // context copy catches up, so persist canonical state only (🎯T206).
+  const persistBeforeNextModel = () => {
+    maint.persist(agent.state.messages);
+  };
   agent.setOnTurnEnd(async (messages, signal, context) => {
     // Every finished model call is durable before the next one (🎯T151).
-    maint.persist(messages);
+    persistBeforeNextModel();
     if (signal?.aborted || !context?.willContinue || maint.compacting) return;
     const last = [...messages].reverse().find((m) => m.role === "assistant") as { stopReason?: string } | undefined;
     if (!last || last.stopReason === "aborted" || last.stopReason === "error") return;
@@ -388,6 +396,9 @@ export function createSeatAgent(opts: {
   };
   agent.addBeforeModelCall((context) => {
     receipts.assertHealthy();
+    // Listeners are observational and swallow exceptions in pi-agent-core.
+    // This awaited gate is the fail-closed persistence boundary (🎯T206).
+    persistBeforeNextModel();
     // Input events are emitted after this gate on the first call. Inspect
     // the actual prepared input, not event timing or the pending FIFO.
     for (const message of context.messages) {
@@ -397,9 +408,6 @@ export function createSeatAgent(opts: {
       if (state === "accepted" || state === "started") currentRequests.add(id);
     }
     if (currentRequests.size === 0) return;
-    // Listeners are observational and swallow exceptions in pi-agent-core.
-    // This awaited gate is the fail-closed persistence boundary.
-    maint.persist();
     const newlyStarted = [...currentRequests].filter(id => !receipts.query(id).turn_ids.includes(turn!.turn_id));
     receipts.start([...currentRequests], turn!.turn_id);
     for (const id of newlyStarted) sink.emit({ type: "receipt", request_id: id, turn_id: turn!.turn_id, receipt: receipts.query(id) });
