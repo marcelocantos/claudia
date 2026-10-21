@@ -4,12 +4,39 @@
 package claudia
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/marcelocantos/claudia/omp"
 )
+
+// openOMPPlansHermetic satisfies the sidecar gate registry Launch tests
+// exercise without touching the host keychain.
+func openOMPPlansHermetic(t *testing.T) {
+	t.Helper()
+	priorSocket, hadSocket := os.LookupEnv(omp.SocketEnv)
+	_ = os.Unsetenv(omp.SocketEnv)
+	exp := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	blob := `{"records":{"anthropic":{"refresh_token":"r","access_token":"token","expiry":"` + exp + `"}}}`
+	ompKeychain = func(context.Context, string, ...string) ([]byte, error) { return []byte(blob), nil }
+	t.Cleanup(func() {
+		ompKeychain = nil
+		omp.ResetKeychainShot()
+		if hadSocket {
+			os.Setenv(omp.SocketEnv, priorSocket)
+		} else {
+			os.Unsetenv(omp.SocketEnv)
+		}
+	})
+	if err := OpenOMPPlans(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
 
 // isolateTmux points CLAUDIA_TMUX_SOCKET at a short temp path. It does
 // not start a server: EnsureServer refuses, and a Skip on that error
@@ -84,6 +111,7 @@ func TestStopKillsWindowWithoutHandle(t *testing.T) {
 // does not create a tmux socket. The stub claude touches a marker if a
 // regression starts it.
 func TestLaunchDoesNotReapLeftovers(t *testing.T) {
+	openOMPPlansHermetic(t)
 	sockDir, err := os.MkdirTemp("/tmp", "t34")
 	if err != nil {
 		t.Fatal(err)
@@ -171,6 +199,7 @@ func TestStopAllKillsWhatThisProcessStarted(t *testing.T) {
 // and Adopt both refuse without a sidecar, and neither creates a window.
 // The stub claude is on PATH so a regression back to tmux spawn fails.
 func TestAdoptReusesWindow(t *testing.T) {
+	openOMPPlansHermetic(t)
 	isolateTmux(t)
 	stubClaude(t)
 
@@ -207,6 +236,7 @@ func TestAdoptReusesWindow(t *testing.T) {
 }
 
 func TestAdoptFailsWhenGone(t *testing.T) {
+	openOMPPlansHermetic(t)
 	isolateTmux(t)
 	r, err := NewRegistry(filepath.Join(t.TempDir(), "agents.json"))
 	if err != nil {
@@ -226,6 +256,7 @@ func TestAdoptFailsWhenGone(t *testing.T) {
 }
 
 func TestAdoptOrLaunchFallsBackToLaunch(t *testing.T) {
+	openOMPPlansHermetic(t)
 	isolateTmux(t)
 	stubClaude(t)
 	r, err := NewRegistry(filepath.Join(t.TempDir(), "agents.json"))

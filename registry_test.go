@@ -538,6 +538,7 @@ func TestHermeticMaterializeFromJSONLAndRequireResume(t *testing.T) {
 // 🎯T15 (c): a materialized seat does not mint when nothing can confirm
 // the conversation. The sidecar is that store. Claude JSONL is not.
 func TestHermeticMaterializedRequireResumeFailsClosed(t *testing.T) {
+	openOMPPlansHermetic(t)
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 	t.Setenv("XDG_STATE_HOME", filepath.Join(tmpHome, "state"))
