@@ -91,6 +91,7 @@ type Line = {
   expires_at?: number;
   cwd?: string;
   sandbox?: SandboxPolicy;
+  protected_paths?: import("./protected.ts").ProtectedPathRule[];
   text?: string;
   call_id?: string;
   result?: string;
@@ -365,6 +366,7 @@ async function handle(
       preserve: msg.preserve,
       pins: msg.pins,
       sandbox: msg.sandbox,
+      protected_paths: msg.protected_paths,
     });
     seats.set(seat, {
       session_id: msg.session_id,
@@ -442,6 +444,7 @@ function rebindSeat(
   if (msg.cwd) existing.agent.setCwd(msg.cwd);
   // A load names the seat's sandbox every time; absent clears it (🎯T178).
   if (msg.op === "load" || msg.sandbox !== undefined) existing.agent.setSandbox(msg.sandbox);
+  if (msg.op === "load" || msg.protected_paths !== undefined) existing.agent.setProtectedPaths(msg.protected_paths);
   // The host sends its current compaction steer on every load (🎯T152).
   existing.agent.setContext(msg.preserve, msg.pins);
 }

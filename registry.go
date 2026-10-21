@@ -135,6 +135,9 @@ type AgentDef struct {
 	// (🎯T112). Persisted for the same reason as the roots above.
 	SandboxGitWrite bool `json:"sandbox_git_write,omitempty"`
 
+	// ProtectedPaths are host edit rules for sidecar file tools (🎯T209).
+	ProtectedPaths []ProtectedPathRule `json:"protected_paths,omitempty"`
+
 	// Goal is the durable host-owned Session objective (🎯T39). Copied
 	// onto Config.Goal at Launch/Adopt so a provider switch keeps the
 	// same objective. Empty means one-shot Send.

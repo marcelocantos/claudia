@@ -3,7 +3,8 @@
 
 import fs from "node:fs";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
-import { capToolText, toolResultBound } from "./truncate.ts";
+import { capToolText, toolResultBound, truncateToolResult } from "./truncate.ts";
+import { recordReadView } from "./readguard.ts";
 
 import { runCommand, runShell, under, writeFile, type SandboxPolicy } from "./execution.ts";
 export { runCommand, realish, writableRoots, checkWrite, seatbeltProfile, under, type RunResult, type SandboxPolicy } from "./execution.ts";
@@ -70,7 +71,10 @@ function readTool(cwdOf: () => string, boundOf: () => number, policyOf: () => Sa
       try {
         const abs = under(cwdOf(), p, policyOf());
         const body = fs.readFileSync(abs, "utf8");
-        return textResult(body, boundOf(), "Read");
+        const bound = boundOf();
+        const capped = truncateToolResult(body, bound, "Read");
+        recordReadView(abs, body, capped.text);
+        return textResult(capped.text, bound, "Read");
       } catch (err) {
         return textResult(String(err), boundOf(), "Read");
       }

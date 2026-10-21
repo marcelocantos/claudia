@@ -43,6 +43,14 @@ import (
 )
 
 // Config configures a session agent.
+
+// ProtectedPathRule is a host-supplied glob the sidecar's own file tools must
+// not mutate (jevons 🎯T546, claudia 🎯T209).
+type ProtectedPathRule struct {
+	Pattern string
+	Reason  string
+}
+
 type Config struct {
 	// Provider selects the runtime backing this agent. Empty means
 	// ProviderClaude. Claude, Codex, Grok and Cursor Session seats use
@@ -140,6 +148,9 @@ type Config struct {
 	// Verified against codex-cli 0.148.0-alpha.9 on 2026-08-31.
 	SandboxWritableRoots []string
 	SandboxNetworkAccess bool
+
+	// ProtectedPaths are passed to OMP sidecar seats (🎯T209).
+	ProtectedPaths []ProtectedPathRule
 
 	// Goal is a durable host-owned objective for this Session. Empty
 	// keeps one-shot Send. When set, the Agent issues a continuation

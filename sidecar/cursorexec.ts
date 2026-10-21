@@ -10,7 +10,8 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import type { CursorExecHandlers, ToolResultMessage } from "@oh-my-pi/pi-ai";
 import { runCommand, runShell, under, writeFile, deleteFile, editFile, type SandboxPolicy } from "./execution.ts";
-import { capToolText } from "./truncate.ts";
+import { capToolText, truncateToolResult, toolResultBound } from "./truncate.ts";
+import { recordReadView } from "./readguard.ts";
 
 const maxOut = 200_000;
 const shellDefaultMs = 60_000;
@@ -74,7 +75,11 @@ export function cursorExecHandlers(cwdOf: () => string, boundOf: () => number, p
       const body = fs.readFileSync(abs, "utf8");
       const start = offset !== undefined ? Math.max(1, offset) : sel.start;
       const count = limit !== undefined ? limit : sel.count;
-      return result(id, tool, sliceLines(body, start, count, limit !== undefined ? undefined : sel.end), false, boundOf());
+      const sliced = sliceLines(body, start, count, limit !== undefined ? undefined : sel.end);
+      const bound = boundOf();
+      const capped = truncateToolResult(sliced, bound, tool);
+      recordReadView(abs, body, capped.text);
+      return result(id, tool, capped.text, false, bound);
     } catch (err) {
       return result(id, tool, String(err), true, boundOf());
     }

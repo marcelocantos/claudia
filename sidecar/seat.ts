@@ -82,6 +82,7 @@ export type SeatAgent = {
   setCwd: (cwd: string) => void;
   // setSandbox replaces the policy on the seat's own tools (🎯T178).
   setSandbox: (policy: SandboxPolicy | undefined) => void;
+  setProtectedPaths: (rules: ProtectedPathRule[] | undefined) => void;
   // sandboxMode is the policy mode in force, echoed on ready (🎯T178).
   sandboxMode: () => string | undefined;
   snapshot: () => unknown;
@@ -140,6 +141,7 @@ export function createSeatAgent(opts: {
   pins?: string[];
   // sandbox limits the seat's own tools (🎯T178). Absent: unchanged.
   sandbox?: SandboxPolicy;
+  protected_paths?: ProtectedPathRule[];
 }): SeatAgent {
   // Resume admission belongs to the authoritative seat/session store. Validate
   // without repair before constructing an engine or changing any file.
@@ -155,6 +157,12 @@ export function createSeatAgent(opts: {
     }
   }
   let sandbox = opts.sandbox;
+  let protectedPaths = opts.protected_paths ?? [];
+  const policyOf = (): SandboxPolicy | undefined => {
+    if (sandbox) return { ...sandbox, protected_paths: protectedPaths };
+    if (protectedPaths.length) return { protected_paths: protectedPaths };
+    return undefined;
+  };
   let token = opts.token;
   let cwd = opts.cwd;
   let preserve = opts.preserve;
@@ -195,7 +203,7 @@ export function createSeatAgent(opts: {
   const execHandlers = cursorExecHandlers(
     () => cwd,
     () => toolResultBound(agent.state.model?.contextWindow ?? 0),
-    () => sandbox,
+    policyOf,
   );
   bindListedMcp(execHandlers, () => agent.state.tools);
   const agent = new Agent({
@@ -238,7 +246,7 @@ export function createSeatAgent(opts: {
     // server executes it. An unlisted name, including a consumer-prefixed
     // one, is not invented here.
     const hosted = (host ?? []).map((t) => jevonsTool(t.name, callBack, t.description, t.input_schema, boundOf));
-    const own = codingTools(() => cwd, boundOf, () => sandbox);
+    const own = codingTools(() => cwd, boundOf, policyOf);
     ownToolNames = new Set(own.map((t) => t.name));
     agent.setTools([...own, ...hosted]);
   };
@@ -726,6 +734,10 @@ export function createSeatAgent(opts: {
     sandboxMode: () => sandbox?.mode,
     setSandbox: (next) => {
       sandbox = next;
+      applyTools(lastHost);
+    },
+    setProtectedPaths: (next) => {
+      protectedPaths = next ?? [];
       applyTools(lastHost);
     },
     snapshot: () => agent.state,

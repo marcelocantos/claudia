@@ -68,6 +68,8 @@ type Message struct {
 	// settings mapped onto what the sidecar controls. Nil leaves them as
 	// they are. A sidecar that honours it names the mode on ready.
 	Sandbox *Sandbox `json:"sandbox,omitempty"`
+	// ProtectedPaths are host edit rules (🎯T209 / jevons 🎯T546), independent of sandbox mode.
+	ProtectedPaths []ProtectedPathRule `json:"protected_paths,omitempty"`
 }
 
 // Sandbox modes the sidecar enforces on its own tools.
@@ -79,10 +81,21 @@ const (
 // Sandbox is a seat's tool policy. read-only offers no Write and no Bash;
 // workspace-write confines Write and Bash's file writes to the working
 // directory plus WritableRoots, and keeps Protected read-only.
+type ProtectedPathRule struct {
+	Pattern string `json:"pattern"`
+	Reason  string `json:"reason"`
+}
+
+// Sandbox is a seat's tool policy. read-only offers no Write and no Bash;
+// workspace-write confines Write and Bash's file writes to the working
+// directory plus WritableRoots, and keeps Protected read-only.
+// ProtectedPaths are host rules (🎯T209 / jevons 🎯T546): mutating tools
+// refuse matching paths with the given reason.
 type Sandbox struct {
-	Mode          string   `json:"mode"`
-	WritableRoots []string `json:"writable_roots,omitempty"`
-	Protected     []string `json:"protected,omitempty"`
+	Mode           string              `json:"mode"`
+	WritableRoots  []string            `json:"writable_roots,omitempty"`
+	Protected      []string            `json:"protected,omitempty"`
+	ProtectedPaths []ProtectedPathRule `json:"protected_paths,omitempty"`
 }
 
 // Event is one sidecar line. Type turn_end carries a context snapshot.

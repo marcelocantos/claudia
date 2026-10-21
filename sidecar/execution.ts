@@ -6,6 +6,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { guardBranchCheckout } from "./branchguard.ts";
+import { protectedPathRefusal, type ProtectedPathRule } from "./protected.ts";
+import { refusalForTruncatedWrite, clearReadView } from "./readguard.ts";
 import { runCommand, type RunResult } from "./process.ts";
 export { runCommand, type RunResult } from "./process.ts";
 
@@ -19,6 +21,7 @@ export type SandboxPolicy = {
   mode: "read-only" | "workspace-write";
   writable_roots?: string[];
   protected?: string[];
+  protected_paths?: ProtectedPathRule[];
 };
 
 // Resolve existing and dangling symlinks through the nearest existing
@@ -71,7 +74,7 @@ export function writableRoots(cwd: string, policy: SandboxPolicy): string[] {
 
 // checkWrite refuses a write a workspace-write policy does not allow.
 export function checkWrite(cwd: string, abs: string, policy: SandboxPolicy | undefined, access: PathAccess = "follow"): void {
-  if (!policy) return;
+  if (!policy?.mode) return;
   if (policy.mode === "read-only") throw new Error(`read-only seat: write refused: ${abs}`);
   const real = operationPath(abs, access);
   for (const p of policy.protected ?? []) {
@@ -116,11 +119,21 @@ export function under(cwd: string, rel: string, policy?: SandboxPolicy, access: 
   return abs;
 }
 
+function checkProtectedWrite(rel: string, abs: string, content: string, policy?: SandboxPolicy): void {
+  const rules = policy?.protected_paths ?? [];
+  const why = protectedPathRefusal(rel, rules);
+  if (why) throw new Error(why);
+  const trunc = refusalForTruncatedWrite(abs, rel, Buffer.byteLength(content, "utf8"));
+  if (trunc) throw new Error(trunc);
+}
+
 export function writeFile(cwd: string, name: string, content: string, policy?: SandboxPolicy): string {
   const abs = under(cwd, name, policy);
+  checkProtectedWrite(name, abs, content, policy);
   checkWrite(cwd, abs, policy);
   fs.mkdirSync(path.dirname(abs), { recursive: true });
   fs.writeFileSync(abs, content, "utf8");
+  clearReadView(abs);
   return abs;
 }
 
@@ -134,14 +147,16 @@ export function deleteFile(cwd: string, name: string, policy?: SandboxPolicy): s
 
 export function editFile(cwd: string, name: string, edits: { oldText: string; newText: string }[], policy?: SandboxPolicy): string {
   const abs = under(cwd, name, policy);
-  checkWrite(cwd, abs, policy);
   let body = fs.readFileSync(abs, "utf8");
   for (const edit of edits) {
     const at = body.indexOf(edit.oldText);
     if (at < 0) throw new Error(`old text not found in ${name}`);
     body = body.slice(0, at) + edit.newText + body.slice(at + edit.oldText.length);
   }
+  checkProtectedWrite(name, abs, body, policy);
+  checkWrite(cwd, abs, policy);
   fs.writeFileSync(abs, body, "utf8");
+  clearReadView(abs);
   return abs;
 }
 

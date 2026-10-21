@@ -110,6 +110,18 @@ func agentBackendFor(cfg Config) agentBackend {
 // Bare codex with no mode keeps the safe read-only default (🎯T37). A
 // subscription-id seat with no mode, and danger-full-access, get no policy:
 // the tools as they always were.
+
+func ompProtectedPathRules(cfg Config) []omp.ProtectedPathRule {
+	if len(cfg.ProtectedPaths) == 0 {
+		return nil
+	}
+	out := make([]omp.ProtectedPathRule, len(cfg.ProtectedPaths))
+	for i, r := range cfg.ProtectedPaths {
+		out[i] = omp.ProtectedPathRule{Pattern: r.Pattern, Reason: r.Reason}
+	}
+	return out
+}
+
 func ompSandboxFor(cfg Config) (*omp.Sandbox, error) {
 	if ompProviderID(cfg.Provider) == "" {
 		// Not a sidecar seat: nothing here can enforce the policy.
@@ -356,7 +368,8 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 		Preserve:      req.Config.ContextPreserve,
 		Pins:          req.Config.ContextPins,
 		Tools:         tools,
-		Sandbox:       sandbox,
+		Sandbox:         sandbox,
+		ProtectedPaths: ompProtectedPathRules(req.Config),
 	}
 	if err := conn.Send(load); err != nil {
 		conn.Close()
