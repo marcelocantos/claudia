@@ -114,6 +114,9 @@ async function abortThenSend(batched: boolean) {
   const aborted = await host.next("T1 turn_end", e => e.type === "turn_end" && !e.rpc_id);
   expect(aborted.turn_id).toBe("T1");
   expect(aborted.error).toBeUndefined();
+  // How it ended is typed; its text is the reply, and an aborted turn has none.
+  expect(aborted.stop_reason).toBe("aborted");
+  expect(aborted.text).toBeUndefined();
   const digest = await host.next("T1 digest", e => e.type === "turn" && e.turn_id === "T1");
   expect(digest.stop).toBe("abort");
   const cancelled = await host.next("r1 settled", settled("r1"));

@@ -112,9 +112,13 @@ type Event struct {
 	// (claudia 🎯T178). Empty from a sidecar that predates it.
 	Sandbox string `json:"sandbox,omitempty"`
 	Reason  string `json:"reason,omitempty"`
-	Text    string `json:"text,omitempty"`
-	CallID  string `json:"call_id,omitempty"`
-	Name    string `json:"name,omitempty"`
+	// StopReason, on a turn_end, says how the turn ended when that is not
+	// its normal end: "aborted" for a turn the host cancelled. Empty is a
+	// normal end. Never carried in Text, which is the turn's reply.
+	StopReason string `json:"stop_reason,omitempty"`
+	Text       string `json:"text,omitempty"`
+	CallID     string `json:"call_id,omitempty"`
+	Name       string `json:"name,omitempty"`
 	// Error is the provider's refusal on a turn_end that got no answer
 	// (usage limit, rate limit, auth). Empty on a turn that answered.
 	Error    string          `json:"error,omitempty"`

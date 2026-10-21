@@ -394,9 +394,11 @@ async function handle(
     // The open turn ends, and the host hears it end as that turn. With no
     // turn open nothing ended: the abort is acknowledged, and an
     // acknowledgement is not a turn's answer (the host refuses a turn_end
-    // that names no turn).
+    // that names no turn). How it ended is a typed field, never text: a
+    // turn_end's text is the reply, and the word "aborted" there reached
+    // the owner as the overseer's answer (jevons 2026-10-21).
     const ended = loaded.agent.abort();
-    if (ended) write({ seat, type: "turn_end", turn_id: ended.turn_id, request_id: ended.request_id, text: "aborted", snapshot: loaded.agent.snapshot() });
+    if (ended) write({ seat, type: "turn_end", turn_id: ended.turn_id, request_id: ended.request_id, stop_reason: "aborted", snapshot: loaded.agent.snapshot() });
     else write({ seat, type: "aborted", snapshot: loaded.agent.snapshot() });
     return;
   }

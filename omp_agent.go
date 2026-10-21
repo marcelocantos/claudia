@@ -62,6 +62,11 @@ var ErrContextOverflow = errors.New("context overflow: the conversation is longe
 // ReasonContextOverflow is [Event.Reason] on the error event of such a turn.
 const ReasonContextOverflow = "context_overflow"
 
+// StopReasonAborted is [Event.StopReason] on the final event of a turn the
+// host aborted. Such a turn has no reply, so its Text is empty: how it ended
+// is said here, never as text a transcript would paint as an answer.
+const StopReasonAborted = "aborted"
+
 // useOMP selects the sidecar. The four subscription plans and the
 // fleet ids grok / claude / codex / cursor all go through it (🎯T866.5).
 // Config.OMP is no longer required for cursor.
@@ -873,11 +878,19 @@ func (c *ompControl) pump(a *Agent) {
 			if refusal != "" && ev.Reason == ReasonContextOverflow {
 				reason = ReasonContextOverflow
 			}
+			// An aborted turn ends as itself, with no reply: the host says
+			// how it ended in StopReason and the transcript paints nothing
+			// for it (jevons 2026-10-21: the word "aborted" in Text reached
+			// the owner as an answer).
+			stop := "end_turn"
+			if ev.StopReason == StopReasonAborted {
+				stop = StopReasonAborted
+			}
 			if err := publishOMPAnswer(a, ev, Event{
 				Type:       "assistant",
 				Text:       text,
 				IsError:    rejected || ev.Type == "error" || refusal != "",
-				StopReason: "end_turn",
+				StopReason: stop,
 				Reason:     reason,
 			}, &fragments); err != nil {
 				slog.Error("omp refused sidecar answer", "seat", c.seat, "error", err)
