@@ -25,10 +25,16 @@ const grokBillingURL = "https://cli-chat-proxy.grok.com/v1/billing?format=credit
 // grokBillingConfig mirrors the /billing?format=credits response — an
 // UNDOCUMENTED, unversioned Grok private surface (shape captured 2026-08-10).
 // Only the fields this maps are declared; unknown fields (productUsage,
-// onDemand*, prepaidBalance, …) are ignored. Grok publishes only the weekly
+// prepaidBalance, …) are ignored. Grok publishes only the weekly
 // SuperGrok pool here — there is no rolling session window.
 // grokWeeklyPeriod is the currentPeriod.type of the weekly SuperGrok pool.
 const grokWeeklyPeriod = "USAGE_PERIOD_TYPE_WEEKLY"
+
+// grokMoneyVal is the protobuf-JSON shape for onDemandCap/onDemandUsed
+// (and similar) on the private billing surface (🎯T967.2).
+type grokMoneyVal struct {
+	Val int64 `json:"val"`
+}
 
 type grokBillingConfig struct {
 	Config struct {
@@ -41,6 +47,8 @@ type grokBillingConfig struct {
 			Start string `json:"start"`
 			End   string `json:"end"`
 		} `json:"currentPeriod"`
+		OnDemandCap  *grokMoneyVal `json:"onDemandCap"`
+		OnDemandUsed *grokMoneyVal `json:"onDemandUsed"`
 		BillingPeriodEnd string `json:"billingPeriodEnd"`
 	} `json:"config"`
 	// SubscriptionTier is present on the ACP variant of this payload; the HTTP
@@ -97,12 +105,51 @@ func parseGrokBilling(raw []byte, now time.Time) PlanUsage {
 			w.ResetsAt = &t
 		}
 	}
-	return PlanUsage{
+	pu := PlanUsage{
 		Provider:  ProviderGrok,
 		Status:    PlanUsageAvailable,
 		Windows:   []PlanWindow{w},
 		PlanType:  r.SubscriptionTier,
 		FetchedAt: now,
+	}
+	pu.Spend = mapGrokOnDemandSpend(r.Config.OnDemandCap, r.Config.OnDemandUsed)
+	return pu
+}
+
+// mapGrokOnDemandSpend maps Grok on-demand auto top-up spend (🎯T967.2).
+// onDemandCap.val == 0 means on-demand is off — no PlanSpend. When cap > 0
+// but onDemandUsed is still zero, the unit of val is not yet established
+// from a live non-zero spend reading, so nothing is mapped. Once used is
+// non-zero, vals are treated as AUD minor units (exponent 2), matching the
+// SuperGrok consumer panel's AUD figures (residue until a live non-zero
+// owner specimen pins this).
+func mapGrokOnDemandSpend(cap, used *grokMoneyVal) *PlanSpend {
+	if cap == nil || cap.Val <= 0 {
+		return nil
+	}
+	usedMinor := int64(0)
+	if used != nil {
+		usedMinor = used.Val
+	}
+	if usedMinor <= 0 {
+		return nil
+	}
+	limitMinor := cap.Val
+	if limitMinor <= 0 {
+		return nil
+	}
+	pct := float64(usedMinor) / float64(limitMinor) * 100
+	if pct < 0 {
+		pct = 0
+	}
+	if pct > 100 {
+		pct = 100
+	}
+	return &PlanSpend{
+		Enabled: true,
+		Used:    &PlanMoney{AmountMinor: usedMinor, Exponent: 2, Currency: "AUD"},
+		Limit:   &PlanMoney{AmountMinor: limitMinor, Exponent: 2, Currency: "AUD"},
+		Percent: &pct,
 	}
 }
 
