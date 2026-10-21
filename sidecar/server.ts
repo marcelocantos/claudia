@@ -23,6 +23,7 @@ import { History } from "./maintain.ts";
 import { ReceiptJournal } from "./receipts.ts";
 import { GenerationDiscovery } from "./generations.ts";
 import { HistoricalUsageReader } from "./usage-reader.ts";
+import { agentPauseGate } from "@oh-my-pi/pi-agent-core";
 import type { SandboxPolicy } from "./coding.ts";
 
 const banned = [
@@ -275,6 +276,16 @@ async function handle(
   }
   if (msg.op === "tool_result") {
     calls.settle(msg.call_id ?? "", msg.result ?? "");
+    return;
+  }
+  if (msg.op === "pause") {
+    agentPauseGate.pause();
+    write({ type: "fleet_paused" });
+    return;
+  }
+  if (msg.op === "resume") {
+    const pausedMs = agentPauseGate.resume();
+    write({ type: "fleet_resumed", paused_ms: pausedMs });
     return;
   }
   if (msg.op === "token") {

@@ -568,3 +568,73 @@ func TestParseClaudeOAuthUsageNoSpendBlock(t *testing.T) {
 		t.Errorf("expected nil Spend, got %+v", pu.Spend)
 	}
 }
+
+// TestParseCodexWhamUsageOverageDisabledSilence pins the live 2026-10-22 pro
+// account: overage off (spend_control.individual_limit null) must not publish
+// Spend or a supplementary Credits balance (🎯jevons/T967.3).
+func TestParseCodexWhamUsageOverageDisabledSilence(t *testing.T) {
+	body := []byte(`{
+		"plan_type": "pro",
+		"rate_limit": {
+			"allowed": true,
+			"limit_reached": false,
+			"primary_window": {"used_percent": 94, "limit_window_seconds": 604800, "reset_at": 1793086692}
+		},
+		"credits": {"has_credits": false, "unlimited": false, "overage_limit_reached": false, "balance": "0"},
+		"spend_control": {"reached": false, "individual_limit": null},
+		"rate_limit_reached_type": null
+	}`)
+	pu, err := parseCodexWhamUsage(body, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pu.Spend != nil {
+		t.Fatalf("expected nil Spend when overage disabled, got %+v", pu.Spend)
+	}
+	if pu.Credits != nil {
+		t.Fatalf("expected nil Credits on usage surfaces, got %+v", pu.Credits)
+	}
+}
+
+// TestParseCodexWhamUsageOverageEnabledMapsSpend pins a redacted team payload
+// (steipete/CodexBar#2736): spend_control.individual_limit signals enablement;
+// Spend carries AUD money converted from account credits at codexAccountCreditsPerAUDMajor.
+func TestParseCodexWhamUsageOverageEnabledMapsSpend(t *testing.T) {
+	body := []byte(`{
+		"plan_type": "team",
+		"rate_limit": {
+			"allowed": false,
+			"limit_reached": true,
+			"primary_window": {"used_percent": 100, "limit_window_seconds": 604800, "reset_at": 1786161204}
+		},
+		"credits": {"has_credits": true, "unlimited": false, "overage_limit_reached": false, "balance": null},
+		"spend_control": {
+			"reached": false,
+			"individual_limit": {
+				"limit": "1000",
+				"used": "36.79748725891113",
+				"used_percent": 4,
+				"remaining_percent": 96,
+				"reset_at": 1788220800
+			}
+		},
+		"rate_limit_reached_type": null
+	}`)
+	pu, err := parseCodexWhamUsage(body, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pu.Spend == nil || !pu.Spend.Enabled {
+		t.Fatalf("expected enabled Spend, got %+v", pu.Spend)
+	}
+	if pu.Spend.Used == nil || pu.Spend.Used.Currency != "AUD" || pu.Spend.Used.AmountMinor != 36 {
+		t.Errorf("Used=%+v", pu.Spend.Used)
+	}
+	if pu.Spend.Limit == nil || pu.Spend.Limit.AmountMinor != 1000 {
+		t.Errorf("Limit=%+v", pu.Spend.Limit)
+	}
+	if pu.Credits != nil {
+		t.Fatalf("raw credits must not be published, got %+v", pu.Credits)
+	}
+}
+
