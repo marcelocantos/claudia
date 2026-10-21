@@ -2,7 +2,7 @@
 // A prompt must call Agent.prompt on the pinned @oh-my-pi/pi-agent-core.
 
 import { AuthRetry, authRefusal, type RetryReply } from "./authretry.ts";
-import { Agent, unpairedToolCallTail, type AgentTool } from "@oh-my-pi/pi-agent-core";
+import { Agent, unpairedToolCallTail, type AgentMessage, type AgentTool } from "@oh-my-pi/pi-agent-core";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import type { AssistantMessage, CursorExecHandlers, CursorMcpCall, Model, ToolResultMessage } from "@oh-my-pi/pi-ai";
 import { classifyMessage, Flag, is as hasFlag } from "@oh-my-pi/pi-ai/error";
@@ -209,6 +209,7 @@ export function createSeatAgent(opts: {
     policyOf,
   );
   bindListedMcp(execHandlers, () => agent.state.tools);
+  const streamPersist = { fn: (_message?: ToolResultMessage) => {} };
   const agent = new Agent({
     initialState: {
       systemPrompt: [
@@ -228,6 +229,10 @@ export function createSeatAgent(opts: {
     // tool; without it the provider answers tool-not-found and the host never
     // sees tool_call (2026-10-18 isolate).
     cursorExecHandlers: execHandlers,
+    cursorOnToolResult: async (message) => {
+      streamPersist.fn(message);
+      return message;
+    },
     getApiKey: async () => { attemptToken = replayToken || token; replayToken = ""; requestCount++; return attemptToken; },
     // A compaction summary must reach the provider; the Agent's default
     // converter drops roles it does not know (🎯T150).
@@ -298,8 +303,48 @@ export function createSeatAgent(opts: {
   // spliced into it for the next request.
   // Cursor exec-channel tool results land on agent.state before the loop's
   // context copy catches up, so persist canonical state only (🎯T206).
-  const persistBeforeNextModel = () => {
-    maint.persist(agent.state.messages);
+  let syntheticAssistant: AssistantMessage | undefined;
+  const persistMidStream = (freshToolResult?: ToolResultMessage) => {
+    const streaming = agent.state.streamMessage;
+    if (streaming?.role === "assistant") {
+      maint.history.forget(streaming as AgentMessage);
+      syntheticAssistant = undefined;
+    } else if (syntheticAssistant) {
+      maint.history.forget(syntheticAssistant);
+      syntheticAssistant = undefined;
+    }
+    const pending: AgentMessage[] = [...agent.state.messages];
+    if (streaming?.role === "assistant") {
+      pending.push(streaming as AgentMessage);
+    } else if (freshToolResult) {
+      const current = agent.state.model;
+      syntheticAssistant = {
+        role: "assistant",
+        content: [{
+          type: "toolCall",
+          id: freshToolResult.toolCallId,
+          name: freshToolResult.toolName,
+          arguments: {},
+        }],
+        api: current.api,
+        provider: current.provider,
+        model: current.id,
+        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+        stopReason: "toolUse",
+        timestamp: freshToolResult.timestamp,
+      };
+      pending.push(syntheticAssistant);
+    }
+    if (freshToolResult) pending.push(freshToolResult);
+    maint.persist(pending);
+  };
+  streamPersist.fn = (message) => { persistMidStream(message); };
+  const persistBeforeNextModel = (messages?: readonly AgentMessage[]) => {
+    if (syntheticAssistant) {
+      maint.history.forget(syntheticAssistant);
+      syntheticAssistant = undefined;
+    }
+    maint.persist(messages ?? agent.state.messages);
   };
   agent.setOnTurnEnd(async (messages, signal, context) => {
     // Every finished model call is durable before the next one (🎯T151).
@@ -406,7 +451,7 @@ export function createSeatAgent(opts: {
     receipts.assertHealthy();
     // Listeners are observational and swallow exceptions in pi-agent-core.
     // This awaited gate is the fail-closed persistence boundary (🎯T206).
-    persistBeforeNextModel();
+    persistBeforeNextModel(context.messages);
     // Input events are emitted after this gate on the first call. Inspect
     // the actual prepared input, not event timing or the pending FIFO.
     for (const message of context.messages) {
@@ -443,16 +488,28 @@ export function createSeatAgent(opts: {
       }
       return;
     }
-    if (event.type === "message_end" && event.message?.role === "assistant" && Array.isArray(event.message.content)) {
-      if (event.message.content.some((part: any) => part?.type === "toolCall" || (part?.type === "text" && part.text))) unsafe = true;
+    if (event.type === "message_end" && event.message?.role) {
+      const role = event.message.role;
+      if (role === "assistant" && Array.isArray(event.message.content)) {
+        if (event.message.content.some((part: any) => part?.type === "toolCall" || (part?.type === "text" && part.text))) unsafe = true;
+      }
+      // Each accepted message unit is durable before the stream continues
+      // (🎯T206): Cursor runs many exec frames inside one model request.
+      if (role === "assistant" || role === "toolResult") persistBeforeNextModel();
     }
     // Tool declarations (including provider-executed tools) and any text
     // make replay unsafe, even if no visible digest delta was emitted.
     if (event.assistantMessageEvent?.type === "toolcall_start" ||
         event.assistantMessageEvent?.type === "text_delta" || event.type === "tool_execution_start") unsafe = true;
+    if (event.type === "tool_execution_end") {
+      persistMidStream();
+    }
     if (event.type === "tool_execution_start" && turn && !turn.closed) {
       noteTool(turn);
       return;
+    }
+    if (event.assistantMessageEvent?.type === "toolcall_start" || event.assistantMessageEvent?.type === "toolcall_end") {
+      persistMidStream();
     }
     if (event.type === "message_update" && event.assistantMessageEvent?.type === "text_delta") {
       const delta = event.assistantMessageEvent.delta ?? "";
