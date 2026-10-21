@@ -9,6 +9,9 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// PeerPID reads the peer process id of a unix domain socket connection.
+func PeerPID(nc net.Conn) int { return peerPID(nc) }
+
 // peerPID reads the peer process id of a unix socket (SO_PEERCRED).
 func peerPID(nc net.Conn) int {
 	uc, ok := nc.(*net.UnixConn)
