@@ -363,18 +363,16 @@ var providerCapabilityClaims = map[Provider]map[Capability]capabilityClaim{
 			reason: cursorExtraArgsReason,
 		},
 		CapabilityModelSwitch: {status: CapabilitySupported},
-		// claudia T118 (open, set_aside as of 2026-09-22, no fix landed):
-		// cursor-agent 2026.09.18 over ACP surfaces session/new's
-		// mcpServers and lists them in tools/list, but the model sees
-		// only the first ~seven global servers (~121 tools) — leading
-		// hypothesis is a cumulative tool budget, not a wiring bug
-		// claudia can fix by itself. jevons 🎯T791 excluded cursor as a
-		// mint destination on exactly this evidence; this claim is the
-		// claudia-side form of the same fact.
-		CapabilityMCPTools: {
-			status: CapabilityUnsupported,
-			reason: "cursor-agent's ACP session surfaces only a subset of the MCP servers claudia attaches (observed ~7 of many, cumulative tool-budget hypothesis, claudia T118 — unresolved); a seat minted on Cursor cannot be relied on to receive every attached MCP tool",
-		},
+		// claudia T118 described cursor-agent over ACP, where the model saw
+		// only ~7 of the MCP servers claudia attached. Cursor seats no longer
+		// run there: ompProviderID routes ProviderCursor into the OMP sidecar,
+		// which binds the offered tools itself (bound_tools on ready) and calls
+		// the provider directly. Observed on 2026-10-21: the Cursor-hosted
+		// yourworld2-po seat (composer-2.5) called 20 jevons_* / bullseye_*
+		// tools in one day, including jevons_agent_start, jevons_agent_send and
+		// bullseye_commit. A seat that does not receive its tools still fails
+		// closed on the sidecar's bound_tools attestation.
+		CapabilityMCPTools: {status: CapabilitySupported},
 	},
 	ProviderBedrock: {
 		CapabilityTask:    {status: CapabilitySupported},

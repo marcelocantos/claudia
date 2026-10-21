@@ -58,12 +58,11 @@ func TestSteerableIsGenuinelyComputed(t *testing.T) {
 		t.Fatalf("Steerable(claude) = (%v, %q), want (true, \"\")", ok, reason)
 	}
 
+	// Cursor seats run in the OMP sidecar, which binds the offered tools
+	// itself; the cursor-agent ACP limit (claudia T118) no longer applies.
 	ok, reason = Steerable(ProviderCursor)
-	if ok || reason == "" {
-		t.Fatalf("Steerable(cursor) = (%v, %q), want (false, non-empty) — claudia T118 is open", ok, reason)
-	}
-	if !strings.Contains(reason, "T118") {
-		t.Errorf("Steerable(cursor) reason %q does not cite claudia T118", reason)
+	if !ok || reason != "" {
+		t.Fatalf("Steerable(cursor) = (%v, %q), want (true, \"\") — cursor seats run in the sidecar", ok, reason)
 	}
 
 	// Mutate the claim table (restored after) and confirm the verdict
