@@ -20,7 +20,12 @@ const (
 	OpPrompt  = "prompt"
 	OpSteer   = "steer"
 	OpAbort   = "abort"
-	OpDrop    = "drop"
+	// OpPause / OpResume engage the sidecar process-global agentPauseGate
+	// (🎯T966). In-flight streams and tools may finish; new model/tool work
+	// parks until resume.
+	OpPause  = "pause"
+	OpResume = "resume"
+	OpDrop   = "drop"
 	OpReceipt = "receipt"
 	OpTool    = "tool_result"
 	// OpToken sets a plan's access token for every seat on it (🎯T159).
