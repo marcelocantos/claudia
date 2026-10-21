@@ -34,6 +34,12 @@ func explainOMPSidecarRefusal(err error, provider Provider, socket string) error
 	fmt.Fprintf(&b, "The Oh My Pi sidecar refused to load this %s seat; its words are above. "+
 		"Grok, Cursor and other subscription-plan seats run inside that sidecar, a Bun process (%s) the broker starts on first use, listening on %s and logging to %s; tmux Claude and Codex CLI seats do not use it. ",
 		provider, omp.ServerScript(), socket, logPath)
+	if !ompSidecarRefusalWantsPathHints(err) {
+		if excerpt := ompSidecarLogExcerptAt(logPath); excerpt != "" {
+			b.WriteString("\n\n" + excerpt)
+		}
+		return fmt.Errorf("%w\n\n%s", err, b.String())
+	}
 	b.WriteString("The sidecar, and every command its seats run, inherits the broker's environment, so a refusal that names a missing command or file is usually the broker's PATH. " +
 		"A supervised broker needs Homebrew (/opt/homebrew/bin), bun (~/.bun/bin) and the user tool directories (~/.grok/bin, ~/.local/bin, ~/go/bin, ~/.cargo/bin, ~/.py/bin) on its PATH. " +
 		"supervisor/claudia.ini and supervisor/run-claudia.sh set that PATH (`make supervisor-install` renders them); a launchd or `brew services` broker runs on /usr/bin:/bin:/usr/sbin:/sbin unless its plist says otherwise. ")
@@ -70,4 +76,23 @@ func missingUserToolDirs() []string {
 		}
 	}
 	return out
+}
+
+// ompSidecarRefusalWantsPathHints is true when the sidecar's refusal names a
+// missing command or file (🎯T163 / 🎯T206). Resume refusals that say the
+// store has no conversation carry the store path instead and must not get the
+// generic PATH appendix.
+func ompSidecarRefusalWantsPathHints(err error) bool {
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "existing conversation required") {
+		return false
+	}
+	if strings.Contains(msg, "no message records") {
+		return false
+	}
+	return strings.Contains(msg, "enoent") ||
+		strings.Contains(msg, "spawn ") ||
+		strings.Contains(msg, "command not found") ||
+		strings.Contains(msg, "no such file or directory") ||
+		strings.Contains(msg, "not found:")
 }
