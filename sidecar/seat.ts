@@ -333,16 +333,15 @@ export function createSeatAgent(opts: {
   let syntheticAssistant: AssistantMessage | undefined;
   const persistMidStream = (freshToolResult?: ToolResultMessage) => {
     const streaming = agent.state.streamMessage;
-    if (streaming?.role === "assistant") {
-      maint.history.forget(streaming as AgentMessage);
-      syntheticAssistant = undefined;
-    } else if (syntheticAssistant) {
+    if (streaming?.role === "assistant" && syntheticAssistant) {
       maint.history.forget(syntheticAssistant);
       syntheticAssistant = undefined;
     }
+    let inFlight: AgentMessage | undefined;
     const pending: AgentMessage[] = [...agent.state.messages];
     if (streaming?.role === "assistant") {
       pending.push(streaming as AgentMessage);
+      inFlight = streaming as AgentMessage;
     } else if (freshToolResult) {
       const current = agent.state.model;
       syntheticAssistant = {
@@ -361,12 +360,14 @@ export function createSeatAgent(opts: {
         timestamp: freshToolResult.timestamp,
       };
       pending.push(syntheticAssistant);
+      inFlight = syntheticAssistant;
     }
     if (freshToolResult) pending.push(freshToolResult);
-    maint.persist(pending);
+    maint.persistMidStream(pending, inFlight);
   };
   streamPersist.fn = (message) => { persistMidStream(message); };
   const persistBeforeNextModel = (messages?: readonly AgentMessage[]) => {
+    maint.history.clearInFlightAssistant();
     if (syntheticAssistant) {
       maint.history.forget(syntheticAssistant);
       syntheticAssistant = undefined;
