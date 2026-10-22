@@ -116,6 +116,23 @@ function messageRolesOnDisk(store: SeatStore): string[] {
   return entries.filter(e => e.type === "message").map(e => (e as { message: { role: string } }).message.role);
 }
 
+function assistantEntriesOnDisk(store: SeatStore): SessionEntry[] {
+  const entries = (store.load() ?? []) as SessionEntry[];
+  return entries.filter((e) => e.type === "message" && (e as { message: { role: string } }).message.role === "assistant");
+}
+
+// assistantSnapshotChainLinks counts assistant rows parented to another assistant
+// row — the growing partial-copy chain 🎯T215 removes.
+function assistantSnapshotChainLinks(store: SeatStore): number {
+  const assistants = assistantEntriesOnDisk(store);
+  const assistantIds = new Set(assistants.map((e) => e.id));
+  let links = 0;
+  for (const entry of assistants) {
+    if (entry.parentId && assistantIds.has(entry.parentId)) links++;
+  }
+  return links;
+}
+
 function seatWithStore(root: string, store: SeatStore, callTool: (id: string, name: string, args: string) => Promise<string>) {
   const bundled = getBundledModel("cursor", "claude-4-sonnet");
   if (!bundled) throw new Error("cursor model missing");
@@ -144,7 +161,6 @@ test("cursor exec frames within one stream persist before the turn ends and surv
   let checkpoint: string[] | undefined;
   let secondGate!: () => void;
   const secondArrived = new Promise<void>(resolve => { secondGate = resolve; });
-
   const mock = spyOn(http2, "connect").mockImplementation(() => {
     const session = new EventEmitter() as EventEmitter & { request: () => Request; close: () => void };
     session.request = () => {
@@ -156,6 +172,11 @@ test("cursor exec frames within one stream persist before the turn ends and surv
             checkpoint = messageRolesOnDisk(store);
             r.push(mcpFrame("jevons_idea_capture", "call-2", { text: "second", source: "mcp" }));
             secondGate();
+            return;
+          }
+          if (mcpRound === 2) {
+            expect(assistantSnapshotChainLinks(store)).toBe(0);
+            queueMicrotask(() => r.finish());
             return;
           }
           queueMicrotask(() => r.finish());
@@ -174,6 +195,7 @@ test("cursor exec frames within one stream persist before the turn ends and surv
   await secondArrived;
 
   expect(checkpoint).toEqual(["user", "assistant", "toolResult"]);
+  expect(assistantSnapshotChainLinks(store)).toBe(0);
 
   const killedRoles = messageRolesOnDisk(store);
   expect(killedRoles).toEqual(["user", "assistant", "toolResult"]);

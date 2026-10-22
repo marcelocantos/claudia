@@ -171,6 +171,10 @@ export class History {
   store: SeatStore | undefined;
   #persisted = 0;
   #dirty = false;
+  // streamingEntryId is the durable row for an assistant message still
+  // growing while the provider streams (🎯T215). Content hash changes on
+  // every partial persist; identity alone is not stable enough to replace.
+  #streamingEntryId: string | undefined;
 
   constructor(store?: SeatStore) {
     this.store = store;
@@ -264,12 +268,55 @@ export class History {
   forget(message: AgentMessage): void {
     const id = this.#ids.get(message);
     if (!id) return;
+    if (this.#streamingEntryId === id) this.#streamingEntryId = undefined;
     const at = this.entries.findIndex((e) => e.id === id);
     if (at < this.#persisted) this.#dirty = true;
     this.entries = this.entries.filter((e) => e.id !== id);
     this.#persisted = Math.min(this.#persisted, this.entries.length);
     this.#ids.delete(message);
     this.#byKey.delete(messageKey(message));
+  }
+
+  // clearInFlightAssistant ends the open streaming/synthetic assistant slot
+  // without removing its durable entry (the turn finished or moved on).
+  clearInFlightAssistant(): void {
+    this.#streamingEntryId = undefined;
+  }
+
+  // upsertInFlightAssistant records one assistant message that may grow across
+  // mid-stream persists (🎯T215). Updates the same store row instead of
+  // appending a parent-linked chain of partial copies.
+  upsertInFlightAssistant(m: AgentMessage): void {
+    let existingId = this.#streamingEntryId ?? this.#ids.get(m);
+    if (existingId) {
+      const at = this.entries.findIndex((e) => e.id === existingId);
+      if (at >= 0 && this.entries[at].type === "message") {
+        const entry = this.entries[at] as SessionMessageEntry;
+        const oldMsg = entry.message;
+        if (oldMsg !== m) {
+          this.#byKey.delete(messageKey(oldMsg));
+          this.#ids.delete(oldMsg);
+        }
+        entry.message = m;
+        entry.timestamp = new Date(typeof m.timestamp === "number" ? m.timestamp : Date.now()).toISOString();
+        if (at < this.#persisted) this.#dirty = true;
+        this.#ids.set(m, existingId);
+        this.#byKey.set(messageKey(m), existingId);
+        this.#streamingEntryId = existingId;
+        return;
+      }
+    }
+    const entry: SessionMessageEntry = {
+      type: "message",
+      id: crypto.randomUUID(),
+      parentId: this.#last(),
+      timestamp: new Date(typeof m.timestamp === "number" ? m.timestamp : Date.now()).toISOString(),
+      message: m,
+    };
+    this.entries.push(entry);
+    this.#ids.set(m, entry.id);
+    this.#byKey.set(messageKey(m), entry.id);
+    this.#streamingEntryId = entry.id;
   }
 
   // latestCompaction is the newest compaction entry, if any.
@@ -432,6 +479,26 @@ export class Maintenance {
   // persist records the conversation so far in the store.
   persist(messages: readonly AgentMessage[] = this.#host.agent.state.messages): void {
     this.history.persist(messages);
+  }
+
+  // persistMidStream journals a partial turn: finished messages sync normally,
+  // and one in-flight assistant row is updated in place (🎯T215).
+  persistMidStream(messages: readonly AgentMessage[], inFlight?: AgentMessage): void {
+    if (inFlight) {
+      const at = messages.indexOf(inFlight);
+      if (at >= 0) {
+        this.history.sync(messages.slice(0, at));
+        this.history.upsertInFlightAssistant(inFlight);
+        this.history.sync(messages.slice(at + 1));
+      } else {
+        this.history.sync(messages);
+        this.history.upsertInFlightAssistant(inFlight);
+      }
+    } else {
+      this.history.sync(messages);
+      this.history.clearInFlightAssistant();
+    }
+    this.history.persist();
   }
 
   get compacting(): boolean {
