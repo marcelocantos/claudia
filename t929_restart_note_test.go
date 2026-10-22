@@ -44,8 +44,8 @@ func TestT929RelaunchedSeatWithoutHistoryIsToldSo(t *testing.T) {
 		want        []string
 	}{
 		{"history kept", "", false, []string{fmt.Sprintf(DefaultRestartNudge, now.Format(time.RFC3339))}},
-		{"history lost", "", true, []string{fmt.Sprintf(LostHistoryRestartNudge, now.Format(time.RFC3339))}},
-		{"history lost, custom note", "custom note", true, []string{fmt.Sprintf(LostHistoryRestartNudge, now.Format(time.RFC3339))}},
+		{"history lost", "", true, []string{lostHistoryRestartNudge(now, "unknown")}},
+		{"history lost, custom note", "custom note", true, []string{lostHistoryRestartNudge(now, "unknown")}},
 		{"history lost, notes disabled", NoRestartNudge, true, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -449,6 +449,10 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 			ErrOMPSandboxNotHonoured, req.Config.Name, sandbox.Mode, ev.Sandbox)
 	}
 	historyLost := ompHistoryLost(ev)
+	superseded := ""
+	if historyLost {
+		superseded = sessionID
+	}
 	ctrl := &ompControl{
 		conn: conn, bytes: make(chan []byte, 8),
 		token: token, provider: provider,
@@ -483,8 +487,9 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 	return &agentStart{
 		Control:            ctrl,
 		SessionID:          sessionID,
-		HistoryLost:        historyLost,
-		HostMCPUnavailable: mcpUnavailable,
+		HistoryLost:           historyLost,
+		SupersededSessionID:   superseded,
+		HostMCPUnavailable:    mcpUnavailable,
 		Ops: agentOps{
 			explicitRequestIDs: true,
 			usagePage: func(ctx context.Context, _ *Agent, after uint64, limit int) (*UsagePage, error) {

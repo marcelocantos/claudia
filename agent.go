@@ -278,6 +278,8 @@ type Agent struct {
 
 	// historyLost is agentStart.HistoryLost, fixed at start.
 	historyLost bool
+	// supersededSessionID is agentStart.SupersededSessionID.
+	supersededSessionID string
 	// hostMCPUnavailable is agentStart.HostMCPUnavailable, fixed at start.
 	hostMCPUnavailable []string
 
@@ -557,6 +559,9 @@ type agentStart struct {
 	// earlier conversation (jevons 🎯T929): the backend knows it could not
 	// bring it back. A restart note must then not claim a resumption.
 	HistoryLost bool
+	// SupersededSessionID is the conversation id a relaunch could not resume
+	// (jevons 🎯T861). Empty when history was not lost or the id is unknown.
+	SupersededSessionID string
 	// HostMCPUnavailable names the host MCP servers that listed no tools
 	// when the seat launched (jevons 🎯T934): it started without them.
 	HostMCPUnavailable []string
@@ -848,6 +853,7 @@ func startWithBackendContext(ctx context.Context, cfg Config, backend agentBacke
 		return nil, fmt.Errorf("%s agent backend returned no session and no error", provider)
 	}
 	a.historyLost = start.HistoryLost
+	a.supersededSessionID = start.SupersededSessionID
 	a.hostMCPUnavailable = append([]string(nil), start.HostMCPUnavailable...)
 	if start.SessionID != "" {
 		a.sessionID = start.SessionID

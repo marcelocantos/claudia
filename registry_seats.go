@@ -59,6 +59,8 @@ type SeatEvent struct {
 	SessionID string
 	// How is set on SeatResumed.
 	How ResumeHow
+	// OldSessionID is set on SeatResumed when How is ResumeReminted (jevons 🎯T861).
+	OldSessionID string
 	// Err is set on SeatResumeFailed.
 	Err error
 	// Agent is the live handle on SeatResumed, SeatNudged and SeatGone.
@@ -74,13 +76,23 @@ const DefaultRestartNudge = "[claudia] The host restarted at %s. This session wa
 	"something (a build, a test, another agent), check its state again before assuming it completed."
 
 // LostHistoryRestartNudge is what a relaunched seat is told when its
-// backend could not bring back its earlier conversation (jevons 🎯T929):
-// claiming a resumption there sends the seat back to work it no longer
-// knows about. %s is the restart time.
-const LostHistoryRestartNudge = "[claudia] The host restarted at %s, and this seat's earlier conversation could not be restored: " +
+// backend could not bring back its earlier conversation (jevons 🎯T929,
+// 🎯T861): claiming a resumption there sends the seat back to work it no
+// longer knows about. First %s is the restart time; second %s is the
+// session id that could not be resumed.
+const LostHistoryRestartNudge = "[claudia] The host restarted at %s. This seat's earlier conversation (session %s) could not be restored: " +
 	"you are starting without it. Anything you were doing before the restart is not in your context. " +
 	"Before continuing, reconstruct where things stand from durable state (the repository, its commits and its targets, " +
 	"your brief) or ask whoever gave you the work. Do not assume a build, test or tool call from before the restart finished."
+
+// lostHistoryRestartNudge formats [LostHistoryRestartNudge]. deadSession may
+// be empty when the backend reports history lost without naming the id.
+func lostHistoryRestartNudge(now time.Time, deadSession string) string {
+	if deadSession == "" {
+		deadSession = "unknown"
+	}
+	return fmt.Sprintf(LostHistoryRestartNudge, now.Format(time.RFC3339), deadSession)
+}
 
 const (
 	// NoRestartNudge as [ResumeArgs.Nudge] sends nothing.
@@ -291,7 +303,7 @@ func (r *Registry) ResumeAll(ctx context.Context, args *ResumeArgs) []ResumeOutc
 	// the configured note says (jevons 🎯T929); NoRestartNudge still wins.
 	lostNudge := ""
 	if nudge != NoRestartNudge {
-		lostNudge = fmt.Sprintf(LostHistoryRestartNudge, now.Format(time.RFC3339))
+		lostNudge = lostHistoryRestartNudge(now, "")
 	}
 	pace := nudgePacer(r.seatClock(), args.NudgeSpacing)
 	conc := args.Concurrency
@@ -319,7 +331,7 @@ func (r *Registry) ResumeAll(ctx context.Context, args *ResumeArgs) []ResumeOutc
 			var once sync.Once
 			release := func() { once.Do(func() { <-sem }) }
 			defer release()
-			r.resumeSeat(ctx, &out[i], nudge, lostNudge, timeout, release, pace)
+			r.resumeSeat(ctx, &out[i], nudge, lostNudge, now, timeout, release, pace)
 		}()
 	}
 	wg.Wait()
@@ -328,7 +340,7 @@ func (r *Registry) ResumeAll(ctx context.Context, args *ResumeArgs) []ResumeOutc
 
 // resumeSeat brings one seat back. started is called once the seat is
 // running or has failed to start, before anything else is asked of it.
-func (r *Registry) resumeSeat(ctx context.Context, out *ResumeOutcome, nudge, lostNudge string, timeout time.Duration, started func(), pace func(context.Context) error) {
+func (r *Registry) resumeSeat(ctx context.Context, out *ResumeOutcome, nudge, lostNudge string, now time.Time, timeout time.Duration, started func(), pace func(context.Context) error) {
 	name := out.Name
 	launch := func() (*Agent, error) {
 		lctx, cancel := context.WithTimeout(ctx, timeout)
@@ -355,12 +367,20 @@ func (r *Registry) resumeSeat(ctx context.Context, out *ResumeOutcome, nudge, lo
 		return
 	}
 	out.How, out.Agent = how, proc
-	r.publishSeatEvent(SeatEvent{Kind: SeatResumed, Name: name, SessionID: proc.SessionID(), How: how, Agent: proc})
+	ev := SeatEvent{Kind: SeatResumed, Name: name, SessionID: proc.SessionID(), How: how, Agent: proc}
+	if how == ResumeReminted {
+		ev.OldSessionID = out.OldSessionID
+	}
+	r.publishSeatEvent(ev)
 	if how == ResumeAdopted || nudge == NoRestartNudge {
 		return
 	}
-	if proc.StartedWithoutHistory() && lostNudge != "" {
-		nudge = lostNudge
+	if lostNudge != "" && (how == ResumeReminted || proc.StartedWithoutHistory()) {
+		dead := out.OldSessionID
+		if dead == "" {
+			dead = proc.supersededSessionID
+		}
+		nudge = lostHistoryRestartNudge(now, dead)
 	}
 	if err := pace(ctx); err != nil {
 		out.NudgeErr = err
