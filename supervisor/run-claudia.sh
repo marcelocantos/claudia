@@ -20,14 +20,20 @@ ROOT="$(CDPATH= cd "$(dirname "$0")/.." && pwd)"
 export CLAUDIA_OMP_SERVER="${CLAUDIA_OMP_SERVER:-$ROOT/sidecar/server.ts}"
 export CLAUDIA_OMP_AUTH="${CLAUDIA_OMP_AUTH:-$ROOT/sidecar/auth.ts}"
 
+BIN=""
+# 🎯T212: a pin is best-effort. A pinned tree build that is missing, not
+# executable, or not a working claudia (2026-10-22: a root-level `go build`
+# left bin/claudia as a Go package archive, three times) falls back to the
+# Homebrew binary with a loud line, instead of exiting 1 until supervisord
+# marks the broker FATAL and every seat loses its backend.
 if [ -n "${CLAUDIA_BIN:-}" ]; then
-  BIN="$CLAUDIA_BIN"
-  if [ ! -x "$BIN" ]; then
-    echo "claudia: CLAUDIA_BIN=$BIN is not executable" >&2
-    exit 1
+  if [ -x "$CLAUDIA_BIN" ] && "$CLAUDIA_BIN" --version >/dev/null 2>&1; then
+    BIN="$CLAUDIA_BIN"
+  else
+    echo "claudia: WARNING CLAUDIA_BIN=$CLAUDIA_BIN is not a working claudia binary; falling back to the Homebrew install (🎯T212)" >&2
   fi
-else
-  BIN=""
+fi
+if [ -z "$BIN" ]; then
   if command -v brew >/dev/null 2>&1; then
     BIN="$(brew --prefix)/opt/claudia/bin/claudia"
   fi
