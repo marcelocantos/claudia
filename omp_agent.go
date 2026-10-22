@@ -1121,6 +1121,46 @@ func ensureOMPToken(ctx context.Context, provider, caller string) (string, error
 	return planStore().Ensure(ctx, provider, login)
 }
 
+// syncOMPProtectedPathsForSeat pushes host protected-path rules to every live
+// ompControl for seat (🎯T209 / jevons 🎯T1145). Registry rows can gain rules
+// after the seat started; token reload alone is not enough until ompControl
+// stores them.
+func syncOMPProtectedPathsForSeat(seat string, rules []omp.ProtectedPathRule) {
+	ompSeats.Range(func(k, _ any) bool {
+		c := k.(*ompControl)
+		if c.seat != seat {
+			return true
+		}
+		c.pushProtectedPaths(rules)
+		return true
+	})
+}
+
+func protectedPathRulesEqual(a, b []omp.ProtectedPathRule) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Pattern != b[i].Pattern || a[i].Reason != b[i].Reason {
+			return false
+		}
+	}
+	return true
+}
+
+func (c *ompControl) pushProtectedPaths(rules []omp.ProtectedPathRule) {
+	c.mu.Lock()
+	if protectedPathRulesEqual(c.protectedPaths, rules) {
+		c.mu.Unlock()
+		return
+	}
+	c.protectedPaths = slices.Clone(rules)
+	c.mu.Unlock()
+	if err := c.send(c.loadMessage()); err != nil {
+		slog.Warn("omp: protected_paths sync load failed", "seat", c.seat, "err", err)
+	}
+}
+
 // loadMessage is the load that (re)configures this seat with its current
 // token, model and host tools.
 

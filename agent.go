@@ -26,6 +26,7 @@ package claudia
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -49,6 +50,29 @@ import (
 type ProtectedPathRule struct {
 	Pattern string `json:"pattern"`
 	Reason  string `json:"reason"`
+}
+
+// UnmarshalJSON accepts legacy grants.json rows that used exported Go field
+// names ("Pattern"/"Reason") so broker registry loads non-empty rules (🎯T1145).
+func (r *ProtectedPathRule) UnmarshalJSON(data []byte) error {
+	var wire struct {
+		Pattern string `json:"pattern"`
+		Reason  string `json:"reason"`
+		LegacyP string `json:"Pattern"`
+		LegacyR string `json:"Reason"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	r.Pattern = wire.Pattern
+	if r.Pattern == "" {
+		r.Pattern = wire.LegacyP
+	}
+	r.Reason = wire.Reason
+	if r.Reason == "" {
+		r.Reason = wire.LegacyR
+	}
+	return nil
 }
 
 type Config struct {

@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -819,6 +820,9 @@ func (d *Daemon) handleGrant(c *broker.ClientConn, req *broker.Request) {
 	// broker's destination is authoritative; accepting the stale source
 	// would overwrite the only durable record of the moved seat.
 	if existing := d.reg.Def(name); existing != nil {
+		if len(def.ProtectedPaths) == 0 && len(existing.ProtectedPaths) > 0 {
+			def.ProtectedPaths = slices.Clone(existing.ProtectedPaths)
+		}
 		if req.Grant.Adopt && def.Provider != existing.Provider {
 			// The seat was switched to another provider in place while the
 			// consumer was away (🎯T195): the session is the same, and the
@@ -845,6 +849,8 @@ func (d *Daemon) handleGrant(c *broker.ClientConn, req *broker.Request) {
 		_ = c.Fail(req.ID, err)
 		return
 	}
+
+	d.reg.SyncLiveOMPProtectedPaths(name)
 
 	ctx, cancel := context.WithTimeout(d.ctx, grantStartTimeout)
 	defer cancel()

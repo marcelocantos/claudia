@@ -4,6 +4,7 @@
 package claudia
 
 import (
+	"slices"
 	"encoding/json"
 	"fmt"
 )
@@ -241,6 +242,7 @@ func configToGrantDef(name string, cfg Config, base *AgentDef) GrantDefinition {
 			OMP:                  cfg.OMP,
 			ContextPreserve:      cfg.ContextPreserve,
 			ContextPins:          cfg.ContextPins,
+			ProtectedPaths:       slices.Clone(cfg.ProtectedPaths),
 		},
 		RequireResume: cfg.RequireResume,
 	}

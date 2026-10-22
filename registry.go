@@ -476,6 +476,27 @@ var registryStartDirect = startDirectContext
 // session JSONL already exists for the def's SessionID, Launch promotes
 // Materialized so subsequent launches require resume. Hosts that complete
 // a first turn after a bare Start should call [Registry.MarkMaterialized].
+
+// SyncLiveOMPProtectedPaths re-sends registry protected_paths to a live OMP
+// sidecar seat without restarting the conversation (jevons 🎯T1145).
+func (r *Registry) SyncLiveOMPProtectedPaths(name string) {
+	r.syncLiveOMPProtectedPaths(name)
+}
+
+func (r *Registry) syncLiveOMPProtectedPaths(name string) {
+	r.mu.Lock()
+	registered := r.agents[name]
+	prior := r.procs[name]
+	r.mu.Unlock()
+	if registered == nil || prior == nil || !prior.Alive() {
+		return
+	}
+	if ompProviderID(registered.Provider) == "" {
+		return
+	}
+	syncOMPProtectedPathsForSeat(name, ompProtectedPathRules(Config{ProtectedPaths: registered.ProtectedPaths}))
+}
+
 func (r *Registry) Launch(name string) (*Agent, error) {
 	return r.LaunchContext(context.Background(), name)
 }
@@ -535,6 +556,7 @@ func (r *Registry) startHeld(ctx context.Context, op *registryLifecycle, name st
 		if err := prior.ensureOwned(); err != nil {
 			return nil, err
 		}
+		r.syncLiveOMPProtectedPaths(name)
 		return prior, nil
 	}
 	if denied != nil {
