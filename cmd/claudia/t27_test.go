@@ -75,7 +75,7 @@ func TestSupervisorInstallPinsClaudiaBin(t *testing.T) {
 	}
 }
 
-func TestSupervisorInstallPreservesExistingPin(t *testing.T) {
+func TestSupervisorInstallDropsAnEarlierPin(t *testing.T) {
 	dir := t.TempDir()
 	dest := filepath.Join(dir, "claudia.ini")
 	if err := os.WriteFile(dest, []byte(`environment=HOME="/tmp",LANG="en_US.UTF-8",CLAUDIA_BIN="/tmp/kept"`), 0o644); err != nil {
@@ -99,8 +99,8 @@ func TestSupervisorInstallPreservesExistingPin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(body), `CLAUDIA_BIN="/tmp/kept"`) {
-		t.Fatalf("existing CLAUDIA_BIN pin not preserved:\n%s\n%s", body, out)
+	if strings.Contains(string(body), "CLAUDIA_BIN") {
+		t.Fatalf("an earlier render's CLAUDIA_BIN pin was carried over:\n%s\n%s", body, out)
 	}
 }
 
