@@ -361,8 +361,8 @@ export class History {
 // journaled the engine's copy. Those fields stay out of the hash so a store
 // written then still resumes each message once.
 function messageKey(m: AgentMessage): string {
-  const stamp = m as AgentMessage & { completedAt?: unknown; contextSnapshot?: unknown };
-  const { completedAt: _completedAt, contextSnapshot: _contextSnapshot, ...body } = stamp;
+  const stamp = m as AgentMessage & { completedAt?: unknown; contextSnapshot?: unknown; attribution?: unknown };
+  const { completedAt: _completedAt, contextSnapshot: _contextSnapshot, attribution: _attribution, ...body } = stamp;
   return `${m.role}|${typeof m.timestamp === "number" ? m.timestamp : ""}|${Bun.hash(JSON.stringify(body))}`;
 }
 

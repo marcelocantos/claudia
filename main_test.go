@@ -41,6 +41,9 @@ func TestMain(m *testing.M) {
 	// whitespace-only override. Opt-in live tests validate their own isolate.
 	if !liveRun {
 		_ = os.Setenv("CLAUDIA_OMP_SPOOL_DIR", filepath.Join(cache, "spool"))
+		// Hermetic Launch/Start must hit omp.SocketPath's test refusal (🎯T145),
+		// not an ambient CLAUDIA_OMP_SOCKET left from a local broker/sidecar.
+		_ = os.Unsetenv(omp.SocketEnv)
 	}
 	// A plan Flush in a test writes here, never the owner's file (🎯T143).
 	omp.UseTestDataPath(filepath.Join(cache, "plan-credentials.enc"))
