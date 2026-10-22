@@ -3,6 +3,7 @@
 
 import { AuthRetry, authRefusal, type RetryReply } from "./authretry.ts";
 import { Agent, unpairedToolCallTail, type AgentMessage, type AgentTool } from "@oh-my-pi/pi-agent-core";
+import { savedTranscriptEndsMidTurn } from "./transcript-end.ts";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import type { AssistantMessage, CursorExecHandlers, CursorMcpCall, Model, ToolResultMessage } from "@oh-my-pi/pi-ai";
 import { classifyMessage, Flag, is as hasFlag } from "@oh-my-pi/pi-ai/error";
@@ -103,6 +104,8 @@ export type SeatAgent = {
   // restored says whether the seat resumed a stored conversation (🎯T151);
   // the host words its restart note by it (jevons 🎯T929).
   restored: boolean;
+  // transcriptEndsMidTurn says whether that store ended inside a turn (🎯T214).
+  transcriptEndsMidTurn: boolean;
   // setContext replaces the host's compaction steer (🎯T152).
   setContext: (preserve: string | undefined, pins: string[] | undefined) => void;
 };
@@ -291,6 +294,7 @@ export function createSeatAgent(opts: {
   // keeps its conversation. Refusing every turn instead stalled 47 seats,
   // the overseer among them, for an hour after a broker restart (2026-10-22).
   const interrupted = restored ? unpairedToolCallTail(agent.state.messages) : undefined;
+  const pairedInterruptedToolBatch = interrupted !== undefined;
   if (interrupted) {
     for (const call of interrupted.content) {
       if (call.type !== "toolCall") continue;
@@ -307,6 +311,9 @@ export function createSeatAgent(opts: {
     console.error(`sidecar: ${opts.store?.path}: paired unfinished tool calls with interrupted results (🎯T213)`);
   }
   const uncertainToolRestore = restored && unpairedToolCallTail(agent.state.messages) !== undefined;
+  const transcriptEndsMidTurn = restored
+    ? savedTranscriptEndsMidTurn(agent.state.messages, pairedInterruptedToolBatch)
+    : false;
   const assertRestorableExecution = () => {
     if (uncertainToolRestore) throw Object.assign(
       new Error("restored history has unfinished tool calls; inspect their effects before starting a fresh session"),
@@ -834,6 +841,7 @@ export function createSeatAgent(opts: {
     },
     setHostTools: (tools) => applyTools(tools),
     restored,
+    transcriptEndsMidTurn,
     setContext: (nextPreserve, nextPins) => {
       preserve = nextPreserve;
       pins = nextPins;

@@ -278,6 +278,8 @@ type Agent struct {
 
 	// historyLost is agentStart.HistoryLost, fixed at start.
 	historyLost bool
+	// transcriptEndsMidTurn is agentStart.TranscriptEndsMidTurn, fixed at start.
+	transcriptEndsMidTurn *bool
 	// supersededSessionID is agentStart.SupersededSessionID.
 	supersededSessionID string
 	// hostMCPUnavailable is agentStart.HostMCPUnavailable, fixed at start.
@@ -559,6 +561,10 @@ type agentStart struct {
 	// earlier conversation (jevons 🎯T929): the backend knows it could not
 	// bring it back. A restart note must then not claim a resumption.
 	HistoryLost bool
+	// TranscriptEndsMidTurn, when non-nil, says whether a relaunched OMP
+	// seat's restored transcript ended inside a turn (jevons 🎯T214). Nil
+	// means the backend did not report it (non-OMP or an older sidecar).
+	TranscriptEndsMidTurn *bool
 	// SupersededSessionID is the conversation id a relaunch could not resume
 	// (jevons 🎯T861). Empty when history was not lost or the id is unknown.
 	SupersededSessionID string
@@ -853,6 +859,10 @@ func startWithBackendContext(ctx context.Context, cfg Config, backend agentBacke
 		return nil, fmt.Errorf("%s agent backend returned no session and no error", provider)
 	}
 	a.historyLost = start.HistoryLost
+	if start.TranscriptEndsMidTurn != nil {
+		v := *start.TranscriptEndsMidTurn
+		a.transcriptEndsMidTurn = &v
+	}
 	a.supersededSessionID = start.SupersededSessionID
 	a.hostMCPUnavailable = append([]string(nil), start.HostMCPUnavailable...)
 	if start.SessionID != "" {

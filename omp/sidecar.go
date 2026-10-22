@@ -120,6 +120,10 @@ type Event struct {
 	// brought back the seat's stored conversation (claudia 🎯T151, jevons
 	// 🎯T929). Absent from a sidecar that predates the store, which never did.
 	Restored *bool `json:"restored,omitempty"`
+	// TranscriptEndsMidTurn, on a launched seat that restored, says whether
+	// the saved transcript ended inside a turn (jevons 🎯T214). Absent from
+	// a sidecar that predates it, or when the backend cannot say.
+	TranscriptEndsMidTurn *bool `json:"transcript_ends_mid_turn,omitempty"`
 	// ResumeChecked acknowledges required-resume admission, including adoption
 	// of a matching in-memory generation. Old sidecars omit this field.
 	ResumeChecked bool `json:"resume_checked,omitempty"`

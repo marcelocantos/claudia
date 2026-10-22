@@ -382,6 +382,10 @@ func (r *Registry) resumeSeat(ctx context.Context, out *ResumeOutcome, nudge, lo
 		}
 		nudge = lostHistoryRestartNudge(now, dead)
 	}
+	mid, known := proc.TranscriptEndsMidTurn()
+	if known && !mid && how == ResumeLaunched && !proc.StartedWithoutHistory() {
+		return
+	}
 	if err := pace(ctx); err != nil {
 		out.NudgeErr = err
 		return

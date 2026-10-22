@@ -390,7 +390,16 @@ async function handle(
       agent,
       calls,
     });
-    write({ seat, type: "ready", how: "launched", resume_checked: msg.require_resume === true, restored: agent.restored, bound_tools: agent.boundToolNames(), sandbox: agent.sandboxMode() });
+    write({
+      seat,
+      type: "ready",
+      how: "launched",
+      resume_checked: msg.require_resume === true,
+      restored: agent.restored,
+      transcript_ends_mid_turn: agent.transcriptEndsMidTurn,
+      bound_tools: agent.boundToolNames(),
+      sandbox: agent.sandboxMode(),
+    });
     return;
   }
   const loaded = seats.get(seat);

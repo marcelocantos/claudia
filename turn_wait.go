@@ -314,6 +314,16 @@ func (a *Agent) markDead() {
 // from the provider's own transcript and report false.
 func (a *Agent) StartedWithoutHistory() bool { return a.historyLost }
 
+// TranscriptEndsMidTurn reports whether a relaunched OMP seat's saved
+// transcript ended inside a turn (jevons 🎯T214). Known is false when the
+// backend did not report it (non-OMP, or an older sidecar).
+func (a *Agent) TranscriptEndsMidTurn() (midTurn bool, known bool) {
+	if a == nil || a.transcriptEndsMidTurn == nil {
+		return false, false
+	}
+	return *a.transcriptEndsMidTurn, true
+}
+
 
 // ExitCauseBrokerLost is the exit cause of a broker-backed handle whose
 // connection the broker ended without warning — it crashed or was killed

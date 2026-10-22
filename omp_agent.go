@@ -485,10 +485,15 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 		ctrl.setOpenTurn(true, ev.TurnID)
 	}
 	ompSeats.Store(ctrl, struct{}{})
+	var transcriptEndsMidTurn *bool
+	if ev.TranscriptEndsMidTurn != nil {
+		transcriptEndsMidTurn = ev.TranscriptEndsMidTurn
+	}
 	return &agentStart{
 		Control:            ctrl,
 		SessionID:          sessionID,
 		HistoryLost:           historyLost,
+		TranscriptEndsMidTurn: transcriptEndsMidTurn,
 		SupersededSessionID:   superseded,
 		HostMCPUnavailable:    mcpUnavailable,
 		Ops: agentOps{
