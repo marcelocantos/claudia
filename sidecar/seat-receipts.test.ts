@@ -6,7 +6,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createMockModel, registerMockApi, type MockResponse } from "@oh-my-pi/pi-ai/providers/mock";
-import type { AssistantMessage, Context } from "@oh-my-pi/pi-ai";
+import type { AssistantMessage, Context, ToolResultMessage } from "@oh-my-pi/pi-ai";
 import type { SessionEntry } from "@oh-my-pi/pi-agent-core";
 import { createSeatAgent, type SeatEvent } from "./seat.ts";
 import { SeatStore } from "./store.ts";
@@ -208,7 +208,11 @@ test("cancellation settles only inputs dispatched in the cancelled turn", async 
   expect(f.agent.receipt("A").cause).toBe("cancellation");
 });
 
-test("an uncertain restored tool batch cannot execute while draining an accepted follow-up", async () => {
+// 🎯T213: an uncertain restored tool batch is never re-executed. Each
+// unfinished call is answered with an interrupted result, so the model is
+// told its effects are unknown, and the seat answers the next request
+// instead of refusing every turn.
+test("an uncertain restored tool batch is answered as interrupted, never replayed", async () => {
   const storage = store();
   const h = new History(storage);
   const journal = new ReceiptJournal(h);
@@ -220,14 +224,20 @@ test("an uncertain restored tool batch cannot execute while draining an accepted
     api: "mock", provider: "mock", model: "mock", stopReason: "toolUse", timestamp: Date.now(),
     usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } } as AssistantMessage]);
   journal.accept("queued", meta("B"), "prompt");
-  const f = fixture(storage);
+  let seen: Context | undefined;
+  const f = fixture(storage, context => {
+    seen ??= context;
+    return { content: ["checked the file first"] };
+  });
   expect(f.agent.receipt("A").state).toBe("unknown");
-  await expect(f.agent.prompt("queued", meta("B"))).rejects.toMatchObject({ reason: "execution_uncertain" });
-  expect(() => f.agent.steer("new", meta("C"))).toThrow(/unfinished tool calls/);
-  await expect(f.agent.switchModel("mock", "other")).rejects.toMatchObject({ reason: "execution_uncertain" });
-  expect(f.model.calls.length).toBe(0);
+  await f.agent.prompt("queued", meta("B"));
   expect(existsSync(effect)).toBe(false);
-  expect(f.agent.receipt("B").state).toBe("accepted");
+  expect(f.model.calls.length).toBeGreaterThan(0);
+  const results = (seen?.messages ?? []).filter(m => m.role === "toolResult") as ToolResultMessage[];
+  const answer = results.find(m => m.toolCallId === "write-1");
+  expect(answer?.isError).toBe(true);
+  expect(JSON.stringify(answer?.content)).toContain("interrupted by a broker or sidecar restart");
+  expect(f.agent.receipt("B").state).toBe("completed");
 });
 
 test("recovery removes an undispatched history copy before a provider switch rebuilds context", async () => {

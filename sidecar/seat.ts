@@ -284,8 +284,28 @@ export function createSeatAgent(opts: {
     fact => sink.emit({ type: "usage", usage_fact: fact }),
     text => sink.emit({ type: "usage_error", text }));
   // continue() re-executes an unpaired tool batch before its model gate.
-  // After a process crash we cannot know whether those effects happened.
-  // Keep the history inspectable, but require a fresh session to proceed.
+  // After a process crash we cannot know whether those effects happened, so
+  // they must not run again unseen. Pair each unfinished call with an error
+  // result saying exactly that (🎯T213): nothing re-executes, the model is
+  // told the outcome is unknown and inspects before repeating, and the seat
+  // keeps its conversation. Refusing every turn instead stalled 47 seats,
+  // the overseer among them, for an hour after a broker restart (2026-10-22).
+  const interrupted = restored ? unpairedToolCallTail(agent.state.messages) : undefined;
+  if (interrupted) {
+    for (const call of interrupted.content) {
+      if (call.type !== "toolCall") continue;
+      agent.appendMessage({
+        role: "toolResult",
+        toolCallId: call.id,
+        toolName: call.name,
+        content: [{ type: "text", text: INTERRUPTED_TOOL_RESULT }],
+        isError: true,
+        timestamp: Date.now(),
+      } as ToolResultMessage);
+    }
+    maint.persist();
+    console.error(`sidecar: ${opts.store?.path}: paired unfinished tool calls with interrupted results (🎯T213)`);
+  }
   const uncertainToolRestore = restored && unpairedToolCallTail(agent.state.messages) !== undefined;
   const assertRestorableExecution = () => {
     if (uncertainToolRestore) throw Object.assign(
@@ -844,6 +864,12 @@ function resolveModel(provider: string, model: string) {
 // Cursor delivers a model-listed tool as an MCP exec frame on the open
 // stream, and runs it here rather than in the agent loop. The lookup is
 // live: the host can replace the tool list after the seat is built.
+// INTERRUPTED_TOOL_RESULT answers a tool call whose run was cut off by a
+// broker or sidecar restart. Its effects may or may not have happened.
+export const INTERRUPTED_TOOL_RESULT =
+  "This tool call was interrupted by a broker or sidecar restart before its result was recorded. " +
+  "Its effects are unknown: it may or may not have run. Inspect the current state before repeating it.";
+
 function bindListedMcp(handlers: CursorExecHandlers, toolsOf: () => AgentTool[]): void {
   const answer = (id: string, name: string, text: string, isError: boolean): ToolResultMessage => ({
     role: "toolResult",
