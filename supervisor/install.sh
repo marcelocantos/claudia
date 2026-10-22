@@ -19,11 +19,9 @@ mkdir -p "$CONF_DIR"
 mkdir -p "$HOME/.local/var/log"
 chmod +x "$REPO/supervisor/run-claudia.sh" "$REPO/supervisor/install.sh"
 
-# Keep a host CLAUDIA_BIN pin across re-renders (this machine runs the
-# remint-capable tree build until the next Cellar ships it).
-if [ -z "${CLAUDIA_BIN:-}" ] && [ -f "$DEST" ]; then
-  CLAUDIA_BIN="$(sed -n 's/.*CLAUDIA_BIN="\([^"]*\)".*/\1/p' "$DEST" | head -n 1)"
-fi
+# A CLAUDIA_BIN pin is written only when the caller passes one. A pin left
+# in an earlier render is not carried over: on 2026-10-22 a carried pin to a
+# tree build kept the broker on v0.63.0 after v0.64.0 was installed.
 
 rm -f "$DEST"
 sed "s|@REPO@|$REPO|g" "$TEMPLATE" >"$DEST"
