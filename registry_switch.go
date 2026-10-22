@@ -93,6 +93,9 @@ func (r *Registry) SwitchModel(ctx context.Context, name string, provider Provid
 				}
 			}
 		}
+		if def := r.Def(name); def != nil {
+			proc.SyncSessionMCPServers(def.MCPServers)
+		}
 		if err := proc.SwitchModel(to, model); err != nil {
 			return out, err
 		}

@@ -455,7 +455,7 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 		seat: req.Config.Name, model: req.Config.Model, cwd: req.Config.WorkDir,
 		sessionID: sessionID,
 		preserve:  req.Config.ContextPreserve, pins: req.Config.ContextPins,
-		tools: tools, toolServers: toolRoutes, toolNames: toolNames,
+		tools: tools, mcpServers: slices.Clone(req.Config.MCPServers), toolServers: toolRoutes, toolNames: toolNames,
 		sandbox: sandbox,
 	}
 	// A reattach (adopt, or a load that found this seat already running in
@@ -531,6 +531,9 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 			switchModel: func(_ *Agent, provider Provider, model string) error {
 				return ctrl.switchModel(provider, model)
 			},
+			syncSessionMCPServers: func(_ *Agent, servers []MCPServer) {
+				ctrl.applySessionMCPServers(context.Background(), servers)
+			},
 			promptInFlight: func(*Agent) bool { return ctrl.inflight.Load() },
 			openTurnID:     func(*Agent) string { return ctrl.openTurnID() },
 			// A removed seat is unloaded from the sidecar, which otherwise
@@ -602,6 +605,8 @@ type ompControl struct {
 	// preserve and pins steer the seat's compaction (🎯T152).
 	preserve string
 	pins     []string
+	// mcpServers is AgentDef.MCPServers; host tools are recomputed from it on switch.
+	mcpServers []MCPServer
 	// tools is the host tool list the seat was loaded with; a reload keeps it.
 	tools json.RawMessage
 	// sandbox is the seat's tool policy; a reload sends it again (🎯T178).
@@ -1062,6 +1067,7 @@ func (c *ompControl) switchModel(provider Provider, model string) error {
 	c.waits[requestID] = reply
 	c.mu.Unlock()
 	defer c.takeWait(requestID)
+	c.applySessionMCPServers(context.Background(), c.mcpServers)
 	msg := c.loadMessage()
 	msg.Provider, msg.Model, msg.Token, msg.RequestID = id, model, token, requestID
 	if err := c.send(msg); err != nil {
@@ -1109,6 +1115,15 @@ func ensureOMPToken(ctx context.Context, provider, caller string) (string, error
 
 // loadMessage is the load that (re)configures this seat with its current
 // token, model and host tools.
+
+func (c *ompControl) applySessionMCPServers(ctx context.Context, servers []MCPServer) {
+	c.mcpServers = slices.Clone(servers)
+	tools, routes, names, _ := hostToolsReport(ctx, c.mcpServers)
+	c.mu.Lock()
+	c.tools, c.toolServers, c.toolNames = tools, routes, names
+	c.mu.Unlock()
+}
+
 func (c *ompControl) loadMessage() omp.Message {
 	c.mu.Lock()
 	defer c.mu.Unlock()

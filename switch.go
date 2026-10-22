@@ -5,6 +5,7 @@ package claudia
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 )
@@ -85,6 +86,24 @@ func (a *Agent) SwitchModel(provider Provider, model string) error {
 		}
 	}
 	return nil
+}
+
+
+// SyncSessionMCPServers updates the running seat's session-scoped MCP list
+// before an in-place switch reloads the sidecar (jevons T612). The
+// registry row is already restamped; this pushes the same list into the
+// live OMP host-tools snapshot the switch load carries.
+func (a *Agent) SyncSessionMCPServers(servers []MCPServer) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	a.startCfg.MCPServers = slices.Clone(servers)
+	sync := a.ops.syncSessionMCPServers
+	a.mu.Unlock()
+	if sync != nil {
+		sync(a, servers)
+	}
 }
 
 // sameProviderSwitch refuses a provider change on a backend that can only

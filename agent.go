@@ -473,6 +473,9 @@ type agentOps struct {
 	// native CLI backends only change model within their own provider.
 	// Nil → SwitchModel refuses after the capability check.
 	switchModel func(a *Agent, provider Provider, model string) error
+	// syncSessionMCPServers refreshes OMP host tools from AgentDef.MCPServers
+	// before a live switch reloads the sidecar seat (jevons T612).
+	syncSessionMCPServers func(a *Agent, servers []MCPServer)
 	// rewind is set only by the broker backend: the daemon rolls the seat
 	// back and relaunches it, and this handle re-points (🎯T75.8).
 	rewind func(*Agent, int) (*RewindResult, error)
