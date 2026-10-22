@@ -262,3 +262,81 @@ func TestRegistryLaunchPassesGoal(t *testing.T) {
 		t.Fatalf("Launch Provider = %q", (*cfgs)[0].Provider)
 	}
 }
+
+func TestT741GoalStatusClosesWithChunkThenEmptyTerminal(t *testing.T) {
+	agent, backend := startGoalAgent(t, "all tests pass")
+	if err := agent.Send("go"); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	// Grok ACP: agent_message_chunk carries the displayed text; the
+	// prompt result is a terminal assistant event with empty Text.
+	publishIdleTurn(agent, backend, Event{
+		Type:          "assistant",
+		Text:          GoalStatusComplete,
+		PreviewUpdate: PreviewUpdateAppend,
+	})
+	publishIdleTurn(agent, backend, Event{
+		Type:       "assistant",
+		StopReason: "end_turn",
+	})
+	waitGoalSettle(t)
+	if n := len(backendSends(t, backend)); n != 1 {
+		t.Fatalf("sends = %d, want 1 after complete", n)
+	}
+	if agent.GoalActive() {
+		t.Fatal("complete must close the goal")
+	}
+}
+
+func TestT741OrdinaryChunkStillContinues(t *testing.T) {
+	agent, backend := startGoalAgent(t, "finish the migration")
+	if err := agent.Send("start work"); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	publishIdleTurn(agent, backend, Event{
+		Type:          "assistant",
+		Text:          "looked at files",
+		PreviewUpdate: PreviewUpdateAppend,
+	})
+	publishIdleTurn(agent, backend, Event{
+		Type:       "assistant",
+		StopReason: "end_turn",
+	})
+	waitGoalSettle(t)
+	sends := backendSends(t, backend)
+	if len(sends) != 2 {
+		t.Fatalf("sends = %d, want 2 (brief + continuation): %#v", len(sends), sends)
+	}
+	if !strings.Contains(sends[1], "finish the migration") {
+		t.Fatalf("continuation dropped the objective: %q", sends[1])
+	}
+	if !agent.GoalActive() {
+		t.Fatal("unfinished goal must stay active")
+	}
+}
+
+func TestT741MarkerChunkClosesAfterEmptyTerminalContinuationRace(t *testing.T) {
+	agent, backend := startGoalAgent(t, "all tests pass")
+	if err := agent.Send("go"); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	// Empty terminal first lets the settle timer fire with no text; a late
+	// chunk carrying the marker must still close without another Continue.
+	publishIdleTurn(agent, backend, Event{
+		Type:       "assistant",
+		StopReason: "end_turn",
+	})
+	time.Sleep(waitSettleDuration + 50*time.Millisecond)
+	publishIdleTurn(agent, backend, Event{
+		Type:          "assistant",
+		Text:          GoalStatusComplete,
+		PreviewUpdate: PreviewUpdateAppend,
+	})
+	waitGoalSettle(t)
+	if n := len(backendSends(t, backend)); n != 2 {
+		t.Fatalf("sends = %d, want 2 (brief + one mistaken continuation)", n)
+	}
+	if agent.GoalActive() {
+		t.Fatal("late marker chunk must close the goal")
+	}
+}

@@ -138,6 +138,19 @@ func (a *Agent) noteGoalEvent(ev Event) {
 	if ev.IsTerminalStop() {
 		a.goalSeenTerminal = true
 	}
+	// Grok ACP publishes the displayed assistant text as agent_message_chunk
+	// events and may terminate with an empty publishPromptResult (🎯T741).
+	// Close as soon as the accumulated turn contains a whole-line marker,
+	// without waiting for the settle timer or a second terminal-shaped event.
+	if status, ok := ParseGoalStatus(a.goalTurn.String()); ok {
+		if a.goalTimer != nil {
+			a.goalTimer.Stop()
+			a.goalTimer = nil
+		}
+		a.closeGoalLocked()
+		slog.Info("claudia goal closed by status", "session", a.sessionID, "status", status)
+		return
+	}
 	if !a.goalSeenTerminal {
 		return
 	}
