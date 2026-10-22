@@ -47,8 +47,8 @@ import (
 // ProtectedPathRule is a host-supplied glob the sidecar's own file tools must
 // not mutate (jevons 🎯T546, claudia 🎯T209).
 type ProtectedPathRule struct {
-	Pattern string
-	Reason  string
+	Pattern string `json:"pattern"`
+	Reason  string `json:"reason"`
 }
 
 type Config struct {

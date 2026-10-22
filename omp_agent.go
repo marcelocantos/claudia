@@ -461,6 +461,7 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 		preserve:  req.Config.ContextPreserve, pins: req.Config.ContextPins,
 		tools: tools, mcpServers: slices.Clone(req.Config.MCPServers), toolServers: toolRoutes, toolNames: toolNames,
 		sandbox: sandbox,
+		protectedPaths: slices.Clone(ompProtectedPathRules(req.Config)),
 	}
 	// A reattach (adopt, or a load that found this seat already running in
 	// the sidecar's memory) may find a turn already open from before this
@@ -616,6 +617,8 @@ type ompControl struct {
 	tools json.RawMessage
 	// sandbox is the seat's tool policy; a reload sends it again (🎯T178).
 	sandbox *omp.Sandbox
+	// protectedPaths are host edit rules; reload must re-send them (🎯T209 / jevons 🎯T1145).
+	protectedPaths []omp.ProtectedPathRule
 	// toolServers routes a model tool name to the AgentDef.MCPServers URL
 	// that declared it (🎯T871.1). A name absent here (a jevons_* name the
 	// host did not list, or a legacy caller) falls back to runOMPTool,
@@ -1137,6 +1140,7 @@ func (c *ompControl) loadMessage() omp.Message {
 		Preserve: c.preserve, Pins: c.pins,
 		Model: c.model, Token: c.token, Cwd: c.cwd,
 		Tools: c.tools, Sandbox: c.sandbox,
+		ProtectedPaths: slices.Clone(c.protectedPaths),
 	}
 }
 

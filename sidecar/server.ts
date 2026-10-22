@@ -455,7 +455,8 @@ function rebindSeat(
   if (msg.cwd) existing.agent.setCwd(msg.cwd);
   // A load names the seat's sandbox every time; absent clears it (🎯T178).
   if (msg.op === "load" || msg.sandbox !== undefined) existing.agent.setSandbox(msg.sandbox);
-  if (msg.op === "load" || msg.protected_paths !== undefined) existing.agent.setProtectedPaths(msg.protected_paths);
+  // Omitting protected_paths on reload must not clear a seat that already has rules (🎯T209 / jevons 🎯T1145).
+  if (msg.protected_paths !== undefined) existing.agent.setProtectedPaths(msg.protected_paths);
   // The host sends its current compaction steer on every load (🎯T152).
   existing.agent.setContext(msg.preserve, msg.pins);
 }
