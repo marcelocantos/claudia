@@ -135,6 +135,13 @@ release-dist:
 release-tap:
 	@tapper push --version "v$$(sed -n 's/^const Version = "\([0-9.]*\)"/\1/p' version.go)"
 
+# Post-release proof that the installed brew claudia is the tagged build and
+# that supervisord serves it. Read-only against the owner's broker; the full
+# exercise runs on a private broker under a mktemp dir. Never part of gate.
+.PHONY: verify-release
+verify-release:
+	@VERSION="$(VERSION)" MIN_GO="$(MIN_GO)" UPTIME_MIN="$(UPTIME_MIN)" OLLAMA_MODEL="$(OLLAMA_MODEL)" scripts/verify-release.sh
+
 .PHONY: verify-specs
 verify-specs:
 	@scripts/tlc.sh AgentLifecycle.tla AgentLifecycle.cfg >/dev/null && \
