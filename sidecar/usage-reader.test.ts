@@ -31,13 +31,25 @@ function fixture(count = 300, messageBytes = 0) {
   store.rewrite(entries);
   return { root, store, entries, facts };
 }
-async function whileScanning(reader: HistoricalUsageReader) {
-  for (let i = 0; i < 10_000; i++) {
-    if (reader.stats().bytesRead > 0 && reader.stats().activeScans > 0) return;
+// Wait for a reader state change. The scan's first read needs several
+// thread-pool fs round trips (stat, open, fstat, stat, read); a fixed count
+// of event-loop turns elapses in ~10ms and loses that race on a loaded host,
+// so the bound is wall-clock. Each turn is a setImmediate, which keeps the
+// check between consecutive 64-byte reads: the scan cannot finish unseen.
+// 🎯T97 exemption: the reader state is the verdict; the clock only turns a hang into a failure.
+async function until(cond: () => boolean, what: string, ms = 30_000) {
+  const deadline = Date.now() + ms;
+  while (!cond()) {
+    if (Date.now() > deadline) throw new Error(what);
     await yieldIO();
   }
-  throw new Error("scan did not start");
 }
+// Above until()'s bound, so a hang reports its own cause, not bun's timeout.
+const loadedHostTimeout = 60_000;
+const whileScanning = (reader: HistoricalUsageReader) =>
+  until(() => reader.stats().bytesRead > 0 && reader.stats().activeScans > 0, "scan did not start");
+const scansDrained = (reader: HistoricalUsageReader) =>
+  until(() => reader.stats().activeScans === 0, "scan did not stop");
 
 test("multiple pages read the source once and cache only the bounded fact projection", async () => {
   const f = fixture(300, 1024 * 1024);
@@ -115,7 +127,7 @@ test("source mutation during asynchronous scan never publishes a partial project
     expect(reader.stats().cacheEntries).toBe(0);
     expect((await reader.page(f.store)).facts).toEqual(f.facts);
   }
-});
+}, loadedHostTimeout);
 
 test("expired, cancelled, oversized and concurrent scans have explicit bounded failure", async () => {
   const f = fixture(3, 128 * 1024);
@@ -135,16 +147,16 @@ test("expired, cancelled, oversized and concurrent scans have explicit bounded f
   await expect(reader.page(other.store)).rejects.toThrow("busy");
   cancelled.abort();
   expect(await result).toContain("cancelled");
-  for (let i = 0; i < 10_000 && reader.stats().activeScans; i++) await yieldIO();
+  await scansDrained(reader);
   expect(reader.stats().activeScans).toBe(0);
   expect(reader.stats().bytesRead).toBeLessThan(statSync(f.store.path).size);
   expect(reader.stats().cacheEntries).toBe(0);
   const timed = new HistoricalUsageReader({ readBytes: 16 });
   await expect(timed.page(f.store, 0, 1, { expiresAt: Date.now() + 20 })).rejects.toThrow("deadline");
-  for (let i = 0; i < 10_000 && timed.stats().activeScans; i++) await yieldIO();
+  await scansDrained(timed);
   expect(timed.stats().activeScans).toBe(0);
   expect(timed.stats().bytesRead).toBeLessThan(statSync(f.store.path).size);
-});
+}, loadedHostTimeout);
 
 test("concurrent callers share a cold scan and eviction requires a new declared scan", async () => {
   const a = fixture(300), b = fixture(1);
@@ -184,7 +196,7 @@ test("an unrelated socket responds during a cold scan, before that scan finishes
     await scan;
     await new Promise<void>(resolve => server.close(() => resolve()));
   }
-});
+}, loadedHostTimeout);
 
 test("cold/warm measurements separate transcript bytes from fact count", async () => {
   for (const count of [10, 300]) for (const textBytes of [0, 2 * 1024 * 1024]) {
@@ -227,8 +239,11 @@ test("real unloaded sidecar usage route honors deadlines and keeps the seat unlo
   }
   try {
     // Startup probe cannot load a model or dispatch an input.
+    // Bun cold-starts server.ts; on a loaded host that alone can exceed a
+    // fixed 100x20ms budget, so readiness is bounded by wall clock.
+    // 🎯T97 exemption: the answered probe is the verdict; the clock only turns a hang into a failure.
     let ready = false;
-    for (let i = 0; i < 100; i++) {
+    for (const deadline = Date.now() + 30_000; Date.now() < deadline;) {
       try { await ask({ op: "abort", seat: "absent" }); ready = true; break; }
       catch { await Bun.sleep(20); }
     }
@@ -273,4 +288,4 @@ test("real unloaded sidecar usage route honors deadlines and keeps the seat unlo
   } finally {
     proc.kill(); await proc.exited;
   }
-});
+}, loadedHostTimeout);

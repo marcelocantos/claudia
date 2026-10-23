@@ -138,12 +138,36 @@ func TestBrokerCloseCancelsStartedReceipts(t *testing.T) {
 	}
 }
 
-func readStoredReceipt(t *testing.T, path, seat, session, request string) claudia.RequestReceipt {
+// controlReaderBusyTimeoutMS is how long a test's own reader of a live
+// owner's control file waits for the owner's write lock. Without it the
+// reader's connection has SQLite's default busy timeout of zero, so a read
+// that lands while the owner is committing (the sidecar-exit hook settling
+// receipts, a seat-pump publish) fails at once: "database is locked" from
+// prepare, or, from a parameterised sqlpipe Query whose step hits
+// SQLITE_BUSY, an empty result with no error. Either fails a correct build on
+// a loaded host, where the owner's commit is slow. The owner holds the lock
+// only for its commit, so this bounds a wait that always ends: a slow host
+// can only make it wait longer, never change what it reads.
+const controlReaderBusyTimeoutMS = 30_000
+
+// openControlReader opens a second connection to a control file that a
+// live daemon may be writing, waiting out the owner's commits.
+func openControlReader(t *testing.T, path string) *sqlpipe.Database {
 	t.Helper()
 	db, err := sqlpipe.OpenDatabase(path)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := db.Exec(fmt.Sprintf("PRAGMA busy_timeout = %d", controlReaderBusyTimeoutMS)); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	return db
+}
+
+func readStoredReceipt(t *testing.T, path, seat, session, request string) claudia.RequestReceipt {
+	t.Helper()
+	db := openControlReader(t, path)
 	defer db.Close()
 	qr, err := db.Query(`SELECT receipt_json FROM claudia_request_receipt WHERE seat = ? AND session_id = ? AND request_id = ?`,
 		seat, session, request)
@@ -166,10 +190,7 @@ func readStoredReceipt(t *testing.T, path, seat, session, request string) claudi
 
 func countReceipts(t *testing.T, path, request string) int {
 	t.Helper()
-	db, err := sqlpipe.OpenDatabase(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	db := openControlReader(t, path)
 	defer db.Close()
 	qr, err := db.Query(`SELECT COUNT(*) FROM claudia_request_receipt WHERE request_id = ?`, request)
 	if err != nil {

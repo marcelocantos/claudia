@@ -22,7 +22,6 @@ import (
 	"github.com/marcelocantos/claudia"
 	"github.com/marcelocantos/claudia/controlplane"
 	"github.com/marcelocantos/claudia/omp"
-	"github.com/marcelocantos/sqlpipe/go/sqlpipe"
 )
 
 // A usage fact's seq belongs to the seat's conversation journal, and the
@@ -70,10 +69,7 @@ func exitUsageFacts(t *testing.T) []claudia.UsageFact {
 // storedUsageRows reads the mirror in the order a consumer catches up.
 func storedUsageRows(t *testing.T, path string) []claudia.UsageFact {
 	t.Helper()
-	db, err := sqlpipe.OpenDatabase(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	db := openControlReader(t, path)
 	defer db.Close()
 	qr, err := db.Query(`SELECT fact_json FROM claudia_usage_fact ORDER BY seat, session_id, seq`)
 	if err != nil {
