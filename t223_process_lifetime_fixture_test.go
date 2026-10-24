@@ -89,6 +89,52 @@ func TestT223SidecarServerProcessLifetimeFixture(t *testing.T) {
 			t.Fatal("tool maxBuffer abort must not kill broker supervisor or sidecar")
 		}
 	})
+
+	t.Run("seat_op_drop_reaps_owned_process_group", func(t *testing.T) {
+		ctx, sock, sidecar, supervisor, dir := startProcessLifetimeSidecar(t)
+		grand, parent, conn := runProcessLifetimeHold(t, ctx, sock, dir)
+		if err := conn.Send(omp.Message{Op: omp.OpDrop, Seat: plSeat}); err != nil {
+			t.Fatal(err)
+		}
+		dropped := false
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			ev, err := conn.Recv()
+			if err != nil {
+				break
+			}
+			if ev.Type == "dropped" && ev.Seat == plSeat {
+				dropped = true
+				break
+			}
+		}
+		if !dropped {
+			t.Fatal("seat OpDrop did not emit dropped on wire (production stop/reap path)")
+		}
+		waitFor(t, "grandchild reaped on seat drop", func() bool { return !ProcessAlive(grand) })
+		waitFor(t, "seat-owned parent reaped on seat drop", func() bool { return !ProcessAlive(parent) })
+		if !ProcessAlive(supervisor) || !ProcessAlive(sidecar.Process.Pid) {
+			t.Fatal("seat OpDrop must not kill broker supervisor or sidecar")
+		}
+	})
+
+	t.Run("leader_exit_background_grandchild_reaped_on_op_drop", func(t *testing.T) {
+		ctx, sock, sidecar, supervisor, dir := startProcessLifetimeSidecar(t)
+		conn := loadAndPrompt(t, ctx, sock, dir, processLifetimePrompt(dir, "leader_exit"))
+		waitFor(t, "grandchild marker after leader exec", func() bool {
+			_, err := os.Stat(filepath.Join(dir, "grand.pid"))
+			return err == nil
+		})
+		grand := readPIDFile(t, filepath.Join(dir, "grand.pid"))
+		time.Sleep(100 * time.Millisecond)
+		if err := conn.Send(omp.Message{Op: omp.OpDrop, Seat: plSeat}); err != nil {
+			t.Fatal(err)
+		}
+		waitFor(t, "background grandchild reaped on OpDrop after leader exec", func() bool { return !ProcessAlive(grand) })
+		if !ProcessAlive(supervisor) || !ProcessAlive(sidecar.Process.Pid) {
+			t.Fatal("OpDrop after leader-exit orphan class must not kill broker supervisor or sidecar")
+		}
+	})
 }
 
 const plSeat = "pl-fixture"

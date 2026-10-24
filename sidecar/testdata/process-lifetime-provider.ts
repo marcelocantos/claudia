@@ -22,6 +22,10 @@ function bashCommand(spec: { mode: string; dir: string }): string {
   if (spec.mode === "flood") {
     return `/bin/sleep 120 & echo $! > ${grand}; echo $$ > ${parent}; exec yes`;
   }
+  if (spec.mode === "leader_exit") {
+    // T219 orphan class: background grandchild survives parent exec; seat stop must reap PG.
+    return `/bin/sleep 300 & echo $! > ${grand}; echo $$ > ${parent}; exec /bin/sleep 300`;
+  }
   return `/bin/sleep 300 & echo $! > ${grand}; echo $$ > ${parent}; while [ ! -f ${release} ]; do sleep 0.05; done; echo done > ${effect}`;
 }
 
