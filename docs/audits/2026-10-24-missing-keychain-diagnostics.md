@@ -15,8 +15,8 @@ It preserves malformed successful output and non-missing read errors.
 runner, invokes `Open`, checks missing diagnostics, malformed successful
 output, denied reads, and an existing empty item. It also checks one read and
 preservation of the denied error's identity. The pre-fix run reproduced the
-exact error: gate `f575a90f`, RED. The full `./omp` package verification is
-queued on the shared heavy lease; no pass is claimed here.
+exact error: gate `f575a90f`, RED. The full `./omp` package passed on a
+pristine checkout of `3a539c34e3ed`: gate `fc46d9a9`, exit 0 GREEN.
 
 No actual credential was read or changed, and no provider was called. This
 is parser-branch coverage, not proof of live authentication or T132 recovery.
