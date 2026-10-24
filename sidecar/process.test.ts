@@ -75,6 +75,31 @@ describe("seat-owned command process groups (🎯T219)", () => {
     expect(processAlive(grand)).toBe(false);
   });
 
+  test("killAll reaps redirected background child after shell leader exits 0", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "t219-leader-exit-"));
+    const marker = join(dir, "child.pid");
+    const out = join(dir, "child.out");
+    const err = join(dir, "child.err");
+    const script = `/bin/sleep 300 > ${out} 2> ${err} & echo $! > ${marker}; exit 0`;
+    const scope = new SeatCommandScope();
+    try {
+      const r = await runCommand("/bin/bash", ["-c", script], {
+        timeoutMs: 60_000,
+        maxBuffer: 10_000,
+        commandScope: scope,
+      });
+      expect(r.status).toBe(0);
+      await new Promise((r) => setTimeout(r, 200));
+      const child = Number.parseInt(readFileSync(marker, "utf8").trim(), 10);
+      expect(processAlive(child)).toBe(true);
+      scope.killAll();
+      await new Promise((r) => setTimeout(r, 800));
+      expect(processAlive(child)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("AbortSignal on runCommand tears down the group", async () => {
     const dir = mkdtempSync(join(tmpdir(), "t219-abort-"));
     const marker = join(dir, "grand.pid");

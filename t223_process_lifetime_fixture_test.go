@@ -118,22 +118,12 @@ func TestT223SidecarServerProcessLifetimeFixture(t *testing.T) {
 		}
 	})
 
-	t.Run("leader_exit_background_grandchild_reaped_on_op_drop", func(t *testing.T) {
-		ctx, sock, sidecar, supervisor, dir := startProcessLifetimeSidecar(t)
-		conn := loadAndPrompt(t, ctx, sock, dir, processLifetimePrompt(dir, "leader_exit"))
-		waitFor(t, "grandchild marker after leader exec", func() bool {
-			_, err := os.Stat(filepath.Join(dir, "grand.pid"))
-			return err == nil
-		})
-		grand := readPIDFile(t, filepath.Join(dir, "grand.pid"))
-		time.Sleep(100 * time.Millisecond)
-		if err := conn.Send(omp.Message{Op: omp.OpDrop, Seat: plSeat}); err != nil {
-			t.Fatal(err)
-		}
-		waitFor(t, "background grandchild reaped on OpDrop after leader exec", func() bool { return !ProcessAlive(grand) })
-		if !ProcessAlive(supervisor) || !ProcessAlive(sidecar.Process.Pid) {
-			t.Fatal("OpDrop after leader-exit orphan class must not kill broker supervisor or sidecar")
-		}
+	t.Run("leader_exit_redirected_child_survives_until_seat_stop", func(t *testing.T) {
+		runLeaderExitOwnershipStop(t, omp.OpDrop)
+	})
+
+	t.Run("leader_exit_redirected_child_survives_until_seat_abort", func(t *testing.T) {
+		runLeaderExitOwnershipStop(t, omp.OpAbort)
 	})
 }
 
@@ -246,6 +236,68 @@ func runProcessLifetimeHold(t *testing.T, ctx context.Context, sock, dir string)
 	parent = readPIDFile(t, filepath.Join(dir, "parent.pid"))
 	time.Sleep(100 * time.Millisecond)
 	return grand, parent, conn
+}
+
+// runLeaderExitOwnershipStop is the mandatory 🎯T219 ownership oracle on real
+// server.ts: leader exits 0 after spawning a redirected background child; scope
+// is empty while the child lives; production stop must reap it (or this fails RED).
+func runLeaderExitOwnershipStop(t *testing.T, stopOp string) {
+	t.Helper()
+	ctx, sock, sidecar, supervisor, dir := startProcessLifetimeSidecar(t)
+	conn := loadAndPrompt(t, ctx, sock, dir, processLifetimePrompt(dir, "leader_exit"))
+	waitFor(t, "background child PID recorded", func() bool {
+		_, err := os.Stat(filepath.Join(dir, "grand.pid"))
+		return err == nil
+	})
+	waitFor(t, "shell leader exited 0 (tool complete)", func() bool {
+		_, err := os.Stat(filepath.Join(dir, "leader.done"))
+		return err == nil
+	})
+	waitFor(t, "provider saw tool result after leader exit", func() bool {
+		raw, err := os.ReadFile(filepath.Join(dir, "provider-calls"))
+		return err == nil && strings.Contains(string(raw), "result")
+	})
+	bgChild := readPIDFile(t, filepath.Join(dir, "grand.pid"))
+	if !ProcessAlive(bgChild) {
+		t.Fatalf("background child %d not alive after leader exit 0", bgChild)
+	}
+	leaderShell := readPIDFile(t, filepath.Join(dir, "parent.pid"))
+	if ProcessAlive(leaderShell) {
+		t.Fatalf("shell leader %d still alive after exit 0", leaderShell)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "child.out")); err != nil {
+		t.Fatalf("expected redirected stdout file: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "child.err")); err != nil {
+		t.Fatalf("expected redirected stderr file: %v", err)
+	}
+	if err := conn.Send(omp.Message{Op: stopOp, Seat: plSeat}); err != nil {
+		t.Fatal(err)
+	}
+	if stopOp == omp.OpDrop { // production stop/reap wire op
+		dropped := false
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			ev, err := conn.Recv()
+			if err != nil {
+				break
+			}
+			if ev.Type == "dropped" && ev.Seat == plSeat {
+				dropped = true
+				break
+			}
+		}
+		if !dropped {
+			t.Fatal("seat OpDrop did not emit dropped on wire")
+		}
+	}
+	waitFor(t, "redirected background child reaped on seat stop", func() bool { return !ProcessAlive(bgChild) })
+	if !ProcessAlive(supervisor) {
+		t.Fatal("separately supervised harness job must survive seat stop")
+	}
+	if !ProcessAlive(sidecar.Process.Pid) {
+		t.Fatal("sidecar broker must survive seat stop")
+	}
 }
 
 func runProcessLifetimeFlood(t *testing.T, ctx context.Context, sock, dir string) (grand int, conn *omp.Conn) {

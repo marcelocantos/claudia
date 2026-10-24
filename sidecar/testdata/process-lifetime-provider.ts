@@ -23,8 +23,13 @@ function bashCommand(spec: { mode: string; dir: string }): string {
     return `/bin/sleep 120 & echo $! > ${grand}; echo $$ > ${parent}; exec yes`;
   }
   if (spec.mode === "leader_exit") {
-    // T219 orphan class: background grandchild survives parent exec; seat stop must reap PG.
-    return `/bin/sleep 300 & echo $! > ${grand}; echo $$ > ${parent}; exec /bin/sleep 300`;
+    const childOut = join(spec.dir, "child.out");
+    const childErr = join(spec.dir, "child.err");
+    const leaderDone = join(spec.dir, "leader.done");
+    // T219/T223 ownership class: background child with redirected streams, PID
+    // recorded, then shell leader exits 0 — commandScope untracks on close while
+    // the child may still be alive.
+    return `/bin/sleep 300 > ${childOut} 2> ${childErr} & echo $! > ${grand}; echo $$ > ${parent}; touch ${leaderDone}; exit 0`;
   }
   return `/bin/sleep 300 & echo $! > ${grand}; echo $$ > ${parent}; while [ ! -f ${release} ]; do sleep 0.05; done; echo done > ${effect}`;
 }
