@@ -1,0 +1,214 @@
+// Copyright 2026 Marcelo Cantos
+// SPDX-License-Identifier: Apache-2.0
+
+package claudia
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/marcelocantos/claudia/omp"
+)
+
+// TestT223SidecarServerProcessLifetimeFixture is the 🎯T223 Slice B oracle:
+// real sidecar/server.ts, real child+grandchild through production seat Bash,
+// not runCommand unit tests alone.
+func TestT223SidecarServerProcessLifetimeFixture(t *testing.T) {
+	t.Run("consumer_disconnect_continues_seat_owned_work", func(t *testing.T) {
+		ctx, sock, sidecar, supervisor, dir := startProcessLifetimeSidecar(t)
+		grand, parent, conn := runProcessLifetimeHold(t, ctx, sock, dir)
+		if err := conn.Close(); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(150 * time.Millisecond)
+		if !ProcessAlive(grand) {
+			t.Fatalf("grandchild %d died on consumer disconnect", grand)
+		}
+		if !ProcessAlive(parent) {
+			t.Fatalf("seat-owned parent %d died on consumer disconnect", parent)
+		}
+		if !ProcessAlive(supervisor) {
+			t.Fatal("unrelated supervisor job died on consumer disconnect")
+		}
+		if !ProcessAlive(sidecar.Process.Pid) {
+			t.Fatal("sidecar supervisor died on consumer disconnect")
+		}
+		second, err := omp.Dial(ctx, sock)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer second.Close()
+		if err := second.Send(omp.Message{Op: omp.OpAdopt, Seat: plSeat, Provider: omp.Anthropic, Token: "fixture", SessionID: plSession}); err != nil {
+			t.Fatal(err)
+		}
+		ev, err := second.Recv()
+		if err != nil || ev.Type != "ready" {
+			t.Fatalf("adopt after disconnect = %+v %v", ev, err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "release"), []byte("go\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		waitFor(t, "hold bash finished after release", func() bool {
+			_, err := os.Stat(filepath.Join(dir, "effect"))
+			return err == nil
+		})
+		if !ProcessAlive(supervisor) || !ProcessAlive(sidecar.Process.Pid) {
+			t.Fatal("supervisor or sidecar died while seat work finished after reconnect")
+		}
+	})
+
+	t.Run("seat_abort_reaps_owned_process_group", func(t *testing.T) {
+		ctx, sock, sidecar, supervisor, dir := startProcessLifetimeSidecar(t)
+		grand, parent, conn := runProcessLifetimeHold(t, ctx, sock, dir)
+		if err := conn.Send(omp.Message{Op: omp.OpAbort, Seat: plSeat}); err != nil {
+			t.Fatal(err)
+		}
+		waitFor(t, "grandchild reaped on seat abort", func() bool { return !ProcessAlive(grand) })
+		if ProcessAlive(parent) {
+			t.Fatalf("seat-owned parent %d still alive after abort", parent)
+		}
+		if !ProcessAlive(supervisor) || !ProcessAlive(sidecar.Process.Pid) {
+			t.Fatal("seat abort must not kill broker supervisor or sidecar")
+		}
+	})
+
+	t.Run("tool_maxbuffer_reaps_owned_process_group", func(t *testing.T) {
+		ctx, sock, sidecar, supervisor, dir := startProcessLifetimeSidecar(t)
+		grand, conn := runProcessLifetimeFlood(t, ctx, sock, dir)
+		_ = conn.Close()
+		waitFor(t, "grandchild reaped on maxBuffer", func() bool { return !ProcessAlive(grand) })
+		if !ProcessAlive(supervisor) || !ProcessAlive(sidecar.Process.Pid) {
+			t.Fatal("tool maxBuffer abort must not kill broker supervisor or sidecar")
+		}
+	})
+}
+
+const plSeat = "pl-fixture"
+const plSession = "generation"
+
+func startProcessLifetimeSidecar(t *testing.T) (context.Context, string, *exec.Cmd, int, string) {
+	t.Helper()
+	bun, err := exec.LookPath("bun")
+	if err != nil {
+		t.Skip("fixture integration requires bun")
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	dir := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", filepath.Join(dir, "state"))
+	socketDir, err := os.MkdirTemp(os.TempDir(), "pl-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(socketDir); cancel() })
+	sock := filepath.Join(socketDir, "s.sock")
+	script, _ := filepath.Abs("sidecar/server.ts")
+	if err := omp.EnsureDeps(ctx, script); err != nil {
+		t.Fatal(err)
+	}
+	entry, _ := filepath.Abs("sidecar/testdata/process-lifetime-provider.ts")
+	cmd := exec.CommandContext(ctx, bun, entry, sock)
+	cmd.Env = append(omp.ScrubEnv(os.Environ()), "CLAUDIA_OMP_SPOOL_DIR="+filepath.Join(dir, "spool"))
+	var childLog bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &childLog, &childLog
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		if t.Failed() {
+			t.Log(childLog.String())
+		}
+	})
+	waitFor(t, "process-lifetime sidecar listening", func() bool { return omp.Listening(ctx, sock) })
+	if api, err := os.ReadFile(filepath.Join(socketDir, "mock-api-ready")); err != nil || string(api) != "mock\n" {
+		t.Fatalf("fixture did not select mock API: %q %v", api, err)
+	}
+	supervisor := exec.Command("sleep", "3600")
+	if err := supervisor.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = supervisor.Process.Kill(); _ = supervisor.Wait() })
+	return ctx, sock, cmd, supervisor.Process.Pid, dir
+}
+
+func processLifetimePrompt(dir string, mode string) string {
+	spec, _ := json.Marshal(map[string]string{"mode": mode, "dir": dir})
+	return "PROCESS_LIFETIME_FIXTURE " + string(spec)
+}
+
+func loadAndPrompt(t *testing.T, ctx context.Context, sock, dir, text string) *omp.Conn {
+	t.Helper()
+	conn, err := omp.Dial(ctx, sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	load := omp.Message{
+		Op: omp.OpLoad, Seat: plSeat, Provider: omp.Anthropic, Model: "claude-sonnet-5",
+		Token: "fixture", Cwd: dir, SessionID: plSession,
+	}
+	if err := conn.Send(load); err != nil {
+		t.Fatal(err)
+	}
+	ev, err := conn.Recv()
+	if err != nil || ev.Type != "ready" {
+		t.Fatalf("load = %+v %v", ev, err)
+	}
+	prompt := omp.Message{
+		Op: omp.OpPrompt, Seat: plSeat, Text: text, RequestID: "r-pl", SessionID: plSession,
+		TurnID: "turn-pl", AttemptID: "attempt-pl",
+	}
+	if err := conn.Send(prompt); err != nil {
+		t.Fatal(err)
+	}
+	return conn
+}
+
+func readPIDFile(t *testing.T, path string) int {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil || pid <= 0 {
+		t.Fatalf("%s = %q", path, raw)
+	}
+	return pid
+}
+
+func runProcessLifetimeHold(t *testing.T, ctx context.Context, sock, dir string) (grand int, parent int, conn *omp.Conn) {
+	t.Helper()
+	conn = loadAndPrompt(t, ctx, sock, dir, processLifetimePrompt(dir, "hold"))
+	waitFor(t, "grandchild marker", func() bool {
+		_, err := os.Stat(filepath.Join(dir, "grand.pid"))
+		return err == nil
+	})
+	waitFor(t, "parent marker", func() bool {
+		_, err := os.Stat(filepath.Join(dir, "parent.pid"))
+		return err == nil
+	})
+	grand = readPIDFile(t, filepath.Join(dir, "grand.pid"))
+	parent = readPIDFile(t, filepath.Join(dir, "parent.pid"))
+	time.Sleep(100 * time.Millisecond)
+	return grand, parent, conn
+}
+
+func runProcessLifetimeFlood(t *testing.T, ctx context.Context, sock, dir string) (grand int, conn *omp.Conn) {
+	t.Helper()
+	conn = loadAndPrompt(t, ctx, sock, dir, processLifetimePrompt(dir, "flood"))
+	waitFor(t, "grandchild marker", func() bool {
+		_, err := os.Stat(filepath.Join(dir, "grand.pid"))
+		return err == nil
+	})
+	grand = readPIDFile(t, filepath.Join(dir, "grand.pid"))
+	return grand, conn
+}
