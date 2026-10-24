@@ -98,6 +98,7 @@ func cloneAgentDef(def AgentDef) AgentDef {
 	def.SandboxWritableRoots = slices.Clone(def.SandboxWritableRoots)
 	def.ProtectedPaths = slices.Clone(def.ProtectedPaths)
 	def.MCPServers = slices.Clone(def.MCPServers)
+	def.ChildProcessEnv = CloneChildProcessEnv(def.ChildProcessEnv)
 	for i := range def.MCPServers {
 		s := &def.MCPServers[i]
 		s.Args = slices.Clone(s.Args)
@@ -135,6 +136,7 @@ func registryConfig(def *AgentDef, requireResume bool) Config {
 		ExtraArgs: def.ExtraArgs, TermLogPath: def.TermLogPath,
 		OMP:             def.OMP,
 		ContextPreserve: def.ContextPreserve, ContextPins: def.ContextPins,
-		ProtectedPaths: slices.Clone(def.ProtectedPaths),
+		ProtectedPaths:  slices.Clone(def.ProtectedPaths),
+		ChildProcessEnv: CloneChildProcessEnv(def.ChildProcessEnv),
 	}
 }

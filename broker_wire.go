@@ -6,6 +6,7 @@ package claudia
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 )
 
 // Wire codecs for the payloads the broker carries opaquely (🎯T2.10). The
@@ -241,6 +242,8 @@ func configToGrantDef(name string, cfg Config, base *AgentDef) GrantDefinition {
 			OMP:                  cfg.OMP,
 			ContextPreserve:      cfg.ContextPreserve,
 			ContextPins:          cfg.ContextPins,
+			ProtectedPaths:       slices.Clone(cfg.ProtectedPaths),
+			ChildProcessEnv:      CloneChildProcessEnv(cfg.ChildProcessEnv),
 		},
 		RequireResume: cfg.RequireResume,
 	}

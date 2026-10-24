@@ -9,7 +9,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import type { CursorExecHandlers, ToolResultMessage } from "@oh-my-pi/pi-ai";
-import { runCommand, runShell, under, writeFile, deleteFile, editFile, type SandboxPolicy } from "./execution.ts";
+import { runCommand, runShell, under, writeFile, deleteFile, editFile, type SandboxPolicy, type SeatCommandScope } from "./execution.ts";
 import { capToolText, truncateToolResult, toolResultBound } from "./truncate.ts";
 import { recordReadView } from "./readguard.ts";
 
@@ -64,8 +64,15 @@ function sliceLines(body: string, start?: number, count?: number, end?: number):
   return lines.slice(from, to).join("\n");
 }
 
-export function cursorExecHandlers(cwdOf: () => string, boundOf: () => number, policyOf: () => SandboxPolicy | undefined = () => undefined): CursorExecHandlers {
+export function cursorExecHandlers(
+  cwdOf: () => string,
+  boundOf: () => number,
+  policyOf: () => SandboxPolicy | undefined = () => undefined,
+  envOf: () => NodeJS.ProcessEnv = () => process.env,
+  commandScopeOf: () => SeatCommandScope | undefined = () => undefined,
+): CursorExecHandlers {
   const root = () => cwdOf() || process.cwd();
+  const runOpts = () => ({ commandScope: commandScopeOf() });
 
   const read = (id: string | undefined, tool: string, p: string, offset?: number, limit?: number) => {
     try {
@@ -110,7 +117,7 @@ export function cursorExecHandlers(cwdOf: () => string, boundOf: () => number, p
         workingDirectory: wd,
         timeoutMs: Math.min(Math.max(timeoutMs, 1000), shellMaxMs),
         maxBuffer: maxOut,
-      });
+      }, envOf, runOpts());
       const out = `${r.stdout || ""}${r.stderr || ""}`.slice(0, maxOut);
       const status = r.status ?? (r.error ? 1 : 0);
       return result(id, "bash", status === 0 ? out || "(no output)" : `exit ${status}\n${out || r.error?.message || ""}`, status !== 0, boundOf());
@@ -126,7 +133,7 @@ export function cursorExecHandlers(cwdOf: () => string, boundOf: () => number, p
       if (a.literal) args.push("-F");
       if (a.glob) args.push("--glob", a.glob);
       args.push("--", a.pattern, target);
-      const r = await runCommand("rg", args, { timeoutMs: searchTimeoutMs, maxBuffer: maxOut });
+      const r = await runCommand("rg", args, { timeoutMs: searchTimeoutMs, maxBuffer: maxOut, env: envOf(), ...runOpts() });
       let lines = (r.stdout || "").split("\n").filter(Boolean);
       if (a.limit && a.limit > 0) lines = lines.slice(0, a.limit);
       if (r.error && r.error.code === "ENOENT") return result(id, "grep", "rg not found", true, boundOf());
@@ -138,7 +145,7 @@ export function cursorExecHandlers(cwdOf: () => string, boundOf: () => number, p
   const find = async (id: string | undefined, pattern: string, p?: string, limit?: number) => {
     try {
       const target = under(root(), p || ".", policyOf());
-      const r = await runCommand("/usr/bin/find", [target, "-name", pattern || "*"], { timeoutMs: searchTimeoutMs, maxBuffer: maxOut });
+      const r = await runCommand("/usr/bin/find", [target, "-name", pattern || "*"], { timeoutMs: searchTimeoutMs, maxBuffer: maxOut, env: envOf(), ...runOpts() });
       const lines = (r.stdout || "").split("\n").filter(Boolean).slice(0, limit && limit > 0 ? limit : 500);
       return result(id, "find", lines.join("\n") || "(no matches)", false, boundOf());
     } catch (err) {
