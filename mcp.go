@@ -23,6 +23,14 @@ type MCPServer struct {
 	Command string            `json:"command,omitempty"`
 	Args    []string          `json:"args,omitempty"`
 	Env     map[string]string `json:"env,omitempty"`
+	// DurableTools opts named HTTP server tools into waiting without the bare-core
+	// host's ordinary 30-second logical deadline. The consumer owns this policy;
+	// server metadata cannot enable it. Names are the server's original names,
+	// before provider renaming. Setup remains bounded and cancellation still
+	// ends the wait; neither cancellation nor transport loss rolls back effects.
+	// Hosted stdio and other provider-native MCP clients retain their own timeout
+	// policies; use an independently hosted HTTP server for durable waiting.
+	DurableTools []string `json:"durable_tools,omitempty"`
 
 	// Static HTTP auth (🎯T41). Headers is the Claude/Grok form
 	// (Authorization: Bearer …, or ${ENV} interpolation). BearerTokenEnv

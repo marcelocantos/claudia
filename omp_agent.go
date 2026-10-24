@@ -357,18 +357,18 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 		sessionID = uuid.NewString()
 	}
 	load := omp.Message{
-		Op:            op,
-		Seat:          req.Config.Name,
-		Provider:      provider,
-		Model:         req.Config.Model,
-		Token:         token,
-		Cwd:           req.Config.WorkDir,
-		SessionID:     sessionID,
-		RequireResume: req.Config.RequireResume,
-		Preserve:      req.Config.ContextPreserve,
-		Pins:          req.Config.ContextPins,
-		Tools:         tools,
-		Sandbox:         sandbox,
+		Op:             op,
+		Seat:           req.Config.Name,
+		Provider:       provider,
+		Model:          req.Config.Model,
+		Token:          token,
+		Cwd:            req.Config.WorkDir,
+		SessionID:      sessionID,
+		RequireResume:  req.Config.RequireResume,
+		Preserve:       req.Config.ContextPreserve,
+		Pins:           req.Config.ContextPins,
+		Tools:          tools,
+		Sandbox:        sandbox,
 		ProtectedPaths: ompProtectedPathRules(req.Config),
 	}
 	if err := conn.Send(load); err != nil {
@@ -460,7 +460,7 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 		sessionID: sessionID,
 		preserve:  req.Config.ContextPreserve, pins: req.Config.ContextPins,
 		tools: tools, mcpServers: slices.Clone(req.Config.MCPServers), toolServers: toolRoutes, toolNames: toolNames,
-		sandbox: sandbox,
+		sandbox:        sandbox,
 		protectedPaths: slices.Clone(ompProtectedPathRules(req.Config)),
 	}
 	// A reattach (adopt, or a load that found this seat already running in
@@ -490,8 +490,8 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 		transcriptEndsMidTurn = ev.TranscriptEndsMidTurn
 	}
 	return &agentStart{
-		Control:            ctrl,
-		SessionID:          sessionID,
+		Control:               ctrl,
+		SessionID:             sessionID,
 		HistoryLost:           historyLost,
 		TranscriptEndsMidTurn: transcriptEndsMidTurn,
 		SupersededSessionID:   superseded,
@@ -639,7 +639,9 @@ type ompControl struct {
 	// reply, not just from a later accepted/receipt, can name it too. Read
 	// and written under mu; "" does not by itself mean idle — check
 	// inflight.
-	turnID string
+	turnID      string
+	toolCalls   map[*ompToolCall]struct{}
+	toolsClosed bool
 	// lastRefresh is when this seat last refreshed a rejected token (under mu).
 	lastRefresh time.Time
 }
@@ -700,7 +702,13 @@ func promptMessage(op, seat, text string, a *Agent, ctrl *ompControl) omp.Messag
 func (c *ompControl) send(msg omp.Message) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.conn.Send(msg)
+	err := c.conn.Send(msg)
+	if err == nil && (msg.Op == omp.OpAbort || msg.Op == omp.OpDrop) {
+		for call := range c.toolCalls {
+			call.cancel()
+		}
+	}
+	return err
 }
 
 // setOpenTurn records whether a turn is open and, when known, its id
@@ -732,6 +740,7 @@ func (c *ompControl) openTurnID() string {
 
 func (c *ompControl) pump(a *Agent) {
 	defer close(c.bytes)
+	defer c.closeToolCalls()
 	c.mu.Lock()
 	if c.done == nil {
 		c.done = make(chan struct{})
@@ -853,8 +862,10 @@ func (c *ompControl) pump(a *Agent) {
 			// every later event from this seat — an acceptance of a new
 			// prompt among them, which a host then reported undelivered. The
 			// result goes back by call id, so order does not matter.
+			call := c.beginToolCall(ev.TurnID)
 			go func(name, callID, args string) {
-				result := c.runTool(name, callID, args)
+				defer c.finishToolCall(call)
+				result := c.runToolContext(call.ctx, name, callID, args)
 				_ = c.send(omp.Message{Op: omp.OpTool, CallID: callID, Result: result})
 			}(ev.Name, ev.CallID, ev.Text)
 		case "tool_start":
@@ -880,6 +891,9 @@ func (c *ompControl) pump(a *Agent) {
 			slog.Error("omp sidecar seat error", "seat", c.seat, "reason", ev.Reason, "error", ev.Text)
 			a.publishEvent(Event{Type: "system", Text: "omp sidecar: " + ev.Text, SessionID: c.sessionID})
 		case "turn_end", "error":
+			if ev.StopReason == ReasonAborted {
+				c.cancelToolTurn(ev.TurnID)
+			}
 			c.setOpenTurn(false, "")
 			// Only this turn's own error says whether the token was refused
 			// (🎯T165). The snapshot is the whole conversation and a turn
@@ -1130,9 +1144,10 @@ func ensureOMPToken(ctx context.Context, provider, caller string) (string, error
 // token, model and host tools.
 
 func (c *ompControl) applySessionMCPServers(ctx context.Context, servers []MCPServer) {
-	c.mcpServers = slices.Clone(servers)
-	tools, routes, names, _ := hostToolsReport(ctx, c.mcpServers)
+	servers = slices.Clone(servers)
+	tools, routes, names, _ := hostToolsReport(ctx, servers)
 	c.mu.Lock()
+	c.mcpServers = servers
 	c.tools, c.toolServers, c.toolNames = tools, routes, names
 	c.mu.Unlock()
 }
@@ -1464,15 +1479,12 @@ func SetOMPToolExec(fn func(name, callID, args string) string) {
 // with a structured tools/call. Any other name goes through runOMPTool,
 // which refuses when no runner is installed.
 func (c *ompControl) runTool(name, callID, args string) string {
-	if c != nil && c.toolServers != nil {
-		if url, ok := c.toolServers[name]; ok {
-			if orig, renamed := c.toolNames[name]; renamed {
-				name = orig
-			}
-			return callMCPTool(url, name, args, c.seat)
-		}
+	if c == nil {
+		return runOMPTool(name, callID, args)
 	}
-	return runOMPTool(name, callID, args)
+	call := c.beginToolCall("")
+	defer c.finishToolCall(call)
+	return c.runToolContext(call.ctx, name, callID, args)
 }
 
 func runOMPTool(name, callID, args string) string {
@@ -1499,34 +1511,47 @@ const jevonsSeatHeader = "X-Jevons-Agent"
 // (🎯T871.1). No name prefix is required: the caller already decided this
 // tool belongs to this server, via [hostTools]'s discovered route.
 func CallMCPTool(mcpURL, name, args string) string {
-	return callMCPTool(mcpURL, name, args, "")
+	return invokeMCPTool(context.Background(), &mcpInvocation{url: mcpURL, name: name, args: args})
 }
 
-func callMCPTool(mcpURL, name, args, seat string) string {
+func invokeMCPTool(ctx context.Context, call *mcpInvocation) string {
+	mcpURL, name, args, seat := call.url, call.name, call.args, call.identity.Seat
+	if call.durable && (seat == "" || call.identity.SessionID == "" || call.identity.ToolCallID == "") {
+		return "omp: durable MCP call requires seat, session and tool-call identity (not sent)"
+	}
+	var id any = 1 // Legacy explicit calls have no model invocation identity.
+	params := map[string]any{"name": name}
+	if call.identity.ToolCallID != "" {
+		id = call.identity.ToolCallID
+		params["_meta"] = map[string]any{MCPInvocationMetaKey: call.identity}
+	}
 	var arguments any
 	if strings.TrimSpace(args) == "" {
 		arguments = map[string]any{}
 	} else if json.Unmarshal([]byte(args), &arguments) != nil {
 		arguments = map[string]any{"text": args}
 	}
+	params["arguments"] = arguments
 	body, err := json.Marshal(map[string]any{
 		"jsonrpc": "2.0",
-		"id":      1,
+		"id":      id,
 		"method":  "tools/call",
-		"params": map[string]any{
-			"name":      name,
-			"arguments": arguments,
-		},
+		"params":  params,
 	})
 	if err != nil {
 		return fmt.Sprintf("omp: encode %s: %v", name, err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	if !call.durable {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, mcpToolCallTimeout)
+		defer cancel()
+	}
 	// The call runs in a session of its own, as the listing does (🎯T147):
 	// a server that keeps sessions refuses a bare tools/call, and a stdio
 	// server drops one it has not been initialized for.
-	session, err := mcpOpenSession(ctx, mcpURL)
+	setupCtx, setupCancel := context.WithTimeout(ctx, mcpToolCallTimeout)
+	session, err := mcpOpenSession(setupCtx, mcpURL)
+	setupCancel()
 	if err != nil {
 		return fmt.Sprintf("omp: %s call failed: %v", name, err)
 	}
@@ -1535,7 +1560,12 @@ func callMCPTool(mcpURL, name, args, seat string) string {
 	}
 	raw, _, cause, err := mcpPost(ctx, mcpURL, session, body, seat)
 	if cause != "" {
-		return fmt.Sprintf("omp: %s call failed (%s): %v", name, cause, err)
+		if ctx.Err() != nil {
+			// MCP cancellation withdraws interest in the result. It is not
+			// evidence that the server did not commit an effect.
+			cancelMCPInvocation(mcpURL, session, seat, id)
+		}
+		return fmt.Sprintf("omp: %s call failed (%s): %v; outcome unknown; do not assume safe replay", name, cause, err)
 	}
 	var envelope struct {
 		Result struct {
