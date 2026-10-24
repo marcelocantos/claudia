@@ -631,9 +631,11 @@ type ompControl struct {
 	toolServers map[string]string
 	// toolNames maps an advertised tool name to the server's own name for
 	// it, where the provider needed it renamed (🎯T146).
-	toolNames map[string]string
-	mu        sync.Mutex
-	inflight  atomic.Bool
+	toolNames   map[string]string
+	mu          sync.Mutex
+	writeOnce   sync.Once
+	writePermit chan struct{}
+	inflight    atomic.Bool
 	// turnID is the running turn's id, when known (🎯T202). Set alongside
 	// inflight so a reattach that learns of a turn from the sidecar's ready
 	// reply, not just from a later accepted/receipt, can name it too. Read
@@ -701,14 +703,19 @@ func promptMessage(op, seat, text string, a *Agent, ctrl *ompControl) omp.Messag
 
 func (c *ompControl) send(msg omp.Message) error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	err := c.conn.Send(msg)
-	if err == nil && (msg.Op == omp.OpAbort || msg.Op == omp.OpDrop) {
+	// Stop local work before trying the transport: its peer may not read.
+	// A drop seals admission even if delivery becomes uncertain. Reopening
+	// requires a new control rather than executing buffered old-seat calls.
+	if msg.Op == omp.OpDrop {
+		c.toolsClosed = true
+	}
+	if msg.Op == omp.OpAbort || msg.Op == omp.OpDrop {
 		for call := range c.toolCalls {
 			call.cancel()
 		}
 	}
-	return err
+	c.mu.Unlock()
+	return c.sendContext(context.Background(), msg)
 }
 
 // setOpenTurn records whether a turn is open and, when known, its id
@@ -1558,12 +1565,12 @@ func invokeMCPTool(ctx context.Context, call *mcpInvocation) string {
 	if session != "" {
 		defer mcpEndSession(mcpURL, session)
 	}
-	raw, _, cause, err := mcpPost(ctx, mcpURL, session, body, seat)
+	raw, _, cause, err := mcpPostResponse(ctx, mcpURL, session, body, seat, call.durable)
 	if cause != "" {
 		if ctx.Err() != nil {
 			// MCP cancellation withdraws interest in the result. It is not
 			// evidence that the server did not commit an effect.
-			cancelMCPInvocation(mcpURL, session, seat, id)
+			cancelMCPInvocation(mcpURL, session, call.identity, id)
 		}
 		return fmt.Sprintf("omp: %s call failed (%s): %v; outcome unknown; do not assume safe replay", name, cause, err)
 	}
@@ -1986,6 +1993,10 @@ func mcpOpenSession(ctx context.Context, mcpURL string) (string, error) {
 // the server assigned, and a cause when it failed. A notification's reply
 // may be empty.
 func mcpPost(ctx context.Context, mcpURL, session string, body []byte, seat string) ([]byte, string, string, error) {
+	return mcpPostResponse(ctx, mcpURL, session, body, seat, false)
+}
+
+func mcpPostResponse(ctx context.Context, mcpURL, session string, body []byte, seat string, terminal bool) ([]byte, string, string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, mcpURL, bytes.NewReader(body))
 	if err != nil {
 		return nil, "", toolsCauseTransport, err
@@ -2009,6 +2020,19 @@ func mcpPost(ctx context.Context, mcpURL, session string, body []byte, seat stri
 		return nil, "", toolsCauseTransport, err
 	}
 	defer resp.Body.Close()
+	if terminal && (resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusAccepted) {
+		var request struct {
+			ID json.RawMessage `json:"id"`
+		}
+		if err := json.Unmarshal(body, &request); err != nil {
+			return nil, "", toolsCauseReply, err
+		}
+		raw, err := readMCPTerminal(resp, request.ID)
+		if err != nil {
+			return nil, "", toolsCauseReply, err
+		}
+		return raw, resp.Header.Get("Mcp-Session-Id"), "", nil
+	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || os.IsTimeout(err) {

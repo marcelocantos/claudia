@@ -28,9 +28,7 @@ func (c *ompControl) callReceipt(ctx context.Context, msg omp.Message) (omp.Even
 	done := c.done
 	c.mu.Unlock()
 	defer c.takeWait("rpc:" + msg.RPCID)
-	c.mu.Lock()
-	err := c.conn.SendContext(ctx, msg)
-	c.mu.Unlock()
+	err := c.sendContext(ctx, msg)
 	if err != nil {
 		return omp.Event{}, err
 	}

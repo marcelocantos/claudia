@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -16,7 +17,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/marcelocantos/claudia/omp"
 )
@@ -68,11 +68,13 @@ func TestMCPInvocationServerProcess(t *testing.T) {
 		var result any
 		switch request.Method {
 		case "initialize":
-			w.Header().Set("Mcp-Session-Id", fmt.Sprintf("transport-%d", sessions.Add(1)))
+			if os.Getenv("CLAUDIA_MCP_STATELESS_FIXTURE") != "1" {
+				w.Header().Set("Mcp-Session-Id", fmt.Sprintf("transport-%d", sessions.Add(1)))
+			}
 			result = map[string]any{"protocolVersion": "2025-03-26"}
 		case "tools/list":
 			var tools []any
-			for _, name := range []string{"durable", "ordinary", "instant", "lost"} {
+			for _, name := range []string{"durable", "ordinary", "instant", "lost", "stream-ok", "stream-error", "stream-progress", "stream-partial", "stream-wrong", "stream-interrupted", "stream-oversize", "json-oversize"} {
 				tools = append(tools, map[string]any{"name": name, "inputSchema": map[string]any{"type": "object"}})
 			}
 			result = map[string]any{"tools": tools}
@@ -83,6 +85,41 @@ func TestMCPInvocationServerProcess(t *testing.T) {
 			event := invocationEvent{Method: request.Method, ID: id, Tool: request.Params.Name,
 				Session: r.Header.Get("Mcp-Session-Id"), Seat: r.Header.Get(jevonsSeatHeader), Identity: request.Params.Meta[MCPInvocationMetaKey]}
 			events <- event
+			if strings.HasPrefix(request.Params.Name, "stream-") {
+				w.Header().Set("Content-Type", "text/event-stream")
+				progress := "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\",\"params\":{}}\n\n"
+				_, _ = io.WriteString(w, progress)
+				terminal := map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": map[string]any{"content": []any{map[string]any{"type": "text", "text": "completed"}}}}
+				switch request.Params.Name {
+				case "stream-progress":
+					return
+				case "stream-partial":
+					_, _ = io.WriteString(w, "data: {\"jsonrpc\":\"2.0\"")
+					return
+				case "stream-wrong":
+					terminal["id"] = "another-call"
+				case "stream-error":
+					delete(terminal, "result")
+					terminal["error"] = map[string]any{"code": -32603, "message": "fixture refusal"}
+				case "stream-interrupted":
+					w.(http.Flusher).Flush()
+					conn, _, err := w.(http.Hijacker).Hijack()
+					if err != nil {
+						panic(err)
+					}
+					_ = conn.Close()
+					return
+				case "stream-oversize":
+					_, _ = io.WriteString(w, strings.Repeat(": padding\n\n", mcpReplyLimit/10+1))
+				}
+				raw, _ := json.Marshal(terminal)
+				_, _ = fmt.Fprintf(w, "data: %s\n\n%s", raw, progress)
+				return
+			}
+			if request.Params.Name == "json-oversize" {
+				_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": map[string]any{"content": []any{map[string]any{"type": "text", "text": strings.Repeat("x", mcpReplyLimit)}}}})
+				return
+			}
 			if request.Params.Name == "lost" {
 				conn, _, err := w.(http.Hijacker).Hijack()
 				if err != nil {
@@ -103,7 +140,7 @@ func TestMCPInvocationServerProcess(t *testing.T) {
 			result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "completed"}}}
 		case "notifications/cancelled":
 			events <- invocationEvent{Method: request.Method, ID: request.Params.RequestID,
-				Session: r.Header.Get("Mcp-Session-Id"), Seat: r.Header.Get(jevonsSeatHeader)}
+				Session: r.Header.Get("Mcp-Session-Id"), Seat: r.Header.Get(jevonsSeatHeader), Identity: request.Params.Meta[MCPInvocationMetaKey]}
 			w.WriteHeader(http.StatusAccepted)
 			return
 		default:
@@ -123,7 +160,7 @@ func TestMCPInvocationServerProcess(t *testing.T) {
 	_ = server.Close()
 }
 
-func invocationProcess(t *testing.T) string {
+func invocationProcess(t *testing.T, stateless bool) string {
 	t.Helper()
 	self, err := os.Executable()
 	if err != nil {
@@ -131,6 +168,9 @@ func invocationProcess(t *testing.T) string {
 	}
 	cmd := exec.Command(self, "-test.run=^TestMCPInvocationServerProcess$")
 	cmd.Env = append(os.Environ(), "CLAUDIA_MCP_INVOCATION_FIXTURE=1")
+	if stateless {
+		cmd.Env = append(cmd.Env, "CLAUDIA_MCP_STATELESS_FIXTURE=1")
+	}
 	in, err := cmd.StdinPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -158,8 +198,7 @@ func invocationProcess(t *testing.T) string {
 
 func nextInvocationEvent(t *testing.T, url string) invocationEvent {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	ctx := t.Context()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url+"/events", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -181,7 +220,7 @@ func configureInvocationTools(ctrl *ompControl, url string) {
 }
 
 func TestMCPInvocationIdentityScopedBySeatAndSession(t *testing.T) {
-	url := invocationProcess(t)
+	url := invocationProcess(t, false)
 	for _, identity := range []MCPInvocationIdentity{{"seat-A", "session-A", "same-call"}, {"seat-B", "session-A", "same-call"}, {"seat-A", "session-B", "same-call"}} {
 		ctrl := &ompControl{seat: identity.Seat, sessionID: identity.SessionID}
 		configureInvocationTools(ctrl, url)
@@ -200,7 +239,7 @@ func TestMCPInvocationIdentityScopedBySeatAndSession(t *testing.T) {
 }
 
 func TestMCPInvocationRequiresDurableIdentityAndNeverRetriesLostReply(t *testing.T) {
-	url := invocationProcess(t)
+	url := invocationProcess(t, false)
 	ctrl := &ompControl{seat: "seat-A"}
 	configureInvocationTools(ctrl, url)
 	if got := ctrl.runTool("durable", "call-A", "{}"); !strings.Contains(got, "not sent") {
@@ -229,16 +268,16 @@ func TestMCPInvocationRequiresDurableIdentityAndNeverRetriesLostReply(t *testing
 }
 
 func TestMCPDurableInvocationOutlivesOrdinaryDeadlineThroughPump(t *testing.T) {
-	url := invocationProcess(t)
+	url := invocationProcess(t, false)
 	ctrl, _, reader, peer, _ := receiptPipe(t)
 	configureInvocationTools(ctrl, url)
-	_ = peer.SetDeadline(time.Now().Add(2 * mcpToolCallTimeout))
-	replyReceipt(t, peer, omp.Event{Type: "tool_call", CallID: "durable-call", Name: "durable", Text: "{}", TurnID: "turn-A"})
+	replyReceipt(t, peer, omp.Event{Type: "accepted", TurnID: "turn-A"})
+	replyReceipt(t, peer, omp.Event{Type: "tool_call", CallID: "durable-call", Name: "durable", Text: "{}"})
 	durable := nextInvocationEvent(t, url)
 	if durable.ID != "durable-call" {
 		t.Fatal(durable)
 	}
-	replyReceipt(t, peer, omp.Event{Type: "tool_call", CallID: "ordinary-call", Name: "ordinary", Text: "{}", TurnID: "turn-A"})
+	replyReceipt(t, peer, omp.Event{Type: "tool_call", CallID: "ordinary-call", Name: "ordinary", Text: "{}"})
 	if event := nextInvocationEvent(t, url); event.ID != "ordinary-call" {
 		t.Fatal(event)
 	}
@@ -262,15 +301,19 @@ func TestMCPDurableInvocationOutlivesOrdinaryDeadlineThroughPump(t *testing.T) {
 func TestMCPInvocationCancellationThroughProductionControl(t *testing.T) {
 	for _, action := range []string{"abort", "drop", "turn-end", "pump-close"} {
 		t.Run(action, func(t *testing.T) {
-			url := invocationProcess(t)
+			url := invocationProcess(t, false)
 			ctrl, _, reader, peer, _ := receiptPipe(t)
 			configureInvocationTools(ctrl, url)
-			replyReceipt(t, peer, omp.Event{Type: "tool_call", CallID: "cancel-me", Name: "durable", Text: "{}", TurnID: "turn-A"})
+			replyReceipt(t, peer, omp.Event{Type: "accepted", TurnID: "turn-A"})
+			replyReceipt(t, peer, omp.Event{Type: "tool_call", CallID: "cancel-me", Name: "durable", Text: "{}"})
 			started := nextInvocationEvent(t, url)
 			if action == "turn-end" {
 				// A delayed abort for an older turn must not cancel a new
 				// turn's tool on this same seat and connection.
-				replyReceipt(t, peer, omp.Event{Type: "tool_call", CallID: "keep-me", Name: "durable", Text: "{}", TurnID: "turn-B"})
+				receipt := testReceipt("request-B")
+				receipt.State, receipt.TurnIDs = ReceiptStarted, []string{"turn-B"}
+				replyReceipt(t, peer, omp.Event{Type: "receipt", TurnID: "turn-B", RequestID: "request-B", Receipt: receipt})
+				replyReceipt(t, peer, omp.Event{Type: "tool_call", CallID: "keep-me", Name: "durable", Text: "{}"})
 				if event := nextInvocationEvent(t, url); event.ID != "keep-me" {
 					t.Fatal(event)
 				}
@@ -306,7 +349,6 @@ func TestMCPInvocationCancellationThroughProductionControl(t *testing.T) {
 					t.Fatal(err)
 				}
 				resp.Body.Close()
-				_ = peer.SetDeadline(time.Now().Add(5 * time.Second))
 				var kept bool
 				for range 2 {
 					result := nextReceiptMessage(t, reader)
@@ -317,6 +359,128 @@ func TestMCPInvocationCancellationThroughProductionControl(t *testing.T) {
 				if !kept {
 					t.Fatal("older turn cancellation crossed into the new turn")
 				}
+			}
+		})
+	}
+}
+
+func TestMCPDropRefusesBufferedToolAdmission(t *testing.T) {
+	url := invocationProcess(t, false)
+	ctrl, _, reader, peer, _ := receiptPipe(t)
+	configureInvocationTools(ctrl, url)
+	if err := ctrl.send(omp.Message{Op: omp.OpDrop, Seat: ctrl.seat, SessionID: ctrl.sessionID}); err != nil {
+		t.Fatal(err)
+	}
+	if msg := nextReceiptMessage(t, reader); msg.Op != omp.OpDrop {
+		t.Fatal(msg)
+	}
+	// This is already buffered on the peer after the drop. It may reach the
+	// pump, but it must never reach the MCP executor.
+	replyReceipt(t, peer, omp.Event{Type: "tool_call", CallID: "too-late", Name: "instant", Text: "{}"})
+	if msg := nextReceiptMessage(t, reader); msg.CallID != "too-late" || !strings.Contains(msg.Result, "not sent") {
+		t.Fatal(msg)
+	}
+	resp, err := http.Get(url + "/count")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var count int
+	if err := json.NewDecoder(resp.Body).Decode(&count); err != nil || count != 0 {
+		t.Fatalf("drop admitted tool: count=%d err=%v", count, err)
+	}
+}
+
+func TestMCPAbortCancelsBeforeBlockedControlWrite(t *testing.T) {
+	url := invocationProcess(t, false)
+	ctrl, _, _, peer, _ := receiptPipe(t)
+	configureInvocationTools(ctrl, url)
+	replyReceipt(t, peer, omp.Event{Type: "accepted", TurnID: "turn-A"})
+	replyReceipt(t, peer, omp.Event{Type: "tool_call", CallID: "cancel-me", Name: "durable", Text: "{}"})
+	started := nextInvocationEvent(t, url)
+	blocked := make(chan error, 1)
+	go func() { blocked <- ctrl.send(omp.Message{Op: omp.OpPrompt, Text: strings.Repeat("x", 16<<20)}) }()
+	// Observe that the real socket writer has started, then stop reading.
+	// The frame cannot fit in the socket buffer. No test deadline races it.
+	var first [1]byte
+	if _, err := io.ReadFull(peer, first[:]); err != nil {
+		t.Fatal(err)
+	}
+	aborted := make(chan error, 1)
+	go func() { aborted <- ctrl.send(omp.Message{Op: omp.OpAbort, Seat: ctrl.seat}) }()
+	for range 2 {
+		event := nextInvocationEvent(t, url)
+		if event.ID != started.ID || (event.Method != "disconnected" && event.Method != "notifications/cancelled") {
+			t.Fatal(event)
+		}
+	}
+	// The real production bound, not a fixture clock, releases the writer.
+	if err := <-blocked; !errors.Is(err, context.DeadlineExceeded) && !os.IsTimeout(err) {
+		t.Fatalf("unread control write: %v", err)
+	}
+	if err := <-aborted; err == nil {
+		t.Fatal("abort unexpectedly reached nonreading peer")
+	}
+}
+
+func TestMCPStatelessCancellationKeepsLogicalSessionIdentity(t *testing.T) {
+	url := invocationProcess(t, true)
+	first, _, firstReader, firstPeer, _ := receiptPipe(t)
+	second, _, secondReader, secondPeer, _ := receiptPipe(t)
+	second.mu.Lock()
+	second.sessionID = "another-session"
+	second.mu.Unlock()
+	configureInvocationTools(first, url)
+	configureInvocationTools(second, url)
+	for _, peer := range []net.Conn{firstPeer, secondPeer} {
+		replyReceipt(t, peer, omp.Event{Type: "accepted", TurnID: "turn-A"})
+		replyReceipt(t, peer, omp.Event{Type: "tool_call", CallID: "same-call", Name: "durable", Text: "{}"})
+		_ = nextInvocationEvent(t, url)
+	}
+	if err := first.send(omp.Message{Op: omp.OpAbort, Seat: first.seat}); err != nil {
+		t.Fatal(err)
+	}
+	if msg := nextReceiptMessage(t, firstReader); msg.Op != omp.OpAbort {
+		t.Fatal(msg)
+	}
+	want := MCPInvocationIdentity{Seat: first.seat, SessionID: first.sessionID, ToolCallID: "same-call"}
+	for range 2 {
+		event := nextInvocationEvent(t, url)
+		if event.Identity != want || event.Session != "" {
+			t.Fatalf("stateless cancellation conflated sessions: %+v", event)
+		}
+	}
+	resp, err := http.Post(url+"/release", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if msg := nextReceiptMessage(t, secondReader); msg.CallID != "same-call" || msg.Result != "completed" {
+		t.Fatalf("other session lost its call: %+v", msg)
+	}
+}
+
+func TestMCPDurableRequiresMatchingTerminalResponse(t *testing.T) {
+	url := invocationProcess(t, false)
+	ctrl := &ompControl{seat: "seat", sessionID: "session"}
+	configureInvocationTools(ctrl, url)
+	for _, name := range []string{"stream-ok", "stream-error", "stream-progress", "stream-partial", "stream-wrong", "stream-interrupted", "stream-oversize", "json-oversize"} {
+		t.Run(name, func(t *testing.T) {
+			ctrl.mcpServers[0].DurableTools = []string{name}
+			result := ctrl.runTool(name, "original-call", "{}")
+			want := "outcome unknown"
+			if name == "stream-ok" {
+				want = "completed"
+			}
+			if name == "stream-error" {
+				want = "fixture refusal"
+			}
+			if !strings.Contains(result, want) {
+				t.Fatalf("%s response incorrectly completed: %s", name, result)
+			}
+			event := nextInvocationEvent(t, url)
+			if event.Tool != name || event.ID != "original-call" {
+				t.Fatal(event)
 			}
 		})
 	}

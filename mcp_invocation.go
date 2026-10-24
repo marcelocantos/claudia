@@ -9,6 +9,8 @@ import (
 	"log/slog"
 	"slices"
 	"time"
+
+	"github.com/marcelocantos/claudia/omp"
 )
 
 // MCPInvocationMetaKey names Claudia's provider/consumer-neutral identity in
@@ -84,6 +86,9 @@ func (c *ompControl) cancelToolTurn(turnID string) {
 }
 
 func (c *ompControl) runToolContext(ctx context.Context, name, callID, args string) string {
+	if err := ctx.Err(); err != nil {
+		return "omp: tool admission cancelled (not sent): " + err.Error()
+	}
 	c.mu.Lock()
 	url, routed := c.toolServers[name]
 	if original, renamed := c.toolNames[name]; renamed {
@@ -104,10 +109,37 @@ func (c *ompControl) runToolContext(ctx context.Context, name, callID, args stri
 	return runOMPTool(name, callID, args)
 }
 
-func cancelMCPInvocation(url, session, seat string, id any) {
+// sendContext serializes writes independently of control state and bounds
+// both acquisition and transport I/O. A failed partial frame closes the
+// connection; it cannot safely be followed by another frame or retried.
+func (c *ompControl) sendContext(ctx context.Context, msg omp.Message) error {
+	ctx, cancel := context.WithTimeout(ctx, receiptOpTimeout)
+	defer cancel()
+	c.writeOnce.Do(func() { c.writePermit = make(chan struct{}, 1) })
+	select {
+	case c.writePermit <- struct{}{}:
+		defer func() { <-c.writePermit }()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := c.conn.SendContext(ctx, msg); err != nil {
+		_ = c.conn.Close()
+		return err
+	}
+	return nil
+}
+
+func cancelMCPInvocation(url, session string, identity MCPInvocationIdentity, id any) {
+	params := map[string]any{"requestId": id, "reason": "caller stopped waiting; effect outcome may be unknown"}
+	if identity.ToolCallID != "" {
+		params["_meta"] = map[string]any{MCPInvocationMetaKey: identity}
+	}
 	body, err := json.Marshal(map[string]any{
 		"jsonrpc": "2.0", "method": "notifications/cancelled",
-		"params": map[string]any{"requestId": id, "reason": "caller stopped waiting; effect outcome may be unknown"},
+		"params": params,
 	})
 	if err != nil {
 		slog.Warn("MCP cancellation could not be encoded", "error", err)
@@ -115,7 +147,7 @@ func cancelMCPInvocation(url, session, seat string, id any) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), hostToolsBudget)
 	defer cancel()
-	if _, _, cause, err := mcpPost(ctx, url, session, body, seat); cause != "" {
+	if _, _, cause, err := mcpPost(ctx, url, session, body, identity.Seat); cause != "" {
 		slog.Warn("MCP cancellation not acknowledged; effect outcome remains unknown", "cause", cause, "error", err)
 	}
 }
