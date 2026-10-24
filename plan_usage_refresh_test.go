@@ -50,6 +50,41 @@ func usageRefreshStore(t *testing.T) (omp.Store, *atomic.Int32) {
 	return store, reads
 }
 
+func TestBrokerUsageLegacyStoreNeverRenewsOrMigrates(t *testing.T) {
+	usageRefreshStore(t) // Isolate persistence and enable the real renewal path.
+	omp.ResetKeychainShot()
+	previousRun, previousStdin := ompKeychain, ompKeychainStdin
+	t.Cleanup(func() { ompKeychain, ompKeychainStdin = previousRun, previousStdin })
+	reads, writes, renewals := 0, 0, 0
+	ompKeychain = func(_ context.Context, _ string, args ...string) ([]byte, error) {
+		if len(args) > 0 && args[0] == "find-generic-password" {
+			reads++
+			return json.Marshal(omp.Item{Records: map[string]omp.Record{
+				omp.Anthropic: {AccessToken: "expired", RefreshToken: "refresh", Expiry: time.Now().Add(-time.Hour)},
+			}})
+		}
+		writes++
+		return nil, errors.New("unexpected legacy Keychain write")
+	}
+	ompKeychainStdin = func(context.Context, []byte, string, ...string) ([]byte, error) {
+		writes++
+		return nil, errors.New("unexpected legacy Keychain write")
+	}
+	ompLogin = omp.Login{Script: "fixture", Run: func(context.Context, string, ...string) ([]byte, error) {
+		renewals++
+		return json.Marshal(omp.Record{AccessToken: "fresh", RefreshToken: "rotated", Expiry: time.Now().Add(time.Hour)})
+	}}
+	if err := omp.Open(t.Context(), planStore()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := brokerUsageToken(t.Context(), omp.Anthropic); err == nil || !strings.Contains(err.Error(), "encrypted plan store not established") {
+		t.Fatalf("legacy renewal refusal=%v", err)
+	}
+	if renewals != 0 || reads != 1 || writes != 0 {
+		t.Fatalf("legacy background activity: renewals=%d Keychain reads=%d writes=%d", renewals, reads, writes)
+	}
+}
+
 func TestUsageSharesProactiveRenewalFailureBackoff(t *testing.T) {
 	store, _ := usageRefreshStore(t)
 	if err := store.Put(t.Context(), omp.Anthropic, omp.Record{AccessToken: "expired", RefreshToken: "refresh", Expiry: time.Now().Add(-time.Hour)}); err != nil {
