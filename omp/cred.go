@@ -181,7 +181,11 @@ func readItem(ctx context.Context, store Store) (Item, []byte, error) {
 		find = append(find, store.Keychain)
 	}
 	out, err := store.Run(ctx, "security", find...)
-	if err != nil && !isMissing(err, out) {
+	if err != nil {
+		if isMissing(err, out) {
+			// A failed runner returns diagnostics, never credential contents.
+			return Item{Records: map[string]Record{}}, nil, nil
+		}
 		return Item{}, nil, err
 	}
 	raw := strings.TrimSpace(string(out))
