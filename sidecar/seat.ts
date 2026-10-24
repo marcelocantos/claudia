@@ -8,6 +8,12 @@ import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import type { AssistantMessage, CursorExecHandlers, CursorMcpCall, Model, ToolResultMessage } from "@oh-my-pi/pi-ai";
 import { classifyMessage, Flag, is as hasFlag } from "@oh-my-pi/pi-ai/error";
 import crypto from "node:crypto";
+import {
+  safeEmitSeatEvent,
+  terminalStatusFromExecutionEnd,
+  toolResultPreview,
+  type SidecarToolTerminalStatus,
+} from "./tool-visibility.ts";
 import { cursorExecHandlers } from "./cursorexec.ts";
 import { codingTools, type SandboxPolicy } from "./coding.ts";
 import { SeatCommandScope } from "./seat-command-scope.ts";
@@ -40,8 +46,8 @@ export type SeatEvent = {
   text?: string;
   call_id?: string;
   name?: string;
-  // status is the native tool lifecycle on tool_end (jevons 🎯T1218).
-  status?: string;
+  // status is the tool lifecycle on tool_end (jevons 🎯T1218).
+  status?: SidecarToolTerminalStatus;
   // error is the provider's refusal on a turn_end that got no answer.
   error?: string;
   // reason classifies an error: "context_overflow" is terminal (🎯T148).
@@ -217,11 +223,31 @@ export function createSeatAgent(opts: {
   const commandScope = new SeatCommandScope();
   const commandScopeOf = () => commandScope;
   // The bound and the tool list close over `agent` and run only after it exists.
+  const ownToolCallKey = (toolCallId: string | undefined, toolName: string) =>
+    (toolCallId && toolCallId.trim()) || `:${toolName}`;
+  const emitToolStart = (toolCallId: string | undefined, name: string, text: string) => {
+    const key = ownToolCallKey(toolCallId, name);
+    let call_id = toolCallId?.trim() || "";
+    if (!call_id) call_id = crypto.randomUUID();
+    ownToolCallIDs.set(key, call_id);
+    safeEmitSeatEvent(sink.emit, { type: "tool_start", call_id, name, text });
+  };
+  const emitToolEnd = (
+    toolCallId: string | undefined,
+    name: string,
+    text: string,
+    status: SidecarToolTerminalStatus,
+  ) => {
+    const key = ownToolCallKey(toolCallId, name);
+    const call_id = toolCallId?.trim() || ownToolCallIDs.get(key) || "";
+    ownToolCallIDs.delete(key);
+    if (!call_id) return;
+    safeEmitSeatEvent(sink.emit, { type: "tool_end", call_id, name, text, status });
+  };
   const nativeToolVisibility = () => ({
-    toolStart: (call_id: string, name: string, text: string) =>
-      sink.emit({ type: "tool_start", call_id, name, text }),
-    toolEnd: (call_id: string, name: string, text: string, status: "completed" | "failed") =>
-      sink.emit({ type: "tool_end", call_id, name, text, status }),
+    toolStart: (call_id: string, name: string, text: string) => emitToolStart(call_id, name, text),
+    toolEnd: (call_id: string, name: string, text: string, status: SidecarToolTerminalStatus) =>
+      emitToolEnd(call_id, name, text, status),
   });
   const execHandlers = cursorExecHandlers(
     () => cwd,
@@ -269,6 +295,7 @@ export function createSeatAgent(opts: {
   // The sidecar's own tools (Bash, Read, Write, Glob, Grep). A host tool
   // reaches the host as tool_call; these ran unseen (claudia 🎯T171).
   let ownToolNames = new Set<string>();
+  const ownToolCallIDs = new Map<string, string>();
   let lastHost: HostTool[] | undefined;
   const applyTools = (host: HostTool[] | undefined) => {
     lastHost = host;
@@ -521,11 +548,20 @@ export function createSeatAgent(opts: {
     toolCallId?: string;
     toolName?: string;
     args?: unknown;
+    isError?: boolean;
+    result?: { content?: Array<{ type?: string; text?: string }>; details?: Record<string, unknown>; isError?: boolean };
   }) => {
-    // 🎯T171: tell the host a sidecar tool started, so a seat running Bash
-    // is not silent. Host tools are already announced by their tool_call.
+    // 🎯T171 / 🎯T221: own setTools executions publish begin/end to the host.
     if (event.type === "tool_execution_start" && event.toolName && ownToolNames.has(event.toolName)) {
-      sink.emit({ type: "tool_start", call_id: event.toolCallId ?? "", name: event.toolName, text: JSON.stringify(event.args ?? {}) });
+      emitToolStart(event.toolCallId, event.toolName, JSON.stringify(event.args ?? {}));
+    }
+    if (event.type === "tool_execution_end" && event.toolName && ownToolNames.has(event.toolName)) {
+      emitToolEnd(
+        event.toolCallId,
+        event.toolName,
+        toolResultPreview(event.result),
+        terminalStatusFromExecutionEnd(event),
+      );
     }
     if (event.type === "message_start" && event.message?.role === "user") {
       const text = userText(event.message.content);

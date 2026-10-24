@@ -871,30 +871,10 @@ func (c *ompControl) pump(a *Agent) {
 				_ = c.send(omp.Message{Op: omp.OpTool, CallID: callID, Result: result})
 			}(ev.Name, ev.CallID, ev.Text)
 		case "tool_start":
-			// 🎯T171 / 🎯T221: a sidecar or native Cursor exec tool started.
-			// Nothing for the host to run; publish in_progress so Je can paint
-			// the step before the subprocess finishes (jevons 🎯T1218).
-			a.publishEvent(Event{
-				Type:         "progress",
-				ProgressType: "tool_use",
-				ToolCallID:   ev.CallID,
-				ToolTitle:    ev.Name,
-				Text:         ev.Text,
-				ToolStatus:   "in_progress",
-			})
+			// 🎯T171 / 🎯T221: sidecar or native Cursor exec tool began.
+			a.publishEvent(PublishSidecarToolStart(ev.CallID, ev.Name, ev.Text))
 		case "tool_end":
-			toolStatus := "completed"
-			if strings.TrimSpace(ev.Status) == "failed" {
-				toolStatus = "failed"
-			}
-			a.publishEvent(Event{
-				Type:         "progress",
-				ProgressType: "tool_use",
-				ToolCallID:   ev.CallID,
-				ToolTitle:    ev.Name,
-				Text:         ev.Text,
-				ToolStatus:   toolStatus,
-			})
+			a.publishEvent(PublishSidecarToolEnd(ev.CallID, ev.Name, ev.Text, ev.Status))
 		case "aborted":
 			// An abort found no turn open: nothing ended, so nothing is
 			// answered. The turn an abort does end arrives as its turn_end,

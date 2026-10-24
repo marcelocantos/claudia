@@ -24,13 +24,35 @@ type Any = Record<string, any>;
 // tool_start/tool_end with a stable call_id (jevons 🎯T1218).
 export type CursorExecVisibility = {
   toolStart(call_id: string, name: string, text: string): void;
-  toolEnd(call_id: string, name: string, text: string, status: "completed" | "failed"): void;
+  toolEnd(call_id: string, name: string, text: string, status: import("./tool-visibility.ts").SidecarToolTerminalStatus): void;
 };
 
 function toolPreview(msg: ToolResultMessage): string {
   const part = msg.content?.[0];
   if (part?.type === "text") return part.text.slice(0, 500);
   return "";
+}
+
+function safeVisStart(vis: CursorExecVisibility | undefined, callId: string, name: string, argsText: string): void {
+  try {
+    vis?.toolStart(callId, name, argsText);
+  } catch {
+    // Observability failures are visible in logs only; they must not affect execution.
+  }
+}
+
+function safeVisEnd(
+  vis: CursorExecVisibility | undefined,
+  callId: string,
+  name: string,
+  text: string,
+  status: import("./tool-visibility.ts").SidecarToolTerminalStatus,
+): void {
+  try {
+    vis?.toolEnd(callId, name, text, status);
+  } catch {
+    // Observability failures must not change tool results or retry effects.
+  }
 }
 
 async function withToolVisibility(
@@ -41,14 +63,14 @@ async function withToolVisibility(
   run: (callId: string) => ToolResultMessage | Promise<ToolResultMessage>,
 ): Promise<ToolResultMessage> {
   const callId = id || crypto.randomUUID();
-  vis?.toolStart(callId, name, argsText);
+  safeVisStart(vis, callId, name, argsText);
   try {
     const msg = await run(callId);
-    const failed = msg.isError === true;
-    vis?.toolEnd(callId, name, toolPreview(msg), failed ? "failed" : "completed");
+    const status = msg.isError === true ? "failed" : "completed";
+    safeVisEnd(vis, callId, name, toolPreview(msg), status);
     return msg;
   } catch (err) {
-    vis?.toolEnd(callId, name, String(err), "failed");
+    safeVisEnd(vis, callId, name, String(err), "failed");
     return result(callId, name, String(err), true, 100_000);
   }
 }
