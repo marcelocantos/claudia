@@ -40,6 +40,8 @@ export type SeatEvent = {
   text?: string;
   call_id?: string;
   name?: string;
+  // status is the native tool lifecycle on tool_end (jevons 🎯T1218).
+  status?: string;
   // error is the provider's refusal on a turn_end that got no answer.
   error?: string;
   // reason classifies an error: "context_overflow" is terminal (🎯T148).
@@ -215,12 +217,19 @@ export function createSeatAgent(opts: {
   const commandScope = new SeatCommandScope();
   const commandScopeOf = () => commandScope;
   // The bound and the tool list close over `agent` and run only after it exists.
+  const nativeToolVisibility = () => ({
+    toolStart: (call_id: string, name: string, text: string) =>
+      sink.emit({ type: "tool_start", call_id, name, text }),
+    toolEnd: (call_id: string, name: string, text: string, status: "completed" | "failed") =>
+      sink.emit({ type: "tool_end", call_id, name, text, status }),
+  });
   const execHandlers = cursorExecHandlers(
     () => cwd,
     () => toolResultBound(agent.state.model?.contextWindow ?? 0),
     policyOf,
     envOf,
     commandScopeOf,
+    nativeToolVisibility,
   );
   bindListedMcp(execHandlers, () => agent.state.tools);
   const streamPersist = { fn: (_message?: ToolResultMessage) => {} };
