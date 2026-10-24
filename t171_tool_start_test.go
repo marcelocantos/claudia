@@ -54,7 +54,7 @@ func TestT171SidecarOwnToolStartPublishesToolUse(t *testing.T) {
 		t.Fatalf("tool_use progress events = %+v; want one for the Bash start", tools)
 	}
 	got := tools[0]
-	if got.ToolCallID != "call-1" || got.ToolTitle != "Bash" || got.Text != `{"command":"sleep 60"}` {
-		t.Fatalf("tool_use event = %+v; want call-1 / Bash / the command args", got)
+	if got.ToolCallID != "call-1" || got.ToolTitle != "Bash" || got.Text != `{"command":"sleep 60"}` || got.ToolStatus != "in_progress" {
+		t.Fatalf("tool_use event = %+v; want call-1 / Bash / args / in_progress", got)
 	}
 }

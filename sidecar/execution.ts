@@ -8,8 +8,9 @@ import path from "node:path";
 import { guardBranchCheckout } from "./branchguard.ts";
 import { protectedPathRefusal, type ProtectedPathRule } from "./protected.ts";
 import { refusalForTruncatedWrite, clearReadView } from "./readguard.ts";
-import { runCommand, type RunResult } from "./process.ts";
-export { runCommand, type RunResult } from "./process.ts";
+import { runCommand, type RunCommandOpts, type RunResult } from "./process.ts";
+export { runCommand, type RunCommandOpts, type RunResult } from "./process.ts";
+import type { SeatCommandScope } from "./seat-command-scope.ts";
 
 // SandboxPolicy is what the host asked this seat's own tools to be allowed
 // (🎯T178: Codex sandbox settings mapped onto the sidecar). Absent means the
@@ -164,6 +165,8 @@ export async function runShell(
   cwdOf: () => string,
   policyOf: () => SandboxPolicy | undefined,
   args: { command: string; workingDirectory?: string; timeoutMs: number; maxBuffer: number },
+  envOf: () => NodeJS.ProcessEnv = () => process.env,
+  runOpts: Pick<RunCommandOpts, "signal" | "commandScope"> = {},
 ): Promise<RunResult> {
   const root = cwdOf() || process.cwd();
   const cwd = under(root, args.workingDirectory || ".", policyOf());
@@ -179,6 +182,15 @@ export async function runShell(
   const [bin, argv] = policy?.mode === "workspace-write"
     ? ["/usr/bin/sandbox-exec", ["-p", seatbeltProfile(root, policy), "/bin/bash", "-lc", args.command]]
     : ["/bin/bash", ["-lc", args.command]];
-  return runCommand(bin, argv, { cwd, timeoutMs: args.timeoutMs, maxBuffer: args.maxBuffer, env: process.env });
+  return runCommand(bin, argv, {
+    cwd,
+    timeoutMs: args.timeoutMs,
+    maxBuffer: args.maxBuffer,
+    env: envOf(),
+    signal: runOpts.signal,
+    commandScope: runOpts.commandScope,
+  });
 }
+
+export type { SeatCommandScope } from "./seat-command-scope.ts";
 

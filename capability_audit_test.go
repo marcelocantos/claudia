@@ -121,6 +121,7 @@ var sessionFieldFates = map[Provider]map[string]fieldDecl{
 		"ContextPreserve":      {fateLocal, "subscription-sidecar compaction steer (🎯T152); a vendor CLI manages its own context"},
 		"ContextPins":          {fateLocal, "subscription-sidecar pinned facts (🎯T152); a vendor CLI manages its own context"},
 		"ProtectedPaths":       {fateConsumed, "OMP sidecar load protected_paths (🎯T209)"},
+		"ChildProcessEnv":      {fateConsumed, "OMP sidecar load child_process_env (🎯T218)"},
 	},
 	ProviderGrok: {
 		"Provider":             {fateLocal, "selects this path"},
@@ -154,6 +155,7 @@ var sessionFieldFates = map[Provider]map[string]fieldDecl{
 		"ContextPreserve":      {fateLocal, "subscription-sidecar compaction steer (🎯T152); a vendor CLI manages its own context"},
 		"ContextPins":          {fateLocal, "subscription-sidecar pinned facts (🎯T152); a vendor CLI manages its own context"},
 		"ProtectedPaths":       {fateConsumed, "OMP sidecar load protected_paths (🎯T209)"},
+		"ChildProcessEnv":      {fateConsumed, "OMP sidecar load child_process_env (🎯T218)"},
 	},
 	ProviderCodex: {
 		"Provider":             {fateLocal, "selects this path"},
@@ -187,6 +189,7 @@ var sessionFieldFates = map[Provider]map[string]fieldDecl{
 		"ContextPreserve":      {fateLocal, "subscription-sidecar compaction steer (🎯T152); a vendor CLI manages its own context"},
 		"ContextPins":          {fateLocal, "subscription-sidecar pinned facts (🎯T152); a vendor CLI manages its own context"},
 		"ProtectedPaths":       {fateConsumed, "OMP sidecar load protected_paths (🎯T209)"},
+		"ChildProcessEnv":      {fateConsumed, "OMP sidecar load child_process_env (🎯T218)"},
 	},
 	ProviderCursor: {
 		"Provider":             {fateLocal, "selects this path"},
@@ -220,6 +223,7 @@ var sessionFieldFates = map[Provider]map[string]fieldDecl{
 		"ContextPreserve":      {fateLocal, "subscription-sidecar compaction steer (🎯T152); a vendor CLI manages its own context"},
 		"ContextPins":          {fateLocal, "subscription-sidecar pinned facts (🎯T152); a vendor CLI manages its own context"},
 		"ProtectedPaths":       {fateConsumed, "OMP sidecar load protected_paths (🎯T209)"},
+		"ChildProcessEnv":      {fateConsumed, "OMP sidecar load child_process_env (🎯T218)"},
 	},
 }
 
@@ -444,6 +448,8 @@ func sessionStartRequest(field string) agentStartRequest {
 		req.Config.ConnectURL = "ws://127.0.0.1:9/ws"
 	case "ProtectedPaths":
 		req.Config.ProtectedPaths = []ProtectedPathRule{{Pattern: "**/t24-protected.yaml", Reason: "t24"}}
+	case "ChildProcessEnv":
+		req.Config.ChildProcessEnv = ChildProcessEnv{"CLAUDIA_T218": "t24"}
 	}
 	return req
 }
@@ -452,6 +458,11 @@ func sessionStartRequest(field string) agentStartRequest {
 func sessionMaterialisesProtectedPaths(req agentStartRequest) bool {
 	rules := ompProtectedPathRules(req.Config)
 	return len(rules) == 1 && rules[0].Pattern == "**/t24-protected.yaml"
+}
+
+func sessionMaterialisesChildProcessEnv(req agentStartRequest) bool {
+	env := ompChildProcessEnv(req.Config)
+	return len(env) == 1 && env["CLAUDIA_T218"] == "t24"
 }
 
 func sessionMaterialises(provider Provider, field string) bool {
@@ -506,6 +517,8 @@ func sessionMaterialises(provider Provider, field string) bool {
 			return strings.Contains(toml, "network_access = true")
 		case "ProtectedPaths":
 			return sessionMaterialisesProtectedPaths(req)
+		case "ChildProcessEnv":
+			return sessionMaterialisesChildProcessEnv(req)
 		default:
 			return false
 		}
@@ -523,6 +536,8 @@ func sessionMaterialises(provider Provider, field string) bool {
 			return claudeMCPConfigArg(req) == "session:mcpServers"
 		case "ProtectedPaths":
 			return sessionMaterialisesProtectedPaths(req)
+		case "ChildProcessEnv":
+			return sessionMaterialisesChildProcessEnv(req)
 		default:
 			return false
 		}
@@ -547,6 +562,8 @@ func sessionMaterialises(provider Provider, field string) bool {
 			return plan.Connect
 		case "ProtectedPaths":
 			return sessionMaterialisesProtectedPaths(req)
+		case "ChildProcessEnv":
+			return sessionMaterialisesChildProcessEnv(req)
 		default:
 			return argvHolds(plan.Args, sessionNeedle(field, req))
 		}
@@ -569,6 +586,8 @@ func sessionMaterialises(provider Provider, field string) bool {
 			return plan.MCPExclusive
 		case "ProtectedPaths":
 			return sessionMaterialisesProtectedPaths(req)
+		case "ChildProcessEnv":
+			return sessionMaterialisesChildProcessEnv(req)
 		default:
 			return argvHolds(plan.Args, sessionNeedle(field, req))
 		}

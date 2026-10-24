@@ -9,7 +9,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import type { CursorExecHandlers, ToolResultMessage } from "@oh-my-pi/pi-ai";
-import { runCommand, runShell, under, writeFile, deleteFile, editFile, type SandboxPolicy } from "./execution.ts";
+import { runCommand, runShell, under, writeFile, deleteFile, editFile, type SandboxPolicy, type SeatCommandScope } from "./execution.ts";
 import { capToolText, truncateToolResult, toolResultBound } from "./truncate.ts";
 import { recordReadView } from "./readguard.ts";
 
@@ -19,6 +19,61 @@ const shellMaxMs = 600_000;
 const searchTimeoutMs = 15_000;
 
 type Any = Record<string, any>;
+
+// 🎯T221: native Cursor exec frames bypass setTools; the host still needs
+// tool_start/tool_end with a stable call_id (jevons 🎯T1218).
+export type CursorExecVisibility = {
+  toolStart(call_id: string, name: string, text: string): void;
+  toolEnd(call_id: string, name: string, text: string, status: import("./tool-visibility.ts").SidecarToolTerminalStatus): void;
+};
+
+function toolPreview(msg: ToolResultMessage): string {
+  const part = msg.content?.[0];
+  if (part?.type === "text") return part.text.slice(0, 500);
+  return "";
+}
+
+function safeVisStart(vis: CursorExecVisibility | undefined, callId: string, name: string, argsText: string): void {
+  try {
+    vis?.toolStart(callId, name, argsText);
+  } catch {
+    // Observability failures are visible in logs only; they must not affect execution.
+  }
+}
+
+function safeVisEnd(
+  vis: CursorExecVisibility | undefined,
+  callId: string,
+  name: string,
+  text: string,
+  status: import("./tool-visibility.ts").SidecarToolTerminalStatus,
+): void {
+  try {
+    vis?.toolEnd(callId, name, text, status);
+  } catch {
+    // Observability failures must not change tool results or retry effects.
+  }
+}
+
+async function withToolVisibility(
+  vis: CursorExecVisibility | undefined,
+  id: string | undefined,
+  name: string,
+  argsText: string,
+  run: (callId: string) => ToolResultMessage | Promise<ToolResultMessage>,
+): Promise<ToolResultMessage> {
+  const callId = id || crypto.randomUUID();
+  safeVisStart(vis, callId, name, argsText);
+  try {
+    const msg = await run(callId);
+    const status = msg.isError === true ? "failed" : "completed";
+    safeVisEnd(vis, callId, name, toolPreview(msg), status);
+    return msg;
+  } catch (err) {
+    safeVisEnd(vis, callId, name, String(err), "failed");
+    return result(callId, name, String(err), true, 100_000);
+  }
+}
 
 function result(id: string | undefined, tool: string, text: string, isError: boolean, bound: number): ToolResultMessage {
   return {
@@ -64,8 +119,17 @@ function sliceLines(body: string, start?: number, count?: number, end?: number):
   return lines.slice(from, to).join("\n");
 }
 
-export function cursorExecHandlers(cwdOf: () => string, boundOf: () => number, policyOf: () => SandboxPolicy | undefined = () => undefined): CursorExecHandlers {
+export function cursorExecHandlers(
+  cwdOf: () => string,
+  boundOf: () => number,
+  policyOf: () => SandboxPolicy | undefined = () => undefined,
+  envOf: () => NodeJS.ProcessEnv = () => process.env,
+  commandScopeOf: () => SeatCommandScope | undefined = () => undefined,
+  visibilityOf: () => CursorExecVisibility | undefined = () => undefined,
+): CursorExecHandlers {
   const root = () => cwdOf() || process.cwd();
+  const runOpts = () => ({ commandScope: commandScopeOf() });
+  const vis = () => visibilityOf();
 
   const read = (id: string | undefined, tool: string, p: string, offset?: number, limit?: number) => {
     try {
@@ -103,21 +167,22 @@ export function cursorExecHandlers(cwdOf: () => string, boundOf: () => number, p
       return result(id, tool, String(err), true, boundOf());
     }
   };
-  const shell = async (id: string | undefined, command: string, wd: string | undefined, timeoutMs: number) => {
-    try {
-      const r = await runShell(cwdOf, policyOf, {
-        command,
-        workingDirectory: wd,
-        timeoutMs: Math.min(Math.max(timeoutMs, 1000), shellMaxMs),
-        maxBuffer: maxOut,
-      });
-      const out = `${r.stdout || ""}${r.stderr || ""}`.slice(0, maxOut);
-      const status = r.status ?? (r.error ? 1 : 0);
-      return result(id, "bash", status === 0 ? out || "(no output)" : `exit ${status}\n${out || r.error?.message || ""}`, status !== 0, boundOf());
-    } catch (err) {
-      return result(id, "bash", String(err), true, boundOf());
-    }
-  };
+  const shell = async (id: string | undefined, command: string, wd: string | undefined, timeoutMs: number) =>
+    withToolVisibility(vis(), id, "bash", JSON.stringify({ command, workingDirectory: wd }), async (callId) => {
+      try {
+        const r = await runShell(cwdOf, policyOf, {
+          command,
+          workingDirectory: wd,
+          timeoutMs: Math.min(Math.max(timeoutMs, 1000), shellMaxMs),
+          maxBuffer: maxOut,
+        }, envOf, runOpts());
+        const out = `${r.stdout || ""}${r.stderr || ""}`.slice(0, maxOut);
+        const status = r.status ?? (r.error ? 1 : 0);
+        return result(callId, "bash", status === 0 ? out || "(no output)" : `exit ${status}\n${out || r.error?.message || ""}`, status !== 0, boundOf());
+      } catch (err) {
+        return result(callId, "bash", String(err), true, boundOf());
+      }
+    });
   const grep = async (id: string | undefined, a: { pattern: string; path?: string; glob?: string; ignoreCase?: boolean; literal?: boolean; limit?: number }) => {
     try {
       const target = under(root(), a.path || ".", policyOf());
@@ -126,7 +191,7 @@ export function cursorExecHandlers(cwdOf: () => string, boundOf: () => number, p
       if (a.literal) args.push("-F");
       if (a.glob) args.push("--glob", a.glob);
       args.push("--", a.pattern, target);
-      const r = await runCommand("rg", args, { timeoutMs: searchTimeoutMs, maxBuffer: maxOut });
+      const r = await runCommand("rg", args, { timeoutMs: searchTimeoutMs, maxBuffer: maxOut, env: envOf(), ...runOpts() });
       let lines = (r.stdout || "").split("\n").filter(Boolean);
       if (a.limit && a.limit > 0) lines = lines.slice(0, a.limit);
       if (r.error && r.error.code === "ENOENT") return result(id, "grep", "rg not found", true, boundOf());
@@ -138,7 +203,7 @@ export function cursorExecHandlers(cwdOf: () => string, boundOf: () => number, p
   const find = async (id: string | undefined, pattern: string, p?: string, limit?: number) => {
     try {
       const target = under(root(), p || ".", policyOf());
-      const r = await runCommand("/usr/bin/find", [target, "-name", pattern || "*"], { timeoutMs: searchTimeoutMs, maxBuffer: maxOut });
+      const r = await runCommand("/usr/bin/find", [target, "-name", pattern || "*"], { timeoutMs: searchTimeoutMs, maxBuffer: maxOut, env: envOf(), ...runOpts() });
       const lines = (r.stdout || "").split("\n").filter(Boolean).slice(0, limit && limit > 0 ? limit : 500);
       return result(id, "find", lines.join("\n") || "(no matches)", false, boundOf());
     } catch (err) {
@@ -147,37 +212,53 @@ export function cursorExecHandlers(cwdOf: () => string, boundOf: () => number, p
   };
 
   return {
-    read: async (a: Any) => read(a.toolCallId, "read", a.path, a.offset, a.limit),
-    ls: async (a: Any) => ls(a.toolCallId, a.path),
-    grep: async (a: Any) => grep(a.toolCallId, { pattern: a.pattern, path: a.path, glob: a.glob, ignoreCase: a.caseInsensitive, limit: a.headLimit }),
+    read: async (a: Any) =>
+      withToolVisibility(vis(), a.toolCallId, "read", JSON.stringify({ path: a.path, offset: a.offset, limit: a.limit }), (callId) =>
+        read(callId, "read", a.path, a.offset, a.limit)),
+    ls: async (a: Any) =>
+      withToolVisibility(vis(), a.toolCallId, "read", JSON.stringify({ path: a.path }), (callId) => ls(callId, a.path)),
+    grep: async (a: Any) =>
+      withToolVisibility(vis(), a.toolCallId, "grep", JSON.stringify({ pattern: a.pattern, path: a.path }), (callId) =>
+        grep(callId, { pattern: a.pattern, path: a.path, glob: a.glob, ignoreCase: a.caseInsensitive, limit: a.headLimit })),
     write: async (a: Any) =>
-      write(a.toolCallId, "write", a.path, a.fileBytes && a.fileBytes.length > 0 ? new TextDecoder().decode(a.fileBytes) : String(a.fileText ?? "")),
-    delete: async (a: Any) => {
-      try {
-        const abs = deleteFile(root(), String(a.path || ""), policyOf());
-        return result(a.toolCallId, "delete", "deleted " + abs, false, boundOf());
-      } catch (err) {
-        return result(a.toolCallId, "delete", String(err), true, boundOf());
-      }
-    },
+      withToolVisibility(vis(), a.toolCallId, "write", JSON.stringify({ path: a.path }), (callId) =>
+        write(callId, "write", a.path, a.fileBytes && a.fileBytes.length > 0 ? new TextDecoder().decode(a.fileBytes) : String(a.fileText ?? ""))),
+    delete: async (a: Any) =>
+      withToolVisibility(vis(), a.toolCallId, "delete", JSON.stringify({ path: a.path }), (callId) => {
+        try {
+          const abs = deleteFile(root(), String(a.path || ""), policyOf());
+          return result(callId, "delete", "deleted " + abs, false, boundOf());
+        } catch (err) {
+          return result(callId, "delete", String(err), true, boundOf());
+        }
+      }),
     shell: async (a: Any) => shell(a.toolCallId, String(a.command || ""), a.workingDirectory, a.timeout && a.timeout > 0 ? a.timeout : shellDefaultMs),
     // This runner collects a bounded batch result. Do not advertise shellStream:
     // Cursor then expects output through callbacks and suppresses the batch
     // stdout/stderr. The pinned provider routes streamed frames to shell when
     // shellStream is absent, forwarding its result before the exit/close frames.
-    piRead: async (c: Any) => read(c.toolCallId, "read", c.args.path, c.args.offset, c.args.limit),
+    piRead: async (c: Any) =>
+      withToolVisibility(vis(), c.toolCallId, "read", JSON.stringify(c.args ?? {}), (callId) =>
+        read(callId, "read", c.args.path, c.args.offset, c.args.limit)),
     piBash: async (c: Any) => shell(c.toolCallId, String(c.args.command || ""), undefined, c.args.timeout && c.args.timeout > 0 ? c.args.timeout * 1000 : shellDefaultMs),
-    piWrite: async (c: Any) => write(c.toolCallId, "write", c.args.path, String(c.args.content ?? "")),
-    piEdit: async (c: Any) => {
-      try {
-        const abs = editFile(root(), String(c.args.path || ""), c.args.edits ?? [], policyOf());
-        return result(c.toolCallId, "edit", "edited " + abs, false, boundOf());
-      } catch (err) {
-        return result(c.toolCallId, "edit", String(err), true, boundOf());
-      }
-    },
-    piGrep: async (c: Any) => grep(c.toolCallId, c.args),
-    piFind: async (c: Any) => find(c.toolCallId, c.args.pattern, c.args.path, c.args.limit),
-    piLs: async (c: Any) => ls(c.toolCallId, c.args.path, c.args.limit),
+    piWrite: async (c: Any) =>
+      withToolVisibility(vis(), c.toolCallId, "write", JSON.stringify(c.args ?? {}), (callId) =>
+        write(callId, "write", c.args.path, String(c.args.content ?? ""))),
+    piEdit: async (c: Any) =>
+      withToolVisibility(vis(), c.toolCallId, "edit", JSON.stringify(c.args ?? {}), (callId) => {
+        try {
+          const abs = editFile(root(), String(c.args.path || ""), c.args.edits ?? [], policyOf());
+          return result(callId, "edit", "edited " + abs, false, boundOf());
+        } catch (err) {
+          return result(callId, "edit", String(err), true, boundOf());
+        }
+      }),
+    piGrep: async (c: Any) =>
+      withToolVisibility(vis(), c.toolCallId, "grep", JSON.stringify(c.args ?? {}), (callId) => grep(callId, c.args)),
+    piFind: async (c: Any) =>
+      withToolVisibility(vis(), c.toolCallId, "find", JSON.stringify(c.args ?? {}), (callId) =>
+        find(callId, c.args.pattern, c.args.path, c.args.limit)),
+    piLs: async (c: Any) =>
+      withToolVisibility(vis(), c.toolCallId, "read", JSON.stringify(c.args ?? {}), (callId) => ls(callId, c.args.path, c.args.limit)),
   } as CursorExecHandlers;
 }

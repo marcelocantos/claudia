@@ -152,6 +152,11 @@ type Config struct {
 	// ProtectedPaths are passed to OMP sidecar seats (🎯T209).
 	ProtectedPaths []ProtectedPathRule
 
+	// ChildProcessEnv is merged into each child process the sidecar seat
+	// spawns (tool shells and commands). Never applied to the sidecar's own
+	// process environment. Empty means unchanged baseline (🎯T218).
+	ChildProcessEnv ChildProcessEnv
+
 	// Goal is a durable host-owned objective for this Session. Empty
 	// keeps one-shot Send. When set, the Agent issues a continuation
 	// Send after each terminal assistant turn until Stop, Interrupt,

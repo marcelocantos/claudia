@@ -25,6 +25,7 @@ import { GenerationDiscovery } from "./generations.ts";
 import { HistoricalUsageReader } from "./usage-reader.ts";
 import { agentPauseGate } from "@oh-my-pi/pi-agent-core";
 import type { SandboxPolicy } from "./coding.ts";
+import { validateChildProcessEnv, cloneChildProcessEnv } from "./child-process-env.ts";
 
 const banned = [
   "ANTHROPIC_API_KEY",
@@ -93,6 +94,7 @@ type Line = {
   cwd?: string;
   sandbox?: SandboxPolicy;
   protected_paths?: import("./protected.ts").ProtectedPathRule[];
+  child_process_env?: Record<string, string>;
   text?: string;
   call_id?: string;
   result?: string;
@@ -153,6 +155,8 @@ const server = createServer((socket) => {
   socket.on("error", () => {});
   // A tool call this connection was answering can no longer be answered.
   // Fail it so the turn ends instead of waiting forever (jevons 🎯T927).
+  // Seat-owned Bash/shell subprocesses keep running until explicit seat
+  // abort/drop (🎯T219); disconnect is not a seat stop.
   socket.on("close", () => {
     disconnected.abort();
     const n = calls.failAll(HOST_CONNECTION_LOST);
@@ -378,6 +382,7 @@ async function handle(
       pins: msg.pins,
       sandbox: msg.sandbox,
       protected_paths: msg.protected_paths,
+      child_process_env: msg.child_process_env ? cloneChildProcessEnv(msg.child_process_env) : undefined,
     });
     seats.set(seat, {
       session_id: msg.session_id,
@@ -466,6 +471,10 @@ function rebindSeat(
   if (msg.op === "load" || msg.sandbox !== undefined) existing.agent.setSandbox(msg.sandbox);
   // Omitting protected_paths on reload must not clear a seat that already has rules (🎯T209 / jevons 🎯T1145).
   if (msg.protected_paths !== undefined) existing.agent.setProtectedPaths(msg.protected_paths);
+  if (msg.child_process_env !== undefined) {
+    validateChildProcessEnv(msg.child_process_env);
+    existing.agent.setChildProcessEnv(cloneChildProcessEnv(msg.child_process_env));
+  }
   // The host sends its current compaction steer on every load (🎯T152).
   existing.agent.setContext(msg.preserve, msg.pins);
 }

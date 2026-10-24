@@ -49,3 +49,38 @@ test("own tool calls emit tool_start; host tool calls do not", async () => {
   const endAt = events.findIndex((e) => e.type === "turn_end");
   expect(startAt).toBeLessThan(endAt);
 });
+
+test("own tool calls emit matching tool_end with same call_id", async () => {
+  let n = 0;
+  const mock = createMockModel({
+    contextWindow: 100_000,
+    handler: () => {
+      n++;
+      if (n === 1) {
+        return {
+          content: [{ type: "toolCall", name: "Read", arguments: { path: "package.json" } }],
+          usage: { input: 10, output: 1 },
+        };
+      }
+      return { content: ["done"], usage: { input: 10, output: 1 } };
+    },
+  });
+  const events: SeatEvent[] = [];
+  const agent = createSeatAgent({
+    provider: "mock",
+    model: "mock-model",
+    token: "t",
+    cwd: process.cwd(),
+    emit: (ev) => events.push(ev),
+    callTool: async () => "ok",
+    modelOverride: mock as never,
+  });
+  await agent.prompt("go");
+  const starts = events.filter((e) => e.type === "tool_start");
+  const ends = events.filter((e) => e.type === "tool_end");
+  expect(starts.length).toBe(1);
+  expect(ends.length).toBe(1);
+  expect(ends[0].call_id).toBe(starts[0].call_id);
+  expect(ends[0].status).toBe("completed");
+  expect(events.indexOf(starts[0])).toBeLessThan(events.indexOf(ends[0]));
+});
