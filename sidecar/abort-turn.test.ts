@@ -7,75 +7,19 @@
 // pump refuses one without turn_id, and the refusal reached the owner as a
 // failed turn while the aborted turn's own end never arrived.
 
-import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { connect, type Socket } from "node:net";
+import { afterEach, beforeEach, expect, setDefaultTimeout, test } from "bun:test";
+import { ABORT_SEMANTIC_MS, FIXTURE_CLEANUP_MS, FIXTURE_STARTUP_MS, Host, launchAbortFixture, type Ev } from "./testdata/abort-fixture";
 
-type Ev = Record<string, any>;
-
-const dirs: string[] = [];
-const procs: ReturnType<typeof Bun.spawn>[] = [];
-afterEach(async () => {
-  for (const p of procs.splice(0)) { p.kill(); await p.exited; }
-  for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
-});
-
-// A host connection: one socket for the seat's whole life, as the Go pump has.
-class Host {
-  events: Ev[] = [];
-  #buf = "";
-  #waiters: { pred: (ev: Ev) => boolean; resolve: (ev: Ev) => void }[] = [];
-  constructor(private socket: Socket) {
-    socket.on("data", chunk => {
-      this.#buf += chunk.toString("utf8");
-      let nl: number;
-      while ((nl = this.#buf.indexOf("\n")) >= 0) {
-        const ev = JSON.parse(this.#buf.slice(0, nl));
-        this.#buf = this.#buf.slice(nl + 1);
-        this.events.push(ev);
-        this.#waiters = this.#waiters.filter(w => (w.pred(ev) ? (w.resolve(ev), false) : true));
-      }
-    });
-  }
-  send(...lines: object[]) {
-    this.socket.write(lines.map(l => JSON.stringify(l) + "\n").join(""));
-  }
-  // next resolves with the first event, already seen or still to come, that
-  // matches pred.
-  next(what: string, pred: (ev: Ev) => boolean, ms = 10_000): Promise<Ev> {
-    const seen = this.events.find(pred);
-    if (seen) return Promise.resolve(seen);
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`no ${what} within ${ms}ms; saw ${JSON.stringify(this.events.map(e => [e.type, e.turn_id, e.request_id]))}`)), ms);
-      this.#waiters.push({ pred, resolve: ev => { clearTimeout(timer); resolve(ev); } });
-    });
-  }
-  close() { this.socket.end(); }
-}
-
-async function startSidecar(): Promise<{ dir: string; sock: string }> {
-  // Short path: a unix socket path is limited to ~104 bytes on macOS.
-  const dir = mkdtempSync(join(tmpdir(), "abrt-"));
-  dirs.push(dir);
-  const sock = join(dir, "s.sock");
-  const proc = Bun.spawn(["bun", join(import.meta.dir, "testdata", "abort-provider.ts"), sock], {
-    stdout: "ignore", stderr: "inherit",
-    env: { ...process.env, HOME: dir, CLAUDIA_OMP_SPOOL_DIR: join(dir, "spool") },
-  });
-  procs.push(proc);
-  for (let i = 0; i < 200 && !existsSync(sock); i++) await Bun.sleep(25);
-  expect(existsSync(join(dir, "mock-api-ready"))).toBe(true);
-  return { dir, sock };
-}
-
-async function dial(sock: string): Promise<Host> {
-  return new Promise((resolve, reject) => {
-    const c = connect(sock, () => resolve(new Host(c)));
-    c.on("error", reject);
-  });
-}
+// Setup has its own bounded lifetime. Each semantic body keeps the original
+// five-second limit; cold vendor imports no longer spend that allowance.
+setDefaultTimeout(ABORT_SEMANTIC_MS);
+let fixture: ReturnType<typeof launchAbortFixture>;
+let host: Host;
+beforeEach(async () => {
+  fixture = launchAbortFixture();
+  host = await fixture.ready;
+}, FIXTURE_STARTUP_MS + FIXTURE_CLEANUP_MS);
+afterEach(async () => { await fixture?.close(); }, FIXTURE_CLEANUP_MS);
 
 async function loadSeat(host: Host, dir: string, seat: string, session: string) {
   host.send({ op: "load", seat, provider: "anthropic", model: "claude-sonnet-5", token: "fixture", cwd: dir, session_id: session });
@@ -98,8 +42,7 @@ function expectEveryAnswerNamesItsTurn(host: Host) {
 }
 
 async function abortThenSend(batched: boolean) {
-  const { dir, sock } = await startSidecar();
-  const host = await dial(sock);
+  const { dir } = fixture;
   await loadSeat(host, dir, "owner", "s1");
 
   host.send(prompt("owner", "s1", "r1", "T1", "HOLD the first owner message"));
@@ -150,8 +93,7 @@ test("abort and send in one write: the send queued behind the unwinding turn ans
 });
 
 test("abort with no turn open is acknowledged, not answered as an anonymous turn_end", async () => {
-  const { dir, sock } = await startSidecar();
-  const host = await dial(sock);
+  const { dir } = fixture;
   await loadSeat(host, dir, "idle", "s1");
   host.send({ op: "abort", seat: "idle" });
   const ack = await host.next("abort ack", e => e.type === "aborted" || e.type === "turn_end" || e.type === "error");
@@ -166,8 +108,7 @@ test("abort with no turn open is acknowledged, not answered as an anonymous turn
 });
 
 test("an unidentified prompt aborted mid-turn ends under the turn_id the host gave it", async () => {
-  const { dir, sock } = await startSidecar();
-  const host = await dial(sock);
+  const { dir } = fixture;
   await loadSeat(host, dir, "legacy", "s1");
   host.send({ op: "prompt", seat: "legacy", session_id: "s1", turn_id: "L1", text: "HOLD legacy" });
   await host.next("L1 accepted", e => e.type === "accepted" && e.turn_id === "L1");
@@ -190,8 +131,7 @@ test("an unidentified prompt aborted mid-turn ends under the turn_id the host ga
 // ending whichever wait was open (the same defect as the abort's turn_end).
 
 test("a failed reload during a turn is a seat_error, and the turn is not ended by it", async () => {
-  const { dir, sock } = await startSidecar();
-  const host = await dial(sock);
+  const { dir } = fixture;
   await loadSeat(host, dir, "reloaded", "s1");
   host.send(prompt("reloaded", "s1", "r1", "T1", "HOLD while the token reloads"));
   await host.next("r1 started", e => e.type === "receipt" && e.request_id === "r1" && e.receipt?.state === "started");
@@ -212,8 +152,7 @@ test("a failed reload during a turn is a seat_error, and the turn is not ended b
 });
 
 test("a reload naming another session is a seat_error with its reason, not an anonymous error", async () => {
-  const { dir, sock } = await startSidecar();
-  const host = await dial(sock);
+  const { dir } = fixture;
   await loadSeat(host, dir, "reloaded", "s1");
   host.send({ op: "load", seat: "reloaded", session_id: "other", provider: "anthropic", model: "claude-sonnet-5", token: "fixture", cwd: dir });
   const refused = await host.next("seat_error", e => e.type === "seat_error", 3000);
@@ -228,8 +167,7 @@ test("a reload naming another session is a seat_error with its reason, not an an
 });
 
 test("the first load on a connection is still answered as the load's own reply", async () => {
-  const { dir, sock } = await startSidecar();
-  const host = await dial(sock);
+  const { dir } = fixture;
   host.send({ op: "load", seat: "fresh", session_id: "s1", provider: "anthropic", model: "claude-sonnet-5", cwd: dir });
   const reply = await host.next("load reply", e => e.type === "ready" || e.type === "error" || e.type === "seat_error");
   expect(reply.type).toBe("error");

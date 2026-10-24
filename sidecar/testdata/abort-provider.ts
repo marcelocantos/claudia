@@ -9,8 +9,7 @@
 // answers on its own; a prompt containing FAIL ends as a provider error.
 // Anything else is answered at once with "reply: <its text>".
 import assert from "node:assert/strict";
-import { writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { connect } from "node:net";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { createMockModel, MockModel, registerMockApi } from "@oh-my-pi/pi-ai/providers/mock";
 
@@ -32,5 +31,12 @@ Object.assign(catalog, model);
 Object.setPrototypeOf(catalog, MockModel.prototype);
 Object.defineProperty(catalog, "calls", { value: model.calls, enumerable: false });
 assert.ok(getBundledModel("anthropic", model.id) instanceof MockModel);
-writeFileSync(join(dirname(process.argv[2]), "mock-api-ready"), "mock\n");
 await import("../server.ts");
+// Importing the server starts its listener. A real connection, rather than a
+// marker written before import, proves that the production socket is ready.
+await new Promise<void>((resolve, reject) => {
+  const probe = connect(process.argv[2]);
+  probe.once("error", reject);
+  probe.once("connect", () => { probe.end(); resolve(); });
+});
+console.log("abort-fixture-ready");
