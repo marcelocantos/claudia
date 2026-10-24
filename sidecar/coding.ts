@@ -6,7 +6,7 @@ import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import { capToolText, toolResultBound, truncateToolResult } from "./truncate.ts";
 import { recordReadView } from "./readguard.ts";
 
-import { runCommand, runShell, under, writeFile, type SandboxPolicy } from "./execution.ts";
+import { runCommand, runShell, under, writeFile, type SandboxPolicy, type SeatCommandScope } from "./execution.ts";
 export { runCommand, realish, writableRoots, checkWrite, seatbeltProfile, under, type RunResult, type SandboxPolicy } from "./execution.ts";
 
 const maxOut = 200_000;
@@ -17,21 +17,34 @@ export function codingTools(
   cwdOf: () => string,
   boundOf: () => number = () => toolResultBound(0),
   policyOf: () => SandboxPolicy | undefined = () => undefined,
+  envOf: () => NodeJS.ProcessEnv = () => process.env,
+  commandScopeOf: () => SeatCommandScope | undefined = () => undefined,
 ): AgentTool[] {
   const policy = policyOf();
+  const runOpts = () => ({ commandScope: commandScopeOf() });
   if (policy?.mode === "read-only") {
-    return [readTool(cwdOf, boundOf, policyOf), globTool(cwdOf, boundOf), grepTool(cwdOf, boundOf, policyOf)];
+    return [
+      readTool(cwdOf, boundOf, policyOf),
+      globTool(cwdOf, boundOf, envOf, runOpts),
+      grepTool(cwdOf, boundOf, policyOf, envOf, runOpts),
+    ];
   }
   return [
-    bashTool(cwdOf, boundOf, policyOf),
+    bashTool(cwdOf, boundOf, policyOf, envOf, runOpts),
     readTool(cwdOf, boundOf, policyOf),
     writeTool(cwdOf, boundOf, policyOf),
-    globTool(cwdOf, boundOf),
-    grepTool(cwdOf, boundOf, policyOf),
+    globTool(cwdOf, boundOf, envOf, runOpts),
+    grepTool(cwdOf, boundOf, policyOf, envOf, runOpts),
   ];
 }
 
-function bashTool(cwdOf: () => string, boundOf: () => number, policyOf: () => SandboxPolicy | undefined): AgentTool {
+function bashTool(
+  cwdOf: () => string,
+  boundOf: () => number,
+  policyOf: () => SandboxPolicy | undefined,
+  envOf: () => NodeJS.ProcessEnv,
+  runOptsOf: () => { commandScope?: SeatCommandScope },
+): AgentTool {
   return {
     name: "Bash",
     label: "Bash",
@@ -41,11 +54,17 @@ function bashTool(cwdOf: () => string, boundOf: () => number, policyOf: () => Sa
       properties: { command: { type: "string", description: "shell command" } },
       required: ["command"],
     },
-    execute: async (_id: string, params: unknown) => {
+    execute: async (_id: string, params: unknown, signal?: AbortSignal) => {
       const command = String((params as { command?: string })?.command || "");
       if (!command) return textResult("missing command", boundOf(), "Bash");
       try {
-        const r = await runShell(cwdOf, policyOf, { command, timeoutMs: bashTimeoutMs, maxBuffer: maxOut });
+        const r = await runShell(
+          cwdOf,
+          policyOf,
+          { command, timeoutMs: bashTimeoutMs, maxBuffer: maxOut },
+          envOf,
+          { signal, ...runOptsOf() },
+        );
         const out = `${r.stdout || ""}${r.stderr || ""}`.slice(0, maxOut);
         const status = r.status ?? (r.error ? 1 : 0);
         return textResult(status === 0 ? out || "(no output)" : `exit ${status}\n${out || r.error?.message || ""}`, boundOf(), "Bash");
@@ -107,7 +126,12 @@ function writeTool(cwdOf: () => string, boundOf: () => number, policyOf: () => S
   } as AgentTool;
 }
 
-function globTool(cwdOf: () => string, boundOf: () => number): AgentTool {
+function globTool(
+  cwdOf: () => string,
+  boundOf: () => number,
+  envOf: () => NodeJS.ProcessEnv,
+  runOptsOf: () => { commandScope?: SeatCommandScope },
+): AgentTool {
   return {
     name: "Glob",
     label: "Glob",
@@ -117,12 +141,15 @@ function globTool(cwdOf: () => string, boundOf: () => number): AgentTool {
       properties: { pattern: { type: "string" } },
       required: ["pattern"],
     },
-    execute: async (_id: string, params: unknown) => {
+    execute: async (_id: string, params: unknown, signal?: AbortSignal) => {
       const pattern = String((params as { pattern?: string })?.pattern || "*");
       const cwd = cwdOf() || process.cwd();
       const r = await runCommand("/usr/bin/find", [cwd, "-name", pattern], {
         timeoutMs: searchTimeoutMs,
         maxBuffer: maxOut,
+        env: envOf(),
+        signal,
+        ...runOptsOf(),
       });
       const lines = (r.stdout || "").split("\n").filter(Boolean).slice(0, 500);
       return textResult(lines.join("\n") || "(no matches)", boundOf(), "Glob");
@@ -130,7 +157,13 @@ function globTool(cwdOf: () => string, boundOf: () => number): AgentTool {
   } as AgentTool;
 }
 
-function grepTool(cwdOf: () => string, boundOf: () => number, policyOf: () => SandboxPolicy | undefined): AgentTool {
+function grepTool(
+  cwdOf: () => string,
+  boundOf: () => number,
+  policyOf: () => SandboxPolicy | undefined,
+  envOf: () => NodeJS.ProcessEnv,
+  runOptsOf: () => { commandScope?: SeatCommandScope },
+): AgentTool {
   return {
     name: "Grep",
     label: "Grep",
@@ -143,19 +176,14 @@ function grepTool(cwdOf: () => string, boundOf: () => number, policyOf: () => Sa
       },
       required: ["pattern"],
     },
-    execute: async (_id: string, params: unknown) => {
+    execute: async (_id: string, params: unknown, signal?: AbortSignal) => {
       const p = params as { pattern?: string; path?: string };
       const cwd = cwdOf() || process.cwd();
       const target = p?.path ? under(cwd, p.path, policyOf()) : cwd;
-      const rg = await runCommand("rg", ["--no-config", "--no-follow", "-n", "--max-count", "50", "--", String(p?.pattern || ""), target], {
-        timeoutMs: searchTimeoutMs,
-        maxBuffer: maxOut,
-      });
+      const shared = { timeoutMs: searchTimeoutMs, maxBuffer: maxOut, env: envOf(), signal, ...runOptsOf() };
+      const rg = await runCommand("rg", ["--no-config", "--no-follow", "-n", "--max-count", "50", "--", String(p?.pattern || ""), target], shared);
       if (rg.error && rg.error.code === "ENOENT") {
-        const g = await runCommand("/usr/bin/grep", ["-r", "-n", "--", String(p?.pattern || ""), target], {
-          timeoutMs: searchTimeoutMs,
-          maxBuffer: maxOut,
-        });
+        const g = await runCommand("/usr/bin/grep", ["-r", "-n", "--", String(p?.pattern || ""), target], shared);
         return textResult((g.stdout || g.stderr || "").slice(0, maxOut) || "(no matches)", boundOf(), "Grep");
       }
       return textResult((rg.stdout || rg.stderr || "").slice(0, maxOut) || "(no matches)", boundOf(), "Grep");

@@ -8,8 +8,16 @@ import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import type { AssistantMessage, CursorExecHandlers, CursorMcpCall, Model, ToolResultMessage } from "@oh-my-pi/pi-ai";
 import { classifyMessage, Flag, is as hasFlag } from "@oh-my-pi/pi-ai/error";
 import crypto from "node:crypto";
+import {
+  safeEmitSeatEvent,
+  terminalStatusFromExecutionEnd,
+  toolResultPreview,
+  type SidecarToolTerminalStatus,
+} from "./tool-visibility.ts";
 import { cursorExecHandlers } from "./cursorexec.ts";
 import { codingTools, type SandboxPolicy } from "./coding.ts";
+import { SeatCommandScope } from "./seat-command-scope.ts";
+import { cloneChildProcessEnv, spawnEnvForSeat, validateChildProcessEnv, type ChildProcessEnv } from "./child-process-env.ts";
 import { capToolText, toolResultBound } from "./truncate.ts";
 import { awaitHostCall } from "./hostcalls.ts";
 import { ContextOverflow, isOverflow, History, Maintenance, seatConvertToLlm, type MaintenanceHost } from "./maintain.ts";
@@ -38,6 +46,8 @@ export type SeatEvent = {
   text?: string;
   call_id?: string;
   name?: string;
+  // status is the tool lifecycle on tool_end (jevons 🎯T1218).
+  status?: SidecarToolTerminalStatus;
   // error is the provider's refusal on a turn_end that got no answer.
   error?: string;
   // reason classifies an error: "context_overflow" is terminal (🎯T148).
@@ -84,6 +94,7 @@ export type SeatAgent = {
   // setSandbox replaces the policy on the seat's own tools (🎯T178).
   setSandbox: (policy: SandboxPolicy | undefined) => void;
   setProtectedPaths: (rules: ProtectedPathRule[] | undefined) => void;
+  setChildProcessEnv: (env: ChildProcessEnv | undefined) => void;
   // sandboxMode is the policy mode in force, echoed on ready (🎯T178).
   sandboxMode: () => string | undefined;
   snapshot: () => unknown;
@@ -145,6 +156,7 @@ export function createSeatAgent(opts: {
   // sandbox limits the seat's own tools (🎯T178). Absent: unchanged.
   sandbox?: SandboxPolicy;
   protected_paths?: ProtectedPathRule[];
+  child_process_env?: ChildProcessEnv;
 }): SeatAgent {
   // Resume admission belongs to the authoritative seat/session store. Validate
   // without repair before constructing an engine or changing any file.
@@ -164,6 +176,9 @@ export function createSeatAgent(opts: {
   }
   let sandbox = opts.sandbox;
   let protectedPaths = opts.protected_paths ?? [];
+  validateChildProcessEnv(opts.child_process_env);
+  let childProcessEnv = cloneChildProcessEnv(opts.child_process_env);
+  const envOf = () => spawnEnvForSeat(childProcessEnv);
   const policyOf = (): SandboxPolicy | undefined => {
     if (sandbox) return { ...sandbox, protected_paths: protectedPaths };
     if (protectedPaths.length) return { protected_paths: protectedPaths };
@@ -205,11 +220,42 @@ export function createSeatAgent(opts: {
     };
   };
   const model = opts.modelOverride ?? resolveModel(opts.provider, opts.model);
+  const commandScope = new SeatCommandScope();
+  const commandScopeOf = () => commandScope;
   // The bound and the tool list close over `agent` and run only after it exists.
+  const ownToolCallKey = (toolCallId: string | undefined, toolName: string) =>
+    (toolCallId && toolCallId.trim()) || `:${toolName}`;
+  const emitToolStart = (toolCallId: string | undefined, name: string, text: string) => {
+    const key = ownToolCallKey(toolCallId, name);
+    let call_id = toolCallId?.trim() || "";
+    if (!call_id) call_id = crypto.randomUUID();
+    ownToolCallIDs.set(key, call_id);
+    safeEmitSeatEvent(sink.emit, { type: "tool_start", call_id, name, text });
+  };
+  const emitToolEnd = (
+    toolCallId: string | undefined,
+    name: string,
+    text: string,
+    status: SidecarToolTerminalStatus,
+  ) => {
+    const key = ownToolCallKey(toolCallId, name);
+    const call_id = toolCallId?.trim() || ownToolCallIDs.get(key) || "";
+    ownToolCallIDs.delete(key);
+    if (!call_id) return;
+    safeEmitSeatEvent(sink.emit, { type: "tool_end", call_id, name, text, status });
+  };
+  const nativeToolVisibility = () => ({
+    toolStart: (call_id: string, name: string, text: string) => emitToolStart(call_id, name, text),
+    toolEnd: (call_id: string, name: string, text: string, status: SidecarToolTerminalStatus) =>
+      emitToolEnd(call_id, name, text, status),
+  });
   const execHandlers = cursorExecHandlers(
     () => cwd,
     () => toolResultBound(agent.state.model?.contextWindow ?? 0),
     policyOf,
+    envOf,
+    commandScopeOf,
+    nativeToolVisibility,
   );
   bindListedMcp(execHandlers, () => agent.state.tools);
   const streamPersist = { fn: (_message?: ToolResultMessage) => {} };
@@ -249,6 +295,7 @@ export function createSeatAgent(opts: {
   // The sidecar's own tools (Bash, Read, Write, Glob, Grep). A host tool
   // reaches the host as tool_call; these ran unseen (claudia 🎯T171).
   let ownToolNames = new Set<string>();
+  const ownToolCallIDs = new Map<string, string>();
   let lastHost: HostTool[] | undefined;
   const applyTools = (host: HostTool[] | undefined) => {
     lastHost = host;
@@ -257,7 +304,7 @@ export function createSeatAgent(opts: {
     // server executes it. An unlisted name, including a consumer-prefixed
     // one, is not invented here.
     const hosted = (host ?? []).map((t) => jevonsTool(t.name, callBack, t.description, t.input_schema, boundOf));
-    const own = codingTools(() => cwd, boundOf, policyOf);
+    const own = codingTools(() => cwd, boundOf, policyOf, envOf, commandScopeOf);
     ownToolNames = new Set(own.map((t) => t.name));
     agent.setTools([...own, ...hosted]);
   };
@@ -501,11 +548,20 @@ export function createSeatAgent(opts: {
     toolCallId?: string;
     toolName?: string;
     args?: unknown;
+    isError?: boolean;
+    result?: { content?: Array<{ type?: string; text?: string }>; details?: Record<string, unknown>; isError?: boolean };
   }) => {
-    // 🎯T171: tell the host a sidecar tool started, so a seat running Bash
-    // is not silent. Host tools are already announced by their tool_call.
+    // 🎯T171 / 🎯T221: own setTools executions publish begin/end to the host.
     if (event.type === "tool_execution_start" && event.toolName && ownToolNames.has(event.toolName)) {
-      sink.emit({ type: "tool_start", call_id: event.toolCallId ?? "", name: event.toolName, text: JSON.stringify(event.args ?? {}) });
+      emitToolStart(event.toolCallId, event.toolName, JSON.stringify(event.args ?? {}));
+    }
+    if (event.type === "tool_execution_end" && event.toolName && ownToolNames.has(event.toolName)) {
+      emitToolEnd(
+        event.toolCallId,
+        event.toolName,
+        toolResultPreview(event.result),
+        terminalStatusFromExecutionEnd(event),
+      );
     }
     if (event.type === "message_start" && event.message?.role === "user") {
       const text = userText(event.message.content);
@@ -790,6 +846,7 @@ export function createSeatAgent(opts: {
       const ended: EndedTurn | undefined = turn && !turn.closed ? { turn_id: turn.turn_id, request_id: answerRequestID() } : undefined;
       if (ended) cancelledTurns.add(ended.turn_id);
       recovery.cancel();
+      commandScope.killAll();
       maint.abort();
       agent.abort();
       finish("abort");
@@ -831,6 +888,11 @@ export function createSeatAgent(opts: {
     },
     setProtectedPaths: (next) => {
       protectedPaths = next ?? [];
+      applyTools(lastHost);
+    },
+    setChildProcessEnv: (next) => {
+      validateChildProcessEnv(next);
+      childProcessEnv = cloneChildProcessEnv(next);
       applyTools(lastHost);
     },
     snapshot: () => agent.state,

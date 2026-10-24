@@ -75,6 +75,8 @@ type Message struct {
 	Sandbox *Sandbox `json:"sandbox,omitempty"`
 	// ProtectedPaths are host edit rules (🎯T209 / jevons 🎯T546), independent of sandbox mode.
 	ProtectedPaths []ProtectedPathRule `json:"protected_paths,omitempty"`
+	// ChildProcessEnv is merged into child tool spawns for this seat (🎯T218).
+	ChildProcessEnv map[string]string `json:"child_process_env,omitempty"`
 }
 
 // Sandbox modes the sidecar enforces on its own tools.
@@ -141,6 +143,8 @@ type Event struct {
 	Text       string `json:"text,omitempty"`
 	CallID     string `json:"call_id,omitempty"`
 	Name       string `json:"name,omitempty"`
+	// Status is the native tool lifecycle on tool_end (claudia 🎯T221).
+	Status string `json:"status,omitempty"`
 	// Error is the provider's refusal on a turn_end that got no answer
 	// (usage limit, rate limit, auth). Empty on a turn that answered.
 	Error    string          `json:"error,omitempty"`

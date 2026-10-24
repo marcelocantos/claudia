@@ -138,6 +138,9 @@ type AgentDef struct {
 	// ProtectedPaths are host edit rules for sidecar file tools (🎯T209).
 	ProtectedPaths []ProtectedPathRule `json:"protected_paths,omitempty"`
 
+	// ChildProcessEnv is a per-seat overlay for child process spawns (🎯T218).
+	ChildProcessEnv ChildProcessEnv `json:"child_process_env,omitempty"`
+
 	// Goal is the durable host-owned Session objective (🎯T39). Copied
 	// onto Config.Goal at Launch/Adopt so a provider switch keeps the
 	// same objective. Empty means one-shot Send.
@@ -411,6 +414,11 @@ func (r *Registry) registerLocked(def AgentDef) error {
 	old, existed := r.agents[def.Name]
 	if op := r.lifecycle[def.Name]; op != nil && (!existed || !sameLaunchDefinition(*old, def)) {
 		return fmt.Errorf("agent %q: %w", def.Name, ErrLifecycleInProgress)
+	}
+	if len(def.ChildProcessEnv) != 0 {
+		if err := ValidateChildProcessEnv(def.ChildProcessEnv); err != nil {
+			return err
+		}
 	}
 	def = cloneAgentDef(def)
 	if existed && old.SessionID != def.SessionID {
