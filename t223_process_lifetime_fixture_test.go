@@ -72,9 +72,7 @@ func TestT223SidecarServerProcessLifetimeFixture(t *testing.T) {
 			t.Fatal(err)
 		}
 		waitFor(t, "grandchild reaped on seat abort", func() bool { return !ProcessAlive(grand) })
-		if ProcessAlive(parent) {
-			t.Fatalf("seat-owned parent %d still alive after abort", parent)
-		}
+		waitFor(t, "seat-owned parent reaped on seat abort", func() bool { return !ProcessAlive(parent) })
 		if !ProcessAlive(supervisor) || !ProcessAlive(sidecar.Process.Pid) {
 			t.Fatal("seat abort must not kill broker supervisor or sidecar")
 		}
