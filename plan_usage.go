@@ -186,6 +186,10 @@ type PlanUsageArgs struct {
 	GrokUnstableUsage bool
 	// GrokAccessToken overrides the grok OIDC token (default: ~/.grok/auth.json).
 	GrokAccessToken string
+	// GrokTokenSource supplies the current token when GrokAccessToken is empty.
+	// It is authoritative: errors/empty tokens never fall back to CLI files,
+	// and billing never rotates a token obtained from this source.
+	GrokTokenSource func(context.Context) (string, error)
 	// GrokAuthPath overrides the path to grok auth.json (tests).
 	GrokAuthPath string
 	// GrokBillingURL overrides the grok billing endpoint (tests).
@@ -250,6 +254,8 @@ type AllPlanUsageArgs struct {
 	GrokUnstableUsage bool
 	// GrokAccessToken overrides the grok OIDC token (default: ~/.grok/auth.json).
 	GrokAccessToken string
+	// GrokTokenSource is forwarded to PlanUsageArgs; see its source contract.
+	GrokTokenSource func(context.Context) (string, error)
 	// GrokAuthPath overrides the path to grok auth.json (tests).
 	GrokAuthPath string
 	// GrokBillingURL overrides the grok billing endpoint (tests).
@@ -410,6 +416,7 @@ func QueryAllPlanUsage(ctx context.Context, args *AllPlanUsageArgs) ([]PlanUsage
 			Now:                 args.Now,
 			GrokUnstableUsage:   args.GrokUnstableUsage,
 			GrokAccessToken:     args.GrokAccessToken,
+			GrokTokenSource:     args.GrokTokenSource,
 			GrokAuthPath:        args.GrokAuthPath,
 			GrokBillingURL:      args.GrokBillingURL,
 			GrokBillingRaw:      args.GrokBillingRaw,

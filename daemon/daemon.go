@@ -326,8 +326,9 @@ func New(opts Options) (*Daemon, error) {
 	d.mergeConsumerIntentStandDown()
 	d.ctx, d.cancel = context.WithCancel(context.Background())
 	d.resumeDone = make(chan struct{})
+	usageFetch, forceUsageFetch := brokerUsageFetchers(opts.UsageFetch)
 	d.usage = claudia.NewPlanUsageMonitor(&claudia.PlanUsageMonitorArgs{
-		TTL: opts.UsageTTL, Fetch: opts.UsageFetch, Clock: clock,
+		TTL: opts.UsageTTL, Fetch: usageFetch, ForceFetch: forceUsageFetch, Clock: clock,
 		OnUpdate: func(fetched []claudia.PlanUsage, err error) {
 			if err != nil {
 				d.log.Warn("plan usage fetch failed", "err", err)

@@ -47,9 +47,9 @@ type grokBillingConfig struct {
 			Start string `json:"start"`
 			End   string `json:"end"`
 		} `json:"currentPeriod"`
-		OnDemandCap  *grokMoneyVal `json:"onDemandCap"`
-		OnDemandUsed *grokMoneyVal `json:"onDemandUsed"`
-		BillingPeriodEnd string `json:"billingPeriodEnd"`
+		OnDemandCap      *grokMoneyVal `json:"onDemandCap"`
+		OnDemandUsed     *grokMoneyVal `json:"onDemandUsed"`
+		BillingPeriodEnd string        `json:"billingPeriodEnd"`
 	} `json:"config"`
 	// SubscriptionTier is present on the ACP variant of this payload; the HTTP
 	// endpoint omits it, so PlanType is best-effort.
@@ -183,6 +183,17 @@ func queryGrokPlanUsage(ctx context.Context, args *PlanUsageArgs, now time.Time)
 // attempt. Any other non-200 stays a loud error with no rotation.
 func fetchGrokBilling(ctx context.Context, args *PlanUsageArgs) ([]byte, error) {
 	tok := args.GrokAccessToken
+	brokerSource := tok == "" && args.GrokTokenSource != nil
+	if brokerSource {
+		var err error
+		tok, err = args.GrokTokenSource(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("broker Grok billing credential unavailable: %w; recover the Grok subscription login in Claudia", err)
+		}
+		if tok == "" {
+			return nil, fmt.Errorf("broker Grok billing credential is empty; recover the Grok subscription login in Claudia")
+		}
+	}
 	if tok == "" {
 		t, err := loadGrokToken(args.GrokAuthPath)
 		if err != nil {
@@ -194,7 +205,7 @@ func fetchGrokBilling(ctx context.Context, args *PlanUsageArgs) ([]byte, error) 
 	if err != nil {
 		return nil, err
 	}
-	if status == http.StatusUnauthorized && !args.GrokRefreshDisabled {
+	if status == http.StatusUnauthorized && !args.GrokRefreshDisabled && !brokerSource {
 		now := args.Now
 		if now.IsZero() {
 			now = time.Now()
@@ -225,6 +236,9 @@ func fetchGrokBilling(ctx context.Context, args *PlanUsageArgs) ([]byte, error) 
 		}
 	}
 	if status != http.StatusOK {
+		if brokerSource && status == http.StatusUnauthorized {
+			return nil, fmt.Errorf("HTTP 401: Grok billing rejected the broker subscription credential; recover the Grok subscription login in Claudia (agent login health is unchanged)")
+		}
 		return nil, fmt.Errorf("HTTP %d (token may be expired — run `grok login`)", status)
 	}
 	return body, nil
