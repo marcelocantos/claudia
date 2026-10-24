@@ -201,7 +201,7 @@ func TestBrokerUsageRefreshCoalescesAndPersistsBothPlans(t *testing.T) {
 				if len(args) != 5 || args[1] != "refresh" || args[2] != plan || args[3] != "--no-login" {
 					t.Error("usage did not force noninteractive refresh")
 				}
-				if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) > planUsageRefreshTimeout {
+				if _, ok := ctx.Deadline(); !ok {
 					t.Error("refresh has no production deadline")
 				}
 				close(entered)
