@@ -10,6 +10,8 @@
 // Anything else is answered at once with "reply: <its text>".
 import assert from "node:assert/strict";
 import { connect } from "node:net";
+import { writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { createMockModel, MockModel, registerMockApi } from "@oh-my-pi/pi-ai/providers/mock";
 
@@ -31,6 +33,9 @@ Object.assign(catalog, model);
 Object.setPrototypeOf(catalog, MockModel.prototype);
 Object.defineProperty(catalog, "calls", { value: model.calls, enumerable: false });
 assert.ok(getBundledModel("anthropic", model.id) instanceof MockModel);
+// Go process fixtures use this to attest mock-provider selection. It is not
+// server readiness: the Bun fixture waits for the connection evidence below.
+writeFileSync(join(dirname(process.argv[2]), "mock-api-ready"), "mock\n");
 await import("../server.ts");
 // Importing the server starts its listener. A real connection, rather than a
 // marker written before import, proves that the production socket is ready.
