@@ -15,6 +15,7 @@ for (const name of banned) delete process.env[name];
 
 const cmd = process.argv[2];
 const provider = process.argv[3];
+const noLogin = process.argv.includes("--no-login");
 
 if (!cmd || !provider) {
   console.error("usage: bun auth.ts refresh|login <provider>  (record JSON on stdin)");
@@ -64,12 +65,12 @@ function toRecord(creds: unknown): RecordOut {
 }
 
 const stdin = await new Response(Bun.stdin).text();
-const fromArg = process.argv[4] ?? "";
+const fromArg = (noLogin ? process.argv[5] : process.argv[4]) ?? "";
 const existing = JSON.parse((stdin.trim() || fromArg.trim() || "{}")) as Record<string, unknown>;
 const force = (process.env.OMP_FORCE_LOGIN ?? "").split(",").map((s) => s.trim()).filter(Boolean);
 const refreshTok = String(existing.refresh_token ?? existing.refresh ?? "");
 
-if (cmd === "refresh" && !force.includes(provider) && usable(refreshTok)) {
+if (cmd === "refresh" && (noLogin || !force.includes(provider)) && usable(refreshTok)) {
   const next = await refreshOAuthToken(provider, {
     refresh: refreshTok,
     access: String(existing.access_token ?? existing.access ?? ""),
@@ -81,6 +82,11 @@ if (cmd === "refresh" && !force.includes(provider) && usable(refreshTok)) {
   }
   process.stdout.write(JSON.stringify(toRecord(next)));
   process.exit(0);
+}
+
+if (noLogin) {
+  console.error("noninteractive credential refresh requires an existing refresh token; sign-in refused");
+  process.exit(1);
 }
 
 const def = getProviderDefinition(provider);

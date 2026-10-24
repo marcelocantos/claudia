@@ -6,6 +6,7 @@ package claudia
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -102,6 +103,13 @@ func renewOMPPlan(ctx context.Context, id string, margin time.Duration) (bool, e
 	mu := ompRefreshLock(id)
 	mu.Lock()
 	defer mu.Unlock()
+	return renewOMPPlanLocked(ctx, id, margin, "expiry ahead")
+}
+
+// renewOMPPlanLocked is shared by the proactive loop and paced usage reads.
+// The caller holds ompRefreshLock(id). Recheck rejection/backoff here because
+// another caller may have failed after the loop selected this plan.
+func renewOMPPlanLocked(ctx context.Context, id string, margin time.Duration, caller string) (bool, error) {
 	store := planStore()
 	item, err := store.Load(ctx)
 	if err != nil {
@@ -109,6 +117,21 @@ func renewOMPPlan(ctx context.Context, id string, margin time.Duration) (bool, e
 	}
 	if !renewDue(item.Records[id], time.Now(), margin) {
 		return false, nil
+	}
+	health, err := omp.Health(ctx, store)
+	if err != nil {
+		return false, err
+	}
+	for _, h := range health {
+		if h.Provider == id && h.State == omp.HealthRejected {
+			return false, fmt.Errorf("subscription refresh grant rejected; explicit sign-in required")
+		}
+	}
+	ompRenewFailedMu.Lock()
+	failed := ompRenewFailed[id]
+	ompRenewFailedMu.Unlock()
+	if !failed.IsZero() && time.Since(failed) < ompRenewRetry {
+		return false, fmt.Errorf("subscription renewal is in backoff after an earlier failure")
 	}
 	login := ompLogin
 	if login.Run == nil {
@@ -120,7 +143,8 @@ func renewOMPPlan(ctx context.Context, id string, margin time.Duration) (bool, e
 	if login.Script == "" {
 		login.Script = sidecarAuthScript()
 	}
-	login.Caller = "expiry ahead"
+	login.Caller = caller
+	login.ForceLogin = false
 	login.NoLogin = true
 	if _, err := login.Refresh(ctx, store, id); err != nil {
 		ompRenewFailedMu.Lock()
@@ -137,6 +161,9 @@ func renewOMPPlan(ctx context.Context, id string, margin time.Duration) (bool, e
 	ompRenewFailedMu.Unlock()
 	if n := reloadOMPSeats(ctx, id); n > 0 {
 		slog.Info("omp plan renewed ahead of expiry; seats took the new token", "provider", id, "seats", n)
+	}
+	if err := ctx.Err(); err != nil {
+		return true, err
 	}
 	return true, nil
 }

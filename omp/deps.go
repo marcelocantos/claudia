@@ -36,6 +36,7 @@ const (
 	// depsInstallTimeout bounds one install. A cold one downloads the
 	// platform's native addon (~170 MB); a warm one copies from bun's cache.
 	depsInstallTimeout = 10 * time.Minute
+	depsLockRetry      = 10 * time.Millisecond
 )
 
 // depsManifests are the files an install is derived from, in hash order.
@@ -76,7 +77,7 @@ func EnsureDeps(ctx context.Context, script string) error {
 		return fmt.Errorf("omp: sidecar dependencies in %s: %w", dir, err)
 	}
 	defer lock.Close()
-	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+	if err := lockDeps(ctx, lock); err != nil {
 		return fmt.Errorf("omp: sidecar dependencies in %s: lock: %w", dir, err)
 	}
 	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN) //nolint:errcheck // Close releases it too
@@ -99,6 +100,27 @@ func EnsureDeps(ctx context.Context, script string) error {
 		return fmt.Errorf("omp: sidecar dependencies in %s: %w", dir, err)
 	}
 	return nil
+}
+
+// A competing install must not hold a cancelled launch or usage renewal
+// indefinitely in Flock. This timer only paces lock probes; ctx owns expiry.
+func lockDeps(ctx context.Context, lock *os.File) error {
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if !errors.Is(err, syscall.EWOULDBLOCK) {
+			return err
+		}
+		timer := time.NewTimer(depsLockRetry)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
 }
 
 // depsHash identifies the install dir's manifests call for, or "" when dir

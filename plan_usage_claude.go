@@ -97,6 +97,20 @@ type claudeOAuthWindow struct {
 
 func queryClaudePlanUsage(ctx context.Context, client *http.Client, args *PlanUsageArgs, now time.Time) (PlanUsage, error) {
 	token := strings.TrimSpace(args.ClaudeAccessToken)
+	fromSource := token == "" && args.ClaudeTokenSource != nil
+	if fromSource {
+		var err error
+		token, err = args.ClaudeTokenSource(ctx)
+		if err != nil {
+			return unavailablePlan(ProviderClaude, now,
+				fmt.Sprintf("Claude usage credential source unavailable: %v", err)), nil
+		}
+		token = strings.TrimSpace(token)
+		if token == "" {
+			return unavailablePlan(ProviderClaude, now,
+				"Claude usage credential source returned an empty token (agent login health is unchanged)"), nil
+		}
+	}
 	if token == "" {
 		token = strings.TrimSpace(os.Getenv(claudeOAuthTokenEnv))
 	}
@@ -149,6 +163,10 @@ func queryClaudePlanUsage(ctx context.Context, client *http.Client, args *PlanUs
 			fmt.Sprintf("Claude usage read failed: %v", err)), nil
 	}
 	if resp.StatusCode != http.StatusOK {
+		if fromSource && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
+			return unavailablePlan(ProviderClaude, now,
+				fmt.Sprintf("Claude usage HTTP %d: usage endpoint rejected the supplied subscription credential (agent login health is unchanged)", resp.StatusCode)), nil
+		}
 		return unavailablePlan(ProviderClaude, now,
 			fmt.Sprintf("Claude usage HTTP %d: %s", resp.StatusCode, truncateForReason(body, 200))), nil
 	}

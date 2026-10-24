@@ -237,7 +237,7 @@ func fetchGrokBilling(ctx context.Context, args *PlanUsageArgs) ([]byte, error) 
 	}
 	if status != http.StatusOK {
 		if brokerSource && status == http.StatusUnauthorized {
-			return nil, fmt.Errorf("HTTP 401: Grok billing rejected the broker subscription credential; recover the Grok subscription login in Claudia (agent login health is unchanged)")
+			return nil, fmt.Errorf("HTTP 401: Grok billing rejected the broker subscription credential (agent login health is unchanged)")
 		}
 		return nil, fmt.Errorf("HTTP %d (token may be expired — run `grok login`)", status)
 	}

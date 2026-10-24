@@ -165,9 +165,13 @@ type PlanUsageArgs struct {
 	Provider Provider
 	// HTTPClient is used for outbound fetches. Nil uses http.DefaultClient.
 	HTTPClient *http.Client
-	// ClaudeAccessToken overrides Claude.ai OAuth (keychain / env).
-	// Empty means load via the default credential path.
+	// ClaudeAccessToken overrides the source and environment credential paths.
 	ClaudeAccessToken string
+	// ClaudeTokenSource supplies the current token when ClaudeAccessToken is empty.
+	// It is authoritative: errors/empty tokens never fall back to the environment
+	// or legacy credentials. The broker source may renew expired cached access
+	// noninteractively; a usage endpoint failure never rejects agent login.
+	ClaudeTokenSource func(context.Context) (string, error)
 	// CodexAccessToken overrides ChatGPT access token from ~/.codex/auth.json.
 	CodexAccessToken string
 	// CodexAccountID is sent as ChatGPT-Account-Id when non-empty.
@@ -236,8 +240,10 @@ type PlanUsageArgs struct {
 type AllPlanUsageArgs struct {
 	// HTTPClient is used for outbound fetches. Nil uses http.DefaultClient.
 	HTTPClient *http.Client
-	// ClaudeAccessToken overrides Claude.ai OAuth (keychain / env).
+	// ClaudeAccessToken overrides the source and environment credential paths.
 	ClaudeAccessToken string
+	// ClaudeTokenSource is forwarded to PlanUsageArgs; see its source contract.
+	ClaudeTokenSource func(context.Context) (string, error)
 	// CodexAccessToken overrides ChatGPT access token from ~/.codex/auth.json.
 	CodexAccessToken string
 	// CodexAccountID is sent as ChatGPT-Account-Id when non-empty.
@@ -408,6 +414,7 @@ func QueryAllPlanUsage(ctx context.Context, args *AllPlanUsageArgs) ([]PlanUsage
 			Forced:              args.Forced,
 			HTTPClient:          args.HTTPClient,
 			ClaudeAccessToken:   args.ClaudeAccessToken,
+			ClaudeTokenSource:   args.ClaudeTokenSource,
 			CodexAccessToken:    args.CodexAccessToken,
 			CodexAccountID:      args.CodexAccountID,
 			CodexAuthPath:       args.CodexAuthPath,

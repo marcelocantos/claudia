@@ -11,8 +11,36 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 )
+
+func TestDependencyLockHonorsCancelledCaller(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(`{"name":"fixture"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	modules := filepath.Join(dir, "node_modules")
+	if err := os.Mkdir(modules, 0700); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := os.OpenFile(filepath.Join(modules, depsLock), os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN) //nolint:errcheck
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	// The old blocking flock never returns until the competing install exits,
+	// even though this request is already cancelled. No fixture timer decides.
+	if err := EnsureDeps(ctx, filepath.Join(dir, "auth.ts")); !errors.Is(err, context.Canceled) {
+		t.Fatalf("dependency lock = %v", err)
+	}
+}
 
 // 🎯T156: a checkout with no sidecar install gets one before bun starts the
 // script, once per lockfile; a failed install is an error at once that

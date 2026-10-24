@@ -1173,12 +1173,20 @@ func (c *ompControl) loadMessage() omp.Message {
 
 // reload hands the seat a new token; its conversation is kept.
 func (c *ompControl) reload(token string) {
+	c.reloadContext(context.Background(), token)
+}
+
+func (c *ompControl) reloadContext(ctx context.Context, token string) bool {
+	msg := c.loadMessage()
+	msg.Token = token
+	if err := c.sendContext(ctx, msg); err != nil {
+		slog.Warn("omp token refreshed; sidecar reload failed", "seat", c.seat, "err", err)
+		return false
+	}
 	c.mu.Lock()
 	c.token = token
 	c.mu.Unlock()
-	if err := c.send(c.loadMessage()); err != nil {
-		slog.Warn("omp token refreshed; sidecar reload failed", "seat", c.seat, "err", err)
-	}
+	return true
 }
 
 // reloadOMPSeats hands provider's stored token to every live seat still
@@ -1203,11 +1211,17 @@ func reloadOMPSeats(ctx context.Context, provider string) int {
 	// seat's connection reaches that one sidecar; the first that takes the
 	// message is enough. A seat whose connection refuses it is reloaded.
 	sent := false
+	moved := 0
 	for _, c := range stale {
+		if ctx.Err() != nil {
+			break
+		}
 		if !sent {
-			if err := c.send(omp.Message{Op: omp.OpToken, Provider: provider, Token: tok}); err != nil {
+			if err := c.sendContext(ctx, omp.Message{Op: omp.OpToken, Provider: provider, Token: tok}); err != nil {
 				slog.Warn("omp token refreshed; sidecar token update failed", "seat", c.seat, "err", err)
-				c.reload(tok)
+				if c.reloadContext(ctx, tok) {
+					moved++
+				}
 				continue
 			}
 			sent = true
@@ -1215,8 +1229,9 @@ func reloadOMPSeats(ctx context.Context, provider string) int {
 		c.mu.Lock()
 		c.token = tok
 		c.mu.Unlock()
+		moved++
 	}
-	return len(stale)
+	return moved
 }
 
 func (c *ompControl) refreshRejectedToken() {
@@ -1643,9 +1658,20 @@ func execBunLogin(ctx context.Context, name string, args ...string) ([]byte, err
 		cmd.Dir = dir
 	}
 	var stderr bytes.Buffer
-	cmd.Stderr = io.MultiWriter(os.Stderr, &stderr)
+	noLogin := slices.Contains(args, "--no-login")
+	if noLogin {
+		cmd.Stderr = &stderr
+	} else {
+		cmd.Stderr = io.MultiWriter(os.Stderr, &stderr)
+	}
 	out, err := cmd.Output()
 	if err != nil {
+		if noLogin {
+			if strings.Contains(strings.ToLower(stderr.String()), "invalid_grant") {
+				return nil, fmt.Errorf("noninteractive refresh invalid_grant: explicit sign-in required")
+			}
+			return nil, fmt.Errorf("noninteractive refresh helper failed: %w", err)
+		}
 		return stderr.Bytes(), fmt.Errorf("%s: %w: %s", name, err, stderr.String())
 	}
 	return out, nil

@@ -444,6 +444,25 @@ func (s Store) AccessToken(ctx context.Context, provider string) (string, error)
 	return rec.AccessToken, nil
 }
 
+// BackgroundRefreshReady refuses a renewal that would need to create a
+// Keychain data key. Background usage may persist into an already-encrypted
+// store, but it must not migrate a legacy item and possibly prompt the owner.
+// This inspects the existing startup copy; it never reads the Keychain.
+func (s Store) BackgroundRefreshReady() error {
+	shot.mu.Lock()
+	defer shot.mu.Unlock()
+	if !shot.opened || shot.openErr != nil {
+		return fmt.Errorf("omp: plan store unavailable; explicit authentication recovery required")
+	}
+	if shot.key == nil {
+		return fmt.Errorf("omp: encrypted plan store not established; explicit authentication recovery required")
+	}
+	if shot.configErr != nil || s.BrokerPath == "" || s.DataPath == "" {
+		return fmt.Errorf("omp: plan persistence unavailable; explicit authentication recovery required")
+	}
+	return rejectUntrustedBroker(s)
+}
+
 // Ensure returns a live access token. A missing or expired record is
 // renewed through login (pi-ai). Failure does not fall through to an
 // API key, models.yml, agent.db, or the process environment.

@@ -135,14 +135,32 @@ func (l Login) fetch(ctx context.Context, provider string, existing Record) (Rec
 	if caller == "" {
 		caller = "unattributed"
 	}
-	out, err := l.Run(ctx, cmd, l.Script, verb, provider, string(blob))
+	args := []string{l.Script, verb, provider}
+	if l.NoLogin {
+		// Carry the policy across the process boundary. A helper environment
+		// override must not turn unattended refresh into browser sign-in.
+		args = append(args, "--no-login")
+	}
+	args = append(args, string(blob))
+	out, err := l.Run(ctx, cmd, args...)
 	if err != nil {
+		if l.NoLogin {
+			// Provider stderr can contain credential material. Keep only the
+			// auth owner's recovery classification for unattended callers.
+			if strings.Contains(strings.ToLower(err.Error()), "invalid_grant") {
+				err = fmt.Errorf("invalid_grant: explicit sign-in required")
+			} else if ctx.Err() != nil {
+				err = ctx.Err()
+			} else {
+				err = fmt.Errorf("noninteractive subscription renewal failed")
+			}
+		}
 		slog.Warn("omp plan login renewal failed", "provider", provider, "verb", verb, "caller", caller, "pid", os.Getpid(), "err", err)
 		return Record{}, fmt.Errorf("omp: %s %s failed: %w", provider, verb, err)
 	}
 	var rec Record
 	if err := json.Unmarshal(out, &rec); err != nil {
-		return Record{}, fmt.Errorf("omp: %s %s returned %s: %w", provider, verb, strings.TrimSpace(string(out)), err)
+		return Record{}, fmt.Errorf("omp: %s %s returned invalid credential JSON", provider, verb)
 	}
 	if rec.AccessToken == "" || rec.RefreshToken == "" || rec.Expiry.IsZero() {
 		return Record{}, fmt.Errorf("omp: %s %s omitted access token, refresh token, or expiry", provider, verb)
