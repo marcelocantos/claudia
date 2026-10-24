@@ -17,21 +17,27 @@ export function codingTools(
   cwdOf: () => string,
   boundOf: () => number = () => toolResultBound(0),
   policyOf: () => SandboxPolicy | undefined = () => undefined,
+  envOf: () => NodeJS.ProcessEnv = () => process.env,
 ): AgentTool[] {
   const policy = policyOf();
   if (policy?.mode === "read-only") {
-    return [readTool(cwdOf, boundOf, policyOf), globTool(cwdOf, boundOf), grepTool(cwdOf, boundOf, policyOf)];
+    return [readTool(cwdOf, boundOf, policyOf), globTool(cwdOf, boundOf, envOf), grepTool(cwdOf, boundOf, policyOf, envOf)];
   }
   return [
-    bashTool(cwdOf, boundOf, policyOf),
+    bashTool(cwdOf, boundOf, policyOf, envOf),
     readTool(cwdOf, boundOf, policyOf),
     writeTool(cwdOf, boundOf, policyOf),
-    globTool(cwdOf, boundOf),
-    grepTool(cwdOf, boundOf, policyOf),
+    globTool(cwdOf, boundOf, envOf),
+    grepTool(cwdOf, boundOf, policyOf, envOf),
   ];
 }
 
-function bashTool(cwdOf: () => string, boundOf: () => number, policyOf: () => SandboxPolicy | undefined): AgentTool {
+function bashTool(
+  cwdOf: () => string,
+  boundOf: () => number,
+  policyOf: () => SandboxPolicy | undefined,
+  envOf: () => NodeJS.ProcessEnv,
+): AgentTool {
   return {
     name: "Bash",
     label: "Bash",
@@ -45,7 +51,7 @@ function bashTool(cwdOf: () => string, boundOf: () => number, policyOf: () => Sa
       const command = String((params as { command?: string })?.command || "");
       if (!command) return textResult("missing command", boundOf(), "Bash");
       try {
-        const r = await runShell(cwdOf, policyOf, { command, timeoutMs: bashTimeoutMs, maxBuffer: maxOut });
+        const r = await runShell(cwdOf, policyOf, { command, timeoutMs: bashTimeoutMs, maxBuffer: maxOut }, envOf);
         const out = `${r.stdout || ""}${r.stderr || ""}`.slice(0, maxOut);
         const status = r.status ?? (r.error ? 1 : 0);
         return textResult(status === 0 ? out || "(no output)" : `exit ${status}\n${out || r.error?.message || ""}`, boundOf(), "Bash");
@@ -107,7 +113,7 @@ function writeTool(cwdOf: () => string, boundOf: () => number, policyOf: () => S
   } as AgentTool;
 }
 
-function globTool(cwdOf: () => string, boundOf: () => number): AgentTool {
+function globTool(cwdOf: () => string, boundOf: () => number, envOf: () => NodeJS.ProcessEnv): AgentTool {
   return {
     name: "Glob",
     label: "Glob",
@@ -123,6 +129,7 @@ function globTool(cwdOf: () => string, boundOf: () => number): AgentTool {
       const r = await runCommand("/usr/bin/find", [cwd, "-name", pattern], {
         timeoutMs: searchTimeoutMs,
         maxBuffer: maxOut,
+        env: envOf(),
       });
       const lines = (r.stdout || "").split("\n").filter(Boolean).slice(0, 500);
       return textResult(lines.join("\n") || "(no matches)", boundOf(), "Glob");
@@ -130,7 +137,12 @@ function globTool(cwdOf: () => string, boundOf: () => number): AgentTool {
   } as AgentTool;
 }
 
-function grepTool(cwdOf: () => string, boundOf: () => number, policyOf: () => SandboxPolicy | undefined): AgentTool {
+function grepTool(
+  cwdOf: () => string,
+  boundOf: () => number,
+  policyOf: () => SandboxPolicy | undefined,
+  envOf: () => NodeJS.ProcessEnv,
+): AgentTool {
   return {
     name: "Grep",
     label: "Grep",
@@ -150,11 +162,13 @@ function grepTool(cwdOf: () => string, boundOf: () => number, policyOf: () => Sa
       const rg = await runCommand("rg", ["--no-config", "--no-follow", "-n", "--max-count", "50", "--", String(p?.pattern || ""), target], {
         timeoutMs: searchTimeoutMs,
         maxBuffer: maxOut,
+        env: envOf(),
       });
       if (rg.error && rg.error.code === "ENOENT") {
         const g = await runCommand("/usr/bin/grep", ["-r", "-n", "--", String(p?.pattern || ""), target], {
           timeoutMs: searchTimeoutMs,
           maxBuffer: maxOut,
+          env: envOf(),
         });
         return textResult((g.stdout || g.stderr || "").slice(0, maxOut) || "(no matches)", boundOf(), "Grep");
       }

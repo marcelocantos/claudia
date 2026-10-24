@@ -122,6 +122,10 @@ func ompProtectedPathRules(cfg Config) []omp.ProtectedPathRule {
 	return out
 }
 
+func ompChildProcessEnv(cfg Config) map[string]string {
+	return CloneChildProcessEnv(cfg.ChildProcessEnv)
+}
+
 func ompSandboxFor(cfg Config) (*omp.Sandbox, error) {
 	if ompProviderID(cfg.Provider) == "" {
 		// Not a sidecar seat: nothing here can enforce the policy.
@@ -237,6 +241,11 @@ func normalizeSeatConfig(cfg Config) (Config, error) {
 	if len(unsupported) != 0 {
 		return cfg, unsupportedCapability(cfg.Provider, capability, "sidecar seat cannot honour legacy CLI configuration: "+strings.Join(unsupported, ", "))
 	}
+	normalized, err := normalizeChildProcessEnv(cfg.ChildProcessEnv)
+	if err != nil {
+		return cfg, err
+	}
+	cfg.ChildProcessEnv = normalized
 	return cfg, nil
 }
 
@@ -369,7 +378,8 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 		Pins:          req.Config.ContextPins,
 		Tools:         tools,
 		Sandbox:         sandbox,
-		ProtectedPaths: ompProtectedPathRules(req.Config),
+		ProtectedPaths:  ompProtectedPathRules(req.Config),
+		ChildProcessEnv: ompChildProcessEnv(req.Config),
 	}
 	if err := conn.Send(load); err != nil {
 		conn.Close()
@@ -461,7 +471,8 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 		preserve:  req.Config.ContextPreserve, pins: req.Config.ContextPins,
 		tools: tools, mcpServers: slices.Clone(req.Config.MCPServers), toolServers: toolRoutes, toolNames: toolNames,
 		sandbox: sandbox,
-		protectedPaths: slices.Clone(ompProtectedPathRules(req.Config)),
+		protectedPaths:  slices.Clone(ompProtectedPathRules(req.Config)),
+		childProcessEnv: CloneChildProcessEnv(req.Config.ChildProcessEnv),
 	}
 	// A reattach (adopt, or a load that found this seat already running in
 	// the sidecar's memory) may find a turn already open from before this
@@ -624,6 +635,8 @@ type ompControl struct {
 	sandbox *omp.Sandbox
 	// protectedPaths are host edit rules; reload must re-send them (🎯T209 / jevons 🎯T1145).
 	protectedPaths []omp.ProtectedPathRule
+	// childProcessEnv is merged into tool child spawns (🎯T218).
+	childProcessEnv ChildProcessEnv
 	// toolServers routes a model tool name to the AgentDef.MCPServers URL
 	// that declared it (🎯T871.1). A name absent here (a jevons_* name the
 	// host did not list, or a legacy caller) falls back to runOMPTool,
@@ -1145,7 +1158,8 @@ func (c *ompControl) loadMessage() omp.Message {
 		Preserve: c.preserve, Pins: c.pins,
 		Model: c.model, Token: c.token, Cwd: c.cwd,
 		Tools: c.tools, Sandbox: c.sandbox,
-		ProtectedPaths: slices.Clone(c.protectedPaths),
+		ProtectedPaths:  slices.Clone(c.protectedPaths),
+		ChildProcessEnv: CloneChildProcessEnv(c.childProcessEnv),
 	}
 }
 

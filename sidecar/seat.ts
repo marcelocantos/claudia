@@ -10,6 +10,7 @@ import { classifyMessage, Flag, is as hasFlag } from "@oh-my-pi/pi-ai/error";
 import crypto from "node:crypto";
 import { cursorExecHandlers } from "./cursorexec.ts";
 import { codingTools, type SandboxPolicy } from "./coding.ts";
+import { cloneChildProcessEnv, spawnEnvForSeat, validateChildProcessEnv, type ChildProcessEnv } from "./child-process-env.ts";
 import { capToolText, toolResultBound } from "./truncate.ts";
 import { awaitHostCall } from "./hostcalls.ts";
 import { ContextOverflow, isOverflow, History, Maintenance, seatConvertToLlm, type MaintenanceHost } from "./maintain.ts";
@@ -84,6 +85,7 @@ export type SeatAgent = {
   // setSandbox replaces the policy on the seat's own tools (🎯T178).
   setSandbox: (policy: SandboxPolicy | undefined) => void;
   setProtectedPaths: (rules: ProtectedPathRule[] | undefined) => void;
+  setChildProcessEnv: (env: ChildProcessEnv | undefined) => void;
   // sandboxMode is the policy mode in force, echoed on ready (🎯T178).
   sandboxMode: () => string | undefined;
   snapshot: () => unknown;
@@ -145,6 +147,7 @@ export function createSeatAgent(opts: {
   // sandbox limits the seat's own tools (🎯T178). Absent: unchanged.
   sandbox?: SandboxPolicy;
   protected_paths?: ProtectedPathRule[];
+  child_process_env?: ChildProcessEnv;
 }): SeatAgent {
   // Resume admission belongs to the authoritative seat/session store. Validate
   // without repair before constructing an engine or changing any file.
@@ -164,6 +167,9 @@ export function createSeatAgent(opts: {
   }
   let sandbox = opts.sandbox;
   let protectedPaths = opts.protected_paths ?? [];
+  validateChildProcessEnv(opts.child_process_env);
+  let childProcessEnv = cloneChildProcessEnv(opts.child_process_env);
+  const envOf = () => spawnEnvForSeat(childProcessEnv);
   const policyOf = (): SandboxPolicy | undefined => {
     if (sandbox) return { ...sandbox, protected_paths: protectedPaths };
     if (protectedPaths.length) return { protected_paths: protectedPaths };
@@ -210,6 +216,7 @@ export function createSeatAgent(opts: {
     () => cwd,
     () => toolResultBound(agent.state.model?.contextWindow ?? 0),
     policyOf,
+    envOf,
   );
   bindListedMcp(execHandlers, () => agent.state.tools);
   const streamPersist = { fn: (_message?: ToolResultMessage) => {} };
@@ -257,7 +264,7 @@ export function createSeatAgent(opts: {
     // server executes it. An unlisted name, including a consumer-prefixed
     // one, is not invented here.
     const hosted = (host ?? []).map((t) => jevonsTool(t.name, callBack, t.description, t.input_schema, boundOf));
-    const own = codingTools(() => cwd, boundOf, policyOf);
+    const own = codingTools(() => cwd, boundOf, policyOf, envOf);
     ownToolNames = new Set(own.map((t) => t.name));
     agent.setTools([...own, ...hosted]);
   };
@@ -831,6 +838,11 @@ export function createSeatAgent(opts: {
     },
     setProtectedPaths: (next) => {
       protectedPaths = next ?? [];
+      applyTools(lastHost);
+    },
+    setChildProcessEnv: (next) => {
+      validateChildProcessEnv(next);
+      childProcessEnv = cloneChildProcessEnv(next);
       applyTools(lastHost);
     },
     snapshot: () => agent.state,

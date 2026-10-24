@@ -164,6 +164,7 @@ export async function runShell(
   cwdOf: () => string,
   policyOf: () => SandboxPolicy | undefined,
   args: { command: string; workingDirectory?: string; timeoutMs: number; maxBuffer: number },
+  envOf: () => NodeJS.ProcessEnv = () => process.env,
 ): Promise<RunResult> {
   const root = cwdOf() || process.cwd();
   const cwd = under(root, args.workingDirectory || ".", policyOf());
@@ -179,6 +180,6 @@ export async function runShell(
   const [bin, argv] = policy?.mode === "workspace-write"
     ? ["/usr/bin/sandbox-exec", ["-p", seatbeltProfile(root, policy), "/bin/bash", "-lc", args.command]]
     : ["/bin/bash", ["-lc", args.command]];
-  return runCommand(bin, argv, { cwd, timeoutMs: args.timeoutMs, maxBuffer: args.maxBuffer, env: process.env });
+  return runCommand(bin, argv, { cwd, timeoutMs: args.timeoutMs, maxBuffer: args.maxBuffer, env: envOf() });
 }
 

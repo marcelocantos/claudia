@@ -75,6 +75,8 @@ type Message struct {
 	Sandbox *Sandbox `json:"sandbox,omitempty"`
 	// ProtectedPaths are host edit rules (🎯T209 / jevons 🎯T546), independent of sandbox mode.
 	ProtectedPaths []ProtectedPathRule `json:"protected_paths,omitempty"`
+	// ChildProcessEnv is merged into child tool spawns for this seat (🎯T218).
+	ChildProcessEnv map[string]string `json:"child_process_env,omitempty"`
 }
 
 // Sandbox modes the sidecar enforces on its own tools.
