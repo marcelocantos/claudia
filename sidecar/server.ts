@@ -155,6 +155,8 @@ const server = createServer((socket) => {
   socket.on("error", () => {});
   // A tool call this connection was answering can no longer be answered.
   // Fail it so the turn ends instead of waiting forever (jevons 🎯T927).
+  // Seat-owned Bash/shell subprocesses keep running until explicit seat
+  // abort/drop (🎯T219); disconnect is not a seat stop.
   socket.on("close", () => {
     disconnected.abort();
     const n = calls.failAll(HOST_CONNECTION_LOST);

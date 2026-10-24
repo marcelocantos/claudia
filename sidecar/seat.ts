@@ -10,6 +10,7 @@ import { classifyMessage, Flag, is as hasFlag } from "@oh-my-pi/pi-ai/error";
 import crypto from "node:crypto";
 import { cursorExecHandlers } from "./cursorexec.ts";
 import { codingTools, type SandboxPolicy } from "./coding.ts";
+import { SeatCommandScope } from "./seat-command-scope.ts";
 import { cloneChildProcessEnv, spawnEnvForSeat, validateChildProcessEnv, type ChildProcessEnv } from "./child-process-env.ts";
 import { capToolText, toolResultBound } from "./truncate.ts";
 import { awaitHostCall } from "./hostcalls.ts";
@@ -211,12 +212,15 @@ export function createSeatAgent(opts: {
     };
   };
   const model = opts.modelOverride ?? resolveModel(opts.provider, opts.model);
+  const commandScope = new SeatCommandScope();
+  const commandScopeOf = () => commandScope;
   // The bound and the tool list close over `agent` and run only after it exists.
   const execHandlers = cursorExecHandlers(
     () => cwd,
     () => toolResultBound(agent.state.model?.contextWindow ?? 0),
     policyOf,
     envOf,
+    commandScopeOf,
   );
   bindListedMcp(execHandlers, () => agent.state.tools);
   const streamPersist = { fn: (_message?: ToolResultMessage) => {} };
@@ -264,7 +268,7 @@ export function createSeatAgent(opts: {
     // server executes it. An unlisted name, including a consumer-prefixed
     // one, is not invented here.
     const hosted = (host ?? []).map((t) => jevonsTool(t.name, callBack, t.description, t.input_schema, boundOf));
-    const own = codingTools(() => cwd, boundOf, policyOf, envOf);
+    const own = codingTools(() => cwd, boundOf, policyOf, envOf, commandScopeOf);
     ownToolNames = new Set(own.map((t) => t.name));
     agent.setTools([...own, ...hosted]);
   };
@@ -797,6 +801,7 @@ export function createSeatAgent(opts: {
       const ended: EndedTurn | undefined = turn && !turn.closed ? { turn_id: turn.turn_id, request_id: answerRequestID() } : undefined;
       if (ended) cancelledTurns.add(ended.turn_id);
       recovery.cancel();
+      commandScope.killAll();
       maint.abort();
       agent.abort();
       finish("abort");
