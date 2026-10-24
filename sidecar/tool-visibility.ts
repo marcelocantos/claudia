@@ -20,26 +20,56 @@ type ToolExecutionEnd = {
   };
 };
 
+/** pi-agent-core {@link SyntheticToolResultDetails.source} values we classify. */
+const SYNTHETIC_TOOL_RESULT_SOURCES = new Set([
+  "assistant_stop_aborted",
+  "assistant_stop_error",
+  "assistant_stop_skipped",
+  "assistant_stop_length",
+  "interrupt_skipped",
+]);
+
 export function toolResultPreview(result: ToolExecutionEnd["result"]): string {
   const part = result?.content?.[0];
   if (part?.type === "text" && part.text) return part.text.slice(0, 500);
   return "";
 }
 
+function terminalStatusFromSyntheticSource(source: string): SidecarToolTerminalStatus {
+  switch (source) {
+    case "assistant_stop_aborted":
+    case "interrupt_skipped":
+      return "cancelled";
+    case "assistant_stop_error":
+    case "assistant_stop_length":
+    case "assistant_stop_skipped":
+      return "failed";
+    default:
+      return "unknown";
+  }
+}
+
 /** Map pi-agent-core tool_execution_end facts to a sidecar terminal status. */
 export function terminalStatusFromExecutionEnd(event: ToolExecutionEnd): SidecarToolTerminalStatus {
   const details = event.result?.details;
-  const text = toolResultPreview(event.result);
-  const interrupted =
-    details?.__interrupted === true ||
-    details?.__synthetic === true ||
-    (typeof details?.source === "string" && String(details.source).includes("interrupt"));
-  if (interrupted || text.startsWith("Skipped due to")) return "cancelled";
-  const blocked =
-    text.includes("Tool execution was blocked") ||
-    details?.blocked === true ||
-    details?.status === "blocked";
-  if (blocked) return "denied";
+
+  if (details?.blocked === true || details?.status === "blocked") {
+    return "denied";
+  }
+
+  if (details?.__interrupted === true) {
+    const source = details.source;
+    if (source === "interrupt_skipped") return "cancelled";
+    if (typeof source === "string" && source.includes("interrupt")) return "cancelled";
+    return "unknown";
+  }
+
+  if (details?.__synthetic === true) {
+    const source = typeof details.source === "string" ? details.source : undefined;
+    if (!source || !SYNTHETIC_TOOL_RESULT_SOURCES.has(source)) return "unknown";
+    return terminalStatusFromSyntheticSource(source);
+  }
+
   const isError = event.isError === true || event.result?.isError === true;
   if (isError) return "failed";
   if (event.isError === false || event.result?.isError === false) return "completed";
