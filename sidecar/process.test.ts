@@ -5,6 +5,8 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawn } from "node:child_process";
+import { retainedProcessGroupStillOwned, listProcessGroupPids } from "./process-group.ts";
 import { runCommand } from "./process.ts";
 import { SeatCommandScope } from "./seat-command-scope.ts";
 
@@ -75,6 +77,20 @@ describe("seat-owned command process groups (🎯T219)", () => {
     expect(processAlive(grand)).toBe(false);
   });
 
+  test("stale witness PIDs are not treated as seat-owned (pgid reuse guard)", () => {
+    const outsider = spawn("/bin/sleep", ["120"], { detached: true, stdio: "ignore" });
+    const pgid = outsider.pid!;
+    expect(pgid).toBeGreaterThan(0);
+    try {
+      expect(processAlive(pgid)).toBe(true);
+      const members = listProcessGroupPids(pgid);
+      expect(members.length).toBeGreaterThan(0);
+      expect(retainedProcessGroupStillOwned(pgid, members.map((p) => p + 50_000))).toBe(false);
+    } finally {
+      outsider.kill("SIGKILL");
+    }
+  });
+
   test("killAll reaps redirected background child after shell leader exits 0", async () => {
     const dir = mkdtempSync(join(tmpdir(), "t219-leader-exit-"));
     const marker = join(dir, "child.pid");
@@ -97,6 +113,19 @@ describe("seat-owned command process groups (🎯T219)", () => {
       expect(processAlive(child)).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("many completed short commands do not grow SeatCommandScope kill set", async () => {
+    const scope = new SeatCommandScope();
+    for (let i = 0; i < 40; i++) {
+      const r = await runCommand("/bin/echo", ["ok"], {
+        timeoutMs: 5_000,
+        maxBuffer: 10_000,
+        commandScope: scope,
+      });
+      expect(r.status).toBe(0);
+      expect(scope.pendingKillTargets()).toEqual([]);
     }
   });
 
