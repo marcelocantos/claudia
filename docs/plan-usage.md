@@ -6,6 +6,42 @@ This is **subscription-style plan remaining**, not per-run token
 [`Usage`](../task.go) / `CostUSD` on Task events. Hosts (e.g. jevons)
 call this to back off before exhausting plan windows.
 
+## Broker observation pipeline
+
+The broker's scheduled monitor owns vendor polling. It reserves each attempt
+in its existing `claudia-control.db` before the request, then atomically writes
+the completed outcome, last successful reading, successful history point and
+next retry time. Successful readings are paced at five minutes; failed polls
+retry automatically after one minute. HTTP 429/529 responses use the durable
+15-minute doubling backoff, capped at two hours. Restarting the broker or
+reloading a consumer cannot waive it. Requests time out after 30 seconds.
+
+`claudia_plan_usage` has one row per provider. `status`, `reason` and
+`attempted_at` describe polling; `success_at` and `reading_json` retain the
+last successful observation across failures. `next_attempt_at` and `refusals`
+are the durable schedule. A reservation preserves a prior completed outcome.
+`claudia_plan_usage_history` retains successful readings indexed by provider
+and observation time; a failure never creates a history point. Reading JSON
+omits vendor raw bodies, preserves credits/spend, and enriches windows with
+Claudia's `band` and finite `pressure` at the successful observation time.
+Cursor publishes both total and API bucket windows.
+
+The existing sqlpipe pair replicates both tables into the consumer's own
+control database. `Replica.SubscribeQuery(ctx, query)` registers one SQL or
+sqldeep query, initially returns persisted cached rows, and delivers complete
+results on initial sync, reconnect and live changes. Local `Replica.Write`
+commits reevaluate registered queries for local settings. It has no refresh
+timer. Slow readers receive the latest result; cancellation or replica close
+closes the result channel. Local tables outside the pair are excluded from
+replication and schema negotiation.
+
+Broker usage RPC/CLI reads are passive, including the legacy refresh flag.
+They read current persisted outcomes and omit last-good windows from failed
+providers so routing cannot mistake retained display values for fresh health.
+The shared JSON readings/throttle files below belong only to the legacy direct
+library APIs, not this broker pipeline. Broker authentication continues to
+reuse the existing credential owner and noninteractive renewal path.
+
 ## API
 
 ```go
@@ -30,7 +66,7 @@ is empty, and `Reason` explains why.
 | **Codex** | available (ChatGPT login) | primary/secondary mapped by `limit_window_seconds` (~5h → session, ~7d → weekly) | `GET https://chatgpt.com/backend-api/wham/usage` with Codex `auth.json` tokens |
 | **Grok** | available (signed in) | `weekly` ← SuperGrok pool | `GET https://cli-chat-proxy.grok.com/v1/billing?format=credits` with the `grok login` token — **undocumented, unversioned** ([grok-usage-billing.md](grok-usage-billing.md)) |
 | **Bedrock** | **unavailable** | — | No Claude-style subscription remaining; AWS account quotas live in AWS |
-| **Cursor** | available (signed in) | `weekly` ← billing-cycle `totalPercentUsed` | `POST https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage` — **undocumented, unversioned** |
+| **Cursor** | available (signed in) | `weekly` ← billing-cycle `totalPercentUsed`, `api` ← `apiPercentUsed` | `POST https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage` — **undocumented, unversioned** |
 
 ### Claude
 

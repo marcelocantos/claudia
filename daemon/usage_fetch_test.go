@@ -62,51 +62,30 @@ func TestBrokerDefaultUsageMonitorUsesStoreForPeriodicAndForcedFetch(t *testing.
 	opts.UsageFetch = nil
 	opts.DisableResume = true
 	f.bootWith(t, opts)
-	// New starts the production monitor; Read joins its initial fetch.
-	for _, forced := range []bool{false, true} {
-		if forced {
-			// Between the forced and ordinary floors: this read reaches the
-			// vendor only if New retained the forced producer's pacing flag.
-			elapsed := (claudia.PlanThrottleMinInterval + claudia.PlanThrottleForcedInterval) / 2
-			claudia.RecordPlanAttempt(os.Getenv("CLAUDIA_PLAN_CACHE"), claudia.ProviderGrok, time.Now().Add(-elapsed), http.StatusOK)
-		}
-		snap := f.d.usage.Read(t.Context(), forced)
-		found := false
-		for _, u := range snap.Backends {
-			if u.Provider == claudia.ProviderGrok {
-				found = true
-				if u.Status != claudia.PlanUsageAvailable {
-					t.Fatalf("forced=%v: %+v", forced, u)
-				}
+	// Only the scheduled producer reaches the provider. Legacy refresh reads
+	// remain passive, even if another process edits the old shared JSON cache.
+	waitFor(t, "initial persisted Grok reading", func() bool {
+		for _, u := range f.d.usage.Read(t.Context(), false).Backends {
+			if u.Provider == claudia.ProviderGrok && u.Status == claudia.PlanUsageAvailable {
+				return true
 			}
 		}
-		if !found {
-			t.Fatalf("forced=%v: Grok missing from %+v", forced, snap)
+		return false
+	})
+	for _, forced := range []bool{false, true, true} {
+		claudia.RecordPlanAttempt(os.Getenv("CLAUDIA_PLAN_CACHE"), claudia.ProviderGrok, time.Now().Add(-time.Hour), http.StatusOK)
+		snap := f.d.usage.Read(t.Context(), forced)
+		if snap.Err != "" {
+			t.Fatal(snap.Err)
 		}
 	}
 	mu.Lock()
 	calls := grokCalls
 	mu.Unlock()
-	if calls != 2 {
-		t.Fatalf("normal/forced calls=%d, want 2 (forced fetch must retain its shorter request floor)", calls)
+	if calls != 1 {
+		t.Fatalf("read/refresh made %d requests, want scheduled request only", calls)
 	}
-}
 
-func TestBrokerUsageFetcherPreservesInjectedProducer(t *testing.T) {
-	count := 0
-	fetch, force := brokerUsageFetchers(func(context.Context) ([]claudia.PlanUsage, error) {
-		count++
-		return []claudia.PlanUsage{{Provider: claudia.ProviderGrok, Reason: "injected"}}, nil
-	})
-	for _, fn := range []func(context.Context) ([]claudia.PlanUsage, error){fetch, force} {
-		got, err := fn(t.Context())
-		if err != nil || len(got) != 1 || got[0].Reason != "injected" {
-			t.Fatalf("injection lost: %v,%v", got, err)
-		}
-	}
-	if count != 2 {
-		t.Fatalf("injected calls=%d", count)
-	}
 }
 
 func TestBrokerClaudeUsageMonitorRotationRejectionAndPacing(t *testing.T) {
@@ -177,15 +156,10 @@ process.stdout.write(JSON.stringify({access_token: record.access_token + "-renew
 	opts := f.options(nil)
 	opts.UsageFetch, opts.DisableResume = nil, true
 	f.bootWith(t, opts)
-	// Observe the periodic monitor's initial request before making any read.
-	select {
-	case <-firstRequest:
-	case <-t.Context().Done():
-		t.Fatal(t.Context().Err())
-	}
+	// Wait for the scheduled cycle to commit, rather than triggering a fetch
+	// by reading or changing the obsolete shared throttle file.
 	read := func(force bool, want claudia.PlanUsageStatus) claudia.PlanUsage {
 		t.Helper()
-		// This reaches daemon.Handle(TypeUsage), including its forced producer.
 		got, err := claudia.LoadPlanUsage(t.Context(), &claudia.PlanUsageCacheArgs{Refresh: force})
 		if err != nil {
 			t.Fatal(err)
@@ -193,45 +167,46 @@ process.stdout.write(JSON.stringify({access_token: record.access_token + "-renew
 		for _, u := range got {
 			if u.Provider == claudia.ProviderClaude {
 				if u.Status != want {
-					t.Fatalf("force=%v usage=%+v", force, u)
+					t.Fatalf("usage=%+v", u)
 				}
 				return u
 			}
 		}
-		t.Fatal("Claude missing from broker usage response")
+		t.Fatal("Claude missing")
 		return claudia.PlanUsage{}
 	}
+	waitCycle := func(want claudia.PlanUsageStatus) {
+		t.Helper()
+		waitFor(t, "scheduled usage outcome", func() bool {
+			snap := f.d.usage.Read(t.Context(), false)
+			for _, u := range snap.Backends {
+				if u.Provider == claudia.ProviderClaude {
+					return u.Status == want && u.Reason != "usage poll in progress" && (want != claudia.PlanUsageAvailable || u.FetchedAt.Equal(f.clock.Now()))
+				}
+			}
+			return false
+		})
+		waitFor(t, "monitor cycle complete", func() bool { f.d.usage.Read(t.Context(), false); return f.clock.Pending() > 1 })
+	}
+	advance := func() { f.clock.Advance(claudia.PlanThrottleMinInterval); f.d.usage.Invalidate() }
+	waitCycle(claudia.PlanUsageAvailable)
 	read(false, claudia.PlanUsageAvailable)
 	put("claude-rotated", time.Now().Add(-time.Hour))
-	// Inside the forced floor: even the forced request must not hit HTTP.
-	read(true, claudia.PlanUsageAvailable)
-	betweenFloors := (claudia.PlanThrottleMinInterval + claudia.PlanThrottleForcedInterval) / 2
-	allowForced := func() {
-		claudia.RecordPlanAttempt(os.Getenv("CLAUDIA_PLAN_CACHE"), claudia.ProviderClaude, time.Now().Add(-betweenFloors), http.StatusOK)
-	}
-	allowForced()
-	read(true, claudia.PlanUsageAvailable)
+	read(true, claudia.PlanUsageAvailable) // force is a passive read
+	advance()
+	waitFor(t, "rotated request", func() bool { mu.Lock(); defer mu.Unlock(); return len(tokens) >= 2 })
+	waitCycle(claudia.PlanUsageAvailable)
 	put("claude-periodic", time.Now().Add(-time.Hour))
-	claudia.RecordPlanAttempt(os.Getenv("CLAUDIA_PLAN_CACHE"), claudia.ProviderClaude, time.Now().Add(-2*claudia.PlanThrottleMinInterval), http.StatusOK)
-	// Drain the forced request's event, then require the Run loop to fetch
-	// with its ordinary producer before the next consumer read.
-	select {
-	case <-firstRequest:
-	default:
-	}
-	f.d.usage.Invalidate()
-	select {
-	case <-firstRequest:
-	case <-t.Context().Done():
-		t.Fatal(t.Context().Err())
-	}
-	read(false, claudia.PlanUsageAvailable)
+	advance()
+	waitFor(t, "periodic request", func() bool { mu.Lock(); defer mu.Unlock(); return len(tokens) >= 3 })
+	waitCycle(claudia.PlanUsageAvailable)
 	before, err := omp.Health(t.Context(), store)
 	if err != nil {
 		t.Fatal(err)
 	}
 	status.Store(http.StatusUnauthorized)
-	allowForced()
+	advance()
+	waitCycle(claudia.PlanUsageUnavailable)
 	u := read(true, claudia.PlanUsageUnavailable)
 	if !strings.Contains(u.Reason, "agent login health is unchanged") {
 		t.Fatalf("usage rejection reason=%q", u.Reason)
@@ -241,26 +216,32 @@ process.stdout.write(JSON.stringify({access_token: record.access_token + "-renew
 		t.Fatalf("usage poisoned auth health: %v -> %v, %v", before, after, err)
 	}
 	put("invalid", time.Now().Add(-time.Hour))
-	allowForced()
+	advance()
+	waitFor(t, "invalid grant outcome", func() bool {
+		for _, u := range f.d.usage.Read(t.Context(), false).Backends {
+			if u.Provider == claudia.ProviderClaude {
+				return strings.Contains(u.Reason, "refresh grant rejected")
+			}
+		}
+		return false
+	})
 	u = read(true, claudia.PlanUsageUnavailable)
-	if !strings.Contains(u.Reason, "refresh grant rejected") {
-		t.Fatalf("invalid grant hidden: %q", u.Reason)
-	}
 	if strings.Contains(u.Reason, "health is unchanged") {
 		t.Fatalf("refresh rejection falsely claims unchanged auth: %q", u.Reason)
 	}
-	// Even if a caller independently clears the usage floor, the failed
-	// credential's refresh attempt remains coalesced for that floor.
-	allowForced()
-	read(true, claudia.PlanUsageUnavailable)
 	if err := store.Save(t.Context(), omp.Item{Records: map[string]omp.Record{}}); err != nil {
 		t.Fatal(err)
 	}
-	allowForced()
-	u = read(true, claudia.PlanUsageUnavailable)
-	if !strings.Contains(u.Reason, "credential source unavailable") || strings.Contains(u.Reason, "probe removed") {
-		t.Fatalf("missing credential hidden: %q", u.Reason)
-	}
+	advance()
+	waitFor(t, "missing credential outcome", func() bool {
+		for _, u := range f.d.usage.Read(t.Context(), false).Backends {
+			if u.Provider == claudia.ProviderClaude {
+				return strings.Contains(u.Reason, "credential source unavailable")
+			}
+		}
+		return false
+	})
+
 	mu.Lock()
 	gotTokens := append([]string(nil), tokens...)
 	mu.Unlock()

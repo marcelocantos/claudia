@@ -19,7 +19,7 @@ import (
 // keep DefaultPlanFetchArgs.
 // Resolve on each fetch, rather than capturing a token that can be rotated.
 func BrokerPlanFetchArgs() *AllPlanUsageArgs {
-	args := DefaultPlanFetchArgs()
+	args := &AllPlanUsageArgs{} // Durable pacing belongs to the broker control database.
 	args.ClaudeTokenSource = func(ctx context.Context) (string, error) {
 		return brokerUsageToken(ctx, omp.Anthropic)
 	}

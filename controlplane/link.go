@@ -4,6 +4,7 @@
 package controlplane
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"sync"
 
 	"github.com/marcelocantos/sqlpipe/go/sqlpipe"
+	"github.com/marcelocantos/sqlpipe/go/sqlpipe/transport"
 )
 
 // maxFrame bounds one peer message on the control socket. A diff-sync
@@ -30,6 +32,11 @@ type linkSide struct {
 	// client opens the sqlpipe handshake. The broker is the client: it
 	// claims the Claudia tables, and the consumer approves the claim.
 	client bool
+	// Hooks install and deliver real sqlpipe query subscriptions.
+	initialized func(*sqlpipe.Peer) error   // called under lock
+	results     func([]sqlpipe.QueryResult) // called outside lock
+	finished    func()                      // called under lock, before peer.Close
+
 }
 
 // runLink runs one sqlpipe peer over conn until conn fails or done closes.
@@ -46,16 +53,19 @@ func runLink(conn net.Conn, done <-chan struct{}, side linkSide) (err error) {
 		default:
 		}
 	}()
-	defer conn.Close()
-	stop := make(chan struct{})
-	defer close(stop)
+	ctx, cancel := context.WithCancel(context.Background())
+	stopped := make(chan struct{})
+	watcher := make(chan struct{})
 	go func() {
+		defer close(watcher)
 		select {
 		case <-done:
+			cancel()
 			_ = conn.Close()
-		case <-stop:
+		case <-stopped:
 		}
 	}()
+	defer func() { cancel(); _ = conn.Close(); close(stopped); <-watcher }()
 
 	var peer *sqlpipe.Peer
 	if err := locked(side, func(db *sqlpipe.Database) (err error) {
@@ -66,100 +76,58 @@ func runLink(conn net.Conn, done <-chan struct{}, side linkSide) (err error) {
 	}
 	defer func() {
 		side.lock.Lock()
+		if side.finished != nil {
+			side.finished()
+		}
 		_ = peer.Close()
 		side.lock.Unlock()
 	}()
 
-	frames := make(chan []byte)
-	readErr := make(chan error, 1)
-	go func() {
-		for {
-			b, err := readFrame(conn)
-			if err != nil {
-				readErr <- err
-				return
+	link := transport.NewLink(&frameTransport{conn: conn, ctx: ctx})
+	link.OwnerLock = side.lock
+	link.OnPeerInitialized = func() error {
+		return locked(side, func(*sqlpipe.Database) error {
+			if side.initialized != nil {
+				return side.initialized(peer)
 			}
-			select {
-			case frames <- b:
-			case <-stop:
-				return
-			}
-		}
-	}()
-	send := func(msgs []sqlpipe.PeerOutMessage) error {
-		for _, m := range msgs {
-			if err := writeFrame(conn, sqlpipe.SerializePeer(m.Msg)); err != nil {
-				return err
-			}
+			return nil
+		})
+	}
+	err = link.RunPeer(ctx, peer, side.client, side.flush, func(hr sqlpipe.PeerHandleResult) error {
+		if side.results != nil && len(hr.Subscriptions) > 0 {
+			side.results(hr.Subscriptions)
 		}
 		return nil
+	})
+	if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
+		return nil
 	}
+	return err
+}
 
-	if side.client {
-		var out []sqlpipe.PeerOutMessage
-		if err := locked(side, func(*sqlpipe.Database) (err error) {
-			out, err = peer.Start()
-			return err
-		}); err != nil {
-			return err
+// Both delivery hints share this ordered Unix stream, preserving the existing
+// framing. Cancellation closes the connection, including when RunPeer cancels
+// its private receiver context after an error or a failed initialization hook.
+type frameTransport struct {
+	conn net.Conn
+	ctx  context.Context
+}
+
+func (t *frameTransport) Send(_ context.Context, data []byte) error { return writeFrame(t.conn, data) }
+func (t *frameTransport) SendDatagram(data []byte) error            { return t.Send(t.ctx, data) }
+func (t *frameTransport) Recv(ctx context.Context) ([]byte, error) {
+	closed := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() { _ = t.conn.Close(); close(closed) })
+	defer func() {
+		if !stop() {
+			<-closed
 		}
-		if err := send(out); err != nil {
-			return err
-		}
-	}
-	// pending holds a local write's flush signal that arrived before the
-	// handshake finished; it is sent as soon as the link is live.
-	pending := true
-	flushIfLive := func() error {
-		var out []sqlpipe.PeerOutMessage
-		if err := locked(side, func(*sqlpipe.Database) (err error) {
-			if peer.State() != sqlpipe.PeerLive {
-				return nil
-			}
-			pending = false
-			out, err = peer.Flush()
-			return err
-		}); err != nil {
-			return err
-		}
-		return send(out)
-	}
-	for {
-		select {
-		case <-done:
-			return nil
-		case err := <-readErr:
-			if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
-				return nil
-			}
-			return err
-		case b := <-frames:
-			msg, err := sqlpipe.DeserializePeer(b)
-			if err != nil {
-				return err
-			}
-			var hr sqlpipe.PeerHandleResult
-			if err := locked(side, func(*sqlpipe.Database) (err error) {
-				hr, err = peer.HandleMessage(msg)
-				return err
-			}); err != nil {
-				return err
-			}
-			if err := send(hr.Messages); err != nil {
-				return err
-			}
-			if pending {
-				if err := flushIfLive(); err != nil {
-					return err
-				}
-			}
-		case <-side.flush:
-			pending = true
-			if err := flushIfLive(); err != nil {
-				return err
-			}
-		}
-	}
+	}()
+	return readFrame(t.conn)
+}
+func (*frameTransport) RecvDatagram(ctx context.Context) ([]byte, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
 }
 
 func locked(side linkSide, fn func(*sqlpipe.Database) error) error {

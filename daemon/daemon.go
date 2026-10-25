@@ -326,9 +326,8 @@ func New(opts Options) (*Daemon, error) {
 	d.mergeConsumerIntentStandDown()
 	d.ctx, d.cancel = context.WithCancel(context.Background())
 	d.resumeDone = make(chan struct{})
-	usageFetch, forceUsageFetch := brokerUsageFetchers(opts.UsageFetch)
-	d.usage = claudia.NewPlanUsageMonitor(&claudia.PlanUsageMonitorArgs{
-		TTL: opts.UsageTTL, Fetch: usageFetch, ForceFetch: forceUsageFetch, Clock: clock,
+	usageArgs := &claudia.PlanUsageMonitorArgs{
+		TTL: opts.UsageTTL, Fetch: opts.UsageFetch, ForceFetch: opts.UsageFetch, Clock: clock,
 		OnUpdate: func(fetched []claudia.PlanUsage, err error) {
 			if err != nil {
 				d.log.Warn("plan usage fetch failed", "err", err)
@@ -338,7 +337,16 @@ func New(opts Options) (*Daemon, error) {
 				d.emit(broker.EventMessage{Kind: broker.EventUsageUpdate, Detail: string(u.Provider)})
 			}
 		},
-	})
+	}
+	if opts.UsageFetch == nil {
+		usageArgs.TTL = claudia.BrokerPlanRetryInterval
+		usageArgs.Fetch = func(ctx context.Context) ([]claudia.PlanUsage, error) {
+			return claudia.PollBrokerPlanUsage(ctx, clock, nil)
+		}
+		usageArgs.ForceFetch = usageArgs.Fetch
+		usageArgs.ReadSnapshot = claudia.ReadBrokerPlanUsage
+	}
+	d.usage = claudia.NewPlanUsageMonitor(usageArgs)
 	srv, err := broker.Serve(&broker.ServeArgs{Listener: ln, Clock: clock, Handler: d})
 	if err != nil {
 		_ = ln.Close()

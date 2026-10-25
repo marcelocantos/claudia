@@ -52,7 +52,10 @@ const (
 // Providers publish used% and/or remaining%; both are filled when either is
 // known. ResetsAt is the next rollover when the provider publishes one.
 type PlanWindow struct {
-	Name PlanWindowName `json:"name"`
+	// Band and Pressure are classified by the broker at the successful observation time.
+	Band     PlanBand       `json:"band,omitempty"`
+	Pressure *float64       `json:"pressure,omitempty"`
+	Name     PlanWindowName `json:"name"`
 	// UsedPercent is 0–100 of the window consumed, when known.
 	UsedPercent *float64 `json:"used_percent,omitempty"`
 	// RemainingPercent is 0–100 of the window still available, when known.

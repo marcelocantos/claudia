@@ -33,7 +33,9 @@ const SidecarExitReceiptReason = "sidecar exited"
 
 const (
 	// UsageTable is the Claudia-owned stream of uniquely identified usage facts.
-	UsageTable = "claudia_usage_fact"
+	UsageTable            = "claudia_usage_fact"
+	PlanUsageTable        = "claudia_plan_usage"
+	PlanUsageHistoryTable = "claudia_plan_usage_history"
 	// ReceiptTable is the Claudia-owned receipt for one logical request.
 	ReceiptTable = "claudia_request_receipt"
 	// StatusTable is the Claudia-owned current seat projection. One row per seat.
@@ -58,6 +60,16 @@ const (
 // sqlpipe diff sync addresses rows by rowid, so each table has an integer
 // primary key. The seat identity stays a separate unique key.
 const Schema = `
+CREATE TABLE IF NOT EXISTS claudia_plan_usage (
+ id INTEGER PRIMARY KEY, provider TEXT NOT NULL UNIQUE,
+ status TEXT NOT NULL, reason TEXT NOT NULL, attempted_at TEXT NOT NULL,
+ success_at TEXT NOT NULL, next_attempt_at TEXT NOT NULL,
+ refusals INTEGER NOT NULL DEFAULT 0, reading_json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS claudia_plan_usage_history (
+ id INTEGER PRIMARY KEY, provider TEXT NOT NULL, observed_at TEXT NOT NULL,
+ reading_json TEXT NOT NULL, UNIQUE(provider, observed_at)
+);
 CREATE TABLE IF NOT EXISTS claudia_usage_fact (
   id INTEGER PRIMARY KEY,
   seat TEXT NOT NULL,
@@ -126,7 +138,7 @@ CREATE TABLE IF NOT EXISTS jevons_control_intent (
 // Owns reports whether name is a table Claudia writes on this pair.
 func Owns(name string) bool {
 	switch name {
-	case UsageTable, ReceiptTable, StatusTable, OutcomeTable:
+	case UsageTable, ReceiptTable, StatusTable, OutcomeTable, PlanUsageTable, PlanUsageHistoryTable:
 		return true
 	default:
 		return false
@@ -146,7 +158,7 @@ func JevonsOwns(name string) bool {
 // ClaudiaTables is the ownership claim the Claudia peer presents.
 func ClaudiaTables() map[string]bool {
 	return map[string]bool{
-		UsageTable: true, ReceiptTable: true, StatusTable: true, OutcomeTable: true,
+		UsageTable: true, ReceiptTable: true, StatusTable: true, OutcomeTable: true, PlanUsageTable: true, PlanUsageHistoryTable: true,
 	}
 }
 

@@ -40,10 +40,11 @@ const busyTimeoutMS = 5000
 // whether a seat-pump publish, a reconcile or a peer link applying changes,
 // goes through it under mu.
 type plane struct {
-	mu    sync.Mutex
-	db    *sqlpipe.Database
-	lock  *os.File
-	flush chan struct{}
+	mu        sync.Mutex
+	db        *sqlpipe.Database
+	lock      *os.File
+	flush     chan struct{}
+	serveDone chan struct{}
 }
 
 // owned is this process's open owner plane, for ReconcileFile.
@@ -208,6 +209,8 @@ func (s *consumerLinkSlot) end() {
 // and the consumer approves that claim.
 func (p *plane) serve(ln net.Listener, done <-chan struct{}) {
 	var slot consumerLinkSlot
+	var links sync.WaitGroup
+	defer links.Wait()
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -221,13 +224,15 @@ func (p *plane) serve(ln net.Listener, done <-chan struct{}) {
 			_ = conn.Close()
 			continue
 		}
+		links.Add(1)
 		go func(c net.Conn) {
+			defer links.Done()
 			defer slot.end()
 			err := runLink(c, done, linkSide{
 				lock:   &p.mu,
 				db:     func() *sqlpipe.Database { return p.db },
 				flush:  p.flush,
-				config: sqlpipe.PeerConfig{OwnedTables: ClaudiaTables()},
+				config: sqlpipe.PeerConfig{OwnedTables: ClaudiaTables(), TableFilter: pairTables()},
 				client: true,
 			})
 			slog.Info("control plane: consumer link ended", "err", err)
@@ -255,12 +260,14 @@ func PublishFile(path, sock string) (func() error, error) {
 	}
 	_ = os.Chmod(sock, 0o600)
 	done := make(chan struct{})
-	go p.serve(ln, done)
+	p.serveDone = make(chan struct{})
+	go func() { defer close(p.serveDone); p.serve(ln, done) }()
 
 	ownedMu.Lock()
 	owned, ownedPath = p, path
 	ownedMu.Unlock()
 	claudia.SetControlPlaneObservers(p.publishUsage, p.publishReceipt)
+	claudia.SetControlPlanUsageStore(p)
 	// The serving sidecar can die while this process stays up (a kill,
 	// a crash). Its Wait path is the only observer that still runs.
 	// Broker shutdown below still settles anything that exit missed.
@@ -287,8 +294,10 @@ func closeOwned(p *plane, ln net.Listener, sock string, done chan struct{}) erro
 		return SettleStartedObligations(db, ShutdownReceiptReason)
 	})
 	claudia.SetControlPlaneObservers(nil, nil)
+	claudia.SetControlPlanUsageStore(nil)
 	close(done)
 	_ = ln.Close()
+	<-p.serveDone
 	_ = os.Remove(sock)
 	ownedMu.Lock()
 	if owned == p {

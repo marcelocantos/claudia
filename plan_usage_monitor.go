@@ -19,11 +19,12 @@ import (
 // 🎯T2.8 guard), so the refresh cadence and the 429 path run under a
 // ManualClock in tests.
 type PlanUsageMonitor struct {
-	clock    Clock
-	ttl      time.Duration
-	fetch    func(context.Context) ([]PlanUsage, error)
-	force    func(context.Context) ([]PlanUsage, error)
-	onUpdate func(fetched []PlanUsage, err error)
+	clock        Clock
+	ttl          time.Duration
+	fetch        func(context.Context) ([]PlanUsage, error)
+	force        func(context.Context) ([]PlanUsage, error)
+	onUpdate     func(fetched []PlanUsage, err error)
+	readSnapshot func() PlanUsageSnapshot
 
 	mu        sync.Mutex
 	snapshot  []PlanUsage
@@ -43,6 +44,8 @@ type PlanUsageMonitor struct {
 // PlanUsageMonitorArgs configures [NewPlanUsageMonitor]. The zero value
 // queries every provider every [DefaultPlanCacheTTL] on the wall clock.
 type PlanUsageMonitorArgs struct {
+	// ReadSnapshot makes reads passive; only Run invokes Fetch. Used by the broker.
+	ReadSnapshot func() PlanUsageSnapshot
 	// TTL is how long a snapshot is current. Zero uses DefaultPlanCacheTTL.
 	TTL time.Duration
 	// Fetch replaces [QueryAllPlanUsage] for every provider (tests).
@@ -75,8 +78,8 @@ func NewPlanUsageMonitor(args *PlanUsageMonitorArgs) *PlanUsageMonitor {
 	}
 	m := &PlanUsageMonitor{
 		clock: args.Clock, ttl: args.TTL, fetch: args.Fetch, force: args.ForceFetch,
-		onUpdate: args.OnUpdate,
-		kick:     make(chan struct{}, 1),
+		onUpdate: args.OnUpdate, readSnapshot: args.ReadSnapshot,
+		kick: make(chan struct{}, 1),
 	}
 	if m.clock == nil {
 		m.clock = SystemClock{}
@@ -195,6 +198,9 @@ func (m *PlanUsageMonitor) Invalidate() {
 // is older than the TTL. A snapshot that has never been fetched and cannot
 // be fetched now has a zero FetchedAt and the fetch error in Err.
 func (m *PlanUsageMonitor) Read(ctx context.Context, force bool) PlanUsageSnapshot {
+	if m.readSnapshot != nil {
+		return m.readSnapshot()
+	}
 	m.mu.Lock()
 	stale := m.fetchedAt.IsZero() || m.clock.Now().Sub(m.fetchedAt) > m.ttl
 	m.mu.Unlock()
