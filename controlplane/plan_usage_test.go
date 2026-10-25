@@ -247,8 +247,14 @@ func TestPlanUsageSubscriptionInitialLiveReconnectLocalAndClose(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if err := replica.Write(func(db *sqlpipe.Database) error {
+		return db.Exec(`UPDATE jv_plan_overrides SET label = 'offline' WHERE id = 1`)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	next("unavailable", "offline")
 	start()
-	next("available", "local")
+	next("available", "offline")
 	cancel()
 	select {
 	case _, ok := <-updates:
@@ -340,5 +346,50 @@ func TestPlanUsageScheduledFailureRecoversWithoutConsumerRead(t *testing.T) {
 	}
 	if attempts != 2 {
 		t.Fatal("unexpected attempt count", attempts)
+	}
+}
+
+// Unrelated local intent writes must not re-run time-dependent projections.
+func TestReplicaQueryNativeLocalInvalidation(t *testing.T) {
+	replica, err := OpenReplica(filepath.Join(t.TempDir(), JevonsDBFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer replica.Close()
+	write := func(sql string) {
+		t.Helper()
+		if err := replica.Write(func(db *sqlpipe.Database) error { return db.Exec(sql) }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(`CREATE TABLE jv_local(id INTEGER PRIMARY KEY, value TEXT); INSERT INTO jv_local VALUES(1,'first')`)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	results, err := replica.SubscribeQuery(ctx, `SELECT {value, nonce: hex(randomblob(16))} FROM jv_local`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-results
+	if err := replica.Link(ctx, filepath.Join(t.TempDir(), "missing.sock")); err == nil {
+		t.Fatal("missing socket unexpectedly connected")
+	}
+	for _, sql := range []string{
+		`CREATE TABLE jv_other(id INTEGER PRIMARY KEY); INSERT INTO jv_other VALUES(1)`,
+		`UPDATE jv_local SET value='first'`,
+		`BEGIN; UPDATE jv_local SET value='failed'; ROLLBACK`,
+		`SAVEPOINT attempt; UPDATE jv_local SET value='failed'; ROLLBACK TO attempt; RELEASE attempt`,
+	} {
+		write(sql)
+		select {
+		case result := <-results:
+			t.Fatalf("unrelated/rolled-back write emitted: %+v", result)
+		default:
+		}
+	}
+	write(`UPDATE jv_local SET value='committed'`)
+	select {
+	case <-results:
+	default:
+		t.Fatal("offline committed change did not emit")
 	}
 }

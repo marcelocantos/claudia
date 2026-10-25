@@ -32,11 +32,8 @@ type linkSide struct {
 	// client opens the sqlpipe handshake. The broker is the client: it
 	// claims the Claudia tables, and the consumer approves the claim.
 	client bool
-	// Hooks install and deliver real sqlpipe query subscriptions.
-	initialized func(*sqlpipe.Peer) error   // called under lock
-	results     func([]sqlpipe.QueryResult) // called outside lock
-	finished    func()                      // called under lock, before peer.Close
-
+	// state runs under the database lock after successful receives.
+	state func(sqlpipe.PeerState) error
 }
 
 // runLink runs one sqlpipe peer over conn until conn fails or done closes.
@@ -76,29 +73,15 @@ func runLink(conn net.Conn, done <-chan struct{}, side linkSide) (err error) {
 	}
 	defer func() {
 		side.lock.Lock()
-		if side.finished != nil {
-			side.finished()
-		}
 		_ = peer.Close()
 		side.lock.Unlock()
 	}()
 
 	link := transport.NewLink(&frameTransport{conn: conn, ctx: ctx})
 	link.OwnerLock = side.lock
-	link.OnPeerInitialized = func() error {
-		return locked(side, func(*sqlpipe.Database) error {
-			if side.initialized != nil {
-				return side.initialized(peer)
-			}
-			return nil
-		})
-	}
-	err = link.RunPeer(ctx, peer, side.client, side.flush, func(hr sqlpipe.PeerHandleResult) error {
-		if side.results != nil && len(hr.Subscriptions) > 0 {
-			side.results(hr.Subscriptions)
-		}
-		return nil
-	})
+	link.OnPeerUpdate = side.state
+	err = link.RunPeer(ctx, peer, side.client, side.flush, nil)
+
 	if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
 		return nil
 	}

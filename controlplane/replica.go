@@ -5,6 +5,7 @@ package controlplane
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"path/filepath"
@@ -22,8 +23,8 @@ type Replica struct {
 	mu         sync.Mutex
 	db         *sqlpipe.Database
 	flush      chan struct{}
-	queries    map[*querySubscription]struct{}
-	peer       *sqlpipe.Peer
+	queries    map[sqlpipe.SubscriptionID]*querySubscription
+	watch      *sqlpipe.QueryWatch
 	linkCancel context.CancelFunc
 	linkDone   chan struct{}
 	closing    bool
@@ -39,7 +40,7 @@ func OpenReplica(path string) (*Replica, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Replica{db: db, flush: make(chan struct{}, 1), queries: make(map[*querySubscription]struct{})}, nil
+	return &Replica{db: db, flush: make(chan struct{}, 1), queries: make(map[sqlpipe.SubscriptionID]*querySubscription)}, nil
 }
 
 // Write runs fn against the consumer's file while the link waits, then has
@@ -52,9 +53,7 @@ func (r *Replica) Write(fn func(*sqlpipe.Database) error) error {
 		return fmt.Errorf("control plane: replica closed")
 	}
 	err := fn(r.db)
-	if err == nil {
-		err = r.refreshQueriesLocked()
-	}
+	err = errors.Join(err, r.notifyQueriesLocked())
 	r.mu.Unlock()
 	select {
 	case r.flush <- struct{}{}:
@@ -107,23 +106,11 @@ func (r *Replica) Link(ctx context.Context, socket string) error {
 	return runLink(conn, ctx.Done(), linkSide{
 		lock: &r.mu, db: func() *sqlpipe.Database { return r.db }, flush: r.flush,
 		config: sqlpipe.PeerConfig{ApproveOwnership: ApproveClaudia, TableFilter: pairTables()},
-		initialized: func(peer *sqlpipe.Peer) error {
-			r.peer = peer
-			for sub := range r.queries {
-				id, err := peer.Subscribe(sub.query)
-				if err != nil {
-					return err
-				}
-				sub.id = id
+		state: func(state sqlpipe.PeerState) error {
+			if state != sqlpipe.PeerLive {
+				return nil
 			}
-			return nil
-		},
-		results: r.deliverQueryResults,
-		finished: func() {
-			r.peer = nil
-			for sub := range r.queries {
-				sub.id = 0
-			}
+			return r.notifyQueriesLocked()
 		},
 	})
 }
@@ -143,10 +130,14 @@ func (r *Replica) Close() error {
 	if r.db == nil {
 		return nil
 	}
-	for sub := range r.queries {
+	for id, sub := range r.queries {
 		sub.stop()
 		close(sub.updates)
-		delete(r.queries, sub)
+		delete(r.queries, id)
+	}
+	if r.watch != nil {
+		_ = r.watch.Close()
+		r.watch = nil
 	}
 	err := r.db.Close()
 	r.db = nil

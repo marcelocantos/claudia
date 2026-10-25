@@ -11,17 +11,14 @@ import (
 )
 
 type querySubscription struct {
-	query   string
-	id      sqlpipe.SubscriptionID
 	updates chan sqlpipe.QueryResult
 	stop    func() bool
 }
 
-// SubscribeQuery registers one sqldeep/SQL query. The first result is the
-// persisted cache, even offline. Live results come from sqlpipe subscriptions,
-// including initial synchronization and reconnect; local Write commits also
-// reevaluate the query. Slow readers receive the latest complete result.
-// Cancellation and Close close the channel. Callers own each delivered result.
+// SubscribeQuery registers one database-lifetime native sqldeep/SQL watch.
+// Initial cached state is available offline. Native dependency filtering and
+// result hashes govern both local commits and replicated changes. Slow readers
+// receive the latest complete result. Cancellation and Close close the channel.
 func (r *Replica) SubscribeQuery(ctx context.Context, query string) (<-chan sqlpipe.QueryResult, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -31,61 +28,50 @@ func (r *Replica) SubscribeQuery(ctx context.Context, query string) (<-chan sqlp
 	if r.db == nil || r.closing {
 		return nil, fmt.Errorf("control plane: replica closed")
 	}
-	cached, err := r.db.Query(query)
-	if err != nil {
-		return nil, err
-	}
-	sub := &querySubscription{query: query, updates: make(chan sqlpipe.QueryResult, 1)}
-	if r.peer != nil {
-		sub.id, err = r.peer.Subscribe(query)
+	if r.watch == nil {
+		watch, err := sqlpipe.NewQueryWatch(r.db)
 		if err != nil {
 			return nil, err
 		}
+		r.watch = watch
 	}
-	r.queries[sub] = struct{}{}
-	sub.updates <- cached
+	initial, err := r.watch.Subscribe(query)
+	if err != nil {
+		return nil, err
+	}
+	id := initial.ID
+	sub := &querySubscription{updates: make(chan sqlpipe.QueryResult, 1)}
+	sub.updates <- initial
+	r.queries[id] = sub
 	sub.stop = context.AfterFunc(ctx, func() {
 		r.mu.Lock()
 		defer r.mu.Unlock()
-		if _, ok := r.queries[sub]; !ok {
+		if _, ok := r.queries[id]; !ok {
 			return
 		}
-		if r.peer != nil && sub.id != 0 {
-			_ = r.peer.Unsubscribe(sub.id)
-		}
-		delete(r.queries, sub)
+		r.watch.Unsubscribe(id)
+		delete(r.queries, id)
 		close(sub.updates)
 	})
 	return sub.updates, nil
 }
 
-func (r *Replica) deliverQueryResults(results []sqlpipe.QueryResult) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+func (r *Replica) notifyQueriesLocked() error {
+	if r.watch == nil {
+		return nil
+	}
+	results, err := r.watch.Notify()
+	if err != nil {
+		return err
+	}
 	for _, result := range results {
-		for sub := range r.queries {
-			if sub.id == result.ID {
-				sub.deliver(result)
+		if sub, ok := r.queries[result.ID]; ok {
+			select {
+			case <-sub.updates:
+			default:
 			}
+			sub.updates <- result
 		}
-	}
-}
-
-func (sub *querySubscription) deliver(result sqlpipe.QueryResult) {
-	select {
-	case <-sub.updates:
-	default:
-	}
-	sub.updates <- result
-}
-
-func (r *Replica) refreshQueriesLocked() error {
-	for sub := range r.queries {
-		result, err := r.db.Query(sub.query)
-		if err != nil {
-			return err
-		}
-		sub.deliver(result)
 	}
 	return nil
 }
