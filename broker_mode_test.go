@@ -48,6 +48,34 @@ func TestTaskRequireBrokerNeverStartsDirectly(t *testing.T) {
 	}
 }
 
+func TestSessionRequireBrokerNeverStartsDirectly(t *testing.T) {
+	for _, setup := range []string{"missing", "bare", "disabled", "canceled"} {
+		t.Run(setup, func(t *testing.T) {
+			t.Setenv(broker.NoBrokerEnv, "")
+			t.Setenv(broker.SocketPathEnv, filepath.Join(t.TempDir(), "absent.sock"))
+			if setup == "bare" {
+				startLibraryBroker(t)
+			}
+			if setup == "disabled" {
+				t.Setenv(broker.NoBrokerEnv, "1")
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			want := ErrBrokerRequired
+			if setup == "canceled" {
+				cancel()
+				want = context.Canceled
+			}
+			// Bedrock is a known non-Session provider. Reaching a direct
+			// backend would return its capability error instead of this verdict.
+			a, err := StartBrokerContext(ctx, Config{Provider: ProviderBedrock, WorkDir: t.TempDir()})
+			if a != nil || !errors.Is(err, want) {
+				t.Fatalf("StartBrokerContext = (%v, %v), want %v", a, err, want)
+			}
+		})
+	}
+}
+
 func startLibraryBroker(t *testing.T) *broker.Server {
 	t.Helper()
 	dir, err := os.MkdirTemp("/tmp", "cb")

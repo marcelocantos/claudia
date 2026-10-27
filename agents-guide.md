@@ -775,6 +775,11 @@ The supported path, when a daemon is up, is the Go library holding one
 `CLAUDIA_BROKER_SOCKET` overrides; `claudia broker socket` prints it).
 `BrokerAvailable` reports whether a daemon is behind that socket.
 
+Unattended consumers that must never start a provider or sidecar locally use
+`StartBrokerContext(ctx, cfg)` instead of `StartContext`. A missing daemon,
+disabled broker, or bare protocol server returns `ErrBrokerRequired` without
+falling back. `Send`, `WaitForResponse`, and `Stop` use the returned handle.
+
 Leave `CLAUDIA_NO_BROKER`, `Registry.SetDirect`, `Task.SetDirect`, and
 `StartDirect` unset. Those select the in-process path. The handle's
 connection stays open for the life of the `*Agent`: that connection

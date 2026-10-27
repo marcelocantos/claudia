@@ -4142,6 +4142,20 @@ targets:
     origin: discovered during T4.6 capability-gap audit 2026-08-09
     discovered: 2026-08-09
     achieved: 2026-08-10
+  T230:
+    name: Consumers can start a session through the host broker with no direct fallback
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    attestation: 'TestSessionRequireBrokerNeverStartsDirectly (missing, bare, disabled, canceled), existing Task/fallback and broker-wire checks pass. YTT synthetic-only live suite through StartBrokerContext passed on 2026-10-28: Claude 2.05s, Codex 1.51s, Grok 1.26s, Cursor 3.95s; full CLI ingest journey wrote a valid synopsis, processed ID and index in an isolate (6.79s). No private vault inputs or owner notifications used. No provider backend wire changed; this API only selects the existing broker start path without fallback.'
+    acceptance:
+    - StartBrokerContext returns ErrBrokerRequired on a missing, disabled, or bare broker without starting a provider or sidecar.
+    - A YTT synthetic-video journey uses the API through the running host broker, produces a valid synopsis and stops its session.
+    - Existing StartContext fallback semantics are unchanged.
+    context: 'Achieved 2026-10-28: TestSessionRequireBrokerNeverStartsDirectly (missing, bare, disabled, canceled), existing Task/fallback and broker-wire checks pass. YTT synthetic-only live suite through StartBrokerContext passed on 2026-10-28: Claude 2.05s, Codex 1.51s, Grok 1.26s, Cursor 3.95s; full CLI ingest journey wrote a valid synopsis, processed ID and index in an isolate (6.79s). No private vault inputs or owner notifications used. No provider backend wire changed; this API only selects the existing broker start path without fallback.'
+    origin: manual
+    discovered: 2026-10-28
+    achieved: 2026-10-28
   T24:
     name: A request field a provider cannot honour produces a typed error, never a silent drop
     status: achieved
