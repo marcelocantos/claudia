@@ -14,9 +14,9 @@ export function markRestoredCursorToolsResolved(messages: readonly unknown[]): v
   }
 }
 
-// See the retry in the turn loop. Three tries at 0.5s, 1s, 2s cover the
-// observed transient without hiding a provider that keeps failing.
-const hollowLengthRetries = 3;
+// See the retry in the turn loop: one plain retry after a short pause, then
+// compaction, then the turn ends hollow and the host sees it.
+const hollowLengthRetries = 2;
 const hollowLengthBackoffMs = 500;
 export function hollowLengthStop(message: unknown): boolean {
   const m = message as { role?: string; stopReason?: string; content?: unknown; usage?: { totalTokens?: number; output?: number } } | undefined;
@@ -648,14 +648,24 @@ export function createSeatAgent(opts: {
       }
       // A hollow length stop is the provider handing back an incomplete
       // response with no output and no usage (openai-codex, ~5% of calls on
-      // 2026-10-27). It is not the model running out of room, and ending the
-      // turn on it strands the seat mid-task until something nudges it. Drop
-      // it and ask again, a bounded number of times.
+      // 2026-10-27). One is usually transient: ask again. Two in a row at the
+      // same size is the backend's way of saying the prompt no longer fits
+      // (jv-auditor-po: four in a row at 224K input), so record that size as
+      // the window and fold the conversation before asking again. Ending the
+      // turn on it strands the seat mid-task until something nudges it.
       for (let i = 0; i < hollowLengthRetries && !cancelled && !turn.closed && hollowLengthStop(agent.state.messages.at(-1)); i++) {
         const hollow = agent.state.messages.at(-1);
         agent.popMessage();
         maint.history.forget(hollow as never);
-        await new Promise(resolve => setTimeout(resolve, hollowLengthBackoffMs * 2 ** i));
+        if (i > 0) {
+          maint.noteObservedLimit(maint.storedTokens());
+          if (!(await maint.run("overflow", "mid_turn"))) {
+            agent.appendMessage(hollow as never);
+            break;
+          }
+        } else {
+          await new Promise(resolve => setTimeout(resolve, hollowLengthBackoffMs));
+        }
         if (cancelled || turn.closed) {
           agent.appendMessage(hollow as never);
           break;

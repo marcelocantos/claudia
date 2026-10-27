@@ -554,6 +554,13 @@ export class Maintenance {
     this.#limit = providerLimit(errorMessage) || this.#limit;
   }
 
+  // noteObservedLimit records a prompt size the provider would not answer
+  // without saying why (a repeated hollow length stop). It only ever lowers
+  // the window.
+  noteObservedLimit(tokens: number): void {
+    if (tokens > 0 && (!this.#limit || tokens < this.#limit)) this.#limit = tokens;
+  }
+
   // storedTokens is the local estimate of what the next request carries:
   // system prompt, tool schemas and messages.
   storedTokens(messages: readonly AgentMessage[] = this.#host.agent.state.messages): number {
