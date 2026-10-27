@@ -2,6 +2,17 @@
 // A prompt must call Agent.prompt on the pinned @oh-my-pi/pi-agent-core.
 
 import { AuthRetry, authRefusal, type RetryReply } from "./authretry.ts";
+import { kCursorExecResolved } from "@oh-my-pi/pi-ai/utils/block-symbols";
+
+export function markRestoredCursorToolsResolved(messages: readonly unknown[]): void {
+  for (const message of messages) {
+    const m = message as { role?: string; provider?: string; stopReason?: string; content?: unknown };
+    if (m?.role !== "assistant" || m.provider !== "cursor" || m.stopReason !== "stop" || !Array.isArray(m.content)) continue;
+    for (const part of m.content as Array<Record<PropertyKey, unknown>>) {
+      if (part?.type === "toolCall") part[kCursorExecResolved] = true;
+    }
+  }
+}
 
 // See the retry in the turn loop. Three tries at 0.5s, 1s, 2s cover the
 // observed transient without hiding a provider that keeps failing.
@@ -306,6 +317,13 @@ export function createSeatAgent(opts: {
   // told the outcome is unknown and inspects before repeating, and the seat
   // keeps its conversation. Refusing every turn instead stalled 47 seats,
   // the overseer among them, for an hour after a broker restart (2026-10-22).
+  // Cursor runs its tools inside the stream and marks those calls resolved
+  // with a symbol, which does not survive the store. Restored, every Cursor
+  // reply that used a tool looked unfinished: it was paired as interrupted
+  // and the broker nudged the seat, so each restart started a turn on every
+  // parked Cursor seat (2026-10-28). A Cursor reply that ended with stop has
+  // already run its tools.
+  if (restored) markRestoredCursorToolsResolved(agent.state.messages);
   const interrupted = restored ? unpairedToolCallTail(agent.state.messages) : undefined;
   const pairedInterruptedToolBatch = interrupted !== undefined;
   if (interrupted) {
