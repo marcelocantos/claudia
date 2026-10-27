@@ -10,13 +10,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/marcelocantos/claudia"
 	"github.com/marcelocantos/claudia/controlplane"
+	"github.com/marcelocantos/claudia/internal/broker"
 	"github.com/marcelocantos/sqlpipe/go/sqlpipe"
 )
 
@@ -101,16 +101,30 @@ func fixturePush(t *testing.T, dir string, readings []claudia.PlanUsage) {
 		t.Fatalf("fixture push status %d", code)
 	}
 }
-func fixtureRows(t *testing.T, r *controlplane.Replica) map[string]string {
+
+// fixtureReadReplica reads only the independently linked consumer database.
+// No test writes broker or consumer SQL directly.
+func fixtureReadReplica(t *testing.T, r *controlplane.Replica) map[claudia.Provider]claudia.PlanUsage {
 	t.Helper()
-	result := map[string]string{}
+	result := map[claudia.Provider]claudia.PlanUsage{}
 	err := r.Read(func(db *sqlpipe.Database) error {
-		q, err := db.Query("SELECT provider, status, reading_json FROM claudia_plan_usage")
+		q, err := db.Query("SELECT provider, status, success_at, reading_json FROM claudia_plan_usage")
 		if err != nil {
 			return err
 		}
 		for _, row := range q.Rows {
-			result[fmt.Sprint(row[0])] = fmt.Sprint(row[1]) + " " + fmt.Sprint(row[2])
+			provider, status, success, body := fmt.Sprint(row[0]), fmt.Sprint(row[1]), fmt.Sprint(row[2]), fmt.Sprint(row[3])
+			if status != string(claudia.PlanUsageAvailable) {
+				continue
+			}
+			var usage claudia.PlanUsage
+			if err := json.Unmarshal([]byte(body), &usage); err != nil {
+				return err
+			}
+			if success == "" || usage.FetchedAt.IsZero() || usage.Provider != claudia.Provider(provider) {
+				return fmt.Errorf("invalid published row for %s", provider)
+			}
+			result[usage.Provider] = usage
 		}
 		return nil
 	})
@@ -119,104 +133,130 @@ func fixtureRows(t *testing.T, r *controlplane.Replica) map[string]string {
 	}
 	return result
 }
-func TestT228CLIUsageFixtureReplicatesAndPersists(t *testing.T) {
-	dir := fixtureTestDir(t)
-	binary := fixtureBinary(t)
-	stop := fixtureServe(t, binary, dir)
+func fixtureAwaitBand(t *testing.T, r *controlplane.Replica, provider claudia.Provider, band claudia.PlanBand, remaining float64) claudia.PlanUsage {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if u, ok := fixtureReadReplica(t, r)[provider]; ok && len(u.Windows) > 0 && u.Windows[0].RemainingPercent != nil && *u.Windows[0].RemainingPercent == remaining {
+			w := u.Windows[0]
+			if w.Band != band || claudia.ClassifyPlan(u, u.FetchedAt, nil).Weekly != band {
+				t.Fatalf("%s: broker band=%s consumer verdict=%s, want %s", provider, w.Band, claudia.ClassifyPlan(u, u.FetchedAt, nil).Weekly, band)
+			}
+			return u
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("%s: no %s/%v reading in consumer replica: %+v", provider, band, remaining, fixtureReadReplica(t, r))
+	return claudia.PlanUsage{}
+}
+func fixtureWeekly(provider claudia.Provider, remaining, used float64, reset time.Time) claudia.PlanUsage {
+	return claudia.PlanUsage{Provider: provider, Status: claudia.PlanUsageAvailable, Windows: []claudia.PlanWindow{{Name: claudia.PlanWindowWeekly, RemainingPercent: &remaining, UsedPercent: &used, ResetsAt: &reset, LimitWindow: 7 * 24 * time.Hour}}}
+}
+func fixtureLinkedReplica(t *testing.T, dir string) (*controlplane.Replica, context.CancelFunc) {
+	t.Helper()
 	replica, err := controlplane.OpenReplica(filepath.Join(t.TempDir(), "consumer.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer replica.Close()
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	go func() { _ = replica.Link(ctx, filepath.Join(dir, "broker.sock.control")) }()
-	pct := func(n float64) *float64 { return &n }
-	readings := []claudia.PlanUsage{{Provider: claudia.ProviderClaude, Status: claudia.PlanUsageAvailable, Windows: []claudia.PlanWindow{{Name: claudia.PlanWindowSession, RemainingPercent: pct(0)}}}, {Provider: claudia.ProviderCodex, Status: claudia.PlanUsageAvailable, Windows: []claudia.PlanWindow{{Name: claudia.PlanWindowWeekly, RemainingPercent: pct(67)}}}}
-	if code := fixturePost(t, dir, readings, "wrong-capability"); code != 403 {
-		t.Fatalf("unauthorized write: %d", code)
+	t.Cleanup(func() { cancel(); _ = replica.Close() })
+	return replica, cancel
+}
+
+// J20's four transitions travel real CLI -> broker owner transaction -> sqlpipe
+// replication -> consumer database. Classification is asserted on typed rows.
+func TestT228CLIUsageFixtureJ20(t *testing.T) {
+	dir, binary := fixtureTestDir(t), fixtureBinary(t)
+	fixtureServe(t, binary, dir)
+	replica, _ := fixtureLinkedReplica(t, dir)
+	now := time.Now().UTC()
+	aheadReset := now.Add(7 * 24 * time.Hour / 2)
+	healthyReset := now.Add(7 * 24 * time.Hour * 9 / 10)
+	initial := fixtureWeekly(claudia.ProviderGrok, 30, 70, aheadReset)
+	if code := fixturePost(t, dir, []claudia.PlanUsage{initial}, "invalid"); code != 403 {
+		t.Fatalf("unauthorized update: %d", code)
 	}
-	fixturePush(t, dir, readings)
-	await := func(provider, match string) {
-		t.Helper()
-		deadline := time.Now().Add(5 * time.Second)
-		for time.Now().Before(deadline) {
-			if strings.Contains(fixtureRows(t, replica)[provider], match) {
-				return
-			}
-			time.Sleep(20 * time.Millisecond)
+	fixturePush(t, dir, []claudia.PlanUsage{initial})
+	fixtureAwaitBand(t, replica, claudia.ProviderGrok, claudia.PlanBandAhead, 30)
+	fixturePush(t, dir, []claudia.PlanUsage{fixtureWeekly(claudia.ProviderGrok, 90, 10, healthyReset)})
+	fixtureAwaitBand(t, replica, claudia.ProviderGrok, claudia.PlanBandOK, 90)
+	providers := []claudia.Provider{claudia.ProviderGrok, claudia.ProviderClaude, claudia.ProviderCodex, claudia.ProviderCursor}
+	all := make([]claudia.PlanUsage, 0, len(providers))
+	for _, p := range providers {
+		all = append(all, fixtureWeekly(p, 0, 100, healthyReset))
+	}
+	fixturePush(t, dir, all)
+	for _, p := range providers {
+		u := fixtureAwaitBand(t, replica, p, claudia.PlanBandExhausted, 0)
+		if claudia.HasAvailableTokens(u, u.FetchedAt, nil) {
+			t.Fatalf("%s exhausted but eligible", p)
 		}
-		t.Fatalf("replica did not see %s %s: %v", provider, match, fixtureRows(t, replica))
 	}
-	await("claude", "exhausted")
-	await("codex", "67")
-	secret, _ := os.ReadFile(filepath.Join(dir, fixtureCapability))
-	bad := append([]claudia.PlanUsage(nil), readings...)
+	secret, err := os.ReadFile(filepath.Join(dir, fixtureCapability))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad := append([]claudia.PlanUsage(nil), all...)
 	bad = append(bad, claudia.PlanUsage{Provider: claudia.Provider("invalid"), Status: claudia.PlanUsageAvailable})
 	if code := fixturePost(t, dir, bad, string(secret)); code != 400 {
 		t.Fatalf("invalid batch accepted: %d", code)
 	}
-	await("claude", "exhausted")
-	// J20 phases: under/ahead => healthy => every tracked plan exhausted => healthy.
-	readings = []claudia.PlanUsage{}
-	for _, provider := range []claudia.Provider{claudia.ProviderGrok, claudia.ProviderClaude, claudia.ProviderCodex, claudia.ProviderCursor} {
-		readings = append(readings, claudia.PlanUsage{Provider: provider, Status: claudia.PlanUsageAvailable, Windows: []claudia.PlanWindow{{Name: claudia.PlanWindowWeekly, RemainingPercent: pct(0), UsedPercent: pct(100)}}})
+	for _, p := range providers {
+		fixtureAwaitBand(t, replica, p, claudia.PlanBandExhausted, 0)
 	}
-	fixturePush(t, dir, readings)
-	for _, u := range readings {
-		await(string(u.Provider), "exhausted")
+	all = all[:0]
+	for _, p := range providers {
+		all = append(all, fixtureWeekly(p, 90, 10, healthyReset))
 	}
-	for i := range readings {
-		readings[i].Windows[0].RemainingPercent = pct(90)
-		readings[i].Windows[0].UsedPercent = pct(10)
+	fixturePush(t, dir, all)
+	for _, p := range providers {
+		fixtureAwaitBand(t, replica, p, claudia.PlanBandOK, 90)
 	}
-	fixturePush(t, dir, readings)
-	for _, u := range readings {
-		await(string(u.Provider), `"remaining_percent":90`)
-	}
-	// J34's restart is the consumer (Jevons), not the broker. A new
-	// consumer file links to the still-running broker and sees the last hot phase.
-	readings[1].Windows[0].RemainingPercent = pct(0)
-	readings[1].Windows[0].UsedPercent = pct(100)
-	fixturePush(t, dir, readings)
-	await("claude", "exhausted")
-	other, err := controlplane.OpenReplica(filepath.Join(t.TempDir(), "reconnected.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer other.Close()
-	otherCtx, otherCancel := context.WithCancel(context.Background())
-	defer otherCancel()
-	go func() { _ = other.Link(otherCtx, filepath.Join(dir, "broker.sock.control")) }()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if strings.Contains(fixtureRows(t, other)["claude"], "exhausted") {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if !strings.Contains(fixtureRows(t, other)["claude"], "exhausted") {
-		t.Fatal("reconnected consumer did not see retained hot Claude reading")
-	}
-	stop() // Broker restart is additional persistence coverage; J34 restarts consumer only.
-	stop = fixtureServe(t, binary, dir)
-	_ = stop
-	cancel()
-	ctx, cancel = context.WithCancel(context.Background())
-	defer cancel()
-	go func() { _ = replica.Link(ctx, filepath.Join(dir, "broker.sock.control")) }()
-	readings[0].Windows[0].RemainingPercent = pct(55)
-	fixturePush(t, dir, readings)
-	await("grok", "55")
+}
+
+// J34's provider state is pinned on both sides of a simulated seat-start
+// boundary. This does not launch a Jevons seat or assert migration; those
+// system assertions belong to 🎯jevons/T1234.
+func TestT228CLIUsageFixtureJ34ConsumerReconnect(t *testing.T) {
+	dir, binary := fixtureTestDir(t), fixtureBinary(t)
+	stop := fixtureServe(t, binary, dir)
+	replica, cancel := fixtureLinkedReplica(t, dir)
+	reset := time.Now().UTC().Add(7 * 24 * time.Hour * 9 / 10)
+	before := []claudia.PlanUsage{fixtureWeekly(claudia.ProviderClaude, 90, 10, reset), fixtureWeekly(claudia.ProviderGrok, 90, 10, reset)}
+	fixturePush(t, dir, before)
+	fixtureAwaitBand(t, replica, claudia.ProviderClaude, claudia.PlanBandOK, 90)
+	fixtureAwaitBand(t, replica, claudia.ProviderGrok, claudia.PlanBandOK, 90)
+	// Simulated post-seat boundary: no actual Jevons seat is started here.
+	fixturePush(t, dir, []claudia.PlanUsage{fixtureWeekly(claudia.ProviderClaude, 0, 100, reset), fixtureWeekly(claudia.ProviderGrok, 90, 10, reset)})
+	fixtureAwaitBand(t, replica, claudia.ProviderClaude, claudia.PlanBandExhausted, 0)
+	fixtureAwaitBand(t, replica, claudia.ProviderGrok, claudia.PlanBandOK, 90)
+	cancel() // Disconnect the first consumer; leave broker running.
+	reconnected, _ := fixtureLinkedReplica(t, dir)
+	fixtureAwaitBand(t, reconnected, claudia.ProviderClaude, claudia.PlanBandExhausted, 0)
+	fixtureAwaitBand(t, reconnected, claudia.ProviderGrok, claudia.PlanBandOK, 90)
+	// Additional broker persistence coverage, distinct from J34 consumer bounce.
+	stop()
+	fixtureServe(t, binary, dir)
+	restarted, _ := fixtureLinkedReplica(t, dir)
+	fixtureAwaitBand(t, restarted, claudia.ProviderClaude, claudia.PlanBandExhausted, 0)
+	fixtureAwaitBand(t, restarted, claudia.ProviderGrok, claudia.PlanBandOK, 90)
 }
 func TestT228FixtureRefusesUnsafeState(t *testing.T) {
 	dir := fixtureTestDir(t)
 	binary := fixtureBinary(t)
+	defaultDir, err := broker.StateDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(defaultDir, 0700); err != nil {
+		t.Fatal(err)
+	}
 	bad := filepath.Join(dir, "bad")
 	if err := os.Mkdir(bad, 0755); err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{"", bad, filepath.Join(dir, "link")} {
+	for _, path := range []string{"", defaultDir, bad, filepath.Join(dir, "link")} {
 		if path == filepath.Join(dir, "link") {
 			if err := os.Symlink(dir, path); err != nil {
 				t.Fatal(err)
@@ -226,6 +266,9 @@ func TestT228FixtureRefusesUnsafeState(t *testing.T) {
 		if out, err := cmd.CombinedOutput(); err == nil {
 			t.Fatalf("accepted unsafe path %q: %s", path, out)
 		}
+	}
+	if _, err := os.Stat(filepath.Join(defaultDir, "logs")); !os.IsNotExist(err) {
+		t.Fatalf("default state wrote log: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(bad, "logs")); !os.IsNotExist(err) {
 		t.Fatalf("unsafe state wrote log: %v", err)
