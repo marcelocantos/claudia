@@ -353,6 +353,7 @@ func New(opts Options) (*Daemon, error) {
 		return nil, err
 	}
 	d.srv = srv
+	claudia.SetHostToolBudgetKeeps(consumerOwnedByPrefix(opts.MCPConsumerOwnedPrefixes))
 	if !opts.DisableMCPHost {
 		h, err := claudia.NewMCPHost(&claudia.MCPHostArgs{
 			StateDir:      stateDir,

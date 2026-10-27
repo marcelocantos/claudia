@@ -1844,13 +1844,34 @@ func hostToolCap(providerID string) int {
 	return 0
 }
 
+// hostToolBudgetKeeps reports servers a host tool budget never leaves out.
+// The broker sets it to its consumer-owned servers (-mcp-consumer-prefix):
+// a Jevons seat without jevonsmcp cannot report or be directed, and on
+// 2026-10-28 a resumed seat whose stored list ended with jevonsmcp lost
+// exactly that server to the cap.
+var hostToolBudgetKeeps atomic.Pointer[func(MCPServer) bool]
+
+// SetHostToolBudgetKeeps installs keep (nil clears it).
+func SetHostToolBudgetKeeps(keep func(MCPServer) bool) {
+	if keep == nil {
+		hostToolBudgetKeeps.Store(nil)
+		return
+	}
+	hostToolBudgetKeeps.Store(&keep)
+}
+
 // capHostToolLists empties whole servers' lists, last server first, until
 // the total fits maxTools, and returns the servers left out. The consumer
-// orders AgentDef.MCPServers, so it decides what goes first. A server is
-// never split: half a server's tools is a tool set nobody designed.
+// orders AgentDef.MCPServers, so it decides what goes first; a server
+// hostToolBudgetKeeps names is never left out. A server is never split:
+// half a server's tools is a tool set nobody designed.
 func capHostToolLists(servers []MCPServer, lists [][]hostJevonsTool, maxTools int) []string {
 	if maxTools <= 0 {
 		return nil
+	}
+	keep := func(MCPServer) bool { return false }
+	if k := hostToolBudgetKeeps.Load(); k != nil {
+		keep = *k
 	}
 	total := 0
 	for _, l := range lists {
@@ -1858,7 +1879,7 @@ func capHostToolLists(servers []MCPServer, lists [][]hostJevonsTool, maxTools in
 	}
 	var dropped []string
 	for i := len(servers) - 1; i >= 0 && total > maxTools; i-- {
-		if len(lists[i]) == 0 {
+		if len(lists[i]) == 0 || keep(servers[i]) {
 			continue
 		}
 		total -= len(lists[i])

@@ -42,3 +42,15 @@ func TestOtherProvidersTakeTheWholeHostToolList(t *testing.T) {
 		t.Fatal("anthropic lists were changed")
 	}
 }
+
+// The consumer's own server stays even when it ends the list.
+func TestCodexHostToolCapKeepsConsumerServers(t *testing.T) {
+	SetHostToolBudgetKeeps(func(s MCPServer) bool { return s.Name == "jevonsmcp" })
+	t.Cleanup(func() { SetHostToolBudgetKeeps(nil) })
+	servers := []MCPServer{{Name: "atlassian"}, {Name: "sawmill"}, {Name: "jevonsmcp"}}
+	lists := [][]hostJevonsTool{toolsN(41), toolsN(200), toolsN(65)}
+	dropped := capHostToolLists(servers, lists, hostToolCap(omp.OpenAICodex))
+	if !slices.Equal(dropped, []string{"sawmill"}) || lists[2] == nil {
+		t.Fatalf("dropped = %v (jevonsmcp kept=%v), want only sawmill", dropped, lists[2] != nil)
+	}
+}
