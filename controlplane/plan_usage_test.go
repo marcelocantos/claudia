@@ -187,8 +187,6 @@ func TestPlanUsageSubscriptionInitialLiveReconnectLocalAndClose(t *testing.T) {
 	}
 	next := func(wantStatus, wantLabel string) {
 		t.Helper()
-		deadline := time.NewTimer(10 * time.Second)
-		defer deadline.Stop()
 		for {
 			select {
 			case result, ok := <-updates:
@@ -216,8 +214,6 @@ func TestPlanUsageSubscriptionInitialLiveReconnectLocalAndClose(t *testing.T) {
 				}
 			case err := <-linkDone:
 				t.Fatalf("link ended: %v", err)
-			case <-deadline.C:
-				t.Fatal("no subscription result", wantStatus, wantLabel)
 			}
 		}
 	}
@@ -256,13 +252,9 @@ func TestPlanUsageSubscriptionInitialLiveReconnectLocalAndClose(t *testing.T) {
 	start()
 	next("available", "offline")
 	cancel()
-	select {
-	case _, ok := <-updates:
-		if ok {
-			t.Fatal("cancel retained subscription")
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("cancel hung")
+	// go test -timeout is the clock for a hang (🎯T97).
+	if _, ok := <-updates; ok {
+		t.Fatal("cancel retained subscription")
 	}
 	live, err := replica.SubscribeQuery(t.Context(), `SELECT count(*) FROM claudia_plan_usage`)
 	if err != nil {
@@ -275,13 +267,8 @@ func TestPlanUsageSubscriptionInitialLiveReconnectLocalAndClose(t *testing.T) {
 	if err := <-linkDone; err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case _, ok := <-live:
-		if ok {
-			t.Fatal("Close retained subscription")
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("Close hung")
+	if _, ok := <-live; ok {
+		t.Fatal("Close retained subscription")
 	}
 }
 
@@ -318,8 +305,8 @@ func TestPlanUsageScheduledFailureRecoversWithoutConsumerRead(t *testing.T) {
 	go func() { defer close(done); monitor.Run(ctx) }()
 	defer func() { cancel(); <-done }()
 	for cycle := 0; cycle < 2; cycle++ {
-		select {
-		case readings := <-cycles:
+		{
+			readings := <-cycles
 			want := claudia.PlanUsageUnavailable
 			if cycle == 1 {
 				want = claudia.PlanUsageAvailable
@@ -336,8 +323,6 @@ func TestPlanUsageScheduledFailureRecoversWithoutConsumerRead(t *testing.T) {
 			if !found {
 				t.Fatal("missing provider")
 			}
-		case <-time.After(10 * time.Second):
-			t.Fatal("scheduled retry never ran")
 		}
 		if cycle == 0 {
 			eventually(t, "scheduled timer", func() bool { return clock.Pending() > 0 })
