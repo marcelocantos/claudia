@@ -2,6 +2,19 @@
 // A prompt must call Agent.prompt on the pinned @oh-my-pi/pi-agent-core.
 
 import { AuthRetry, authRefusal, type RetryReply } from "./authretry.ts";
+
+// See the retry in the turn loop. Three tries at 0.5s, 1s, 2s cover the
+// observed transient without hiding a provider that keeps failing.
+const hollowLengthRetries = 3;
+const hollowLengthBackoffMs = 500;
+export function hollowLengthStop(message: unknown): boolean {
+  const m = message as { role?: string; stopReason?: string; content?: unknown; usage?: { totalTokens?: number; output?: number } } | undefined;
+  if (!m || m.role !== "assistant" || m.stopReason !== "length") return false;
+  if ((m.usage?.totalTokens ?? 0) !== 0 || (m.usage?.output ?? 0) !== 0) return false;
+  const parts = Array.isArray(m.content) ? m.content : [];
+  return parts.every((p: { type?: string; text?: string; thinking?: string }) =>
+    p?.type !== "toolCall" && !(p?.text ?? "").trim() && !(p?.thinking ?? "").trim());
+}
 import { Agent, unpairedToolCallTail, type AgentMessage, type AgentTool } from "@oh-my-pi/pi-agent-core";
 import { savedTranscriptEndsMidTurn } from "./transcript-end.ts";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
@@ -614,6 +627,22 @@ export function createSeatAgent(opts: {
           retrying = false;
           releaseRetry();
         }
+      }
+      // A hollow length stop is the provider handing back an incomplete
+      // response with no output and no usage (openai-codex, ~5% of calls on
+      // 2026-10-27). It is not the model running out of room, and ending the
+      // turn on it strands the seat mid-task until something nudges it. Drop
+      // it and ask again, a bounded number of times.
+      for (let i = 0; i < hollowLengthRetries && !cancelled && !turn.closed && hollowLengthStop(agent.state.messages.at(-1)); i++) {
+        const hollow = agent.state.messages.at(-1);
+        agent.popMessage();
+        maint.history.forget(hollow as never);
+        await new Promise(resolve => setTimeout(resolve, hollowLengthBackoffMs * 2 ** i));
+        if (cancelled || turn.closed) {
+          agent.appendMessage(hollow as never);
+          break;
+        }
+        await agent.continue();
       }
       // A follow-up queued after the run's own last check would wait for
       // the next prompt. Drain it inside this turn (bounded).
