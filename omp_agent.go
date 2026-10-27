@@ -1646,6 +1646,13 @@ func execKeychain(ctx context.Context, name string, args ...string) ([]byte, err
 // @oh-my-pi/pi-ai resolves. It is not the Keychain runner. Stderr is
 // forwarded so an interactive login URL reaches the owner (🎯T865).
 func execBunLogin(ctx context.Context, name string, args ...string) ([]byte, error) {
+	// A test binary never opens an interactive provider login: a hermetic
+	// test that started a cursor seat with an empty plan store put a real
+	// Cursor approval screen in front of the owner (jevons, 2026-10-27).
+	// Non-interactive refresh stays available to tests that exercise it.
+	if testing.Testing() && len(args) >= 2 && args[1] == "login" {
+		return nil, errors.New("omp: a test binary never starts an interactive plan login; set ompLogin.Run")
+	}
 	if err := omp.EnsureDeps(ctx, sidecarAuthScript()); err != nil {
 		return nil, err
 	}

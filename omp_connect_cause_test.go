@@ -5,6 +5,7 @@ package claudia
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -66,5 +67,14 @@ func TestCauseFromConnectError(t *testing.T) {
 		if got := CauseFromConnectError(in); got != want {
 			t.Errorf("CauseFromConnectError(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// A test binary refuses the interactive login verb before running bun, so no
+// approval screen reaches the owner (2026-10-27).
+func TestExecBunLoginRefusesInteractiveLoginInTests(t *testing.T) {
+	_, err := execBunLogin(t.Context(), "bun", sidecarAuthScript(), "login", "cursor")
+	if err == nil || !strings.Contains(err.Error(), "never starts an interactive plan login") {
+		t.Fatalf("interactive login in a test binary: err=%v", err)
 	}
 }
