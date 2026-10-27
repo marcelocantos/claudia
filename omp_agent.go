@@ -348,7 +348,7 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 	var tools json.RawMessage
 	var toolRoutes, toolNames map[string]string
 	var mcpUnavailable []string
-	tools, toolRoutes, toolNames, mcpUnavailable = hostToolsReport(req.Context, req.Config.MCPServers)
+	tools, toolRoutes, toolNames, mcpUnavailable = hostToolsReport(req.Context, req.Config.MCPServers, hostToolCap(provider))
 	// The session names the seat's conversation. The sidecar keeps it on
 	// disk under this id, so a sidecar restart resumes it and a new session
 	// starts fresh (🎯T151).
@@ -543,7 +543,7 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 				return ctrl.switchModel(provider, model)
 			},
 			syncSessionMCPServers: func(_ *Agent, servers []MCPServer) {
-				ctrl.applySessionMCPServers(context.Background(), servers)
+				ctrl.applySessionMCPServers(context.Background(), servers, ctrl.currentProvider())
 			},
 			promptInFlight: func(*Agent) bool { return ctrl.inflight.Load() },
 			openTurnID:     func(*Agent) string { return ctrl.openTurnID() },
@@ -1074,6 +1074,12 @@ func (c *ompControl) currentToken() string {
 	return c.token
 }
 
+func (c *ompControl) currentProvider() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.provider
+}
+
 // switchModel moves this seat to provider and model in place (🎯T195): a
 // load naming them, which the sidecar answers once the seat's agent has taken
 // the new model (folding the conversation first when it would not fit), or
@@ -1104,7 +1110,7 @@ func (c *ompControl) switchModel(provider Provider, model string) error {
 	c.waits[requestID] = reply
 	c.mu.Unlock()
 	defer c.takeWait(requestID)
-	c.applySessionMCPServers(context.Background(), c.mcpServers)
+	c.applySessionMCPServers(context.Background(), c.mcpServers, id)
 	msg := c.loadMessage()
 	msg.Provider, msg.Model, msg.Token, msg.RequestID = id, model, token, requestID
 	if err := c.send(msg); err != nil {
@@ -1153,9 +1159,9 @@ func ensureOMPToken(ctx context.Context, provider, caller string) (string, error
 // loadMessage is the load that (re)configures this seat with its current
 // token, model and host tools.
 
-func (c *ompControl) applySessionMCPServers(ctx context.Context, servers []MCPServer) {
+func (c *ompControl) applySessionMCPServers(ctx context.Context, servers []MCPServer, providerID string) {
 	servers = slices.Clone(servers)
-	tools, routes, names, _ := hostToolsReport(ctx, servers)
+	tools, routes, names, _ := hostToolsReport(ctx, servers, hostToolCap(providerID))
 	c.mu.Lock()
 	c.mcpServers = servers
 	c.tools, c.toolServers, c.toolNames = tools, routes, names
@@ -1720,14 +1726,14 @@ func hostTools(ctx context.Context, servers []MCPServer) (json.RawMessage, map[s
 // hostToolsNamed is hostTools plus, for each advertised name that differs
 // from the server's own, the server's name to call it by (🎯T146).
 func hostToolsNamed(ctx context.Context, servers []MCPServer) (json.RawMessage, map[string]string, map[string]string) {
-	raw, routes, names, _ := hostToolsReport(ctx, servers)
+	raw, routes, names, _ := hostToolsReport(ctx, servers, 0)
 	return raw, routes, names
 }
 
 // hostToolsReport is hostToolsNamed plus the servers that listed no tools
 // within the launch's budget (jevons 🎯T934): the seat starts without them,
 // and the caller is told so rather than finding out minutes into its work.
-func hostToolsReport(ctx context.Context, servers []MCPServer) (json.RawMessage, map[string]string, map[string]string, []string) {
+func hostToolsReport(ctx context.Context, servers []MCPServer, maxTools int) (json.RawMessage, map[string]string, map[string]string, []string) {
 	var tools []hostJevonsTool
 	routes := map[string]string{}
 	originals := map[string]string{}
@@ -1790,6 +1796,11 @@ wait:
 	if len(offered) > 0 {
 		slog.Info("omp: host tools offered to seat", "servers", strings.Join(offered, ","))
 	}
+	if dropped := capHostToolLists(servers, lists, maxTools); len(dropped) > 0 {
+		slog.Warn("omp: host tools over the provider's tool budget; servers at the end of the list are left out",
+			"budget", maxTools, "dropped", strings.Join(dropped, ","))
+		unavailable = append(unavailable, dropped...)
+	}
 	for i, srv := range servers {
 		for _, t := range lists[i] {
 			name := providerToolName(t.Name)
@@ -1815,6 +1826,46 @@ wait:
 		return nil, nil, nil, unavailable
 	}
 	return raw, routes, originals, unavailable
+}
+
+// codexHostToolCap bounds the host tools an openai-codex seat is offered.
+// With 320 host tools the Codex backend answered nearly every request with
+// an incomplete response (reason max_output_tokens, zero input and output
+// tokens) on 2026-10-28; with 252 it answered normally. Other providers
+// take the whole list.
+const codexHostToolCap = 250
+
+// hostToolCap is the host tool budget for a sidecar provider id; 0 means
+// no budget.
+func hostToolCap(providerID string) int {
+	if providerID == omp.OpenAICodex {
+		return codexHostToolCap
+	}
+	return 0
+}
+
+// capHostToolLists empties whole servers' lists, last server first, until
+// the total fits maxTools, and returns the servers left out. The consumer
+// orders AgentDef.MCPServers, so it decides what goes first. A server is
+// never split: half a server's tools is a tool set nobody designed.
+func capHostToolLists(servers []MCPServer, lists [][]hostJevonsTool, maxTools int) []string {
+	if maxTools <= 0 {
+		return nil
+	}
+	total := 0
+	for _, l := range lists {
+		total += len(l)
+	}
+	var dropped []string
+	for i := len(servers) - 1; i >= 0 && total > maxTools; i-- {
+		if len(lists[i]) == 0 {
+			continue
+		}
+		total -= len(lists[i])
+		lists[i] = nil
+		dropped = append(dropped, servers[i].Name)
+	}
+	return dropped
 }
 
 // maxProviderToolName is the longest tool name every sidecar provider takes

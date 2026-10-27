@@ -87,7 +87,7 @@ func TestT934LaunchReportsServersThatListedNoTools(t *testing.T) {
 	_, _, _, unavailable := hostToolsReport(context.Background(), []MCPServer{
 		{Name: "bullseye-t934", Type: "http", URL: dead.URL},
 		{Name: "jevons-t934", Type: "http", URL: good.URL},
-	})
+	}, 0)
 	if !slices.Equal(unavailable, []string{"bullseye-t934"}) {
 		t.Fatalf("unavailable = %v, want only the server that answered nothing", unavailable)
 	}

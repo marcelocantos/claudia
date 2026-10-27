@@ -216,7 +216,7 @@ func nextInvocationEvent(t *testing.T, url string) invocationEvent {
 }
 
 func configureInvocationTools(ctrl *ompControl, url string) {
-	ctrl.applySessionMCPServers(context.Background(), []MCPServer{{Name: "fixture", Type: "http", URL: url + "/mcp", DurableTools: []string{"durable"}}})
+	ctrl.applySessionMCPServers(context.Background(), []MCPServer{{Name: "fixture", Type: "http", URL: url + "/mcp", DurableTools: []string{"durable"}}}, "")
 }
 
 func TestMCPInvocationIdentityScopedBySeatAndSession(t *testing.T) {
