@@ -6,6 +6,7 @@ package claudia
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/marcelocantos/claudia/internal/broker"
 )
@@ -13,6 +14,21 @@ import (
 // ErrBrokerRequired means a Task configured for broker-only execution
 // could not run through the host daemon. The Task did not start directly.
 var ErrBrokerRequired = errors.New("claudia: task requires broker")
+
+// StartBrokerContext starts a session only through the host daemon. Unlike
+// StartContext, an absent daemon or bare protocol server never falls back to
+// starting a provider or sidecar in the caller. The context bounds startup;
+// the returned handle owns its connection until Stop or Detach.
+func StartBrokerContext(ctx context.Context, cfg Config) (*Agent, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	a, err := startViaBrokerContext(ctx, cfg)
+	if brokerFellThrough(err) {
+		return nil, fmt.Errorf("%w: %v", ErrBrokerRequired, err)
+	}
+	return a, err
+}
 
 // The library consult (🎯T3). Start and Task.Run ask usingBroker before any
 // socket work so CLAUDIA_NO_BROKER=1 is a live escape hatch: no filesystem
