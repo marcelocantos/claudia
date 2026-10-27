@@ -932,6 +932,9 @@ func (c *ompControl) pump(a *Agent) {
 			if refusal != "" && ev.Reason == ReasonContextOverflow {
 				reason = ReasonContextOverflow
 			}
+			if refusal != "" && reason == "" {
+				reason = string(CauseFromConnectError(refusal))
+			}
 			// An aborted turn ends as itself, with no reply: it ends like any
 			// turn (end_turn) and says how in Reason, so the transcript paints
 			// nothing for it (jevons 2026-10-21: the word "aborted" in Text

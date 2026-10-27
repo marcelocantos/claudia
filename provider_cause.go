@@ -3,6 +3,8 @@
 
 package claudia
 
+import "strings"
+
 // ProviderCause is the stable code of a provider failure.
 // Controls switch on it. The rendered text is not a cause.
 type ProviderCause string
@@ -47,6 +49,34 @@ func CauseFromProviderCode(code string) ProviderCause {
 	case "model_not_found":
 		return CauseClientBug
 	case "overloaded_error", "internal_error":
+		return CauseBackendUnavailable
+	default:
+		return ""
+	}
+}
+
+// CauseFromConnectError maps the Connect RPC code that an OMP-hosted provider
+// (Cursor) reports in its turn errorMessage, "Connect error <code>: …", onto
+// a cause. The code is the provider's own token in a fixed position; the
+// prose after it is not consulted. Without this, Cursor's quota refusal
+// (resource_exhausted) reached Jevons as an untyped error, so no provider
+// wall was raised and seats kept submitting into it (2026-10-27).
+func CauseFromConnectError(errorMessage string) ProviderCause {
+	const prefix = "Connect error "
+	i := strings.Index(errorMessage, prefix)
+	if i < 0 {
+		return ""
+	}
+	code := errorMessage[i+len(prefix):]
+	if j := strings.IndexAny(code, ": "); j >= 0 {
+		code = code[:j]
+	}
+	switch code {
+	case "resource_exhausted":
+		return CauseRateLimit
+	case "unauthenticated":
+		return CauseAuth
+	case "unavailable":
 		return CauseBackendUnavailable
 	default:
 		return ""
