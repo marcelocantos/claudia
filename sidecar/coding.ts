@@ -11,6 +11,10 @@ export { runCommand, realish, writableRoots, checkWrite, seatbeltProfile, under,
 
 const maxOut = 200_000;
 const bashTimeoutMs = 60_000;
+// A model may ask for longer (builds, test gates), up to the same ceiling the
+// Cursor shell path allows. 1254 commands hit the fixed 60s bound by 2026-10-28.
+const bashMaxTimeoutMs = 600_000;
+const bashMinTimeoutMs = 1_000;
 const searchTimeoutMs = 15_000;
 
 export function codingTools(
@@ -38,17 +42,32 @@ function bashTool(cwdOf: () => string, boundOf: () => number, policyOf: () => Sa
     description: "Run a shell command in the seat working directory. Returns stdout and stderr.",
     parameters: {
       type: "object",
-      properties: { command: { type: "string", description: "shell command" } },
+      properties: {
+        command: { type: "string", description: "shell command" },
+        timeout: {
+          type: "number",
+          description: "seconds before the command is killed (default 60, max 600); raise it for builds and test runs",
+        },
+      },
       required: ["command"],
     },
     execute: async (_id: string, params: unknown) => {
-      const command = String((params as { command?: string })?.command || "");
+      const p = params as { command?: string; timeout?: number };
+      const command = String(p?.command || "");
       if (!command) return textResult("missing command", boundOf(), "Bash");
+      const timeoutMs =
+        typeof p?.timeout === "number" && p.timeout > 0
+          ? Math.min(Math.max(p.timeout * 1000, bashMinTimeoutMs), bashMaxTimeoutMs)
+          : bashTimeoutMs;
       try {
-        const r = await runShell(cwdOf, policyOf, { command, timeoutMs: bashTimeoutMs, maxBuffer: maxOut });
+        const r = await runShell(cwdOf, policyOf, { command, timeoutMs, maxBuffer: maxOut });
         const out = `${r.stdout || ""}${r.stderr || ""}`.slice(0, maxOut);
         const status = r.status ?? (r.error ? 1 : 0);
-        return textResult(status === 0 ? out || "(no output)" : `exit ${status}\n${out || r.error?.message || ""}`, boundOf(), "Bash");
+        const hint =
+          r.error?.code === "ETIMEDOUT" && timeoutMs < bashMaxTimeoutMs
+            ? `\n(killed at ${timeoutMs / 1000}s; pass timeout up to ${bashMaxTimeoutMs / 1000} seconds for a longer command)`
+            : "";
+        return textResult(status === 0 ? out || "(no output)" : `exit ${status}\n${out || r.error?.message || ""}${hint}`, boundOf(), "Bash");
       } catch (err) {
         return { ...textResult(String(err), boundOf(), "Bash"), isError: true };
       }

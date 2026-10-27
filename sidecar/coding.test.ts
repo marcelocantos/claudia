@@ -49,6 +49,22 @@ describe("coding tools do not block the sidecar (🎯T161)", () => {
     }
   });
 
+  test("Bash honours a requested timeout and says how to ask for more", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "coding-"));
+    try {
+      const started = Date.now();
+      const killed = await tool(dir, "Bash").execute("c3", { command: "sleep 5; echo late", timeout: 1 });
+      expect(Date.now() - started).toBeLessThan(4_000);
+      expect(text(killed)).toContain("pass timeout up to 600 seconds");
+      // Past the 60s default would fail here only by taking a minute; the
+      // schema is what tells the model the parameter exists.
+      const params = tool(dir, "Bash").parameters as { properties: Record<string, unknown> };
+      expect(Object.keys(params.properties)).toContain("timeout");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("a command past its bound is killed and reported", async () => {
     const started = Date.now();
     const r = await runCommand("/bin/bash", ["-c", "sleep 30"], { timeoutMs: 200, maxBuffer: 1000 });
