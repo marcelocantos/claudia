@@ -1,15 +1,18 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -41,33 +44,54 @@ func fixtureBinary(t *testing.T) string {
 func fixtureServe(t *testing.T, binary, dir string) func() {
 	t.Helper()
 	cmd := exec.Command(binary, "broker", "serve", "--state-dir", dir, "--test-usage-fixture", "--no-resume")
-	var output bytes.Buffer
-	cmd.Stdout = &output
-	cmd.Stderr = &output
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd.Stdout = io.Discard
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
+	ready := make(chan struct{})
+	drained := make(chan struct{})
+	var output strings.Builder
+	go func() {
+		defer close(drained)
+		scan := bufio.NewScanner(stderr)
+		for scan.Scan() {
+			line := scan.Text()
+			output.WriteString(line + "\n")
+			if strings.Contains(line, "usage fixture ready") {
+				select {
+				case <-ready:
+				default:
+					close(ready)
+				}
+			}
+		}
+	}()
+	exited := make(chan struct{})
+	go func() { _ = cmd.Wait(); close(exited) }()
 	stopped := false
 	stop := func() {
 		if !stopped {
 			stopped = true
 			_ = cmd.Process.Signal(syscall.SIGTERM)
-			_ = cmd.Wait()
+			<-exited
+			<-drained
 		}
 	}
 	t.Cleanup(stop)
-	capPath := filepath.Join(dir, fixtureCapability)
-	deadline := time.Now().Add(15 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(capPath); err == nil {
-			if _, err = os.Stat(filepath.Join(dir, fixtureSocket)); err == nil {
-				return stop
-			}
-		}
-		time.Sleep(20 * time.Millisecond)
+	select {
+	case <-ready:
+		return stop
+	case <-exited:
+		<-drained
+		t.Fatalf("fixture exited before readiness: %s", output.String())
+	case <-t.Context().Done():
+		stop()
+		t.Fatalf("fixture readiness interrupted: %s", output.String())
 	}
-	stop()
-	t.Fatalf("fixture did not start: %s", output.String())
 	return nil
 }
 func fixturePost(t *testing.T, dir string, readings []claudia.PlanUsage, token string) int {
@@ -135,19 +159,29 @@ func fixtureReadReplica(t *testing.T, r *controlplane.Replica) map[claudia.Provi
 }
 func fixtureAwaitBand(t *testing.T, r *controlplane.Replica, provider claudia.Provider, band claudia.PlanBand, remaining float64) claudia.PlanUsage {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if u, ok := fixtureReadReplica(t, r)[provider]; ok && len(u.Windows) > 0 && u.Windows[0].RemainingPercent != nil && *u.Windows[0].RemainingPercent == remaining {
-			w := u.Windows[0]
-			if w.Band != band || claudia.ClassifyPlan(u, u.FetchedAt, nil).Weekly != band {
-				t.Fatalf("%s: broker band=%s consumer verdict=%s, want %s", provider, w.Band, claudia.ClassifyPlan(u, u.FetchedAt, nil).Weekly, band)
-			}
-			return u
-		}
-		time.Sleep(20 * time.Millisecond)
+	// The subscription returns an initial snapshot and subsequent replica
+	// changesets. No host-speed-dependent poll deadline decides the verdict.
+	updates, err := r.SubscribeQuery(t.Context(), "SELECT provider, status, success_at, reading_json FROM claudia_plan_usage")
+	if err != nil {
+		t.Fatal(err)
 	}
-	t.Fatalf("%s: no %s/%v reading in consumer replica: %+v", provider, band, remaining, fixtureReadReplica(t, r))
-	return claudia.PlanUsage{}
+	for {
+		select {
+		case _, ok := <-updates:
+			if !ok {
+				t.Fatal("replica subscription closed before desired generation")
+			}
+			if u, found := fixtureReadReplica(t, r)[provider]; found && len(u.Windows) > 0 && u.Windows[0].RemainingPercent != nil && *u.Windows[0].RemainingPercent == remaining {
+				w := u.Windows[0]
+				if w.Band != band || claudia.ClassifyPlan(u, u.FetchedAt, nil).Weekly != band {
+					t.Fatalf("%s: broker band=%s consumer verdict=%s, want %s", provider, w.Band, claudia.ClassifyPlan(u, u.FetchedAt, nil).Weekly, band)
+				}
+				return u
+			}
+		case <-t.Context().Done():
+			t.Fatalf("replica did not deliver %s %s/%v: %v", provider, band, remaining, t.Context().Err())
+		}
+	}
 }
 func fixtureWeekly(provider claudia.Provider, remaining, used float64, reset time.Time) claudia.PlanUsage {
 	return claudia.PlanUsage{Provider: provider, Status: claudia.PlanUsageAvailable, Windows: []claudia.PlanWindow{{Name: claudia.PlanWindowWeekly, RemainingPercent: &remaining, UsedPercent: &used, ResetsAt: &reset, LimitWindow: 7 * 24 * time.Hour}}}

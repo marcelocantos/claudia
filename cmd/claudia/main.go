@@ -344,6 +344,7 @@ func serve(args []string) error {
 			return err
 		}
 		defer closeFixture()
+		log.Info("usage fixture ready", "socket", filepath.Join(*stateDir, fixtureSocket))
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
