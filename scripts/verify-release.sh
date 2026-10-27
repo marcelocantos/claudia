@@ -202,7 +202,11 @@ else
 		else
 			fail "private broker status"; note "$(head -5 <<<"$out")"
 		fi
-		if out="$(priv "$BIN" broker usage --json 2>&1)" && jq -e '(.providers|type=="array" and length>0) and (.fetched_at|type=="string")' >/dev/null 2>&1 <<<"$out"; then
+		# A fresh private broker has observed nothing: broker reads never start
+		# collection, so fetched_at is absent until a scheduled poll lands. It
+		# must still list every provider, and none may claim to be available
+		# without an observation.
+		if out="$(priv "$BIN" broker usage --json 2>&1)" && jq -e '(.providers|type=="array" and length>0) and ((.fetched_at|type=="string") or all(.providers[]; .status != "available"))' >/dev/null 2>&1 <<<"$out"; then
 			pass "private broker usage: $(jq -r '[.providers[]|"\(.provider)=\(.status)"]|join(" ")' <<<"$out")"
 		else
 			fail "private broker usage --json"; note "$(head -5 <<<"$out")"
