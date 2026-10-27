@@ -6,6 +6,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -33,6 +34,20 @@ import (
 // that wants one starts its own and re-enables the consult), and off the
 // developer's plan-usage cache, which a stub's rate-limit error marks stale.
 func TestMain(m *testing.M) {
+	// The daemon suite starts the real Bun sidecar from several tests, including
+	// testdata/continuity-provider.ts. A clean Go-only checkout has no
+	// node_modules: prepare the locked dependencies before any sidecar starts,
+	// rather than letting a missing import hang a readiness loop until timeout.
+	// EnsureDeps is idempotent, lockfile-aware and runs frozen Bun install only
+	// when the installed modules are missing or stale.
+	if _, err := exec.LookPath("bun"); err != nil {
+		fmt.Fprintf(os.Stderr, "OUTAGE: Bun is required for daemon sidecar tests: %v\n", err)
+		os.Exit(2)
+	}
+	if err := omp.EnsureDeps(context.Background(), filepath.Join("..", "sidecar", "server.ts")); err != nil {
+		fmt.Fprintf(os.Stderr, "OUTAGE: daemon sidecar test dependencies: %v\n", err)
+		os.Exit(2)
+	}
 	if os.Getenv(broker.NoBrokerEnv) == "" {
 		_ = os.Setenv(broker.NoBrokerEnv, "1")
 	}
