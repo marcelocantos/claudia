@@ -13,7 +13,6 @@ import (
 	"strings"
 	"sync"
 	"syscall"
-	"time"
 
 	"github.com/marcelocantos/claudia"
 	"github.com/marcelocantos/claudia/internal/broker"
@@ -148,11 +147,21 @@ func (p *plane) publishReceipt(receipt *claudia.RequestReceipt) error {
 // linkPeerAlive is overridden in tests to simulate a dead consumer peer.
 var linkPeerAlive = claudia.ProcessAlive
 
+// peerPIDOf is the unix-peer pid of a control-socket connection.
+// Tests replace it so stallConn can stand in for a real unix peer.
+var peerPIDOf = broker.PeerPID
+
 // consumerLinkSlot admits one live consumer control link. When a new
 // consumer dials while the slot is taken, a dead peer is evicted so a
-// restarted consumer can relink immediately (🎯T207).
+// restarted consumer can relink immediately (🎯T207). A reconnect from
+// the same still-alive pid takes the slot at once (🎯T227) instead of
+// being refused as a second consumer: refusing dropped the handshake,
+// and waiting inside begin blocked Accept until the listen backlog
+// filled. end is generation-scoped so the previous runLink cannot clear
+// the occupant that replaced it.
 type consumerLinkSlot struct {
 	mu   sync.Mutex
+	gen  uint64
 	busy bool
 	conn net.Conn
 	pid  int
@@ -172,35 +181,40 @@ func (s *consumerLinkSlot) evictStale() {
 	s.mu.Unlock()
 }
 
-func (s *consumerLinkSlot) begin(conn net.Conn) bool {
-	pid := broker.PeerPID(conn)
-	for i := 0; i < 2000; i++ {
-		s.mu.Lock()
-		switch {
-		case !s.busy:
-			s.busy = true
-			s.conn = conn
-			s.pid = pid
-			s.mu.Unlock()
-			return true
-		case s.pid > 0 && linkPeerAlive(s.pid):
-			s.mu.Unlock()
-			return false
-		default:
-			if s.conn != nil {
-				_ = s.conn.Close()
-			}
-			s.mu.Unlock()
-			time.Sleep(time.Millisecond)
+func (s *consumerLinkSlot) begin(conn net.Conn) (gen uint64, ok bool) {
+	pid := peerPIDOf(conn)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.busy {
+		held := s.pid
+		alive := held > 0 && linkPeerAlive(held)
+		// A different live process still holds the slot: one consumer only.
+		// Same pid (this test process, or jevonsd redialing while the
+		// previous runLink is still unwinding) and a dead peer take over
+		// immediately. Refusing is the 🎯T227 miss: the new conn is closed,
+		// handshake never runs, and a wait that does not re-check the link
+		// sits until the package timeout. Waiting here would stall Accept
+		// and fill the listen backlog.
+		if alive && pid > 0 && held > 0 && pid != held {
+			return 0, false
+		}
+		if s.conn != nil {
+			_ = s.conn.Close()
 		}
 	}
-	return false
+	s.gen++
+	s.busy = true
+	s.conn = conn
+	s.pid = pid
+	return s.gen, true
 }
 
-func (s *consumerLinkSlot) end() {
+func (s *consumerLinkSlot) end(gen uint64) {
 	s.mu.Lock()
-	s.busy = false
-	s.conn, s.pid = nil, 0
+	if s.gen == gen {
+		s.busy = false
+		s.conn, s.pid = nil, 0
+	}
 	s.mu.Unlock()
 }
 
@@ -210,6 +224,7 @@ func (s *consumerLinkSlot) end() {
 func (p *plane) serve(ln net.Listener, done <-chan struct{}) {
 	var slot consumerLinkSlot
 	var links sync.WaitGroup
+	var prevDone chan struct{}
 	defer links.Wait()
 	for {
 		conn, err := ln.Accept()
@@ -217,17 +232,29 @@ func (p *plane) serve(ln net.Listener, done <-chan struct{}) {
 			return
 		}
 		slot.evictStale()
-		if !slot.begin(conn) {
+		gen, ok := slot.begin(conn)
+		if !ok {
 			// One consumer writes the Jevons tables. A second link would
 			// be a second writer of them.
 			slog.Warn("control plane: refused a second consumer link while one is live")
 			_ = conn.Close()
 			continue
 		}
+		// Steal already closed the previous conn. The new runLink waits
+		// for that one to leave so they do not pile up on the plane
+		// lock. The wait is in the worker, not here: blocking Accept
+		// fills the listen backlog and the next Dial is refused.
+		finished := make(chan struct{})
+		waitFor := prevDone
+		prevDone = finished
 		links.Add(1)
-		go func(c net.Conn) {
+		go func(c net.Conn, gen uint64, waitFor, finished chan struct{}) {
 			defer links.Done()
-			defer slot.end()
+			defer close(finished)
+			defer slot.end(gen)
+			if waitFor != nil {
+				<-waitFor
+			}
 			err := runLink(c, done, linkSide{
 				lock:   &p.mu,
 				db:     func() *sqlpipe.Database { return p.db },
@@ -236,7 +263,7 @@ func (p *plane) serve(ln net.Listener, done <-chan struct{}) {
 				client: true,
 			})
 			slog.Info("control plane: consumer link ended", "err", err)
-		}(conn)
+		}(conn, gen, waitFor, finished)
 	}
 }
 

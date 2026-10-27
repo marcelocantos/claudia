@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -168,19 +169,41 @@ func TestReplicaLinkDeliversBothWaysAndAcrossReconnect(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	link := func() (stop func()) {
+	type liveLink struct {
+		cancel context.CancelFunc
+		done   chan struct{}
+		err    error
+	}
+	start := func() *liveLink {
 		ctx, cancel := context.WithCancel(t.Context())
-		done := make(chan error, 1)
-		go func() { done <- replica.Link(ctx, sock) }()
-		return func() {
-			cancel()
-			if err := <-done; err != nil {
-				t.Errorf("link: %v", err)
-			}
+		l := &liveLink{cancel: cancel, done: make(chan struct{})}
+		go func() {
+			l.err = replica.Link(ctx, sock)
+			close(l.done)
+		}()
+		return l
+	}
+	stop := func(l *liveLink) {
+		l.cancel()
+		<-l.done
+		if l.err != nil {
+			t.Errorf("link: %v", l.err)
 		}
 	}
-	stop := link()
+	// A wait that only polls the destination table misses a refused
+	// reconnect: Link returns nil on the closed conn (EOF), and the
+	// test sits until the package timeout (🎯T227).
+	requireUp := func(l *liveLink, what string) {
+		t.Helper()
+		select {
+		case <-l.done:
+			t.Fatalf("link ended while waiting for %s: %v", what, l.err)
+		default:
+		}
+	}
+	live := start()
 	eventually(t, "desired seat at the broker", func() bool {
+		requireUp(live, "desired seat at the broker")
 		var n int
 		ownerRead(t, func(db *sqlpipe.Database) error {
 			got, err := DesiredSeats(db)
@@ -196,11 +219,12 @@ func TestReplicaLinkDeliversBothWaysAndAcrossReconnect(t *testing.T) {
 		return PublishSeatStatus(db, SeatStatus{Seat: "seat-a", SessionID: "sess", Generation: 1, Revision: 1, RuntimeID: "sess", State: statusRunning, StatusJSON: `{}`})
 	})
 	eventually(t, "seat status at the consumer", func() bool {
+		requireUp(live, "seat status at the consumer")
 		var got map[string]SeatStatus
 		_ = replica.Read(func(db *sqlpipe.Database) (err error) { got, err = SeatStatuses(db); return err })
 		return got["seat-a"].SessionID == "sess"
 	})
-	stop()
+	stop(live)
 
 	// Both sides commit while no link is up.
 	claudia.RecordObservedReceipt(&claudia.RequestReceipt{RequestID: "offline", SessionID: "s", Seat: "seat-a",
@@ -210,9 +234,10 @@ func TestReplicaLinkDeliversBothWaysAndAcrossReconnect(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	stop = link()
-	defer stop()
+	live = start()
+	defer stop(live)
 	eventually(t, "offline intent at the broker", func() bool {
+		requireUp(live, "offline intent at the broker")
 		var n int
 		ownerRead(t, func(db *sqlpipe.Database) error {
 			got, err := ControlIntents(db)
@@ -222,10 +247,97 @@ func TestReplicaLinkDeliversBothWaysAndAcrossReconnect(t *testing.T) {
 		return n == 1
 	})
 	eventually(t, "offline receipt at the consumer", func() bool {
+		requireUp(live, "offline receipt at the consumer")
 		var n int64
 		_ = replica.Read(func(db *sqlpipe.Database) error { n = count(t, db, ReceiptTable); return nil })
 		return n == 1
 	})
+}
+
+// Under host load the reconnect in TestReplicaLinkDeliversBothWaysAndAcrossReconnect
+// used to miss the offline intent: the broker refused the same-pid redial
+// while the previous link was still ending, Link returned, and eventually
+// never re-checked that the link was up. Spin the scheduler and redial
+// repeatedly so a refused handshake fails here instead of at make gate.
+func TestReplicaLinkReconnectUnderSchedLoad(t *testing.T) {
+	asBroker(t)
+	var stopLoad atomic.Bool
+	var load sync.WaitGroup
+	workers := runtime.GOMAXPROCS(0)
+	if workers < 4 {
+		workers = 4
+	}
+	load.Add(workers)
+	for i := 0; i < workers; i++ {
+		go func() {
+			defer load.Done()
+			n := 0
+			for !stopLoad.Load() {
+				n++
+			}
+			_ = n
+		}()
+	}
+	t.Cleanup(func() { stopLoad.Store(true); load.Wait() })
+
+	dbPath, sock := brokerDirs(t)
+	publishOwned(t, dbPath, sock)
+	replica, err := OpenReplica(filepath.Join(t.TempDir(), JevonsDBFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer replica.Close()
+
+	start := func() (cancel context.CancelFunc, done chan struct{}, errp *error) {
+		ctx, cancel := context.WithCancel(t.Context())
+		done = make(chan struct{})
+		var linkErr error
+		errp = &linkErr
+		go func() {
+			linkErr = replica.Link(ctx, sock)
+			close(done)
+		}()
+		return cancel, done, errp
+	}
+	requireUp := func(done chan struct{}, errp *error, what string) {
+		t.Helper()
+		select {
+		case <-done:
+			t.Fatalf("link ended while waiting for %s: %v", what, *errp)
+		default:
+		}
+	}
+
+	const cycles = 20
+	for i := 0; i < cycles; i++ {
+		op := fmt.Sprintf("op-load-%d", i)
+		if err := replica.Write(func(db *sqlpipe.Database) error {
+			return PublishControlIntent(db, ControlIntent{OperationID: op, Seat: "seat-a", Generation: 1, Kind: "interrupt", PayloadJSON: `{}`})
+		}); err != nil {
+			t.Fatal(err)
+		}
+		cancel, done, errp := start()
+		eventually(t, op+" at the broker", func() bool {
+			requireUp(done, errp, op+" at the broker")
+			var found bool
+			ownerRead(t, func(db *sqlpipe.Database) error {
+				got, err := ControlIntents(db)
+				for _, in := range got {
+					if in.OperationID == op {
+						found = true
+						break
+					}
+				}
+				return err
+			})
+			return found
+		})
+		cancel()
+		<-done
+		if *errp != nil {
+			t.Fatalf("link %d: %v", i, *errp)
+		}
+	}
 }
 
 type warnings struct {
