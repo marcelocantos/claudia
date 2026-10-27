@@ -196,6 +196,7 @@ func serve(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	stateDir := fs.String("state-dir", "", "grants and logs directory (default: claudia state dir)")
 	socket := fs.String("socket", "", "socket path (default: CLAUDIA_BROKER_SOCKET or the state dir)")
+	fixture := fs.Bool("test-usage-fixture", false, "isolated test-only plan usage control socket (requires private --state-dir)")
 	usageTTL := fs.Duration("usage-ttl", 0, "plan-usage refresh interval (default 5m)")
 	noResume := fs.Bool("no-resume", false, "do not bring back seats held before the last stop")
 	nudge := fs.String("restart-nudge", "", "message for seats relaunched on boot; '-' sends none")
@@ -204,6 +205,24 @@ func serve(args []string) error {
 	bindMCPConsumerFlags(fs, &consumer)
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *fixture {
+		if consumer.ConsumerStateDir != "" || len(consumer.MCPSeedStateDirs) != 0 {
+			return fmt.Errorf("usage fixture refuses external consumer state")
+		}
+		syscall.Umask(0o077) // all broker-owned files in fixture mode are owner-only
+		*noResume = true
+		if err := validateFixtureDir(*stateDir); err != nil {
+			return err
+		}
+		fixtureBrokerSocket := filepath.Join(*stateDir, "broker.sock")
+		if *socket != "" && *socket != fixtureBrokerSocket {
+			return fmt.Errorf("usage fixture broker socket must be within private state directory")
+		}
+		*socket = fixtureBrokerSocket
+		if os.Getenv(broker.SocketPathEnv) != "" {
+			return fmt.Errorf("usage fixture refuses broker socket environment override")
+		}
 	}
 	var lvl slog.Level
 	if err := lvl.UnmarshalText([]byte(*logLevel)); err != nil {
@@ -247,7 +266,9 @@ func serve(args []string) error {
 	claudia.SetOMPToolExec(claudia.DefaultOMPToolExec)
 	refreshCtx, refreshCancel := context.WithTimeout(context.Background(), 8*time.Second)
 	plansOpen := false
-	if err := claudia.OpenOMPPlans(refreshCtx); err != nil {
+	if *fixture {
+		log.Info("isolated usage fixture: skipping provider credentials and sidecar")
+	} else if err := claudia.OpenOMPPlans(refreshCtx); err != nil {
 		log.Warn("plan keychain was not read; Launch will not prompt again", "err", err)
 	} else {
 		plansOpen = true
@@ -275,8 +296,10 @@ func serve(args []string) error {
 	if err := os.MkdirAll(sidecarState, 0o700); err != nil {
 		return fmt.Errorf("broker: state dir: %w", err)
 	}
-	if err := omp.EnsureSocketEnv(sidecarState); err != nil {
-		return fmt.Errorf("broker: sidecar socket: %w", err)
+	if !*fixture {
+		if err := omp.EnsureSocketEnv(sidecarState); err != nil {
+			return fmt.Errorf("broker: sidecar socket: %w", err)
+		}
 	}
 
 	d, err := daemon.New(daemon.Options{
@@ -286,6 +309,8 @@ func serve(args []string) error {
 		SocketPath:               *socket,
 		StateDir:                 *stateDir,
 		UsageTTL:                 *usageTTL,
+		FixtureUsage:             *fixture,
+		DisableIntel:             *fixture,
 		DisableResume:            *noResume,
 		RestartNudge:             *nudge,
 		Logger:                   log,
@@ -293,6 +318,9 @@ func serve(args []string) error {
 		// One an earlier broker left serving the socket is stopped first,
 		// never adopted: it may be an older build.
 		StartSidecar: func(ctx context.Context) error {
+			if *fixture {
+				return nil
+			}
 			if pid, err := omp.StopUnowned(ctx); err != nil {
 				return err
 			} else if pid != 0 {
@@ -308,6 +336,14 @@ func serve(args []string) error {
 	})
 	if err != nil {
 		return err
+	}
+	if *fixture {
+		closeFixture, err := startUsageFixture(*stateDir)
+		if err != nil {
+			_ = d.Close()
+			return err
+		}
+		defer closeFixture()
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

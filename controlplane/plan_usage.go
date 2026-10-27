@@ -105,31 +105,37 @@ func (p *plane) ReservePlanUsage(provider claudia.Provider, now, next time.Time)
 // CompletePlanUsage commits the polling outcome, last success and history
 // together. A failure never writes a history point or retimestamps a success.
 func (p *plane) CompletePlanUsage(observation claudia.PlanUsageObservation) error {
+	return p.CommitFixturePlanUsage([]claudia.PlanUsageObservation{observation})
+}
+
+// CommitFixturePlanUsage writes an entire fixture generation in one owner transaction.
+// The same commit path serves ordinary poll completions and history publication.
+func (p *plane) CommitFixturePlanUsage(rows []claudia.PlanUsageObservation) error {
 	return p.withDB(func(db *sqlpipe.Database) (err error) {
 		if err = db.Exec("BEGIN IMMEDIATE"); err != nil {
 			return err
 		}
 		defer func() {
 			if err != nil {
-				if rollbackErr := db.Exec("ROLLBACK"); rollbackErr != nil {
-					err = fmt.Errorf("%w; rollback: %v", err, rollbackErr)
-				}
+				_ = db.Exec("ROLLBACK")
 			}
 		}()
-		if err = writePlanUsage(db, observation); err != nil {
-			return err
-		}
-		if observation.Status == claudia.PlanUsageAvailable && observation.Reading != nil {
-			reading := *observation.Reading
-			reading.RawBody = ""
-			body, marshalErr := json.Marshal(reading)
-			if marshalErr != nil {
-				return marshalErr
-			}
-			err = ExecOwned(db, WriterClaudia, PlanUsageHistoryTable, `INSERT INTO claudia_plan_usage_history (provider, observed_at, reading_json) VALUES (?, ?, ?)
-    ON CONFLICT(provider, observed_at) DO UPDATE SET reading_json = excluded.reading_json`, string(observation.Provider), planTime(observation.SuccessAt), string(body))
-			if err != nil {
+		for _, observation := range rows {
+			if err = writePlanUsage(db, observation); err != nil {
 				return err
+			}
+			if observation.Status == claudia.PlanUsageAvailable && observation.Reading != nil {
+				reading := *observation.Reading
+				reading.RawBody = ""
+				body, marshalErr := json.Marshal(reading)
+				if marshalErr != nil {
+					return marshalErr
+				}
+				err = ExecOwned(db, WriterClaudia, PlanUsageHistoryTable, `INSERT INTO claudia_plan_usage_history (provider, observed_at, reading_json) VALUES (?, ?, ?)
+    ON CONFLICT(provider, observed_at) DO UPDATE SET reading_json = excluded.reading_json`, string(observation.Provider), planTime(observation.SuccessAt), string(body))
+				if err != nil {
+					return err
+				}
 			}
 		}
 		return db.Exec("COMMIT")

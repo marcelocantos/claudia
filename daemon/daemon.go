@@ -53,6 +53,9 @@ type Options struct {
 	// UsageTTL is how long a usage snapshot is current. Zero uses
 	// DefaultPlanCacheTTL.
 	UsageTTL time.Duration
+	// FixtureUsage disables vendor polling and reads only the broker-owned control file.
+	// It is enabled only by the isolated CLI fixture serve mode.
+	FixtureUsage bool
 	// UsageFetch replaces the vendor usage query (tests).
 	UsageFetch func(context.Context) ([]claudia.PlanUsage, error)
 	// DisableResume skips bringing back the seats held before the daemon
@@ -338,7 +341,11 @@ func New(opts Options) (*Daemon, error) {
 			}
 		},
 	}
-	if opts.UsageFetch == nil {
+	if opts.FixtureUsage {
+		usageArgs.Fetch = func(context.Context) ([]claudia.PlanUsage, error) { return claudia.ReadBrokerPlanUsage().Backends, nil }
+		usageArgs.ForceFetch = usageArgs.Fetch
+		usageArgs.ReadSnapshot = claudia.ReadBrokerPlanUsage
+	} else if opts.UsageFetch == nil {
 		usageArgs.TTL = claudia.BrokerPlanRetryInterval
 		usageArgs.Fetch = func(ctx context.Context) ([]claudia.PlanUsage, error) {
 			return claudia.PollBrokerPlanUsage(ctx, clock, nil)
