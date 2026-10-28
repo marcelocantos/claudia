@@ -56,6 +56,12 @@ type Options struct {
 	// FixtureUsage disables vendor polling and reads only the broker-owned control file.
 	// It is enabled only by the isolated CLI fixture serve mode.
 	FixtureUsage bool
+	// UsageOverrideProviders is a test-only CLI-fixed allowlist of providers
+	// whose usage is injected rather than vendor-fetched. Empty in production.
+	UsageOverrideProviders []claudia.Provider
+	// UsageProviderFetch replaces the per-provider vendor query for
+	// providers not in UsageOverrideProviders (tests). Nil uses real fetch.
+	UsageProviderFetch func(context.Context, claudia.Provider) (claudia.PlanUsage, error)
 	// UsageFetch replaces the vendor usage query (tests).
 	UsageFetch func(context.Context) ([]claudia.PlanUsage, error)
 	// DisableResume skips bringing back the seats held before the daemon
@@ -235,6 +241,9 @@ func New(opts Options) (*Daemon, error) {
 	// This process is the seat broker. Library Start/Task calls must
 	// take the direct path; a daemon that dialled its own socket would
 	// deadlock (🎯T866.7 jevons-broker and claudia broker serve).
+	if opts.FixtureUsage && len(opts.UsageOverrideProviders) > 0 {
+		return nil, fmt.Errorf("usage override refuses fixture usage mode")
+	}
 	broker.MarkSelfHosted()
 	log := opts.Logger
 	if log == nil {
@@ -343,6 +352,17 @@ func New(opts Options) (*Daemon, error) {
 	}
 	if opts.FixtureUsage {
 		usageArgs.Fetch = func(context.Context) ([]claudia.PlanUsage, error) { return claudia.ReadBrokerPlanUsage().Backends, nil }
+		usageArgs.ForceFetch = usageArgs.Fetch
+		usageArgs.ReadSnapshot = claudia.ReadBrokerPlanUsage
+	} else if len(opts.UsageOverrideProviders) > 0 {
+		if err := claudia.InstallBrokerUsageOverride(opts.UsageOverrideProviders); err != nil {
+			return nil, fmt.Errorf("broker daemon: usage override: %w", err)
+		}
+		fetch := opts.UsageProviderFetch
+		usageArgs.TTL = claudia.BrokerPlanRetryInterval
+		usageArgs.Fetch = func(ctx context.Context) ([]claudia.PlanUsage, error) {
+			return claudia.PollBrokerPlanUsageWithOverride(ctx, clock, fetch)
+		}
 		usageArgs.ForceFetch = usageArgs.Fetch
 		usageArgs.ReadSnapshot = claudia.ReadBrokerPlanUsage
 	} else if opts.UsageFetch == nil {
