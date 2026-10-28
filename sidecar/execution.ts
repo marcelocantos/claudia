@@ -163,8 +163,9 @@ export function editFile(cwd: string, name: string, edits: { oldText: string; ne
 export async function runShell(
   cwdOf: () => string,
   policyOf: () => SandboxPolicy | undefined,
-  args: { command: string; workingDirectory?: string; timeoutMs: number; maxBuffer: number },
+  args: { command: string; workingDirectory?: string; timeoutMs: number; maxBuffer: number; signal?: AbortSignal },
 ): Promise<RunResult> {
+  if (args.signal?.aborted) return runCommand("/bin/bash", ["-lc", args.command], { timeoutMs: args.timeoutMs, maxBuffer: args.maxBuffer, signal: args.signal });
   const root = cwdOf() || process.cwd();
   const cwd = under(root, args.workingDirectory || ".", policyOf());
   if (policyOf()?.mode === "read-only") throw new Error("read-only seat: shell refused");
@@ -179,6 +180,6 @@ export async function runShell(
   const [bin, argv] = policy?.mode === "workspace-write"
     ? ["/usr/bin/sandbox-exec", ["-p", seatbeltProfile(root, policy), "/bin/bash", "-lc", args.command]]
     : ["/bin/bash", ["-lc", args.command]];
-  return runCommand(bin, argv, { cwd, timeoutMs: args.timeoutMs, maxBuffer: args.maxBuffer, env: process.env });
+  return runCommand(bin, argv, { cwd, timeoutMs: args.timeoutMs, maxBuffer: args.maxBuffer, env: process.env, signal: args.signal });
 }
 

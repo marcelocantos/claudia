@@ -23,6 +23,10 @@ const model = createMockModel({ provider: "anthropic", id: "claude-sonnet-5", ha
   const last = users.at(-1);
   assert.ok(last && last.role === "user");
   const text = typeof last.content === "string" ? last.content : last.content.filter(c => c.type === "text").map(c => c.text).join("");
+  if (text.startsWith("BASH_CANCEL ") && !context.messages.some(m => m.role === "toolResult")) {
+    const marker = text.slice("BASH_CANCEL ".length);
+    return { content: [{ type: "toolCall", id: "cancel-bash", name: "Bash", arguments: { command: `sleep 60 & child=$!; echo $child > '${marker}'; wait $child`, timeout: 65 } }] };
+  }
   if (text.includes("HOLD")) return { content: ["never"], delayMs: holdMs };
   if (text.includes("FAIL")) return { stopReason: "error", errorMessage: "fixture provider refusal" };
   return { content: [`reply: ${text}`] };

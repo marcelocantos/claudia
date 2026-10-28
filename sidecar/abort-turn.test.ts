@@ -174,3 +174,31 @@ test("the first load on a connection is still answered as the load's own reply",
   expect(reply.text).toBe("load without an access token");
   host.close();
 });
+
+
+test("socket abort of an executing Bash tool kills its sleep child and settles the turn (🎯T235)", async () => {
+  const { dir } = fixture;
+  await loadSeat(host, dir, "bash-seat", "bash-session");
+  const marker = `${dir}/sleep.pid`;
+  host.send(prompt("bash-seat", "bash-session", "bash-r1", "bash-T1", `BASH_CANCEL ${marker}`));
+  await host.next("Bash tool started", e => e.type === "tool_start", 3000);
+  const { existsSync, readFileSync } = await import("node:fs");
+  for (let i = 0; i < 100 && !existsSync(marker); i++) await Bun.sleep(10);
+  expect(existsSync(marker)).toBe(true);
+  const pid = Number(readFileSync(marker, "utf8").trim());
+  const started = Date.now();
+  try {
+    await Bun.sleep(1000);
+    host.send({ op: "abort", seat: "bash-seat" });
+    const end = await host.next("cancelled turn", e => e.type === "turn_end" && e.turn_id === "bash-T1", 1800);
+    expect(end.stop_reason).toBe("aborted");
+    expect(Date.now() - started).toBeLessThan(3000);
+    for (let i = 0; i < 50; i++) {
+      try { process.kill(pid, 0); } catch { break; }
+      await Bun.sleep(20);
+    }
+    expect(() => process.kill(pid, 0)).toThrow();
+  } finally {
+    try { process.kill(pid, "SIGKILL"); } catch {}
+  }
+});

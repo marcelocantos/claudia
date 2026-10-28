@@ -51,7 +51,7 @@ function bashTool(cwdOf: () => string, boundOf: () => number, policyOf: () => Sa
       },
       required: ["command"],
     },
-    execute: async (_id: string, params: unknown) => {
+    execute: async (_id: string, params: unknown, signal?: AbortSignal) => {
       const p = params as { command?: string; timeout?: number };
       const command = String(p?.command || "");
       if (!command) return textResult("missing command", boundOf(), "Bash");
@@ -60,14 +60,16 @@ function bashTool(cwdOf: () => string, boundOf: () => number, policyOf: () => Sa
           ? Math.min(Math.max(p.timeout * 1000, bashMinTimeoutMs), bashMaxTimeoutMs)
           : bashTimeoutMs;
       try {
-        const r = await runShell(cwdOf, policyOf, { command, timeoutMs, maxBuffer: maxOut });
+        const r = await runShell(cwdOf, policyOf, { command, timeoutMs, maxBuffer: maxOut, signal });
         const out = `${r.stdout || ""}${r.stderr || ""}`.slice(0, maxOut);
         const status = r.status ?? (r.error ? 1 : 0);
+        const abortNote = r.error?.code === "ABORT_ERR" ? `\n${r.error.message}` : "";
         const hint =
           r.error?.code === "ETIMEDOUT" && timeoutMs < bashMaxTimeoutMs
             ? `\n(killed at ${timeoutMs / 1000}s; pass timeout up to ${bashMaxTimeoutMs / 1000} seconds for a longer command)`
             : "";
-        return textResult(status === 0 ? out || "(no output)" : `exit ${status}\n${out || r.error?.message || ""}${hint}`, boundOf(), "Bash");
+        const result = textResult(status === 0 ? out || "(no output)" : `exit ${status}\n${out || r.error?.message || ""}${abortNote}${hint}`, boundOf(), "Bash");
+        return r.error?.code === "ABORT_ERR" ? { ...result, isError: true } : result;
       } catch (err) {
         return { ...textResult(String(err), boundOf(), "Bash"), isError: true };
       }
@@ -136,13 +138,14 @@ function globTool(cwdOf: () => string, boundOf: () => number): AgentTool {
       properties: { pattern: { type: "string" } },
       required: ["pattern"],
     },
-    execute: async (_id: string, params: unknown) => {
+    execute: async (_id: string, params: unknown, signal?: AbortSignal) => {
       const pattern = String((params as { pattern?: string })?.pattern || "*");
       const cwd = cwdOf() || process.cwd();
       const r = await runCommand("/usr/bin/find", [cwd, "-name", pattern], {
         timeoutMs: searchTimeoutMs,
-        maxBuffer: maxOut,
+        maxBuffer: maxOut, signal,
       });
+      if (r.error?.code === "ABORT_ERR") return { ...textResult("Glob aborted", boundOf(), "Glob"), isError: true };
       const lines = (r.stdout || "").split("\n").filter(Boolean).slice(0, 500);
       return textResult(lines.join("\n") || "(no matches)", boundOf(), "Glob");
     },
@@ -162,19 +165,21 @@ function grepTool(cwdOf: () => string, boundOf: () => number, policyOf: () => Sa
       },
       required: ["pattern"],
     },
-    execute: async (_id: string, params: unknown) => {
+    execute: async (_id: string, params: unknown, signal?: AbortSignal) => {
       const p = params as { pattern?: string; path?: string };
       const cwd = cwdOf() || process.cwd();
       const target = p?.path ? under(cwd, p.path, policyOf()) : cwd;
       const rg = await runCommand("rg", ["--no-config", "--no-follow", "-n", "--max-count", "50", "--", String(p?.pattern || ""), target], {
         timeoutMs: searchTimeoutMs,
-        maxBuffer: maxOut,
+        maxBuffer: maxOut, signal,
       });
+      if (rg.error?.code === "ABORT_ERR") return { ...textResult("Grep aborted", boundOf(), "Grep"), isError: true };
       if (rg.error && rg.error.code === "ENOENT") {
         const g = await runCommand("/usr/bin/grep", ["-r", "-n", "--", String(p?.pattern || ""), target], {
           timeoutMs: searchTimeoutMs,
-          maxBuffer: maxOut,
+          maxBuffer: maxOut, signal,
         });
+        if (g.error?.code === "ABORT_ERR") return { ...textResult("Grep aborted", boundOf(), "Grep"), isError: true };
         return textResult((g.stdout || g.stderr || "").slice(0, maxOut) || "(no matches)", boundOf(), "Grep");
       }
       return textResult((rg.stdout || rg.stderr || "").slice(0, maxOut) || "(no matches)", boundOf(), "Grep");

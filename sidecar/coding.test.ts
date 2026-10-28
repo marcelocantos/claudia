@@ -84,3 +84,75 @@ describe("coding tools do not block the sidecar (🎯T161)", () => {
     expect(r.error?.code).toBe("ENOENT");
   });
 });
+
+test("an aborted Bash tool kills its process group promptly, without discarding earlier output (🎯T235)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "bash-cancel-"));
+  let pid = 0;
+  try {
+    // wait keeps bash alive while sleep is its separate child. A shell-only
+    // kill would answer promptly but leave that child executing for 60s.
+    const marker = join(dir, "child.pid");
+    const withMarker = `sleep 60 & child=$!; echo $child > '${marker}'; echo child=$child; wait $child; echo late`;
+    const started = Date.now();
+    const abort = new AbortController();
+    const tracked = tool(dir, "Bash").execute("tracked", { command: withMarker }, abort.signal);
+    const { existsSync, readFileSync } = await import("node:fs");
+    for (let i = 0; i < 100 && !existsSync(marker); i++) await Bun.sleep(10);
+    expect(existsSync(marker)).toBe(true);
+    pid = Number(readFileSync(marker, "utf8").trim());
+    await Bun.sleep(1000);
+    abort.abort();
+    const answer = await tracked;
+    expect(Date.now() - started).toBeLessThan(3000);
+    expect(text(answer)).toContain(`child=${pid}`);
+    expect(text(answer)).toContain("aborted");
+    expect(text(answer)).not.toContain("late");
+    expect((answer as { isError?: boolean }).isError).toBe(true);
+    for (let i = 0; i < 50; i++) {
+      try { process.kill(pid, 0); } catch { break; }
+      await Bun.sleep(20);
+    }
+    expect(() => process.kill(pid, 0)).toThrow();
+  } finally {
+    if (pid) { try { process.kill(pid, "SIGKILL"); } catch {} }
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+
+test("pre-aborted Bash never launches and a late abort cannot change a completed result (🎯T235)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "bash-abort-race-"));
+  try {
+    const marker = join(dir, "should-not-exist");
+    const early = new AbortController();
+    early.abort();
+    const refused = await tool(dir, "Bash").execute("early", { command: `touch '${marker}'` }, early.signal);
+    expect(text(refused)).toContain("aborted");
+    expect((refused as { isError?: boolean }).isError).toBe(true);
+    const { existsSync } = await import("node:fs");
+    expect(existsSync(marker)).toBe(false);
+
+    const late = new AbortController();
+    const ordinary = await tool(dir, "Bash").execute("ordinary", { command: "echo ordinary" }, late.signal);
+    late.abort();
+    expect(text(ordinary)).toBe("ordinary\n");
+    expect((ordinary as { isError?: boolean }).isError).toBeUndefined();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("aborting search tools does not present a cancelled scan as empty success (🎯T235)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "search-abort-"));
+  try {
+    const cancel = new AbortController();
+    cancel.abort();
+    for (const name of ["Glob", "Grep"]) {
+      const answer = await tool(dir, name).execute(name, name === "Glob" ? { pattern: "*" } : { pattern: "x" }, cancel.signal);
+      expect(text(answer)).toContain("aborted");
+      expect((answer as { isError?: boolean }).isError).toBe(true);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
