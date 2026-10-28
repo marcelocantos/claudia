@@ -25,7 +25,7 @@ export type RunResult = {
 export function runCommand(
   command: string,
   args: string[],
-  opts: { cwd?: string; timeoutMs: number; maxBuffer: number; env?: NodeJS.ProcessEnv },
+  opts: { cwd?: string; timeoutMs: number; maxBuffer: number; env?: NodeJS.ProcessEnv; signal?: AbortSignal },
 ): Promise<RunResult> {
   return new Promise((resolve) => {
     const out: Buffer[] = [];
@@ -34,10 +34,14 @@ export function runCommand(
     let errBytes = 0;
     let error: NodeJS.ErrnoException | undefined;
     let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let child: ReturnType<typeof spawn> | undefined;
+    const onAbort = () => fail("ABORT_ERR", `${command} aborted`);
     const finish = (status: number | null) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      opts.signal?.removeEventListener("abort", onAbort);
       resolve({
         stdout: Buffer.concat(out).toString("utf8"),
         stderr: Buffer.concat(errOut).toString("utf8"),
@@ -49,14 +53,26 @@ export function runCommand(
       if (!error) {
         error = Object.assign(new Error(message), { code }) as NodeJS.ErrnoException;
       }
-      child.kill("SIGTERM");
+      // Each command owns a process group: killing only bash leaves `sleep`
+      // (and pipe-holding grandchildren) running after the turn is cancelled.
+      if (child?.pid && process.platform !== "win32") {
+        try { process.kill(-child.pid, "SIGKILL"); } catch (e) {
+          if ((e as NodeJS.ErrnoException).code !== "ESRCH") child.kill("SIGKILL");
+        }
+      } else child?.kill("SIGKILL");
       // A grandchild holding the pipes open must not hold the seat.
-      child.stdout?.destroy();
-      child.stderr?.destroy();
+      child?.stdout?.destroy();
+      child?.stderr?.destroy();
       finish(null);
     };
-    const child = spawn(command, args, { cwd: opts.cwd, env: opts.env, stdio: ["ignore", "pipe", "pipe"] });
-    const timer = setTimeout(() => fail("ETIMEDOUT", `${command} timed out after ${opts.timeoutMs}ms`), opts.timeoutMs);
+    if (opts.signal?.aborted) {
+      fail("ABORT_ERR", `${command} aborted`);
+      return;
+    }
+    child = spawn(command, args, { cwd: opts.cwd, env: opts.env, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
+    opts.signal?.addEventListener("abort", onAbort, { once: true });
+    if (opts.signal?.aborted) onAbort();
+    if (!settled) timer = setTimeout(() => fail("ETIMEDOUT", `${command} timed out after ${opts.timeoutMs}ms`), opts.timeoutMs);
     const collect = (into: Buffer[], add: (n: number) => number) => (chunk: Buffer) => {
       if (settled) return;
       if (add(chunk.length) > opts.maxBuffer) {
@@ -68,7 +84,7 @@ export function runCommand(
     child.stdout?.on("data", collect(out, (n) => (outBytes += n)));
     child.stderr?.on("data", collect(errOut, (n) => (errBytes += n)));
     child.on("error", (err: NodeJS.ErrnoException) => {
-      error = err;
+      if (!settled) error = err;
       finish(null);
     });
     child.on("close", (code) => finish(code));

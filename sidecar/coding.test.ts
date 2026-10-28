@@ -84,3 +84,38 @@ describe("coding tools do not block the sidecar (🎯T161)", () => {
     expect(r.error?.code).toBe("ENOENT");
   });
 });
+
+test("an aborted Bash tool kills its process group promptly, without discarding earlier output (🎯T235)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "bash-cancel-"));
+  const abort = new AbortController();
+  let pid = 0;
+  try {
+    // wait keeps bash alive while sleep is its separate child. A shell-only
+    // kill would answer promptly but leave that child executing for 60s.
+    const marker = join(dir, "child.pid");
+    const withMarker = `sleep 60 & child=$!; echo $child > '${marker}'; echo child=$child; wait $child; echo late`;
+    const started = Date.now();
+    const second = new AbortController();
+    const tracked = tool(dir, "Bash").execute("tracked", { command: withMarker }, second.signal);
+    const { existsSync, readFileSync } = await import("node:fs");
+    for (let i = 0; i < 100 && !existsSync(marker); i++) await Bun.sleep(10);
+    expect(existsSync(marker)).toBe(true);
+    pid = Number(readFileSync(marker, "utf8").trim());
+    await Bun.sleep(1000);
+    second.abort();
+    const answer = await tracked;
+    expect(Date.now() - started).toBeLessThan(3000);
+    expect(text(answer)).toContain(`child=${pid}`);
+    expect(text(answer)).toContain("aborted");
+    expect(text(answer)).not.toContain("late");
+    expect((answer as { isError?: boolean }).isError).toBe(true);
+    for (let i = 0; i < 50; i++) {
+      try { process.kill(pid, 0); } catch { break; }
+      await Bun.sleep(20);
+    }
+    expect(() => process.kill(pid, 0)).toThrow();
+  } finally {
+    if (pid) { try { process.kill(pid, "SIGKILL"); } catch {} }
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

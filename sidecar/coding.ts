@@ -51,7 +51,7 @@ function bashTool(cwdOf: () => string, boundOf: () => number, policyOf: () => Sa
       },
       required: ["command"],
     },
-    execute: async (_id: string, params: unknown) => {
+    execute: async (_id: string, params: unknown, signal?: AbortSignal) => {
       const p = params as { command?: string; timeout?: number };
       const command = String(p?.command || "");
       if (!command) return textResult("missing command", boundOf(), "Bash");
@@ -60,14 +60,16 @@ function bashTool(cwdOf: () => string, boundOf: () => number, policyOf: () => Sa
           ? Math.min(Math.max(p.timeout * 1000, bashMinTimeoutMs), bashMaxTimeoutMs)
           : bashTimeoutMs;
       try {
-        const r = await runShell(cwdOf, policyOf, { command, timeoutMs, maxBuffer: maxOut });
+        const r = await runShell(cwdOf, policyOf, { command, timeoutMs, maxBuffer: maxOut, signal });
         const out = `${r.stdout || ""}${r.stderr || ""}`.slice(0, maxOut);
         const status = r.status ?? (r.error ? 1 : 0);
+        const abortNote = r.error?.code === "ABORT_ERR" ? `\n${r.error.message}` : "";
         const hint =
           r.error?.code === "ETIMEDOUT" && timeoutMs < bashMaxTimeoutMs
             ? `\n(killed at ${timeoutMs / 1000}s; pass timeout up to ${bashMaxTimeoutMs / 1000} seconds for a longer command)`
             : "";
-        return textResult(status === 0 ? out || "(no output)" : `exit ${status}\n${out || r.error?.message || ""}${hint}`, boundOf(), "Bash");
+        const result = textResult(status === 0 ? out || "(no output)" : `exit ${status}\n${out || r.error?.message || ""}${abortNote}${hint}`, boundOf(), "Bash");
+        return r.error?.code === "ABORT_ERR" ? { ...result, isError: true } : result;
       } catch (err) {
         return { ...textResult(String(err), boundOf(), "Bash"), isError: true };
       }
