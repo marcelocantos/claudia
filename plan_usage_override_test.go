@@ -56,13 +56,13 @@ func TestLookupBrokerUsageOverride(t *testing.T) {
 
 func TestBrokerUsageOverrideAllows(t *testing.T) {
 	t.Cleanup(ClearBrokerUsageOverride)
-	if BrokerUsageOverrideAllows(ProviderGrok) {
+	if brokerUsageOverrideAllows(ProviderGrok) {
 		t.Fatal("empty allowlist")
 	}
 	if err := InstallBrokerUsageOverride([]Provider{ProviderGrok}); err != nil {
 		t.Fatal(err)
 	}
-	if !BrokerUsageOverrideAllows(ProviderGrok) || BrokerUsageOverrideAllows(ProviderClaude) {
+	if !brokerUsageOverrideAllows(ProviderGrok) || brokerUsageOverrideAllows(ProviderClaude) {
 		t.Fatal("allowlist mismatch")
 	}
 }

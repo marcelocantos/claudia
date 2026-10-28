@@ -34,6 +34,7 @@ The flag is refused when:
 - the process is in a supervisor/prod context (`SUPERVISOR_ENABLED` / `SUPERVISOR_SERVER_URL` / `SUPERVISOR_PROCESS_NAME`)
 - `CLAUDIA_BROKER_SOCKET` or `--socket` names the production socket or a path outside the private state directory
 - `--mcp-seed-dir` or `--consumer-state-dir` escapes the private state directory
+- `CLAUDIA_CONSUMER_STATE_DIR` is set (when `--consumer-state-dir` is empty) to a path that escapes the private state directory — the same fallback `daemon` uses for fleet intent
 - the allowlist names an unknown provider
 
 Authorization is a per-run capability file at `<state>/usage-fixture-override/capability` (0600). POST `http://override/usage` over `<state>/usage-fixture-override/control.sock` with `X-Fixture-Capability`. Unenrolled providers and a wrong capability are refused; a successful POST commits through the same broker-owned control-file writer as real polling.

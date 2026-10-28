@@ -72,6 +72,17 @@ func confinedTo(path, root string) bool {
 	return strings.HasPrefix(path, root+string(os.PathSeparator))
 }
 
+// effectiveConsumerStateDir matches daemon consumerIntentPath: CLI flag, else
+// CLAUDIA_CONSUMER_STATE_DIR. Isolation must refuse the path the daemon will
+// actually read, not only the flag field.
+func effectiveConsumerStateDir(cli string) string {
+	root := strings.TrimSpace(cli)
+	if root == "" {
+		root = strings.TrimSpace(os.Getenv("CLAUDIA_CONSUMER_STATE_DIR"))
+	}
+	return root
+}
+
 func supervisorContext() bool {
 	for _, key := range []string{"SUPERVISOR_ENABLED", "SUPERVISOR_SERVER_URL", "SUPERVISOR_PROCESS_NAME"} {
 		if strings.TrimSpace(os.Getenv(key)) != "" {
@@ -84,6 +95,11 @@ func supervisorContext() bool {
 func prepareUsageOverride(stateDir, socket string, consumer daemon.Options) (string, error) {
 	if supervisorContext() {
 		return "", fmt.Errorf("usage override refuses supervisor context")
+	}
+	if root := effectiveConsumerStateDir(consumer.ConsumerStateDir); root != "" {
+		if !filepath.IsAbs(root) || !confinedTo(root, stateDir) {
+			return "", fmt.Errorf("usage override refuses consumer state escape")
+		}
 	}
 	if err := validateFixtureDir(stateDir); err != nil {
 		return "", fmt.Errorf("usage override: %w", err)
@@ -117,11 +133,6 @@ func prepareUsageOverride(stateDir, socket string, consumer daemon.Options) (str
 		}
 		if st.Mode()&os.ModeSymlink != 0 {
 			return "", fmt.Errorf("usage override refuses symlink %s", seed)
-		}
-	}
-	if consumer.ConsumerStateDir != "" {
-		if !filepath.IsAbs(consumer.ConsumerStateDir) || !confinedTo(consumer.ConsumerStateDir, stateDir) {
-			return "", fmt.Errorf("usage override refuses consumer state escape")
 		}
 	}
 	overrideDir := filepath.Join(stateDir, overrideSubdir)

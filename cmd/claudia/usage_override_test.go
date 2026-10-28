@@ -109,6 +109,12 @@ func TestT234OverrideRefusesSupervisorAndEscapes(t *testing.T) {
 			want: "usage override refuses consumer state escape",
 		},
 		{
+			name: "consumer env escape",
+			env:  []string{"CLAUDIA_CONSUMER_STATE_DIR=" + outside},
+			args: []string{"broker", "serve", "--usage-fixture-override=grok", "--state-dir", dir},
+			want: "usage override refuses consumer state escape",
+		},
+		{
 			name: "production socket",
 			args: []string{"broker", "serve", "--usage-fixture-override=grok", "--state-dir", dir, "--socket", prodSock},
 			want: "usage override refuses production socket",
@@ -211,12 +217,36 @@ func overrideTestEnv(t *testing.T) []string {
 	t.Helper()
 	env := []string{}
 	for _, e := range os.Environ() {
-		if strings.HasPrefix(e, broker.SocketPathEnv+"=") || strings.HasPrefix(e, "SUPERVISOR_") {
+		if strings.HasPrefix(e, broker.SocketPathEnv+"=") ||
+			strings.HasPrefix(e, "SUPERVISOR_") ||
+			strings.HasPrefix(e, "CLAUDIA_CONSUMER_STATE_DIR=") {
 			continue
 		}
 		env = append(env, e)
 	}
 	return env
+}
+
+func TestT234OverrideRefusesConsumerStateEnvBeforeMutation(t *testing.T) {
+	dir := fixtureTestDir(t)
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	outside := fixtureTestDir(t)
+	for _, key := range []string{"SUPERVISOR_ENABLED", "SUPERVISOR_SERVER_URL", "SUPERVISOR_PROCESS_NAME", broker.SocketPathEnv} {
+		t.Setenv(key, "")
+	}
+	t.Setenv("CLAUDIA_CONSUMER_STATE_DIR", outside)
+	_, err := prepareUsageOverride(dir, "", daemon.Options{})
+	if err == nil || !strings.Contains(err.Error(), "usage override refuses consumer state escape") {
+		t.Fatalf("got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, overrideSubdir)); !os.IsNotExist(err) {
+		t.Fatalf("mutated override dir: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "logs")); !os.IsNotExist(err) {
+		t.Fatalf("wrote logs: %v", err)
+	}
 }
 
 func overridePost(t *testing.T, dir string, readings []claudia.PlanUsage, token string) int {

@@ -18,7 +18,8 @@ var brokerUsageOverride struct {
 	readings map[Provider]PlanUsage
 }
 
-// InstallBrokerUsageOverride installs the CLI-fixed provider allowlist.
+// InstallBrokerUsageOverride installs the CLI-fixed provider allowlist for
+// topology-B isolated brokers (🎯T234). Test-only; not production surface.
 // Readings start empty: an admitted provider with no push is unpublished.
 func InstallBrokerUsageOverride(providers []Provider) error {
 	allow := make(map[Provider]bool, len(providers))
@@ -44,6 +45,7 @@ func InstallBrokerUsageOverride(providers []Provider) error {
 }
 
 // ClearBrokerUsageOverride drops the allowlist and stored readings.
+// Test-only; not production surface.
 func ClearBrokerUsageOverride() {
 	brokerUsageOverride.mu.Lock()
 	brokerUsageOverride.allow = nil
@@ -51,8 +53,8 @@ func ClearBrokerUsageOverride() {
 	brokerUsageOverride.mu.Unlock()
 }
 
-// BrokerUsageOverrideAllows reports whether p is in the installed allowlist.
-func BrokerUsageOverrideAllows(p Provider) bool {
+// brokerUsageOverrideAllows reports whether p is in the installed allowlist.
+func brokerUsageOverrideAllows(p Provider) bool {
 	brokerUsageOverride.mu.Lock()
 	defer brokerUsageOverride.mu.Unlock()
 	return brokerUsageOverride.allow[p]
@@ -60,6 +62,7 @@ func BrokerUsageOverrideAllows(p Provider) bool {
 
 // StoreBrokerUsageOverride records the last pushed readings for admitted
 // providers. Unenrolled providers are refused and nothing is stored.
+// Test-only; not production surface.
 func StoreBrokerUsageOverride(readings []PlanUsage) error {
 	if len(readings) == 0 {
 		return fmt.Errorf("usage override: empty generation")
@@ -101,9 +104,10 @@ func lookupBrokerUsageOverride(p Provider) (PlanUsage, bool) {
 // PollBrokerPlanUsageWithOverride is PollBrokerPlanUsage with a per-provider
 // fetch wrapper: admitted override providers never reach the vendor, and
 // every other provider uses fetch (or the real broker fetch when fetch is nil).
+// Test-only topology-B seam (🎯T234); not production surface.
 func PollBrokerPlanUsageWithOverride(ctx context.Context, clock Clock, fetch func(context.Context, Provider) (PlanUsage, error)) ([]PlanUsage, error) {
 	return PollBrokerPlanUsage(ctx, clock, func(ctx context.Context, provider Provider) (PlanUsage, error) {
-		if BrokerUsageOverrideAllows(provider) {
+		if brokerUsageOverrideAllows(provider) {
 			if u, ok := lookupBrokerUsageOverride(provider); ok {
 				return u, nil
 			}
