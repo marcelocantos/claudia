@@ -138,13 +138,14 @@ function globTool(cwdOf: () => string, boundOf: () => number): AgentTool {
       properties: { pattern: { type: "string" } },
       required: ["pattern"],
     },
-    execute: async (_id: string, params: unknown) => {
+    execute: async (_id: string, params: unknown, signal?: AbortSignal) => {
       const pattern = String((params as { pattern?: string })?.pattern || "*");
       const cwd = cwdOf() || process.cwd();
       const r = await runCommand("/usr/bin/find", [cwd, "-name", pattern], {
         timeoutMs: searchTimeoutMs,
-        maxBuffer: maxOut,
+        maxBuffer: maxOut, signal,
       });
+      if (r.error?.code === "ABORT_ERR") return { ...textResult("Glob aborted", boundOf(), "Glob"), isError: true };
       const lines = (r.stdout || "").split("\n").filter(Boolean).slice(0, 500);
       return textResult(lines.join("\n") || "(no matches)", boundOf(), "Glob");
     },
@@ -164,19 +165,21 @@ function grepTool(cwdOf: () => string, boundOf: () => number, policyOf: () => Sa
       },
       required: ["pattern"],
     },
-    execute: async (_id: string, params: unknown) => {
+    execute: async (_id: string, params: unknown, signal?: AbortSignal) => {
       const p = params as { pattern?: string; path?: string };
       const cwd = cwdOf() || process.cwd();
       const target = p?.path ? under(cwd, p.path, policyOf()) : cwd;
       const rg = await runCommand("rg", ["--no-config", "--no-follow", "-n", "--max-count", "50", "--", String(p?.pattern || ""), target], {
         timeoutMs: searchTimeoutMs,
-        maxBuffer: maxOut,
+        maxBuffer: maxOut, signal,
       });
+      if (rg.error?.code === "ABORT_ERR") return { ...textResult("Grep aborted", boundOf(), "Grep"), isError: true };
       if (rg.error && rg.error.code === "ENOENT") {
         const g = await runCommand("/usr/bin/grep", ["-r", "-n", "--", String(p?.pattern || ""), target], {
           timeoutMs: searchTimeoutMs,
-          maxBuffer: maxOut,
+          maxBuffer: maxOut, signal,
         });
+        if (g.error?.code === "ABORT_ERR") return { ...textResult("Grep aborted", boundOf(), "Grep"), isError: true };
         return textResult((g.stdout || g.stderr || "").slice(0, maxOut) || "(no matches)", boundOf(), "Grep");
       }
       return textResult((rg.stdout || rg.stderr || "").slice(0, maxOut) || "(no matches)", boundOf(), "Grep");
