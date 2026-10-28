@@ -154,10 +154,12 @@ func TestT233BootResumeFailsClosedOnInvalidIntentFile(t *testing.T) {
 	}
 }
 
-// 🎯T233.2: fleet/policy-hold.json is missing (fleet/intent.json is valid
-// and empty) — fail-closed applies symmetrically to either file, not only
-// fleet/intent.json.
-func TestT233BootResumeFailsClosedOnMissingPolicyHoldFile(t *testing.T) {
+// 🎯T233.2 owner decision 2026-10-28: fleet/policy-hold.json MISSING
+// (fleet/intent.json is valid and empty) means "no transient holds right
+// now", NOT fail-closed. A consumer that has never needed to
+// policy-hold anything does not thereby block every AutoStart seat,
+// named/PO included.
+func TestT233BootResumeTreatsMissingPolicyHoldFileAsNoHolds(t *testing.T) {
 	f := newFixture(t)
 	starts := recordStarts(f)
 	consumerRoot := t.TempDir()
@@ -169,7 +171,43 @@ func TestT233BootResumeFailsClosedOnMissingPolicyHoldFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	// fleet/policy-hold.json deliberately absent.
-	writeGrantsTable(t, f.state, autoStart(t, "claudia-po"))
+	writeGrantsTable(t, f.state, autoStart(t, "claudia-po", "jevons-po", "jv-t1020-auto"))
+	opts := f.options(nil)
+	opts.RestartNudge = "-"
+	opts.ResumeConcurrency = 1
+	opts.ConsumerStateDir = consumerRoot
+	f.bootWith(t, opts)
+	<-f.d.resumeDone
+	got := strings.Join(starts(), ",")
+	for _, want := range []string{"claudia-po", "jevons-po", "jv-t1020-auto"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("resume starts = %q, want %s resumed (missing policy-hold.json is not fail-closed)", got, want)
+		}
+	}
+}
+
+// 🎯T233.2 owner decision 2026-10-28, mixed named/PO + auto: a MALFORMED
+// (present but schema-invalid) fleet/policy-hold.json fails closed for
+// EVERY AutoStart seat this registry has — the only distinction this
+// registry carries is the AutoStart bool, so named/PO seats (which are
+// also AutoStart grants in production) are denied right alongside the
+// auto, not exempted.
+func TestT233BootResumeMalformedPolicyHoldBlocksAllAutoStartNamedAndAuto(t *testing.T) {
+	f := newFixture(t)
+	starts := recordStarts(f)
+	consumerRoot := t.TempDir()
+	dir := filepath.Join(consumerRoot, "fleet")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "intent.json"), []byte(`{"agents":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Present but malformed: wrong version.
+	if err := os.WriteFile(filepath.Join(dir, "policy-hold.json"), []byte(`{"version":2,"kind":"policy_hold","updated_at":"2026-10-28T12:00:00Z","holds":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeGrantsTable(t, f.state, autoStart(t, "claudia-po", "jevons-po", "jv-t1020-auto"))
 	opts := f.options(nil)
 	opts.RestartNudge = "-"
 	opts.ResumeConcurrency = 1
@@ -177,7 +215,7 @@ func TestT233BootResumeFailsClosedOnMissingPolicyHoldFile(t *testing.T) {
 	f.bootWith(t, opts)
 	<-f.d.resumeDone
 	if got := starts(); len(got) != 0 {
-		t.Fatalf("resume starts = %v, want none (fail closed on missing policy-hold file)", got)
+		t.Fatalf("resume starts = %v, want none — malformed policy-hold.json blocks named/PO and auto alike", got)
 	}
 }
 
@@ -482,5 +520,91 @@ func TestT233SnapshotBecomesValidDuringResumeGateWait(t *testing.T) {
 	got := strings.Join(starts(), ",")
 	if got != "claudia-po" {
 		t.Fatalf("resume starts = %q, want only claudia-po (valid snapshot published before the gate opened)", got)
+	}
+}
+
+// 🎯T233.2 owner decision 2026-10-28: a Grant for an auto name succeeds
+// when fleet/policy-hold.json is simply absent (no transient holds),
+// with a valid, empty fleet/intent.json alongside it.
+func TestT233GrantSucceedsWhenPolicyHoldFileMissing(t *testing.T) {
+	f := newFixture(t)
+	consumerRoot := t.TempDir()
+	dir := filepath.Join(consumerRoot, "fleet")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "intent.json"), []byte(`{"agents":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// fleet/policy-hold.json deliberately absent.
+	opts := f.options(nil)
+	opts.DisableResume = true
+	opts.ConsumerStateDir = consumerRoot
+	f.bootWith(t, opts)
+
+	c, err := broker.Dial(f.sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	def, err := claudia.EncodeGrantDefinition(claudia.GrantDefinition{AgentDef: claudia.AgentDef{
+		Name: "jv-t1020-auto", WorkDir: t.TempDir(), SessionID: "sid-auto", TermLogPath: "-",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := rawCall(t, c, &broker.Request{ID: "grant", Type: broker.TypeGrant,
+		Grant: &broker.GrantRequest{Name: "jv-t1020-auto", Def: def}})
+	if resp.Type != broker.TypeGranted {
+		t.Fatalf("grant with missing policy-hold file answered %s %+v, want granted", resp.Type, resp.Error)
+	}
+	if f.seatCount() != 1 {
+		t.Fatalf("seat count = %d, want 1", f.seatCount())
+	}
+}
+
+// 🎯T233.2 owner decision 2026-10-28, mixed named/PO + auto: a Grant for
+// EITHER a named/PO seat or an auto is refused while fleet/policy-hold.json
+// is present but malformed — the hard-error path denies every name,
+// not only ones the broken file might have named.
+func TestT233GrantFailsClosedWhenPolicyHoldFileMalformedMixedNamedAndAuto(t *testing.T) {
+	f := newFixture(t)
+	consumerRoot := t.TempDir()
+	dir := filepath.Join(consumerRoot, "fleet")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "intent.json"), []byte(`{"agents":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Present but malformed: duplicate name.
+	if err := os.WriteFile(filepath.Join(dir, "policy-hold.json"), []byte(`{"version":1,"kind":"policy_hold","updated_at":"2026-10-28T12:00:00Z","holds":[{"name":"x","reason":"target_achieved"},{"name":"x","reason":"target_achieved"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	opts := f.options(nil)
+	opts.DisableResume = true
+	opts.ConsumerStateDir = consumerRoot
+	f.bootWith(t, opts)
+
+	c, err := broker.Dial(f.sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	for _, name := range []string{"claudia-po", "jv-t1020-auto"} {
+		def, err := claudia.EncodeGrantDefinition(claudia.GrantDefinition{AgentDef: claudia.AgentDef{
+			Name: name, WorkDir: t.TempDir(), SessionID: "sid-" + name, TermLogPath: "-",
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp := rawCall(t, c, &broker.Request{ID: "grant-" + name, Type: broker.TypeGrant,
+			Grant: &broker.GrantRequest{Name: name, Def: def}})
+		if resp.Type != broker.TypeError || resp.Error == nil || resp.Error.Code != broker.CodeConsumerPolicyHold {
+			t.Fatalf("grant for %s with malformed policy-hold file answered %s %+v, want CodeConsumerPolicyHold", name, resp.Type, resp.Error)
+		}
+	}
+	if f.seatCount() != 0 {
+		t.Fatalf("seat count = %d, want 0 — malformed policy-hold.json blocks named/PO and auto alike", f.seatCount())
 	}
 }

@@ -27,7 +27,7 @@ func (d *Daemon) mergeConsumerIntentStandDown() {
 	}
 	held, failClosed := d.consumerHoldLiveSnapshot()
 	if failClosed {
-		d.log.Warn("consumer fleet intent and/or policy-hold snapshot unavailable; failing closed for AutoStart seats")
+		d.log.Warn("consumer fleet intent and/or policy-hold snapshot unavailable or malformed; failing closed for AutoStart seats")
 		return
 	}
 	if len(held) == 0 {
@@ -46,9 +46,10 @@ func consumerIntentPath(opts Options) string {
 }
 
 // policyHoldPath is the Jevons-owned policy-hold file under the same
-// consumer state dir as fleet/intent.json (🎯T233.2 final owner schema):
-// one root, two files with distinct, non-overlapping meanings — genuine
-// parked/reaped intent vs. transient policy-held autos.
+// consumer state dir as fleet/intent.json (🎯T233.2 owner decision
+// 2026-10-28: TWO_FILES): one root, two files with distinct,
+// non-overlapping meanings — genuine parked/reaped intent vs. transient
+// policy-held autos.
 func policyHoldPath(opts Options) string {
 	return consumerStatePath(opts, claudia.PolicyHoldRelPath)
 }
@@ -69,12 +70,33 @@ func consumerStatePath(opts Options, relPath string) string {
 // fleet/policy-hold.json (transient policy-held autos) — never from a
 // cached field, never from the claims ledger, so every caller sees the
 // same live union regardless of how long it has been since boot or the
-// last grant (🎯T233.2 final owner schema). failClosed is true when a
-// consumer state dir is configured but EITHER file could not be read at
-// all (missing, invalid, or schema-violating); in that case held is nil
-// and every name must be treated as denied — a writer that gets one file
-// right and the other wrong is not "half safe". An unconfigured path (no
-// consumer state dir at all) returns an empty held set and
+// last grant (🎯T233.2).
+//
+// The two files are NOT symmetric (owner decision 2026-10-28):
+//
+//   - fleet/intent.json missing or malformed: fail closed for every
+//     AutoStart name — unchanged from before. This file's whole job is
+//     naming stand-downs; the broker cannot tell "nothing parked" from
+//     "couldn't read it" without the file saying so.
+//   - fleet/policy-hold.json MISSING (no file at that path at all):
+//     treated as "no transient holds right now" — NOT fail closed. A
+//     consumer that has never needed to policy-hold anything, or whose
+//     writer has not started yet, does not thereby block every AutoStart
+//     seat in the fleet.
+//   - fleet/policy-hold.json MALFORMED (present but invalid — bad JSON,
+//     wrong version/kind, a rejected reason, a duplicate name, oversize,
+//     …): fail closed for every AutoStart name, same as an
+//     intent.json problem. A file that exists and claims to be the
+//     schema but isn't is a writer bug, not silence, and is never read
+//     as "nothing held".
+//
+// failClosed=true means held is nil and every name must be denied,
+// whatever category it is — this registry has no "auto" vs "named/PO"
+// distinction on a grant beyond its AutoStart bool, and every grant
+// resumeSeats or Grant/Adopt considers here carries that bool, so a
+// fail-closed verdict from a malformed intent.json or a malformed
+// policy-hold.json denies ALL of them, named/PO included. An unconfigured
+// path (no consumer state dir at all) returns an empty held set and
 // failClosed=false: legacy behaviour, nothing enforced.
 func (d *Daemon) consumerHoldLiveSnapshot() (held map[string]bool, failClosed bool) {
 	intentPath := consumerIntentPath(d.opts)
@@ -86,13 +108,27 @@ func (d *Daemon) consumerHoldLiveSnapshot() (held map[string]bool, failClosed bo
 	if intentErr != nil {
 		d.log.Warn("consumer fleet intent not read", "path", intentPath, "err", intentErr)
 	}
-	policyHeld, policyPresent, policyErr := claudia.PolicyHoldSnapshot(holdPath)
-	if policyErr != nil {
-		d.log.Warn("consumer policy-hold not read", "path", holdPath, "err", policyErr)
-	}
-	if !intentPresent || !policyPresent {
+	if intentErr != nil || !intentPresent {
+		// fleet/intent.json missing or invalid: unchanged fail-closed
+		// policy, independent of fleet/policy-hold.json's state.
 		return nil, true
 	}
+
+	policyHeld, policyPresent, policyErr := claudia.PolicyHoldSnapshot(holdPath)
+	if policyErr != nil {
+		// Malformed, not missing: the file exists and claims to be a
+		// policy-hold snapshot but fails to parse as one. Fail closed —
+		// never read as "nothing held".
+		d.log.Warn("consumer policy-hold malformed; failing closed for AutoStart seats", "path", holdPath, "err", policyErr)
+		return nil, true
+	}
+	if !policyPresent {
+		// Missing, not malformed: no writer has published a
+		// policy-hold.json at all (yet, or ever). That is "no transient
+		// holds right now", not a reason to deny every AutoStart seat.
+		policyHeld = map[string]string{}
+	}
+
 	out := make(map[string]bool, len(stood)+len(policyHeld))
 	for name := range stood {
 		out[name] = true
@@ -107,10 +143,11 @@ func (d *Daemon) consumerHoldLiveSnapshot() (held map[string]bool, failClosed bo
 // read, both files, union) state denies launching name right now. A
 // claim refresh, reattach, or Grant/Adopt cannot revive a name either
 // file still holds: the only way to lift a hold is for the consumer to
-// rewrite the relevant file (🎯T233.2). failClosed is true when a
-// consumer state dir is configured but either snapshot could not be read
-// at all; in that case every name is denied, not just ones a readable
-// file might have named.
+// rewrite the relevant file (🎯T233.2). failClosed is true when
+// fleet/intent.json is missing/invalid, or fleet/policy-hold.json is
+// present but malformed; in that case every name is denied. A MISSING
+// fleet/policy-hold.json alone does not set failClosed — see
+// consumerHoldLiveSnapshot.
 func (d *Daemon) consumerPolicyHold(name string) (deny bool, failClosed bool) {
 	held, failClosed := d.consumerHoldLiveSnapshot()
 	if failClosed {
