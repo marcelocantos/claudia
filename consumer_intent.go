@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 )
@@ -27,10 +28,6 @@ const ConsumerIntentRelPath = "fleet/intent.json"
 // runaway or corrupt writer cannot make the broker hold an unbounded read
 // open on every boot and every grant.
 const ConsumerIntentMaxBytes = 1 << 20 // 1 MiB
-
-type consumerIntentDoc struct {
-	Agents map[string]consumerIntentAgent `json:"agents"`
-}
 
 type consumerIntentAgent struct {
 	State string `json:"state"`
@@ -59,34 +56,82 @@ func ConsumerIntentSnapshot(path string) (stood map[string]bool, present bool, e
 	if strings.TrimSpace(path) == "" {
 		return map[string]bool{}, true, nil
 	}
-	info, statErr := os.Stat(path)
-	if errors.Is(statErr, os.ErrNotExist) {
-		return nil, false, nil
-	}
-	if statErr != nil {
-		return nil, false, statErr
-	}
-	if info.Size() > ConsumerIntentMaxBytes {
-		return nil, false, fmt.Errorf("%s: %d bytes exceeds %d byte limit", path, info.Size(), ConsumerIntentMaxBytes)
-	}
-	raw, err := os.ReadFile(path)
+	// openConsumerIntentFileNoFollow (unix: O_NOFOLLOW|O_NONBLOCK) is the
+	// one syscall that both decides and acts: O_NOFOLLOW fails the open
+	// with ELOOP on a symlink instead of traversing it, and O_NONBLOCK
+	// means opening a FIFO with no writer attached returns immediately
+	// rather than blocking this goroutine forever — there is no separate
+	// Lstat-then-Open TOCTOU window to close here because there is no
+	// separate Lstat; the single open call is both the check and the use
+	// (🎯T233.2 follow-up). The trust boundary this still rests on is the
+	// consumer state dir being private to its writer and this broker, not
+	// an attacker-writable path; that is a deployment property, not
+	// something this function can enforce.
+	f, err := openConsumerIntentFileNoFollow(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, false, nil
 	}
 	if err != nil {
 		return nil, false, err
 	}
-	var doc consumerIntentDoc
-	if err := json.Unmarshal(raw, &doc); err != nil {
+	defer f.Close()
+	// The fd's own Stat is what gets size- and type-checked, not the
+	// path's: whatever the open actually attached to is what gets read.
+	info, err := f.Stat()
+	if err != nil {
+		return nil, false, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, false, fmt.Errorf("%s: refusing non-regular file (mode %v)", path, info.Mode())
+	}
+	if info.Size() > ConsumerIntentMaxBytes {
+		return nil, false, fmt.Errorf("%s: %d bytes exceeds %d byte limit", path, info.Size(), ConsumerIntentMaxBytes)
+	}
+	// Bounded read regardless of what Stat claimed: a file that grows
+	// between stat and read (e.g. a writer appending in place rather than
+	// atomically renaming) is cut off at the limit rather than read
+	// without bound.
+	raw, err := io.ReadAll(io.LimitReader(f, ConsumerIntentMaxBytes+1))
+	if err != nil {
+		return nil, false, err
+	}
+	if int64(len(raw)) > ConsumerIntentMaxBytes {
+		return nil, false, fmt.Errorf("%s: exceeds %d byte limit while reading", path, ConsumerIntentMaxBytes)
+	}
+	// Decode into raw fields first so a document with no "agents" key, or
+	// an explicit "agents": null, is told apart from a genuinely empty
+	// {"agents": {}} — the PO finding this closes (🎯T233.2 follow-up): a
+	// writer that produced {} (missing the expected top-level shape) was
+	// treated the same as an intentional empty snapshot and silently
+	// revived every held name. Only an explicit, present, non-null
+	// "agents" object counts as a valid (possibly empty) snapshot; a
+	// missing or null "agents" key is reported invalid so the caller
+	// fails closed exactly as it would for a missing file.
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
 		return nil, false, fmt.Errorf("%s: %w", path, err)
 	}
-	out := make(map[string]bool, len(doc.Agents))
-	for name, agent := range doc.Agents {
+	agentsRaw, hasAgents := fields["agents"]
+	if !hasAgents || isJSONNull(agentsRaw) {
+		return nil, false, fmt.Errorf("%s: missing or null %q key", path, "agents")
+	}
+	var agents map[string]consumerIntentAgent
+	if err := json.Unmarshal(agentsRaw, &agents); err != nil {
+		return nil, false, fmt.Errorf("%s: %w", path, err)
+	}
+	out := make(map[string]bool, len(agents))
+	for name, agent := range agents {
 		if consumerIntentStoodDown(agent.State) {
 			out[name] = true
 		}
 	}
 	return out, true, nil
+}
+
+// isJSONNull reports whether a raw JSON value is the literal null,
+// allowing for surrounding whitespace.
+func isJSONNull(raw json.RawMessage) bool {
+	return strings.TrimSpace(string(raw)) == "null"
 }
 
 func consumerIntentStoodDown(state string) bool {

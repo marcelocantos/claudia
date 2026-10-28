@@ -271,3 +271,67 @@ func TestT233ClaimRefreshCannotReviveHeldName(t *testing.T) {
 		t.Fatalf("grant after claim refresh answered %s %+v, want still held", resp.Type, resp.Error)
 	}
 }
+
+// 🎯T233.2 PO follow-up: the consumer publishes a hold for an AutoStart
+// auto WHILE resumeSeats is held on opts.resumeGate (a valid, empty
+// snapshot was true at boot). The live re-read inside Select must still
+// see the hold once the gate opens — proving resumeSeats does not decide
+// from whatever was true at daemon construction.
+func TestT233DelayedPolicyHoldDuringResumeGateBlocksLaunch(t *testing.T) {
+	f := newFixture(t)
+	starts := recordStarts(f)
+	consumerRoot := t.TempDir()
+	// Valid, empty snapshot at boot: nothing held yet.
+	writeConsumerIntent(t, consumerRoot, map[string]string{})
+	writeGrantsTable(t, f.state, autoStart(t, "claudia-po", "jv-t1020-auto"))
+	gate := make(chan struct{})
+	opts := f.options(nil)
+	opts.resumeGate = gate
+	opts.ConsumerStateDir = consumerRoot
+
+	f.bootWith(t, opts)
+
+	// The consumer atomically publishes a hold for the auto seat while
+	// resumeSeats is still parked on the gate.
+	writeConsumerIntent(t, consumerRoot, map[string]string{
+		"jv-t1020-auto": "parked",
+	})
+	close(gate)
+	<-f.d.resumeDone
+
+	got := strings.Join(starts(), ",")
+	if got != "claudia-po" {
+		t.Fatalf("resume starts = %q, want only claudia-po (jv-t1020-auto held during the gate wait)", got)
+	}
+}
+
+// 🎯T233.2 PO follow-up: the snapshot is MISSING at daemon construction
+// (so mergeConsumerIntentStandDown's early read sees nothing to merge)
+// but the writer publishes a valid file before the gate opens. The live
+// re-read must use that valid file, not fail closed on stale "missing"
+// information from construction time.
+func TestT233SnapshotBecomesValidDuringResumeGateWait(t *testing.T) {
+	f := newFixture(t)
+	starts := recordStarts(f)
+	consumerRoot := t.TempDir() // no fleet/intent.json at boot
+	writeGrantsTable(t, f.state, autoStart(t, "claudia-po", "jv-t1020-auto"))
+	gate := make(chan struct{})
+	opts := f.options(nil)
+	opts.resumeGate = gate
+	opts.ConsumerStateDir = consumerRoot
+
+	f.bootWith(t, opts)
+
+	// The writer publishes a valid snapshot — with a hold on the auto —
+	// before the gate opens.
+	writeConsumerIntent(t, consumerRoot, map[string]string{
+		"jv-t1020-auto": "parked",
+	})
+	close(gate)
+	<-f.d.resumeDone
+
+	got := strings.Join(starts(), ",")
+	if got != "claudia-po" {
+		t.Fatalf("resume starts = %q, want only claudia-po (valid snapshot published before the gate opened)", got)
+	}
+}

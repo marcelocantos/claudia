@@ -178,11 +178,6 @@ type Daemon struct {
 	seatSub int64
 	// claims records when each grant last had a consumer (🎯T161).
 	claims *seatClaims
-	// consumerIntentFailClosed is true when a consumer state dir is
-	// configured but its fleet-intent snapshot could not be read at boot;
-	// resumeSeats resumes no AutoStart grant until a valid snapshot is
-	// re-read (🎯T233.2). Guarded by mu.
-	consumerIntentFailClosed bool
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -1939,13 +1934,34 @@ func (d *Daemon) resumeSeats() {
 		// Most recently held first; long-unclaimed grants wait for a
 		// consumer to ask for them (🎯T161).
 		Select: func(names []string) []string {
-			d.mu.Lock()
-			failClosed := d.consumerIntentFailClosed
-			d.mu.Unlock()
+			// 🎯T233.2 follow-up: re-read the consumer's fleet intent
+			// fresh here, at the moment resume is actually decided, not
+			// from whatever mergeConsumerIntentStandDown saw at daemon
+			// construction. opts.resumeGate can hold this call open for
+			// an arbitrary time; a writer that only becomes valid (or
+			// only adds/lifts a hold) during that wait must still be
+			// honoured, not missed because an earlier snapshot was cached.
+			intentHeld, failClosed := d.consumerIntentLiveSnapshot()
 			if failClosed {
 				d.log.Warn("consumer fleet intent unavailable; resuming no AutoStart seat this boot",
 					"count", len(names), "grants", strings.Join(names, ","))
 				return nil
+			}
+			if len(intentHeld) > 0 {
+				filtered := make([]string, 0, len(names))
+				var skipped []string
+				for _, name := range names {
+					if intentHeld[name] {
+						skipped = append(skipped, name)
+						continue
+					}
+					filtered = append(filtered, name)
+				}
+				if len(skipped) > 0 {
+					d.log.Info("not resuming seats the consumer's fleet intent currently parks",
+						"count", len(skipped), "grants", strings.Join(skipped, ","))
+				}
+				names = filtered
 			}
 			resume, left := d.claims.resumeOrder(now, unclaimedAfter, names)
 			if len(left) > 0 {
