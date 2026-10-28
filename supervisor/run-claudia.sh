@@ -49,5 +49,10 @@ if [ "${1:-}" = "--print-bin" ]; then
   exit 0
 fi
 
-echo "claudia: running $BIN broker serve" >&2
-exec "$BIN" broker serve
+# 🎯T233.2: pin the Jevons consumer state dir so the broker enforces
+# fleet/intent.json (parked/reaped + policy-held autos) before AutoStart
+# resume and before Grant/Adopt. Override with CLAUDIA_CONSUMER_STATE_DIR.
+CONSUMER_STATE_DIR="${CLAUDIA_CONSUMER_STATE_DIR:-$HOME/.jevons/claudia-consumer}"
+
+echo "claudia: running $BIN broker serve --consumer-state-dir=$CONSUMER_STATE_DIR" >&2
+exec "$BIN" broker serve --consumer-state-dir="$CONSUMER_STATE_DIR"

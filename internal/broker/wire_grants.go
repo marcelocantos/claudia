@@ -126,6 +126,11 @@ const (
 	// plan-usage snapshot shows this provider has no usable capacity.
 	// `claudia broker usage` prints that snapshot.
 	CodePlanExhausted ErrorCode = "plan_exhausted"
+	// CodeConsumerPolicyHold means a Grant/Adopt was refused because the
+	// consumer's durable fleet intent currently parks this name, or
+	// because that intent could not be read at all and the broker fails
+	// closed rather than guess (🎯T233.2).
+	CodeConsumerPolicyHold ErrorCode = "consumer_policy_hold"
 )
 
 // Grant dispositions on release. DispositionStop tears the seat down;
