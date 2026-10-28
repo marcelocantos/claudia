@@ -197,6 +197,7 @@ func serve(args []string) error {
 	stateDir := fs.String("state-dir", "", "grants and logs directory (default: claudia state dir)")
 	socket := fs.String("socket", "", "socket path (default: CLAUDIA_BROKER_SOCKET or the state dir)")
 	fixture := fs.Bool("test-usage-fixture", false, "isolated test-only plan usage control socket (requires private --state-dir)")
+	overrideFlag := fs.String("usage-fixture-override", "", "test-only per-provider usage injection allowlist (comma-separated; ordinary isolated broker)")
 	usageTTL := fs.Duration("usage-ttl", 0, "plan-usage refresh interval (default 5m)")
 	noResume := fs.Bool("no-resume", false, "do not bring back seats held before the last stop")
 	nudge := fs.String("restart-nudge", "", "message for seats relaunched on boot; '-' sends none")
@@ -205,6 +206,23 @@ func serve(args []string) error {
 	bindMCPConsumerFlags(fs, &consumer)
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	var overrideProviders []claudia.Provider
+	if *overrideFlag != "" {
+		if *fixture {
+			return fmt.Errorf("usage override refuses --test-usage-fixture")
+		}
+		parsed, err := parseUsageOverrideProviders(*overrideFlag)
+		if err != nil {
+			return err
+		}
+		forcedSocket, err := prepareUsageOverride(*stateDir, *socket, consumer)
+		if err != nil {
+			return err
+		}
+		*socket = forcedSocket
+		overrideProviders = parsed
+		syscall.Umask(0o077)
 	}
 	if *fixture {
 		if consumer.ConsumerStateDir != "" || len(consumer.MCPSeedStateDirs) != 0 {
@@ -310,6 +328,7 @@ func serve(args []string) error {
 		StateDir:                 *stateDir,
 		UsageTTL:                 *usageTTL,
 		FixtureUsage:             *fixture,
+		UsageOverrideProviders:   overrideProviders,
 		DisableIntel:             *fixture,
 		DisableResume:            *noResume,
 		RestartNudge:             *nudge,
@@ -345,6 +364,15 @@ func serve(args []string) error {
 		}
 		defer closeFixture()
 		log.Info("usage fixture ready", "socket", filepath.Join(*stateDir, fixtureSocket))
+	}
+	if len(overrideProviders) > 0 {
+		closeOverride, err := startUsageOverride(*stateDir)
+		if err != nil {
+			_ = d.Close()
+			return err
+		}
+		defer closeOverride()
+		log.Info("usage override ready", "socket", filepath.Join(*stateDir, overrideSubdir, overrideSocketName), "providers", overrideProviders)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

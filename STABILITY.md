@@ -573,6 +573,25 @@ until the next retarget.
   `TurnCaps func() TurnCaps`) and `NewStubAgentOps(args *StubAgentOps)
   *Agent` — `NewStubAgent` with every delivery verb observable.
 
+Test-only per-provider usage override on an ordinary isolated broker
+(🎯T234, topology B, docs/usage-fixture.md) is HEAD-only. The surface
+checker derives the tables above from the snapshot tag, so these items
+are listed here, all assessed **Fluid**, until the next retarget. They
+are not production surface: `--usage-fixture-override` refuses
+production state, production sockets, supervisor context,
+`--test-usage-fixture`, and consumer state that is not confined to the
+private isolate — including `CLAUDIA_CONSUMER_STATE_DIR` when the CLI
+flag is empty, which is the path the daemon actually reads.
+
+- Functions (`github.com/marcelocantos/claudia`):
+  `InstallBrokerUsageOverride(providers []Provider) error`,
+  `ClearBrokerUsageOverride()`,
+  `StoreBrokerUsageOverride(readings []PlanUsage) error`,
+  `PollBrokerPlanUsageWithOverride(ctx context.Context, clock Clock, fetch func(context.Context, Provider) (PlanUsage, error)) ([]PlanUsage, error)`.
+- `daemon.Options` fields: `UsageOverrideProviders []claudia.Provider`
+  (CLI-fixed allowlist), `UsageProviderFetch func(context.Context, claudia.Provider) (claudia.PlanUsage, error)`
+  (test seam; nil uses real fetch for non-overridden providers).
+
 ## Gaps and prerequisites for 1.0
 
 Concrete items that must be addressed before cutting 1.0.
