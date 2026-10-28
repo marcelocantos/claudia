@@ -49,9 +49,19 @@ if [ "${1:-}" = "--print-bin" ]; then
   exit 0
 fi
 
-# 🎯T233.2: pin the Jevons consumer state dir so the broker enforces
-# fleet/intent.json (parked/reaped + policy-held autos) before AutoStart
-# resume and before Grant/Adopt. Override with CLAUDIA_CONSUMER_STATE_DIR.
+# 🎯T233.2: pin the Jevons consumer state ROOT so the broker enforces,
+# before AutoStart resume and before Grant/Adopt, the UNION of the two
+# distinct files the consumer owns under it: fleet/intent.json (genuine
+# parked/reaped agent intent ONLY) and fleet/policy-hold.json (transient
+# policy-held auto seats ONLY — frontier_consume_disabled |
+# target_achieved). The two files are not interchangeable and neither is
+# a union of both meanings; only this root path is pinned here — the
+# broker reads each file from it. Override with CLAUDIA_CONSUMER_STATE_DIR.
+#
+# NOT YET LIVE (🎯T233.2 land-hold): this flag is wired in source but the
+# installed supervisor is not activated with it until the Jevons writer
+# publishes a validated both-files SHA and the overseer gives explicit
+# rollout GO. Do not treat this script existing as evidence of rollout.
 CONSUMER_STATE_DIR="${CLAUDIA_CONSUMER_STATE_DIR:-$HOME/.jevons/claudia-consumer}"
 
 echo "claudia: running $BIN broker serve --consumer-state-dir=$CONSUMER_STATE_DIR" >&2

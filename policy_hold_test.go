@@ -140,25 +140,95 @@ func TestPolicyHoldSnapshotStrictSchemaRejections(t *testing.T) {
 	}
 }
 
-// 🎯T233.2: a reason outside the documented set is still read (new
-// reasons should not need a broker release) but is distinguishable via
-// PolicyHoldKnownReason for a caller that wants to flag it.
-func TestPolicyHoldSnapshotUnknownReasonIsReadButFlaggable(t *testing.T) {
+// 🎯T233.2 strict final schema (PO release-blocking finding): a reason
+// outside the documented set (frontier_consume_disabled |
+// target_achieved) REJECTS the whole snapshot — it is not read through
+// or silently dropped. PolicyHoldKnownReason itself still reports the
+// known/unknown distinction, used internally by PolicyHoldSnapshot to
+// decide the rejection.
+func TestPolicyHoldSnapshotUnknownReasonRejectsWholeSnapshot(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, PolicyHoldRelPath)
 	writePolicyHoldFile(t, path, `{"version":1,"kind":"policy_hold","updated_at":"2026-10-28T12:00:00Z","holds":[{"name":"jv-x","reason":"something_new"}]}`)
 	held, present, err := PolicyHoldSnapshot(path)
-	if err != nil || !present {
-		t.Fatalf("unknown reason: present=%v err=%v", present, err)
+	if err == nil {
+		t.Fatal("unknown reason: want error")
 	}
-	if held["jv-x"] != "something_new" {
-		t.Fatalf("held = %v", held)
+	if present {
+		t.Fatal("unknown reason reported present")
 	}
-	if PolicyHoldKnownReason(held["jv-x"]) {
-		t.Fatal("something_new reported as a known reason")
+	if held != nil {
+		t.Fatalf("unknown reason: held = %v, want nil", held)
 	}
 	if !PolicyHoldKnownReason(PolicyHoldReasonFrontierConsumeDisabled) || !PolicyHoldKnownReason(PolicyHoldReasonTargetAchieved) {
 		t.Fatal("documented reasons not reported known")
+	}
+	if PolicyHoldKnownReason("something_new") {
+		t.Fatal("something_new reported as a known reason")
+	}
+}
+
+// 🎯T233.2 strict final schema (PO release-blocking finding): an empty
+// reason string REJECTS the whole snapshot, same as an unrecognised one.
+func TestPolicyHoldSnapshotEmptyReasonRejectsWholeSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, PolicyHoldRelPath)
+	writePolicyHoldFile(t, path, `{"version":1,"kind":"policy_hold","updated_at":"2026-10-28T12:00:00Z","holds":[{"name":"jv-x","reason":""}]}`)
+	held, present, err := PolicyHoldSnapshot(path)
+	if err == nil {
+		t.Fatal("empty reason: want error")
+	}
+	if present {
+		t.Fatal("empty reason reported present")
+	}
+	if held != nil {
+		t.Fatalf("empty reason: held = %v, want nil", held)
+	}
+}
+
+// 🎯T233.2 strict final schema (PO release-blocking finding): a
+// repeated name anywhere in "holds" REJECTS the whole snapshot — not
+// last-wins, not first-wins. A writer producing two conflicting rows
+// for the same name is a writer bug, and this is exactly the class of
+// silent-wrong-interpretation case the strict schema exists to refuse.
+func TestPolicyHoldSnapshotDuplicateNameRejectsWholeSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, PolicyHoldRelPath)
+	writePolicyHoldFile(t, path, `{"version":1,"kind":"policy_hold","updated_at":"2026-10-28T12:00:00Z","holds":[
+		{"name":"jv-x","reason":"frontier_consume_disabled"},
+		{"name":"jv-x","reason":"target_achieved"}
+	]}`)
+	held, present, err := PolicyHoldSnapshot(path)
+	if err == nil {
+		t.Fatal("duplicate name: want error")
+	}
+	if present {
+		t.Fatal("duplicate name reported present")
+	}
+	if held != nil {
+		t.Fatalf("duplicate name: held = %v, want nil", held)
+	}
+}
+
+// 🎯T233.2: a duplicate name with the identical reason twice is still
+// rejected — "complete, unique snapshot" means no name repeats at all,
+// not merely no conflicting reasons for the same name.
+func TestPolicyHoldSnapshotDuplicateNameSameReasonStillRejected(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, PolicyHoldRelPath)
+	writePolicyHoldFile(t, path, `{"version":1,"kind":"policy_hold","updated_at":"2026-10-28T12:00:00Z","holds":[
+		{"name":"jv-x","reason":"frontier_consume_disabled"},
+		{"name":"jv-x","reason":"frontier_consume_disabled"}
+	]}`)
+	held, present, err := PolicyHoldSnapshot(path)
+	if err == nil {
+		t.Fatal("duplicate name (same reason): want error")
+	}
+	if present {
+		t.Fatal("duplicate name (same reason) reported present")
+	}
+	if held != nil {
+		t.Fatalf("duplicate name (same reason): held = %v, want nil", held)
 	}
 }
 

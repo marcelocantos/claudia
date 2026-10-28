@@ -34,18 +34,19 @@ const PolicyHoldVersion = 1
 // PolicyHoldKind is the required "kind" discriminator.
 const PolicyHoldKind = "policy_hold"
 
-// Policy-hold reasons the writer may record. The reader does not refuse
-// an unrecognised reason string (new reasons should not need a broker
-// release to become valid) but PolicyHoldKnownReason reports whether one
-// is in the documented set, for callers that want to flag the unknown
-// case rather than enforce it silently.
+// Policy-hold reasons the writer may record. 🎯T233.2 final owner
+// schema (strict): these are the ONLY two reasons PolicyHoldSnapshot
+// accepts — any other value (including empty) fails the whole snapshot
+// closed, it is not silently dropped or passed through. A new reason
+// genuinely needs a broker release before it is valid.
 const (
 	PolicyHoldReasonFrontierConsumeDisabled = "frontier_consume_disabled"
 	PolicyHoldReasonTargetAchieved          = "target_achieved"
 )
 
-// PolicyHoldKnownReason reports whether reason is one of the documented
-// policy-hold reasons.
+// PolicyHoldKnownReason reports whether reason is one of the two
+// documented policy-hold reasons. PolicyHoldSnapshot uses this itself to
+// reject any entry whose reason is not in this set.
 func PolicyHoldKnownReason(reason string) bool {
 	switch reason {
 	case PolicyHoldReasonFrontierConsumeDisabled, PolicyHoldReasonTargetAchieved:
@@ -75,10 +76,14 @@ type policyHoldEntry struct {
 // policy_hold snapshot was found: false for a missing file, invalid
 // JSON, a wrong/missing version or kind, a missing/null/malformed
 // "holds" list, an oversize file, more than PolicyHoldMaxEntries
-// entries, or an entry with an empty name. A caller enforcing a hold
-// MUST fail closed when present is false. An unconfigured path ("" — no
-// consumer state dir) is reported present with an empty map: there is
-// nothing to enforce.
+// entries, an entry with an empty name, an entry with an empty or
+// unrecognised reason (only frontier_consume_disabled and
+// target_achieved are accepted — 🎯T233.2 strict final schema), or a
+// repeated name anywhere in "holds" (the snapshot must be a complete,
+// internally-unique document; it is rejected whole, not narrowed, on
+// any of these). A caller enforcing a hold MUST fail closed when
+// present is false. An unconfigured path ("" — no consumer state dir)
+// is reported present with an empty map: there is nothing to enforce.
 func PolicyHoldSnapshot(path string) (held map[string]string, present bool, err error) {
 	if strings.TrimSpace(path) == "" {
 		return map[string]string{}, true, nil
@@ -117,11 +122,30 @@ func PolicyHoldSnapshot(path string) (held map[string]string, present bool, err 
 	if len(entries) > PolicyHoldMaxEntries {
 		return nil, false, fmt.Errorf("%s: %d holds exceeds %d entry limit", path, len(entries), PolicyHoldMaxEntries)
 	}
+	// Strict v1 (PO finding, release-blocking): a snapshot is REJECTED
+	// outright — not silently narrowed — if any entry has an empty or
+	// unrecognised reason, or if any name repeats. "Complete, unique
+	// snapshot" means every entry is individually valid and the whole
+	// document is internally consistent; a writer bug that produces two
+	// conflicting rows for one name, or a reason outside the documented
+	// set, is exactly the kind of silent-wrong-interpretation case this
+	// reader exists to refuse rather than paper over with last-wins or
+	// best-effort reads.
 	out := make(map[string]string, len(entries))
 	for i, e := range entries {
 		name := strings.TrimSpace(e.Name)
 		if name == "" {
 			return nil, false, fmt.Errorf("%s: holds[%d]: empty name", path, i)
+		}
+		if strings.TrimSpace(e.Reason) == "" {
+			return nil, false, fmt.Errorf("%s: holds[%d] (%q): empty reason", path, i, name)
+		}
+		if !PolicyHoldKnownReason(e.Reason) {
+			return nil, false, fmt.Errorf("%s: holds[%d] (%q): reason %q is not %s or %s", path, i, name, e.Reason,
+				PolicyHoldReasonFrontierConsumeDisabled, PolicyHoldReasonTargetAchieved)
+		}
+		if _, dup := out[name]; dup {
+			return nil, false, fmt.Errorf("%s: holds[%d]: duplicate name %q", path, i, name)
 		}
 		out[name] = e.Reason
 	}
