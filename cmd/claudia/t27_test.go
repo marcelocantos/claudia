@@ -126,6 +126,26 @@ func TestSupervisorRunScriptPrefersHomebrewOpt(t *testing.T) {
 	}
 }
 
+// 🎯T233.2: the installed supervisor pins the canonical Jevons consumer
+// state path so the broker enforces fleet/intent.json before AutoStart
+// resume and Grant/Adopt, with an env override for non-default installs.
+func TestSupervisorRunScriptPinsConsumerStateDir(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", "supervisor", "run-claudia.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	for _, want := range []string{
+		"--consumer-state-dir=",
+		"CLAUDIA_CONSUMER_STATE_DIR",
+		"$HOME/.jevons/claudia-consumer",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("run-claudia.sh missing %q:\n%s", want, s)
+		}
+	}
+}
+
 func TestHomebrewFormulaStartsBrokerServe(t *testing.T) {
 	body, err := os.ReadFile(filepath.Join("..", "..", "tapper", "formula_includes.rb"))
 	if err != nil {

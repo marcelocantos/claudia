@@ -763,6 +763,21 @@ func ownedBy(c *broker.ClientConn, name string) {
 
 func (d *Daemon) handleGrant(c *broker.ClientConn, req *broker.Request) {
 	name := req.Grant.Name
+	// 🎯T233.2 final owner schema: the consumer's current state — the
+	// union of fleet/intent.json (genuine parked/reaped) and
+	// fleet/policy-hold.json (transient policy-held autos) — is read
+	// fresh here, before any Register/Launch/Adopt/noteHeld. An entry in
+	// either file for this name refuses the grant, whether this is a
+	// first launch, a reattach, or a reclaim. Only the consumer rewriting
+	// the relevant file lifts this; nothing on this path does.
+	if deny, failClosed := d.consumerPolicyHold(name); deny {
+		msg := fmt.Sprintf("consumer fleet intent/policy-hold currently parks %s", name)
+		if failClosed {
+			msg = fmt.Sprintf("consumer fleet intent/policy-hold unavailable; %s held until a valid snapshot is written", name)
+		}
+		_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeConsumerPolicyHold, Field: "name", Value: name, Msg: msg})
+		return
+	}
 	wire, err := claudia.DecodeGrantDefinition(req.Grant.Def)
 	if err != nil {
 		_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeMalformed, Field: "def", Msg: err.Error()})
@@ -1921,6 +1936,39 @@ func (d *Daemon) resumeSeats() {
 		// Most recently held first; long-unclaimed grants wait for a
 		// consumer to ask for them (🎯T161).
 		Select: func(names []string) []string {
+			// 🎯T233.2 final owner schema: re-read BOTH of the
+			// consumer's state files (fleet/intent.json genuine
+			// parked/reaped, fleet/policy-hold.json transient
+			// policy-held autos) fresh here, at the moment resume is
+			// actually decided, not from whatever
+			// mergeConsumerIntentStandDown saw at daemon construction.
+			// opts.resumeGate can hold this call open for an arbitrary
+			// time; a writer that only becomes valid (or only
+			// adds/lifts a hold in either file) during that wait must
+			// still be honoured, not missed because an earlier snapshot
+			// was cached.
+			consumerHeld, failClosed := d.consumerHoldLiveSnapshot()
+			if failClosed {
+				d.log.Warn("consumer fleet intent/policy-hold unavailable; resuming no AutoStart seat this boot",
+					"count", len(names), "grants", strings.Join(names, ","))
+				return nil
+			}
+			if len(consumerHeld) > 0 {
+				filtered := make([]string, 0, len(names))
+				var skipped []string
+				for _, name := range names {
+					if consumerHeld[name] {
+						skipped = append(skipped, name)
+						continue
+					}
+					filtered = append(filtered, name)
+				}
+				if len(skipped) > 0 {
+					d.log.Info("not resuming seats the consumer's fleet intent/policy-hold currently parks",
+						"count", len(skipped), "grants", strings.Join(skipped, ","))
+				}
+				names = filtered
+			}
 			resume, left := d.claims.resumeOrder(now, unclaimedAfter, names)
 			if len(left) > 0 {
 				d.log.Info("not resuming seats no consumer has held recently; a grant request still starts them",

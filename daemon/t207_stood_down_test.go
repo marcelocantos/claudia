@@ -85,6 +85,13 @@ func TestT207BrokerRestartSkipsIntentParkedSeat(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(intentDir, "intent.json"), []byte(intent), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// 🎯T233.2 final owner schema: fleet/policy-hold.json is the second
+	// required state file under the same consumer root; a valid, empty
+	// one here keeps this test about fleet/intent.json alone.
+	policyHold := `{"version":1,"kind":"policy_hold","updated_at":"2026-10-28T12:00:00Z","holds":[]}`
+	if err := os.WriteFile(filepath.Join(intentDir, "policy-hold.json"), []byte(policyHold), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	opts := f.options(nil)
 	opts.RestartNudge = "-"
 	opts.ResumeConcurrency = 1
