@@ -10,7 +10,8 @@ import (
 	"syscall"
 )
 
-// openConsumerIntentFileNoFollow opens path for reading with O_NOFOLLOW (a
+// openStateFileNoFollow opens a consumer-state JSON file (fleet/intent.json,
+// fleet/policy-hold.json) for reading with O_NOFOLLOW (a
 // symlink at path fails the open with ELOOP, so it is never silently
 // traversed) and O_NONBLOCK (opening a FIFO with no writer attached
 // returns immediately instead of blocking the calling goroutine
@@ -19,7 +20,7 @@ import (
 // caller still re-checks the resulting fd's own Stat().Mode() before
 // trusting it as a regular file, since O_NOFOLLOW/O_NONBLOCK alone do not
 // certify that (🎯T233.2 follow-up).
-func openConsumerIntentFileNoFollow(path string) (*os.File, error) {
+func openStateFileNoFollow(path string) (*os.File, error) {
 	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		return nil, &os.PathError{Op: "open", Path: path, Err: err}
