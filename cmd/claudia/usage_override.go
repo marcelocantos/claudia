@@ -83,11 +83,19 @@ func effectiveConsumerStateDir(cli string) string {
 	return root
 }
 
+// supervisorContext checks each name as its own literal os.Getenv call (not a
+// loop over a variable key): the live-test census (internal/livegate)
+// statically classifies os.Getenv by its literal argument, and a non-literal
+// key is unclassifiable and flagged (🎯T234 follow-up).
 func supervisorContext() bool {
-	for _, key := range []string{"SUPERVISOR_ENABLED", "SUPERVISOR_SERVER_URL", "SUPERVISOR_PROCESS_NAME"} {
-		if strings.TrimSpace(os.Getenv(key)) != "" {
-			return true
-		}
+	if strings.TrimSpace(os.Getenv("SUPERVISOR_ENABLED")) != "" {
+		return true
+	}
+	if strings.TrimSpace(os.Getenv("SUPERVISOR_SERVER_URL")) != "" {
+		return true
+	}
+	if strings.TrimSpace(os.Getenv("SUPERVISOR_PROCESS_NAME")) != "" {
+		return true
 	}
 	return false
 }
