@@ -18,6 +18,14 @@ import { createMockModel, MockModel, registerMockApi } from "@oh-my-pi/pi-ai/pro
 globalThis.fetch = (async () => { throw new Error("unexpected fixture fetch"); }) as typeof fetch;
 registerMockApi();
 const holdMs = 10 * 60 * 1000;
+function unpairedToolCall(messages: { role?: string; content?: unknown }[]): boolean {
+  let pending = false;
+  for (const m of messages) {
+    if (m.role === "assistant" && Array.isArray(m.content) && m.content.some((c: { type?: string }) => c?.type === "toolCall")) pending = true;
+    if (m.role === "toolResult") pending = false;
+  }
+  return pending;
+}
 const model = createMockModel({ provider: "anthropic", id: "claude-sonnet-5", handler: context => {
   const users = context.messages.filter(message => message.role === "user");
   const last = users.at(-1);
@@ -27,6 +35,13 @@ const model = createMockModel({ provider: "anthropic", id: "claude-sonnet-5", ha
     const marker = text.slice("BASH_CANCEL ".length);
     return { content: [{ type: "toolCall", id: "cancel-bash", name: "Bash", arguments: { command: `sleep 60 & child=$!; echo $child > '${marker}'; wait $child`, timeout: 65 } }] };
   }
+  // 🎯T236: an unanswered function call is a rejection, never an empty
+  // successful stop. Pairing must close the call before this prompt.
+  if (unpairedToolCall(context.messages)) {
+    return { content: [], stopReason: "stop" };
+  }
+  const exact = /Reply with exactly:\s*(\S+)/.exec(text);
+  if (exact) return { content: [exact[1]] };
   if (text.includes("HOLD")) return { content: ["never"], delayMs: holdMs };
   if (text.includes("FAIL")) return { stopReason: "error", errorMessage: "fixture provider refusal" };
   return { content: [`reply: ${text}`] };

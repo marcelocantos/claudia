@@ -152,8 +152,14 @@ type Event struct {
 // snapshot's last message for a sidecar started before Error existed: the
 // sidecar outlives broker and host bounces, so an older one may be the one
 // answering. An aborted turn is not a refusal.
+//
+// 🎯T236: an empty assistant after an unanswered tool call is a refusal
+// even when stopReason is not "error" (openai-codex empty end_turn).
 func (ev Event) Refusal() string {
 	if ev.Type != "turn_end" {
+		return ""
+	}
+	if ev.StopReason == "aborted" {
 		return ""
 	}
 	if ev.Error != "" {
@@ -163,23 +169,94 @@ func (ev Event) Refusal() string {
 		return ""
 	}
 	var state struct {
-		Messages []struct {
-			Role         string `json:"role"`
-			StopReason   string `json:"stopReason"`
-			ErrorMessage string `json:"errorMessage"`
-		} `json:"messages"`
+		Messages []snapshotMessage `json:"messages"`
 	}
 	if json.Unmarshal(ev.Snapshot, &state) != nil || len(state.Messages) == 0 {
 		return ""
 	}
 	last := state.Messages[len(state.Messages)-1]
-	if last.Role != "assistant" || last.StopReason != "error" {
+	if last.Role == "assistant" && last.StopReason == "error" {
+		if reason := strings.TrimSpace(last.ErrorMessage); reason != "" {
+			return reason
+		}
+		return "the provider ended the turn with an error"
+	}
+	if reason := unansweredFunctionCallRefusal(state.Messages); reason != "" {
+		return reason
+	}
+	return ""
+}
+
+type snapshotMessage struct {
+	Role         string          `json:"role"`
+	StopReason   string          `json:"stopReason"`
+	ErrorMessage string          `json:"errorMessage"`
+	Content      json.RawMessage `json:"content"`
+	ToolCallID   string          `json:"toolCallId"`
+}
+
+func unansweredFunctionCallRefusal(msgs []snapshotMessage) string {
+	if len(msgs) == 0 {
+		return ""
+	}
+	last := msgs[len(msgs)-1]
+	if last.Role != "assistant" || last.StopReason == "error" || last.StopReason == "aborted" {
+		return ""
+	}
+	if !emptyAssistantContent(last.Content) {
+		return ""
+	}
+	if !snapshotUnpairedToolCall(msgs[:len(msgs)-1]) {
 		return ""
 	}
 	if reason := strings.TrimSpace(last.ErrorMessage); reason != "" {
 		return reason
 	}
-	return "the provider ended the turn with an error"
+	return "provider rejected an unanswered function call"
+}
+
+func snapshotUnpairedToolCall(msgs []snapshotMessage) bool {
+	pending := false
+	for _, m := range msgs {
+		if m.Role == "assistant" && contentHasToolCall(m.Content) {
+			pending = true
+		}
+		if m.Role == "toolResult" {
+			pending = false
+		}
+	}
+	return pending
+}
+
+func contentHasToolCall(raw json.RawMessage) bool {
+	var parts []struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal(raw, &parts) != nil {
+		return false
+	}
+	for _, p := range parts {
+		if p.Type == "toolCall" {
+			return true
+		}
+	}
+	return false
+}
+
+func emptyAssistantContent(raw json.RawMessage) bool {
+	var parts []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(raw, &parts) != nil {
+		return len(strings.TrimSpace(string(raw))) == 0
+	}
+	for _, p := range parts {
+		if p.Type == "toolCall" || strings.TrimSpace(p.Text) != "" {
+			return false
+		}
+	}
+	return true
 }
 
 // Conn is one line-oriented connection to the long-lived sidecar.

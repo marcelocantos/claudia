@@ -176,7 +176,7 @@ test("the first load on a connection is still answered as the load's own reply",
 });
 
 
-test("socket abort of an executing Bash tool kills its sleep child and settles the turn (🎯T235)", async () => {
+test("socket abort of an executing Bash tool kills its sleep child, then a later prompt is answered (🎯T235/🎯T236)", async () => {
   const { dir } = fixture;
   await loadSeat(host, dir, "bash-seat", "bash-session");
   const marker = `${dir}/sleep.pid`;
@@ -198,7 +198,17 @@ test("socket abort of an executing Bash tool kills its sleep child and settles t
       await Bun.sleep(20);
     }
     expect(() => process.kill(pid, 0)).toThrow();
+
+    // 🎯T236: settle the aborted turn, then a separate prompt — not abort+send.
+    const cancelled = await host.next("bash-r1 settled", settled("bash-r1"), 3000);
+    expect(cancelled.receipt.state).toBe("cancelled");
+    host.send(prompt("bash-seat", "bash-session", "bash-r2", "bash-T2", "Reply with exactly: journey-cancel-ok"));
+    const next = await host.next("follow-up turn", e => e.type === "turn_end" && e.turn_id === "bash-T2", 5000);
+    expect(next.error).toBeUndefined();
+    const reply = host.events.filter(e => e.type === "text" && e.turn_id === "bash-T2").map(e => e.text).join("");
+    expect(reply).toBe("journey-cancel-ok");
+    expectEveryAnswerNamesItsTurn(host);
   } finally {
     try { process.kill(pid, "SIGKILL"); } catch {}
   }
-});
+}, 20_000);

@@ -37,6 +37,7 @@ import { codingTools, type SandboxPolicy } from "./coding.ts";
 import { capToolText, toolResultBound } from "./truncate.ts";
 import { awaitHostCall } from "./hostcalls.ts";
 import { ContextOverflow, isOverflow, History, Maintenance, seatConvertToLlm, type MaintenanceHost } from "./maintain.ts";
+import { resetOpenAICodexHistoryAfterCompaction } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
 import type { SeatStore } from "./store.ts";
 import { ReceiptJournal, type RequestReceipt, type ReceiptCause, type ReceiptMessage, type ReceiptTerminalState } from "./receipts.ts";
 import { UsageJournal, measuredStream, measuredCompletion, type UsageFact, type UsagePage } from "./usage.ts";
@@ -430,9 +431,37 @@ export function createSeatAgent(opts: {
   // as the transcript's tail, the next continue() (the abort's queue drain)
   // sent that cancelled input to the model again, ahead of the message the
   // host had sent next (jevons J3-cancel-and-send, 2026-10-19).
+  const resetCodexHistoryAfterAbort = () => {
+    const state = (agent as { providerSessionState?: Map<string, unknown> }).providerSessionState;
+    if (!state) return;
+    // Local pairing is the load-bearing fix. Seats often carry no
+    // providerSessionState (🎯T150 residual); this is a no-op then.
+    resetOpenAICodexHistoryAfterCompaction({
+      providerSessionState: state as never,
+      sessionId: (agent as { sessionId?: string }).sessionId,
+      compaction: { operationId: crypto.randomUUID(), trigger: "auto", reason: "context_limit", phase: "pre_turn", strategy: "memento" } as never,
+    });
+  };
+
+  const closeAbortedToolCalls = (live?: AgentMessage[]) => {
+    const added: ToolResultMessage[] = [];
+    pairUnpairedToolCalls(agent.state.messages, m => {
+      agent.appendMessage(m);
+      added.push(m);
+    }, ABORTED_TOOL_RESULT);
+    if (added.length === 0) return 0;
+    if (live && live !== agent.state.messages) live.push(...added);
+    maint.persist();
+    return added.length;
+  };
+
+  // closeAbortedTail answers an input the abort stopped before the model
+  // answered it. Only an unanswered user message: an assistant toolCall
+  // tail is closed by closeAbortedToolCalls. Closing a toolResult with an
+  // empty aborted assistant was a bad next-request prefix (🎯T236).
   const closeAbortedTail = () => {
     const last = agent.state.messages.at(-1);
-    if (!last || last.role === "assistant") return;
+    if (last?.role !== "user") return;
     const current = agent.state.model;
     agent.appendMessage({
       role: "assistant",
@@ -508,6 +537,7 @@ export function createSeatAgent(opts: {
   };
   agent.addBeforeModelCall((context) => {
     receipts.assertHealthy();
+    closeAbortedToolCalls(context.messages as AgentMessage[]);
     // Listeners are observational and swallow exceptions in pi-agent-core.
     // This awaited gate is the fail-closed persistence boundary (🎯T206).
     persistBeforeNextModel(context.messages);
@@ -618,7 +648,13 @@ export function createSeatAgent(opts: {
       const before = new Set(agent.state.messages);
       runInvoked = true;
       await run();
-      if (cancelled) closeAbortedTail();
+      if (cancelled) {
+        closeAbortedToolCalls();
+        closeAbortedTail();
+        // Pairing is the load-bearing local fix. Also drop a Codex
+        // previous_response_id that still names the cancelled function call.
+        resetCodexHistoryAfterAbort();
+      }
       const failed = agent.state.messages.at(-1);
       const authError = turnRefusal(agent.state);
       if (failed && !before.has(failed) && authRefusal(authError) && requestCount === 1 &&
@@ -703,7 +739,7 @@ export function createSeatAgent(opts: {
           await agent.continue();
         }
       }
-      refusal = turnRefusal(agent.state);
+      refusal = turnRefusal(agent.state) || emptyAnswerAfterUnpairedTool(agent.state.messages);
       finish(refusal ? "error" : turn?.stop_token ? "stop_token" : "end_turn");
     } catch (err) {
       // Preparation (notably compaction) can fail before Agent.prompt gets
@@ -858,6 +894,19 @@ export function createSeatAgent(opts: {
         await retryDone;
         if (!agent.hasQueuedMessages() || agent.state.isStreaming || turnDone) return;
         try {
+          // continue() from a toolResult tail re-asks the model about the
+          // cancelled tool, then absorbs the next prompt in the same turn
+          // (🎯T236). Take the queued user as a fresh prompt instead.
+          const last = agent.state.messages.at(-1);
+          if (last?.role === "toolResult") {
+            const steering = [...agent.peekSteeringQueue()];
+            const followUps = [...agent.peekFollowUpQueue()];
+            const next = steering[0] ?? followUps[0];
+            if (!next) return;
+            agent.replaceQueues(steering.length ? steering.slice(1) : steering, steering.length ? followUps : followUps.slice(1));
+            await runTurn("", { cause: "interrupt-deliver", turn_id: queuedTurnIDs.get(next) ?? queuedHeadTurnID() }, () => agent.prompt(next));
+            return;
+          }
           await runTurn("", { cause: "interrupt-deliver", turn_id: queuedHeadTurnID() }, () => agent.continue());
         } catch (err) {
           // A turn that began fails as itself. One that never began belongs
@@ -935,6 +984,49 @@ function resolveModel(provider: string, model: string) {
 export const INTERRUPTED_TOOL_RESULT =
   "This tool call was interrupted by a broker or sidecar restart before its result was recorded. " +
   "Its effects are unknown: it may or may not have run. Inspect the current state before repeating it.";
+
+// ABORTED_TOOL_RESULT closes a tool call the host cancelled mid-flight (🎯T236).
+export const ABORTED_TOOL_RESULT =
+  "This tool call was aborted by the host before it finished. Its effects may or may not have happened. Inspect the current state before repeating it.";
+
+export function pairUnpairedToolCalls(
+  messages: readonly AgentMessage[],
+  append: (m: ToolResultMessage) => void,
+  text: string,
+): number {
+  const interrupted = unpairedToolCallTail(messages as AgentMessage[]);
+  if (!interrupted) return 0;
+  let n = 0;
+  for (const call of interrupted.content) {
+    if (call.type !== "toolCall") continue;
+    append({
+      role: "toolResult",
+      toolCallId: call.id,
+      toolName: call.name,
+      content: [{ type: "text", text }],
+      isError: true,
+      timestamp: Date.now(),
+    } as ToolResultMessage);
+    n++;
+  }
+  return n;
+}
+
+// emptyAnswerAfterUnpairedTool is the live J3 shape: openai-codex returned
+// empty stop_reason end_turn / stop after an unanswered function call, and
+// turnRefusal missed it because stopReason was not "error".
+export function emptyAnswerAfterUnpairedTool(messages: readonly unknown[]): string {
+  if (!messages.length) return "";
+  const last = messages[messages.length - 1] as {
+    role?: string; stopReason?: string; errorMessage?: string; content?: unknown;
+  };
+  if (last?.role !== "assistant" || last.stopReason === "error" || last.stopReason === "aborted") return "";
+  const parts = Array.isArray(last.content) ? last.content as Array<{ type?: string; text?: string }> : [];
+  const empty = parts.every(p => p?.type !== "toolCall" && !(p?.text ?? "").trim());
+  if (!empty) return "";
+  if (!unpairedToolCallTail(messages.slice(0, -1) as AgentMessage[])) return "";
+  return (last.errorMessage ?? "").trim() || "provider rejected an unanswered function call";
+}
 
 function bindListedMcp(handlers: CursorExecHandlers, toolsOf: () => AgentTool[]): void {
   const answer = (id: string, name: string, text: string, isError: boolean): ToolResultMessage => ({
