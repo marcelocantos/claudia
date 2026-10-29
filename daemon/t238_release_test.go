@@ -99,3 +99,40 @@ func TestT238ReleaseFencesConcurrentGrant(t *testing.T) {
 		t.Fatalf("release = %+v", done)
 	}
 }
+
+// Reclaim cannot silently rewrite an explicit provider request to the
+// broker's old live provider. A caller needs a typed refusal to choose
+// whether to switch or reattach to the provider actually running.
+func TestT238AdoptRefusesStaleProviderInsteadOfSuccessfulOldBackend(t *testing.T) {
+	f := newFixture(t)
+	f.boot(t, nil)
+	old := rawSeat(t, f.sock, "moved")
+	if err := old.Close(); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "old owner detached", func() bool {
+		f.d.mu.Lock()
+		defer f.d.mu.Unlock()
+		g := f.d.grants["moved"]
+		return g != nil && g.owner == nil
+	})
+	contender, err := broker.Dial(f.sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer contender.Close()
+	def, err := claudia.EncodeGrantDefinition(claudia.GrantDefinition{AgentDef: claudia.AgentDef{
+		Name: "moved", Provider: claudia.ProviderGrok, WorkDir: t.TempDir(), SessionID: "sid-moved", TermLogPath: "-",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	refused := rawCall(t, contender, &broker.Request{ID: "new-provider", Type: broker.TypeGrant,
+		Grant: &broker.GrantRequest{Name: "moved", Def: def, Adopt: true}})
+	if refused.Type != broker.TypeError || refused.Error.Code != broker.CodeProviderMismatch || refused.Error.Field != "provider" {
+		t.Fatalf("adopt returned %+v instead of provider_mismatch", refused.Error)
+	}
+	if f.seatCount() != 1 || f.d.reg.Def("moved").Provider == claudia.ProviderGrok {
+		t.Fatalf("mismatch changed live provider or started another seat: count=%d def=%+v", f.seatCount(), f.d.reg.Def("moved"))
+	}
+}

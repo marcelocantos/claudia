@@ -114,6 +114,9 @@ const (
 	// CodeGrantHeld means the seat exists and a live connection owns it. A
 	// second consumer never silently steals a seat (🎯T2.6 no double-ownership).
 	CodeGrantHeld ErrorCode = "grant_held"
+	// CodeProviderMismatch refuses a reattach whose requested provider differs
+	// from the live seat instead of silently using its old backend.
+	CodeProviderMismatch ErrorCode = "provider_mismatch"
 	// CodeNotAvailable means this broker has no handler for the request: a
 	// bare protocol server without the daemon runtime behind it.
 	CodeNotAvailable ErrorCode = "not_available"

@@ -879,17 +879,14 @@ func (d *Daemon) handleGrant(c *broker.ClientConn, req *broker.Request) {
 	// would overwrite the only durable record of the moved seat.
 	if existing := d.reg.Def(name); existing != nil {
 		if req.Grant.Adopt && def.Provider != existing.Provider {
-			// The seat was switched to another provider in place while the
-			// consumer was away (🎯T195): the session is the same, and the
-			// daemon's record of the provider is the one that is true.
-			d.log.Warn("adopting a seat switched in place over stale consumer definition", "name", name,
-				"consumer_provider", def.Provider, "broker_provider", existing.Provider)
-			// Keep the consumer's current role, goal and host constraints;
-			// only the seat identity belongs to the broker here.
-			def.Provider, def.SessionID, def.Model = existing.Provider, existing.SessionID, existing.Model
-			def.ConnectURL, def.ConnectPID = existing.ConnectURL, existing.ConnectPID
-			def.Materialized, def.GrokConnect = existing.Materialized, existing.GrokConnect
-			def.OMP, def.TermLogPath = existing.OMP, existing.TermLogPath
+			// A stale consumer may request the provider it last knew, while
+			// the daemon's seat has since moved. Do not answer that request
+			// with a successful grant on a different provider. The caller can
+			// explicitly switch the seat or retry with the reported backend.
+			_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeProviderMismatch,
+				Field: "provider", Value: string(def.Provider),
+				Msg: fmt.Sprintf("grant %s requested %s; live seat uses %s", name, def.Provider, existing.Provider)})
+			return
 		} else if def.SessionID == existing.SessionID {
 			def.ConnectURL, def.ConnectPID = existing.ConnectURL, existing.ConnectPID
 			def.Materialized = def.Materialized || existing.Materialized
