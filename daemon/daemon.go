@@ -166,13 +166,17 @@ type Daemon struct {
 	authRecoverDetail func(context.Context, string) claudia.OMPRecoveryResult
 	// authStatus reads plan login health (🎯T924). Tests replace it.
 	authStatus func(context.Context) ([]claudia.PlanLoginHealth, error)
-	opts       Options
-	log        *slog.Logger
-	clock      broker.Clock
-	reg        *claudia.Registry
-	srv        *broker.Server
-	usage      *claudia.PlanUsageMonitor
-	path       string
+	// releaseSettle bounds how long a stop waits for an interrupted turn to
+	// settle before it discards the seat instead (🎯T239). Zero is
+	// defaultReleaseSettle; tests shorten it.
+	releaseSettle time.Duration
+	opts          Options
+	log           *slog.Logger
+	clock         broker.Clock
+	reg           *claudia.Registry
+	srv           *broker.Server
+	usage         *claudia.PlanUsageMonitor
+	path          string
 	// stateDir is the resolved state directory. opts.StateDir is empty on a
 	// default serve and must not be read after construction.
 	stateDir string
@@ -1378,6 +1382,7 @@ func (d *Daemon) handleRelease(c *broker.ClientConn, req *broker.Request) {
 		d.notifyDetached(displaced, name, "released by an operator on another connection")
 		d.emit(broker.EventMessage{Kind: broker.EventDetach, Name: name})
 	case broker.DispositionStop:
+		forceDiscard := false
 		// A plain stop preserves the sidecar conversation, not the provider turn.
 		// Interrupt while its control connection and event pump are still alive:
 		// closing the connection alone leaves the sidecar streaming on the old
@@ -1395,7 +1400,11 @@ func (d *Daemon) handleRelease(c *broker.ClientConn, req *broker.Request) {
 			d.mu.Unlock()
 			err := proc.Quiesce()
 			if err == nil {
-				deadline := time.NewTimer(5 * time.Second)
+				settle := d.releaseSettle
+				if settle <= 0 {
+					settle = defaultReleaseSettle
+				}
+				deadline := time.NewTimer(settle)
 				tick := time.NewTicker(10 * time.Millisecond)
 				for proc.PromptInFlight() {
 					select {
@@ -1412,10 +1421,14 @@ func (d *Daemon) handleRelease(c *broker.ClientConn, req *broker.Request) {
 			}
 			d.mu.Lock()
 			if err != nil {
-				g.stopping = false
-				d.mu.Unlock()
-				_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeReleaseFailed, Field: "name", Value: name, Msg: fmt.Sprintf("could not stop in-flight turn: %v", err)})
-				return
+				// 🎯T239: a stop stops. Failing the release here left the seat
+				// running, detached, on the provider the host was stopping it
+				// to leave (jevons J20 on v0.77.0: a plan-policy park whose
+				// turn did not settle kept calling the exhausted plan). The
+				// turn will not end on request, so the seat's backend goes
+				// with it rather than surviving for a later adopt.
+				d.log.Warn("release stop: interrupted turn did not settle; discarding the seat", "grant", name, "err", err)
+				forceDiscard = true
 			}
 			if d.liveGrantLocked(name) != g {
 				g.stopping = false
@@ -1437,7 +1450,7 @@ func (d *Daemon) handleRelease(c *broker.ClientConn, req *broker.Request) {
 		// leaves the backend's seat for a later start of the same session
 		// to adopt, as before (jevons 🎯T1096).
 		remove := d.reg.RemoveKeepingBackend
-		if req.Release.Discard {
+		if req.Release.Discard || forceDiscard {
 			remove = d.reg.Remove
 		}
 		if err := remove(name); err != nil {
@@ -2202,3 +2215,7 @@ func restartNudgeSpacing(d time.Duration) time.Duration {
 	}
 	return d
 }
+
+// defaultReleaseSettle is how long a stop waits for an interrupted turn to
+// settle before discarding the seat (🎯T239).
+const defaultReleaseSettle = 5 * time.Second

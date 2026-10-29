@@ -70,6 +70,9 @@ var seatCaps = claudia.TurnCaps{CanInterrupt: true, CanSteer: true, SteerPolicy:
 // was asked for recorded.
 type seat struct {
 	inFlight atomic.Bool
+	// stuckTurn makes Interrupt leave the turn open, as a provider whose
+	// turn will not settle on request does (🎯T239).
+	stuckTurn atomic.Bool
 	exited   chan struct{}
 	exitOnce sync.Once
 
@@ -103,8 +106,11 @@ func (s *seat) ops() *claudia.StubAgentOps {
 			s.mu.Lock()
 			s.interrupts++
 			s.mu.Unlock()
-			// A hard-stop closes the turn, as every real provider's does.
-			s.inFlight.Store(false)
+			// A hard-stop closes the turn, as every real provider's does,
+			// unless the fixture models one that will not settle.
+			if !s.stuckTurn.Load() {
+				s.inFlight.Store(false)
+			}
 			return nil
 		},
 		Resize: func(uint16, uint16) error {

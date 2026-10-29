@@ -8,6 +8,7 @@ import (
 	"github.com/marcelocantos/claudia"
 	"github.com/marcelocantos/claudia/internal/broker"
 	"testing"
+	"time"
 )
 
 // Production grant-by-name release must interrupt before it removes the
@@ -172,5 +173,33 @@ func TestT238StoppedSeatStartsOnConsumersSwitchedProvider(t *testing.T) {
 	}
 	if got := f.d.reg.Def("parked"); got.Provider != claudia.ProviderCodex || got.SessionID != "same-session" {
 		t.Fatalf("broker record = %+v, want codex on the same session", got)
+	}
+}
+
+// 🎯T239: a stop whose interrupted turn will not settle still stops. On
+// v0.77.0 the release failed instead and left the seat running, detached, on
+// the provider the host was stopping it to leave (jevons J20).
+func TestT239StopDiscardsASeatWhoseTurnWillNotSettle(t *testing.T) {
+	f := newFixture(t)
+	f.boot(t, nil)
+	f.d.releaseSettle = 50 * time.Millisecond
+	c := rawSeat(t, f.sock, "stuck")
+	old := f.seat(0)
+	old.stuckTurn.Store(true)
+	sent := rawCall(t, c, &broker.Request{ID: "send", Type: broker.TypeSend,
+		Send: &broker.SendRequest{Name: "stuck", Text: "a turn that will not settle"}})
+	if sent.Type != broker.TypeSent || !old.inFlight.Load() {
+		t.Fatalf("fixture did not start the turn: %+v", sent)
+	}
+	released := rawCall(t, c, &broker.Request{ID: "release", Type: broker.TypeRelease,
+		Release: &broker.ReleaseRequest{Name: "stuck", Disposition: broker.DispositionStop}})
+	if released.Type != broker.TypeReleased {
+		t.Fatalf("a stop whose turn would not settle was refused: %+v", released)
+	}
+	if _, _, stops := old.counts(); stops != 1 {
+		t.Fatalf("seat stops = %d, want 1: the seat kept running", stops)
+	}
+	if f.d.reg.Get("stuck") != nil {
+		t.Fatal("the stopped seat is still running in the registry")
 	}
 }
