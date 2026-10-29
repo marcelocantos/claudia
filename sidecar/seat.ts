@@ -33,6 +33,7 @@ import type { AssistantMessage, CursorExecHandlers, CursorMcpCall, Model, ToolRe
 import { classifyMessage, Flag, is as hasFlag } from "@oh-my-pi/pi-ai/error";
 import crypto from "node:crypto";
 import { cursorExecHandlers } from "./cursorexec.ts";
+import { SeatProcessOwnership } from "./killguard.ts";
 import { codingTools, type SandboxPolicy } from "./coding.ts";
 import { capToolText, toolResultBound } from "./truncate.ts";
 import { awaitHostCall } from "./hostcalls.ts";
@@ -231,10 +232,12 @@ export function createSeatAgent(opts: {
   };
   const model = opts.modelOverride ?? resolveModel(opts.provider, opts.model);
   // The bound and the tool list close over `agent` and run only after it exists.
+  const ownership = new SeatProcessOwnership();
   const execHandlers = cursorExecHandlers(
     () => cwd,
     () => toolResultBound(agent.state.model?.contextWindow ?? 0),
     policyOf,
+    ownership,
   );
   bindListedMcp(execHandlers, () => agent.state.tools);
   const streamPersist = { fn: (_message?: ToolResultMessage) => {} };
@@ -282,7 +285,7 @@ export function createSeatAgent(opts: {
     // server executes it. An unlisted name, including a consumer-prefixed
     // one, is not invented here.
     const hosted = (host ?? []).map((t) => jevonsTool(t.name, callBack, t.description, t.input_schema, boundOf));
-    const own = codingTools(() => cwd, boundOf, policyOf);
+    const own = codingTools(() => cwd, boundOf, policyOf, ownership);
     ownToolNames = new Set(own.map((t) => t.name));
     agent.setTools([...own, ...hosted]);
   };

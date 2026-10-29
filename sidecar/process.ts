@@ -25,7 +25,7 @@ export type RunResult = {
 export function runCommand(
   command: string,
   args: string[],
-  opts: { cwd?: string; timeoutMs: number; maxBuffer: number; env?: NodeJS.ProcessEnv; signal?: AbortSignal },
+  opts: { cwd?: string; timeoutMs: number; maxBuffer: number; env?: NodeJS.ProcessEnv; signal?: AbortSignal; onSpawn?: (pid: number) => void },
 ): Promise<RunResult> {
   return new Promise((resolve) => {
     const out: Buffer[] = [];
@@ -70,6 +70,7 @@ export function runCommand(
       return;
     }
     child = spawn(command, args, { cwd: opts.cwd, env: opts.env, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
+    if (child.pid) opts.onSpawn?.(child.pid);
     opts.signal?.addEventListener("abort", onAbort, { once: true });
     if (opts.signal?.aborted) onAbort();
     if (!settled) timer = setTimeout(() => fail("ETIMEDOUT", `${command} timed out after ${opts.timeoutMs}ms`), opts.timeoutMs);

@@ -6,6 +6,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { guardBranchCheckout } from "./branchguard.ts";
+import { guardKill, SeatProcessOwnership } from "./killguard.ts";
 import { protectedPathRefusal, type ProtectedPathRule } from "./protected.ts";
 import { refusalForTruncatedWrite, clearReadView } from "./readguard.ts";
 import { runCommand, type RunResult } from "./process.ts";
@@ -164,6 +165,8 @@ export async function runShell(
   cwdOf: () => string,
   policyOf: () => SandboxPolicy | undefined,
   args: { command: string; workingDirectory?: string; timeoutMs: number; maxBuffer: number; signal?: AbortSignal },
+  ownership: SeatProcessOwnership = new SeatProcessOwnership(),
+  launch: typeof runCommand = runCommand,
 ): Promise<RunResult> {
   if (args.signal?.aborted) return runCommand("/bin/bash", ["-lc", args.command], { timeoutMs: args.timeoutMs, maxBuffer: args.maxBuffer, signal: args.signal });
   const root = cwdOf() || process.cwd();
@@ -171,6 +174,7 @@ export async function runShell(
   if (policyOf()?.mode === "read-only") throw new Error("read-only seat: shell refused");
   const refusal = await guardBranchCheckout(cwd, args.command);
   if (refusal?.verdict === "deny") throw new Error(refusal.message);
+  await guardKill(cwd, args.command, ownership);
   // Branch inspection yields to the event loop. Recheck mutable authority
   // immediately before launch so a queued old handle cannot retain its grant.
   const policy = policyOf();
@@ -180,6 +184,6 @@ export async function runShell(
   const [bin, argv] = policy?.mode === "workspace-write"
     ? ["/usr/bin/sandbox-exec", ["-p", seatbeltProfile(root, policy), "/bin/bash", "-lc", args.command]]
     : ["/bin/bash", ["-lc", args.command]];
-  return runCommand(bin, argv, { cwd, timeoutMs: args.timeoutMs, maxBuffer: args.maxBuffer, env: process.env, signal: args.signal });
+  return launch(bin, argv, { cwd, timeoutMs: args.timeoutMs, maxBuffer: args.maxBuffer, env: process.env, signal: args.signal, onSpawn: (pid) => { void ownership.launched(pid); } });
 }
 

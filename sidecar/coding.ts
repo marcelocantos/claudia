@@ -7,6 +7,7 @@ import { capToolText, toolResultBound, truncateToolResult } from "./truncate.ts"
 import { recordReadView } from "./readguard.ts";
 
 import { runCommand, runShell, under, writeFile, type SandboxPolicy } from "./execution.ts";
+import { SeatProcessOwnership } from "./killguard.ts";
 export { runCommand, realish, writableRoots, checkWrite, seatbeltProfile, under, type RunResult, type SandboxPolicy } from "./execution.ts";
 
 const maxOut = 200_000;
@@ -21,13 +22,14 @@ export function codingTools(
   cwdOf: () => string,
   boundOf: () => number = () => toolResultBound(0),
   policyOf: () => SandboxPolicy | undefined = () => undefined,
+  ownership: SeatProcessOwnership = new SeatProcessOwnership(),
 ): AgentTool[] {
   const policy = policyOf();
   if (policy?.mode === "read-only") {
     return [readTool(cwdOf, boundOf, policyOf), globTool(cwdOf, boundOf), grepTool(cwdOf, boundOf, policyOf)];
   }
   return [
-    bashTool(cwdOf, boundOf, policyOf),
+    bashTool(cwdOf, boundOf, policyOf, ownership),
     readTool(cwdOf, boundOf, policyOf),
     writeTool(cwdOf, boundOf, policyOf),
     globTool(cwdOf, boundOf),
@@ -35,7 +37,7 @@ export function codingTools(
   ];
 }
 
-function bashTool(cwdOf: () => string, boundOf: () => number, policyOf: () => SandboxPolicy | undefined): AgentTool {
+function bashTool(cwdOf: () => string, boundOf: () => number, policyOf: () => SandboxPolicy | undefined, ownership: SeatProcessOwnership): AgentTool {
   return {
     name: "Bash",
     label: "Bash",
@@ -60,7 +62,7 @@ function bashTool(cwdOf: () => string, boundOf: () => number, policyOf: () => Sa
           ? Math.min(Math.max(p.timeout * 1000, bashMinTimeoutMs), bashMaxTimeoutMs)
           : bashTimeoutMs;
       try {
-        const r = await runShell(cwdOf, policyOf, { command, timeoutMs, maxBuffer: maxOut, signal });
+        const r = await runShell(cwdOf, policyOf, { command, timeoutMs, maxBuffer: maxOut, signal }, ownership);
         const out = `${r.stdout || ""}${r.stderr || ""}`.slice(0, maxOut);
         const status = r.status ?? (r.error ? 1 : 0);
         const abortNote = r.error?.code === "ABORT_ERR" ? `\n${r.error.message}` : "";
