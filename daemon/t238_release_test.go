@@ -136,3 +136,41 @@ func TestT238AdoptRefusesStaleProviderInsteadOfSuccessfulOldBackend(t *testing.T
 		t.Fatalf("mismatch changed live provider or started another seat: count=%d def=%+v", f.seatCount(), f.d.reg.Def("moved"))
 	}
 }
+
+// A seat stopped on one provider and switched in place by its consumer
+// starts on the consumer's provider. The broker's record of a stopped seat is
+// not newer than the consumer's switch: overriding it kept a park's exhausted
+// plan in use (jevons 🎯T1305 / J45, 2026-10-29).
+func TestT238StoppedSeatStartsOnConsumersSwitchedProvider(t *testing.T) {
+	f := newFixture(t)
+	f.boot(t, nil)
+	stopped := claudia.AgentDef{
+		Name: "parked", WorkDir: t.TempDir(), SessionID: "same-session",
+		Provider: claudia.ProviderGrok, Model: "grok-4.5", Materialized: true,
+	}
+	if err := f.d.reg.Register(stopped); err != nil {
+		t.Fatal(err)
+	}
+	if f.d.reg.Get("parked") != nil {
+		t.Fatal("fixture seat is running; the case needs a stopped one")
+	}
+	switched, err := claudia.EncodeGrantDefinition(claudia.GrantDefinition{AgentDef: claudia.AgentDef{
+		Name: "parked", WorkDir: stopped.WorkDir, SessionID: "same-session",
+		Provider: claudia.ProviderCodex, Model: "gpt-6-sol", Materialized: true,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := dialRaw(t, f.sock)
+	resp := rawCall(t, c, &broker.Request{ID: "resume-switched", Type: broker.TypeGrant,
+		Grant: &broker.GrantRequest{Name: "parked", Def: switched, Adopt: true}})
+	if resp.Type != broker.TypeGranted || resp.Granted == nil {
+		t.Fatalf("switched stopped seat was not granted: %+v", resp)
+	}
+	if resp.Granted.Provider != broker.Provider(claudia.ProviderCodex) {
+		t.Fatalf("granted on %s, want the consumer's codex", resp.Granted.Provider)
+	}
+	if got := f.d.reg.Def("parked"); got.Provider != claudia.ProviderCodex || got.SessionID != "same-session" {
+		t.Fatalf("broker record = %+v, want codex on the same session", got)
+	}
+}

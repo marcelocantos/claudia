@@ -879,14 +879,37 @@ func (d *Daemon) handleGrant(c *broker.ClientConn, req *broker.Request) {
 	// would overwrite the only durable record of the moved seat.
 	if existing := d.reg.Def(name); existing != nil {
 		if req.Grant.Adopt && def.Provider != existing.Provider {
-			// A stale consumer may request the provider it last knew, while
-			// the daemon's seat has since moved. Do not answer that request
-			// with a successful grant on a different provider. The caller can
-			// explicitly switch the seat or retry with the reported backend.
-			_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeProviderMismatch,
-				Field: "provider", Value: string(def.Provider),
-				Msg: fmt.Sprintf("grant %s requested %s; live seat uses %s", name, def.Provider, existing.Provider)})
-			return
+			switch {
+			case def.SessionID != existing.SessionID:
+				// The daemon committed a migration to a new session while the
+				// consumer was away: the destination is the only durable
+				// record of the moved seat, so it is authoritative.
+				d.log.Warn("adopting a seat migrated over stale consumer definition", "name", name,
+					"consumer_provider", def.Provider, "broker_provider", existing.Provider)
+				// Keep the consumer's current role, goal and host constraints;
+				// only the seat identity belongs to the broker here.
+				def.Provider, def.SessionID, def.Model = existing.Provider, existing.SessionID, existing.Model
+				def.ConnectURL, def.ConnectPID = existing.ConnectURL, existing.ConnectPID
+				def.Materialized, def.GrokConnect = existing.Materialized, existing.GrokConnect
+				def.OMP, def.TermLogPath = existing.OMP, existing.TermLogPath
+			case d.reg.Get(name) == nil:
+				// 🎯T238: the same session and no running seat. The consumer
+				// switched it in place while it was stopped (a plan-policy
+				// park), so its definition is the newer record and the seat
+				// starts on the requested provider. Overriding it with the
+				// stopped seat's provider kept an exhausted plan in use.
+				d.log.Info("starting a stopped seat on the consumer's switched provider", "name", name,
+					"consumer_provider", def.Provider, "broker_provider", existing.Provider)
+			default:
+				// The same session running on another provider: either side
+				// may be the newer record. Do not answer with a successful
+				// grant on a provider nobody asked for; the caller switches
+				// the seat explicitly or retries with the reported backend.
+				_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeProviderMismatch,
+					Field: "provider", Value: string(def.Provider),
+					Msg: fmt.Sprintf("grant %s requested %s; live seat uses %s", name, def.Provider, existing.Provider)})
+				return
+			}
 		} else if def.SessionID == existing.SessionID {
 			def.ConnectURL, def.ConnectPID = existing.ConnectURL, existing.ConnectPID
 			def.Materialized = def.Materialized || existing.Materialized
