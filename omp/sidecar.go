@@ -53,6 +53,9 @@ type Message struct {
 	Text      string `json:"text,omitempty"`
 	CallID    string `json:"call_id,omitempty"`
 	Result    string `json:"result,omitempty"`
+	// StopTurn is set only by Release Stop: abort and discard queued work,
+	// unlike an ordinary interrupt that delivers the next queued prompt.
+	StopTurn bool `json:"stop_turn,omitempty"`
 	// Turn fields name who prompted the seat (🎯T870). The sidecar
 	// writes them onto the digest when it accepts the prompt.
 	TurnID        string `json:"turn_id,omitempty"`

@@ -48,12 +48,15 @@ test("busy provider switch refuses with typed identity, never ready", async () =
 
 // An actual released host closes its socket; no stale sidecar work may
 // continue merely because the agent conversation was retained for resume.
-test("closing old host aborts the provider stream but preserves the seat", async () => {
+test("explicit stop aborts once and closing host preserves the seat", async () => {
   const seat = "closed", session_id = "s2";
   host.send({ op: "load", seat, session_id, provider: "xai-oauth", model: "grok-4.3", token: "fixture", cwd: fixture.dir });
   await host.next("xai ready", e => e.type === "ready", 5_000);
   host.send({ op: "prompt", seat, session_id, request_id: "old", turn_id: "old-turn", text: "HOLD old" });
   await host.next("old started", e => e.type === "receipt" && e.request_id === "old" && e.receipt?.state === "started", 5_000);
+  host.send({ op: "abort", seat, stop_turn: true });
+  const stopped = await host.next("explicit stop", e => e.type === "turn_end" && e.turn_id === "old-turn", 5_000);
+  expect(stopped.stop_reason).toBe("aborted");
   host.close();
   const spool = join(fixture.dir, "spool");
   const deadline = Date.now() + 5_000;
@@ -63,6 +66,7 @@ test("closing old host aborts the provider stream but preserves the seat", async
     if (events.includes('"type":"turn_end"') && events.includes('"stop_reason":"aborted"')) break;
     await Bun.sleep(10);
   }
+  expect(events.match(/"type":"turn_end"/g)?.length).toBe(1);
   expect(events).toContain('"stop_reason":"aborted"');
   const sock = connect(join(fixture.dir, "s.sock"));
   await new Promise<void>((resolve, reject) => { sock.once("connect", resolve); sock.once("error", reject); });
@@ -74,5 +78,26 @@ test("closing old host aborts the provider stream but preserves the seat", async
     nextHost.send({ op: "prompt", seat, session_id, request_id: "new", turn_id: "new-turn", text: "fresh" });
     await nextHost.next("new turn", e => e.type === "turn_end" && e.turn_id === "new-turn", 5_000);
     expect(nextHost.events.filter(e => e.type === "text" && e.turn_id === "old-turn")).toEqual([]);
+  } finally { nextHost.close(); }
+}, 15_000);
+
+test("transient disconnect alone leaves turn running for adoption", async () => {
+  const seat = "reattach", session_id = "s3";
+  host.send({ op: "load", seat, session_id, provider: "xai-oauth", model: "grok-4.3", token: "fixture", cwd: fixture.dir });
+  await host.next("xai ready", e => e.type === "ready", 5_000);
+  host.send({ op: "prompt", seat, session_id, request_id: "old", turn_id: "old-turn", text: "HOLD old" });
+  await host.next("old started", e => e.type === "receipt" && e.request_id === "old" && e.receipt?.state === "started", 5_000);
+  host.close();
+  const sock = connect(join(fixture.dir, "s.sock"));
+  await new Promise<void>((resolve, reject) => { sock.once("connect", resolve); sock.once("error", reject); });
+  const nextHost = new Host(sock);
+  try {
+    nextHost.send({ op: "adopt", seat, session_id, provider: "xai-oauth", model: "grok-4.3", token: "fixture", cwd: fixture.dir });
+    const ready = await nextHost.next("adopt", e => e.type === "ready" || e.type === "error", 5_000);
+    expect(ready).toMatchObject({ type: "ready", how: "adopted", provider: "xai-oauth", turn_id: "old-turn" });
+    expect(nextHost.events.filter(e => e.type === "turn_end" && e.turn_id === "old-turn")).toEqual([]);
+    nextHost.send({ op: "abort", seat });
+    const end = await nextHost.next("abort", e => e.type === "turn_end" && e.turn_id === "old-turn", 5_000);
+    expect(end.stop_reason).toBe("aborted");
   } finally { nextHost.close(); }
 }, 15_000);

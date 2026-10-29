@@ -221,6 +221,8 @@ type brokerGrant struct {
 	// return rather than a promise of one (🎯T94). While it is set the
 	// seat is nobody's to take: liveGrantLocked reads it as absent.
 	returning bool
+	// stopping fences new grants while Release Stop waits for a turn to end.
+	stopping bool
 	// ephemeral marks a plumbing seat. Once unowned it is reaped after
 	// claudia.EphemeralGrantTTL. A jevons grant leaves this false.
 	ephemeral bool
@@ -841,6 +843,11 @@ func (d *Daemon) handleGrant(c *broker.ClientConn, req *broker.Request) {
 
 	d.mu.Lock()
 	g := d.liveGrantLocked(name)
+	if g != nil && g.stopping {
+		d.mu.Unlock()
+		_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeGrantHeld, Field: "name", Value: name, Msg: "grant is stopping its turn"})
+		return
+	}
 	if g != nil && g.owner != nil && g.owner != c {
 		d.mu.Unlock()
 		_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeGrantHeld, Field: "name", Value: name,
@@ -916,6 +923,11 @@ func (d *Daemon) handleGrant(c *broker.ClientConn, req *broker.Request) {
 
 	d.mu.Lock()
 	g = d.liveGrantLocked(name)
+	if g != nil && g.stopping {
+		d.mu.Unlock()
+		_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeGrantHeld, Field: "name", Value: name, Msg: "grant is stopping its turn"})
+		return
+	}
 	if g == nil {
 		g = &brokerGrant{name: name}
 		d.grants[name] = g
@@ -1350,10 +1362,18 @@ func (d *Daemon) handleRelease(c *broker.ClientConn, req *broker.Request) {
 		// Interrupt while its control connection and event pump are still alive:
 		// closing the connection alone leaves the sidecar streaming on the old
 		// provider, and a subsequent grant can reattach to that busy seat.
+		if g != nil && g.stopping {
+			d.mu.Unlock()
+			_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeReleaseFailed, Field: "name", Value: name, Msg: "grant is already stopping"})
+			return
+		}
+		if g != nil {
+			g.stopping = true
+		}
 		if g != nil && g.proc != nil && g.proc.PromptInFlight() {
 			proc := g.proc
 			d.mu.Unlock()
-			err := proc.Interrupt()
+			err := proc.Quiesce()
 			if err == nil {
 				deadline := time.NewTimer(5 * time.Second)
 				tick := time.NewTicker(10 * time.Millisecond)
@@ -1372,11 +1392,13 @@ func (d *Daemon) handleRelease(c *broker.ClientConn, req *broker.Request) {
 			}
 			d.mu.Lock()
 			if err != nil {
+				g.stopping = false
 				d.mu.Unlock()
 				_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeReleaseFailed, Field: "name", Value: name, Msg: fmt.Sprintf("could not stop in-flight turn: %v", err)})
 				return
 			}
 			if d.liveGrantLocked(name) != g {
+				g.stopping = false
 				d.mu.Unlock()
 				_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeReleaseFailed, Field: "name", Value: name, Msg: "grant changed while stopping turn"})
 				return

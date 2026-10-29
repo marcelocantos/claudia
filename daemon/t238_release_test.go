@@ -4,6 +4,8 @@
 package daemon
 
 import (
+	"context"
+	"github.com/marcelocantos/claudia"
 	"github.com/marcelocantos/claudia/internal/broker"
 	"testing"
 )
@@ -37,5 +39,63 @@ func TestT238ReleaseStopsInFlightTurnBeforeRegrant(t *testing.T) {
 	_ = c2
 	if f.seatCount() != 2 || old.inFlight.Load() {
 		t.Fatal("old provider survived next grant")
+	}
+}
+
+// A second consumer cannot win the name while the first Release waits for
+// the old stream to settle. The old grant is fenced across the unlocked wait.
+func TestT238ReleaseFencesConcurrentGrant(t *testing.T) {
+	f := newFixture(t)
+	entered, resume := make(chan struct{}), make(chan struct{})
+	f.startHook = func(ctx context.Context, cfg claudia.Config) (*claudia.Agent, error) {
+		s := newSeat()
+		f.mu.Lock()
+		f.seats = append(f.seats, s)
+		f.mu.Unlock()
+		f.ensureStubTranscript(cfg)
+		ops := s.ops()
+		ops.Interrupt = func() error {
+			close(entered)
+			<-resume
+			s.mu.Lock()
+			s.interrupts++
+			s.mu.Unlock()
+			s.inFlight.Store(false)
+			return nil
+		}
+		return claudia.StartStub(ctx, cfg, ops)
+	}
+	f.boot(t, nil)
+	owner := rawSeat(t, f.sock, "fenced")
+	sent := rawCall(t, owner, &broker.Request{ID: "send", Type: broker.TypeSend,
+		Send: &broker.SendRequest{Name: "fenced", Text: "old stream"}})
+	if sent.Type != broker.TypeSent {
+		t.Fatalf("send: %+v", sent)
+	}
+	finished := make(chan *broker.Response, 1)
+	go func() {
+		finished <- rawCall(t, owner, &broker.Request{ID: "stop", Type: broker.TypeRelease,
+			Release: &broker.ReleaseRequest{Name: "fenced", Disposition: broker.DispositionStop}})
+	}()
+	<-entered
+	contender, err := broker.Dial(f.sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer contender.Close()
+	def, err := claudia.EncodeGrantDefinition(claudia.GrantDefinition{AgentDef: claudia.AgentDef{
+		Name: "fenced", WorkDir: t.TempDir(), SessionID: "sid-fenced", TermLogPath: "-",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rejected := rawCall(t, contender, &broker.Request{ID: "contender", Type: broker.TypeGrant,
+		Grant: &broker.GrantRequest{Name: "fenced", Def: def}})
+	close(resume)
+	if rejected.Type != broker.TypeError || rejected.Error.Code != broker.CodeGrantHeld {
+		t.Fatalf("concurrent grant = %+v, want grant_held", rejected)
+	}
+	if done := <-finished; done.Type != broker.TypeReleased {
+		t.Fatalf("release = %+v", done)
 	}
 }

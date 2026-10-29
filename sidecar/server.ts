@@ -102,6 +102,7 @@ type Line = {
   cause?: string;
   cause_detail?: string;
   resume?: string;
+  stop_turn?: boolean;
   tools?: HostTool[];
   preserve?: string;
   pins?: string[];
@@ -155,15 +156,8 @@ const server = createServer((socket) => {
   // Fail it so the turn ends instead of waiting forever (jevons 🎯T927).
   socket.on("close", () => {
     disconnected.abort();
-    // A host stop must not leave its old provider streaming in the sidecar.
-    // Rebound seats belong to their new connection and are not ours to stop.
-    for (const seat of loadedOnConnection) {
-      const loaded = seats.get(seat);
-      if (loaded?.calls === calls) {
-        const ended = loaded.agent.stopTurn();
-        if (ended) write({ seat, type: "turn_end", turn_id: ended.turn_id, request_id: ended.request_id, stop_reason: "aborted", snapshot: loaded.agent.snapshot() });
-      }
-    }
+    // A disconnected broker can reattach mid-turn. Disconnect alone is
+    // neither Release Stop nor an instruction to abort its provider.
     const n = calls.failAll(HOST_CONNECTION_LOST);
     if (n > 0) console.error(`sidecar: host connection closed with ${n} tool call(s) unanswered; failed them`);
   });
@@ -433,7 +427,7 @@ async function handle(
     // that names no turn). How it ended is a typed field, never text: a
     // turn_end's text is the reply, and the word "aborted" there reached
     // the owner as the overseer's answer (jevons 2026-10-21).
-    const ended = loaded.agent.abort();
+    const ended = msg.stop_turn ? loaded.agent.stopTurn() : loaded.agent.abort();
     if (ended) write({ seat, type: "turn_end", turn_id: ended.turn_id, request_id: ended.request_id, stop_reason: "aborted", snapshot: loaded.agent.snapshot() });
     else write({ seat, type: "aborted", snapshot: loaded.agent.snapshot() });
     return;

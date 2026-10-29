@@ -555,6 +555,9 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 			interrupt: func(*Agent) error {
 				return ctrl.send(omp.Message{Op: omp.OpAbort, Seat: req.Config.Name})
 			},
+			quiesce: func(*Agent) error {
+				return ctrl.send(omp.Message{Op: omp.OpAbort, Seat: req.Config.Name, StopTurn: true})
+			},
 			switchModel: func(_ *Agent, provider Provider, model string) error {
 				return ctrl.switchModel(provider, model)
 			},
