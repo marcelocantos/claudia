@@ -18,6 +18,19 @@ const snapshot = async () => rows.map((r) => ({ ...r }));
 const denied = (p: Promise<unknown>, fragment: string) => expect(p).rejects.toThrow(fragment);
 
 describe("killguard pre-exec", () => {
+  test("pre-aborted pkill never calls the shell runner or process snapshot (T235)", async () => {
+    const abort = new AbortController();
+    abort.abort();
+    let snapshots = 0, launches = 0;
+    const owner = new SeatProcessOwnership(async () => { snapshots++; return rows; });
+    const runner: any = async () => { launches++; throw new Error("must not launch"); };
+    const result = await runShell(() => ".", () => undefined,
+      { command: "/usr/bin/pkill -f journey-suite", timeoutMs: 1000, maxBuffer: 1000, signal: abort.signal }, owner, runner);
+    expect(result.error?.code).toBe("ABORT_ERR");
+    expect(result.status).toBeNull();
+    expect(snapshots).toBe(0);
+    expect(launches).toBe(0);
+  });
   test("refuses pattern forms with real snapshot candidates; never launches a shell", async () => {
     const owner = new SeatProcessOwnership(snapshot);
     let launches = 0;

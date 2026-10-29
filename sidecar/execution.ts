@@ -168,7 +168,10 @@ export async function runShell(
   ownership: SeatProcessOwnership = new SeatProcessOwnership(),
   launch: typeof runCommand = runCommand,
 ): Promise<RunResult> {
-  if (args.signal?.aborted) return runCommand("/bin/bash", ["-lc", args.command], { timeoutMs: args.timeoutMs, maxBuffer: args.maxBuffer, signal: args.signal });
+  // A pre-aborted call must never spawn even for a forbidden signal command.
+  // Preserve T235's typed cancellation result without taking the launch path.
+  if (args.signal?.aborted) return { stdout: "", stderr: "", status: null,
+    error: Object.assign(new Error("/bin/bash aborted"), { code: "ABORT_ERR" }) as NodeJS.ErrnoException };
   const root = cwdOf() || process.cwd();
   const cwd = under(root, args.workingDirectory || ".", policyOf());
   if (policyOf()?.mode === "read-only") throw new Error("read-only seat: shell refused");

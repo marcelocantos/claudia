@@ -28,8 +28,12 @@ export const hostProcesses: ProcessSnapshot = async () => {
 export class SeatProcessOwnership {
   constructor(readonly snapshot: ProcessSnapshot = hostProcesses) {}
   private groups = new Map<number, string>();
-  // Called on the child-process launch path. Only a process identity obtained
-  // from the OS (never model text, cwd or an environment variable) is trusted.
+  // Called on the child-process launch path. The OS snapshot is asynchronous:
+  // short-lived leaders may exit before observation, and a later kill racing
+  // registration is denied. Background descendants with an exited leader are
+  // also denied. This deliberately prefers false negatives to guessing PID
+  // ownership; there is no durable cross-restart grant. Only an OS identity
+  // (never model text, cwd or an environment variable) is trusted.
   async launched(pid: number, snapshot: ProcessSnapshot = this.snapshot): Promise<void> {
     let rows: ProcessRow[] | null;
     try { rows = await snapshot(); } catch { return; }
