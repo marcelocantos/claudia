@@ -55,7 +55,8 @@ export function detectBranchCheckout(command: string): BranchCheckout | null {
     if (words[0] === "cd") {
       // `cd` moves every later segment; `cd` alone or `cd -` is unknowable,
       // so later segments are judged where the shell started.
-      dir = words.length > 1 && words[1] !== "-" ? path.join(dir, words[1]) : "";
+      dir = words.length > 1 && words[1] !== "-"
+        ? (path.isAbsolute(words[1]) ? words[1] : path.join(dir, words[1])) : "";
       continue;
     }
     const cmd = stripPrefixes(words);
@@ -68,7 +69,8 @@ export function detectBranchCheckout(command: string): BranchCheckout | null {
       const a = cmd[i];
       if (sub === "") {
         if (a === "-C" && i + 1 < cmd.length) {
-          segDir = dir ? path.join(dir, cmd[++i]) : cmd[++i];
+          const next = cmd[++i];
+          segDir = path.isAbsolute(next) ? next : path.join(segDir, next);
           continue;
         }
         if (a.startsWith("-")) continue;

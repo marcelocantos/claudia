@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { guardDestructiveGit } from "./gitdestructguard.ts";
+import { destructiveGitCommands, guardDestructiveGit } from "./gitdestructguard.ts";
 import { runShell } from "./execution.ts";
 import { SeatProcessOwnership } from "./killguard.ts";
 
@@ -64,6 +64,23 @@ describe("T240 shared clone destructive git pre-exec", () => {
       expect(message).toContain("owner.txt");
       expect(launched).toBe(false);
       await expect(guardDestructiveGit(dir, "cd sub && cd .. && git -C sub/.. stash push")).rejects.toThrow("owner.txt");
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+  test("absolute cd and -C reset prior relative cwd before pre-exec admission", async () => {
+    const dir = fixture();
+    mkdirSync(join(dir, "sub"));
+    let launched = false;
+    try {
+      for (const command of [`cd sub && cd ${dir} && git stash`,
+        `cd sub && cd ${join(dir, "sub")} && cd .. && git stash`,
+        `cd sub && git -C ${dir} stash`]) {
+        expect(destructiveGitCommands(command)[0].dir).toBe(dir);
+        const message = await runShell(() => dir, () => undefined, { command, timeoutMs: 1000, maxBuffer: 1000 },
+          new SeatProcessOwnership(), async () => { launched = true; throw new Error("spawned"); }).catch((e: Error) => e.message);
+        expect(message).toContain("gitdestructguard:");
+        expect(message).toContain("owner.txt");
+        expect(launched).toBe(false);
+      }
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
   test("clean excludes are operands, not pathspecs; names only removed paths", async () => {

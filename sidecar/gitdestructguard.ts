@@ -13,13 +13,18 @@ export function destructiveGitCommands(command: string): Hit[] {
   const hits: Hit[] = [];
   let dir = "";
   for (const words of segments(stripHeredocBodies(command))) {
-    if (words[0] === "cd") { dir = words[1] && words[1] !== "-" ? path.join(dir, words[1]) : ""; continue; }
+    if (words[0] === "cd") {
+      dir = words[1] && words[1] !== "-"
+        ? (path.isAbsolute(words[1]) ? words[1] : path.join(dir, words[1])) : "";
+      continue;
+    }
     const cmd = stripPrefixes(words);
     if (path.basename(cmd[0] || "") !== "git") continue;
     let at = 1, target = dir;
     while (at < cmd.length) {
       if (cmd[at] === "-C" && cmd[at + 1]) {
-        target = target ? path.join(target, cmd[at + 1]) : cmd[at + 1]; at += 2;
+        const next = cmd[at + 1];
+        target = path.isAbsolute(next) ? next : path.join(target, next); at += 2;
       } else if (cmd[at].startsWith("-")) at++;
       else break;
     }
