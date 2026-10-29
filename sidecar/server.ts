@@ -102,6 +102,7 @@ type Line = {
   cause?: string;
   cause_detail?: string;
   resume?: string;
+  stop_turn?: boolean;
   tools?: HostTool[];
   preserve?: string;
   pins?: string[];
@@ -155,6 +156,8 @@ const server = createServer((socket) => {
   // Fail it so the turn ends instead of waiting forever (jevons 🎯T927).
   socket.on("close", () => {
     disconnected.abort();
+    // A disconnected broker can reattach mid-turn. Disconnect alone is
+    // neither Release Stop nor an instruction to abort its provider.
     const n = calls.failAll(HOST_CONNECTION_LOST);
     if (n > 0) console.error(`sidecar: host connection closed with ${n} tool call(s) unanswered; failed them`);
   });
@@ -170,6 +173,7 @@ const server = createServer((socket) => {
           ts: str("ts") ?? new Date().toISOString(),
           seat,
           type: String(ev.type ?? ""),
+          stop_reason: str("stop_reason"),
           text: str("text"),
           call_id: str("call_id"),
           name: str("name"),
@@ -319,6 +323,8 @@ async function handle(
       seat,
       type: "ready",
       how: "adopted",
+      provider: existing.provider,
+      model: existing.model,
       resume_checked: msg.require_resume === true,
       bound_tools: existing.agent.boundToolNames(),
       sandbox: existing.agent.sandboxMode(),
@@ -393,6 +399,8 @@ async function handle(
     write({
       seat,
       type: "ready",
+      provider: msg.provider ?? "",
+      model: (agent.snapshot() as { model?: { id?: string } }).model?.id || msg.model || "",
       how: "launched",
       resume_checked: msg.require_resume === true,
       restored: agent.restored,
@@ -419,7 +427,7 @@ async function handle(
     // that names no turn). How it ended is a typed field, never text: a
     // turn_end's text is the reply, and the word "aborted" there reached
     // the owner as the overseer's answer (jevons 2026-10-21).
-    const ended = loaded.agent.abort();
+    const ended = msg.stop_turn ? loaded.agent.stopTurn() : loaded.agent.abort();
     if (ended) write({ seat, type: "turn_end", turn_id: ended.turn_id, request_id: ended.request_id, stop_reason: "aborted", snapshot: loaded.agent.snapshot() });
     else write({ seat, type: "aborted", snapshot: loaded.agent.snapshot() });
     return;
@@ -485,6 +493,10 @@ async function switchIfAsked(
   const out = await switchOnLoad(existing, msg, (provider, model) => existing.agent.switchModel(provider, model));
   if (!out.ok) {
     write(errorEvent(msg, seat, out.error, { reason: "switch_refused" }));
+    return false;
+  }
+  if (out.refused && msg.provider && msg.provider !== existing.provider) {
+    write(errorEvent(msg, seat, `loaded seat is ${existing.provider}; cannot switch to ${msg.provider}: ${out.refused}`, { reason: "seat_provider_mismatch" }));
     return false;
   }
   if (out.refused) {

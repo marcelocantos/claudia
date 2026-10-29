@@ -124,6 +124,7 @@ func TestBrokerIdentifiedSendWaitsForReceiptAndPreservesLostAck(t *testing.T) {
 			release := make(chan struct{})
 			var mu sync.Mutex
 			var recorded *omp.RequestReceipt
+			var sockets sync.Map
 			var wg sync.WaitGroup
 			wg.Add(1)
 			go func() {
@@ -134,8 +135,10 @@ func TestBrokerIdentifiedSendWaitsForReceiptAndPreservesLostAck(t *testing.T) {
 						return
 					}
 					wg.Add(1)
+					sockets.Store(conn, struct{}{})
 					go func() {
 						defer wg.Done()
+						defer sockets.Delete(conn)
 						defer conn.Close()
 						r := bufio.NewReader(conn)
 						write := func(ev omp.Event) { raw, _ := json.Marshal(ev); _, _ = conn.Write(append(raw, '\n')) }
@@ -149,8 +152,10 @@ func TestBrokerIdentifiedSendWaitsForReceiptAndPreservesLostAck(t *testing.T) {
 								return
 							}
 							switch msg.Op {
+							case omp.OpAbort:
+								write(omp.Event{Type: "turn_end", Seat: msg.Seat, TurnID: "old-turn", StopReason: "aborted"})
 							case omp.OpLoad, omp.OpAdopt:
-								write(omp.Event{Type: "ready", Seat: msg.Seat, How: "launched"})
+								write(omp.Event{Type: "ready", Seat: msg.Seat, How: "launched", Provider: msg.Provider})
 							case omp.OpPrompt:
 								now := time.Now().UTC().Format(time.RFC3339Nano)
 								receipt := &omp.RequestReceipt{Seat: msg.Seat, SessionID: msg.SessionID, RequestID: msg.RequestID, AttemptID: msg.AttemptID, State: omp.ReceiptAccepted, TurnIDs: []string{}, AcceptedAt: now, UpdatedAt: now}
@@ -174,7 +179,11 @@ func TestBrokerIdentifiedSendWaitsForReceiptAndPreservesLostAck(t *testing.T) {
 					}()
 				}
 			}()
-			t.Cleanup(func() { _ = ln.Close(); wg.Wait() })
+			t.Cleanup(func() {
+				_ = ln.Close()
+				sockets.Range(func(k, _ any) bool { _ = k.(net.Conn).Close(); return true })
+				wg.Wait()
+			})
 			opts := f.options(nil)
 			opts.launchers = nil
 			opts.DisableResume = true

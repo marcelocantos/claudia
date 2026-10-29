@@ -448,6 +448,7 @@ type agentControl interface {
 type agentOps struct {
 	attachCommand     func(*Agent) string
 	interrupt         func(*Agent) error
+	quiesce           func(*Agent) error
 	send              func(*Agent, string) error
 	sendWithRequestID func(*Agent, string, string) error
 	// explicitRequestIDs means the backend, not a host FIFO, identifies events.
@@ -1440,6 +1441,22 @@ func (a *Agent) Interrupt() error {
 		return unsupportedCapability(a.provider, "interrupt", "provider did not supply an interrupt operation")
 	}
 	return a.ops.interrupt(a)
+}
+
+// Quiesce stops the current turn and suppresses queued work before a
+// Release Stop. Ordinary Interrupt deliberately retains its queued delivery.
+func (a *Agent) Quiesce() error {
+	a.closeGoal()
+	a.mu.Lock()
+	alive := a.alive
+	a.mu.Unlock()
+	if !alive {
+		return ErrProcessNotRunning
+	}
+	if a.ops.quiesce != nil {
+		return a.ops.quiesce(a)
+	}
+	return a.Interrupt()
 }
 
 // PromptInFlight reports whether the provider has an open prompt/turn

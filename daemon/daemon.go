@@ -221,6 +221,8 @@ type brokerGrant struct {
 	// return rather than a promise of one (🎯T94). While it is set the
 	// seat is nobody's to take: liveGrantLocked reads it as absent.
 	returning bool
+	// stopping fences new grants while Release Stop waits for a turn to end.
+	stopping bool
 	// ephemeral marks a plumbing seat. Once unowned it is reaped after
 	// claudia.EphemeralGrantTTL. A jevons grant leaves this false.
 	ephemeral bool
@@ -841,6 +843,11 @@ func (d *Daemon) handleGrant(c *broker.ClientConn, req *broker.Request) {
 
 	d.mu.Lock()
 	g := d.liveGrantLocked(name)
+	if g != nil && g.stopping {
+		d.mu.Unlock()
+		_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeGrantHeld, Field: "name", Value: name, Msg: "grant is stopping its turn"})
+		return
+	}
 	if g != nil && g.owner != nil && g.owner != c {
 		d.mu.Unlock()
 		_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeGrantHeld, Field: "name", Value: name,
@@ -872,17 +879,37 @@ func (d *Daemon) handleGrant(c *broker.ClientConn, req *broker.Request) {
 	// would overwrite the only durable record of the moved seat.
 	if existing := d.reg.Def(name); existing != nil {
 		if req.Grant.Adopt && def.Provider != existing.Provider {
-			// The seat was switched to another provider in place while the
-			// consumer was away (🎯T195): the session is the same, and the
-			// daemon's record of the provider is the one that is true.
-			d.log.Warn("adopting a seat switched in place over stale consumer definition", "name", name,
-				"consumer_provider", def.Provider, "broker_provider", existing.Provider)
-			// Keep the consumer's current role, goal and host constraints;
-			// only the seat identity belongs to the broker here.
-			def.Provider, def.SessionID, def.Model = existing.Provider, existing.SessionID, existing.Model
-			def.ConnectURL, def.ConnectPID = existing.ConnectURL, existing.ConnectPID
-			def.Materialized, def.GrokConnect = existing.Materialized, existing.GrokConnect
-			def.OMP, def.TermLogPath = existing.OMP, existing.TermLogPath
+			switch {
+			case def.SessionID != existing.SessionID:
+				// The daemon committed a migration to a new session while the
+				// consumer was away: the destination is the only durable
+				// record of the moved seat, so it is authoritative.
+				d.log.Warn("adopting a seat migrated over stale consumer definition", "name", name,
+					"consumer_provider", def.Provider, "broker_provider", existing.Provider)
+				// Keep the consumer's current role, goal and host constraints;
+				// only the seat identity belongs to the broker here.
+				def.Provider, def.SessionID, def.Model = existing.Provider, existing.SessionID, existing.Model
+				def.ConnectURL, def.ConnectPID = existing.ConnectURL, existing.ConnectPID
+				def.Materialized, def.GrokConnect = existing.Materialized, existing.GrokConnect
+				def.OMP, def.TermLogPath = existing.OMP, existing.TermLogPath
+			case d.reg.Get(name) == nil:
+				// 🎯T238: the same session and no running seat. The consumer
+				// switched it in place while it was stopped (a plan-policy
+				// park), so its definition is the newer record and the seat
+				// starts on the requested provider. Overriding it with the
+				// stopped seat's provider kept an exhausted plan in use.
+				d.log.Info("starting a stopped seat on the consumer's switched provider", "name", name,
+					"consumer_provider", def.Provider, "broker_provider", existing.Provider)
+			default:
+				// The same session running on another provider: either side
+				// may be the newer record. Do not answer with a successful
+				// grant on a provider nobody asked for; the caller switches
+				// the seat explicitly or retries with the reported backend.
+				_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeProviderMismatch,
+					Field: "provider", Value: string(def.Provider),
+					Msg: fmt.Sprintf("grant %s requested %s; live seat uses %s", name, def.Provider, existing.Provider)})
+				return
+			}
 		} else if def.SessionID == existing.SessionID {
 			def.ConnectURL, def.ConnectPID = existing.ConnectURL, existing.ConnectPID
 			def.Materialized = def.Materialized || existing.Materialized
@@ -916,6 +943,11 @@ func (d *Daemon) handleGrant(c *broker.ClientConn, req *broker.Request) {
 
 	d.mu.Lock()
 	g = d.liveGrantLocked(name)
+	if g != nil && g.stopping {
+		d.mu.Unlock()
+		_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeGrantHeld, Field: "name", Value: name, Msg: "grant is stopping its turn"})
+		return
+	}
 	if g == nil {
 		g = &brokerGrant{name: name}
 		d.grants[name] = g
@@ -1346,6 +1378,52 @@ func (d *Daemon) handleRelease(c *broker.ClientConn, req *broker.Request) {
 		d.notifyDetached(displaced, name, "released by an operator on another connection")
 		d.emit(broker.EventMessage{Kind: broker.EventDetach, Name: name})
 	case broker.DispositionStop:
+		// A plain stop preserves the sidecar conversation, not the provider turn.
+		// Interrupt while its control connection and event pump are still alive:
+		// closing the connection alone leaves the sidecar streaming on the old
+		// provider, and a subsequent grant can reattach to that busy seat.
+		if g != nil && g.stopping {
+			d.mu.Unlock()
+			_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeReleaseFailed, Field: "name", Value: name, Msg: "grant is already stopping"})
+			return
+		}
+		if g != nil {
+			g.stopping = true
+		}
+		if g != nil && g.proc != nil && g.proc.PromptInFlight() {
+			proc := g.proc
+			d.mu.Unlock()
+			err := proc.Quiesce()
+			if err == nil {
+				deadline := time.NewTimer(5 * time.Second)
+				tick := time.NewTicker(10 * time.Millisecond)
+				for proc.PromptInFlight() {
+					select {
+					case <-tick.C:
+					case <-deadline.C:
+						err = fmt.Errorf("sidecar did not settle the interrupted turn")
+					}
+					if err != nil {
+						break
+					}
+				}
+				tick.Stop()
+				deadline.Stop()
+			}
+			d.mu.Lock()
+			if err != nil {
+				g.stopping = false
+				d.mu.Unlock()
+				_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeReleaseFailed, Field: "name", Value: name, Msg: fmt.Sprintf("could not stop in-flight turn: %v", err)})
+				return
+			}
+			if d.liveGrantLocked(name) != g {
+				g.stopping = false
+				d.mu.Unlock()
+				_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeReleaseFailed, Field: "name", Value: name, Msg: "grant changed while stopping turn"})
+				return
+			}
+		}
 		if g != nil {
 			d.detachLocked(g)
 			if g.proc != nil && g.sub != 0 {

@@ -56,10 +56,10 @@ func (f *seatKeepingSidecar) answer(msg omp.Message) map[string]any {
 			if msg.SessionID != "" && cur != msg.SessionID {
 				return map[string]any{"seat": msg.Seat, "type": "error", "reason": "seat_identity_mismatch", "text": "load seat identity mismatch"}
 			}
-			return map[string]any{"seat": msg.Seat, "type": "ready", "how": "adopted", "resume_checked": msg.RequireResume}
+			return map[string]any{"seat": msg.Seat, "type": "ready", "provider": msg.Provider, "how": "adopted", "resume_checked": msg.RequireResume}
 		}
 		f.seats[msg.Seat] = msg.SessionID
-		return map[string]any{"seat": msg.Seat, "type": "ready", "how": "launched", "resume_checked": msg.RequireResume}
+		return map[string]any{"seat": msg.Seat, "type": "ready", "provider": msg.Provider, "how": "launched", "resume_checked": msg.RequireResume}
 	case omp.OpDrop:
 		cur, ok := f.seats[msg.Seat]
 		if !ok {

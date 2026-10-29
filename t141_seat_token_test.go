@@ -52,7 +52,7 @@ func startT141Sidecar(t *testing.T) *t141Sidecar {
 			s.got <- msg
 			if msg.Op == omp.OpLoad {
 				// A switch names a request id and waits for it (🎯T195).
-				ready, _ := json.Marshal(map[string]any{"type": "ready", "request_id": msg.RequestID})
+				ready, _ := json.Marshal(map[string]any{"type": "ready", "provider": msg.Provider, "request_id": msg.RequestID})
 				_, _ = c.Write(append(ready, '\n'))
 			}
 		}

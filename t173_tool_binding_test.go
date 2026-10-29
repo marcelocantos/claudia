@@ -70,7 +70,7 @@ func TestT173RefusesReadyWithUnboundHostTools(t *testing.T) {
 				if msg.Op == omp.OpAdopt {
 					how = "adopted"
 				}
-				_, _ = io.WriteString(c, `{"type":"ready","how":"`+how+`","bound_tools":["Bash"]}`+"\n")
+				_, _ = io.WriteString(c, `{"type":"ready","provider":"anthropic","how":"`+how+`","bound_tools":["Bash"]}`+"\n")
 			}()
 		}
 	}()

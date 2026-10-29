@@ -68,12 +68,12 @@ func startFakeSidecar(t *testing.T, reply []string) *fakeSidecar {
 				f.mu.Unlock()
 				switch {
 				case msg.RequestID == "":
-					_, _ = c.Write([]byte("{\"type\":\"ready\",\"how\":\"launched\",\"restored\":false}\n"))
+					_, _ = fmt.Fprintf(c, "{\"type\":\"ready\",\"provider\":%q,\"how\":\"launched\",\"restored\":false}\n", msg.Provider)
 				case refuse != "":
 					b, _ := json.Marshal(map[string]any{"seat": msg.Seat, "type": "error", "reason": "switch_refused", "request_id": msg.RequestID, "text": refuse})
 					_, _ = c.Write(append(b, '\n'))
 				default:
-					b, _ := json.Marshal(map[string]any{"seat": msg.Seat, "type": "ready", "how": "switched", "request_id": msg.RequestID})
+					b, _ := json.Marshal(map[string]any{"seat": msg.Seat, "type": "ready", "how": "switched", "provider": msg.Provider, "request_id": msg.RequestID})
 					_, _ = c.Write(append(b, '\n'))
 				}
 			case omp.OpPrompt:
