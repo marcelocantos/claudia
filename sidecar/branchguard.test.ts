@@ -117,13 +117,14 @@ describe("the Bash tool's pre-exec guard (🎯T164)", () => {
     }
   });
 
-  test("a path restore in the shared clone is not a branch switch", async () => {
+  test("a path restore in the shared clone is not a branch switch but is refused as destructive", async () => {
     const dir = sharedClone();
     try {
       const run = bash(dir);
       for (const command of ["git checkout .", "git checkout -- README.md", "git checkout HEAD -- README.md", "git checkout README.md"]) {
         const r = await run(command);
-        expect(r.isError).toBeUndefined();
+        expect(r.isError).toBe(true);
+        expect(r.content[0].text).toContain("gitdestructguard:");
       }
       expect(git(dir, "symbolic-ref", "--quiet", "--short", "HEAD")).toBe("steer");
     } finally {

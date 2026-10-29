@@ -112,7 +112,7 @@ export type GitRunner = (dir: string, args: string[]) => Promise<string | null>;
 export const runGit: GitRunner = async (dir, args) => {
   const r = await runCommand("git", ["-C", dir, ...args], { timeoutMs: gitTimeoutMs, maxBuffer: gitMaxBuffer });
   if (r.error || r.status !== 0) return null;
-  return r.stdout.trim();
+  return args[0] === "status" ? r.stdout : r.stdout.trim();
 };
 
 // guardBranchCheckout is the pre-exec check the Bash tool runs: null when the
@@ -143,9 +143,9 @@ export async function guardBranchCheckout(cwd: string, command: string, git: Git
 // Not a shell: just enough to keep a quoted `;` from splitting a command, to
 // drop redirections, and to split on `;`, `&&`, `||`, `|`, `&` and newlines.
 
-const commandPrefixes = new Set(["env", "sudo", "nice", "nohup", "time", "command", "exec", "builtin"]);
+export const commandPrefixes = new Set(["env", "sudo", "nice", "nohup", "time", "command", "exec", "builtin"]);
 
-function stripPrefixes(words: string[]): string[] {
+export function stripPrefixes(words: string[]): string[] {
   let i = 0;
   while (i < words.length) {
     const w = words[i];
@@ -167,7 +167,7 @@ const heredocStart = /<<-?\s*['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?/;
 
 // stripHeredocBodies drops heredoc bodies, which are data that would
 // otherwise lex as commands.
-function stripHeredocBodies(command: string): string {
+export function stripHeredocBodies(command: string): string {
   const lines = command.split("\n");
   const code: string[] = [];
   for (let i = 0; i < lines.length; i++) {
@@ -183,7 +183,7 @@ function stripHeredocBodies(command: string): string {
 
 // segments splits command into simple commands, each a list of words with
 // redirection targets removed.
-function segments(command: string): string[][] {
+export function segments(command: string): string[][] {
   const out: string[][] = [];
   let seg: string[] = [];
   let cur = "";

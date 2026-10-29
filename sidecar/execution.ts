@@ -5,6 +5,7 @@
 // Adapters supply arguments and render results; they do not authorize operations.
 import fs from "node:fs";
 import path from "node:path";
+import { guardDestructiveGit } from "./gitdestructguard.ts";
 import { guardBranchCheckout } from "./branchguard.ts";
 import { guardKill, SeatProcessOwnership } from "./killguard.ts";
 import { protectedPathRefusal, type ProtectedPathRule } from "./protected.ts";
@@ -177,6 +178,7 @@ export async function runShell(
   if (policyOf()?.mode === "read-only") throw new Error("read-only seat: shell refused");
   const refusal = await guardBranchCheckout(cwd, args.command);
   if (refusal?.verdict === "deny") throw new Error(refusal.message);
+  await guardDestructiveGit(cwd, args.command);
   await guardKill(cwd, args.command, ownership);
   // Branch inspection yields to the event loop. Recheck mutable authority
   // immediately before launch so a queued old handle cannot retain its grant.
