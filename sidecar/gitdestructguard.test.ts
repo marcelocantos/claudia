@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { guardDestructiveGit } from "./gitdestructguard.ts";
@@ -51,6 +51,38 @@ describe("T240 shared clone destructive git pre-exec", () => {
       const message = await guardDestructiveGit(dir, "git clean -fx").catch((e: Error) => e.message);
       expect(message).toContain("ignored.txt");
       expect(message).toContain("untracked.txt");
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+  test("cd sub && cd .. evolves cwd and denies stash before shell launch", async () => {
+    const dir = fixture(); mkdirSync(join(dir, "sub"));
+    let launched = false;
+    try {
+      const command = "cd sub && cd .. && git stash";
+      const message = await runShell(() => dir, () => undefined, { command, timeoutMs: 1000, maxBuffer: 1000 },
+        new SeatProcessOwnership(), async () => { launched = true; throw new Error("spawned"); }).catch((e: Error) => e.message);
+      expect(message).toContain("gitdestructguard:");
+      expect(message).toContain("owner.txt");
+      expect(launched).toBe(false);
+      await expect(guardDestructiveGit(dir, "cd sub && cd .. && git -C sub/.. stash push")).rejects.toThrow("owner.txt");
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+  test("clean excludes are operands, not pathspecs; names only removed paths", async () => {
+    const dir = fixture();
+    let launched = false;
+    try {
+      writeFileSync(join(dir, "keep.txt"), "owner keep\n");
+      writeFileSync(join(dir, ".gitignore"), "ignored.txt\n");
+      writeFileSync(join(dir, "ignored.txt"), "owner ignored\n");
+      for (const option of ["-e keep.txt", "--exclude=keep.txt", "--exclude keep.txt"]) {
+        const command = `git clean -fx ${option}`;
+        const message = await runShell(() => dir, () => undefined, { command, timeoutMs: 1000, maxBuffer: 1000 },
+          new SeatProcessOwnership(), async () => { launched = true; throw new Error("spawned"); }).catch((e: Error) => e.message);
+        expect(message).toContain("gitdestructguard:");
+        expect(message).toContain("untracked.txt");
+        expect(message).toContain("ignored.txt");
+        expect(message).not.toContain('"keep.txt"');
+        expect(launched).toBe(false);
+      }
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
   test("-C and cd segments resolve shared clone from another cwd", async () => {

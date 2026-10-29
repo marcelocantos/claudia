@@ -53,6 +53,7 @@ describe("detectBranchCheckout", () => {
     ["heredoc body is data", "cat <<EOF\ngit checkout master\nEOF", null],
     ["-C names the repository", "git -C ../shared checkout master", { ref: "master", dir: "../shared", definite: false }],
     ["cd moves later segments", "cd ../shared && git switch master", { ref: "master", dir: "../shared", definite: true }],
+    ["multiple cd segments evolve the directory", "cd sub && cd .. && git switch master", { ref: "master", dir: ".", definite: true }],
     ["env prefix is stripped", "GIT_DIR=.git env git switch master", { ref: "master", dir: "", definite: true }],
   ];
   for (const [name, command, want] of cases) {
