@@ -10,6 +10,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import type { CursorExecHandlers, ToolResultMessage } from "@oh-my-pi/pi-ai";
 import { runCommand, runShell, under, writeFile, deleteFile, editFile, type SandboxPolicy } from "./execution.ts";
+import { SeatProcessOwnership } from "./killguard.ts";
 import { capToolText, truncateToolResult, toolResultBound } from "./truncate.ts";
 import { recordReadView } from "./readguard.ts";
 
@@ -64,7 +65,7 @@ function sliceLines(body: string, start?: number, count?: number, end?: number):
   return lines.slice(from, to).join("\n");
 }
 
-export function cursorExecHandlers(cwdOf: () => string, boundOf: () => number, policyOf: () => SandboxPolicy | undefined = () => undefined): CursorExecHandlers {
+export function cursorExecHandlers(cwdOf: () => string, boundOf: () => number, policyOf: () => SandboxPolicy | undefined = () => undefined, ownership: SeatProcessOwnership = new SeatProcessOwnership()): CursorExecHandlers {
   const root = () => cwdOf() || process.cwd();
 
   const read = (id: string | undefined, tool: string, p: string, offset?: number, limit?: number) => {
@@ -110,7 +111,7 @@ export function cursorExecHandlers(cwdOf: () => string, boundOf: () => number, p
         workingDirectory: wd,
         timeoutMs: Math.min(Math.max(timeoutMs, 1000), shellMaxMs),
         maxBuffer: maxOut,
-      });
+      }, ownership);
       const out = `${r.stdout || ""}${r.stderr || ""}`.slice(0, maxOut);
       const status = r.status ?? (r.error ? 1 : 0);
       return result(id, "bash", status === 0 ? out || "(no output)" : `exit ${status}\n${out || r.error?.message || ""}`, status !== 0, boundOf());

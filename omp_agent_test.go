@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -490,7 +491,11 @@ func TestOMPSidecarPromptCallsPiAgentCore(t *testing.T) {
 	if strings.Contains(string(manifest), `@oh-my-pi/pi-coding-agent`) {
 		t.Fatal("sidecar/package.json must not depend on the coding-agent SDK")
 	}
-	if !strings.Contains(src, `from "./coding.ts"`) || !strings.Contains(src, "const own = codingTools(() => cwd, boundOf, policyOf);") || !strings.Contains(src, "agent.setTools([...own, ...hosted])") {
+	// The seat must pass its own process-ownership authority into the coding
+	// tools, then bind those tools alongside the hosted tools. Match the call
+	// rather than an exact formatting/string snapshot of the old arity.
+	codingWithOwnership := regexp.MustCompile(`(?s)const\s+own\s*=\s*codingTools\s*\(\s*\(\)\s*=>\s*cwd\s*,\s*boundOf\s*,\s*policyOf\s*,\s*ownership\s*\)`)
+	if !strings.Contains(src, `from "./coding.ts"`) || !codingWithOwnership.MatchString(src) || !strings.Contains(src, "agent.setTools([...own, ...hosted])") {
 		t.Fatal("seat.ts must advertise host coding tools (Bash/Read/Write/Glob/Grep) beside the host's jevons_* tools (🎯T886)")
 	}
 	coding, err := os.ReadFile("sidecar/coding.ts")
