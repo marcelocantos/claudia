@@ -149,17 +149,21 @@ export async function guardKill(cwd: string, command: string, owner: SeatProcess
       throw new Error(`killguard: refusing ${cmd} before signal; candidate processes/PIDs (read-only snapshot): ${names(candidates)}; command was not run`);
     }
     const args = w.slice(1);
-    // Only a literal positive decimal PID is authorizable. Flags such as
-    // -TERM/-s, negative/group targets, substitutions, variables and PID 0
-    // are denied; shell expansion cannot turn a verified PID into another.
-    if (args.length !== 1 || !/^[1-9]\d*$/.test(args[0])) {
+    // Admit only one literal positive PID, optionally with an explicit SIGINT.
+    // No other signal, option, group target or expansion can acquire authority.
+    // The signal spelling does not bypass the same live OS ownership check.
+    const target = args.length === 1 ? args[0]
+      : args.length === 2 && ["-INT", "-SIGINT"].includes(args[0]) ? args[1]
+      : args.length === 3 && args[0] === "-s" && args[1] === "INT" ? args[2]
+      : undefined;
+    if (!target || !/^[1-9]\d*$/.test(target) || !Number.isSafeInteger(Number(target))) {
       const pgrep = /\bpgrep\b/.test(command);
       const match = /\bpgrep\s+([^)]*)/.exec(command);
       const parts = match?.[1].trim().split(/\s+/) ?? [];
       const candidates = pgrep ? candidateRows(rows, parts.filter((x) => !x.startsWith("-")).at(-1) || "", parts.some((x) => x.includes("f"))) : rows.filter((r) => args.includes(String(r.pid)));
       throw new Error(`killguard: refusing ${pgrep ? "kill $(pgrep …)" : "unresolved/group kill"} before signal; candidate processes/PIDs: ${names(candidates)}; command was not run`);
     }
-    const pid = Number(args[0]);
+    const pid = Number(target);
     const row = rows.find((r) => r.pid === pid);
     if (!row || !owner.owns(row, rows)) {
       throw new Error(`killguard: refusing foreign, reused or unowned PID ${pid}; candidate processes/PIDs: ${names(row ? [row] : [])}; command was not run`);

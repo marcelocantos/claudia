@@ -77,6 +77,38 @@ describe("killguard pre-exec", () => {
     await denied(guardKill(".", "kill 410", new SeatProcessOwnership(async () => null)), "snapshot unavailable");
   });
 
+  test("explicit SIGINT uses live provenance on the production Bash path; denial never launches", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "killguard-sigint-"));
+    let current: ProcessRow[] | null = rows.map((r) => ({ ...r }));
+    const owner = new SeatProcessOwnership(async () => current?.map((r) => ({ ...r })) ?? null);
+    await owner.launched(410); // This seat observed its directly launched shell/group leader.
+    let launches = 0;
+    const launch: any = async () => { launches++; return { status: 0, stdout: "no signal executed", stderr: "" }; };
+    const bash = (command: string) => runShell(() => dir, () => undefined,
+      { command, timeoutMs: 1000, maxBuffer: 1000 }, owner, launch);
+    try {
+      for (const command of ["kill -INT 410", "kill -INT 411", "kill -SIGINT 411", "kill -s INT 411"]) {
+        expect((await bash(command)).stdout).toBe("no signal executed");
+      }
+      expect(launches).toBe(4);
+      for (const command of ["kill -INT 520", "kill -INT 0", "kill -INT -410", "kill -INT 411 520",
+        "kill -INT $pid", "kill -INT $(echo 411)", "kill -TERM 411", "kill -s TERM 411", "pkill -INT sleep"]) {
+        await denied(bash(command), "killguard:");
+      }
+      expect(launches).toBe(4);
+      // An exited group leader is not proof of ownership of its remaining child.
+      current = rows.filter((r) => r.pid !== 410).map((r) => r.pid === 411 ? { ...r, ppid: 1 } : { ...r });
+      await denied(bash("kill -INT 411"), "foreign, reused or unowned PID 411");
+      // A new leader at the old PID cannot inherit the old leader's authority.
+      current = rows.map((r) => r.pid === 410 ? { ...r, started: "Fri Oct 30 10:00:00 2026" } : { ...r });
+      await denied(bash("kill -INT 410"), "foreign, reused or unowned PID 410");
+      await denied(bash("kill -INT 411"), "foreign, reused or unowned PID 411");
+      current = null;
+      await denied(bash("kill -INT 411"), "process snapshot unavailable");
+      expect(launches).toBe(4);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   test("both production adapters reach the guard before execution", async () => {
     const dir = mkdtempSync(join(tmpdir(), "killguard-tools-"));
     try {
