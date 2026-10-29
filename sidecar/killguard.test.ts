@@ -44,8 +44,13 @@ describe("killguard pre-exec", () => {
       await denied(guardKill(dir, "pkill -f journey-suite", owner), "520 /usr/bin/journey-suite");
       await denied(guardKill(dir, "killall journey-suite", owner), "520 /usr/bin/journey-suite");
       await denied(guardKill(dir, "kill 520", owner), "foreign");
-      await denied(guardKill(dir, "echo $(pkill -f journey-suite)", owner), "expansion");
+      await denied(guardKill(dir, "echo $(pkill -f journey-suite)", owner), "520 /usr/bin/journey-suite");
       await denied(guardKill(dir, "kill $(pgrep -f journey-suite)", owner), "520 /usr/bin/journey-suite");
+      for (const command of ["echo `pkill -f journey-suite`", "printf '%s' `killall journey-suite`", "echo $(pkill -f journey-suite)"]) {
+        await denied(runShell(() => dir, () => undefined,
+          { command, timeoutMs: 1000, maxBuffer: 1000 }, owner, launch), "520 /usr/bin/journey-suite");
+      }
+      expect(launches).toBe(0);
       await guardKill(dir, "echo 'pkill is only prose'", owner);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });

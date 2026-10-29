@@ -46,6 +46,9 @@ export class SeatProcessOwnership {
     const leader = rows.find((r) => r.pid === row.pgid && r.pgid === row.pgid && r.started === start);
     // Only a still-running leader anchors group identity; refuse after it
     // exits rather than guessing about an orphaned group or reused PGID.
+    // This is a pre-exec observation, NOT an atomic process handle: the
+    // target may exit and its PID be reused before Bash runs kill. No claim
+    // of absolute PID ownership confinement is made on this boundary.
     return !!leader && (row.pid === leader.pid ? row.started === leader.started :
       Date.parse(row.started) >= Date.parse(leader.started));
   }
@@ -100,9 +103,26 @@ function names(rows: ProcessRow[]): string {
 export async function guardKill(cwd: string, command: string, owner: SeatProcessOwnership,
   snapshot: ProcessSnapshot = owner.snapshot): Promise<void> {
   const commands = shellCommands(command).map(action);
-  // Reject dynamic command names and nested command substitutions with signal
-  // verbs: the outer command may itself be harmless but its expansion is not.
-  if (commands.some((w) => /^\$/.test(w[0] || "")) || /\$\([^)]*\b(?:pkill|killall|kill)\b/.test(command)) {
+  // Bash executes both substitution syntaxes even when the outer command is
+  // echo/printf. Check them before any harmless-command exemption. The parser
+  // is deliberately conservative: opaque/nested substitutions are refused,
+  // not proof of a general Bash security boundary.
+  const substitution = /\$\(([^)]*)\)|`([^`]*)`/g;
+  for (const match of command.matchAll(substitution)) {
+    const body = match[1] ?? match[2] ?? "";
+    if (!/\b(?:pkill|killall|kill)\b/.test(body)) continue;
+    const rows = await snapshot();
+    if (!rows) throw new Error("killguard: refusing signal substitution: process snapshot unavailable; no signal sent");
+    const inner = shellCommands(body).map(action);
+    const signal = inner.find((w) => ["pkill", "killall", "kill"].includes(path.basename(w[0] || "")));
+    const options = signal?.slice(1) ?? [];
+    const pattern = options.filter((x) => !x.startsWith("-")).at(-1) || "";
+    const candidates = signal && path.basename(signal[0]) !== "kill"
+      ? candidateRows(rows, pattern, path.basename(signal[0]) === "pkill" && options.some((x) => x.includes("f")))
+      : rows;
+    throw new Error(`killguard: refusing signal substitution before execution; candidate processes/PIDs: ${names(candidates)}; no signal sent`);
+  }
+  if (commands.some((w) => /^\$/.test(w[0] || ""))) {
     const rows = await snapshot();
     throw new Error(`killguard: refusing unresolved shell signal expansion before execution; candidate processes/PIDs: ${rows ? names(rows) : "snapshot unavailable"}; no signal sent`);
   }
