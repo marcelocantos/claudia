@@ -95,6 +95,7 @@ export type SeatAgent = {
   // abort ends the open turn and names it, so the host hears that turn end
   // as itself; undefined when no turn was open, and nothing ended.
   abort: () => EndedTurn | undefined;
+  stopTurn: () => EndedTurn | undefined;
   // cancelOpenReceipts finishes every started receipt as cancelled.
   // Abort, drop, and process exit call it. Accepted inputs stay accepted.
   cancelOpenReceipts: () => void;
@@ -818,6 +819,49 @@ export function createSeatAgent(opts: {
     }
   };
 
+  const abortTurn = () => {
+
+      cancelOpenReceipts();
+      const interruptedTurn = turnDone ?? Promise.resolve();
+      cancelled = true;
+      const ended: EndedTurn | undefined = turn && !turn.closed ? { turn_id: turn.turn_id, request_id: answerRequestID() } : undefined;
+      if (ended) cancelledTurns.add(ended.turn_id);
+      recovery.cancel();
+      maint.abort();
+      agent.abort();
+      finish("abort");
+      // An interrupt is how a waiting message gets taken now (T138). The
+      // queues survive abort; once the aborted run has unwound, run what is
+      // queued as its own turn instead of leaving it for a later prompt.
+      void agent.waitForIdle().then(async () => {
+        await interruptedTurn;
+        await retryDone;
+        if (!agent.hasQueuedMessages() || agent.state.isStreaming || turnDone) return;
+        try {
+          // continue() from a toolResult tail re-asks the model about the
+          // cancelled tool, then absorbs the next prompt in the same turn
+          // (🎯T236). Take the queued user as a fresh prompt instead.
+          const last = agent.state.messages.at(-1);
+          if (last?.role === "toolResult") {
+            const steering = [...agent.peekSteeringQueue()];
+            const followUps = [...agent.peekFollowUpQueue()];
+            const next = steering[0] ?? followUps[0];
+            if (!next) return;
+            agent.replaceQueues(steering.length ? steering.slice(1) : steering, steering.length ? followUps : followUps.slice(1));
+            await runTurn("", { cause: "interrupt-deliver", turn_id: queuedTurnIDs.get(next) ?? queuedHeadTurnID() }, () => agent.prompt(next));
+            return;
+          }
+          await runTurn("", { cause: "interrupt-deliver", turn_id: queuedHeadTurnID() }, () => agent.continue());
+        } catch (err) {
+          // A turn that began fails as itself. One that never began belongs
+          // to no turn: it is the seat's, not an answer (seat_error).
+          const turnID = turnOf(err);
+          sink.emit({ type: turnID ? "error" : "seat_error", turn_id: turnID, text: err instanceof Error ? err.message : String(err) });
+        }
+      });
+      return ended;
+  };
+
   return {
     receipt: (requestId) => receipts.query(requestId),
     usage: (after, limit) => {
@@ -876,45 +920,14 @@ export function createSeatAgent(opts: {
       sink.emit({ type: "accepted", request_id: meta?.request_id, rpc_id: meta?.rpc_id, receipt: accepted?.receipt });
     },
     cancelOpenReceipts,
-    abort: () => {
-      cancelOpenReceipts();
-      const interruptedTurn = turnDone ?? Promise.resolve();
-      cancelled = true;
-      const ended: EndedTurn | undefined = turn && !turn.closed ? { turn_id: turn.turn_id, request_id: answerRequestID() } : undefined;
-      if (ended) cancelledTurns.add(ended.turn_id);
-      recovery.cancel();
-      maint.abort();
-      agent.abort();
-      finish("abort");
-      // An interrupt is how a waiting message gets taken now (T138). The
-      // queues survive abort; once the aborted run has unwound, run what is
-      // queued as its own turn instead of leaving it for a later prompt.
-      void agent.waitForIdle().then(async () => {
-        await interruptedTurn;
-        await retryDone;
-        if (!agent.hasQueuedMessages() || agent.state.isStreaming || turnDone) return;
-        try {
-          // continue() from a toolResult tail re-asks the model about the
-          // cancelled tool, then absorbs the next prompt in the same turn
-          // (🎯T236). Take the queued user as a fresh prompt instead.
-          const last = agent.state.messages.at(-1);
-          if (last?.role === "toolResult") {
-            const steering = [...agent.peekSteeringQueue()];
-            const followUps = [...agent.peekFollowUpQueue()];
-            const next = steering[0] ?? followUps[0];
-            if (!next) return;
-            agent.replaceQueues(steering.length ? steering.slice(1) : steering, steering.length ? followUps : followUps.slice(1));
-            await runTurn("", { cause: "interrupt-deliver", turn_id: queuedTurnIDs.get(next) ?? queuedHeadTurnID() }, () => agent.prompt(next));
-            return;
-          }
-          await runTurn("", { cause: "interrupt-deliver", turn_id: queuedHeadTurnID() }, () => agent.continue());
-        } catch (err) {
-          // A turn that began fails as itself. One that never began belongs
-          // to no turn: it is the seat's, not an answer (seat_error).
-          const turnID = turnOf(err);
-          sink.emit({ type: turnID ? "error" : "seat_error", turn_id: turnID, text: err instanceof Error ? err.message : String(err) });
-        }
-      });
+    abort: abortTurn,
+    stopTurn: () => {
+      const ended = abortTurn();
+      // A released host owns no queued work. The ordinary interrupt path
+      // delivers queues; a stop must not start another old-provider request.
+      agent.replaceQueues([], []);
+      heldSteering.length = 0;
+      heldFollowUps.length = 0;
       return ended;
     },
     switchModel: async (provider: string, modelId: string) => {

@@ -95,7 +95,7 @@ func (f *ompFixture) serve(c net.Conn) {
 			case f.loads <- msg:
 			default:
 			}
-			ready := map[string]any{"seat": msg.Seat, "type": "ready", "how": "launched"}
+			ready := map[string]any{"seat": msg.Seat, "type": "ready", "provider": msg.Provider, "how": "launched"}
 			if msg.Op == omp.OpAdopt {
 				ready["how"] = "adopted"
 			}

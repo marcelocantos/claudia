@@ -155,6 +155,15 @@ const server = createServer((socket) => {
   // Fail it so the turn ends instead of waiting forever (jevons 🎯T927).
   socket.on("close", () => {
     disconnected.abort();
+    // A host stop must not leave its old provider streaming in the sidecar.
+    // Rebound seats belong to their new connection and are not ours to stop.
+    for (const seat of loadedOnConnection) {
+      const loaded = seats.get(seat);
+      if (loaded?.calls === calls) {
+        const ended = loaded.agent.stopTurn();
+        if (ended) write({ seat, type: "turn_end", turn_id: ended.turn_id, request_id: ended.request_id, stop_reason: "aborted", snapshot: loaded.agent.snapshot() });
+      }
+    }
     const n = calls.failAll(HOST_CONNECTION_LOST);
     if (n > 0) console.error(`sidecar: host connection closed with ${n} tool call(s) unanswered; failed them`);
   });
@@ -170,6 +179,7 @@ const server = createServer((socket) => {
           ts: str("ts") ?? new Date().toISOString(),
           seat,
           type: String(ev.type ?? ""),
+          stop_reason: str("stop_reason"),
           text: str("text"),
           call_id: str("call_id"),
           name: str("name"),
@@ -319,6 +329,8 @@ async function handle(
       seat,
       type: "ready",
       how: "adopted",
+      provider: existing.provider,
+      model: existing.model,
       resume_checked: msg.require_resume === true,
       bound_tools: existing.agent.boundToolNames(),
       sandbox: existing.agent.sandboxMode(),
@@ -393,6 +405,8 @@ async function handle(
     write({
       seat,
       type: "ready",
+      provider: msg.provider ?? "",
+      model: (agent.snapshot() as { model?: { id?: string } }).model?.id || msg.model || "",
       how: "launched",
       resume_checked: msg.require_resume === true,
       restored: agent.restored,
@@ -485,6 +499,10 @@ async function switchIfAsked(
   const out = await switchOnLoad(existing, msg, (provider, model) => existing.agent.switchModel(provider, model));
   if (!out.ok) {
     write(errorEvent(msg, seat, out.error, { reason: "switch_refused" }));
+    return false;
+  }
+  if (out.refused && msg.provider && msg.provider !== existing.provider) {
+    write(errorEvent(msg, seat, `loaded seat is ${existing.provider}; cannot switch to ${msg.provider}: ${out.refused}`, { reason: "seat_provider_mismatch" }));
     return false;
   }
   if (out.refused) {

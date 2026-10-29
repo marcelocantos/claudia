@@ -291,6 +291,15 @@ func providerLocalSessionModel(ctx context.Context, provider Provider) (string, 
 	return model, nil
 }
 
+// verifyOMPReadyProvider fails closed on old sidecars that could not attest
+// their live provider. A ready is not proof of a successful switch.
+func verifyOMPReadyProvider(name, requested string, ready omp.Event) error {
+	if ready.Provider != requested {
+		return fmt.Errorf("omp: sidecar provider mismatch for %s: asked %s, ready reported %q", name, requested, ready.Provider)
+	}
+	return nil
+}
+
 // ompKeychain is the Keychain command runner. Tests replace it. A nil
 // runner refuses rather than reading an API key from the environment.
 var ompKeychain omp.Runner
@@ -419,6 +428,13 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 			refused = fmt.Errorf("omp: sidecar said %q, want ready: %s", ev.Type, ev.Text)
 		}
 		return nil, explainOMPSidecarRefusal(refused, req.Config.Provider, socket)
+	}
+	// A ready response alone did not prove the requested provider took over:
+	// a loaded sidecar seat may have refused a busy switch and kept streaming.
+	// Missing identity from an older sidecar is also not proof of a switch.
+	if err := verifyOMPReadyProvider(req.Config.Name, provider, ev); err != nil {
+		conn.Close()
+		return nil, err
 	}
 	if req.Config.RequireResume && !ev.ResumeChecked {
 		conn.Close()

@@ -26,7 +26,7 @@ function unpairedToolCall(messages: { role?: string; content?: unknown }[]): boo
   }
   return pending;
 }
-const model = createMockModel({ provider: "anthropic", id: "claude-sonnet-5", handler: context => {
+const handler = (context: any) => {
   const users = context.messages.filter(message => message.role === "user");
   const last = users.at(-1);
   assert.ok(last && last.role === "user");
@@ -45,13 +45,20 @@ const model = createMockModel({ provider: "anthropic", id: "claude-sonnet-5", ha
   if (text.includes("HOLD")) return { content: ["never"], delayMs: holdMs };
   if (text.includes("FAIL")) return { stopReason: "error", errorMessage: "fixture provider refusal" };
   return { content: [`reply: ${text}`] };
-} });
+};
+const model = createMockModel({ provider: "anthropic", id: "claude-sonnet-5", handler });
+const xai = createMockModel({ provider: "xai-oauth", id: "grok-4.3", handler });
 const catalog = getBundledModel("anthropic", model.id);
 assert.ok(catalog, "fixture requires the exact pinned catalog row");
 Object.assign(catalog, model);
 Object.setPrototypeOf(catalog, MockModel.prototype);
 Object.defineProperty(catalog, "calls", { value: model.calls, enumerable: false });
 assert.ok(getBundledModel("anthropic", model.id) instanceof MockModel);
+const xaiCatalog = getBundledModel("xai-oauth", xai.id);
+assert.ok(xaiCatalog, "fixture requires the pinned xai catalog row");
+Object.assign(xaiCatalog, xai);
+Object.setPrototypeOf(xaiCatalog, MockModel.prototype);
+Object.defineProperty(xaiCatalog, "calls", { value: xai.calls, enumerable: false });
 // Go process fixtures use this to attest mock-provider selection. It is not
 // server readiness: the Bun fixture waits for the connection evidence below.
 writeFileSync(join(dirname(process.argv[2]), "mock-api-ready"), "mock\n");

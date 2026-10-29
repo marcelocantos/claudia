@@ -78,6 +78,7 @@ export type SpoolRecord = {
   ts: string;
   seat: string;
   type: string;
+  stop_reason?: string;
   text?: string;
   call_id?: string;
   name?: string;
@@ -179,6 +180,7 @@ export class Spool {
       ts,
       seat: rec.seat,
       type: rec.type,
+      stop_reason: rec.stop_reason,
       turn_id: rec.turn_id,
       session_id: rec.session_id,
       cause: rec.cause,

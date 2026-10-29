@@ -150,7 +150,7 @@ func TestBrokerIdentifiedSendWaitsForReceiptAndPreservesLostAck(t *testing.T) {
 							}
 							switch msg.Op {
 							case omp.OpLoad, omp.OpAdopt:
-								write(omp.Event{Type: "ready", Seat: msg.Seat, How: "launched"})
+								write(omp.Event{Type: "ready", Seat: msg.Seat, How: "launched", Provider: msg.Provider})
 							case omp.OpPrompt:
 								now := time.Now().UTC().Format(time.RFC3339Nano)
 								receipt := &omp.RequestReceipt{Seat: msg.Seat, SessionID: msg.SessionID, RequestID: msg.RequestID, AttemptID: msg.AttemptID, State: omp.ReceiptAccepted, TurnIDs: []string{}, AcceptedAt: now, UpdatedAt: now}

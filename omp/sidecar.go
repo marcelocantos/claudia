@@ -15,17 +15,17 @@ import (
 
 // Verbs the broker sends. The sidecar streams Event messages back.
 const (
-	OpLoad    = "load"
-	OpAdopt   = "adopt"
-	OpPrompt  = "prompt"
-	OpSteer   = "steer"
-	OpAbort   = "abort"
+	OpLoad   = "load"
+	OpAdopt  = "adopt"
+	OpPrompt = "prompt"
+	OpSteer  = "steer"
+	OpAbort  = "abort"
 	// OpPause / OpResume engage the sidecar process-global agentPauseGate
 	// (🎯T966). In-flight streams and tools may finish; new model/tool work
 	// parks until resume.
-	OpPause  = "pause"
-	OpResume = "resume"
-	OpDrop   = "drop"
+	OpPause   = "pause"
+	OpResume  = "resume"
+	OpDrop    = "drop"
 	OpReceipt = "receipt"
 	OpTool    = "tool_result"
 	// OpToken sets a plan's access token for every seat on it (🎯T159).
@@ -116,6 +116,10 @@ type Event struct {
 	Seat           string          `json:"seat,omitempty"`
 	Type           string          `json:"type"`
 	How            string          `json:"how,omitempty"`
+	// The live model identity, not the host's requested label. Required for
+	// launch admission: old sidecars that omit it cannot prove a provider move.
+	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model,omitempty"`
 	// Restored, on a "ready" for a launched seat, says whether the sidecar
 	// brought back the seat's stored conversation (claudia 🎯T151, jevons
 	// 🎯T929). Absent from a sidecar that predates the store, which never did.

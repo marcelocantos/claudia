@@ -1346,6 +1346,42 @@ func (d *Daemon) handleRelease(c *broker.ClientConn, req *broker.Request) {
 		d.notifyDetached(displaced, name, "released by an operator on another connection")
 		d.emit(broker.EventMessage{Kind: broker.EventDetach, Name: name})
 	case broker.DispositionStop:
+		// A plain stop preserves the sidecar conversation, not the provider turn.
+		// Interrupt while its control connection and event pump are still alive:
+		// closing the connection alone leaves the sidecar streaming on the old
+		// provider, and a subsequent grant can reattach to that busy seat.
+		if g != nil && g.proc != nil && g.proc.PromptInFlight() {
+			proc := g.proc
+			d.mu.Unlock()
+			err := proc.Interrupt()
+			if err == nil {
+				deadline := time.NewTimer(5 * time.Second)
+				tick := time.NewTicker(10 * time.Millisecond)
+				for proc.PromptInFlight() {
+					select {
+					case <-tick.C:
+					case <-deadline.C:
+						err = fmt.Errorf("sidecar did not settle the interrupted turn")
+					}
+					if err != nil {
+						break
+					}
+				}
+				tick.Stop()
+				deadline.Stop()
+			}
+			d.mu.Lock()
+			if err != nil {
+				d.mu.Unlock()
+				_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeReleaseFailed, Field: "name", Value: name, Msg: fmt.Sprintf("could not stop in-flight turn: %v", err)})
+				return
+			}
+			if d.liveGrantLocked(name) != g {
+				d.mu.Unlock()
+				_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeReleaseFailed, Field: "name", Value: name, Msg: "grant changed while stopping turn"})
+				return
+			}
+		}
 		if g != nil {
 			d.detachLocked(g)
 			if g.proc != nil && g.sub != 0 {

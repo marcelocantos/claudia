@@ -123,9 +123,9 @@ func TestOMPEmptyModelLoadsProviderLocalDefault(t *testing.T) {
 					}
 					if msg.Op == omp.OpLoad {
 						loads <- msg
-						ready := "{\"type\":\"ready\"}\n"
+						ready := fmt.Sprintf("{\"type\":\"ready\",\"provider\":%q}\n", msg.Provider)
 						if msg.Sandbox != nil {
-							ready = fmt.Sprintf("{\"type\":\"ready\",\"sandbox\":%q}\n", msg.Sandbox.Mode)
+							ready = fmt.Sprintf("{\"type\":\"ready\",\"provider\":%q,\"sandbox\":%q}\n", msg.Provider, msg.Sandbox.Mode)
 						}
 						_, _ = conn.Write([]byte(ready))
 					}
@@ -200,7 +200,7 @@ func TestOMPStartLoadsTokenFromKeychain(t *testing.T) {
 			_ = json.Unmarshal(line, &msg)
 			got <- msg
 			if msg.Op == omp.OpLoad {
-				_, _ = c.Write([]byte("{\"type\":\"ready\"}\n"))
+				_, _ = fmt.Fprintf(c, "{\"type\":\"ready\",\"provider\":%q}\n", msg.Provider)
 			}
 			if msg.Op == omp.OpPrompt {
 				_, _ = fmt.Fprintf(c, "{\"type\":\"text\",\"turn_id\":%q,\"text\":\"hi\"}\n", msg.TurnID)
@@ -303,7 +303,7 @@ func TestOMPStartRefreshesExpiredToken(t *testing.T) {
 		var msg omp.Message
 		_ = json.Unmarshal(line, &msg)
 		got <- msg
-		_, _ = c.Write([]byte("{\"type\":\"ready\"}\n"))
+		_, _ = fmt.Fprintf(c, "{\"type\":\"ready\",\"provider\":%q}\n", msg.Provider)
 		select {}
 	}()
 
@@ -710,7 +710,7 @@ func TestT202ReattachMidTurnReportsInFlight(t *testing.T) {
 				// The fix under test: a reattach's ready reply names the
 				// turn the sidecar is already mid-way through, exactly the
 				// fact a sidecar predating 🎯T202 omits.
-				_, _ = conn.Write([]byte(fmt.Sprintf("{\"type\":\"ready\",\"how\":\"adopted\",\"turn_id\":%q}\n", runningTurn)))
+				_, _ = conn.Write([]byte(fmt.Sprintf("{\"type\":\"ready\",\"provider\":%q,\"how\":\"adopted\",\"turn_id\":%q}\n", msg.Provider, runningTurn)))
 				select {}
 			}()
 		}
@@ -778,7 +778,7 @@ func TestT202ReattachUnknownOldSidecarBiasesInFlight(t *testing.T) {
 					return
 				}
 				// An old sidecar's adopted ready: no turn_id field at all.
-				_, _ = conn.Write([]byte("{\"type\":\"ready\",\"how\":\"adopted\"}\n"))
+				_, _ = conn.Write([]byte("{\"type\":\"ready\",\"provider\":\"anthropic\",\"how\":\"adopted\"}\n"))
 				select {}
 			}()
 		}
@@ -836,7 +836,7 @@ func TestT202LaunchedSeatStartsIdle(t *testing.T) {
 				if _, err := r.ReadBytes('\n'); err != nil {
 					return
 				}
-				_, _ = conn.Write([]byte("{\"type\":\"ready\",\"how\":\"launched\"}\n"))
+				_, _ = conn.Write([]byte("{\"type\":\"ready\",\"provider\":\"anthropic\",\"how\":\"launched\"}\n"))
 				select {}
 			}()
 		}
