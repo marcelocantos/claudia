@@ -7,7 +7,7 @@
 import path from "node:path";
 import { segments, stripHeredocBodies, stripPrefixes, runGit, type GitRunner } from "./branchguard.ts";
 
-type Hit = { dir: string; operation: string; paths: string[]; untrackedOnly: boolean };
+type Hit = { dir: string; operation: string; paths: string[]; untrackedOnly: boolean; includeIgnored: boolean };
 
 export function destructiveGitCommands(command: string): Hit[] {
   const hits: Hit[] = [];
@@ -25,7 +25,7 @@ export function destructiveGitCommands(command: string): Hit[] {
     }
     const sub = cmd[at++];
     const args = cmd.slice(at);
-    let operation = "", paths: string[] = [], untrackedOnly = false;
+    let operation = "", paths: string[] = [], untrackedOnly = false, includeIgnored = false;
     const dash = args.indexOf("--");
     const positional = args.filter((a) => !a.startsWith("-"));
     switch (sub) {
@@ -45,7 +45,7 @@ export function destructiveGitCommands(command: string): Hit[] {
       case "restore":
         if (!args.includes("--staged") || args.includes("--worktree")) {
           operation = "restore worktree";
-          paths = dash >= 0 ? args.slice(dash + 1) : positional.filter((a, i) => i === positional.length - 1 || !args.includes("--source"));
+          paths = dash >= 0 ? args.slice(dash + 1) : args.filter((a, i) => !a.startsWith("-") && args[i - 1] !== "--source");
         }
         break;
       case "checkout-index":
@@ -54,11 +54,12 @@ export function destructiveGitCommands(command: string): Hit[] {
       case "clean":
         if (args.some((a) => a === "--force" || /^-[^-]*f/.test(a))) {
           operation = "clean -f"; untrackedOnly = true;
+          includeIgnored = args.includes("-x") || args.includes("-X") || args.some((a) => /^-[^-]*[xX]/.test(a));
           paths = dash >= 0 ? args.slice(dash + 1) : positional;
         }
         break;
     }
-    if (operation) hits.push({ dir: target, operation, paths, untrackedOnly });
+    if (operation) hits.push({ dir: target, operation, paths, untrackedOnly, includeIgnored });
   }
   return hits;
 }
@@ -76,7 +77,7 @@ export async function guardDestructiveGit(cwd: string, command: string, git: Git
       if (ref !== null) continue;
     }
     const repo = await git(dir, ["rev-parse", "--show-toplevel"]);
-    const raw = await git(dir, ["status", "--porcelain=v1", "-z", "--untracked-files=all", ...(hit.paths.length ? ["--", ...hit.paths] : [])]);
+    const raw = await git(dir, ["status", "--porcelain=v1", "-z", "--untracked-files=all", ...(hit.includeIgnored ? ["--ignored"] : []), ...(hit.paths.length ? ["--", ...hit.paths] : [])]);
     const entries: string[] = [];
     if (raw !== null) {
       const fields = raw.split("\0");
@@ -84,7 +85,7 @@ export async function guardDestructiveGit(cwd: string, command: string, git: Git
         const field = fields[i];
         if (!field || field.length < 4) continue;
         const xy = field.slice(0, 2);
-        if (!hit.untrackedOnly || xy === "??") entries.push(field.slice(3));
+        if (!hit.untrackedOnly || (xy === "??" || (hit.includeIgnored && xy === "!!"))) entries.push(field.slice(3));
         if (/[RC]/.test(xy)) i++; // -z rename/copy adds the original path.
       }
     }
