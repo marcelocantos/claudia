@@ -358,12 +358,18 @@ func (b *brokerAgentBackend) ops() agentOps {
 // place (🎯T195). It can take as long as a compaction, when the conversation
 // must be folded to fit the new model, so it is not an ordinary op call.
 // The daemon's model_switch Event arrives on the stream.
-func (b *brokerAgentBackend) switchModel(_ *Agent, provider Provider, model string) error {
+func (b *brokerAgentBackend) switchModel(_ *Agent, provider Provider, model string, opt SwitchOptions) error {
 	ctx, cancel := context.WithTimeout(context.Background(), switchModelTimeout)
 	defer cancel()
-	_, err := b.client.call(ctx, &broker.Request{Type: broker.TypeSetModel, SetModel: &broker.SetModelRequest{
-		Name: b.named().Name, Provider: broker.Provider(provider), Model: model,
-	}})
+	req := &broker.SetModelRequest{Name: b.named().Name, Provider: broker.Provider(provider), Model: model}
+	if opt.CompactOn == CompactOnDestination {
+		req.CompactOn = "destination"
+	} else if opt.CompactOn == CompactOnExplicit {
+		req.CompactOn = "explicit"
+		req.CompactProvider = broker.Provider(opt.CompactProvider)
+		req.CompactModel = strings.TrimSpace(opt.CompactModel)
+	}
+	_, err := b.client.call(ctx, &broker.Request{Type: broker.TypeSetModel, SetModel: req})
 	return err
 }
 

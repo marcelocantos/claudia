@@ -47,7 +47,11 @@ const switchSettle = 30 * time.Second
 // provider that way, since a native CLI session belongs to its provider. A
 // seat the broker runs but this host has not attached refuses with
 // [ErrSeatNotAttached].
-func (r *Registry) SwitchModel(ctx context.Context, name string, provider Provider, model string, force bool) (SeatSwitch, error) {
+func (r *Registry) SwitchModel(ctx context.Context, name string, provider Provider, model string, force bool, opts ...SwitchOptions) (SeatSwitch, error) {
+	opt := mergeSwitchOptions(opts)
+	if err := opt.Validate(); err != nil {
+		return SeatSwitch{}, err
+	}
 	def := r.Def(name)
 	if def == nil {
 		return SeatSwitch{}, fmt.Errorf("agent %q not registered", name)
@@ -96,7 +100,7 @@ func (r *Registry) SwitchModel(ctx context.Context, name string, provider Provid
 		if def := r.Def(name); def != nil {
 			proc.SyncSessionMCPServers(def.MCPServers)
 		}
-		if err := proc.SwitchModel(to, model); err != nil {
+		if err := proc.SwitchModel(to, model, opt); err != nil {
 			return out, err
 		}
 		out.Changed = true

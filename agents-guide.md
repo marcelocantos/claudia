@@ -656,9 +656,15 @@ sets `Event.IsError` and `WaitForResponse` returns that text as an
 treats the synthetic message as a normal reply.
 
 **Switching model or provider mid-session (🎯T195)**: call
-`agent.SwitchModel(provider, model)` between turns; an empty provider
-keeps the seat's own. For a registered seat, call
-`Registry.SwitchModel(ctx, name, provider, model, force)`, which also
+`agent.SwitchModel(provider, model, opt...)` between turns; an empty provider
+keeps the seat's own. Optional `SwitchOptions` (variadic, zero value is legacy)
+selects who compacts when the conversation must fold to fit the destination
+window (🎯T243): `CompactOnSource` (default) folds with the seat's current
+model using a local summary only; `CompactOnDestination` folds with the
+resolved destination model and its plan token; `CompactOnExplicit` folds with
+`CompactProvider`/`CompactModel` and refuses unknown models or missing plan
+auth — it never silently falls back to a throttled source. For a registered
+seat, call `Registry.SwitchModel(ctx, name, provider, model, force, opt...)`,
 takes a plan id (`claude`, `codex`) as provider, picks the standard
 session model when `model` is empty, and with `force` interrupts a turn
 in flight first. The seat keeps its name, session, and conversation.

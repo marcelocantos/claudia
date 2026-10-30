@@ -49,6 +49,12 @@ type eventWire struct {
 	Reason        string          `json:"reason,omitempty"`
 	WarningCodes  []string        `json:"warning_codes,omitempty"`
 	StuckClass    string          `json:"stuck_class,omitempty"`
+	ContextBefore int             `json:"context_before,omitempty"`
+	ContextAfter  int             `json:"context_after,omitempty"`
+	CompactionWindow int          `json:"compaction_window,omitempty"`
+	CompactOn     string          `json:"compact_on,omitempty"`
+	CompactProvider string        `json:"compact_provider,omitempty"`
+	CompactModel  string          `json:"compact_model,omitempty"`
 	Truncated     bool            `json:"truncated,omitempty"`
 }
 

@@ -21,9 +21,31 @@ function mentions(context: Context, text: string): boolean {
 }
 
 // seat builds a seat on model `from`, whose switches resolve through models.
-function seat(from: Model, models: Record<string, Model>, opts: { tools?: boolean; summaries?: string[] } = {}) {
+function seat(
+  from: Model,
+  models: Record<string, Model>,
+  opts: {
+    tools?: boolean;
+    summaries?: string[];
+    planToken?: (provider: string) => string;
+    maintenance?: Pick<import("./maintain.ts").MaintenanceHost, "nativeEligible" | "summaryOptions">;
+  } = {},
+) {
   const events: SeatEvent[] = [];
   let release: (v: string) => void = () => {};
+  const defaultComplete = (async (model: Model) => {
+    opts.summaries?.push(`${model.provider}/${model.id}`);
+    return {
+      role: "assistant",
+      content: [{ type: "text", text: summaryText }],
+      api: model.api,
+      provider: model.provider,
+      model: model.id,
+      usage: { input: 0, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: 10, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      stopReason: "stop",
+      timestamp: Date.now(),
+    } as AssistantMessage;
+  }) as never;
   const agent = createSeatAgent({
     provider: from.provider,
     model: from.id,
@@ -33,6 +55,7 @@ function seat(from: Model, models: Record<string, Model>, opts: { tools?: boolea
     callTool: () => new Promise<string>((resolve) => (release = resolve)),
     tools: opts.tools ? [{ name: "jevons_wait", description: "wait on the host", input_schema: { type: "object" } }] : undefined,
     modelOverride: from as never,
+    planToken: opts.planToken,
     resolveModelOverride: (provider, model) => {
       const m = models[`${provider}/${model}`];
       if (!m) throw new Error(`unknown model ${provider}/${model}`);
@@ -40,20 +63,10 @@ function seat(from: Model, models: Record<string, Model>, opts: { tools?: boolea
     },
     maintenance: {
       nativeEligible: () => false,
+      ...opts.maintenance,
       summaryOptions: {
-        completeImpl: (async (model: Model) => {
-          opts.summaries?.push(`${model.provider}/${model.id}`);
-          return {
-            role: "assistant",
-            content: [{ type: "text", text: summaryText }],
-            api: model.api,
-            provider: model.provider,
-            model: model.id,
-            usage: { input: 0, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: 10, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-            stopReason: "stop",
-            timestamp: Date.now(),
-          } as AssistantMessage;
-        }) as never,
+        ...opts.maintenance?.summaryOptions,
+        completeImpl: opts.maintenance?.summaryOptions?.completeImpl ?? defaultComplete,
       },
     },
   });
@@ -145,6 +158,58 @@ describe("switching a seat in place (🎯T195)", () => {
 
     await s.agent.prompt("carry on");
     expect(mentions(seenByB!, summaryText)).toBe(true);
+  });
+
+  test("destination compactor folds when the source summarizer is throttled", async () => {
+    const big = "the quick brown fox jumps over the lazy dog. ".repeat(1200);
+    const a = createMockModel({ id: "a", provider: "anthropic", contextWindow: 400_000, handler: () => reply("ok") });
+    const b = createMockModel({
+      id: "b",
+      provider: "openai-codex",
+      contextWindow: 60_000,
+      handler: () => reply("fine"),
+    });
+    const summaries: string[] = [];
+    const s = seat(a as never, { "openai-codex/b": b as never }, {
+      summaries,
+      planToken: () => "t",
+      maintenance: {
+        nativeEligible: () => false,
+        summaryOptions: {
+          completeImpl: (async (model: Model) => {
+            if (model.provider === "anthropic") throw new Error("rate limit exceeded");
+            summaries.push(`${model.provider}/${model.id}`);
+            return {
+              role: "assistant",
+              content: [{ type: "text", text: summaryText }],
+              api: model.api,
+              provider: model.provider,
+              model: model.id,
+              usage: { input: 0, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: 10, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+              stopReason: "stop",
+              timestamp: Date.now(),
+            } as AssistantMessage;
+          }) as never,
+        },
+      },
+    });
+    for (let i = 0; i < 8; i++) await s.agent.prompt(`${i}: ${big}`);
+
+    await s.agent.switchModel("openai-codex", "b", { on: "destination" });
+    expect(summaries.length).toBeGreaterThan(0);
+    expect([...new Set(summaries)]).toEqual(["openai-codex/b"]);
+    expect(s.agent.snapshot().model?.id).toBe("b");
+  });
+
+  test("default switch fold still uses only the source model", async () => {
+    const big = "word ".repeat(8000);
+    const a = createMockModel({ id: "a", provider: "anthropic", contextWindow: 400_000, handler: () => reply("ok") });
+    const b = createMockModel({ id: "b", provider: "openai-codex", contextWindow: 50_000, handler: () => reply("fine") });
+    const summaries: string[] = [];
+    const s = seat(a as never, { "openai-codex/b": b as never }, { summaries, planToken: () => "t" });
+    for (let i = 0; i < 6; i++) await s.agent.prompt(`${i}: ${big}`);
+    await s.agent.switchModel("openai-codex", "b");
+    expect([...new Set(summaries)]).toEqual(["anthropic/a"]);
   });
 });
 

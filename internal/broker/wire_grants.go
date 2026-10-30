@@ -590,6 +590,10 @@ type SetModelRequest struct {
 	Name     string   `json:"name"`
 	Provider Provider `json:"provider,omitempty"`
 	Model    string   `json:"model"`
+	// Switch-time compaction selection (🎯T243). Omitted preserves legacy source folding.
+	CompactOn       string   `json:"compact_on,omitempty"`
+	CompactProvider Provider `json:"compact_provider,omitempty"`
+	CompactModel    string   `json:"compact_model,omitempty"`
 }
 
 // Validate checks the fields.

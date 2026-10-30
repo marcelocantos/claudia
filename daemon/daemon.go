@@ -1590,7 +1590,12 @@ func (d *Daemon) handleAgentOp(c *broker.ClientConn, req *broker.Request) {
 		// The daemon's Registry launched proc, so a switch rewrites the
 		// seat's definition and a restart resumes it on the new model
 		// (🎯T195).
-		if err := proc.SwitchModel(claudia.Provider(req.SetModel.Provider), req.SetModel.Model); err != nil {
+		opt, err := claudia.SwitchOptionsFromWire(req.SetModel.CompactOn, claudia.Provider(req.SetModel.CompactProvider), req.SetModel.CompactModel)
+		if err != nil {
+			_ = c.Fail(req.ID, err)
+			return
+		}
+		if err := proc.SwitchModel(claudia.Provider(req.SetModel.Provider), req.SetModel.Model, opt); err != nil {
 			_ = c.Fail(req.ID, err)
 			return
 		}

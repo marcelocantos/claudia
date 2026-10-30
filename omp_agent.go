@@ -558,8 +558,8 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 			quiesce: func(*Agent) error {
 				return ctrl.send(omp.Message{Op: omp.OpAbort, Seat: req.Config.Name, StopTurn: true})
 			},
-			switchModel: func(_ *Agent, provider Provider, model string) error {
-				return ctrl.switchModel(provider, model)
+			switchModel: func(_ *Agent, provider Provider, model string, opt SwitchOptions) error {
+				return ctrl.switchModel(provider, model, opt)
 			},
 			syncSessionMCPServers: func(_ *Agent, servers []MCPServer) {
 				ctrl.applySessionMCPServers(context.Background(), servers, ctrl.currentProvider())
@@ -858,11 +858,22 @@ func (c *ompControl) pump(a *Agent) {
 			// an escalation for it stops here (🎯T138).
 			a.publishEvent(Event{Type: "progress", ProgressType: ProgressDeliveryAbsorbed, Text: ev.Text, TurnID: ev.TurnID, RequestID: ev.RequestID})
 		case "compacting", "compacted", "compaction_warning":
-			// The seat is managing its context (🎯T150): a host can show
+			// The seat is managing its context (🎯T150 / 🎯T243): a host can show
 			// when and why a long conversation was folded, or that it could
 			// not be.
 			slog.Info("omp seat context maintenance", "seat", c.seat, "event", ev.Type, "text", ev.Text)
-			a.publishEvent(Event{Type: "progress", ProgressType: ProgressCompaction, Text: ev.Type + ": " + ev.Text})
+			text := ev.Type + ": " + ev.Text
+			a.publishEvent(Event{
+				Type:            "progress",
+				ProgressType:    ProgressCompaction,
+				Text:            text,
+				ContextBefore:   ev.ContextBefore,
+				ContextAfter:    ev.ContextAfter,
+				CompactionWindow: ev.TargetWindow,
+				CompactOn:       ev.CompactOn,
+				CompactProvider: ev.CompactProvider,
+				CompactModel:    ev.CompactModel,
+			})
 		case "text":
 			visible, token := omp.StripStopToken(ev.Text)
 			if visible == "" && token != "" {
@@ -1104,7 +1115,7 @@ func (c *ompControl) currentProvider() string {
 // the new model (folding the conversation first when it would not fit), or
 // refuses with the seat left as it was. The seat's provider, model and token
 // change only once the sidecar has switched.
-func (c *ompControl) switchModel(provider Provider, model string) error {
+func (c *ompControl) switchModel(provider Provider, model string, opt SwitchOptions) error {
 	id := ompProviderID(provider)
 	if id == "" {
 		return fmt.Errorf("omp: %s is not a sidecar provider", provider)
@@ -1120,6 +1131,21 @@ func (c *ompControl) switchModel(provider Provider, model string) error {
 			return err
 		}
 	}
+	if opt.CompactOn == CompactOnExplicit {
+		compactID := ompProviderID(opt.CompactProvider)
+		if compactID == "" {
+			return fmt.Errorf("SwitchModel: %s is not a sidecar provider for compaction", opt.CompactProvider)
+		}
+		if compactID != id {
+			compactToken, err := ensureOMPToken(ctx, compactID, "switch compact "+c.seat)
+			if err != nil {
+				return err
+			}
+			if err := c.send(omp.Message{Op: omp.OpToken, Provider: compactID, Token: compactToken}); err != nil {
+				return err
+			}
+		}
+	}
 	requestID := uuid.NewString()
 	reply := make(chan omp.Event, 1)
 	c.mu.Lock()
@@ -1132,6 +1158,7 @@ func (c *ompControl) switchModel(provider Provider, model string) error {
 	c.applySessionMCPServers(context.Background(), c.mcpServers, id)
 	msg := c.loadMessage()
 	msg.Provider, msg.Model, msg.Token, msg.RequestID = id, model, token, requestID
+	applySwitchCompact(&msg, opt)
 	if err := c.send(msg); err != nil {
 		return err
 	}
