@@ -204,6 +204,31 @@ export class History {
     return true;
   }
 
+  // durableSnapshot clones the entry list for switch-time rollback (🎯T243).
+  durableSnapshot(): SessionEntry[] {
+    return JSON.parse(JSON.stringify(this.entries)) as SessionEntry[];
+  }
+
+  // rollbackDurable restores a snapshot and rewrites the store when present.
+  rollbackDurable(snapshot: SessionEntry[]): void {
+    this.entries = JSON.parse(JSON.stringify(snapshot)) as SessionEntry[];
+    this.#ids = new WeakMap();
+    this.#byKey = new Map();
+    for (const e of this.entries) {
+      if (e.type === "message") {
+        const m = (e as SessionMessageEntry).message;
+        const k = messageKey(m);
+        this.#byKey.set(k, e.id);
+        this.#ids.set(m, e.id);
+      }
+    }
+    this.#streamingEntryId = undefined;
+    this.#persisted = this.entries.length;
+    this.#dirty = true;
+    if (this.store) this.store.rewrite(this.entries);
+    this.#dirty = false;
+  }
+
   // persist writes what the store does not have yet: the new tail, or the
   // whole list when an entry was taken back.
   persist(messages?: readonly AgentMessage[]): void {
@@ -557,21 +582,30 @@ export class Maintenance {
       this.#compactorToken(compactor);
     }
     if (window > 0 && shouldCompact(this.contextTokens(agent.state.messages), window, settings)) {
-      await this.run("switch", "pre_turn", agent.state.messages, {
-        window,
-        soft: true,
-        compactor: compactor ? { model: compactor, token: () => this.#compactorToken(compactor!) } : undefined,
-        compactMeta: {
-          on,
-          provider: (compactor ?? agent.state.model)?.provider,
-          model: (compactor ?? agent.state.model)?.id,
+      const durable = this.history.durableSnapshot();
+      const srcProvider = agent.state.model?.provider;
+      try {
+        await this.run("switch", "pre_turn", agent.state.messages, {
           window,
-        },
-      });
-      if (shouldCompact(this.contextTokens(agent.state.messages), window, settings)) {
-        throw new Error(
-          `switch refused: the conversation (${this.contextTokens(agent.state.messages)} tokens) does not fit ${next.provider}/${next.id} (${window}) even after compaction`,
-        );
+          soft: true,
+          compactor: compactor ? { model: compactor, token: () => this.#compactorToken(compactor!) } : undefined,
+          compactMeta: {
+            on,
+            provider: (compactor ?? agent.state.model)?.provider,
+            model: (compactor ?? agent.state.model)?.id,
+            window,
+          },
+        });
+        if (shouldCompact(this.contextTokens(agent.state.messages), window, settings)) {
+          throw new Error(
+            `switch refused: the conversation (${this.contextTokens(agent.state.messages)} tokens) does not fit ${next.provider}/${next.id} (${window}) even after compaction`,
+          );
+        }
+      } catch (err) {
+        this.history.rollbackDurable(durable);
+        if (srcProvider) agent.replaceMessages(this.history.rebuild(srcProvider));
+        this.#compactedAt = this.history.latestCompactionAt();
+        throw err;
       }
     }
     const from = agent.state.model?.provider;
