@@ -5,6 +5,8 @@ package claudia
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/marcelocantos/claudia/omp"
@@ -53,6 +55,68 @@ func TestSwitchOptionsFromWire(t *testing.T) {
 	_, err = SwitchOptionsFromWire("bogus", "", "")
 	if err == nil {
 		t.Fatal("expected error for unknown compact_on")
+	}
+}
+
+func TestSwitchModelRejectsMalformedExplicit(t *testing.T) {
+	a := &Agent{
+		ops: agentOps{
+			switchModel: func(*Agent, Provider, string, SwitchOptions) error {
+				t.Fatal("switchModel must not run when options are invalid")
+				return nil
+			},
+		},
+	}
+	err := a.SwitchModel(ProviderCodex, "gpt-5.5", SwitchOptions{CompactOn: CompactOnExplicit})
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+}
+
+func TestSwitchExplicitUsesOpTokenNotLoadForCompactorAuth(t *testing.T) {
+	f := startFakeSidecar(t, nil)
+	dir := t.TempDir()
+	agent, err := StartDirect(Config{
+		Name: "sw-tok", WorkDir: dir, Provider: Provider(omp.Anthropic), Model: "claude-opus", TermLogPath: "-",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { agent.Stop() })
+	if err := agent.WaitReady(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.SwitchModel(ProviderCodex, "gpt-5.5", SwitchOptions{
+		CompactOn: CompactOnExplicit, CompactProvider: Provider(omp.Anthropic), CompactModel: "claude-opus",
+	}); err != nil {
+		t.Fatalf("SwitchModel: %v", err)
+	}
+	var tokenOps, switchLoads int
+	var switchLoad omp.Message
+	for _, m := range f.incoming() {
+		if m.Op == omp.OpToken && m.Provider == omp.Anthropic && m.Token == "plan-token" {
+			tokenOps++
+		}
+		if m.Op == omp.OpLoad && m.RequestID != "" {
+			switchLoads++
+			switchLoad = m
+		}
+	}
+	if tokenOps != 1 {
+		t.Fatalf("OpToken for compactor plan: got %d", tokenOps)
+	}
+	if switchLoads != 1 {
+		t.Fatalf("switch loads: got %d", switchLoads)
+	}
+	if switchLoad.Token != "codex-token" {
+		t.Fatalf("switch load token=%q, want destination plan token only", switchLoad.Token)
+	}
+	if switchLoad.CompactOn != "explicit" || switchLoad.CompactProvider != omp.Anthropic {
+		t.Fatalf("switch load compact fields: %+v", switchLoad)
+	}
+	raw, _ := json.Marshal(switchLoad)
+	if strings.Contains(string(raw), "plan-token") {
+		t.Fatalf("compactor bearer token must not ride on switch load: %s", raw)
 	}
 }
 

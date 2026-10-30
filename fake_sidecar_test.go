@@ -24,6 +24,7 @@ import (
 type fakeSidecar struct {
 	mu    sync.Mutex
 	loads []omp.Message
+	in    []omp.Message
 	// refuseSwitch, when set, is the text of the refusal a switch gets.
 	refuseSwitch string
 }
@@ -32,6 +33,12 @@ func (f *fakeSidecar) loaded() []omp.Message {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]omp.Message(nil), f.loads...)
+}
+
+func (f *fakeSidecar) incoming() []omp.Message {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]omp.Message(nil), f.in...)
 }
 
 // startFakeSidecar serves one sidecar connection, points direct starts at
@@ -60,7 +67,12 @@ func startFakeSidecar(t *testing.T, reply []string) *fakeSidecar {
 			}
 			var msg omp.Message
 			_ = json.Unmarshal(line, &msg)
+			f.mu.Lock()
+			f.in = append(f.in, msg)
+			f.mu.Unlock()
 			switch msg.Op {
+			case omp.OpToken:
+				// Plan token updates are fire-and-forget on the wire.
 			case omp.OpLoad:
 				f.mu.Lock()
 				f.loads = append(f.loads, msg)

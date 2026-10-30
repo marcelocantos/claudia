@@ -28,7 +28,7 @@ function seat(
     tools?: boolean;
     summaries?: string[];
     planToken?: (provider: string) => string;
-    maintenance?: Pick<import("./maintain.ts").MaintenanceHost, "nativeEligible" | "summaryOptions">;
+    maintenance?: Pick<import("./maintain.ts").MaintenanceHost, "nativeEligible" | "summaryOptions" | "compactImpl">;
   } = {},
 ) {
   const events: SeatEvent[] = [];
@@ -210,6 +210,108 @@ describe("switching a seat in place (🎯T195)", () => {
     for (let i = 0; i < 6; i++) await s.agent.prompt(`${i}: ${big}`);
     await s.agent.switchModel("openai-codex", "b");
     expect([...new Set(summaries)]).toEqual(["anthropic/a"]);
+  });
+
+  test("explicit compaction rejects missing provider and model", async () => {
+    const a = createMockModel({ id: "a", provider: "anthropic", contextWindow: 200_000, handler: () => reply("ok") });
+    const b = createMockModel({ id: "b", provider: "openai-codex", contextWindow: 200_000, handler: () => reply("fine") });
+    const s = seat(a as never, { "openai-codex/b": b as never });
+    await expect(s.agent.switchModel("openai-codex", "b", { on: "explicit" })).rejects.toThrow(
+      "explicit compaction requires compact_provider and compact_model",
+    );
+    expect(s.agent.snapshot().model?.id).toBe("a");
+  });
+
+  test("explicit compaction rejects an unknown compactor model", async () => {
+    const a = createMockModel({ id: "a", provider: "anthropic", contextWindow: 200_000, handler: () => reply("ok") });
+    const b = createMockModel({ id: "b", provider: "openai-codex", contextWindow: 200_000, handler: () => reply("fine") });
+    const s = seat(a as never, { "openai-codex/b": b as never });
+    await expect(
+      s.agent.switchModel("openai-codex", "b", { on: "explicit", compact_provider: "anthropic", compact_model: "missing" }),
+    ).rejects.toThrow("unknown model");
+    expect(s.agent.snapshot().model?.id).toBe("a");
+  });
+
+  test("explicit compaction without plan auth refuses without falling back to the throttled source", async () => {
+    const big = "the quick brown fox jumps over the lazy dog. ".repeat(1200);
+    const a = createMockModel({ id: "a", provider: "anthropic", contextWindow: 400_000, handler: () => reply("ok") });
+    const b = createMockModel({ id: "b", provider: "openai-codex", contextWindow: 60_000, handler: () => reply("fine") });
+    const summaries: string[] = [];
+    const s = seat(a as never, { "openai-codex/b": b as never }, {
+      summaries,
+      planToken: (provider) => (provider === "anthropic" ? "t" : undefined),
+      maintenance: {
+        nativeEligible: () => false,
+        summaryOptions: {
+          completeImpl: (async (model: Model) => {
+            if (model.provider === "anthropic") throw new Error("rate limit exceeded");
+            summaries.push(`${model.provider}/${model.id}`);
+            return {
+              role: "assistant",
+              content: [{ type: "text", text: summaryText }],
+              api: model.api,
+              provider: model.provider,
+              model: model.id,
+              usage: { input: 0, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: 10, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+              stopReason: "stop",
+              timestamp: Date.now(),
+            } as AssistantMessage;
+          }) as never,
+        },
+      },
+    });
+    for (let i = 0; i < 8; i++) await s.agent.prompt(`${i}: ${big}`);
+
+    await expect(
+      s.agent.switchModel("openai-codex", "b", { on: "explicit", compact_provider: "openai-codex", compact_model: "b" }),
+    ).rejects.toThrow("no plan token for compactor provider openai-codex");
+    expect(summaries).toEqual([]);
+    expect(s.agent.snapshot().model?.id).toBe("a");
+  });
+
+  test("destination switch compaction emits structured before/after progress", async () => {
+    const big = "the quick brown fox jumps over the lazy dog. ".repeat(1200);
+    const a = createMockModel({ id: "a", provider: "anthropic", contextWindow: 400_000, handler: () => reply("ok") });
+    const b = createMockModel({ id: "b", provider: "openai-codex", contextWindow: 60_000, handler: () => reply("fine") });
+    const s = seat(a as never, { "openai-codex/b": b as never }, { planToken: () => "t" });
+    for (let i = 0; i < 8; i++) await s.agent.prompt(`${i}: ${big}`);
+
+    await s.agent.switchModel("openai-codex", "b", { on: "destination" });
+    const progress = s.events.filter((e) => e.type === "compacting" || e.type === "compacted");
+    expect(progress.length).toBeGreaterThan(0);
+    const last = progress[progress.length - 1]!;
+    expect(last.compact_on).toBe("destination");
+    expect(last.compact_provider).toBe("openai-codex");
+    expect(last.compact_model).toBe("b");
+    expect((last.context_before ?? 0) > 0).toBe(true);
+    expect((last.context_after ?? 0) > 0).toBe(true);
+    expect((last.target_window ?? 0)).toBe(60_000);
+  });
+
+  test("abort during switch compaction leaves the seat on the source model", async () => {
+    const big = "word ".repeat(8000);
+    const a = createMockModel({ id: "a", provider: "anthropic", contextWindow: 400_000, handler: () => reply("ok") });
+    const b = createMockModel({ id: "b", provider: "openai-codex", contextWindow: 50_000, handler: () => reply("fine") });
+    let unblock: (() => void) | undefined;
+    const s = seat(a as never, { "openai-codex/b": b as never }, {
+      planToken: () => "t",
+      maintenance: {
+        compactImpl: async (_prep, _model, _token, _instructions, signal) => {
+          await new Promise<void>((_, reject) => {
+            signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+            unblock = () => reject(new Error("unblocked"));
+          });
+          throw new Error("unreachable");
+        },
+      },
+    });
+    for (let i = 0; i < 6; i++) await s.agent.prompt(`${i}: ${big}`);
+
+    const switching = s.agent.switchModel("openai-codex", "b", { on: "destination" });
+    for (let i = 0; i < 200 && !unblock; i++) await Bun.sleep(5);
+    s.agent.abort();
+    await expect(switching).rejects.toThrow();
+    expect(s.agent.snapshot().model?.id).toBe("a");
   });
 });
 

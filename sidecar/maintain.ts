@@ -552,6 +552,10 @@ export class Maintenance {
       }
       compactor = compact.explicitModel;
     }
+    if (compactor) {
+      // Fail before folding when the chosen compactor has no plan auth (🎯T243).
+      this.#compactorToken(compactor);
+    }
     if (window > 0 && shouldCompact(this.contextTokens(agent.state.messages), window, settings)) {
       await this.run("switch", "pre_turn", agent.state.messages, {
         window,
