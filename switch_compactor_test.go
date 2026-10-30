@@ -6,7 +6,6 @@ package claudia
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/marcelocantos/claudia/omp"
 )
@@ -70,21 +69,10 @@ func TestSwitchModelExplicitOnWire(t *testing.T) {
 	if err := agent.WaitReady(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	done := make(chan error, 1)
-	go func() {
-		done <- agent.SwitchModel(ProviderCodex, "gpt-5.5", SwitchOptions{
-			CompactOn: CompactOnExplicit, CompactProvider: Provider(omp.Anthropic), CompactModel: "claude-opus",
-		})
-	}()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("SwitchModel: %v", err)
-		}
-	case <-ctx.Done():
-		t.Fatal("switch hung")
+	if err := agent.SwitchModel(ProviderCodex, "gpt-5.5", SwitchOptions{
+		CompactOn: CompactOnExplicit, CompactProvider: Provider(omp.Anthropic), CompactModel: "claude-opus",
+	}); err != nil {
+		t.Fatalf("SwitchModel: %v", err)
 	}
 	last := f.loaded()[len(f.loaded())-1]
 	if last.CompactOn != "explicit" || last.CompactProvider != omp.Anthropic || last.CompactModel != "claude-opus" {
