@@ -781,7 +781,10 @@ export class Maintenance {
   }
 
   // compactToBound is the synchronous one-shot host compaction API (🎯T244).
-  async compactToBound(boundTokens: number): Promise<BoundCompactResult> {
+  async compactToBound(
+    boundTokens: number,
+    opts: { cancel?: AbortSignal } = {},
+  ): Promise<BoundCompactResult> {
     if (!Number.isFinite(boundTokens) || boundTokens <= 0) {
       throw Object.assign(new Error("compact refused: bound_tokens must be positive"), { reason: "invalid_bound" });
     }
@@ -793,7 +796,24 @@ export class Maintenance {
     if (this.#abort) {
       throw Object.assign(new Error("compact refused: compaction already running"), { reason: "turn_in_flight" });
     }
-    const progressed = await this.run("bound", "pre_turn", messages, { window: boundTokens, compactOn: "bound" });
+    const compactionsBefore = this.history.entries.filter((e) => e.type === "compaction").length;
+    let progressed: boolean;
+    try {
+      progressed = await this.run("bound", "pre_turn", messages, {
+        window: boundTokens,
+        compactOn: "bound",
+        cancel: opts.cancel,
+      });
+    } catch (err) {
+      if (opts.cancel?.aborted || (err instanceof Error && err.name === "AbortError")) {
+        throw Object.assign(new Error("compact canceled before commit"), { reason: "compact_canceled" });
+      }
+      throw err;
+    }
+    const compactionsAfter = this.history.entries.filter((e) => e.type === "compaction").length;
+    if (opts.cancel?.aborted && compactionsAfter > compactionsBefore) {
+      throw Object.assign(new Error("compact canceled after commit"), { reason: "compact_uncertain" });
+    }
     const after = this.contextTokens(this.#host.agent.state.messages);
     const committed = progressed || after < before;
     if (!committed && after > boundTokens) {
@@ -822,6 +842,8 @@ export class Maintenance {
       deferPersist?: boolean;
       compactor?: { model: Model; token: () => string };
       compactMeta?: { on: SwitchCompactOn; provider?: string; model?: string; window: number };
+      compactOn?: string;
+      cancel?: AbortSignal;
     } = {},
   ): Promise<boolean> {
     const agent = this.#host.agent;
@@ -850,6 +872,10 @@ export class Maintenance {
     const compactImpl = this.#host.compactImpl ?? engineCompact;
     const token = target.compactor?.token ?? this.#host.token;
     const abort = new AbortController();
+    if (target.cancel) {
+      if (target.cancel.aborted) abort.abort();
+      else target.cancel.addEventListener("abort", () => abort.abort(), { once: true });
+    }
     this.#abort = abort;
     try {
       for (const method of methods) {
@@ -904,7 +930,16 @@ export class Maintenance {
           ]),
         ];
         if (pins.length > 0) result = { ...result, details: { ...(result.details as object | undefined), pins } };
+<<<<<<< HEAD
         this.#commit(result, method, codex, { persist: !target.deferPersist });
+||||||| parent of 173035f (Fix T244 compact cancel settlement via OOB abort (T244).)
+        this.#commit(result, method, codex);
+=======
+        if (abort.signal.aborted) {
+          throw Object.assign(new Error("compact canceled before commit"), { reason: "compact_canceled" });
+        }
+        this.#commit(result, method, codex);
+>>>>>>> 173035f (Fix T244 compact cancel settlement via OOB abort (T244).)
         const after = this.storedTokens();
         const progressed =
           reason === "overflow"
@@ -918,6 +953,11 @@ export class Maintenance {
         return progressed;
       }
       return false;
+    } catch (err) {
+      if (abort.signal.aborted) {
+        throw Object.assign(new Error("compact canceled"), { reason: "compact_canceled" });
+      }
+      throw err;
     } finally {
       if (this.#abort === abort) this.#abort = null;
     }

@@ -536,10 +536,16 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 				}
 			},
 			send: func(a *Agent, text string) error {
+				if err := ctrl.blockIfCompactUncertain(); err != nil {
+					return err
+				}
 				ctrl.inflight.Store(true)
 				return ctrl.send(promptMessage(omp.OpPrompt, req.Config.Name, text, a, ctrl))
 			},
 			sendWithRequestID: func(a *Agent, text, id string) error {
+				if err := ctrl.blockIfCompactUncertain(); err != nil {
+					return err
+				}
 				if id == "" {
 					ctrl.inflight.Store(true)
 				}
@@ -658,6 +664,7 @@ type ompControl struct {
 	writeOnce   sync.Once
 	writePermit chan struct{}
 	inflight    atomic.Bool
+	compactUncertain atomic.Bool
 	// turnID is the running turn's id, when known (🎯T202). Set alongside
 	// inflight so a reattach that learns of a turn from the sidecar's ready
 	// reply, not just from a later accepted/receipt, can name it too. Read
@@ -1118,6 +1125,37 @@ func (c *ompControl) currentProvider() string {
 // the new model (folding the conversation first when it would not fit), or
 // refuses with the seat left as it was. The seat's provider, model and token
 // change only once the sidecar has switched.
+
+func (c *ompControl) blockIfCompactUncertain() error {
+	if c.compactUncertain.Load() {
+		return fmt.Errorf("omp: %w", ErrCompactUncertain)
+	}
+	return nil
+}
+
+func (c *ompControl) parseCompactEv(ev omp.Event) (SeatCompact, error) {
+	if ev.Type == "error" {
+		switch ev.Reason {
+		case "turn_in_flight":
+			return SeatCompact{}, fmt.Errorf("omp: %w", ErrTurnInFlight)
+		case "no_eligible_fold":
+			return SeatCompact{}, fmt.Errorf("omp: %w", ErrCompactNoEligibleFold)
+		case "compact_canceled":
+			return SeatCompact{}, fmt.Errorf("omp: %w", ErrCompactCanceled)
+		case "compact_uncertain":
+			return SeatCompact{}, fmt.Errorf("omp: %w", ErrCompactUncertain)
+		case "invalid_bound":
+			return SeatCompact{}, fmt.Errorf("omp: compact refused: %s", ev.Text)
+		default:
+			return SeatCompact{}, fmt.Errorf("omp: compact failed: %s", ev.Text)
+		}
+	}
+	if ev.Type != "compact_result" {
+		return SeatCompact{}, fmt.Errorf("omp: sidecar said %q, want compact_result", ev.Type)
+	}
+	return SeatCompact{TokensBefore: ev.TokensBefore, TokensAfter: ev.TokensAfter, Committed: ev.Committed}, nil
+}
+
 func (c *ompControl) compact(ctx context.Context, boundTokens int) (SeatCompact, error) {
 	if boundTokens <= 0 {
 		return SeatCompact{}, fmt.Errorf("omp: bound tokens must be positive")
@@ -1138,26 +1176,50 @@ func (c *ompControl) compact(ctx context.Context, boundTokens int) (SeatCompact,
 	if err := c.send(msg); err != nil {
 		return SeatCompact{}, err
 	}
-	select {
-	case ev := <-reply:
-		if ev.Type == "error" {
-			if ev.Reason == "turn_in_flight" {
-				return SeatCompact{}, fmt.Errorf("omp: %w", ErrTurnInFlight)
+	wait := func(waitCtx context.Context) (SeatCompact, error) {
+		select {
+		case ev := <-reply:
+			out, err := c.parseCompactEv(ev)
+			if err == nil {
+				c.compactUncertain.Store(false)
 			}
-			if ev.Reason == "no_eligible_fold" {
-				return SeatCompact{}, fmt.Errorf("omp: %w", ErrCompactNoEligibleFold)
-			}
-			if ev.Reason == "invalid_bound" {
-				return SeatCompact{}, fmt.Errorf("omp: compact refused: %s", ev.Text)
-			}
-			return SeatCompact{}, fmt.Errorf("omp: compact failed: %s", ev.Text)
+			return out, err
+		case <-waitCtx.Done():
+			return SeatCompact{}, waitCtx.Err()
 		}
-		if ev.Type != "compact_result" {
-			return SeatCompact{}, fmt.Errorf("omp: sidecar said %q, want compact_result", ev.Type)
+	}
+	out, err := wait(ctx)
+	if err == nil {
+		return out, nil
+	}
+	if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+		return SeatCompact{}, fmt.Errorf("omp: compact: %w", err)
+	}
+	callerErr := err
+	_ = c.send(omp.Message{Op: omp.OpCompactAbort, Seat: c.seat, SessionID: c.sessionID, RequestID: requestID})
+	settleCtx, cancel := context.WithTimeout(context.Background(), CompactSettleTimeout)
+	defer cancel()
+	for {
+		select {
+		case ev := <-reply:
+			out, settleErr := c.parseCompactEv(ev)
+			if settleErr == nil {
+				c.compactUncertain.Store(false)
+				return out, nil
+			}
+			if errors.Is(settleErr, ErrCompactCanceled) {
+				c.compactUncertain.Store(false)
+				return SeatCompact{}, fmt.Errorf("omp: compact: %w", errors.Join(ErrCompactCanceled, callerErr))
+			}
+			if errors.Is(settleErr, ErrCompactUncertain) {
+				c.compactUncertain.Store(true)
+				return SeatCompact{}, settleErr
+			}
+			return SeatCompact{}, settleErr
+		case <-settleCtx.Done():
+			c.compactUncertain.Store(true)
+			return SeatCompact{}, fmt.Errorf("omp: compact: %w", ErrCompactUncertain)
 		}
-		return SeatCompact{TokensBefore: ev.TokensBefore, TokensAfter: ev.TokensAfter, Committed: ev.Committed}, nil
-	case <-ctx.Done():
-		return SeatCompact{}, fmt.Errorf("omp: compact: no answer from the sidecar: %w", ctx.Err())
 	}
 }
 

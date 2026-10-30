@@ -14,6 +14,12 @@ import (
 // but nothing can be folded to satisfy it (🎯T244).
 var ErrCompactNoEligibleFold = errors.New("compact: no eligible fold")
 
+// ErrCompactCanceled is returned when cancellation settled with no commit.
+var ErrCompactCanceled = errors.New("compact: canceled")
+
+// ErrCompactUncertain is returned when cancel settlement timed out or history may have changed.
+var ErrCompactUncertain = errors.New("compact: outcome uncertain")
+
 // SeatCompact is the observed outcome of a one-shot Registry.Compact (🎯T244).
 type SeatCompact struct {
 	TokensBefore int
@@ -23,6 +29,9 @@ type SeatCompact struct {
 
 // CompactTimeout bounds a bound compaction end to end (native compaction lane).
 const CompactTimeout = 15 * time.Minute
+
+// CompactSettleTimeout bounds sidecar acknowledgment after caller cancel.
+const CompactSettleTimeout = 30 * time.Second
 
 // Compact folds the named seat's conversation toward boundTokens in one
 // synchronous call between turns (🎯T244 / Jevons T1374). Only sidecar seats

@@ -144,9 +144,9 @@ func TestT244CompactDuringPromptReturnsTurnInFlight(t *testing.T) {
 	}
 }
 
-func TestT244CompactContextCancel(t *testing.T) {
+func TestT244CompactContextCancelSettlesWithoutCommit(t *testing.T) {
 	f := startFakeSidecar(t, []string{`{"type":"turn_end","text":"ok"}`})
-	f.compactDelay = 10 * time.Second
+	f.compactDelay = 2 * time.Second
 	ctx := context.Background()
 	agent, err := startDirectContext(ctx, Config{
 		Provider: Provider(omp.Anthropic), Name: "jv-compact-cancel", Model: "claude-sonnet-4-20250514",
@@ -170,8 +170,11 @@ func TestT244CompactContextCancel(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 	compactCancel()
 	wg.Wait()
-	if !errors.Is(compactErr, context.Canceled) {
-		t.Fatalf("Compact = %v, want context.Canceled", compactErr)
+	if !errors.Is(compactErr, ErrCompactCanceled) {
+		t.Fatalf("Compact = %v, want ErrCompactCanceled", compactErr)
+	}
+	if err := agent.Send("ok after cancel"); err != nil {
+		t.Fatalf("Send after settled cancel = %v", err)
 	}
 }
 
@@ -186,3 +189,5 @@ func waitForPromptInFlight(t *testing.T, flying *atomic.Bool, timeout time.Durat
 	}
 	t.Fatal("prompt never entered in-flight state")
 }
+
+

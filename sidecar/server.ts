@@ -26,6 +26,7 @@ import { HistoricalUsageReader } from "./usage-reader.ts";
 import { agentPauseGate } from "@oh-my-pi/pi-agent-core";
 import type { SandboxPolicy } from "./coding.ts";
 import { withSeatCommand } from "./seat_command.ts";
+import { abortBoundCompact, registerBoundCompact, unregisterBoundCompact } from "./bound_compact_inflight.ts";
 
 const banned = [
   "ANTHROPIC_API_KEY",
@@ -220,6 +221,12 @@ const server = createServer((socket) => {
       let msg: Line;
       try { msg = JSON.parse(raw); } catch { continue; }
       const seat = msg.seat ?? "";
+      if (msg.op === "compact_abort") {
+        if (msg.request_id && abortBoundCompact(seat, msg.request_id)) {
+          write({ seat, type: "compact_abort_ack", request_id: msg.request_id });
+        }
+        continue;
+      }
       if (msg.op === "load" || msg.op === "adopt") {
         if (msg.request_id || !loadedOnConnection.has(seat)) awaitedLoads.add(msg);
         loadedOnConnection.add(seat);
@@ -447,8 +454,10 @@ async function handle(
   }
   if (msg.op === "compact") {
     const bound = msg.bound_tokens ?? 0;
+    const requestId = msg.request_id ?? "";
+    const cancel = requestId ? registerBoundCompact(seat, requestId) : undefined;
     try {
-      const result = await loaded.agent.compactAtBound(bound);
+      const result = await loaded.agent.compactAtBound(bound, cancel ? { cancel: cancel.signal } : undefined);
       write({
         seat,
         type: "compact_result",
@@ -461,6 +470,8 @@ async function handle(
     } catch (err: unknown) {
       const reason = err instanceof Error && "reason" in err && typeof err.reason === "string" ? err.reason : undefined;
       write(errorEvent(msg, seat, err instanceof Error ? err.message : String(err), { reason }));
+    } finally {
+      if (requestId) unregisterBoundCompact(seat, requestId);
     }
     return;
   }

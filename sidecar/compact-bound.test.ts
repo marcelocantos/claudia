@@ -14,6 +14,7 @@ import type { AssistantMessage, Context, Model } from "@oh-my-pi/pi-ai";
 import { createSeatAgent } from "./seat.ts";
 import { SeatStore } from "./store.ts";
 import { withSeatCommand } from "./seat_command.ts";
+import { abortBoundCompact, registerBoundCompact, unregisterBoundCompact } from "./bound_compact_inflight.ts";
 
 registerMockApi();
 
@@ -173,6 +174,38 @@ describe("bound compact (🎯T244)", () => {
     await Bun.sleep(20);
     agent.abort();
     await expect(compacting).rejects.toBeDefined();
+    const entriesAfter = store.load() as SessionEntry[];
+    expect(entriesAfter.length).toBe(entriesBefore);
+    expect(entriesAfter.some((e) => e.type === "compaction")).toBe(false);
+    await agent.prompt("still usable");
+  });
+
+
+  test("out-of-band compact_abort cancels mid fold without durable commit", async () => {
+    const root = tempDir();
+    const store = new SeatStore(root, "po", "s1");
+    const requestId = "oob-cancel-1";
+    const seatName = "seat-a";
+    const cancel = registerBoundCompact(seatName, requestId);
+    const agent = agentWithMaintenance(() => ({ content: ["ok"], usage: { input: 1000, output: 1 } }), {
+      compactImpl: (async (_prep: CompactionPreparation, _model: unknown, _token: unknown, _instructions: unknown, signal?: AbortSignal) => {
+        await new Promise<void>((_, reject) => {
+          if (signal?.aborted) {
+            reject(new Error("aborted"));
+            return;
+          }
+          signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+        });
+      }) as typeof engineCompact,
+    }, { store });
+    for (let i = 0; i < 16; i++) await agent.prompt(`${i}: ${chunkText}`);
+    const entriesBefore = (store.load() as SessionEntry[]).length;
+    const compacting = agent.compactAtBound(bound180k, { cancel: cancel.signal });
+    await Bun.sleep(20);
+    expect(abortBoundCompact(seatName, requestId)).toBe(true);
+    expect(abortBoundCompact(seatName, "other-request")).toBe(false);
+    await expect(compacting).rejects.toMatchObject({ reason: "compact_canceled" });
+    unregisterBoundCompact(seatName, requestId);
     const entriesAfter = store.load() as SessionEntry[];
     expect(entriesAfter.length).toBe(entriesBefore);
     expect(entriesAfter.some((e) => e.type === "compaction")).toBe(false);
