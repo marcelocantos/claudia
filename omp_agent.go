@@ -561,6 +561,9 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 			switchModel: func(_ *Agent, provider Provider, model string) error {
 				return ctrl.switchModel(provider, model)
 			},
+			compact: func(_ *Agent, ctx context.Context, bound int) (SeatCompact, error) {
+				return ctrl.compact(ctx, bound)
+			},
 			syncSessionMCPServers: func(_ *Agent, servers []MCPServer) {
 				ctrl.applySessionMCPServers(context.Background(), servers, ctrl.currentProvider())
 			},
@@ -800,7 +803,7 @@ func (c *ompControl) pump(a *Agent) {
 		}
 		// A reply to a switch is the switch's, not a turn's (🎯T195): a
 		// refusal must not read as a failed turn.
-		if ev.RequestID != "" && (ev.Type == "ready" || ev.Type == "error") {
+		if ev.RequestID != "" && (ev.Type == "ready" || ev.Type == "error" || ev.Type == "compact_result") {
 			if ch := c.takeWait(ev.RequestID); ch != nil {
 				ch <- ev
 				continue
@@ -1104,6 +1107,46 @@ func (c *ompControl) currentProvider() string {
 // the new model (folding the conversation first when it would not fit), or
 // refuses with the seat left as it was. The seat's provider, model and token
 // change only once the sidecar has switched.
+func (c *ompControl) compact(ctx context.Context, boundTokens int) (SeatCompact, error) {
+	if boundTokens <= 0 {
+		return SeatCompact{}, fmt.Errorf("omp: bound tokens must be positive")
+	}
+	requestID := uuid.NewString()
+	reply := make(chan omp.Event, 1)
+	c.mu.Lock()
+	if c.waits == nil {
+		c.waits = map[string]chan omp.Event{}
+	}
+	c.waits[requestID] = reply
+	c.mu.Unlock()
+	defer c.takeWait(requestID)
+	msg := omp.Message{
+		Op: omp.OpCompact, Seat: c.seat, SessionID: c.sessionID,
+		RequestID: requestID, BoundTokens: boundTokens,
+	}
+	if err := c.send(msg); err != nil {
+		return SeatCompact{}, err
+	}
+	select {
+	case ev := <-reply:
+		if ev.Type == "error" {
+			if ev.Reason == "turn_in_flight" {
+				return SeatCompact{}, fmt.Errorf("omp: %w", ErrTurnInFlight)
+			}
+			if ev.Reason == "no_eligible_fold" || ev.Reason == "invalid_bound" {
+				return SeatCompact{}, fmt.Errorf("omp: compact refused: %s", ev.Text)
+			}
+			return SeatCompact{}, fmt.Errorf("omp: compact failed: %s", ev.Text)
+		}
+		if ev.Type != "compact_result" {
+			return SeatCompact{}, fmt.Errorf("omp: sidecar said %q, want compact_result", ev.Type)
+		}
+		return SeatCompact{TokensBefore: ev.TokensBefore, TokensAfter: ev.TokensAfter, Committed: ev.Committed}, nil
+	case <-ctx.Done():
+		return SeatCompact{}, fmt.Errorf("omp: compact: no answer from the sidecar: %w", ctx.Err())
+	}
+}
+
 func (c *ompControl) switchModel(provider Provider, model string) error {
 	id := ompProviderID(provider)
 	if id == "" {

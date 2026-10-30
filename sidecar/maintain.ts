@@ -448,6 +448,12 @@ export type MaintenanceHost = {
 };
 
 // Maintenance runs the CLI's compaction triggers for one seat.
+export type BoundCompactResult = {
+  tokensBefore: number;
+  tokensAfter: number;
+  committed: boolean;
+};
+
 export class Maintenance {
   readonly history: History;
   #host: MaintenanceHost;
@@ -600,6 +606,31 @@ export class Maintenance {
     return true;
   }
 
+  // compactToBound is the synchronous one-shot host compaction API (🎯T244).
+  async compactToBound(boundTokens: number): Promise<BoundCompactResult> {
+    if (!Number.isFinite(boundTokens) || boundTokens <= 0) {
+      throw Object.assign(new Error("compact refused: bound_tokens must be positive"), { reason: "invalid_bound" });
+    }
+    const messages = this.#host.agent.state.messages;
+    const before = this.contextTokens(messages);
+    if (before <= boundTokens) {
+      return { tokensBefore: before, tokensAfter: before, committed: false };
+    }
+    if (this.#abort) {
+      throw Object.assign(new Error("compact refused: compaction already running"), { reason: "turn_in_flight" });
+    }
+    const progressed = await this.run("bound", "pre_turn", messages, { window: boundTokens, compactOn: "bound" });
+    const after = this.contextTokens(this.#host.agent.state.messages);
+    const committed = progressed || after < before;
+    if (!committed && after > boundTokens) {
+      throw Object.assign(
+        new Error("compact refused: no eligible fold or insufficient progress"),
+        { reason: "no_eligible_fold" },
+      );
+    }
+    return { tokensBefore: before, tokensAfter: after, committed };
+  }
+
   // run compacts the conversation once and reports whether the result made
   // progress (the rebuilt context fits, or sits under the recovery band).
   // messages is the live conversation: mid-turn, the loop's own array, which
@@ -611,7 +642,7 @@ export class Maintenance {
     reason: Reason,
     phase: Phase,
     messages: readonly AgentMessage[] = this.#host.agent.state.messages,
-    target: { window?: number; soft?: boolean } = {},
+    target: { window?: number; soft?: boolean; compactOn?: string } = {},
   ): Promise<boolean> {
     const agent = this.#host.agent;
     const model = agent.state.model;
@@ -691,6 +722,9 @@ export class Maintenance {
         this.#host.emit({
           type: "compacted",
           text: `${reason} (${phase}): context ${before} -> ${after} tokens of ${window}; method ${method}`,
+          compact_on: target.compactOn,
+          context_before: before,
+          context_after: after,
         });
         if (!progressed) {
           this.#deadEnd = true;

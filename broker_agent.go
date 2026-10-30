@@ -301,6 +301,7 @@ func (b *brokerAgentBackend) ops() agentOps {
 			return resp.AgentInfo.PromptInFlight
 		},
 		switchModel: b.switchModel,
+		compact:     b.compact,
 		// steer forwards mode=steer (🎯T72.3); the daemon runs the
 		// provider's mechanism and the outcome comes back on the sent
 		// response. A daemon that predates send.mode answers the bare
@@ -358,6 +359,24 @@ func (b *brokerAgentBackend) ops() agentOps {
 // place (🎯T195). It can take as long as a compaction, when the conversation
 // must be folded to fit the new model, so it is not an ordinary op call.
 // The daemon's model_switch Event arrives on the stream.
+
+func (b *brokerAgentBackend) compact(_ *Agent, ctx context.Context, boundTokens int) (SeatCompact, error) {
+	resp, err := b.client.call(ctx, &broker.Request{Type: broker.TypeCompact, Compact: &broker.CompactRequest{
+		Name: b.named().Name, BoundTokens: boundTokens,
+	}})
+	if err != nil {
+		return SeatCompact{}, err
+	}
+	if resp.Compact == nil {
+		return SeatCompact{}, fmt.Errorf("broker: compact_result missing body")
+	}
+	return SeatCompact{
+		TokensBefore: resp.Compact.TokensBefore,
+		TokensAfter:  resp.Compact.TokensAfter,
+		Committed:    resp.Compact.Committed,
+	}, nil
+}
+
 func (b *brokerAgentBackend) switchModel(_ *Agent, provider Provider, model string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), switchModelTimeout)
 	defer cancel()

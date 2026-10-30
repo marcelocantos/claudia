@@ -519,7 +519,7 @@ func (d *Daemon) HandleRequest(c *broker.ClientConn, req *broker.Request) bool {
 			return false
 		}
 		d.handleRelease(c, req)
-	case broker.TypeSend, broker.TypeInterrupt, broker.TypeSetModel,
+	case broker.TypeSend, broker.TypeInterrupt, broker.TypeSetModel, broker.TypeCompact,
 		broker.TypeAgentInfo, broker.TypeTermSubscribe, broker.TypeResize, broker.TypeCloseGoal, broker.TypeRewind:
 		d.handleAgentOp(c, req)
 	case broker.TypeGoalVerdict:
@@ -1555,6 +1555,8 @@ func (d *Daemon) handleAgentOp(c *broker.ClientConn, req *broker.Request) {
 		name = req.Interrupt.Name
 	case broker.TypeSetModel:
 		name = req.SetModel.Name
+	case broker.TypeCompact:
+		name = req.Compact.Name
 	case broker.TypeAgentInfo:
 		name = req.AgentInfo.Name
 	case broker.TypeTermSubscribe:
@@ -1586,6 +1588,15 @@ func (d *Daemon) handleAgentOp(c *broker.ClientConn, req *broker.Request) {
 			return
 		}
 		_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeInterrupted, Interrupted: named})
+	case broker.TypeCompact:
+		out, err := proc.Compact(context.Background(), req.Compact.BoundTokens)
+		if err != nil {
+			_ = c.Fail(req.ID, err)
+			return
+		}
+		_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeCompactResult, Compact: &broker.CompactResponse{
+			Name: name, TokensBefore: out.TokensBefore, TokensAfter: out.TokensAfter, Committed: out.Committed,
+		}})
 	case broker.TypeSetModel:
 		// The daemon's Registry launched proc, so a switch rewrites the
 		// seat's definition and a restart resumes it on the new model

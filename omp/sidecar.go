@@ -32,6 +32,8 @@ const (
 	// It carries Provider and Token and names no seat.
 	OpToken     = "token"
 	OpAuthRetry = "auth_retry"
+	// OpCompact is a synchronous bound compaction (🎯T244).
+	OpCompact = "compact"
 )
 
 // Message is one IPC line. Token is set only on load, and only with the
@@ -78,6 +80,8 @@ type Message struct {
 	Sandbox *Sandbox `json:"sandbox,omitempty"`
 	// ProtectedPaths are host edit rules (🎯T209 / jevons 🎯T546), independent of sandbox mode.
 	ProtectedPaths []ProtectedPathRule `json:"protected_paths,omitempty"`
+	// BoundTokens is the host token bound for OpCompact (🎯T244).
+	BoundTokens int `json:"bound_tokens,omitempty"`
 }
 
 // Sandbox modes the sidecar enforces on its own tools.
@@ -152,6 +156,10 @@ type Event struct {
 	// (usage limit, rate limit, auth). Empty on a turn that answered.
 	Error    string          `json:"error,omitempty"`
 	Snapshot json.RawMessage `json:"snapshot,omitempty"`
+	// Compact result fields (🎯T244).
+	TokensBefore int  `json:"tokens_before,omitempty"`
+	TokensAfter  int  `json:"tokens_after,omitempty"`
+	Committed    bool `json:"committed,omitempty"`
 }
 
 // Refusal is the provider's reason when a turn_end closed a refused turn,
