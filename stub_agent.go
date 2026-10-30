@@ -75,6 +75,8 @@ type StubAgentOps struct {
 	// SwitchModel answers [Agent.SwitchModel] (🎯T195). Nil refuses the
 	// switch as unsupported.
 	SwitchModel func(provider Provider, model string) error
+	// Compact answers [Agent.Compact] (🎯T244). Nil leaves compact unsupported.
+	Compact func(ctx context.Context, boundTokens int) (SeatCompact, error)
 }
 
 // StubStart is what [StartStub] resolved before handing the stub its
@@ -169,6 +171,9 @@ func (b *stubAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error
 	}
 	if o.SwitchModel != nil {
 		ops.switchModel = func(_ *Agent, provider Provider, model string) error { return o.SwitchModel(provider, model) }
+	}
+	if o.Compact != nil {
+		ops.compact = func(_ *Agent, ctx context.Context, bound int) (SeatCompact, error) { return o.Compact(ctx, bound) }
 	}
 	return &agentStart{
 		Control: ctrl,

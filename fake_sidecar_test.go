@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -26,6 +27,13 @@ type fakeSidecar struct {
 	loads []omp.Message
 	// refuseSwitch, when set, is the text of the refusal a switch gets.
 	refuseSwitch string
+	// compactReason, when set, is the sidecar error reason for OpCompact.
+	compactReason string
+	// promptHold blocks OpPrompt until closed.
+	promptHold chan struct{}
+	promptInFlight atomic.Bool
+	compactDuringPrompt atomic.Bool
+	compactDelay time.Duration
 }
 
 func (f *fakeSidecar) loaded() []omp.Message {
@@ -77,15 +85,36 @@ func startFakeSidecar(t *testing.T, reply []string) *fakeSidecar {
 					_, _ = c.Write(append(b, '\n'))
 				}
 			case omp.OpCompact:
+				if f.promptInFlight.Load() {
+					f.compactDuringPrompt.Store(true)
+					b, _ := json.Marshal(map[string]any{"seat": msg.Seat, "type": "error", "request_id": msg.RequestID, "reason": "turn_in_flight", "text": "compact refused: turn in flight"})
+					_, _ = c.Write(append(b, '\n'))
+					break
+				}
+				if f.compactDelay > 0 {
+					time.Sleep(f.compactDelay)
+				}
+				if f.compactReason != "" {
+					b, _ := json.Marshal(map[string]any{"seat": msg.Seat, "type": "error", "request_id": msg.RequestID, "reason": f.compactReason, "text": "compact refused"})
+					_, _ = c.Write(append(b, '\n'))
+					break
+				}
 				b, _ := json.Marshal(map[string]any{
 					"seat": msg.Seat, "type": "compact_result", "request_id": msg.RequestID,
 					"tokens_before": 200000, "tokens_after": 120000, "committed": true,
 				})
 				_, _ = c.Write(append(b, '\n'))
 			case omp.OpPrompt:
-				for _, l := range reply {
-					_, _ = c.Write([]byte(withTurnID(l, msg.TurnID) + "\n"))
-				}
+				go func(turnID string) {
+					f.promptInFlight.Store(true)
+					if f.promptHold != nil {
+						<-f.promptHold
+					}
+					for _, l := range reply {
+						_, _ = c.Write([]byte(withTurnID(l, turnID) + "\n"))
+					}
+					f.promptInFlight.Store(false)
+				}(msg.TurnID)
 			}
 		}
 	}()

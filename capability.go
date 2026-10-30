@@ -61,6 +61,9 @@ const (
 	// switches provider and model in place and is not gated by it
 	// (🎯T195).
 	CapabilityModelSwitch Capability = "model_switch"
+	// CapabilityCompact is synchronous bound compaction between turns
+	// ([Agent.Compact], [Registry.Compact]) on sidecar seats (🎯T244).
+	CapabilityCompact Capability = "compact"
 	// CapabilityMCPTools is a live Session actually surfacing the MCP
 	// tools claudia attaches ([Config.MCPServers]) to the provider's
 	// model — steerability, in the jevons sense: can this seat receive
@@ -149,6 +152,7 @@ func reportedCapabilities() []Capability {
 		CapabilitySandboxPolicy,
 		CapabilityExtraArgs,
 		CapabilityModelSwitch,
+		CapabilityCompact,
 		CapabilityMCPTools,
 	}
 }
@@ -212,6 +216,10 @@ var providerCapabilityClaims = map[Provider]map[Capability]capabilityClaim{
 			status: CapabilityUnsupported,
 			reason: "Ollama Task mode is one-shot generate; there is no live session model to switch",
 		},
+		CapabilityCompact: {
+			status: CapabilityUnsupported,
+			reason: "only sidecar seats support bound compaction between turns",
+		},
 		CapabilityMCPTools: {
 			status: CapabilityUnsupported,
 			reason: "Ollama Task mode is one-shot generate with no tool-calling wired; there is no session for an MCP tool to reach",
@@ -238,6 +246,7 @@ var providerCapabilityClaims = map[Provider]map[Capability]capabilityClaim{
 		},
 		CapabilityExtraArgs:   {status: CapabilityUnsupported, reason: "sidecar seats do not implement legacy CLI ExtraArgs"},
 		CapabilityModelSwitch: {status: CapabilitySupported},
+		CapabilityCompact:      {status: CapabilitySupported},
 		CapabilityMCPTools:    {status: CapabilitySupported},
 	},
 	ProviderCodex: {
@@ -281,6 +290,7 @@ var providerCapabilityClaims = map[Provider]map[Capability]capabilityClaim{
 		// on every Codex seat's MCP block; before it every MCP call was
 		// rejected with "MCP tool call requires approval, but approval
 		// policy is never" (claudia T119, jevons 🎯T791/🎯T841).
+		CapabilityCompact:      {status: CapabilitySupported},
 		CapabilityMCPTools: {status: CapabilitySupported},
 	},
 	ProviderGrok: {
@@ -322,6 +332,7 @@ var providerCapabilityClaims = map[Provider]map[Capability]capabilityClaim{
 			reason: grokExtraArgsReason,
 		},
 		CapabilityModelSwitch: {status: CapabilitySupported},
+		CapabilityCompact:      {status: CapabilitySupported},
 		CapabilityMCPTools:    {status: CapabilitySupported},
 	},
 	ProviderCursor: {
@@ -372,6 +383,7 @@ var providerCapabilityClaims = map[Provider]map[Capability]capabilityClaim{
 		// tools in one day, including jevons_agent_start, jevons_agent_send and
 		// bullseye_commit. A seat that does not receive its tools still fails
 		// closed on the sidecar's bound_tools attestation.
+		CapabilityCompact:      {status: CapabilitySupported},
 		CapabilityMCPTools: {status: CapabilitySupported},
 	},
 	ProviderBedrock: {
@@ -421,6 +433,10 @@ var providerCapabilityClaims = map[Provider]map[Capability]capabilityClaim{
 		CapabilityModelSwitch: {
 			status: CapabilityUnsupported,
 			reason: "Bedrock v1 is one-shot ConverseStream; there is no live session model to switch",
+		},
+		CapabilityCompact: {
+			status: CapabilityUnsupported,
+			reason: "only sidecar seats support bound compaction between turns",
 		},
 		CapabilityMCPTools: {
 			status: CapabilityUnsupported,
