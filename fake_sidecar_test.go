@@ -34,6 +34,8 @@ type fakeSidecar struct {
 	promptInFlight atomic.Bool
 	compactDuringPrompt atomic.Bool
 	compactDelay time.Duration
+	compactMu     sync.Mutex
+	compactCancels map[string]context.CancelFunc
 }
 
 func (f *fakeSidecar) loaded() []omp.Message {
@@ -84,26 +86,57 @@ func startFakeSidecar(t *testing.T, reply []string) *fakeSidecar {
 					b, _ := json.Marshal(map[string]any{"seat": msg.Seat, "type": "ready", "how": "switched", "provider": msg.Provider, "request_id": msg.RequestID})
 					_, _ = c.Write(append(b, '\n'))
 				}
+			case omp.OpCompactAbort:
+				f.compactMu.Lock()
+				if cancel := f.compactCancels[msg.RequestID]; cancel != nil {
+					cancel()
+				}
+				f.compactMu.Unlock()
 			case omp.OpCompact:
-				if f.promptInFlight.Load() {
-					f.compactDuringPrompt.Store(true)
-					b, _ := json.Marshal(map[string]any{"seat": msg.Seat, "type": "error", "request_id": msg.RequestID, "reason": "turn_in_flight", "text": "compact refused: turn in flight"})
+				go func(msg omp.Message) {
+					if f.promptInFlight.Load() {
+						f.compactDuringPrompt.Store(true)
+						b, _ := json.Marshal(map[string]any{"seat": msg.Seat, "type": "error", "request_id": msg.RequestID, "reason": "turn_in_flight", "text": "compact refused: turn in flight"})
+						_, _ = c.Write(append(b, '\n'))
+						return
+					}
+					ctx, cancel := context.WithCancel(context.Background())
+					f.compactMu.Lock()
+					if f.compactCancels == nil {
+						f.compactCancels = map[string]context.CancelFunc{}
+					}
+					f.compactCancels[msg.RequestID] = cancel
+					f.compactMu.Unlock()
+					defer func() {
+						f.compactMu.Lock()
+						delete(f.compactCancels, msg.RequestID)
+						f.compactMu.Unlock()
+					}()
+					if f.compactDelay > 0 {
+						select {
+						case <-time.After(f.compactDelay):
+						case <-ctx.Done():
+							b, _ := json.Marshal(map[string]any{"seat": msg.Seat, "type": "error", "request_id": msg.RequestID, "reason": "compact_canceled", "text": "compact canceled"})
+							_, _ = c.Write(append(b, '\n'))
+							return
+						}
+					}
+					if ctx.Err() != nil {
+						b, _ := json.Marshal(map[string]any{"seat": msg.Seat, "type": "error", "request_id": msg.RequestID, "reason": "compact_canceled", "text": "compact canceled"})
+						_, _ = c.Write(append(b, '\n'))
+						return
+					}
+					if f.compactReason != "" {
+						b, _ := json.Marshal(map[string]any{"seat": msg.Seat, "type": "error", "request_id": msg.RequestID, "reason": f.compactReason, "text": "compact refused"})
+						_, _ = c.Write(append(b, '\n'))
+						return
+					}
+					b, _ := json.Marshal(map[string]any{
+						"seat": msg.Seat, "type": "compact_result", "request_id": msg.RequestID,
+						"tokens_before": 200000, "tokens_after": 120000, "committed": true,
+					})
 					_, _ = c.Write(append(b, '\n'))
-					break
-				}
-				if f.compactDelay > 0 {
-					time.Sleep(f.compactDelay)
-				}
-				if f.compactReason != "" {
-					b, _ := json.Marshal(map[string]any{"seat": msg.Seat, "type": "error", "request_id": msg.RequestID, "reason": f.compactReason, "text": "compact refused"})
-					_, _ = c.Write(append(b, '\n'))
-					break
-				}
-				b, _ := json.Marshal(map[string]any{
-					"seat": msg.Seat, "type": "compact_result", "request_id": msg.RequestID,
-					"tokens_before": 200000, "tokens_after": 120000, "committed": true,
-				})
-				_, _ = c.Write(append(b, '\n'))
+				}(msg)
 			case omp.OpPrompt:
 				go func(turnID string) {
 					f.promptInFlight.Store(true)

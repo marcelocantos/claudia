@@ -34,6 +34,8 @@ const (
 	OpAuthRetry = "auth_retry"
 	// OpCompact is a synchronous bound compaction (🎯T244).
 	OpCompact = "compact"
+	// OpCompactAbort cancels one in-flight OpCompact by request_id (🎯T244).
+	OpCompactAbort = "compact_abort"
 )
 
 // Message is one IPC line. Token is set only on load, and only with the

@@ -107,7 +107,10 @@ export type SeatAgent = {
   // unknown model, and when the conversation cannot be made to fit.
   switchModel: (provider: string, model: string) => Promise<void>;
   // compactAtBound folds toward boundTokens between turns (🎯T244).
-  compactAtBound: (boundTokens: number) => Promise<import("./maintain.ts").BoundCompactResult>;
+  compactAtBound: (
+    boundTokens: number,
+    opts?: { cancel?: AbortSignal },
+  ) => Promise<import("./maintain.ts").BoundCompactResult>;
   setToken: (token: string) => void;
   setCwd: (cwd: string) => void;
   // setSandbox replaces the policy on the seat's own tools (🎯T178).
@@ -352,7 +355,12 @@ export function createSeatAgent(opts: {
   const transcriptEndsMidTurn = restored
     ? savedTranscriptEndsMidTurn(agent.state.messages, pairedInterruptedToolBatch)
     : false;
+  let boundCompactUncertain = false;
   const assertRestorableExecution = () => {
+    if (boundCompactUncertain) throw Object.assign(
+      new Error("bound compaction outcome uncertain; re-check before prompting"),
+      { reason: "compact_uncertain" },
+    );
     if (uncertainToolRestore) throw Object.assign(
       new Error("restored history has unfinished tool calls; inspect their effects before starting a fresh session"),
       { reason: "execution_uncertain" },
@@ -952,10 +960,17 @@ export function createSeatAgent(opts: {
       }
       await maint.switchModel((opts.resolveModelOverride ?? resolveModel)(provider, modelId));
     },
-    compactAtBound: async (boundTokens: number) => {
+    compactAtBound: async (boundTokens: number, opts?: { cancel?: AbortSignal }) => {
       assertRestorableExecution();
       refuseCompactMutation();
-      return maint.compactToBound(boundTokens);
+      try {
+        const out = await maint.compactToBound(boundTokens, opts);
+        boundCompactUncertain = false;
+        return out;
+      } catch (err) {
+        if (err instanceof Error && "reason" in err && err.reason === "compact_uncertain") boundCompactUncertain = true;
+        throw err;
+      }
     },
     setToken: (next: string) => {
       token = next;
