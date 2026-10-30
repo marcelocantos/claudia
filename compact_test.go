@@ -6,8 +6,12 @@ package claudia
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/marcelocantos/claudia/omp"
 )
 
 func TestRegistryCompactRefusesNonPositiveBound(t *testing.T) {
@@ -65,4 +69,120 @@ func TestAgentCompactReturnsObservedSizes(t *testing.T) {
 	if out.TokensBefore != 200_000 || out.TokensAfter != 120_000 || !out.Committed {
 		t.Fatalf("out = %+v", out)
 	}
+}
+
+func TestAgentCompactMissingOpReportsCompactCapability(t *testing.T) {
+	a := &Agent{
+		ready:    make(chan struct{}),
+		provider: ProviderCursor,
+		startCfg: Config{Provider: ProviderCursor, OMP: true},
+		ops: agentOps{
+			promptInFlight: func(*Agent) bool { return false },
+		},
+	}
+	close(a.ready)
+	_, err := a.Compact(context.Background(), 180_000)
+	var ce *CapabilityError
+	if !errors.As(err, &ce) || ce.Capability != CapabilityCompact {
+		t.Fatalf("Compact = %v, want *CapabilityError compact", err)
+	}
+}
+
+func TestOMPCompactNoEligibleFoldEndToEnd(t *testing.T) {
+	f := startFakeSidecar(t, []string{`{"type":"turn_end","text":"ok"}`})
+	f.compactReason = "no_eligible_fold"
+	ctx := context.Background()
+	agent, err := startDirectContext(ctx, Config{
+		Provider: Provider(omp.Anthropic), Name: "jv-compact-fold", Model: "claude-sonnet-4-20250514",
+		WorkDir: t.TempDir(), TermLogPath: "-",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer agent.Stop()
+	if err := agent.WaitReady(ctx); err != nil {
+		t.Fatal(err)
+	}
+	_, err = agent.Compact(ctx, 180_000)
+	if !errors.Is(err, ErrCompactNoEligibleFold) {
+		t.Fatalf("Compact = %v, want ErrCompactNoEligibleFold", err)
+	}
+}
+
+func TestT244CompactDuringPromptReturnsTurnInFlight(t *testing.T) {
+	hold := make(chan struct{})
+	f := startFakeSidecar(t, []string{`{"type":"turn_end","text":"ok"}`})
+	f.promptHold = hold
+	ctx := context.Background()
+	agent, err := startDirectContext(ctx, Config{
+		Provider: Provider(omp.Anthropic), Name: "jv-compact-race", Model: "claude-sonnet-4-20250514",
+		WorkDir: t.TempDir(), TermLogPath: "-",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer agent.Stop()
+	if err := agent.WaitReady(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var promptErr error
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		promptErr = agent.Send("hold open")
+	}()
+	waitForPromptInFlight(t, &f.promptInFlight, 5*time.Second)
+	_, compactErr := agent.Compact(ctx, 180_000)
+	close(hold)
+	wg.Wait()
+	if !errors.Is(compactErr, ErrTurnInFlight) {
+		t.Fatalf("Compact during prompt = %v, want ErrTurnInFlight", compactErr)
+	}
+	if promptErr != nil {
+		t.Fatalf("Send = %v", promptErr)
+	}
+}
+
+func TestT244CompactContextCancel(t *testing.T) {
+	f := startFakeSidecar(t, []string{`{"type":"turn_end","text":"ok"}`})
+	f.compactDelay = 10 * time.Second
+	ctx := context.Background()
+	agent, err := startDirectContext(ctx, Config{
+		Provider: Provider(omp.Anthropic), Name: "jv-compact-cancel", Model: "claude-sonnet-4-20250514",
+		WorkDir: t.TempDir(), TermLogPath: "-",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer agent.Stop()
+	if err := agent.WaitReady(ctx); err != nil {
+		t.Fatal(err)
+	}
+	compactCtx, compactCancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	wg.Add(1)
+	var compactErr error
+	go func() {
+		defer wg.Done()
+		_, compactErr = agent.Compact(compactCtx, 180_000)
+	}()
+	time.Sleep(200 * time.Millisecond)
+	compactCancel()
+	wg.Wait()
+	if !errors.Is(compactErr, context.Canceled) {
+		t.Fatalf("Compact = %v, want context.Canceled", compactErr)
+	}
+}
+
+func waitForPromptInFlight(t *testing.T, flying *atomic.Bool, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if flying.Load() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("prompt never entered in-flight state")
 }

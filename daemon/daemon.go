@@ -157,6 +157,11 @@ const (
 )
 
 // Daemon is a running daemon.
+const (
+	connCtxKey    = "daemon.connCtx"
+	connCancelKey = "daemon.connCancel"
+)
+
 type Daemon struct {
 	// One interactive plan login at a time: concurrent seats must not open
 	// several browser/device-code prompts for the same owner.
@@ -641,6 +646,11 @@ func (d *Daemon) ConnClosed(c *broker.ClientConn) {
 		detached = append(detached, name)
 	}
 	var cancels []context.CancelFunc
+	if v, ok := c.Get(connCancelKey); ok {
+		if cancel, ok := v.(context.CancelFunc); ok {
+			cancels = append(cancels, cancel)
+		}
+	}
 	for id, t := range d.tasks {
 		if t.owner == c {
 			cancels = append(cancels, t.cancel)
@@ -1546,6 +1556,19 @@ func (d *Daemon) seatFor(c *broker.ClientConn, id, name string, needOwner bool) 
 	return g, g.proc, true
 }
 
+
+func (d *Daemon) connectionContext(c *broker.ClientConn) context.Context {
+	if v, ok := c.Get(connCtxKey); ok {
+		if ctx, ok := v.(context.Context); ok {
+			return ctx
+		}
+	}
+	ctx, cancel := context.WithCancel(d.ctx)
+	c.Set(connCtxKey, ctx)
+	c.Set(connCancelKey, cancel)
+	return ctx
+}
+
 func (d *Daemon) handleAgentOp(c *broker.ClientConn, req *broker.Request) {
 	var name string
 	switch req.Type {
@@ -1589,14 +1612,31 @@ func (d *Daemon) handleAgentOp(c *broker.ClientConn, req *broker.Request) {
 		}
 		_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeInterrupted, Interrupted: named})
 	case broker.TypeCompact:
-		out, err := proc.Compact(context.Background(), req.Compact.BoundTokens)
-		if err != nil {
-			_ = c.Fail(req.ID, err)
-			return
+		ctx, cancel := context.WithTimeout(d.connectionContext(c), claudia.CompactTimeout)
+		type compactRes struct {
+			out claudia.SeatCompact
+			err error
 		}
-		_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeCompactResult, Compact: &broker.CompactResponse{
-			Name: name, TokensBefore: out.TokensBefore, TokensAfter: out.TokensAfter, Committed: out.Committed,
-		}})
+		ch := make(chan compactRes, 1)
+		go func() {
+			defer cancel()
+			out, err := proc.Compact(ctx, req.Compact.BoundTokens)
+			ch <- compactRes{out, err}
+		}()
+		go func() {
+			select {
+			case r := <-ch:
+				if r.err != nil {
+					_ = c.Fail(req.ID, r.err)
+					return
+				}
+				_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeCompactResult, Compact: &broker.CompactResponse{
+					Name: name, TokensBefore: r.out.TokensBefore, TokensAfter: r.out.TokensAfter, Committed: r.out.Committed,
+				}})
+			case <-ctx.Done():
+				_ = c.Fail(req.ID, ctx.Err())
+			}
+		}()
 	case broker.TypeSetModel:
 		// The daemon's Registry launched proc, so a switch rewrites the
 		// seat's definition and a restart resumes it on the new model

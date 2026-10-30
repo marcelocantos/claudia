@@ -21,8 +21,8 @@ type SeatCompact struct {
 	Committed    bool
 }
 
-// compactTimeout bounds a bound compaction end to end (native compaction lane).
-const compactTimeout = 15 * time.Minute
+// CompactTimeout bounds a bound compaction end to end (native compaction lane).
+const CompactTimeout = 15 * time.Minute
 
 // Compact folds the named seat's conversation toward boundTokens in one
 // synchronous call between turns (🎯T244 / Jevons T1374). Only sidecar seats
@@ -51,7 +51,7 @@ func (r *Registry) Compact(ctx context.Context, name string, boundTokens int) (S
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	ctx, cancel := context.WithTimeout(ctx, compactTimeout)
+	ctx, cancel := context.WithTimeout(ctx, CompactTimeout)
 	defer cancel()
 	out, err := proc.Compact(ctx, boundTokens)
 	if err != nil {
@@ -79,12 +79,12 @@ func (a *Agent) Compact(ctx context.Context, boundTokens int) (SeatCompact, erro
 		return SeatCompact{}, fmt.Errorf("Compact: %w", ErrTurnInFlight)
 	}
 	if a.ops.compact == nil {
-		return SeatCompact{}, unsupportedCapability(a.Provider(), CapabilityModelSwitch, "provider did not supply a compact operation")
+		return SeatCompact{}, unsupportedCapability(a.Provider(), CapabilityCompact, "provider did not supply a compact operation")
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	ctx, cancel := context.WithTimeout(ctx, compactTimeout)
+	ctx, cancel := context.WithTimeout(ctx, CompactTimeout)
 	defer cancel()
 	return a.ops.compact(a, ctx, boundTokens)
 }
