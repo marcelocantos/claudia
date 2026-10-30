@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 )
 
@@ -56,7 +55,7 @@ func (r *Registry) Compact(ctx context.Context, name string, boundTokens int) (S
 	defer cancel()
 	out, err := proc.Compact(ctx, boundTokens)
 	if err != nil {
-		if strings.Contains(err.Error(), "no eligible fold") {
+		if errors.Is(err, ErrCompactNoEligibleFold) {
 			return out, fmt.Errorf("Compact %s: %w", name, ErrCompactNoEligibleFold)
 		}
 		return out, err
