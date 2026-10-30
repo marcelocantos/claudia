@@ -40,7 +40,7 @@ const (
 // consulted. An unrecognised code has no cause.
 func CauseFromProviderCode(code string) ProviderCause {
 	switch code {
-	case "rate_limit":
+	case "rate_limit", "rate_limit_error":
 		return CauseRateLimit
 	case "billing_error":
 		return CauseSpendWall
@@ -55,32 +55,62 @@ func CauseFromProviderCode(code string) ProviderCause {
 	}
 }
 
-// CauseFromConnectError maps the Connect RPC code that an OMP-hosted provider
-// (Cursor) reports in its turn errorMessage, "Connect error <code>: …", onto
-// a cause. The code is the provider's own token in a fixed position; the
-// prose after it is not consulted. Without this, Cursor's quota refusal
-// (resource_exhausted) reached Jevons as an untyped error, so no provider
-// wall was raised and seats kept submitting into it (2026-10-27).
+// CauseFromConnectError maps a provider turn-refusal errorMessage onto a
+// cause. The provider's own code sits in a fixed position; the prose after
+// it is not consulted.
+//
+//	Connect error <code>: …                 Cursor / Connect RPC
+//	Anthropic stream error (<code>): …      Anthropic stream
+//
+// Without the Connect mapping, Cursor's quota refusal (resource_exhausted)
+// reached Jevons as an untyped error, so no provider wall was raised and
+// seats kept submitting into it (2026-10-27). Without the Anthropic mapping,
+// `Anthropic stream error (rate_limit_error): Rate limited` reached Jevons
+// as client_bug / untyped (2026-10-31).
 func CauseFromConnectError(errorMessage string) ProviderCause {
+	if code, ok := connectErrorCode(errorMessage); ok {
+		switch code {
+		case "resource_exhausted":
+			return CauseRateLimit
+		case "unauthenticated":
+			return CauseAuth
+		case "unavailable":
+			return CauseBackendUnavailable
+		default:
+			return ""
+		}
+	}
+	if code, ok := anthropicStreamErrorCode(errorMessage); ok {
+		return CauseFromProviderCode(code)
+	}
+	return ""
+}
+
+func connectErrorCode(errorMessage string) (string, bool) {
 	const prefix = "Connect error "
 	i := strings.Index(errorMessage, prefix)
 	if i < 0 {
-		return ""
+		return "", false
 	}
 	code := errorMessage[i+len(prefix):]
 	if j := strings.IndexAny(code, ": "); j >= 0 {
 		code = code[:j]
 	}
-	switch code {
-	case "resource_exhausted":
-		return CauseRateLimit
-	case "unauthenticated":
-		return CauseAuth
-	case "unavailable":
-		return CauseBackendUnavailable
-	default:
-		return ""
+	return code, true
+}
+
+func anthropicStreamErrorCode(errorMessage string) (string, bool) {
+	const prefix = "Anthropic stream error ("
+	i := strings.Index(errorMessage, prefix)
+	if i < 0 {
+		return "", false
 	}
+	rest := errorMessage[i+len(prefix):]
+	j := strings.IndexByte(rest, ')')
+	if j < 0 {
+		return "", false
+	}
+	return rest[:j], true
 }
 
 // causedError is a provider failure whose cause is a code.
