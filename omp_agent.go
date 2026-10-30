@@ -1133,7 +1133,10 @@ func (c *ompControl) compact(ctx context.Context, boundTokens int) (SeatCompact,
 			if ev.Reason == "turn_in_flight" {
 				return SeatCompact{}, fmt.Errorf("omp: %w", ErrTurnInFlight)
 			}
-			if ev.Reason == "no_eligible_fold" || ev.Reason == "invalid_bound" {
+			if ev.Reason == "no_eligible_fold" {
+				return SeatCompact{}, fmt.Errorf("omp: %w", ErrCompactNoEligibleFold)
+			}
+			if ev.Reason == "invalid_bound" {
 				return SeatCompact{}, fmt.Errorf("omp: compact refused: %s", ev.Text)
 			}
 			return SeatCompact{}, fmt.Errorf("omp: compact failed: %s", ev.Text)
