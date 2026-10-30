@@ -478,6 +478,8 @@ type agentOps struct {
 	// native CLI backends only change model within their own provider.
 	// Nil → SwitchModel refuses after the capability check.
 	switchModel func(a *Agent, provider Provider, model string, opt SwitchOptions) error
+	// compact folds the seat toward a host token bound between turns (🎯T244).
+	compact func(a *Agent, ctx context.Context, boundTokens int) (SeatCompact, error)
 	// syncSessionMCPServers refreshes OMP host tools from AgentDef.MCPServers
 	// before a live switch reloads the sidecar seat (jevons T612).
 	syncSessionMCPServers func(a *Agent, servers []MCPServer)

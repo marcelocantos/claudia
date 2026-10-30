@@ -530,6 +530,7 @@ type Request struct {
 	Send          *SendRequest
 	Interrupt     *NamedRequest
 	SetModel      *SetModelRequest
+	Compact       *CompactRequest
 	AgentInfo     *NamedRequest
 	TermSubscribe *NamedRequest
 	Resize        *ResizeRequest
@@ -575,6 +576,7 @@ type Response struct {
 	Sent             *SentResponse
 	Interrupted      *NamedResponse
 	ModelSet         *NamedResponse
+	Compact          *CompactResponse
 	AgentInfo        *AgentInfoResponse
 	TermSubscribed   *TermSubscribedResponse
 	Resized          *NamedResponse
@@ -645,6 +647,7 @@ var requestSpecs = map[MessageType]bodySpec[Request]{
 	TypeSend:              spec("send body", func(r *Request) **SendRequest { return &r.Send }, false),
 	TypeInterrupt:         spec("interrupt body", func(r *Request) **NamedRequest { return &r.Interrupt }, false),
 	TypeSetModel:          spec("set_model body", func(r *Request) **SetModelRequest { return &r.SetModel }, false),
+	TypeCompact:           spec("compact body", func(r *Request) **CompactRequest { return &r.Compact }, false),
 	TypeAgentInfo:         spec("agent_info body", func(r *Request) **NamedRequest { return &r.AgentInfo }, false),
 	TypeTermSubscribe:     spec("term_subscribe body", func(r *Request) **NamedRequest { return &r.TermSubscribe }, false),
 	TypeResize:            spec("resize body", func(r *Request) **ResizeRequest { return &r.Resize }, false),
@@ -684,6 +687,7 @@ var responseSpecs = map[MessageType]bodySpec[Response]{
 	TypeSent:               spec("sent body", func(r *Response) **SentResponse { return &r.Sent }, false),
 	TypeInterrupted:        spec("interrupted body", func(r *Response) **NamedResponse { return &r.Interrupted }, false),
 	TypeModelSet:           spec("model_set body", func(r *Response) **NamedResponse { return &r.ModelSet }, false),
+	TypeCompactResult:      spec("compact_result body", func(r *Response) **CompactResponse { return &r.Compact }, false),
 	TypeAgentInfoResult:    spec("agent_info_result body", func(r *Response) **AgentInfoResponse { return &r.AgentInfo }, false),
 	TypeTermSubscribed:     spec("term_subscribed body", func(r *Response) **TermSubscribedResponse { return &r.TermSubscribed }, false),
 	TypeResized:            spec("resized body", func(r *Response) **NamedResponse { return &r.Resized }, false),

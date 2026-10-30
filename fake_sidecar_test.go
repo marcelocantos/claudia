@@ -88,6 +88,12 @@ func startFakeSidecar(t *testing.T, reply []string) *fakeSidecar {
 					b, _ := json.Marshal(map[string]any{"seat": msg.Seat, "type": "ready", "how": "switched", "provider": msg.Provider, "request_id": msg.RequestID})
 					_, _ = c.Write(append(b, '\n'))
 				}
+			case omp.OpCompact:
+				b, _ := json.Marshal(map[string]any{
+					"seat": msg.Seat, "type": "compact_result", "request_id": msg.RequestID,
+					"tokens_before": 200000, "tokens_after": 120000, "committed": true,
+				})
+				_, _ = c.Write(append(b, '\n'))
 			case omp.OpPrompt:
 				for _, l := range reply {
 					_, _ = c.Write([]byte(withTurnID(l, msg.TurnID) + "\n"))

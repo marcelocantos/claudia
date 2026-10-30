@@ -182,6 +182,7 @@ var requestVectors = map[string]requestVector{
 	"send_queue":     {msg: &Request{ID: "g6", Type: TypeSend, Send: &SendRequest{Name: "jv-worker-1", Text: "after this turn", Mode: SendModeQueue}}},
 	"interrupt":      {msg: &Request{ID: "g7", Type: TypeInterrupt, Interrupt: &NamedRequest{Name: "jv-worker-1"}}},
 	"set_model":      {msg: &Request{ID: "g8", Type: TypeSetModel, SetModel: &SetModelRequest{Name: "jv-worker-1", Provider: "openai-codex", Model: "gpt-5.5"}}},
+		"compact":        {msg: &Request{ID: "g8c", Type: TypeCompact, Compact: &CompactRequest{Name: "jv-worker-1", BoundTokens: 180000}}},
 	"agent_info":     {msg: &Request{ID: "g10", Type: TypeAgentInfo, AgentInfo: &NamedRequest{Name: "jv-worker-1"}}},
 	"term_subscribe": {msg: &Request{ID: "g11", Type: TypeTermSubscribe, TermSubscribe: &NamedRequest{Name: "jv-worker-1"}}},
 	"resize":         {msg: &Request{ID: "g12", Type: TypeResize, Resize: &ResizeRequest{Name: "jv-worker-1", Cols: 120, Rows: 40}}},
@@ -322,6 +323,7 @@ var responseVectors = map[string]*Response{
 	"sent_queue":     {ID: "g6", Type: TypeSent, Sent: &SentResponse{Name: "jv-worker-1", Mode: SendModeQueue, Mechanism: "client_queue", PhaseBefore: "in_turn"}},
 	"interrupted":    {ID: "g7", Type: TypeInterrupted, Interrupted: &NamedResponse{Name: "jv-worker-1"}},
 	"model_set":      {ID: "g8", Type: TypeModelSet, ModelSet: &NamedResponse{Name: "jv-worker-1"}},
+		"compact_result": {ID: "g8c", Type: TypeCompactResult, Compact: &CompactResponse{Name: "jv-worker-1", TokensBefore: 200000, TokensAfter: 120000, Committed: true}},
 	"goal_check": {
 		Type:      TypeGoalCheck,
 		GoalCheck: &GoalCheckMessage{Name: "jv-worker-1", CheckID: "c-1", Goal: "ship T75", TurnText: "all done"},

@@ -47,6 +47,8 @@ const (
 	// TypeSetModel switches the seat to another provider or model in place,
 	// keeping its conversation (🎯T195).
 	TypeSetModel MessageType = "set_model"
+	// TypeCompact runs synchronous bound compaction (🎯T244).
+	TypeCompact MessageType = "compact"
 	// TypeAgentInfo reads the seat's live state.
 	TypeAgentInfo MessageType = "agent_info"
 	// TypeTermSubscribe starts streaming the seat's raw terminal bytes.
@@ -90,6 +92,7 @@ const (
 	TypeSent            MessageType = "sent"
 	TypeInterrupted     MessageType = "interrupted"
 	TypeModelSet        MessageType = "model_set"
+	TypeCompactResult   MessageType = "compact_result"
 	TypeAgentInfoResult MessageType = "agent_info_result"
 	TypeTermSubscribed  MessageType = "term_subscribed"
 	TypeResized         MessageType = "resized"
@@ -582,6 +585,32 @@ type TurnCaps struct {
 	// BusyOnSecondSubmit is what the provider does with a second submit
 	// while in a turn: reject, supersede or queue.
 	BusyOnSecondSubmit string `json:"busy_on_second_submit,omitempty"`
+}
+
+
+// CompactRequest asks the daemon to compact a seat toward BoundTokens (🎯T244).
+type CompactRequest struct {
+	Name        string `json:"name"`
+	BoundTokens int    `json:"bound_tokens"`
+}
+
+// Validate checks the fields.
+func (r *CompactRequest) Validate() error {
+	if strings.TrimSpace(r.Name) == "" {
+		return &ProtocolError{Code: CodeMissingField, Field: "name", Msg: "grant name is required"}
+	}
+	if r.BoundTokens <= 0 {
+		return &ProtocolError{Code: CodeMissingField, Field: "bound_tokens", Msg: "bound_tokens must be positive"}
+	}
+	return nil
+}
+
+// CompactResponse carries observed token sizes from a compact (🎯T244).
+type CompactResponse struct {
+	Name         string `json:"name"`
+	TokensBefore int    `json:"tokens_before"`
+	TokensAfter  int    `json:"tokens_after"`
+	Committed    bool   `json:"committed"`
 }
 
 // SetModelRequest moves the seat to Provider and Model in place, keeping its

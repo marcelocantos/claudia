@@ -565,6 +565,12 @@ export type MaintenanceHost = {
 };
 
 // Maintenance runs the CLI's compaction triggers for one seat.
+export type BoundCompactResult = {
+  tokensBefore: number;
+  tokensAfter: number;
+  committed: boolean;
+};
+
 export class Maintenance {
   readonly history: History;
   #host: MaintenanceHost;
@@ -772,6 +778,31 @@ export class Maintenance {
     }
     this.#deadEnd = false;
     return true;
+  }
+
+  // compactToBound is the synchronous one-shot host compaction API (🎯T244).
+  async compactToBound(boundTokens: number): Promise<BoundCompactResult> {
+    if (!Number.isFinite(boundTokens) || boundTokens <= 0) {
+      throw Object.assign(new Error("compact refused: bound_tokens must be positive"), { reason: "invalid_bound" });
+    }
+    const messages = this.#host.agent.state.messages;
+    const before = this.contextTokens(messages);
+    if (before <= boundTokens) {
+      return { tokensBefore: before, tokensAfter: before, committed: false };
+    }
+    if (this.#abort) {
+      throw Object.assign(new Error("compact refused: compaction already running"), { reason: "turn_in_flight" });
+    }
+    const progressed = await this.run("bound", "pre_turn", messages, { window: boundTokens, compactOn: "bound" });
+    const after = this.contextTokens(this.#host.agent.state.messages);
+    const committed = progressed || after < before;
+    if (!committed && after > boundTokens) {
+      throw Object.assign(
+        new Error("compact refused: no eligible fold or insufficient progress"),
+        { reason: "no_eligible_fold" },
+      );
+    }
+    return { tokensBefore: before, tokensAfter: after, committed };
   }
 
   // run compacts the conversation once and reports whether the result made

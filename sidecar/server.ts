@@ -25,6 +25,7 @@ import { GenerationDiscovery } from "./generations.ts";
 import { HistoricalUsageReader } from "./usage-reader.ts";
 import { agentPauseGate } from "@oh-my-pi/pi-agent-core";
 import type { SandboxPolicy } from "./coding.ts";
+import { withSeatCommand } from "./seat_command.ts";
 
 const banned = [
   "ANTHROPIC_API_KEY",
@@ -112,6 +113,7 @@ type Line = {
   cursor?: string;
   after?: number;
   limit?: number;
+  bound_tokens?: number;
 };
 
 // planTokens is each plan's current access token, keyed by provider.
@@ -229,7 +231,7 @@ const server = createServer((socket) => {
         write({ type: "tool_call", call_id: callId, name, text: args });
         return answer;
       };
-      void handle(msg, seat, write, callTool, calls, disconnected.signal).catch((err: unknown) => {
+      void withSeatCommand(seat, () => handle(msg, seat, write, callTool, calls, disconnected.signal)).catch((err: unknown) => {
         write(errorEvent(msg, seat, err instanceof Error ? err.message : String(err), {
           turn_id: turnOf(err),
           reason: err instanceof Error && "reason" in err && typeof err.reason === "string" ? err.reason : undefined,
@@ -443,6 +445,25 @@ async function handle(
     write({ seat, type: "dropped" });
     return;
   }
+  if (msg.op === "compact") {
+    const bound = msg.bound_tokens ?? 0;
+    try {
+      const result = await loaded.agent.compactAtBound(bound);
+      write({
+        seat,
+        type: "compact_result",
+        request_id: msg.request_id,
+        rpc_id: msg.rpc_id,
+        tokens_before: result.tokensBefore,
+        tokens_after: result.tokensAfter,
+        committed: result.committed,
+      });
+    } catch (err: unknown) {
+      const reason = err instanceof Error && "reason" in err && typeof err.reason === "string" ? err.reason : undefined;
+      write(errorEvent(msg, seat, err instanceof Error ? err.message : String(err), { reason }));
+    }
+    return;
+  }
   if (msg.op === "steer") {
     loaded.agent.steer(msg.text ?? "", promptMeta(msg));
     return;
@@ -535,6 +556,7 @@ function errorEvent(msg: Line, seat: string, text: string, opts: { turn_id?: str
   const base = { seat, request_id: msg.request_id, reason: opts.reason, text };
   if (opts.turn_id) return { ...base, type: "error", turn_id: opts.turn_id };
   if (msg.rpc_id) return { ...base, type: "error", rpc_id: msg.rpc_id };
+  if (msg.op === "compact" && msg.request_id) return { ...base, type: "error", request_id: msg.request_id };
   if (msg.op === "prompt" && msg.turn_id) return { ...base, type: "error", turn_id: msg.turn_id };
   if ((msg.op === "load" || msg.op === "adopt") && awaitedLoads.has(msg)) return { ...base, type: "error" };
   return { ...base, type: "seat_error" };

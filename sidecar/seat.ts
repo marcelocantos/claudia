@@ -106,6 +106,8 @@ export type SeatAgent = {
   // keeping its conversation (🎯T195). It rejects while a turn runs, for an
   // unknown model, and when the conversation cannot be made to fit.
   switchModel: (provider: string, model: string, compact?: { on?: SwitchCompactOn; compact_provider?: string; compact_model?: string }) => Promise<void>;
+  // compactAtBound folds toward boundTokens between turns (🎯T244).
+  compactAtBound: (boundTokens: number) => Promise<import("./maintain.ts").BoundCompactResult>;
   setToken: (token: string) => void;
   setCwd: (cwd: string) => void;
   // setSandbox replaces the policy on the seat's own tools (🎯T178).
@@ -801,6 +803,12 @@ export function createSeatAgent(opts: {
   // An error after the turn began is that turn's (TurnError). An aborted
   // turn has already ended as itself, so what its unwinding throws is not a
   // second end: it is logged, not answered.
+  const refuseCompactMutation = () => {
+    if (turnDone || retrying || agent.state.isStreaming || (turn && !turn.closed) || maint.compacting || agent.hasQueuedMessages()) {
+      throw Object.assign(new Error("compact refused: turn in flight"), { reason: "turn_in_flight" });
+    }
+  };
+
   const runTurn = async (text: string, meta: PromptMeta | undefined, run: () => Promise<void>, accepted?: RequestReceipt) => {
     if (turnDone) throw new Error("a turn is still unwinding");
     let releaseTurn!: () => void;
@@ -937,8 +945,12 @@ export function createSeatAgent(opts: {
     },
     switchModel: async (provider: string, modelId: string, compact?: { on?: SwitchCompactOn; compact_provider?: string; compact_model?: string }) => {
       assertRestorableExecution();
+      refuseCompactMutation();
       if (turnDone || agent.state.isStreaming) {
-        throw new Error("switch refused: a turn is running");
+        throw Object.assign(new Error("switch refused: a turn is running"), { reason: "turn_in_flight" });
+      }
+      if (maint.compacting) {
+        throw Object.assign(new Error("switch refused: compaction running"), { reason: "turn_in_flight" });
       }
       const next = (opts.resolveModelOverride ?? resolveModel)(provider, modelId);
       let compactReq: SwitchCompactRequest = { on: compact?.on ?? "source" };
@@ -954,6 +966,11 @@ export function createSeatAgent(opts: {
         };
       }
       await maint.switchModel(next, compactReq);
+    },
+    compactAtBound: async (boundTokens: number) => {
+      assertRestorableExecution();
+      refuseCompactMutation();
+      return maint.compactToBound(boundTokens);
     },
     setToken: (next: string) => {
       token = next;
