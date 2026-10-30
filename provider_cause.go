@@ -68,6 +68,9 @@ func CauseFromProviderCode(code string) ProviderCause {
 // `Anthropic stream error (rate_limit_error): Rate limited` reached Jevons
 // as client_bug / untyped (2026-10-31).
 func CauseFromConnectError(errorMessage string) ProviderCause {
+	if code, ok := anthropicStreamErrorCode(errorMessage); ok {
+		return CauseFromProviderCode(code)
+	}
 	if code, ok := connectErrorCode(errorMessage); ok {
 		switch code {
 		case "resource_exhausted":
@@ -79,9 +82,6 @@ func CauseFromConnectError(errorMessage string) ProviderCause {
 		default:
 			return ""
 		}
-	}
-	if code, ok := anthropicStreamErrorCode(errorMessage); ok {
-		return CauseFromProviderCode(code)
 	}
 	return ""
 }
@@ -101,16 +101,26 @@ func connectErrorCode(errorMessage string) (string, bool) {
 
 func anthropicStreamErrorCode(errorMessage string) (string, bool) {
 	const prefix = "Anthropic stream error ("
-	i := strings.Index(errorMessage, prefix)
-	if i < 0 {
+	if !strings.HasPrefix(errorMessage, prefix) {
 		return "", false
 	}
-	rest := errorMessage[i+len(prefix):]
-	j := strings.IndexByte(rest, ')')
-	if j < 0 {
+	rest := errorMessage[len(prefix):]
+	j := strings.Index(rest, "):")
+	if j <= 0 {
 		return "", false
 	}
-	return rest[:j], true
+	code := rest[:j]
+	// A provider code is one token, not prose or a parenthesized sentence.
+	for i := 0; i < len(code); i++ {
+		c := code[i]
+		if (c < 'a' || c > 'z') && c != '_' && (i == 0 || c < '0' || c > '9') {
+			return "", false
+		}
+	}
+	if code[0] == '_' {
+		return "", false
+	}
+	return code, true
 }
 
 // causedError is a provider failure whose cause is a code.

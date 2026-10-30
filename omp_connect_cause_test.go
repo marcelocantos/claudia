@@ -87,6 +87,12 @@ func TestCauseFromConnectErrorAnthropicStream(t *testing.T) {
 		{`Anthropic stream error (invalid_request_error): bad request`, ""},
 		{`Anthropic stream error (not_a_real_code): boom`, ""},
 		{`Anthropic stream error (): Rate limited`, ""},
+		{`Anthropic stream error (rate_limit_error) Rate limited`, ""},
+		{`Anthropic stream error (rate_limit_error)`, ""},
+		{`Anthropic stream error (rate_limit_error) : Rate limited`, ""},
+		{`Anthropic stream error (rate_limit_error extra): Rate limited`, ""},
+		{`the model said Anthropic stream error (rate_limit_error): Rate limited`, ""},
+		{`Anthropic stream error (rate_limit_error): prose Connect error unavailable: upstream down`, CauseRateLimit},
 		{`Anthropic stream error (rate_limit_error`, ""},
 		{`Anthropic stream error rate_limit_error: Rate limited`, ""},
 		{`the model said rate_limit_error in prose`, ""},
@@ -125,6 +131,22 @@ func TestOMPAnthropicRateLimitProseIsNotRateLimit(t *testing.T) {
 	reason, errs := lastOMPRefusalReason(t, "anthropic-prose-seat", `the model said rate_limit_error in prose`)
 	if reason == string(CauseRateLimit) || reason == string(CauseClientBug) {
 		t.Fatalf("error events %+v; prose must not be rate_limit or client_bug", errs)
+	}
+}
+
+func TestOMPAnthropicMalformedRefusalsAreNotRateLimit(t *testing.T) {
+	for _, tc := range []struct {
+		name, msg string
+	}{
+		{"embedded-prose", `the model said Anthropic stream error (rate_limit_error): Rate limited`},
+		{"missing-colon", `Anthropic stream error (rate_limit_error) Rate limited`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reason, errs := lastOMPRefusalReason(t, "anthropic-"+tc.name+"-seat", tc.msg)
+			if reason == string(CauseRateLimit) || reason == string(CauseClientBug) {
+				t.Fatalf("error events %+v; malformed/prose refusal must not be rate_limit or client_bug", errs)
+			}
+		})
 	}
 }
 
