@@ -428,7 +428,7 @@ describe("switch-time compaction durability (🎯T243)", () => {
     }
   });
 
-  test("double ENOSPC on commit and rollback rewrite restores live agent without summary", async () => {
+  test("double ENOSPC on commit and rollback rewrite keeps strict disk journal and reload", async () => {
     const root = mkdtempSync(join(tmpdir(), "t243-double-enospc-"));
     try {
       const a = createMockModel({ id: "a", provider: "anthropic", contextWindow: 400_000, handler: () => reply("ok") });
@@ -446,6 +446,77 @@ describe("switch-time compaction durability (🎯T243)", () => {
       };
       const { agent } = durableSeat(root, a as never, models, {
         store,
+        preserve: "Keep integration notes verbatim.",
+        pins: ["DOUBLE-ENOSPC-PIN"],
+        maintenance: { compactImpl: engineCompact },
+      });
+      await agent.prompt(`PIN: DOUBLE-ENOSPC-PIN\n${marker}`);
+      for (let i = 0; i < 8; i++) await agent.prompt(`${i}: ${big}`);
+      const beforeComps = compactionCount(store.load({ repairTail: false })!);
+      diskFull = true;
+
+      await expect(agent.switchModel("openai-codex", "b", { on: "destination" })).rejects.toThrow(/ENOSPC/);
+      expect(agent.snapshot().model?.id).toBe("a");
+      const inMemory = JSON.stringify(agent.snapshot().messages);
+      expect(inMemory).toContain(marker);
+      expect(inMemory).toContain("DOUBLE-ENOSPC-PIN");
+      expect(inMemory).not.toContain(summaryText);
+
+      const strict = store.load({ repairTail: false })!;
+      expect(compactionCount(strict)).toBe(beforeComps);
+      expect(JSON.stringify(strict)).toContain(marker);
+      expect(JSON.stringify(strict)).toContain("DOUBLE-ENOSPC-PIN");
+      expect(JSON.stringify(strict)).not.toContain(summaryText);
+
+      const { history } = reloadSeat(root, store, a as never, models, {
+        preserve: "Keep integration notes verbatim.",
+        pins: ["DOUBLE-ENOSPC-PIN"],
+      });
+      const rebuilt = JSON.stringify(history.rebuild("anthropic"));
+      expect(rebuilt).toContain(marker);
+      expect(rebuilt).toContain("DOUBLE-ENOSPC-PIN");
+      expect(rebuilt).not.toContain(summaryText);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("double ENOSPC with polluted journal and failed backup restore is durableUncertain", async () => {
+    const root = mkdtempSync(join(tmpdir(), "t243-double-enospc-uncertain-"));
+    try {
+      const a = createMockModel({ id: "a", provider: "anthropic", contextWindow: 400_000, handler: () => reply("ok") });
+      const b = createMockModel({ id: "b", provider: "openai-codex", contextWindow: 60_000, handler: () => reply("fine") });
+      const models = { "anthropic/a": a, "openai-codex/b": b } as Record<string, Model>;
+      const store = new SeatStore(root, "worker", "session");
+      const origRewrite = store.rewrite.bind(store);
+      const origRestore = store.restoreSwitchBackup.bind(store);
+      let diskFull = false;
+      let rewriteCalls = 0;
+      store.rewrite = (entries) => {
+        if (!diskFull) {
+          origRewrite(entries);
+          return;
+        }
+        rewriteCalls++;
+        if (rewriteCalls === 1) {
+          appendFileSync(
+            store.path,
+            `${JSON.stringify({
+              type: "compaction",
+              id: "leaked-compaction",
+              parentId: null,
+              timestamp: new Date().toISOString(),
+              summary: summaryText,
+            })}\n`,
+          );
+        }
+        throw new Error("ENOSPC");
+      };
+      store.restoreSwitchBackup = () => {
+        throw new Error("ENOSPC");
+      };
+      const { agent } = durableSeat(root, a as never, models, {
+        store,
         maintenance: { compactImpl: engineCompact },
       });
       await agent.prompt(marker);
@@ -457,9 +528,8 @@ describe("switch-time compaction durability (🎯T243)", () => {
         durableUncertain: true,
       });
       expect(agent.snapshot().model?.id).toBe("a");
-      const inMemory = JSON.stringify(agent.snapshot().messages);
-      expect(inMemory).toContain(marker);
-      expect(inMemory).not.toContain(summaryText);
+      expect(JSON.stringify(agent.snapshot().messages)).not.toContain(summaryText);
+      store.restoreSwitchBackup = origRestore;
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

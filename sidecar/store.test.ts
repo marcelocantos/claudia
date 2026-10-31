@@ -123,6 +123,35 @@ describe("durable seat conversations (🎯T151)", () => {
     expect(store.load()?.some((e) => e.type === "compaction")).toBe(false);
   });
 
+  test("switch backup restore replaces a polluted journal with the pre-switch copy", () => {
+    const store = new SeatStore(tempDir(), "po", "s1");
+    store.rewrite([
+      {
+        type: "message",
+        id: "m1",
+        parentId: null,
+        timestamp: new Date().toISOString(),
+        message: { role: "user", content: [{ type: "text", text: "marker" }], timestamp: Date.now() },
+      } as SessionEntry,
+    ]);
+    store.beginSwitchBackup();
+    appendFileSync(
+      store.path,
+      `${JSON.stringify({
+        type: "compaction",
+        id: "leak",
+        parentId: "m1",
+        timestamp: new Date().toISOString(),
+        summary: summaryText,
+      })}\n`,
+    );
+    store.restoreSwitchBackup();
+    const loaded = store.load({ repairTail: false })!;
+    expect(loaded.some((e) => e.type === "compaction")).toBe(false);
+    expect(JSON.stringify(loaded)).toContain("marker");
+    store.clearSwitchBackup();
+  });
+
   test("append partial payload leaves a torn tail that load repairs without a compaction row", () => {
     const store = new SeatStore(tempDir(), "po", "s1");
     store.rewrite([

@@ -158,15 +158,16 @@ function entryPins(c: CompactionEntry | undefined): string[] {
 }
 
 // History is the seat's conversation as engine entries, on one branch.
-// HistoryRollbackError is raised when a durable rollback rewrite fails after
-// the store was already mutated. Live history is rolled back in memory before
+// HistoryRollbackError is raised when switch rollback cannot prove the journal
+// matches the pre-switch snapshot. Live history is rolled back in memory before
 // throw; callers must not treat the switch as accepted.
 export class HistoryRollbackError extends Error {
-  readonly durableUncertain = true as const;
+  readonly durableUncertain: boolean;
 
-  constructor(message: string, options?: { cause?: unknown }) {
+  constructor(message: string, options?: { cause?: unknown; durableUncertain?: boolean }) {
     super(message, options);
     this.name = "HistoryRollbackError";
+    this.durableUncertain = options?.durableUncertain ?? true;
   }
 }
 
@@ -221,22 +222,54 @@ export class History {
     return JSON.parse(JSON.stringify(this.entries)) as SessionEntry[];
   }
 
+  // beginSwitchDurableBackup copies the on-disk journal before switch-time fold.
+  beginSwitchDurableBackup(): void {
+    this.store?.beginSwitchBackup();
+  }
+
+  clearSwitchDurableBackup(): void {
+    this.store?.clearSwitchBackup();
+  }
+
   // rollbackDurable restores a snapshot. memoryOnly skips rewrite when the
   // trial fold was never persisted (switch refused before viability).
   rollbackDurable(snapshot: SessionEntry[], options: { memoryOnly?: boolean } = {}): void {
     const restored = JSON.parse(JSON.stringify(snapshot)) as SessionEntry[];
+    this.#replaceEntries(restored);
     if (this.store && !options.memoryOnly) {
       try {
         this.store.rewrite(restored);
       } catch (err) {
-        this.#replaceEntries(restored);
+        if (this.#tryReconcileDiskWithSnapshot(restored)) return;
         throw new HistoryRollbackError(
           "conversation store rollback failed; durable history may still include the switch-time compaction",
-          { cause: err },
+          { cause: err, durableUncertain: true },
         );
       }
     }
-    this.#replaceEntries(restored);
+  }
+
+  #journalMatchesSnapshot(snapshot: SessionEntry[]): boolean {
+    if (!this.store) return true;
+    try {
+      const loaded = this.store.load({ repairTail: false });
+      if (!loaded) return snapshot.length === 0;
+      return JSON.stringify(loaded) === JSON.stringify(snapshot);
+    } catch {
+      return false;
+    }
+  }
+
+  // tryReconcileDiskWithSnapshot restores from pre-switch backup or verifies the
+  // journal was never mutated when commit rewrite failed atomically.
+  #tryReconcileDiskWithSnapshot(snapshot: SessionEntry[]): boolean {
+    if (this.#journalMatchesSnapshot(snapshot)) return true;
+    try {
+      this.store!.restoreSwitchBackup();
+    } catch {
+      // backup missing or restore failed
+    }
+    return this.#journalMatchesSnapshot(snapshot);
   }
 
   #replaceEntries(restored: SessionEntry[]): void {
@@ -621,6 +654,7 @@ export class Maintenance {
     }
     if (window > 0 && shouldCompact(this.contextTokens(agent.state.messages), window, settings)) {
       const durable = this.history.durableSnapshot();
+      this.history.beginSwitchDurableBackup();
       const srcProvider = agent.state.model?.provider;
       let switchDiskCommitAttempted = false;
       try {
@@ -654,6 +688,8 @@ export class Maintenance {
         this.#compactedAt = this.history.latestCompactionAt();
         if (rollbackErr) throw rollbackErr;
         throw err;
+      } finally {
+        this.history.clearSwitchDurableBackup();
       }
     }
     const from = agent.state.model?.provider;
