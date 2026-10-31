@@ -138,6 +138,8 @@ func startFakeSidecar(t *testing.T, reply []string) *fakeSidecar {
 						return
 					}
 					if delay > 0 {
+						// 🎯T97 exemption: simulates slow compact; a slow host only delays
+						// response timing, it cannot flip cancel vs success.
 						select {
 						case <-time.After(delay):
 						case <-ctx.Done():
