@@ -159,7 +159,8 @@ function entryPins(c: CompactionEntry | undefined): string[] {
 
 // History is the seat's conversation as engine entries, on one branch.
 // HistoryRollbackError is raised when a durable rollback rewrite fails after
-// the store was already mutated. Callers must not treat the switch as accepted.
+// the store was already mutated. Live history is rolled back in memory before
+// throw; callers must not treat the switch as accepted.
 export class HistoryRollbackError extends Error {
   readonly durableUncertain = true as const;
 
@@ -228,12 +229,17 @@ export class History {
       try {
         this.store.rewrite(restored);
       } catch (err) {
+        this.#replaceEntries(restored);
         throw new HistoryRollbackError(
           "conversation store rollback failed; durable history may still include the switch-time compaction",
           { cause: err },
         );
       }
     }
+    this.#replaceEntries(restored);
+  }
+
+  #replaceEntries(restored: SessionEntry[]): void {
     this.entries = restored;
     this.#ids = new WeakMap();
     this.#byKey = new Map();
@@ -638,13 +644,15 @@ export class Maintenance {
         switchDiskCommitAttempted = true;
         this.history.persistSwitchCommit();
       } catch (err) {
+        let rollbackErr: unknown;
         try {
           this.history.rollbackDurable(durable, { memoryOnly: !switchDiskCommitAttempted });
-        } catch (rollbackErr) {
-          throw rollbackErr;
+        } catch (e) {
+          rollbackErr = e;
         }
         if (srcProvider) agent.replaceMessages(this.history.rebuild(srcProvider));
         this.#compactedAt = this.history.latestCompactionAt();
+        if (rollbackErr) throw rollbackErr;
         throw err;
       }
     }

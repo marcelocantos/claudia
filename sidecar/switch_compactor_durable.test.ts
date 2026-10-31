@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { compact as engineCompact } from "@oh-my-pi/pi-agent-core";
 import { createMockModel, registerMockApi } from "@oh-my-pi/pi-ai/providers/mock";
 import type { AssistantMessage, Model } from "@oh-my-pi/pi-ai";
-import { History, preserveRule } from "./maintain.ts";
+import { History, HistoryRollbackError, preserveRule } from "./maintain.ts";
 import { createSeatAgent, type SeatEvent } from "./seat.ts";
 import { SeatStore } from "./store.ts";
 import type { SessionEntry } from "@oh-my-pi/pi-agent-core";
@@ -423,6 +423,43 @@ describe("switch-time compaction durability (🎯T243)", () => {
       expect(rebuilt).toContain(marker);
       expect(rebuilt).toContain("COMPLETE-LINE-PIN");
       expect(rebuilt).not.toContain(summaryText);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("double ENOSPC on commit and rollback rewrite restores live agent without summary", async () => {
+    const root = mkdtempSync(join(tmpdir(), "t243-double-enospc-"));
+    try {
+      const a = createMockModel({ id: "a", provider: "anthropic", contextWindow: 400_000, handler: () => reply("ok") });
+      const b = createMockModel({ id: "b", provider: "openai-codex", contextWindow: 60_000, handler: () => reply("fine") });
+      const models = { "anthropic/a": a, "openai-codex/b": b } as Record<string, Model>;
+      const store = new SeatStore(root, "worker", "session");
+      const origRewrite = store.rewrite.bind(store);
+      let diskFull = false;
+      store.rewrite = (entries) => {
+        if (!diskFull) {
+          origRewrite(entries);
+          return;
+        }
+        throw new Error("ENOSPC");
+      };
+      const { agent } = durableSeat(root, a as never, models, {
+        store,
+        maintenance: { compactImpl: engineCompact },
+      });
+      await agent.prompt(marker);
+      for (let i = 0; i < 8; i++) await agent.prompt(`${i}: ${big}`);
+      diskFull = true;
+
+      await expect(agent.switchModel("openai-codex", "b", { on: "destination" })).rejects.toMatchObject({
+        name: "HistoryRollbackError",
+        durableUncertain: true,
+      });
+      expect(agent.snapshot().model?.id).toBe("a");
+      const inMemory = JSON.stringify(agent.snapshot().messages);
+      expect(inMemory).toContain(marker);
+      expect(inMemory).not.toContain(summaryText);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
