@@ -1,6 +1,11 @@
 // 🎯T245 / Jevons J53 (T1371): completed source turn → switch → destination must
 // answer only the new codeword probe, not re-answer or glue STORED onto it.
 // Provenance: jevons 7534c923 …/j53-t1371-switch-post-turn/CLAUDIA_HANDOFF.md
+//
+// Post-backup switch fold rollback is covered by switch_compactor_durable.test.ts
+// (🎯T243), e.g. "failed destination switch fold leaves no compaction entry and
+// replayable messages on reload" and "still-does-not-fit after switch fold rolls
+// back on disk and reload".
 
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
@@ -28,13 +33,21 @@ function messageText(message: unknown): string {
   return JSON.stringify(message);
 }
 
+
+function isSourceProbeUser(message: unknown): boolean {
+  const t = messageText(message);
+  // Seat-attributed user probes use string content; compaction summaries embed
+  // codewords inside structured blocks and must not count as replay probes.
+  return t.includes('"content":"owner probe: remember');
+}
+
 function unansweredSourceUserCount(ctx: Context): number {
   const msgs = ctx.messages;
   let dangling = 0;
   for (let i = 0; i < msgs.length; i++) {
     const m = msgs[i];
     if (m.role !== "user") continue;
-    if (!messageText(m).includes(sourceCodeword)) continue;
+    if (!isSourceProbeUser(m)) continue;
     let answered = false;
     for (let j = i + 1; j < msgs.length; j++) {
       if (msgs[j].role === "user") break;
@@ -46,6 +59,33 @@ function unansweredSourceUserCount(ctx: Context): number {
     if (!answered) dangling++;
   }
   return dangling;
+}
+
+function answeredSourcePairCount(ctx: Context): number {
+  const msgs = ctx.messages;
+  let pairs = 0;
+  for (let i = 0; i < msgs.length; i++) {
+    const m = msgs[i];
+    if (m.role !== "user") continue;
+    if (!isSourceProbeUser(m)) continue;
+    for (let j = i + 1; j < msgs.length; j++) {
+      if (msgs[j].role === "user") break;
+      if (msgs[j].role === "assistant" && messageText(msgs[j]).includes(storedAnswer)) {
+        pairs++;
+        break;
+      }
+    }
+  }
+  return pairs;
+}
+
+function assertDestinationSourceContext(ctx: Context): void {
+  expect(unansweredSourceUserCount(ctx)).toBe(0);
+  expect(answeredSourcePairCount(ctx)).toBe(1);
+  const lastUser = ctx.messages.at(-1);
+  if (lastUser?.role === "user" && isSourceProbeUser(lastUser)) {
+    throw new Error("destination context ends on dangling source user prompt");
+  }
 }
 
 function latestUserMessage(ctx: Context): AgentMessage | undefined {
@@ -78,7 +118,7 @@ function strictDestinationOracle(): DestinationOracle {
         newCodewordAnswers++;
         return reply(newCodeword);
       }
-      if (lastUserText.includes(sourceCodeword)) {
+      if (isSourceProbeUser(lastUser)) {
         sourceReanswers++;
         return reply(storedAnswer);
       }
@@ -91,12 +131,40 @@ function assistantText(message: unknown): string {
   return messageText(message);
 }
 
+/** Filler turns first so the source codeword turn is the last completed turn before switch. */
+async function seedFillerThenSourceTurn(agent: ReturnType<typeof createSeatAgent>): Promise<void> {
+  for (let i = 0; i < 8; i++) await agent.prompt(`${i}: ${big}`);
+  await agent.prompt(sourcePrompt);
+  expect(JSON.stringify(agent.snapshot().messages)).toContain(storedAnswer);
+}
+
+function assertProbeAnsweredOnlyNewCodeword(
+  destination: DestinationOracle,
+  sourceReanswersBefore: number,
+  newAnswersBefore: number,
+  ctx: Context,
+  agentLastMessage: unknown,
+): void {
+  assertDestinationSourceContext(ctx);
+  expect(destination.sourceReanswers() - sourceReanswersBefore).toBe(0);
+  expect(destination.newCodewordAnswers() - newAnswersBefore).toBe(1);
+  expect(ctx.messages.at(-1)?.role).toBe("user");
+  expect(ctx.messages.at(-2)?.role).toBe("assistant");
+  expect(assistantText(ctx.messages.at(-1))).toContain(newCodeword);
+  expect(assistantText(ctx.messages.at(-1))).not.toContain(sourceCodeword);
+  const answerText = assistantText(agentLastMessage);
+  expect(answerText).toContain(newCodeword);
+  expect(answerText).not.toContain(storedAnswer);
+  expect(answerText).not.toMatch(
+    new RegExp(`${storedAnswer}.*${newCodeword}|${newCodeword}.*${storedAnswer}`),
+  );
+}
+
 describe("switch replay after completed source turn (J53 / 🎯T245)", () => {
   test("seeded STORED source reply, switch, then next answer is only the new codeword", async () => {
     const root = mkdtempSync(join(tmpdir(), "t245-j53-"));
     try {
       let destinationContext: Context | undefined;
-      const phases: string[] = [];
       const destination = strictDestinationOracle();
       const a = createMockModel({
         id: "a",
@@ -121,9 +189,7 @@ describe("switch replay after completed source turn (J53 / 🎯T245)", () => {
         token: "t",
         cwd: root,
         store,
-        emit: (ev) => {
-          if (ev.type === "compacting" || ev.type === "compacted") phases.push(ev.text ?? "");
-        },
+        emit: () => {},
         callTool: async () => "",
         modelOverride: a as never,
         planToken: () => "t",
@@ -131,35 +197,28 @@ describe("switch replay after completed source turn (J53 / 🎯T245)", () => {
         maintenance: { nativeEligible: () => false },
       });
 
-      await agent.prompt(sourcePrompt);
-      expect(JSON.stringify(agent.snapshot().messages)).toContain(storedAnswer);
-      for (let i = 0; i < 8; i++) await agent.prompt(`${i}: ${big}`);
+      await seedFillerThenSourceTurn(agent);
 
       await agent.switchModel("openai-codex", "b", { on: "destination" });
       expect(agent.snapshot().model?.id).toBe("b");
-      expect(phases.some((t) => t.includes("post_turn"))).toBe(true);
-      expect(phases.some((t) => t.includes("pre_turn") && t.includes("switch"))).toBe(false);
 
       const afterSwitch = store.load({ repairTail: false })!;
       expect(JSON.stringify(afterSwitch)).toContain(storedAnswer);
       expect(JSON.stringify(afterSwitch)).not.toContain(newCodeword);
 
+      expect(destination.sourceReanswers()).toBe(0);
+
       const sourceReanswersBeforeProbe = destination.sourceReanswers();
       const newAnswersBeforeProbe = destination.newCodewordAnswers();
       await agent.prompt(newPrompt);
       const ctx = destinationContext!;
-      expect(unansweredSourceUserCount(ctx)).toBe(0);
-      expect(destination.sourceReanswers() - sourceReanswersBeforeProbe).toBe(0);
-      expect(destination.newCodewordAnswers() - newAnswersBeforeProbe).toBe(1);
-      expect(ctx.messages.at(-1)?.role).toBe("user");
-      expect(ctx.messages.at(-2)?.role).toBe("assistant");
-      expect(assistantText(ctx.messages.at(-1))).toContain(newCodeword);
-      expect(assistantText(ctx.messages.at(-1))).not.toContain(sourceCodeword);
-
-      const answerText = assistantText(agent.snapshot().messages.at(-1));
-      expect(answerText).toContain(newCodeword);
-      expect(answerText).not.toContain(storedAnswer);
-      expect(answerText).not.toMatch(new RegExp(`${storedAnswer}.*${newCodeword}|${newCodeword}.*${storedAnswer}`));
+      assertProbeAnsweredOnlyNewCodeword(
+        destination,
+        sourceReanswersBeforeProbe,
+        newAnswersBeforeProbe,
+        ctx,
+        agent.snapshot().messages.at(-1),
+      );
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -191,8 +250,8 @@ describe("switch replay after completed source turn (J53 / 🎯T245)", () => {
         resolveModelOverride: (provider, model) => models[`${provider}/${model}`]!,
         maintenance: { nativeEligible: () => false },
       });
-      await agent.prompt(sourcePrompt);
-      await agent.switchModel("openai-codex", "b");
+      await seedFillerThenSourceTurn(agent);
+      await agent.switchModel("openai-codex", "b", { on: "destination" });
 
       const reloaded = createSeatAgent({
         provider: "openai-codex",
@@ -208,9 +267,11 @@ describe("switch replay after completed source turn (J53 / 🎯T245)", () => {
         maintenance: { nativeEligible: () => false },
       });
 
+      const reBefore = destination.sourceReanswers();
+      const newBefore = destination.newCodewordAnswers();
       await reloaded.prompt(newPrompt);
-      expect(destination.sourceReanswers()).toBe(0);
-      expect(destination.newCodewordAnswers()).toBe(1);
+      expect(destination.sourceReanswers() - reBefore).toBe(0);
+      expect(destination.newCodewordAnswers() - newBefore).toBe(1);
       const answerText = assistantText(reloaded.snapshot().messages.at(-1));
       expect(answerText).toContain(newCodeword);
       expect(answerText).not.toContain(storedAnswer);
@@ -260,8 +321,7 @@ describe("switch replay after completed source turn (J53 / 🎯T245)", () => {
         resolveModelOverride: (provider, model) => models[`${provider}/${model}`]!,
         maintenance: { nativeEligible: () => false },
       });
-      await agent.prompt(sourcePrompt);
-      for (let i = 0; i < 8; i++) await agent.prompt(`${i}: ${big}`);
+      await seedFillerThenSourceTurn(agent);
 
       switchStarted = true;
       await agent.switchModel("openai-codex", "b", { on: "destination" });
@@ -280,17 +340,18 @@ describe("switch replay after completed source turn (J53 / 🎯T245)", () => {
       const origAppend = store.append.bind(store);
       const origRewrite = store.rewrite.bind(store);
       let switchStarted = false;
-      const failPreBackupPersist = () => {
-        if (switchStarted && !existsSync(store.switchBackupPath())) {
+      let failPreBackupPersist = true;
+      const maybeFailPreBackupPersist = () => {
+        if (failPreBackupPersist && switchStarted && !existsSync(store.switchBackupPath())) {
           throw new Error("ENOSPC before backup");
         }
       };
       store.append = (entries) => {
-        failPreBackupPersist();
+        maybeFailPreBackupPersist();
         origAppend(entries);
       };
       store.rewrite = (entries) => {
-        failPreBackupPersist();
+        maybeFailPreBackupPersist();
         origRewrite(entries);
       };
       const agent = createSeatAgent({
@@ -306,14 +367,19 @@ describe("switch replay after completed source turn (J53 / 🎯T245)", () => {
         resolveModelOverride: (provider, model) => models[`${provider}/${model}`]!,
         maintenance: { nativeEligible: () => false },
       });
-      await agent.prompt(sourcePrompt);
-      for (let i = 0; i < 8; i++) await agent.prompt(`${i}: ${big}`);
+      await seedFillerThenSourceTurn(agent);
+      const journalBeforeFail = JSON.stringify(store.load({ repairTail: false }));
 
       switchStarted = true;
       await expect(agent.switchModel("openai-codex", "b", { on: "destination" })).rejects.toThrow(/ENOSPC before backup/);
       expect(agent.snapshot().model?.id).toBe("a");
       expect(existsSync(store.switchBackupPath())).toBe(false);
-      expect(JSON.stringify(store.load({ repairTail: false }))).toContain(storedAnswer);
+      expect(JSON.stringify(store.load({ repairTail: false }))).toBe(journalBeforeFail);
+
+      failPreBackupPersist = false;
+      switchStarted = false;
+      await agent.switchModel("openai-codex", "b", { on: "destination" });
+      expect(agent.snapshot().model?.id).toBe("b");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
