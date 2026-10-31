@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -245,6 +246,50 @@ func grantOMPSeat(t *testing.T, sock, name, workDir, session string) *broker.Con
 	return c
 }
 
+type brokerDemuxConn struct {
+	*broker.Conn
+	mu      sync.Mutex
+	waiters map[string]chan *broker.Response
+}
+
+func startBrokerDemux(t *testing.T, c *broker.Conn) *brokerDemuxConn {
+	t.Helper()
+	d := &brokerDemuxConn{Conn: c, waiters: map[string]chan *broker.Response{}}
+	go func() {
+		for {
+			resp, err := d.Conn.ReadResponse()
+			if err != nil {
+				return
+			}
+			d.mu.Lock()
+			ch := d.waiters[resp.ID]
+			d.mu.Unlock()
+			if ch != nil {
+				ch <- resp
+			}
+		}
+	}()
+	return d
+}
+
+func (d *brokerDemuxConn) call(t *testing.T, req *broker.Request) *broker.Response {
+	t.Helper()
+	ch := make(chan *broker.Response, 1)
+	d.mu.Lock()
+	d.waiters[req.ID] = ch
+	d.mu.Unlock()
+	if err := d.WriteRequest(req); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case resp := <-ch:
+		return resp
+	case <-time.After(90 * time.Second):
+		t.Fatalf("timeout waiting for %q", req.ID)
+		return nil
+	}
+}
+
 type traceRec struct {
 	Op        string `json:"op"`
 	RequestID string `json:"request_id"`
@@ -317,6 +362,19 @@ func parseCompactBrokerErr(msg string) error {
 	return errors.New(msg)
 }
 
+func sendSidecarCompactAbort(t *testing.T, ompSock, seat, requestID string) {
+	t.Helper()
+	if requestID == "" {
+		return
+	}
+	c, err := net.Dial("unix", ompSock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	_, _ = fmt.Fprintf(c, `{"op":"compact_abort","seat":%q,"request_id":%q}`+"\n", seat, requestID)
+}
+
 func writePreloadedT244Store(t *testing.T, path, seat, session, chunk string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -335,4 +393,150 @@ func writePreloadedT244Store(t *testing.T, path, seat, session, chunk string) {
 	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func bootT244InterleaveSidecarDaemon(t *testing.T) (*fixture, string, string, string) {
+	t.Helper()
+	f := newFixture(t)
+	root := filepath.Dir(f.sock)
+	ompSock := filepath.Join(root, "omp.sock")
+	tracePath := filepath.Join(root, "omp-trace.jsonl")
+	t244BrokerSock = f.sock
+
+	bun, err := exec.LookPath("bun")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, err := filepath.Abs("../sidecar/testdata/t244-interleave-provider.ts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(bun, entry, ompSock, "--lifeline=stdin")
+	cmd.Env = append(omp.ScrubEnv(os.Environ()),
+		"HOME="+root,
+		"CLAUDIA_OMP_SPOOL_DIR="+filepath.Join(root, "spool"),
+		"CLAUDIA_TEST_OMP_TRACE="+tracePath,
+	)
+	cmd.Stderr = os.Stderr
+	life, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = life.Close()
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+	ctx := t.Context()
+	waitFor(t, "t244 interleave sidecar listening", func() bool { return omp.Listening(ctx, ompSock) })
+
+	t.Setenv(omp.SocketEnv, ompSock)
+	t.Setenv("CLAUDIA_OMP_SPOOL_DIR", filepath.Join(root, "spool"))
+	t.Setenv("CLAUDIA_OMP_NO_REFRESH", "1")
+	omp.ResetKeychainShot()
+	t.Cleanup(omp.ResetKeychainShot)
+	item := omp.Item{Records: map[string]omp.Record{}}
+	for _, p := range []string{omp.Anthropic, omp.OpenAICodex, omp.XAIOAuth, omp.Cursor} {
+		item.Records[p] = omp.Record{AccessToken: "fixture", RefreshToken: "fixture", Expiry: time.Now().Add(time.Hour)}
+	}
+	raw, _ := json.Marshal(item)
+	if err := omp.Open(ctx, omp.Store{Run: func(context.Context, string, ...string) ([]byte, error) { return raw, nil }}); err != nil {
+		t.Fatal(err)
+	}
+	opts := f.options(nil)
+	opts.DisableResume = true
+	opts.launchers = &claudia.RegistryLaunchers{Start: claudia.StartDirectContext, Adopt: claudia.Adopt}
+	f.bootWith(t, opts)
+	return f, root, ompSock, tracePath
+}
+
+// TestT244BrokerCompactRefusedDuringInFlightPrompt is the broker wire oracle for
+// compact while a normal prompt turn is open on production server.ts.
+func TestT244BrokerCompactRefusedDuringInFlightPrompt(t *testing.T) {
+	_, root, _, _ := bootT244InterleaveSidecarDaemon(t)
+	seat := "t244-broker-compact-race"
+	workDir := filepath.Join(root, "work")
+	if err := os.MkdirAll(workDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	conn := grantOMPSeat(t, brokerSocket(t), seat, workDir, "sess-race")
+	dmx := startBrokerDemux(t, conn)
+	go func() {
+		_ = dmx.call(t, &broker.Request{
+			ID: "hold", Type: broker.TypeSend,
+			Send: &broker.SendRequest{Name: seat, Text: "HOLD broker prompt"},
+		})
+	}()
+	waitFor(t, "hold prompt started", func() bool {
+		info := dmx.call(t, &broker.Request{ID: "info", Type: broker.TypeAgentInfo, AgentInfo: &broker.NamedRequest{Name: seat}})
+		return info.Type == broker.TypeAgentInfoResult && info.AgentInfo != nil && info.AgentInfo.PromptInFlight
+	})
+	before := countStoreType(t, filepath.Join(root, "omp-seats", seat, "sess-race.jsonl"), "compaction")
+	resp := dmx.call(t, &broker.Request{
+		ID: "compact", Type: broker.TypeCompact,
+		Compact: &broker.CompactRequest{Name: seat, BoundTokens: 180_000},
+	})
+	if resp.Type != broker.TypeError {
+		t.Fatalf("compact during prompt type = %s, want error", resp.Type)
+	}
+	if resp.Error == nil || !strings.Contains(resp.Error.Message, claudia.ErrTurnInFlight.Error()) {
+		t.Fatalf("compact during prompt = %+v, want turn_in_flight", resp.Error)
+	}
+	if countStoreType(t, filepath.Join(root, "omp-seats", seat, "sess-race.jsonl"), "compaction") > before {
+		t.Fatal("compact during prompt must not commit")
+	}
+	_ = dmx.call(t, &broker.Request{ID: "abort", Type: broker.TypeInterrupt, Interrupt: &broker.NamedRequest{Name: seat}})
+}
+
+// TestT244BrokerSendRefusedDuringHeldBoundCompact is the consumer no-slip oracle:
+// a caller-held next large prompt must not pass while bound compact is in flight.
+func TestT244BrokerSendRefusedDuringHeldBoundCompact(t *testing.T) {
+	_, root, ompSock, tracePath := bootT244InterleaveSidecarDaemon(t)
+	seat := "t244-broker-send-slip"
+	workDir := filepath.Join(root, "work")
+	if err := os.MkdirAll(workDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	chunk := strings.Repeat("the quick brown fox jumps over the lazy dog. ", 1200)
+	session := "sess-heavy"
+	storePath := filepath.Join(root, "omp-seats", seat, session+".jsonl")
+	writePreloadedT244Store(t, storePath, seat, session, chunk)
+	conn := grantOMPSeat(t, brokerSocket(t), seat, workDir, session)
+	dmx := startBrokerDemux(t, conn)
+	wake := dmx.call(t, &broker.Request{ID: "wake", Type: broker.TypeSend, Send: &broker.SendRequest{Name: seat, Text: "wake"}})
+	if wake.Type == broker.TypeError {
+		t.Fatalf("wake: %+v", wake.Error)
+	}
+	waitFor(t, "wake settled", func() bool {
+		info := dmx.call(t, &broker.Request{ID: "info2", Type: broker.TypeAgentInfo, AgentInfo: &broker.NamedRequest{Name: seat}})
+		return info.Type == broker.TypeAgentInfoResult && info.AgentInfo != nil && !info.AgentInfo.PromptInFlight
+	})
+	before := countStoreType(t, storePath, "compaction")
+	go func() {
+		_ = dmx.call(t, &broker.Request{
+			ID: "compact-hold", Type: broker.TypeCompact,
+			Compact: &broker.CompactRequest{Name: seat, BoundTokens: 180_000},
+		})
+	}()
+	waitFor(t, "compact on wire", func() bool {
+		return lastTraceOp(tracePath, "compact") != ""
+	})
+	slip := dmx.call(t, &broker.Request{
+		ID: "slip", Type: broker.TypeSend,
+		Send: &broker.SendRequest{Name: seat, Text: strings.Repeat("NEXT-LARGE ", 900)},
+	})
+	if slip.Type != broker.TypeError {
+		t.Fatalf("send during compact type = %s, want error", slip.Type)
+	}
+	if slip.Error == nil || !strings.Contains(slip.Error.Message, claudia.ErrTurnInFlight.Error()) {
+		t.Fatalf("send during compact = %+v, want turn_in_flight", slip.Error)
+	}
+	if countStoreType(t, storePath, "compaction") > before {
+		t.Fatal("held compact must not commit before slip refused")
+	}
+	compactReq := lastTraceOp(tracePath, "compact")
+	sendSidecarCompactAbort(t, ompSock, seat, compactReq)
 }

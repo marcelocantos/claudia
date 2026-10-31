@@ -536,14 +536,14 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 				}
 			},
 			send: func(a *Agent, text string) error {
-				if err := ctrl.blockIfCompactUncertain(); err != nil {
+				if err := ctrl.blockIfCompactBusy(); err != nil {
 					return err
 				}
 				ctrl.inflight.Store(true)
 				return ctrl.send(promptMessage(omp.OpPrompt, req.Config.Name, text, a, ctrl))
 			},
 			sendWithRequestID: func(a *Agent, text, id string) error {
-				if err := ctrl.blockIfCompactUncertain(); err != nil {
+				if err := ctrl.blockIfCompactBusy(); err != nil {
 					return err
 				}
 				if id == "" {
@@ -663,7 +663,8 @@ type ompControl struct {
 	mu          sync.Mutex
 	writeOnce   sync.Once
 	writePermit chan struct{}
-	inflight    atomic.Bool
+	inflight         atomic.Bool
+	compactInFlight  atomic.Bool
 	compactUncertain atomic.Bool
 	// turnID is the running turn's id, when known (🎯T202). Set alongside
 	// inflight so a reattach that learns of a turn from the sidecar's ready
@@ -1126,9 +1127,12 @@ func (c *ompControl) currentProvider() string {
 // refuses with the seat left as it was. The seat's provider, model and token
 // change only once the sidecar has switched.
 
-func (c *ompControl) blockIfCompactUncertain() error {
+func (c *ompControl) blockIfCompactBusy() error {
 	if c.compactUncertain.Load() {
 		return fmt.Errorf("omp: %w", ErrCompactUncertain)
+	}
+	if c.compactInFlight.Load() {
+		return fmt.Errorf("omp: %w", ErrTurnInFlight)
 	}
 	return nil
 }
@@ -1160,6 +1164,8 @@ func (c *ompControl) compact(ctx context.Context, boundTokens int) (SeatCompact,
 	if boundTokens <= 0 {
 		return SeatCompact{}, fmt.Errorf("omp: bound tokens must be positive")
 	}
+	c.compactInFlight.Store(true)
+	defer c.compactInFlight.Store(false)
 	requestID := uuid.NewString()
 	reply := make(chan omp.Event, 1)
 	c.mu.Lock()
