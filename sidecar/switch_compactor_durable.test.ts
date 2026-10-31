@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { compact as engineCompact } from "@oh-my-pi/pi-agent-core";
 import { createMockModel, registerMockApi } from "@oh-my-pi/pi-ai/providers/mock";
 import type { AssistantMessage, Model } from "@oh-my-pi/pi-ai";
-import { History, preserveRule } from "./maintain.ts";
+import { History, HistoryRollbackError, preserveRule } from "./maintain.ts";
 import { createSeatAgent, type SeatEvent } from "./seat.ts";
 import { SeatStore } from "./store.ts";
 import type { SessionEntry } from "@oh-my-pi/pi-agent-core";
@@ -35,10 +35,11 @@ function durableSeat(
   opts: {
     preserve?: string;
     pins?: string[];
+    store?: SeatStore;
     maintenance?: Parameters<typeof createSeatAgent>[0]["maintenance"];
   } = {},
 ) {
-  const store = new SeatStore(root, "worker", "session");
+  const store = opts.store ?? new SeatStore(root, "worker", "session");
   const events: SeatEvent[] = [];
   const told: (string | undefined)[] = [];
   const defaultComplete = (async (model: Model) => {
@@ -245,6 +246,64 @@ describe("switch-time compaction durability (🎯T243)", () => {
       const { history } = reloadSeat(root, store, a as never, models, {});
       expect(JSON.stringify(history.rebuild("anthropic"))).toContain(marker);
       expect(JSON.stringify(history.rebuild("anthropic"))).not.toContain(summaryText);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("still-does-not-fit after switch fold rolls back on disk and reload", async () => {
+    const root = mkdtempSync(join(tmpdir(), "t243-still-"));
+    try {
+      const a = createMockModel({ id: "a", provider: "anthropic", contextWindow: 400_000, handler: () => reply("ok") });
+      const b = createMockModel({ id: "b", provider: "openai-codex", contextWindow: 3_000, handler: () => reply("fine") });
+      const models = { "anthropic/a": a, "openai-codex/b": b } as Record<string, Model>;
+      const { agent, store } = durableSeat(root, a as never, models, {
+        maintenance: { compactImpl: engineCompact },
+      });
+      await agent.prompt(marker);
+      for (let i = 0; i < 6; i++) await agent.prompt(`${i}: ${big}`);
+
+      const beforeCompactions = compactionCount(store.load()!);
+      await expect(agent.switchModel("openai-codex", "b", { on: "destination" })).rejects.toThrow(/even after compaction/);
+      expect(agent.snapshot().model?.id).toBe("a");
+      expect(compactionCount(store.load()!)).toBe(beforeCompactions);
+      expect(JSON.stringify(store.load())).toContain(marker);
+
+      const { agent: reloaded, history } = reloadSeat(root, store, a as never, models, {});
+      expect(reloaded.snapshot().model?.id).toBe("a");
+      expect(JSON.stringify(history.rebuild("anthropic"))).toContain(marker);
+      expect(JSON.stringify(history.rebuild("anthropic"))).not.toContain(summaryText);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("store rewrite failure during rollback surfaces HistoryRollbackError and may leave compaction on disk", async () => {
+    const root = mkdtempSync(join(tmpdir(), "t243-rwfail-"));
+    try {
+      const a = createMockModel({ id: "a", provider: "anthropic", contextWindow: 400_000, handler: () => reply("ok") });
+      const b = createMockModel({ id: "b", provider: "openai-codex", contextWindow: 3_000, handler: () => reply("fine") });
+      const models = { "anthropic/a": a, "openai-codex/b": b } as Record<string, Model>;
+      const store = new SeatStore(root, "worker", "session");
+      let rewriteCalls = 0;
+      const origRewrite = store.rewrite.bind(store);
+      store.rewrite = (entries) => {
+        rewriteCalls++;
+        if (rewriteCalls >= 2) throw new Error("ENOSPC");
+        origRewrite(entries);
+      };
+      const { agent } = durableSeat(root, a as never, models, {
+        store,
+        maintenance: { compactImpl: engineCompact },
+      });
+      await agent.prompt(marker);
+      for (let i = 0; i < 6; i++) await agent.prompt(`${i}: ${big}`);
+
+      const beforeCompactions = compactionCount(store.load()!);
+      await expect(agent.switchModel("openai-codex", "b", { on: "destination" })).rejects.toBeInstanceOf(HistoryRollbackError);
+      expect(agent.snapshot().model?.id).toBe("a");
+      // Rollback rewrite failed: durable state is ambiguous; compaction row may remain.
+      expect(compactionCount(store.load()!)).toBeGreaterThan(beforeCompactions);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

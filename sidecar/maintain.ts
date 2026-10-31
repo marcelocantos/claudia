@@ -158,6 +158,17 @@ function entryPins(c: CompactionEntry | undefined): string[] {
 }
 
 // History is the seat's conversation as engine entries, on one branch.
+// HistoryRollbackError is raised when switch-time rollback cannot rewrite the
+// seat store. Durable state may still contain a switch fold that was refused.
+export class HistoryRollbackError extends Error {
+  readonly durableUncertain = true as const;
+
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "HistoryRollbackError";
+  }
+}
+
 export class History {
   entries: SessionEntry[] = [];
   #ids = new WeakMap<object, string>();
@@ -210,8 +221,21 @@ export class History {
   }
 
   // rollbackDurable restores a snapshot and rewrites the store when present.
+  // The store is updated before memory so a failed rewrite leaves no mismatch
+  // where memory was rolled back but disk still holds the fold.
   rollbackDurable(snapshot: SessionEntry[]): void {
-    this.entries = JSON.parse(JSON.stringify(snapshot)) as SessionEntry[];
+    const restored = JSON.parse(JSON.stringify(snapshot)) as SessionEntry[];
+    if (this.store) {
+      try {
+        this.store.rewrite(restored);
+      } catch (err) {
+        throw new HistoryRollbackError(
+          "conversation store rollback failed; durable history may still include the switch-time compaction",
+          { cause: err },
+        );
+      }
+    }
+    this.entries = restored;
     this.#ids = new WeakMap();
     this.#byKey = new Map();
     for (const e of this.entries) {
@@ -224,8 +248,6 @@ export class History {
     }
     this.#streamingEntryId = undefined;
     this.#persisted = this.entries.length;
-    this.#dirty = true;
-    if (this.store) this.store.rewrite(this.entries);
     this.#dirty = false;
   }
 
@@ -602,7 +624,11 @@ export class Maintenance {
           );
         }
       } catch (err) {
-        this.history.rollbackDurable(durable);
+        try {
+          this.history.rollbackDurable(durable);
+        } catch (rollbackErr) {
+          throw rollbackErr;
+        }
         if (srcProvider) agent.replaceMessages(this.history.rebuild(srcProvider));
         this.#compactedAt = this.history.latestCompactionAt();
         throw err;
