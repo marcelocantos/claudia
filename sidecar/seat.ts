@@ -951,7 +951,6 @@ export function createSeatAgent(opts: {
     },
     switchModel: async (provider: string, modelId: string) => {
       assertRestorableExecution();
-      refuseCompactMutation();
       if (turnDone || agent.state.isStreaming) {
         throw Object.assign(new Error("switch refused: a turn is running"), { reason: "turn_in_flight" });
       }

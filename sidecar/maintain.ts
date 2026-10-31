@@ -738,7 +738,10 @@ export class Maintenance {
         ];
         if (pins.length > 0) result = { ...result, details: { ...(result.details as object | undefined), pins } };
         if (abort.signal.aborted) {
-          throw Object.assign(new Error("compact canceled before commit"), { reason: "compact_canceled" });
+          if (target.compactOn === "bound" || target.cancel) {
+            throw Object.assign(new Error("compact canceled before commit"), { reason: "compact_canceled" });
+          }
+          return false;
         }
         this.#commit(result, method, codex);
         const after = this.storedTokens();
@@ -764,7 +767,7 @@ export class Maintenance {
       }
       return false;
     } catch (err) {
-      if (abort.signal.aborted) {
+      if (abort.signal.aborted && (target.compactOn === "bound" || target.cancel)) {
         throw Object.assign(new Error("compact canceled"), { reason: "compact_canceled" });
       }
       throw err;

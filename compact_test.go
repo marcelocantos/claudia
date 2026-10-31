@@ -191,3 +191,83 @@ func waitForPromptInFlight(t *testing.T, flying *atomic.Bool, timeout time.Durat
 }
 
 
+
+
+func TestT244CompactCancelSendsCompactAbort(t *testing.T) {
+	f := startFakeSidecar(t, []string{`{"type":"turn_end","text":"ok"}`})
+	f.compactDelay = 30 * time.Second
+	ctx := context.Background()
+	agent, err := startDirectContext(ctx, Config{
+		Provider: Provider(omp.Anthropic), Name: "jv-compact-abort-wire", Model: "claude-sonnet-4-20250514",
+		WorkDir: t.TempDir(), TermLogPath: "-",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer agent.Stop()
+	if err := agent.WaitReady(ctx); err != nil {
+		t.Fatal(err)
+	}
+	compactCtx, compactCancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	wg.Add(1)
+	var compactErr error
+	go func() {
+		defer wg.Done()
+		_, compactErr = agent.Compact(compactCtx, 180_000)
+	}()
+	time.Sleep(300 * time.Millisecond)
+	compactCancel()
+	wg.Wait()
+	if !errors.Is(compactErr, ErrCompactCanceled) {
+		t.Fatalf("Compact = %v, want ErrCompactCanceled", compactErr)
+	}
+	f.compactAbortsMu.Lock()
+	n := len(f.compactAborts)
+	f.compactAbortsMu.Unlock()
+	if n != 1 {
+		t.Fatalf("compact_abort sends = %d, want 1", n)
+	}
+}
+
+func TestT244CompactUncertainBlocksSendUntilRecovery(t *testing.T) {
+	f := startFakeSidecar(t, []string{`{"type":"turn_end","text":"ok"}`})
+	f.compactSilent = true
+	ctx := context.Background()
+	agent, err := startDirectContext(ctx, Config{
+		Provider: Provider(omp.Anthropic), Name: "jv-compact-uncertain", Model: "claude-sonnet-4-20250514",
+		WorkDir: t.TempDir(), TermLogPath: "-",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer agent.Stop()
+	if err := agent.WaitReady(ctx); err != nil {
+		t.Fatal(err)
+	}
+	compactCtx, compactCancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	wg.Add(1)
+	var compactErr error
+	go func() {
+		defer wg.Done()
+		_, compactErr = agent.Compact(compactCtx, 180_000)
+	}()
+	time.Sleep(200 * time.Millisecond)
+	compactCancel()
+	wg.Wait()
+	if !errors.Is(compactErr, ErrCompactUncertain) {
+		t.Fatalf("Compact = %v, want ErrCompactUncertain", compactErr)
+	}
+	if err := agent.Send("blocked"); !errors.Is(err, ErrCompactUncertain) {
+		t.Fatalf("Send while uncertain = %v, want ErrCompactUncertain", err)
+	}
+	f.compactSilent = false
+	f.compactDelay = 0
+	if _, err := agent.Compact(ctx, 180_000); err != nil {
+		t.Fatalf("recovery Compact = %v", err)
+	}
+	if err := agent.Send("recovered"); err != nil {
+		t.Fatalf("Send after recovery = %v", err)
+	}
+}
