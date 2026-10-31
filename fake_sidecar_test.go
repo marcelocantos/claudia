@@ -33,12 +33,26 @@ type fakeSidecar struct {
 	promptHold chan struct{}
 	promptInFlight atomic.Bool
 	compactDuringPrompt atomic.Bool
-	compactDelay time.Duration
-	compactMu     sync.Mutex
+	compactCfgMu   sync.Mutex
+	compactDelay   time.Duration
+	compactSilent  bool
+	compactMu      sync.Mutex
 	compactCancels map[string]context.CancelFunc
 	compactAbortsMu sync.Mutex
 	compactAborts   []string
-	compactSilent   bool
+}
+
+func (f *fakeSidecar) compactBehavior() (silent bool, delay time.Duration) {
+	f.compactCfgMu.Lock()
+	defer f.compactCfgMu.Unlock()
+	return f.compactSilent, f.compactDelay
+}
+
+func (f *fakeSidecar) setCompactBehavior(silent bool, delay time.Duration) {
+	f.compactCfgMu.Lock()
+	defer f.compactCfgMu.Unlock()
+	f.compactSilent = silent
+	f.compactDelay = delay
 }
 
 func (f *fakeSidecar) loaded() []omp.Message {
@@ -100,6 +114,7 @@ func startFakeSidecar(t *testing.T, reply []string) *fakeSidecar {
 				f.compactMu.Unlock()
 			case omp.OpCompact:
 				go func(msg omp.Message) {
+					silent, delay := f.compactBehavior()
 					if f.promptInFlight.Load() {
 						f.compactDuringPrompt.Store(true)
 						b, _ := json.Marshal(map[string]any{"seat": msg.Seat, "type": "error", "request_id": msg.RequestID, "reason": "turn_in_flight", "text": "compact refused: turn in flight"})
@@ -118,13 +133,13 @@ func startFakeSidecar(t *testing.T, reply []string) *fakeSidecar {
 						delete(f.compactCancels, msg.RequestID)
 						f.compactMu.Unlock()
 					}()
-					if f.compactSilent {
+					if silent {
 						<-ctx.Done()
 						return
 					}
-					if f.compactDelay > 0 {
+					if delay > 0 {
 						select {
-						case <-time.After(f.compactDelay):
+						case <-time.After(delay):
 						case <-ctx.Done():
 							b, _ := json.Marshal(map[string]any{"seat": msg.Seat, "type": "error", "request_id": msg.RequestID, "reason": "compact_canceled", "text": "compact canceled"})
 							_, _ = c.Write(append(b, '\n'))

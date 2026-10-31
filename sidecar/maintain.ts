@@ -670,9 +670,28 @@ export class Maintenance {
     if (!model || window <= 0 || this.#abort) return false;
     this.history.sync(messages);
     const before = this.contextTokens(messages);
-    const nativeEligible = this.#host.nativeEligible ?? shouldUseProviderNativeCompaction;
+    const nativeEligible = process.env.CLAUDIA_TEST_COMPACT_SOFT_ONLY === "1"
+      ? () => false
+      : (this.#host.nativeEligible ?? shouldUseProviderNativeCompaction);
     const methods: Method[] = !target.soft && nativeEligible(model, methodSettings("remote")) ? ["remote", "soft"] : ["soft"];
-    const compactImpl = this.#host.compactImpl ?? engineCompact;
+    let compactImpl = this.#host.compactImpl ?? engineCompact;
+    if (process.env.CLAUDIA_TEST_COMPACT_HOLD === "1") {
+      const inner = compactImpl;
+      compactImpl = async (prep, model, token, instructions, signal, opts) => {
+        await new Promise<void>((_, reject) => {
+          if (signal?.aborted) {
+            reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+            return;
+          }
+          signal?.addEventListener(
+            "abort",
+            () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })),
+            { once: true },
+          );
+        });
+        return inner(prep, model, token, instructions, signal, opts);
+      };
+    }
     const abort = new AbortController();
     if (target.cancel) {
       if (target.cancel.aborted) abort.abort();

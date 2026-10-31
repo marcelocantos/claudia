@@ -32,6 +32,7 @@ func TestGrokCapabilityMatrixIsExplicit(t *testing.T) {
 		CapabilitySandboxPolicy:    CapabilityUnsupported,
 		CapabilityExtraArgs:        CapabilityUnsupported,
 		CapabilityModelSwitch:      CapabilitySupported,
+		CapabilityCompact:          CapabilitySupported,
 		CapabilityMCPTools:         CapabilitySupported,
 	}
 	got := ProviderCapabilityMatrix(ProviderGrok)

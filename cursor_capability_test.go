@@ -23,6 +23,7 @@ func TestCursorCapabilityMatrixIsExplicit(t *testing.T) {
 		CapabilitySandboxPolicy:    CapabilityUnsupported,
 		CapabilityExtraArgs:        CapabilityUnsupported,
 		CapabilityModelSwitch:      CapabilitySupported,
+		CapabilityCompact:          CapabilitySupported, // OMP sidecar bound compaction (🎯T244)
 		CapabilityMCPTools:         CapabilitySupported, // sidecar binds tools itself; T118 was the ACP transport
 	}
 	got := ProviderCapabilityMatrix(ProviderCursor)
