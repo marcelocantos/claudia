@@ -195,6 +195,11 @@ func lastOMPRefusalReason(t *testing.T, name, msg string) (string, []Event) {
 	if len(errs) == 0 {
 		t.Fatal("no error events")
 	}
+	for i := len(errs) - 1; i >= 0; i-- {
+		if errs[i].Type == "assistant" {
+			return errs[i].Reason, errs
+		}
+	}
 	return errs[len(errs)-1].Reason, errs
 }
 

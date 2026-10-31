@@ -1655,6 +1655,7 @@ func (a *Agent) publishEvent(ev Event) {
 			ProgressType: ProgressStuck,
 			SessionID:    a.SessionID(),
 			StuckClass:   class,
+			Reason:       ev.Reason,
 			Text:         detail,
 			IsError:      true,
 		}
