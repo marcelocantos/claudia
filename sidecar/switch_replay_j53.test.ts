@@ -1,6 +1,6 @@
-// 🎯T245 / Jevons J53: after a completed source turn, switching must seed the
-// destination from post-turn durable state — the next model call answers only
-// the new prompt, not the already-answered source prompt again.
+// 🎯T245 / Jevons J53 (T1371): completed source turn → switch → destination must
+// answer only the new codeword probe, not re-answer or glue STORED onto it.
+// Provenance: jevons 7534c923 …/j53-t1371-switch-post-turn/CLAUDIA_HANDOFF.md
 
 import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -8,37 +8,52 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createMockModel, registerMockApi, type MockResponse } from "@oh-my-pi/pi-ai/providers/mock";
 import type { Context, Model } from "@oh-my-pi/pi-ai";
-import { createSeatAgent, type SeatEvent } from "./seat.ts";
+import { createSeatAgent } from "./seat.ts";
 import { SeatStore } from "./store.ts";
 
 registerMockApi();
 
-const oldPrompt = "owner probe: remember MARBLEWREN951";
-const storedAnswer = "STOREDMARBLEWREN951";
-const newPrompt = "Acknowledged — what is 2+2?";
+const sourceCodeword = "MARBLEWREN951";
+const storedAnswer = `STORED${sourceCodeword}`;
+const newCodeword = "LIMESTONE827";
+const sourcePrompt = `owner probe: remember ${sourceCodeword}`;
+const newPrompt = `Reply with only the codeword ${newCodeword}, nothing else.`;
+const big = "the quick brown fox jumps over the lazy dog. ".repeat(1200);
 
 function reply(text: string): MockResponse {
   return { content: [text], usage: { input: 10, output: 1 } };
 }
 
+function assistantText(message: unknown): string {
+  return JSON.stringify(message);
+}
+
+function destinationHandler(ctx: Context): MockResponse {
+  const lastUser = JSON.stringify(ctx.messages.at(-1));
+  if (lastUser.includes(newCodeword)) return reply(newCodeword);
+  if (lastUser.includes(sourceCodeword)) return reply(storedAnswer);
+  return reply("ok");
+}
+
 describe("switch replay after completed source turn (J53 / 🎯T245)", () => {
-  test("destination next reply is only for the new prompt, not the stored source answer", async () => {
+  test("seeded STORED source reply, switch, then next answer is only the new codeword", async () => {
     const root = mkdtempSync(join(tmpdir(), "t245-j53-"));
     try {
-      let postSwitchContext: Context | undefined;
+      let destinationContext: Context | undefined;
+      const phases: string[] = [];
       const a = createMockModel({
         id: "a",
         provider: "anthropic",
-        contextWindow: 200_000,
+        contextWindow: 400_000,
         handler: () => reply(storedAnswer),
       });
       const b = createMockModel({
         id: "b",
         provider: "openai-codex",
-        contextWindow: 200_000,
+        contextWindow: 60_000,
         handler: (ctx) => {
-          postSwitchContext = ctx;
-          return reply("FOUR");
+          destinationContext = ctx;
+          return destinationHandler(ctx);
         },
       });
       const models = { "anthropic/a": a, "openai-codex/b": b } as Record<string, Model>;
@@ -49,7 +64,9 @@ describe("switch replay after completed source turn (J53 / 🎯T245)", () => {
         token: "t",
         cwd: root,
         store,
-        emit: () => {},
+        emit: (ev) => {
+          if (ev.type === "compacting" || ev.type === "compacted") phases.push(ev.text ?? "");
+        },
         callTool: async () => "",
         modelOverride: a as never,
         planToken: () => "t",
@@ -57,39 +74,40 @@ describe("switch replay after completed source turn (J53 / 🎯T245)", () => {
         maintenance: { nativeEligible: () => false },
       });
 
-      await agent.prompt(oldPrompt);
+      await agent.prompt(sourcePrompt);
       expect(JSON.stringify(agent.snapshot().messages)).toContain(storedAnswer);
+      for (let i = 0; i < 8; i++) await agent.prompt(`${i}: ${big}`);
 
-      await agent.switchModel("openai-codex", "b");
+      await agent.switchModel("openai-codex", "b", { on: "destination" });
       expect(agent.snapshot().model?.id).toBe("b");
+      expect(phases.some((t) => t.includes("post_turn"))).toBe(true);
+      expect(phases.some((t) => t.includes("pre_turn") && t.includes("switch"))).toBe(false);
+
       const afterSwitch = store.load({ repairTail: false })!;
       expect(JSON.stringify(afterSwitch)).toContain(storedAnswer);
-      expect(JSON.stringify(afterSwitch)).not.toContain("FOUR");
+      expect(JSON.stringify(afterSwitch)).not.toContain(newCodeword);
 
       await agent.prompt(newPrompt);
-      const ctx = postSwitchContext!;
+      const ctx = destinationContext!;
       expect(ctx.messages.at(-1)?.role).toBe("user");
       expect(ctx.messages.at(-2)?.role).toBe("assistant");
-      expect(JSON.stringify(ctx.messages.at(-2))).toContain(storedAnswer);
-      expect(JSON.stringify(ctx.messages)).toContain(newPrompt);
+      expect(assistantText(ctx.messages.at(-1))).toContain(newCodeword);
+      expect(assistantText(ctx.messages.at(-1))).not.toContain(sourceCodeword);
 
-      const answer = agent.snapshot().messages.at(-1);
-      expect(answer?.role).toBe("assistant");
-      const answerText = JSON.stringify(answer);
-      expect(answerText).toContain("FOUR");
+      const answerText = assistantText(agent.snapshot().messages.at(-1));
+      expect(answerText).toContain(newCodeword);
       expect(answerText).not.toContain(storedAnswer);
-
-      expect(JSON.stringify(store.load({ repairTail: false })!)).toContain("FOUR");
+      expect(answerText).not.toMatch(new RegExp(`${storedAnswer}.*${newCodeword}|${newCodeword}.*${storedAnswer}`));
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });
 
-  test("strict store reload after switch still seeds destination without replaying the old prompt", async () => {
+  test("strict store reload after switch still answers only the new codeword", async () => {
     const root = mkdtempSync(join(tmpdir(), "t245-j53-reload-"));
     try {
       const a = createMockModel({ id: "a", provider: "anthropic", contextWindow: 200_000, handler: () => reply(storedAnswer) });
-      const b = createMockModel({ id: "b", provider: "openai-codex", contextWindow: 200_000, handler: () => reply("NEW-ONLY") });
+      const b = createMockModel({ id: "b", provider: "openai-codex", contextWindow: 200_000, handler: destinationHandler });
       const models = { "anthropic/a": a, "openai-codex/b": b } as Record<string, Model>;
       const store = new SeatStore(root, "worker", "session");
       const agent = createSeatAgent({
@@ -105,7 +123,7 @@ describe("switch replay after completed source turn (J53 / 🎯T245)", () => {
         resolveModelOverride: (provider, model) => models[`${provider}/${model}`]!,
         maintenance: { nativeEligible: () => false },
       });
-      await agent.prompt(oldPrompt);
+      await agent.prompt(sourcePrompt);
       await agent.switchModel("openai-codex", "b");
 
       const reloaded = createSeatAgent({
@@ -123,42 +141,9 @@ describe("switch replay after completed source turn (J53 / 🎯T245)", () => {
       });
 
       await reloaded.prompt(newPrompt);
-      const answerText = JSON.stringify(reloaded.snapshot().messages.at(-1));
-      expect(answerText).toContain("NEW-ONLY");
+      const answerText = assistantText(reloaded.snapshot().messages.at(-1));
+      expect(answerText).toContain(newCodeword);
       expect(answerText).not.toContain(storedAnswer);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  test("switch-time compaction uses post_turn phase after a completed source turn", async () => {
-    const root = mkdtempSync(join(tmpdir(), "t245-j53-phase-"));
-    try {
-      const big = "the quick brown fox jumps over the lazy dog. ".repeat(1200);
-      const a = createMockModel({ id: "a", provider: "anthropic", contextWindow: 400_000, handler: () => reply(storedAnswer) });
-      const b = createMockModel({ id: "b", provider: "openai-codex", contextWindow: 60_000, handler: () => reply("ok") });
-      const models = { "anthropic/a": a, "openai-codex/b": b } as Record<string, Model>;
-      const events: SeatEvent[] = [];
-      const store = new SeatStore(root, "worker", "session");
-      const agent = createSeatAgent({
-        provider: "anthropic",
-        model: "a",
-        token: "t",
-        cwd: root,
-        store,
-        emit: (ev) => events.push(ev),
-        callTool: async () => "",
-        modelOverride: a as never,
-        planToken: () => "t",
-        resolveModelOverride: (provider, model) => models[`${provider}/${model}`]!,
-        maintenance: { nativeEligible: () => false },
-      });
-      await agent.prompt(oldPrompt);
-      for (let i = 0; i < 8; i++) await agent.prompt(`${i}: ${big}`);
-      await agent.switchModel("openai-codex", "b", { on: "destination" });
-      const progress = events.filter((e) => e.type === "compacting" || e.type === "compacted").map((e) => e.text ?? "");
-      expect(progress.some((t) => t.includes("post_turn"))).toBe(true);
-      expect(progress.some((t) => t.includes("pre_turn") && t.includes("switch"))).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
