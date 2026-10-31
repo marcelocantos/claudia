@@ -281,13 +281,8 @@ func (d *brokerDemuxConn) call(t *testing.T, req *broker.Request) *broker.Respon
 	if err := d.WriteRequest(req); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case resp := <-ch:
-		return resp
-	case <-time.After(90 * time.Second):
-		t.Fatalf("timeout waiting for %q", req.ID)
-		return nil
-	}
+	// Block on the broker response; go test -timeout is the only clock (🎯T97).
+	return <-ch
 }
 
 type traceRec struct {
@@ -515,7 +510,9 @@ func TestT244BrokerSendRefusedDuringHeldBoundCompact(t *testing.T) {
 		return info.Type == broker.TypeAgentInfoResult && info.AgentInfo != nil && !info.AgentInfo.PromptInFlight
 	})
 	before := countStoreType(t, storePath, "compaction")
+	compactDone := make(chan struct{})
 	go func() {
+		defer close(compactDone)
 		_ = dmx.call(t, &broker.Request{
 			ID: "compact-hold", Type: broker.TypeCompact,
 			Compact: &broker.CompactRequest{Name: seat, BoundTokens: 180_000},
@@ -539,4 +536,5 @@ func TestT244BrokerSendRefusedDuringHeldBoundCompact(t *testing.T) {
 	}
 	compactReq := lastTraceOp(tracePath, "compact")
 	sendSidecarCompactAbort(t, ompSock, seat, compactReq)
+	<-compactDone
 }
