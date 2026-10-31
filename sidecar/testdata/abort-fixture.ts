@@ -86,7 +86,8 @@ export class Host {
 
 // Only test entrypoints are accepted here. No broker, provider or installed
 // service is launched. The returned handle owns exactly this child and dir.
-export function launchAbortFixture(options: { entrypoint?: string; args?: string[]; signal?: AbortSignal } = {}) {
+export function launchAbortFixture(options: { entrypoint?: string; args?: string[]; signal?: AbortSignal; readyMarker?: string } = {}) {
+  const readyMarker = options.readyMarker ?? FIXTURE_READY;
   const dir = mkdtempSync(join(tmpdir(), "abrt-"));
   const sock = join(dir, "s.sock");
   const child = spawn(process.execPath, [options.entrypoint ?? join(import.meta.dir, "abort-provider.ts"), sock, ...options.args ?? []], {
@@ -135,7 +136,7 @@ export function launchAbortFixture(options: { entrypoint?: string; args?: string
         output += chunk.toString();
         if (output.length > DIAGNOSTIC_BYTES) return reject(new Error("fixture readiness output exceeded bound"));
         if (output.includes("\n")) {
-          if (output.trim() === FIXTURE_READY) resolve();
+          if (output.trim() === readyMarker) resolve();
           else reject(new Error(`unexpected fixture readiness: ${output}`));
         }
       };

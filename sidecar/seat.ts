@@ -815,6 +815,15 @@ export function createSeatAgent(opts: {
     }
   };
 
+  // Bound compact between turns (🎯T244): refuse new prompt/steer that would
+  // start while history is mutating. Mid-turn maintenance compaction still
+  // queues prompt/steer onto the open turn (maintain.test.ts).
+  const refuseDuringBoundCompact = () => {
+    if (!maint.compacting) return;
+    if (turnDone || retrying || agent.state.isStreaming || (turn && !turn.closed) || agent.hasQueuedMessages()) return;
+    throw Object.assign(new Error("seat refused: bound compaction running"), { reason: "turn_in_flight" });
+  };
+
   const runTurn = async (text: string, meta: PromptMeta | undefined, run: () => Promise<void>, accepted?: RequestReceipt) => {
     if (turnDone) throw new Error("a turn is still unwinding");
     let releaseTurn!: () => void;
@@ -918,15 +927,18 @@ export function createSeatAgent(opts: {
         // joins behind them rather than jumping ahead via agent.prompt().
         // The turn opens on the oldest of them, under its identity.
         if (!turnDone && !retrying && !agent.state.isStreaming) {
+          refuseDuringBoundCompact();
           await runTurn("", { ...meta, turn_id: queuedHeadTurnID() ?? meta?.turn_id }, () => agent.continue());
         }
         return;
       }
+      refuseDuringBoundCompact();
       await runTurn(text, meta, () => agent.prompt(message), accepted?.receipt);
     },
     steer: (text: string, meta?: PromptMeta) => {
       receipts.assertHealthy();
       assertRestorableExecution();
+      refuseDuringBoundCompact();
       const accepted = meta?.request_id ? receipts.accept(text, meta as typeof meta & { request_id: string; session_id: string }, "steer") : undefined;
       if (accepted && !accepted.fresh) {
         sink.emit({ type: "accepted", request_id: meta!.request_id, rpc_id: meta?.rpc_id, receipt: accepted.receipt });

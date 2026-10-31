@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -269,5 +270,40 @@ func TestT244CompactUncertainBlocksSendUntilRecovery(t *testing.T) {
 	}
 	if err := agent.Send("recovered"); err != nil {
 		t.Fatalf("Send after recovery = %v", err)
+	}
+}
+
+func TestT244HeldNextPromptRefusedWhileCompactInFlight(t *testing.T) {
+	f := startFakeSidecar(t, []string{`{"type":"turn_end","text":"ok"}`})
+	f.setCompactBehavior(false, 400*time.Millisecond)
+	ctx := context.Background()
+	agent, err := startDirectContext(ctx, Config{
+		Provider: Provider(omp.Anthropic), Name: "jv-compact-hold-send", Model: "claude-sonnet-4-20250514",
+		WorkDir: t.TempDir(), TermLogPath: "-",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer agent.Stop()
+	if err := agent.WaitReady(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	wg.Add(1)
+	var compactErr error
+	go func() {
+		defer wg.Done()
+		_, compactErr = agent.Compact(ctx, 180_000)
+	}()
+	time.Sleep(50 * time.Millisecond)
+	if err := agent.Send(strings.Repeat("x", 8000)); !errors.Is(err, ErrTurnInFlight) {
+		t.Fatalf("Send during compact = %v, want ErrTurnInFlight", err)
+	}
+	wg.Wait()
+	if compactErr != nil {
+		t.Fatalf("Compact = %v", compactErr)
+	}
+	if err := agent.Send("after compact"); err != nil {
+		t.Fatalf("Send after compact = %v", err)
 	}
 }
