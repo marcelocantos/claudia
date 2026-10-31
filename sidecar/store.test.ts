@@ -92,6 +92,37 @@ describe("durable seat conversations (🎯T151)", () => {
     expect(again.restore()).toBe(true);
     expect(new ReceiptJournal(again).pending().map(p => p.receipt.request_id)).toEqual(["A", "B"]);
   });
+
+  test("append that throws leaves the on-disk journal unchanged", () => {
+    const store = new SeatStore(tempDir(), "po", "s1");
+    store.rewrite([
+      {
+        type: "message",
+        id: "m1",
+        parentId: null,
+        timestamp: new Date().toISOString(),
+        message: { role: "user", content: [{ type: "text", text: "hello" }], timestamp: Date.now() },
+      } as SessionEntry,
+    ]);
+    const before = readFileSync(store.path);
+    store.append = () => {
+      throw new Error("ENOSPC");
+    };
+    expect(() =>
+      store.append([
+        {
+          type: "compaction",
+          id: "c1",
+          parentId: "m1",
+          timestamp: new Date().toISOString(),
+          summary: "fold",
+        } as SessionEntry,
+      ]),
+    ).toThrow(/ENOSPC/);
+    expect(readFileSync(store.path)).toEqual(before);
+    expect(store.load()?.some((e) => e.type === "compaction")).toBe(false);
+  });
+
   test("a reloaded seat resumes its conversation and its compaction, without re-summarizing", async () => {
     const root = tempDir();
     const first = seat(new SeatStore(root, "po", "s1"), ok);

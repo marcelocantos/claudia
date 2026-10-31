@@ -278,31 +278,39 @@ describe("switch-time compaction durability (🎯T243)", () => {
     }
   });
 
-  test("refused switch fold with ENOSPC on store rewrite never durably commits compaction", async () => {
-    const root = mkdtempSync(join(tmpdir(), "t243-rwfail-"));
+  test("viable switch fold refuses when final history.persist append hits ENOSPC", async () => {
+    const root = mkdtempSync(join(tmpdir(), "t243-persist-enospc-"));
     try {
       const a = createMockModel({ id: "a", provider: "anthropic", contextWindow: 400_000, handler: () => reply("ok") });
-      const b = createMockModel({ id: "b", provider: "openai-codex", contextWindow: 3_000, handler: () => reply("fine") });
+      const b = createMockModel({ id: "b", provider: "openai-codex", contextWindow: 60_000, handler: () => reply("fine") });
       const models = { "anthropic/a": a, "openai-codex/b": b } as Record<string, Model>;
       const store = new SeatStore(root, "worker", "session");
-      const origRewrite = store.rewrite.bind(store);
-      const baselineComps = () => compactionCount(store.load() ?? []);
-      store.rewrite = (entries) => {
-        if (compactionCount(entries) > baselineComps()) throw new Error("ENOSPC");
-        origRewrite(entries);
+      const origAppend = store.append.bind(store);
+      let compactionAppendAttempts = 0;
+      store.append = (entries) => {
+        if (entries.some((e) => e.type === "compaction")) {
+          compactionAppendAttempts++;
+          throw new Error("ENOSPC");
+        }
+        origAppend(entries);
       };
       const { agent } = durableSeat(root, a as never, models, {
         store,
         maintenance: { compactImpl: engineCompact },
       });
       await agent.prompt(marker);
-      for (let i = 0; i < 6; i++) await agent.prompt(`${i}: ${big}`);
+      for (let i = 0; i < 8; i++) await agent.prompt(`${i}: ${big}`);
 
       const beforeCompactions = compactionCount(store.load()!);
-      await expect(agent.switchModel("openai-codex", "b", { on: "destination" })).rejects.toThrow(/even after compaction/);
+      await expect(agent.switchModel("openai-codex", "b", { on: "destination" })).rejects.toThrow(/ENOSPC/);
+      expect(compactionAppendAttempts).toBe(1);
       expect(agent.snapshot().model?.id).toBe("a");
       expect(compactionCount(store.load()!)).toBe(beforeCompactions);
       expect(JSON.stringify(store.load())).toContain(marker);
+
+      const inMemory = JSON.stringify(agent.snapshot().messages);
+      expect(inMemory).toContain(marker);
+      expect(inMemory).not.toContain(summaryText);
 
       const { history } = reloadSeat(root, store, a as never, models, {});
       expect(JSON.stringify(history.rebuild("anthropic"))).toContain(marker);

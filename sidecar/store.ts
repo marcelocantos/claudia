@@ -120,6 +120,8 @@ export class SeatStore {
   }
 
   // append adds entries to the end of the file, creating it with its header.
+  // One appendFileSync call: if it throws, no new bytes are added (torn tails
+  // come from crashes mid-write, repaired on load — see load()).
   append(entries: readonly SessionEntry[]): void {
     if (entries.length === 0) return;
     if (!existsSync(this.path)) {
