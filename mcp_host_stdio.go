@@ -60,6 +60,18 @@ type mcpStdioProc struct {
 // mcpStdioRequestTimeout bounds a request whose caller set no deadline.
 var mcpStdioRequestTimeout = 20 * time.Second
 
+// mcpStdioWaitTimeout is how long the host waits for a reply when the HTTP
+// caller set no deadline. initialize may start a new process; it waits at
+// least mcpStdioWedgeGrace so a slow spawn is not reported wedged before the
+// host would treat it as still starting (🎯T934 / gate 1811a879 under load).
+func mcpStdioWaitTimeout(method string) time.Duration {
+	timeout := mcpStdioRequestTimeout
+	if method == "initialize" && mcpStdioWedgeGrace > timeout {
+		timeout = mcpStdioWedgeGrace
+	}
+	return timeout
+}
+
 // A process that has not answered initialize by the request's deadline is
 // wedged (jevons 🎯T934): alive and reading, answering nothing, so every
 // seat that names it starts without it until something restarts it. The
@@ -120,10 +132,14 @@ func (b *mcpStdioBackend) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("mcp stdio: request: %v", err), http.StatusBadRequest)
 		return
 	}
+	var method string
+	if m, ok := msg["method"]; ok {
+		_ = json.Unmarshal(m, &method)
+	}
 	ctx := r.Context()
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, mcpStdioRequestTimeout)
+		ctx, cancel = context.WithTimeout(ctx, mcpStdioWaitTimeout(method))
 		defer cancel()
 	}
 	resp, err := b.roundTrip(ctx, body, msg)

@@ -125,6 +125,11 @@ func TestOMPAnthropicRateLimitErrorIsRateLimit(t *testing.T) {
 	if reason != string(CauseRateLimit) {
 		t.Fatalf("error events %+v; want Reason %q, never %q", errs, CauseRateLimit, CauseClientBug)
 	}
+	for _, ev := range errs {
+		if ev.ProgressType == ProgressStuck && ev.StuckClass == StuckClassRateLimit && ev.Reason != string(CauseRateLimit) {
+			t.Fatalf("stuck event %+v; production contract copies assistant Reason onto stuck", ev)
+		}
+	}
 }
 
 func TestOMPAnthropicRateLimitProseIsNotRateLimit(t *testing.T) {
