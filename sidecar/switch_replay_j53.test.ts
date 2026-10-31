@@ -2,6 +2,20 @@
 // answer only the new codeword probe, not re-answer or glue STORED onto it.
 // Provenance: jevons 7534c923 …/j53-t1371-switch-post-turn/CLAUDIA_HANDOFF.md
 //
+// J53 timing (jv-t1371): pending switch accepted while a blocking tool turn is
+// in flight; switch applies after source STORED completes, before the next user
+// probe. createSeatAgent.prompt() always runs persistBeforeNextModel on turn_end
+// before switchModel is callable, so the filler-first fixture does NOT reproduce
+// in-flight durable boundary — pre-fix maintain@825b3dc still passes the main
+// behavioral test (see "J53 oracle sensitivity" describe).
+//
+// Proposed discriminating contract (not yet hermetic):
+//  1. Seed busy source turn (tool hold) per j53_t1371_pending_switch.go.
+//  2. Apply switchModel at post-STORED / pre-persist boundary (broker ordering).
+//  3. Destination strict oracle: probe must not return STORED / re-answer source.
+// Missing seam: sidecar switchModel refuses turn_in_flight; no public hook to
+// invoke maintain.switchModel at J53 boundary without broker/spool fixture.
+//
 // Post-backup switch fold rollback is covered by switch_compactor_durable.test.ts
 // (🎯T243), e.g. "failed destination switch fold leaves no compaction entry and
 // replayable messages on reload" and "still-does-not-fit after switch fold rolls
@@ -417,6 +431,24 @@ describe("switch replay after completed source turn (J53 / 🎯T245)", () => {
       expect(JSON.stringify(store.load({ repairTail: false }))).toContain(storedAnswer);
     } finally {
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("J53 oracle sensitivity (🎯T245 auditor contract)", () => {
+  test("documents pre-fix maintain.ts still passes main behavioral oracle (known NO-GO gap)", async () => {
+    const repo = new URL("..", import.meta.url).pathname;
+    const proc = Bun.spawn({
+      cmd: ["bash", "-lc", `cd '${repo}' && git show 825b3dc:sidecar/maintain.ts > sidecar/maintain.ts && cd sidecar && bun test switch_replay_j53.test.ts -t "seeded STORED source reply" ; ec=$?; git checkout HEAD -- maintain.ts; exit $ec`],
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const exit = await proc.exited;
+    const err = await new Response(proc.stderr).text();
+    // Until a hermetic seam reproduces J53 busy-switch timing, pre-fix incorrectly stays GREEN.
+    expect(exit).toBe(0);
+    if (exit !== 0) {
+      throw new Error(`expected pre-fix main oracle to stay GREEN (gap closed); stderr:\n${err}`);
     }
   });
 });
