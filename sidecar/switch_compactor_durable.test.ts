@@ -211,6 +211,7 @@ describe("switch-time compaction durability (🎯T243)", () => {
       await expect(switching).rejects.toThrow();
 
       expect(compactionCount(store.load()!)).toBe(beforeCompactions);
+      expect(compactionCount(store.load({ repairTail: false })!)).toBe(beforeCompactions);
       expect(JSON.stringify(store.load())).toContain(marker);
 
       const { agent: reloaded, history } = reloadSeat(root, store, a as never, models, {});
@@ -242,6 +243,7 @@ describe("switch-time compaction durability (🎯T243)", () => {
       await expect(agent.switchModel("openai-codex", "b", { on: "destination" })).rejects.toThrow();
       expect(agent.snapshot().model?.id).toBe("a");
       expect(compactionCount(store.load()!)).toBe(beforeCompactions);
+      expect(compactionCount(store.load({ repairTail: false })!)).toBe(beforeCompactions);
 
       const { history } = reloadSeat(root, store, a as never, models, {});
       expect(JSON.stringify(history.rebuild("anthropic"))).toContain(marker);
@@ -267,6 +269,7 @@ describe("switch-time compaction durability (🎯T243)", () => {
       await expect(agent.switchModel("openai-codex", "b", { on: "destination" })).rejects.toThrow(/even after compaction/);
       expect(agent.snapshot().model?.id).toBe("a");
       expect(compactionCount(store.load()!)).toBe(beforeCompactions);
+      expect(compactionCount(store.load({ repairTail: false })!)).toBe(beforeCompactions);
       expect(JSON.stringify(store.load())).toContain(marker);
 
       const { agent: reloaded, history } = reloadSeat(root, store, a as never, models, {});
@@ -308,6 +311,7 @@ describe("switch-time compaction durability (🎯T243)", () => {
       expect(switchCommitRewriteAttempts).toBe(1);
       expect(agent.snapshot().model?.id).toBe("a");
       expect(compactionCount(store.load()!)).toBe(beforeCompactions);
+      expect(compactionCount(store.load({ repairTail: false })!)).toBe(beforeCompactions);
       expect(JSON.stringify(store.load())).toContain(marker);
 
       const inMemory = JSON.stringify(agent.snapshot().messages);
@@ -356,6 +360,7 @@ describe("switch-time compaction durability (🎯T243)", () => {
       expect(injectedPartialWrites).toBe(1);
       expect(agent.snapshot().model?.id).toBe("a");
       expect(compactionCount(store.load()!)).toBe(beforeCompactions);
+      expect(compactionCount(store.load({ repairTail: false })!)).toBe(beforeCompactions);
       expect(JSON.stringify(store.load())).toContain(marker);
       expect(JSON.stringify(store.load())).toContain("PELICAN-PARTIAL-7");
 
@@ -406,6 +411,7 @@ describe("switch-time compaction durability (🎯T243)", () => {
       expect(injectedCompleteLines).toBe(1);
       expect(agent.snapshot().model?.id).toBe("a");
       expect(compactionCount(store.load()!)).toBe(beforeCompactions);
+      expect(compactionCount(store.load({ repairTail: false })!)).toBe(beforeCompactions);
       expect(JSON.stringify(store.load())).toContain(marker);
       expect(JSON.stringify(store.load())).not.toContain(summaryText);
 
