@@ -13,7 +13,7 @@
 // The one repair is a torn last line — the signature of a crash mid-append —
 // which is dropped, with a warning, because nothing after it was written.
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { SessionEntry } from "@oh-my-pi/pi-agent-core";
 
@@ -120,6 +120,8 @@ export class SeatStore {
   }
 
   // append adds entries to the end of the file, creating it with its header.
+  // appendFileSync is not all-or-nothing: a throw can still leave bytes (or a
+  // complete JSON line) on disk; torn tails are repaired on load() when possible.
   append(entries: readonly SessionEntry[]): void {
     if (entries.length === 0) return;
     if (!existsSync(this.path)) {
@@ -137,5 +139,35 @@ export class SeatStore {
     const tmp = `${this.path}.tmp-${process.pid}`;
     writeFileSync(tmp, body);
     renameSync(tmp, this.path);
+  }
+
+  // switchBackupPath is the pre-switch journal copy used when rollback rewrite fails (🎯T243).
+  switchBackupPath(): string {
+    return `${this.path}.switch-backup`;
+  }
+
+  // beginSwitchBackup captures the on-disk journal before a switch-time fold commit.
+  beginSwitchBackup(): void {
+    if (!existsSync(this.path)) return;
+    const dest = this.switchBackupPath();
+    const tmp = `${dest}.tmp-${process.pid}`;
+    writeFileSync(tmp, readFileSync(this.path));
+    renameSync(tmp, dest);
+  }
+
+  // restoreSwitchBackup replaces the live journal from the pre-switch backup atomically.
+  restoreSwitchBackup(): void {
+    const backup = this.switchBackupPath();
+    if (!existsSync(backup)) {
+      throw new Error(`conversation store ${this.path} has no switch backup`);
+    }
+    const tmp = `${this.path}.tmp-restore-${process.pid}`;
+    writeFileSync(tmp, readFileSync(backup));
+    renameSync(tmp, this.path);
+  }
+
+  clearSwitchBackup(): void {
+    const backup = this.switchBackupPath();
+    if (existsSync(backup)) unlinkSync(backup);
   }
 }

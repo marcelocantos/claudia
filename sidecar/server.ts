@@ -106,6 +106,9 @@ type Line = {
   tools?: HostTool[];
   preserve?: string;
   pins?: string[];
+  compact_on?: string;
+  compact_provider?: string;
+  compact_model?: string;
   cursor?: string;
   after?: number;
   limit?: number;
@@ -380,6 +383,7 @@ async function handle(
       tools: msg.tools,
       store,
       requireResume: msg.require_resume,
+      planToken: (provider) => planTokens.get(provider),
       preserve: msg.preserve,
       pins: msg.pins,
       sandbox: msg.sandbox,
@@ -480,7 +484,9 @@ function rebindSeat(
 
 // switchIfAsked moves a loaded seat to the provider and model msg names,
 // before anything is rebound: a conversation that must be folded to fit is
-// folded by the model that wrote it, on its own plan's token (🎯T195). An
+// fold by the model that wrote it, on its own plan's token (🎯T195). When
+// compact_on names destination or explicit, the sidecar folds with that
+// working model instead (🎯T243).
 // explicit switch (a request id) that the seat refuses writes the refusal
 // and reports false; the seat stays as it was. A plain re-attach never
 // fails here: the seat keeps its own model (switchOnLoad).
@@ -490,7 +496,12 @@ async function switchIfAsked(
   seat: string,
   write: (ev: Record<string, unknown>) => void,
 ): Promise<boolean> {
-  const out = await switchOnLoad(existing, msg, (provider, model) => existing.agent.switchModel(provider, model));
+  if (msg.provider && msg.token) setPlanToken(msg.provider, msg.token);
+  const compact =
+    msg.compact_on && msg.compact_on !== "source"
+      ? { on: msg.compact_on as "destination" | "explicit", compact_provider: msg.compact_provider, compact_model: msg.compact_model }
+      : undefined;
+  const out = await switchOnLoad(existing, msg, (provider, model) => existing.agent.switchModel(provider, model, compact));
   if (!out.ok) {
     write(errorEvent(msg, seat, out.error, { reason: "switch_refused" }));
     return false;

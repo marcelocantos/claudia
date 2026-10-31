@@ -78,6 +78,10 @@ type Message struct {
 	Sandbox *Sandbox `json:"sandbox,omitempty"`
 	// ProtectedPaths are host edit rules (🎯T209 / jevons 🎯T546), independent of sandbox mode.
 	ProtectedPaths []ProtectedPathRule `json:"protected_paths,omitempty"`
+	// Switch-time compaction selection (🎯T243). Omitted means fold on the source model.
+	CompactOn       string `json:"compact_on,omitempty"`
+	CompactProvider string `json:"compact_provider,omitempty"`
+	CompactModel    string `json:"compact_model,omitempty"`
 }
 
 // Sandbox modes the sidecar enforces on its own tools.
@@ -152,6 +156,15 @@ type Event struct {
 	// (usage limit, rate limit, auth). Empty on a turn that answered.
 	Error    string          `json:"error,omitempty"`
 	Snapshot json.RawMessage `json:"snapshot,omitempty"`
+	// Structured switch-time compaction progress (🎯T243). Older sidecars omit these.
+	ContextBefore   int    `json:"context_before,omitempty"`
+	ContextAfter    int    `json:"context_after,omitempty"`
+	TargetWindow    int    `json:"target_window,omitempty"`
+	CompactOn       string `json:"compact_on,omitempty"`
+	CompactProvider string `json:"compact_provider,omitempty"`
+	CompactModel    string `json:"compact_model,omitempty"`
+	Phase           string `json:"phase,omitempty"`
+	CompactReason   string `json:"compact_reason,omitempty"`
 }
 
 // Refusal is the provider's reason when a turn_end closed a refused turn,

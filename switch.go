@@ -28,7 +28,11 @@ const switchModelTimeout = 15 * time.Minute
 // that is not running, and a turn in flight. On success [Agent.Provider] and
 // [Agent.Model] name the new model, a model_switch Event is published, and a
 // seat launched by a [Registry] has its definition rewritten to match.
-func (a *Agent) SwitchModel(provider Provider, model string) error {
+func (a *Agent) SwitchModel(provider Provider, model string, opts ...SwitchOptions) error {
+	opt := mergeSwitchOptions(opts)
+	if err := opt.Validate(); err != nil {
+		return err
+	}
 	model = strings.TrimSpace(model)
 	if model == "" {
 		return fmt.Errorf("SwitchModel: model must be non-empty")
@@ -59,7 +63,7 @@ func (a *Agent) SwitchModel(provider Provider, model string) error {
 	if a.ops.switchModel == nil {
 		return unsupportedCapability(from, CapabilityModelSwitch, "provider did not supply a switchModel operation")
 	}
-	if err := a.ops.switchModel(a, provider, model); err != nil {
+	if err := a.ops.switchModel(a, provider, model, opt); err != nil {
 		return err
 	}
 	a.mu.Lock()

@@ -92,6 +92,92 @@ describe("durable seat conversations (🎯T151)", () => {
     expect(again.restore()).toBe(true);
     expect(new ReceiptJournal(again).pending().map(p => p.receipt.request_id)).toEqual(["A", "B"]);
   });
+
+  test("append hook that throws before writing leaves the on-disk journal unchanged", () => {
+    const store = new SeatStore(tempDir(), "po", "s1");
+    store.rewrite([
+      {
+        type: "message",
+        id: "m1",
+        parentId: null,
+        timestamp: new Date().toISOString(),
+        message: { role: "user", content: [{ type: "text", text: "hello" }], timestamp: Date.now() },
+      } as SessionEntry,
+    ]);
+    const before = readFileSync(store.path);
+    store.append = () => {
+      throw new Error("ENOSPC");
+    };
+    expect(() =>
+      store.append([
+        {
+          type: "compaction",
+          id: "c1",
+          parentId: "m1",
+          timestamp: new Date().toISOString(),
+          summary: "fold",
+        } as SessionEntry,
+      ]),
+    ).toThrow(/ENOSPC/);
+    expect(readFileSync(store.path)).toEqual(before);
+    expect(store.load()?.some((e) => e.type === "compaction")).toBe(false);
+  });
+
+  test("switch backup restore replaces a polluted journal with the pre-switch copy", () => {
+    const store = new SeatStore(tempDir(), "po", "s1");
+    store.rewrite([
+      {
+        type: "message",
+        id: "m1",
+        parentId: null,
+        timestamp: new Date().toISOString(),
+        message: { role: "user", content: [{ type: "text", text: "marker" }], timestamp: Date.now() },
+      } as SessionEntry,
+    ]);
+    store.beginSwitchBackup();
+    appendFileSync(
+      store.path,
+      `${JSON.stringify({
+        type: "compaction",
+        id: "leak",
+        parentId: "m1",
+        timestamp: new Date().toISOString(),
+        summary: summaryText,
+      })}\n`,
+    );
+    store.restoreSwitchBackup();
+    const loaded = store.load({ repairTail: false })!;
+    expect(loaded.some((e) => e.type === "compaction")).toBe(false);
+    expect(JSON.stringify(loaded)).toContain("marker");
+    store.clearSwitchBackup();
+  });
+
+  test("append partial payload leaves a torn tail that load repairs without a compaction row", () => {
+    const store = new SeatStore(tempDir(), "po", "s1");
+    store.rewrite([
+      {
+        type: "message",
+        id: "m1",
+        parentId: null,
+        timestamp: new Date().toISOString(),
+        message: { role: "user", content: [{ type: "text", text: "hello" }], timestamp: Date.now() },
+      } as SessionEntry,
+    ]);
+    const before = readFileSync(store.path);
+    const line = JSON.stringify({
+      type: "compaction",
+      id: "c1",
+      parentId: "m1",
+      timestamp: new Date().toISOString(),
+      summary: "fold",
+    } satisfies Partial<SessionEntry>);
+    appendFileSync(store.path, line.slice(0, Math.floor(line.length * 0.5)));
+    const loaded = store.load()!;
+    expect(loaded.some((e) => e.type === "compaction")).toBe(false);
+    expect(JSON.stringify(loaded)).toContain("hello");
+    expect(readFileSync(store.path).length).toBeGreaterThanOrEqual(before.length);
+  });
+
   test("a reloaded seat resumes its conversation and its compaction, without re-summarizing", async () => {
     const root = tempDir();
     const first = seat(new SeatStore(root, "po", "s1"), ok);

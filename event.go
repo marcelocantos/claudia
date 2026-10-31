@@ -125,6 +125,14 @@ type Event struct {
 	// (rate_limit or quota). Empty on every other event.
 	StuckClass string
 
+	// Switch-time compaction progress (🎯T243), on ProgressType=compaction events.
+	ContextBefore    int
+	ContextAfter     int
+	CompactionWindow int
+	CompactOn        string
+	CompactProvider  string
+	CompactModel     string
+
 	// Truncated reports that this event's payload was bounded before it was
 	// relayed, because it was too large for one broker frame — a screenshot
 	// or other base64 tool_result is the usual cause. Raw is then no longer

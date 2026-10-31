@@ -37,7 +37,7 @@ import { SeatProcessOwnership } from "./killguard.ts";
 import { codingTools, type SandboxPolicy } from "./coding.ts";
 import { capToolText, toolResultBound } from "./truncate.ts";
 import { awaitHostCall } from "./hostcalls.ts";
-import { ContextOverflow, isOverflow, History, Maintenance, seatConvertToLlm, type MaintenanceHost } from "./maintain.ts";
+import { ContextOverflow, isOverflow, History, Maintenance, seatConvertToLlm, type MaintenanceHost, type SwitchCompactOn, type SwitchCompactRequest } from "./maintain.ts";
 import { resetOpenAICodexHistoryAfterCompaction } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
 import type { SeatStore } from "./store.ts";
 import { ReceiptJournal, type RequestReceipt, type ReceiptCause, type ReceiptMessage, type ReceiptTerminalState } from "./receipts.ts";
@@ -105,7 +105,7 @@ export type SeatAgent = {
   // switchModel moves the seat to another provider or model between turns,
   // keeping its conversation (🎯T195). It rejects while a turn runs, for an
   // unknown model, and when the conversation cannot be made to fit.
-  switchModel: (provider: string, model: string) => Promise<void>;
+  switchModel: (provider: string, model: string, compact?: { on?: SwitchCompactOn; compact_provider?: string; compact_model?: string }) => Promise<void>;
   setToken: (token: string) => void;
   setCwd: (cwd: string) => void;
   // setSandbox replaces the policy on the seat's own tools (🎯T178).
@@ -161,6 +161,7 @@ export function createSeatAgent(opts: {
   // resolveModelOverride replaces the catalog lookup a switch makes (tests).
   resolveModelOverride?: (provider: string, model: string) => Model;
   maintenance?: Pick<MaintenanceHost, "compactImpl" | "summaryOptions" | "nativeEligible">;
+  planToken?: (provider: string) => string | undefined;
   // store keeps the conversation across a sidecar restart (🎯T151). A seat
   // loaded with a store that already holds its session resumes from it.
   store?: SeatStore;
@@ -301,6 +302,7 @@ export function createSeatAgent(opts: {
     store: opts.store,
     preserve: () => preserve,
     pins: () => pins,
+    planToken: opts.planToken,
     ...opts.maintenance,
     nativeUsageObserver: model => usage?.observer("compaction", model, usageAttribution()),
     summaryOptions: {
@@ -933,12 +935,25 @@ export function createSeatAgent(opts: {
       heldFollowUps.length = 0;
       return ended;
     },
-    switchModel: async (provider: string, modelId: string) => {
+    switchModel: async (provider: string, modelId: string, compact?: { on?: SwitchCompactOn; compact_provider?: string; compact_model?: string }) => {
       assertRestorableExecution();
       if (turnDone || agent.state.isStreaming) {
         throw new Error("switch refused: a turn is running");
       }
-      await maint.switchModel((opts.resolveModelOverride ?? resolveModel)(provider, modelId));
+      const next = (opts.resolveModelOverride ?? resolveModel)(provider, modelId);
+      let compactReq: SwitchCompactRequest = { on: compact?.on ?? "source" };
+      if (compact?.on === "destination") {
+        compactReq = { on: "destination" };
+      } else if (compact?.on === "explicit") {
+        if (!compact.compact_provider?.trim() || !compact.compact_model?.trim()) {
+          throw new Error("switch refused: explicit compaction requires compact_provider and compact_model");
+        }
+        compactReq = {
+          on: "explicit",
+          explicitModel: (opts.resolveModelOverride ?? resolveModel)(compact.compact_provider, compact.compact_model),
+        };
+      }
+      await maint.switchModel(next, compactReq);
     },
     setToken: (next: string) => {
       token = next;

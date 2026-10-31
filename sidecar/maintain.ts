@@ -158,6 +158,19 @@ function entryPins(c: CompactionEntry | undefined): string[] {
 }
 
 // History is the seat's conversation as engine entries, on one branch.
+// HistoryRollbackError is raised when switch rollback cannot prove the journal
+// matches the pre-switch snapshot. Live history is rolled back in memory before
+// throw; callers must not treat the switch as accepted.
+export class HistoryRollbackError extends Error {
+  readonly durableUncertain: boolean;
+
+  constructor(message: string, options?: { cause?: unknown; durableUncertain?: boolean }) {
+    super(message, options);
+    this.name = "HistoryRollbackError";
+    this.durableUncertain = options?.durableUncertain ?? true;
+  }
+}
+
 export class History {
   entries: SessionEntry[] = [];
   #ids = new WeakMap<object, string>();
@@ -204,6 +217,78 @@ export class History {
     return true;
   }
 
+  // durableSnapshot clones the entry list for switch-time rollback (🎯T243).
+  durableSnapshot(): SessionEntry[] {
+    return JSON.parse(JSON.stringify(this.entries)) as SessionEntry[];
+  }
+
+  // beginSwitchDurableBackup copies the on-disk journal before switch-time fold.
+  beginSwitchDurableBackup(): void {
+    this.store?.beginSwitchBackup();
+  }
+
+  clearSwitchDurableBackup(): void {
+    this.store?.clearSwitchBackup();
+  }
+
+  // rollbackDurable restores a snapshot. memoryOnly skips rewrite when the
+  // trial fold was never persisted (switch refused before viability).
+  rollbackDurable(snapshot: SessionEntry[], options: { memoryOnly?: boolean } = {}): void {
+    const restored = JSON.parse(JSON.stringify(snapshot)) as SessionEntry[];
+    this.#replaceEntries(restored);
+    if (this.store && !options.memoryOnly) {
+      try {
+        this.store.rewrite(restored);
+      } catch (err) {
+        if (this.#tryReconcileDiskWithSnapshot(restored)) return;
+        throw new HistoryRollbackError(
+          "conversation store rollback failed; durable history may still include the switch-time compaction",
+          { cause: err, durableUncertain: true },
+        );
+      }
+    }
+  }
+
+  #journalMatchesSnapshot(snapshot: SessionEntry[]): boolean {
+    if (!this.store) return true;
+    try {
+      const loaded = this.store.load({ repairTail: false });
+      if (!loaded) return snapshot.length === 0;
+      return JSON.stringify(loaded) === JSON.stringify(snapshot);
+    } catch {
+      return false;
+    }
+  }
+
+  // tryReconcileDiskWithSnapshot restores from pre-switch backup or verifies the
+  // journal was never mutated when commit rewrite failed atomically.
+  #tryReconcileDiskWithSnapshot(snapshot: SessionEntry[]): boolean {
+    if (this.#journalMatchesSnapshot(snapshot)) return true;
+    try {
+      this.store!.restoreSwitchBackup();
+    } catch {
+      // backup missing or restore failed
+    }
+    return this.#journalMatchesSnapshot(snapshot);
+  }
+
+  #replaceEntries(restored: SessionEntry[]): void {
+    this.entries = restored;
+    this.#ids = new WeakMap();
+    this.#byKey = new Map();
+    for (const e of this.entries) {
+      if (e.type === "message") {
+        const m = (e as SessionMessageEntry).message;
+        const k = messageKey(m);
+        this.#byKey.set(k, e.id);
+        this.#ids.set(m, e.id);
+      }
+    }
+    this.#streamingEntryId = undefined;
+    this.#persisted = this.entries.length;
+    this.#dirty = false;
+  }
+
   // persist writes what the store does not have yet: the new tail, or the
   // whole list when an entry was taken back.
   persist(messages?: readonly AgentMessage[]): void {
@@ -216,6 +301,17 @@ export class History {
       this.store.append(this.entries.slice(this.#persisted));
     }
     this.#persisted = this.entries.length;
+  }
+
+  // persistSwitchCommit replaces the whole journal atomically (tmp+rename).
+  // Switch viability must not use append for the trial fold commit: append can
+  // leave a partial or complete compaction line while the switch is still refused.
+  persistSwitchCommit(messages?: readonly AgentMessage[]): void {
+    if (messages) this.sync(messages);
+    if (!this.store) return;
+    this.store.rewrite(this.entries);
+    this.#persisted = this.entries.length;
+    this.#dirty = false;
   }
 
   // Execution facts share the conversation's durable entry sequence but
@@ -426,7 +522,25 @@ function openAiRemotePayload(c: CompactionEntry) {
   return { type: "openaiResponsesHistory" as const, provider: candidate.provider, items };
 }
 
-export type MaintenanceEvent = { type: "compacting" | "compacted" | "compaction_warning"; text: string };
+export type MaintenanceEvent = {
+  type: "compacting" | "compacted" | "compaction_warning";
+  text: string;
+  context_before?: number;
+  context_after?: number;
+  target_window?: number;
+  compact_on?: string;
+  compact_provider?: string;
+  compact_model?: string;
+  phase?: Phase;
+  compact_reason?: Reason;
+};
+
+export type SwitchCompactOn = "source" | "destination" | "explicit";
+
+export type SwitchCompactRequest = {
+  on: SwitchCompactOn;
+  explicitModel?: Model;
+};
 
 export type MaintenanceHost = {
   agent: Agent;
@@ -445,6 +559,9 @@ export type MaintenanceHost = {
   // beyond preserveRule, and facts kept verbatim.
   preserve?: () => string | undefined;
   pins?: () => readonly string[] | undefined;
+  // planToken reads a plan's access token for switch-time compaction on
+  // another provider (🎯T243). Falls back to token() for the seat's own plan.
+  planToken?: (provider: string) => string | undefined;
 };
 
 // Maintenance runs the CLI's compaction triggers for one seat.
@@ -518,15 +635,61 @@ export class Maintenance {
   // that wrote it, down to what next can carry; if it cannot be, the switch
   // is refused and the seat stays where it was. Limits learned from the old
   // provider's refusals do not describe the new one.
-  async switchModel(next: Model): Promise<void> {
+  async switchModel(next: Model, compact: SwitchCompactRequest = { on: "source" }): Promise<void> {
     const agent = this.#host.agent;
     const window = next.contextWindow ?? 0;
+    const on = compact.on ?? "source";
+    let compactor: Model | undefined;
+    if (on === "destination") {
+      compactor = next;
+    } else if (on === "explicit") {
+      if (!compact.explicitModel) {
+        throw new Error("switch refused: explicit compaction requires compact_provider and compact_model");
+      }
+      compactor = compact.explicitModel;
+    }
+    if (compactor) {
+      // Fail before folding when the chosen compactor has no plan auth (🎯T243).
+      this.#compactorToken(compactor);
+    }
     if (window > 0 && shouldCompact(this.contextTokens(agent.state.messages), window, settings)) {
-      await this.run("switch", "pre_turn", agent.state.messages, { window, soft: true });
-      if (shouldCompact(this.contextTokens(agent.state.messages), window, settings)) {
-        throw new Error(
-          `switch refused: the conversation (${this.contextTokens(agent.state.messages)} tokens) does not fit ${next.provider}/${next.id} (${window}) even after compaction`,
-        );
+      const durable = this.history.durableSnapshot();
+      this.history.beginSwitchDurableBackup();
+      const srcProvider = agent.state.model?.provider;
+      let switchDiskCommitAttempted = false;
+      try {
+        await this.run("switch", "pre_turn", agent.state.messages, {
+          window,
+          soft: true,
+          deferPersist: true,
+          compactor: compactor ? { model: compactor, token: () => this.#compactorToken(compactor!) } : undefined,
+          compactMeta: {
+            on,
+            provider: (compactor ?? agent.state.model)?.provider,
+            model: (compactor ?? agent.state.model)?.id,
+            window,
+          },
+        });
+        if (shouldCompact(this.contextTokens(agent.state.messages), window, settings)) {
+          throw new Error(
+            `switch refused: the conversation (${this.contextTokens(agent.state.messages)} tokens) does not fit ${next.provider}/${next.id} (${window}) even after compaction`,
+          );
+        }
+        switchDiskCommitAttempted = true;
+        this.history.persistSwitchCommit();
+      } catch (err) {
+        let rollbackErr: unknown;
+        try {
+          this.history.rollbackDurable(durable, { memoryOnly: !switchDiskCommitAttempted });
+        } catch (e) {
+          rollbackErr = e;
+        }
+        if (srcProvider) agent.replaceMessages(this.history.rebuild(srcProvider));
+        this.#compactedAt = this.history.latestCompactionAt();
+        if (rollbackErr) throw rollbackErr;
+        throw err;
+      } finally {
+        this.history.clearSwitchDurableBackup();
       }
     }
     const from = agent.state.model?.provider;
@@ -543,6 +706,13 @@ export class Maintenance {
         compaction: { operationId: crypto.randomUUID(), trigger: "auto", reason: "context_limit", phase: "pre_turn", strategy: "memento" } as never,
       });
     }
+  }
+
+  #compactorToken(model: Model): string {
+    const fromPlan = this.#host.planToken?.(model.provider)?.trim();
+    if (fromPlan) return fromPlan;
+    if (model.provider === this.#host.agent.state.model?.provider) return this.#host.token();
+    throw new Error(`switch refused: no plan token for compactor provider ${model.provider}`);
   }
 
   window(): number {
@@ -611,17 +781,39 @@ export class Maintenance {
     reason: Reason,
     phase: Phase,
     messages: readonly AgentMessage[] = this.#host.agent.state.messages,
-    target: { window?: number; soft?: boolean } = {},
+    target: {
+      window?: number;
+      soft?: boolean;
+      deferPersist?: boolean;
+      compactor?: { model: Model; token: () => string };
+      compactMeta?: { on: SwitchCompactOn; provider?: string; model?: string; window: number };
+    } = {},
   ): Promise<boolean> {
     const agent = this.#host.agent;
-    const model = agent.state.model;
+    const seatModel = agent.state.model;
+    const model = target.compactor?.model ?? seatModel;
     const window = target.window ?? this.window();
     if (!model || window <= 0 || this.#abort) return false;
     this.history.sync(messages);
     const before = this.contextTokens(messages);
+    const meta = target.compactMeta ?? { on: "source" as const, provider: seatModel?.provider, model: seatModel?.id, window };
+    const progress = (type: MaintenanceEvent["type"], text: string, after?: number) =>
+      this.#host.emit({
+        type,
+        text,
+        context_before: before,
+        context_after: after,
+        target_window: window,
+        compact_on: meta.on,
+        compact_provider: meta.provider,
+        compact_model: meta.model,
+        phase,
+        compact_reason: reason,
+      });
     const nativeEligible = this.#host.nativeEligible ?? shouldUseProviderNativeCompaction;
     const methods: Method[] = !target.soft && nativeEligible(model, methodSettings("remote")) ? ["remote", "soft"] : ["soft"];
     const compactImpl = this.#host.compactImpl ?? engineCompact;
+    const token = target.compactor?.token ?? this.#host.token;
     const abort = new AbortController();
     this.#abort = abort;
     try {
@@ -629,23 +821,18 @@ export class Maintenance {
         const s = methodSettings(method);
         const prep = prepareCompaction(this.history.entries, s, model, agent.tokenizer);
         if (!prep) {
-          // Nothing before the newest turn can be folded: a single oversized
-          // turn. Park until the engine finds a cut point again.
           this.#deadEnd = true;
-          this.#host.emit({
-            type: "compaction_warning",
-            text: `${reason}: nothing to fold before the newest turn (${before} tokens of ${window}); compaction is paused until there is`,
-          });
+          progress("compaction_warning", `${reason}: nothing to fold before the newest turn (${before} tokens of ${window}); compaction is paused until there is`);
           return false;
         }
-        this.#host.emit({ type: "compacting", text: `${reason} (${phase}): ${before} tokens of ${window}; method ${method}` });
+        progress("compacting", `${reason} (${phase}): ${before} tokens of ${window}; method ${method}`);
         const codex = { operationId: crypto.randomUUID(), trigger: "auto", reason: "context_limit", phase, strategy: "memento" } as const;
         const hostPreserve = this.#host.preserve?.()?.trim();
         const instructions = hostPreserve ? `${preserveRule}\n${hostPreserve}` : preserveRule;
         let result: CompactionResult | undefined;
         for (let attempt = 0; ; attempt++) {
           try {
-            result = await compactImpl(prep, model, this.#host.token(), instructions, abort.signal, {
+            result = await compactImpl(prep, model, token(), instructions, abort.signal, {
               convertToLlm: seatConvertToLlm,
               remoteSystemPrompt: agent.state.systemPrompt,
               initiatorOverride: "agent",
@@ -666,7 +853,7 @@ export class Maintenance {
               await Bun.sleep(transientBackoffMs * (attempt + 1));
               continue;
             }
-            this.#host.emit({ type: "compaction_warning", text: `${reason}: ${method} compaction failed: ${errorText(err)}` });
+            progress("compaction_warning", `${reason}: ${method} compaction failed: ${errorText(err)}`);
             return false;
           }
         }
@@ -682,22 +869,16 @@ export class Maintenance {
           ]),
         ];
         if (pins.length > 0) result = { ...result, details: { ...(result.details as object | undefined), pins } };
-        this.#commit(result, method, codex);
+        this.#commit(result, method, codex, { persist: !target.deferPersist });
         const after = this.storedTokens();
         const progressed =
           reason === "overflow"
             ? after <= Math.max(0, window - resolveBudgetReserveTokens(window, settings))
             : after <= Math.floor(thresholdTokens(window) * recoveryBand);
-        this.#host.emit({
-          type: "compacted",
-          text: `${reason} (${phase}): context ${before} -> ${after} tokens of ${window}; method ${method}`,
-        });
+        progress("compacted", `${reason} (${phase}): context ${before} -> ${after} tokens of ${window}; method ${method}`, after);
         if (!progressed) {
           this.#deadEnd = true;
-          this.#host.emit({
-            type: "compaction_warning",
-            text: `${reason}: compaction freed too little (${after} tokens of ${window} remain); automatic compaction is paused until there is more to fold`,
-          });
+          progress("compaction_warning", `${reason}: compaction freed too little (${after} tokens of ${window} remain); automatic compaction is paused until there is more to fold`, after);
         }
         return progressed;
       }
@@ -707,13 +888,13 @@ export class Maintenance {
     }
   }
 
-  #commit(result: CompactionResult, method: Method, codex: object): void {
+  #commit(result: CompactionResult, method: Method, codex: object, options: { persist?: boolean } = {}): void {
     const agent = this.#host.agent;
     const entry = this.history.appendCompaction(result, method);
     agent.replaceMessages(this.history.rebuild(this.#provider()));
     this.#compactedAt = Date.now();
     entry.tokensAfter = this.storedTokens();
-    this.history.persist();
+    if (options.persist !== false) this.history.persist();
     // A Codex seat's server-side history no longer matches what is sent.
     resetOpenAICodexHistoryAfterCompaction({
       providerSessionState: agent.providerSessionState,

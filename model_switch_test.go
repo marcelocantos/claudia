@@ -15,7 +15,7 @@ func TestSwitchModelEmptyRejected(t *testing.T) {
 		provider: ProviderClaude,
 		alive:    true,
 		ready:    make(chan struct{}),
-		ops:      agentOps{switchModel: func(*Agent, Provider, string) error { return nil }},
+		ops:      agentOps{switchModel: func(*Agent, Provider, string, SwitchOptions) error { return nil }},
 	}
 	close(a.ready)
 	if err := a.SwitchModel("", "  "); err == nil {
@@ -30,7 +30,7 @@ func TestSwitchModelRefusesWhilePromptInFlight(t *testing.T) {
 		ready:    make(chan struct{}),
 		ops: agentOps{
 			promptInFlight: func(*Agent) bool { return true },
-			switchModel:    func(*Agent, Provider, string) error { t.Fatal("switchModel must not run"); return nil },
+			switchModel:    func(*Agent, Provider, string, SwitchOptions) error { t.Fatal("switchModel must not run"); return nil },
 		},
 	}
 	close(a.ready)
@@ -57,7 +57,7 @@ func TestSwitchModelPublishesSwitchEventAndRecords(t *testing.T) {
 		ready:     make(chan struct{}),
 		eventSubs: map[int64]EventFunc{},
 		ops: agentOps{
-			switchModel: func(_ *Agent, p Provider, model string) error {
+			switchModel: func(_ *Agent, p Provider, model string, _ SwitchOptions) error {
 				sent = append(sent, call{p, model})
 				return nil
 			},
@@ -93,7 +93,7 @@ func TestSwitchModelPublishesSwitchEventAndRecords(t *testing.T) {
 // A native CLI backend changes model only within its provider.
 func TestSwitchModelNativeBackendRefusesProviderChange(t *testing.T) {
 	a := &Agent{provider: ProviderCodex, alive: true, ready: make(chan struct{})}
-	a.ops.switchModel = func(a *Agent, p Provider, _ string) error { return sameProviderSwitch(a, p) }
+	a.ops.switchModel = func(a *Agent, p Provider, _ string, _ SwitchOptions) error { return sameProviderSwitch(a, p) }
 	close(a.ready)
 	err := a.SwitchModel(ProviderClaude, "sonnet")
 	var ce *CapabilityError
@@ -110,7 +110,7 @@ func TestSwitchModelUnsupportedProvider(t *testing.T) {
 		provider: ProviderOllama,
 		alive:    true,
 		ready:    make(chan struct{}),
-		ops:      agentOps{switchModel: func(*Agent, Provider, string) error { return nil }},
+		ops:      agentOps{switchModel: func(*Agent, Provider, string, SwitchOptions) error { return nil }},
 	}
 	close(a.ready)
 	err := a.SwitchModel("", "llama3")
