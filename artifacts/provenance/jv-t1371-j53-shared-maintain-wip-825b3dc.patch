@@ -1,0 +1,24 @@
+diff --git a/sidecar/maintain.ts b/sidecar/maintain.ts
+index 89ff940..4230915 100644
+--- a/sidecar/maintain.ts
++++ b/sidecar/maintain.ts
+@@ -658,13 +658,18 @@ export class Maintenance {
+       // Fail before folding when the chosen compactor has no plan auth (🎯T243).
+       this.#compactorToken(compactor);
+     }
++    // Pending T1371 switch lands between turns: fold from post-turn durable
++    // state so a source prompt that just received STORED is not re-presented.
++    this.history.clearInFlightAssistant();
++    this.persist(agent.state.messages);
++    const switchPhase: Phase = "post_turn";
+     if (window > 0 && shouldCompact(this.contextTokens(agent.state.messages), window, settings)) {
+       const durable = this.history.durableSnapshot();
+       this.history.beginSwitchDurableBackup();
+       const srcProvider = agent.state.model?.provider;
+       let switchDiskCommitAttempted = false;
+       try {
+-        await this.run("switch", "pre_turn", agent.state.messages, {
++        await this.run("switch", switchPhase, agent.state.messages, {
+           window,
+           soft: true,
+           deferPersist: true,
