@@ -6,6 +6,7 @@ package claudia
 import (
 	"context"
 	"errors"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -132,7 +133,7 @@ func TestT244CompactDuringPromptReturnsTurnInFlight(t *testing.T) {
 		defer wg.Done()
 		promptErr = agent.Send("hold open")
 	}()
-	waitForPromptInFlight(t, &f.promptInFlight, 5*time.Second)
+	waitForPromptInFlight(t, &f.promptInFlight)
 	_, compactErr := agent.Compact(ctx, 180_000)
 	close(hold)
 	wg.Wait()
@@ -178,16 +179,16 @@ func TestT244CompactContextCancelSettlesWithoutCommit(t *testing.T) {
 	}
 }
 
-func waitForPromptInFlight(t *testing.T, flying *atomic.Bool, timeout time.Duration) {
+func waitForPromptInFlight(t *testing.T, flying *atomic.Bool) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if flying.Load() {
-			return
+	for !flying.Load() {
+		select {
+		case <-t.Context().Done():
+			t.Fatal("prompt never entered in-flight state")
+		default:
+			runtime.Gosched()
 		}
-		time.Sleep(5 * time.Millisecond)
 	}
-	t.Fatal("prompt never entered in-flight state")
 }
 
 

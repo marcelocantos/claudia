@@ -28,9 +28,10 @@ import type { SandboxPolicy } from "./coding.ts";
 import { withSeatCommand } from "./seat_command.ts";
 import { abortBoundCompact, registerBoundCompact, unregisterBoundCompact } from "./bound_compact_inflight.ts";
 
-/** Serialize only compact vs prompt/steer (🎯T244); abort/load/usage must not wait on a turn. */
+/** Serialize only bound compact (🎯T244). Prompt/steer queue inside the seat agent;
+chaining them here blocked T169 queued auth recovery behind an in-flight prompt handle. */
 function seatCommandSerialized(op: string | undefined): boolean {
-  return op === "compact" || op === "prompt" || op === "steer";
+  return op === "compact";
 }
 
 /** Test-only OMP wire trace (🎯T244 broker fold oracle). */
