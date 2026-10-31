@@ -3,7 +3,7 @@
 // summary when the switch fold fails or is canceled.
 
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { appendFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { compact as engineCompact } from "@oh-my-pi/pi-agent-core";
@@ -278,21 +278,22 @@ describe("switch-time compaction durability (🎯T243)", () => {
     }
   });
 
-  test("viable switch fold refuses when final history.persist append hits ENOSPC", async () => {
+  test("viable switch fold refuses when atomic switch commit rewrite hits ENOSPC", async () => {
     const root = mkdtempSync(join(tmpdir(), "t243-persist-enospc-"));
     try {
       const a = createMockModel({ id: "a", provider: "anthropic", contextWindow: 400_000, handler: () => reply("ok") });
       const b = createMockModel({ id: "b", provider: "openai-codex", contextWindow: 60_000, handler: () => reply("fine") });
       const models = { "anthropic/a": a, "openai-codex/b": b } as Record<string, Model>;
       const store = new SeatStore(root, "worker", "session");
-      const origAppend = store.append.bind(store);
-      let compactionAppendAttempts = 0;
-      store.append = (entries) => {
-        if (entries.some((e) => e.type === "compaction")) {
-          compactionAppendAttempts++;
+      const origRewrite = store.rewrite.bind(store);
+      let switchCommitRewriteAttempts = 0;
+      let baselineComps = 0;
+      store.rewrite = (entries) => {
+        if (compactionCount(entries) > baselineComps) {
+          switchCommitRewriteAttempts++;
           throw new Error("ENOSPC");
         }
-        origAppend(entries);
+        origRewrite(entries);
       };
       const { agent } = durableSeat(root, a as never, models, {
         store,
@@ -300,10 +301,11 @@ describe("switch-time compaction durability (🎯T243)", () => {
       });
       await agent.prompt(marker);
       for (let i = 0; i < 8; i++) await agent.prompt(`${i}: ${big}`);
+      baselineComps = compactionCount(store.load()!);
 
       const beforeCompactions = compactionCount(store.load()!);
       await expect(agent.switchModel("openai-codex", "b", { on: "destination" })).rejects.toThrow(/ENOSPC/);
-      expect(compactionAppendAttempts).toBe(1);
+      expect(switchCommitRewriteAttempts).toBe(1);
       expect(agent.snapshot().model?.id).toBe("a");
       expect(compactionCount(store.load()!)).toBe(beforeCompactions);
       expect(JSON.stringify(store.load())).toContain(marker);
@@ -315,6 +317,106 @@ describe("switch-time compaction durability (🎯T243)", () => {
       const { history } = reloadSeat(root, store, a as never, models, {});
       expect(JSON.stringify(history.rebuild("anthropic"))).toContain(marker);
       expect(JSON.stringify(history.rebuild("anthropic"))).not.toContain(summaryText);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("viable switch fold restores disk after partial compaction tail write then throw", async () => {
+    const root = mkdtempSync(join(tmpdir(), "t243-partial-tail-"));
+    try {
+      const a = createMockModel({ id: "a", provider: "anthropic", contextWindow: 400_000, handler: () => reply("ok") });
+      const b = createMockModel({ id: "b", provider: "openai-codex", contextWindow: 60_000, handler: () => reply("fine") });
+      const models = { "anthropic/a": a, "openai-codex/b": b } as Record<string, Model>;
+      const store = new SeatStore(root, "worker", "session");
+      const origRewrite = store.rewrite.bind(store);
+      let injectedPartialWrites = 0;
+      let baselineComps = 0;
+      store.rewrite = (entries) => {
+        if (compactionCount(entries) > baselineComps) {
+          injectedPartialWrites++;
+          const line = JSON.stringify(entries.filter((e) => e.type === "compaction").at(-1)) + "\n";
+          appendFileSync(store.path, line.slice(0, Math.max(20, Math.floor(line.length * 0.4))));
+          throw new Error("ENOSPC");
+        }
+        origRewrite(entries);
+      };
+      const { agent } = durableSeat(root, a as never, models, {
+        store,
+        preserve: "Keep release notes.",
+        pins: ["PELICAN-PARTIAL-7"],
+        maintenance: { compactImpl: engineCompact },
+      });
+      await agent.prompt(`PIN: PELICAN-PARTIAL-7\n${marker}`);
+      for (let i = 0; i < 8; i++) await agent.prompt(`${i}: ${big}`);
+      baselineComps = compactionCount(store.load()!);
+
+      const beforeCompactions = compactionCount(store.load()!);
+      await expect(agent.switchModel("openai-codex", "b", { on: "destination" })).rejects.toThrow(/ENOSPC/);
+      expect(injectedPartialWrites).toBe(1);
+      expect(agent.snapshot().model?.id).toBe("a");
+      expect(compactionCount(store.load()!)).toBe(beforeCompactions);
+      expect(JSON.stringify(store.load())).toContain(marker);
+      expect(JSON.stringify(store.load())).toContain("PELICAN-PARTIAL-7");
+
+      const { history } = reloadSeat(root, store, a as never, models, {
+        preserve: "Keep release notes.",
+        pins: ["PELICAN-PARTIAL-7"],
+      });
+      const rebuilt = JSON.stringify(history.rebuild("anthropic"));
+      expect(rebuilt).toContain(marker);
+      expect(rebuilt).toContain("PELICAN-PARTIAL-7");
+      expect(rebuilt).not.toContain(summaryText);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("viable switch fold restores disk after complete compaction line append then throw", async () => {
+    const root = mkdtempSync(join(tmpdir(), "t243-complete-line-"));
+    try {
+      const a = createMockModel({ id: "a", provider: "anthropic", contextWindow: 400_000, handler: () => reply("ok") });
+      const b = createMockModel({ id: "b", provider: "openai-codex", contextWindow: 60_000, handler: () => reply("fine") });
+      const models = { "anthropic/a": a, "openai-codex/b": b } as Record<string, Model>;
+      const store = new SeatStore(root, "worker", "session");
+      const origRewrite = store.rewrite.bind(store);
+      let injectedCompleteLines = 0;
+      let baselineComps = 0;
+      store.rewrite = (entries) => {
+        if (compactionCount(entries) > baselineComps) {
+          injectedCompleteLines++;
+          const comp = entries.filter((e) => e.type === "compaction").at(-1)!;
+          appendFileSync(store.path, JSON.stringify(comp) + "\n");
+          throw new Error("ENOSPC");
+        }
+        origRewrite(entries);
+      };
+      const { agent } = durableSeat(root, a as never, models, {
+        store,
+        preserve: "Keep integration notes verbatim.",
+        pins: ["COMPLETE-LINE-PIN"],
+        maintenance: { compactImpl: engineCompact },
+      });
+      await agent.prompt(`PIN: COMPLETE-LINE-PIN\n${marker}`);
+      for (let i = 0; i < 8; i++) await agent.prompt(`${i}: ${big}`);
+      baselineComps = compactionCount(store.load()!);
+
+      const beforeCompactions = compactionCount(store.load()!);
+      await expect(agent.switchModel("openai-codex", "b", { on: "destination" })).rejects.toThrow(/ENOSPC/);
+      expect(injectedCompleteLines).toBe(1);
+      expect(agent.snapshot().model?.id).toBe("a");
+      expect(compactionCount(store.load()!)).toBe(beforeCompactions);
+      expect(JSON.stringify(store.load())).toContain(marker);
+      expect(JSON.stringify(store.load())).not.toContain(summaryText);
+
+      const { history } = reloadSeat(root, store, a as never, models, {
+        preserve: "Keep integration notes verbatim.",
+        pins: ["COMPLETE-LINE-PIN"],
+      });
+      const rebuilt = JSON.stringify(history.rebuild("anthropic"));
+      expect(rebuilt).toContain(marker);
+      expect(rebuilt).toContain("COMPLETE-LINE-PIN");
+      expect(rebuilt).not.toContain(summaryText);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

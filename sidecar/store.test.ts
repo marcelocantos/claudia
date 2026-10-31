@@ -93,7 +93,7 @@ describe("durable seat conversations (🎯T151)", () => {
     expect(new ReceiptJournal(again).pending().map(p => p.receipt.request_id)).toEqual(["A", "B"]);
   });
 
-  test("append that throws leaves the on-disk journal unchanged", () => {
+  test("append hook that throws before writing leaves the on-disk journal unchanged", () => {
     const store = new SeatStore(tempDir(), "po", "s1");
     store.rewrite([
       {
@@ -121,6 +121,32 @@ describe("durable seat conversations (🎯T151)", () => {
     ).toThrow(/ENOSPC/);
     expect(readFileSync(store.path)).toEqual(before);
     expect(store.load()?.some((e) => e.type === "compaction")).toBe(false);
+  });
+
+  test("append partial payload leaves a torn tail that load repairs without a compaction row", () => {
+    const store = new SeatStore(tempDir(), "po", "s1");
+    store.rewrite([
+      {
+        type: "message",
+        id: "m1",
+        parentId: null,
+        timestamp: new Date().toISOString(),
+        message: { role: "user", content: [{ type: "text", text: "hello" }], timestamp: Date.now() },
+      } as SessionEntry,
+    ]);
+    const before = readFileSync(store.path);
+    const line = JSON.stringify({
+      type: "compaction",
+      id: "c1",
+      parentId: "m1",
+      timestamp: new Date().toISOString(),
+      summary: "fold",
+    } satisfies Partial<SessionEntry>);
+    appendFileSync(store.path, line.slice(0, Math.floor(line.length * 0.5)));
+    const loaded = store.load()!;
+    expect(loaded.some((e) => e.type === "compaction")).toBe(false);
+    expect(JSON.stringify(loaded)).toContain("hello");
+    expect(readFileSync(store.path).length).toBeGreaterThanOrEqual(before.length);
   });
 
   test("a reloaded seat resumes its conversation and its compaction, without re-summarizing", async () => {

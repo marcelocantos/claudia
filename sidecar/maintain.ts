@@ -159,8 +159,7 @@ function entryPins(c: CompactionEntry | undefined): string[] {
 
 // History is the seat's conversation as engine entries, on one branch.
 // HistoryRollbackError is raised when a durable rollback rewrite fails after
-// the store was already mutated. Switch-time folds defer disk commit until the
-// switch is viable, so refused switches roll back in memory only (🎯T243).
+// the store was already mutated. Callers must not treat the switch as accepted.
 export class HistoryRollbackError extends Error {
   readonly durableUncertain = true as const;
 
@@ -263,6 +262,17 @@ export class History {
       this.store.append(this.entries.slice(this.#persisted));
     }
     this.#persisted = this.entries.length;
+  }
+
+  // persistSwitchCommit replaces the whole journal atomically (tmp+rename).
+  // Switch viability must not use append for the trial fold commit: append can
+  // leave a partial or complete compaction line while the switch is still refused.
+  persistSwitchCommit(messages?: readonly AgentMessage[]): void {
+    if (messages) this.sync(messages);
+    if (!this.store) return;
+    this.store.rewrite(this.entries);
+    this.#persisted = this.entries.length;
+    this.#dirty = false;
   }
 
   // Execution facts share the conversation's durable entry sequence but
@@ -606,6 +616,7 @@ export class Maintenance {
     if (window > 0 && shouldCompact(this.contextTokens(agent.state.messages), window, settings)) {
       const durable = this.history.durableSnapshot();
       const srcProvider = agent.state.model?.provider;
+      let switchDiskCommitAttempted = false;
       try {
         await this.run("switch", "pre_turn", agent.state.messages, {
           window,
@@ -624,10 +635,11 @@ export class Maintenance {
             `switch refused: the conversation (${this.contextTokens(agent.state.messages)} tokens) does not fit ${next.provider}/${next.id} (${window}) even after compaction`,
           );
         }
-        this.history.persist();
+        switchDiskCommitAttempted = true;
+        this.history.persistSwitchCommit();
       } catch (err) {
         try {
-          this.history.rollbackDurable(durable, { memoryOnly: true });
+          this.history.rollbackDurable(durable, { memoryOnly: !switchDiskCommitAttempted });
         } catch (rollbackErr) {
           throw rollbackErr;
         }
