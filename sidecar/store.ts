@@ -166,8 +166,15 @@ export class SeatStore {
     renameSync(tmp, this.path);
   }
 
+  // Best-effort: a failed unlink must not reject a switch that already committed
+  // or mask rollback errors from the try/catch above it (🎯T243).
   clearSwitchBackup(): void {
     const backup = this.switchBackupPath();
-    if (existsSync(backup)) unlinkSync(backup);
+    if (!existsSync(backup)) return;
+    try {
+      unlinkSync(backup);
+    } catch (err) {
+      console.error(`sidecar: ${backup}: switch backup cleanup failed: ${String(err)}`);
+    }
   }
 }

@@ -689,7 +689,11 @@ export class Maintenance {
         if (rollbackErr) throw rollbackErr;
         throw err;
       } finally {
-        this.history.clearSwitchDurableBackup();
+        try {
+          this.history.clearSwitchDurableBackup();
+        } catch {
+          // Best-effort backup cleanup must not reject a committed switch or mask rollback (🎯T243).
+        }
       }
     }
     const from = agent.state.model?.provider;

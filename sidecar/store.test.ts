@@ -152,6 +152,42 @@ describe("durable seat conversations (🎯T151)", () => {
     store.clearSwitchBackup();
   });
 
+  test("beginSwitchBackup replaces a stale backup left by failed cleanup", () => {
+    const store = new SeatStore(tempDir(), "po", "s1");
+    store.rewrite([
+      {
+        type: "message",
+        id: "m1",
+        parentId: null,
+        timestamp: new Date().toISOString(),
+        message: { role: "user", content: [{ type: "text", text: "before fold" }], timestamp: Date.now() },
+      } as SessionEntry,
+    ]);
+    store.beginSwitchBackup();
+    store.rewrite([
+      {
+        type: "message",
+        id: "m1",
+        parentId: null,
+        timestamp: new Date().toISOString(),
+        message: { role: "user", content: [{ type: "text", text: "before fold" }], timestamp: Date.now() },
+      } as SessionEntry,
+      {
+        type: "compaction",
+        id: "c1",
+        parentId: "m1",
+        timestamp: new Date().toISOString(),
+        summary: summaryText,
+      } as SessionEntry,
+    ]);
+    writeFileSync(store.switchBackupPath(), "stale-pre-success-journal\n");
+    store.beginSwitchBackup();
+    const backup = readFileSync(store.switchBackupPath(), "utf8");
+    expect(backup).toContain(summaryText);
+    expect(backup).not.toContain("stale-pre-success-journal");
+    store.clearSwitchBackup();
+  });
+
   test("append partial payload leaves a torn tail that load repairs without a compaction row", () => {
     const store = new SeatStore(tempDir(), "po", "s1");
     store.rewrite([

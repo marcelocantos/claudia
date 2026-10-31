@@ -3,7 +3,7 @@
 // summary when the switch fold fails or is canceled.
 
 import { describe, expect, test } from "bun:test";
-import { appendFileSync, mkdtempSync, rmSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { compact as engineCompact } from "@oh-my-pi/pi-agent-core";
@@ -476,6 +476,103 @@ describe("switch-time compaction durability (🎯T243)", () => {
       expect(rebuilt).toContain(marker);
       expect(rebuilt).toContain("DOUBLE-ENOSPC-PIN");
       expect(rebuilt).not.toContain(summaryText);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("successful switch fold survives switch-backup cleanup unlink failure", async () => {
+    const root = mkdtempSync(join(tmpdir(), "t243-cleanup-success-"));
+    try {
+      const a = createMockModel({ id: "a", provider: "anthropic", contextWindow: 400_000, handler: () => reply("ok") });
+      const b = createMockModel({ id: "b", provider: "openai-codex", contextWindow: 60_000, handler: () => reply("fine") });
+      const models = { "anthropic/a": a, "openai-codex/b": b } as Record<string, Model>;
+      const store = new SeatStore(root, "worker", "session");
+      const origClear = store.clearSwitchBackup.bind(store);
+      store.clearSwitchBackup = () => {
+        throw new Error("EACCES unlink");
+      };
+      const { agent } = durableSeat(root, a as never, models, {
+        store,
+        preserve: "Keep release notes.",
+        pins: ["CLEANUP-SUCCESS-PIN"],
+        maintenance: { compactImpl: engineCompact },
+      });
+      await agent.prompt(`PIN: CLEANUP-SUCCESS-PIN\n${marker}`);
+      for (let i = 0; i < 8; i++) await agent.prompt(`${i}: ${big}`);
+
+      const beforeCompactions = compactionCount(store.load()!);
+      await agent.switchModel("openai-codex", "b", { on: "destination" });
+      expect(agent.snapshot().model?.id).toBe("b");
+      expect(compactionCount(store.load()!)).toBe(beforeCompactions + 1);
+
+      store.clearSwitchBackup = origClear;
+      const { history } = reloadSeat(root, store, b as never, models, {
+        preserve: "Keep release notes.",
+        pins: ["CLEANUP-SUCCESS-PIN"],
+      });
+      const rebuilt = JSON.stringify(history.rebuild("openai-codex"));
+      expect(rebuilt).toContain("CLEANUP-SUCCESS-PIN");
+      expect(rebuilt).toContain(summaryText);
+      expect(rebuilt).not.toContain(marker);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("failed switch fold with durableUncertain keeps HistoryRollbackError when cleanup unlink fails", async () => {
+    const root = mkdtempSync(join(tmpdir(), "t243-cleanup-rollback-"));
+    try {
+      const a = createMockModel({ id: "a", provider: "anthropic", contextWindow: 400_000, handler: () => reply("ok") });
+      const b = createMockModel({ id: "b", provider: "openai-codex", contextWindow: 60_000, handler: () => reply("fine") });
+      const models = { "anthropic/a": a, "openai-codex/b": b } as Record<string, Model>;
+      const store = new SeatStore(root, "worker", "session");
+      const origRewrite = store.rewrite.bind(store);
+      const origRestore = store.restoreSwitchBackup.bind(store);
+      let diskFull = false;
+      let rewriteCalls = 0;
+      store.rewrite = (entries) => {
+        if (!diskFull) {
+          origRewrite(entries);
+          return;
+        }
+        rewriteCalls++;
+        if (rewriteCalls === 1) {
+          appendFileSync(
+            store.path,
+            `${JSON.stringify({
+              type: "compaction",
+              id: "leaked-compaction",
+              parentId: null,
+              timestamp: new Date().toISOString(),
+              summary: summaryText,
+            })}\n`,
+          );
+        }
+        throw new Error("ENOSPC");
+      };
+      store.restoreSwitchBackup = () => {
+        throw new Error("ENOSPC");
+      };
+      const origClear = store.clearSwitchBackup.bind(store);
+      store.clearSwitchBackup = () => {
+        throw new Error("EACCES unlink");
+      };
+      const { agent } = durableSeat(root, a as never, models, {
+        store,
+        maintenance: { compactImpl: engineCompact },
+      });
+      await agent.prompt(marker);
+      for (let i = 0; i < 8; i++) await agent.prompt(`${i}: ${big}`);
+      diskFull = true;
+
+      await expect(agent.switchModel("openai-codex", "b", { on: "destination" })).rejects.toMatchObject({
+        name: "HistoryRollbackError",
+        durableUncertain: true,
+      });
+      expect(agent.snapshot().model?.id).toBe("a");
+      store.clearSwitchBackup = origClear;
+      store.restoreSwitchBackup = origRestore;
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
