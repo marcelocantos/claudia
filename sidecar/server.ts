@@ -26,6 +26,11 @@ import { HistoricalUsageReader } from "./usage-reader.ts";
 import { agentPauseGate } from "@oh-my-pi/pi-agent-core";
 import type { SandboxPolicy } from "./coding.ts";
 import { withSeatCommand } from "./seat_command.ts";
+
+/** Serialize only compact vs prompt/steer (🎯T244); abort/load/usage must not wait on a turn. */
+function seatCommandSerialized(op: string | undefined): boolean {
+  return op === "compact" || op === "prompt" || op === "steer";
+}
 import { abortBoundCompact, registerBoundCompact, unregisterBoundCompact } from "./bound_compact_inflight.ts";
 
 const banned = [
@@ -238,7 +243,9 @@ const server = createServer((socket) => {
         write({ type: "tool_call", call_id: callId, name, text: args });
         return answer;
       };
-      void withSeatCommand(seat, () => handle(msg, seat, write, callTool, calls, disconnected.signal)).catch((err: unknown) => {
+      const run = () => handle(msg, seat, write, callTool, calls, disconnected.signal);
+      const dispatch = seatCommandSerialized(msg.op) ? withSeatCommand(seat, run) : run();
+      void dispatch.catch((err: unknown) => {
         write(errorEvent(msg, seat, err instanceof Error ? err.message : String(err), {
           turn_id: turnOf(err),
           reason: err instanceof Error && "reason" in err && typeof err.reason === "string" ? err.reason : undefined,

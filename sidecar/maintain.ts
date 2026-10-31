@@ -936,7 +936,10 @@ export class Maintenance {
         this.#commit(result, method, codex);
 =======
         if (abort.signal.aborted) {
-          throw Object.assign(new Error("compact canceled before commit"), { reason: "compact_canceled" });
+          if (target.compactOn === "bound" || target.cancel) {
+            throw Object.assign(new Error("compact canceled before commit"), { reason: "compact_canceled" });
+          }
+          return false;
         }
         this.#commit(result, method, codex);
 >>>>>>> 173035f (Fix T244 compact cancel settlement via OOB abort (T244).)
@@ -954,7 +957,7 @@ export class Maintenance {
       }
       return false;
     } catch (err) {
-      if (abort.signal.aborted) {
+      if (abort.signal.aborted && (target.compactOn === "bound" || target.cancel)) {
         throw Object.assign(new Error("compact canceled"), { reason: "compact_canceled" });
       }
       throw err;

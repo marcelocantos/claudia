@@ -37,6 +37,9 @@ type fakeSidecar struct {
 	compactDelay time.Duration
 	compactMu     sync.Mutex
 	compactCancels map[string]context.CancelFunc
+	compactAbortsMu sync.Mutex
+	compactAborts   []string
+	compactSilent   bool
 }
 
 func (f *fakeSidecar) loaded() []omp.Message {
@@ -99,6 +102,9 @@ func startFakeSidecar(t *testing.T, reply []string) *fakeSidecar {
 					_, _ = c.Write(append(b, '\n'))
 				}
 			case omp.OpCompactAbort:
+				f.compactAbortsMu.Lock()
+				f.compactAborts = append(f.compactAborts, msg.RequestID)
+				f.compactAbortsMu.Unlock()
 				f.compactMu.Lock()
 				if cancel := f.compactCancels[msg.RequestID]; cancel != nil {
 					cancel()
@@ -124,6 +130,10 @@ func startFakeSidecar(t *testing.T, reply []string) *fakeSidecar {
 						delete(f.compactCancels, msg.RequestID)
 						f.compactMu.Unlock()
 					}()
+					if f.compactSilent {
+						<-ctx.Done()
+						return
+					}
 					if f.compactDelay > 0 {
 						select {
 						case <-time.After(f.compactDelay):
