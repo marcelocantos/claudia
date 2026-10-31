@@ -158,8 +158,9 @@ function entryPins(c: CompactionEntry | undefined): string[] {
 }
 
 // History is the seat's conversation as engine entries, on one branch.
-// HistoryRollbackError is raised when switch-time rollback cannot rewrite the
-// seat store. Durable state may still contain a switch fold that was refused.
+// HistoryRollbackError is raised when a durable rollback rewrite fails after
+// the store was already mutated. Switch-time folds defer disk commit until the
+// switch is viable, so refused switches roll back in memory only (🎯T243).
 export class HistoryRollbackError extends Error {
   readonly durableUncertain = true as const;
 
@@ -220,12 +221,11 @@ export class History {
     return JSON.parse(JSON.stringify(this.entries)) as SessionEntry[];
   }
 
-  // rollbackDurable restores a snapshot and rewrites the store when present.
-  // The store is updated before memory so a failed rewrite leaves no mismatch
-  // where memory was rolled back but disk still holds the fold.
-  rollbackDurable(snapshot: SessionEntry[]): void {
+  // rollbackDurable restores a snapshot. memoryOnly skips rewrite when the
+  // trial fold was never persisted (switch refused before viability).
+  rollbackDurable(snapshot: SessionEntry[], options: { memoryOnly?: boolean } = {}): void {
     const restored = JSON.parse(JSON.stringify(snapshot)) as SessionEntry[];
-    if (this.store) {
+    if (this.store && !options.memoryOnly) {
       try {
         this.store.rewrite(restored);
       } catch (err) {
@@ -610,6 +610,7 @@ export class Maintenance {
         await this.run("switch", "pre_turn", agent.state.messages, {
           window,
           soft: true,
+          deferPersist: true,
           compactor: compactor ? { model: compactor, token: () => this.#compactorToken(compactor!) } : undefined,
           compactMeta: {
             on,
@@ -623,9 +624,10 @@ export class Maintenance {
             `switch refused: the conversation (${this.contextTokens(agent.state.messages)} tokens) does not fit ${next.provider}/${next.id} (${window}) even after compaction`,
           );
         }
+        this.history.persist();
       } catch (err) {
         try {
-          this.history.rollbackDurable(durable);
+          this.history.rollbackDurable(durable, { memoryOnly: true });
         } catch (rollbackErr) {
           throw rollbackErr;
         }
@@ -726,6 +728,7 @@ export class Maintenance {
     target: {
       window?: number;
       soft?: boolean;
+      deferPersist?: boolean;
       compactor?: { model: Model; token: () => string };
       compactMeta?: { on: SwitchCompactOn; provider?: string; model?: string; window: number };
     } = {},
@@ -810,7 +813,7 @@ export class Maintenance {
           ]),
         ];
         if (pins.length > 0) result = { ...result, details: { ...(result.details as object | undefined), pins } };
-        this.#commit(result, method, codex);
+        this.#commit(result, method, codex, { persist: !target.deferPersist });
         const after = this.storedTokens();
         const progressed =
           reason === "overflow"
@@ -829,13 +832,13 @@ export class Maintenance {
     }
   }
 
-  #commit(result: CompactionResult, method: Method, codex: object): void {
+  #commit(result: CompactionResult, method: Method, codex: object, options: { persist?: boolean } = {}): void {
     const agent = this.#host.agent;
     const entry = this.history.appendCompaction(result, method);
     agent.replaceMessages(this.history.rebuild(this.#provider()));
     this.#compactedAt = Date.now();
     entry.tokensAfter = this.storedTokens();
-    this.history.persist();
+    if (options.persist !== false) this.history.persist();
     // A Codex seat's server-side history no longer matches what is sent.
     resetOpenAICodexHistoryAfterCompaction({
       providerSessionState: agent.providerSessionState,
