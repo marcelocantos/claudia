@@ -867,9 +867,28 @@ export class Maintenance {
         phase,
         compact_reason: reason,
       });
-    const nativeEligible = this.#host.nativeEligible ?? shouldUseProviderNativeCompaction;
+    const nativeEligible = process.env.CLAUDIA_TEST_COMPACT_SOFT_ONLY === "1"
+      ? () => false
+      : (this.#host.nativeEligible ?? shouldUseProviderNativeCompaction);
     const methods: Method[] = !target.soft && nativeEligible(model, methodSettings("remote")) ? ["remote", "soft"] : ["soft"];
-    const compactImpl = this.#host.compactImpl ?? engineCompact;
+    let compactImpl = this.#host.compactImpl ?? engineCompact;
+    if (process.env.CLAUDIA_TEST_COMPACT_HOLD === "1") {
+      const inner = compactImpl;
+      compactImpl = async (prep, model, token, instructions, signal, opts) => {
+        await new Promise<void>((_, reject) => {
+          if (signal?.aborted) {
+            reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+            return;
+          }
+          signal?.addEventListener(
+            "abort",
+            () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })),
+            { once: true },
+          );
+        });
+        return inner(prep, model, token, instructions, signal, opts);
+      };
+    }
     const token = target.compactor?.token ?? this.#host.token;
     const abort = new AbortController();
     if (target.cancel) {
@@ -930,19 +949,13 @@ export class Maintenance {
           ]),
         ];
         if (pins.length > 0) result = { ...result, details: { ...(result.details as object | undefined), pins } };
-<<<<<<< HEAD
-        this.#commit(result, method, codex, { persist: !target.deferPersist });
-||||||| parent of 173035f (Fix T244 compact cancel settlement via OOB abort (T244).)
-        this.#commit(result, method, codex);
-=======
         if (abort.signal.aborted) {
           if (target.compactOn === "bound" || target.cancel) {
             throw Object.assign(new Error("compact canceled before commit"), { reason: "compact_canceled" });
           }
           return false;
         }
-        this.#commit(result, method, codex);
->>>>>>> 173035f (Fix T244 compact cancel settlement via OOB abort (T244).)
+        this.#commit(result, method, codex, { persist: !target.deferPersist });
         const after = this.storedTokens();
         const progressed =
           reason === "overflow"
@@ -957,7 +970,7 @@ export class Maintenance {
       }
       return false;
     } catch (err) {
-      if (abort.signal.aborted && (target.compactOn === "bound" || target.cancel)) {
+      if (abort.signal.aborted) {
         throw Object.assign(new Error("compact canceled"), { reason: "compact_canceled" });
       }
       throw err;

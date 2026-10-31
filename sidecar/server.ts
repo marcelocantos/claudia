@@ -11,7 +11,7 @@
 
 import { switchOnLoad } from "./loadswitch.ts";
 import { createServer } from "node:net";
-import { unlinkSync } from "node:fs";
+import { unlinkSync, appendFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createSeatAgent, turnOf, type HostTool, type SeatAgent } from "./seat.ts";
 import { defaultWriter, spoolReceipt } from "./spool.ts";
@@ -26,12 +26,26 @@ import { HistoricalUsageReader } from "./usage-reader.ts";
 import { agentPauseGate } from "@oh-my-pi/pi-agent-core";
 import type { SandboxPolicy } from "./coding.ts";
 import { withSeatCommand } from "./seat_command.ts";
+import { abortBoundCompact, registerBoundCompact, unregisterBoundCompact } from "./bound_compact_inflight.ts";
 
 /** Serialize only compact vs prompt/steer (🎯T244); abort/load/usage must not wait on a turn. */
 function seatCommandSerialized(op: string | undefined): boolean {
   return op === "compact" || op === "prompt" || op === "steer";
 }
-import { abortBoundCompact, registerBoundCompact, unregisterBoundCompact } from "./bound_compact_inflight.ts";
+
+/** Test-only OMP wire trace (🎯T244 broker fold oracle). */
+function traceOMP(msg: Line) {
+  const path = process.env.CLAUDIA_TEST_OMP_TRACE;
+  if (!path || !msg.op) return;
+  try {
+    appendFileSync(
+      path,
+      JSON.stringify({ op: msg.op, request_id: msg.request_id ?? "", seat: msg.seat ?? "" }) + "\n",
+    );
+  } catch {
+    /* test-only */
+  }
+}
 
 const banned = [
   "ANTHROPIC_API_KEY",
@@ -225,6 +239,7 @@ const server = createServer((socket) => {
       buf = buf.slice(nl + 1);
       let msg: Line;
       try { msg = JSON.parse(raw); } catch { continue; }
+      traceOMP(msg);
       const seat = msg.seat ?? "";
       if (msg.op === "compact_abort") {
         if (msg.request_id && abortBoundCompact(seat, msg.request_id)) {

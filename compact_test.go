@@ -146,7 +146,7 @@ func TestT244CompactDuringPromptReturnsTurnInFlight(t *testing.T) {
 
 func TestT244CompactContextCancelSettlesWithoutCommit(t *testing.T) {
 	f := startFakeSidecar(t, []string{`{"type":"turn_end","text":"ok"}`})
-	f.compactDelay = 2 * time.Second
+	f.setCompactBehavior(false, 2*time.Second)
 	ctx := context.Background()
 	agent, err := startDirectContext(ctx, Config{
 		Provider: Provider(omp.Anthropic), Name: "jv-compact-cancel", Model: "claude-sonnet-4-20250514",
@@ -195,7 +195,7 @@ func waitForPromptInFlight(t *testing.T, flying *atomic.Bool, timeout time.Durat
 
 func TestT244CompactCancelSendsCompactAbort(t *testing.T) {
 	f := startFakeSidecar(t, []string{`{"type":"turn_end","text":"ok"}`})
-	f.compactDelay = 30 * time.Second
+	f.setCompactBehavior(false, 30*time.Second)
 	ctx := context.Background()
 	agent, err := startDirectContext(ctx, Config{
 		Provider: Provider(omp.Anthropic), Name: "jv-compact-abort-wire", Model: "claude-sonnet-4-20250514",
@@ -232,7 +232,7 @@ func TestT244CompactCancelSendsCompactAbort(t *testing.T) {
 
 func TestT244CompactUncertainBlocksSendUntilRecovery(t *testing.T) {
 	f := startFakeSidecar(t, []string{`{"type":"turn_end","text":"ok"}`})
-	f.compactSilent = true
+	f.setCompactBehavior(true, 0)
 	ctx := context.Background()
 	agent, err := startDirectContext(ctx, Config{
 		Provider: Provider(omp.Anthropic), Name: "jv-compact-uncertain", Model: "claude-sonnet-4-20250514",
@@ -262,8 +262,7 @@ func TestT244CompactUncertainBlocksSendUntilRecovery(t *testing.T) {
 	if err := agent.Send("blocked"); !errors.Is(err, ErrCompactUncertain) {
 		t.Fatalf("Send while uncertain = %v, want ErrCompactUncertain", err)
 	}
-	f.compactSilent = false
-	f.compactDelay = 0
+	f.setCompactBehavior(false, 0)
 	if _, err := agent.Compact(ctx, 180_000); err != nil {
 		t.Fatalf("recovery Compact = %v", err)
 	}
