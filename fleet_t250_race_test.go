@@ -65,15 +65,10 @@ func TestFleetCloseDoesNotWaitOnAHungInterrupt(t *testing.T) {
 	}
 	s.sendGate <- struct{}{}
 	<-s.inInt // deferred interrupt now hangs
-	done := make(chan struct{})
-	go func() { r.k.Close(); close(done) }()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Errorf("Close blocked on a hung deferred interrupt")
-		close(s.intGate)
-		<-done
-	}
+	t.Cleanup(func() { close(s.intGate) })
+	// A Close that waited on the interrupt would never return; go test's
+	// -timeout is the clock.
+	r.k.Close()
 }
 
 // Send fails; an interrupt lands in the gap before the turn is judged.
