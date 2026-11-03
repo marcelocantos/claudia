@@ -74,9 +74,6 @@ const (
 	// fleetMaxDeaths is how many times in a row a seat can die mid-work, with no
 	// turn finished between, before its agent retires.
 	fleetMaxDeaths = 3
-	// fleetMaxResumes is how many failed tries to reattach to a conversation come
-	// before starting the agent on a fresh one.
-	fleetMaxResumes = 3
 	// fleetRetryMax caps the wait between tries to bring an agent's seat back.
 	fleetRetryMax = time.Minute
 	fleetRetryMin = time.Second
@@ -93,8 +90,12 @@ var (
 	errFleetClosed  = errors.New("the fleet kernel is shut down")
 
 	// ErrFleetSeatHeld means something outside the fleet currently forbids this
-	// seat. The kernel keeps trying, and it does not count as a failure.
+	// seat. The kernel keeps trying.
 	ErrFleetSeatHeld = errors.New("the consumer's fleet policy holds this seat")
+	// ErrFleetConversationLost means the provider says a seat's conversation can
+	// never be resumed. Only this makes the kernel start the agent afresh: any
+	// other failure may pass, and a fresh start would throw away work.
+	ErrFleetConversationLost = errors.New("the seat's conversation cannot be resumed")
 )
 
 // fleetNameValid reports whether a fleet or agent name is acceptable.
@@ -293,10 +294,13 @@ type FleetKernel struct {
 	// reviving holds agents whose seat is being brought back. Unlike a first
 	// start, nobody is waiting on one, so it can be stopped.
 	reviving map[string]bool
-	timers   map[string]*time.Timer
-	logs     map[string]*fleetLog
-	changed  chan struct{}
-	closed   bool
+	// reviveStop cancels a revive's start in progress, so a stop need not wait
+	// for a slow seat to finish starting.
+	reviveStop map[string]context.CancelFunc
+	timers     map[string]*time.Timer
+	logs       map[string]*fleetLog
+	changed    chan struct{}
+	closed     bool
 }
 
 func fleetKey(fleet, name string) string { return fleet + "/" + name }
@@ -314,13 +318,14 @@ func OpenFleetKernel(args *FleetKernelArgs) (*FleetKernel, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	k := &FleetKernel{
 		dir: args.Dir, start: args.Start, discard: args.Discard, spacing: args.ResumeSpacing, logf: args.Logger, ctx: ctx, cancel: cancel,
-		state:    fleetState{Version: fleetStateVersion, Fleets: map[string]*fleetGroupState{}},
-		running:  map[string]*fleetRuntime{},
-		starting: map[string]bool{},
-		reviving: map[string]bool{},
-		timers:   map[string]*time.Timer{},
-		logs:     map[string]*fleetLog{},
-		changed:  make(chan struct{}),
+		state:      fleetState{Version: fleetStateVersion, Fleets: map[string]*fleetGroupState{}},
+		running:    map[string]*fleetRuntime{},
+		starting:   map[string]bool{},
+		reviving:   map[string]bool{},
+		reviveStop: map[string]context.CancelFunc{},
+		timers:     map[string]*time.Timer{},
+		logs:       map[string]*fleetLog{},
+		changed:    make(chan struct{}),
 	}
 	if k.logf == nil {
 		k.logf = func(string, ...any) {}
@@ -644,7 +649,7 @@ func (k *FleetKernel) revive(fleet string, a *fleetAgentState, deaths int, delay
 	k.reviving[key] = true
 	k.mu.Unlock()
 
-	failures, told := 0, false
+	fresh, told := false, false
 	wait := k.retry
 	for {
 		k.mu.Lock()
@@ -668,10 +673,16 @@ func (k *FleetKernel) revive(fleet string, a *fleetAgentState, deaths int, delay
 		}
 
 		// An agent with no conversation yet has nothing to resume.
-		resume := briefed && failures < fleetMaxResumes
-		seat, err := k.start(k.ctx, k.specFor(fleet, a, resume))
+		resume := briefed && !fresh
+		attempt, cancel := context.WithCancel(k.ctx)
+		k.mu.Lock()
+		k.reviveStop[key] = cancel
+		k.mu.Unlock()
+		seat, err := k.start(attempt, k.specFor(fleet, a, resume))
+		cancel()
 
 		k.mu.Lock()
+		delete(k.reviveStop, key)
 		if k.closed {
 			// A seat that did start keeps running for the next kernel.
 			k.mu.Unlock()
@@ -691,8 +702,14 @@ func (k *FleetKernel) revive(fleet string, a *fleetAgentState, deaths int, delay
 			k.mu.Unlock()
 			return
 		}
-		if !errors.Is(err, ErrFleetSeatHeld) {
-			failures++
+		if a.Stopped {
+			// A stop cancelled this start. The loop retires it next.
+			k.mu.Unlock()
+			continue
+		}
+		if errors.Is(err, ErrFleetConversationLost) {
+			fresh = true
+			wait = k.retry
 		}
 		k.logf("fleet: cannot bring seat back", "fleet", fleet, "agent", a.Name, "err", err)
 		if !told {
@@ -1022,6 +1039,9 @@ func (k *FleetKernel) Stop(fleet, caller, name string) error {
 	a.Stopped = true
 	if rt == nil {
 		// Its revive loop notices and retires it.
+		if cancel := k.reviveStop[key]; cancel != nil {
+			cancel()
+		}
 		k.eventLocked(fleet, &FleetEvent{Kind: FleetEventStop, Agent: name, Root: a.Root, Parent: caller})
 		if err := k.saveLocked(); err != nil {
 			k.logf("fleet: save after stop", "fleet", fleet, "agent", name, "err", err)
@@ -1111,6 +1131,13 @@ func (k *FleetKernel) Shutdown(ctx context.Context, fleet string) error {
 	stopCtx, cancel := context.WithTimeout(ctx, fleetStopWait)
 	defer cancel()
 	if err := k.stopAgents(stopCtx, fleet, func(*fleetAgentState) bool { return true }); err != nil {
+		// Not shut down after all, so it takes agents again.
+		k.mu.Lock()
+		if group := k.state.Fleets[fleet]; group != nil {
+			group.Closing = false
+			_ = k.saveLocked()
+		}
+		k.mu.Unlock()
 		return err
 	}
 	k.mu.Lock()
@@ -1257,6 +1284,10 @@ func (k *FleetKernel) eventLocked(fleet string, e *FleetEvent) {
 	}
 	log.seq++
 	e.Seq = log.seq
+	// Every field that can carry outside text is bounded, so one event always
+	// fits a read.
+	e.Text = boundFleetText(e.Text)
+	e.Cause = boundFleetText(e.Cause)
 	e.At = time.Now().UTC()
 	raw, err := json.Marshal(e)
 	if err == nil {

@@ -358,7 +358,8 @@ func TestFleetGrantNamesAreUnambiguous(t *testing.T) {
 	if f.seatCount() != 2 || f.d.reg.Def(fleetGrantName("a", "b-c")) == nil || f.d.reg.Def(fleetGrantName("a-b", "c")) == nil {
 		t.Fatal("two agents shared a seat")
 	}
-	if !isFleetGrantName(fleetGrantName("a", "b")) || isFleetGrantName("fleet-ordinary") || isFleetGrantName("worker--x") {
+	if !isFleetGrantName(fleetGrantName("a", "b")) || isFleetGrantName("fleet-ordinary") || isFleetGrantName("worker--x") ||
+		isFleetGrantName("fleet-X--Y") || isFleetGrantName("fleet---x") {
 		t.Fatal("namespace check is wrong")
 	}
 }
@@ -371,11 +372,15 @@ func TestOrphanFleetSeatIsRemovedAtBoot(t *testing.T) {
 	fleet := openTestFleet(t, f)
 	startTestAgent(t, fleet, "kept")
 	orphan := fleetGrantName("home", "orphan")
-	if err := f.d.reg.Register(claudia.AgentDef{Name: orphan, Provider: claudia.ProviderCursor, WorkDir: t.TempDir(), SessionID: "sid-orphan"}); err != nil {
+	if err := f.d.reg.Register(claudia.AgentDef{Name: orphan, Provider: claudia.ProviderCursor, WorkDir: t.TempDir(), SessionID: "sid-orphan",
+		MCPServers: []claudia.MCPServer{{Name: claudia.FleetMCPServerName, Type: "http", URL: "http://127.0.0.1:1/upstream/fleet/tok"}}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.d.reg.Register(claudia.AgentDef{Name: "ordinary", Provider: claudia.ProviderCursor, WorkDir: t.TempDir(), SessionID: "sid-ordinary"}); err != nil {
-		t.Fatal(err)
+	// Re-review finding 3: ordinary seats whose names look like fleet seats stay.
+	for _, name := range []string{"ordinary", "fleet-ops--bot", "fleet-X--Y", "fleet---x"} {
+		if err := f.d.reg.Register(claudia.AgentDef{Name: name, Provider: claudia.ProviderCursor, WorkDir: t.TempDir(), SessionID: "sid-" + name}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := f.d.Close(); err != nil {
 		t.Fatal(err)
@@ -384,8 +389,10 @@ func TestOrphanFleetSeatIsRemovedAtBoot(t *testing.T) {
 	if f.d.reg.Def(orphan) != nil {
 		t.Fatal("orphan survived boot")
 	}
-	if f.d.reg.Def("ordinary") == nil || f.d.reg.Def(fleetGrantName("home", "kept")) == nil {
-		t.Fatal("removed a seat that should have stayed")
+	for _, name := range []string{"ordinary", "fleet-ops--bot", "fleet-X--Y", "fleet---x", fleetGrantName("home", "kept")} {
+		if f.d.reg.Def(name) == nil {
+			t.Fatalf("removed %s, which should have stayed", name)
+		}
 	}
 }
 

@@ -1027,8 +1027,9 @@ An agent does not die of a passing problem. A failed turn, such as a plan refusi
 it, tells whoever was waiting and leaves the agent available. A seat that dies comes
 back with its message delivered again, and retires only after dying three times with
 no finished turn. A seat that cannot come back after a restart keeps trying, and
-its parent hears once. If its conversation cannot be resumed, it starts on a fresh
-one and its parent hears that too.
+its parent hears once; messages to it wait meanwhile, and anyone else waiting on it
+hears nothing until it is back or stopped. It starts on a fresh conversation only
+when the provider says the old one is gone, and its parent hears that too.
 
 `Shutdown` stops every agent and deletes the fleet. A fleet's agents are ordinary
 grants named `fleet-<fleet>--<agent>`, visible in `claudia broker status`, and only

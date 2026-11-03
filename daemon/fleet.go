@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -53,11 +54,13 @@ func (d *Daemon) openFleetKernel(stateDir string) {
 		d.mu.Unlock()
 		return
 	}
+	// Before any client can reach the kernel, so nothing it starts is mistaken
+	// for an orphan.
+	d.reapOrphanFleetSeats(k)
 	d.mcp.ServeLocal(claudia.FleetMCPServerName, k)
 	d.mu.Lock()
 	d.fleet = k
 	d.mu.Unlock()
-	d.reapOrphanFleetSeats(k)
 	k.Resume()
 }
 
@@ -71,7 +74,7 @@ func (d *Daemon) reapOrphanFleetSeats(k *claudia.FleetKernel) {
 		}
 	}
 	for _, def := range d.reg.List() {
-		if isFleetGrantName(def.Name) && !known[def.Name] {
+		if isFleetGrantName(def.Name) && isFleetSeatDef(&def) && !known[def.Name] {
 			d.log.Warn("removing a fleet seat with no agent", "grant", def.Name)
 			d.removeFleetSeat(def.Name)
 		}
@@ -102,7 +105,18 @@ func fleetGrantName(fleet, agent string) string {
 // release requests refuse these, so a client cannot take over or stop a seat
 // behind the kernel's back.
 func isFleetGrantName(name string) bool {
-	return strings.HasPrefix(name, fleetGrantPrefix) && strings.Contains(name, fleetGrantSeparator)
+	return fleetGrantPattern.MatchString(name)
+}
+
+// fleetGrantPattern matches exactly the names fleetGrantName produces from names
+// the kernel accepts.
+var fleetGrantPattern = regexp.MustCompile(`^` + fleetGrantPrefix + `[a-z0-9]+(-[a-z0-9]+)*` + fleetGrantSeparator + `[a-z0-9]+(-[a-z0-9]+)*$`)
+
+// isFleetSeatDef reports a seat the kernel set up: its only MCP server is the
+// fleet's own, at the host's URL for it.
+func isFleetSeatDef(def *claudia.AgentDef) bool {
+	return len(def.MCPServers) == 1 && def.MCPServers[0].Name == claudia.FleetMCPServerName &&
+		strings.Contains(def.MCPServers[0].URL, "/upstream/"+claudia.FleetMCPServerName+"/")
 }
 
 func fleetOnlyError(name string) *broker.ProtocolError {
@@ -122,6 +136,9 @@ func (d *Daemon) startFleetSeat(ctx context.Context, spec *claudia.FleetSeatSpec
 	defer cancel()
 
 	existing := d.reg.Def(name)
+	if existing != nil && !isFleetSeatDef(existing) {
+		return nil, fmt.Errorf("an ordinary seat already holds the name %s", name)
+	}
 	if existing != nil && !spec.Resume {
 		// Left by a crash, or an agent whose conversation cannot be resumed.
 		d.removeFleetSeat(name)
@@ -149,15 +166,21 @@ func (d *Daemon) startFleetSeat(ctx context.Context, spec *claudia.FleetSeatSpec
 	}
 
 	// A failed fresh start leaves nothing behind. A failed resume keeps its
-	// record, because the kernel will try again.
+	// record for the kernel's next try, but not a process that started badly,
+	// which the next try would otherwise adopt again just as it was.
 	abandon := func() {
-		if !spec.Resume {
-			d.removeFleetSeat(name)
+		if spec.Resume {
+			d.reg.Stop(name)
+			return
 		}
+		d.removeFleetSeat(name)
 	}
 	proc, err := d.reg.AdoptOrLaunchContext(ctx, name)
 	if err != nil {
 		abandon()
+		if spec.Resume && claudia.IsCursorResumeDenied(err) {
+			return nil, fmt.Errorf("%w: %v", claudia.ErrFleetConversationLost, err)
+		}
 		return nil, err
 	}
 	if err := proc.WaitReady(ctx); err != nil {
@@ -303,6 +326,10 @@ func (d *Daemon) removeFleetSeat(name string) {
 	d.mu.Unlock()
 	if settle <= 0 {
 		settle = defaultReleaseSettle
+	}
+	// With no process to tell, removal would leave the backend's seat running.
+	if d.reg.Get(name) == nil && d.reg.Def(name) != nil {
+		_, _ = d.reg.Adopt(name)
 	}
 	if proc := d.reg.Get(name); proc != nil && proc.PromptInFlight() {
 		if err := proc.Quiesce(); err == nil {

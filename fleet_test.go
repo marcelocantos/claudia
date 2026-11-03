@@ -880,7 +880,7 @@ func TestFleetReattachKeepsTryingAndComesBackWhenItCan(t *testing.T) {
 	r.open()
 	waitFleet(t, "the parent to hear once", func() bool { return fleetSeatHeard(parent, "cannot come back yet") })
 	before := r.specCount()
-	waitFleet(t, "further tries", func() bool { return r.specCount() > before+fleetMaxResumes+2 })
+	waitFleet(t, "further tries", func() bool { return r.specCount() > before+5 })
 	st, err := r.k.Status("f")
 	if err != nil || len(st.Agents) != 2 {
 		t.Fatalf("a hold lost an agent: %+v %v", st, err)
@@ -920,7 +920,7 @@ func TestFleetConversationThatCannotResumeStartsFreshAndIsRebriefed(t *testing.T
 	fresh := newFakeFleetSeat(fleetAnswer("second answer"))
 	r.setStartFn(func(_ context.Context, spec *FleetSeatSpec) (FleetSeat, error) {
 		if spec.Resume {
-			return nil, errors.New("no saved conversation")
+			return nil, fmt.Errorf("%w: refused", ErrFleetConversationLost)
 		}
 		return fresh, nil
 	})
@@ -1226,5 +1226,72 @@ func TestLocalMCPServerDoesNotCaptureAnOrdinaryServerOfTheSameName(t *testing.T)
 	got = h.Attach([]MCPServer{{Name: FleetMCPServerName, Type: "http", URL: upstream.URL + "/mcp"}})
 	if strings.Contains(got[0].URL, "/upstream/"+FleetMCPServerName+"/") {
 		t.Fatalf("an ordinary server was captured: %q", got[0].URL)
+	}
+}
+
+// Re-review finding 1: ordinary failures, however many, never cost the agent its
+// conversation. Only the provider saying it is gone does.
+func TestFleetRepeatedFailuresKeepAskingToResume(t *testing.T) {
+	seat := newFakeFleetSeat(fleetAnswer("first answer"))
+	r := newFleetRig(t, map[string]*fakeFleetSeat{"a": seat})
+	r.start("a", FleetOwner)
+	r.send(FleetOwner, "a", "first")
+	var seq uint64
+	r.ownerMessage(&seq)
+	r.k.Close()
+	r.setStartFn(func(_ context.Context, spec *FleetSeatSpec) (FleetSeat, error) {
+		return nil, errors.New("sidecar not listening")
+	})
+	r.open()
+	waitFleet(t, "many tries", func() bool { return r.specCount() > 12 })
+	r.k.Close()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, spec := range r.specs[1:] {
+		if !spec.Resume {
+			t.Fatalf("gave up on the conversation after ordinary failures: %+v", spec)
+		}
+	}
+}
+
+// Re-review finding 6: a stop must not wait out a slow start.
+func TestFleetStopCancelsAReviveStartInProgress(t *testing.T) {
+	r := newFleetRig(t, map[string]*fakeFleetSeat{"a": newFakeFleetSeat(fleetHold)})
+	r.start("a", FleetOwner)
+	r.k.Close()
+	entered := make(chan struct{}, 1)
+	r.setStartFn(func(ctx context.Context, _ *FleetSeatSpec) (FleetSeat, error) {
+		entered <- struct{}{}
+		<-ctx.Done()
+		return nil, ctx.Err()
+	})
+	r.open()
+	<-entered
+	if err := r.k.StopTree(wallclockguard.UntilTestTimeout(t), "f", "a"); err != nil {
+		t.Fatal(err)
+	}
+	st, err := r.k.Status("f")
+	if err != nil || len(st.Agents) != 0 {
+		t.Fatalf("status %+v %v", st, err)
+	}
+}
+
+// Re-review finding 4: no field of an event may be too big to read.
+func TestFleetOversizedErrorTextIsBounded(t *testing.T) {
+	seat := newFakeFleetSeat(fleetHold)
+	seat.failTurn = errors.New(strings.Repeat("e", 2*fleetMaxText))
+	r := newFleetRig(t, map[string]*fakeFleetSeat{"a": seat})
+	r.start("a", FleetOwner)
+	r.send(FleetOwner, "a", "work")
+	var seq uint64
+	r.ownerMessage(&seq)
+	events, err := r.k.Read(wallclockguard.UntilTestTimeout(t), "f", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range events {
+		if len(e.Cause) > fleetMaxText+100 {
+			t.Fatalf("event %d carries a %d-byte cause", e.Seq, len(e.Cause))
+		}
 	}
 }
