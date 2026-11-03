@@ -911,18 +911,16 @@ func (k *FleetKernel) run(rt *fleetRuntime) {
 		}
 		err := rt.seat.Send(text)
 		k.mu.Lock()
-		rt.live = true
+		// A turn the seat refused never began, so nothing can interrupt it.
+		rt.live = err == nil
 		pending, turn := rt.pending, rt.turns
 		rt.pending = nil
 		if pending != nil && err == nil {
 			// Apart from this loop, which must stay free to honour a stop if the
-			// seat never answers the interrupt.
+			// seat never answers the interrupt. Not counted in k.wg, so that a
+			// hung call cannot hold up Close; after Close it touches only rt.
 			rt.interrupting++
-			k.wg.Add(1)
-			go func() {
-				defer k.wg.Done()
-				_ = k.interruptSeat(rt, turn, pending.by, pending.forID)
-			}()
+			go func() { _ = k.interruptSeat(rt, turn, pending.by, pending.forID) }()
 		}
 		k.mu.Unlock()
 		var reply string
@@ -1016,7 +1014,7 @@ func (k *FleetKernel) run(rt *fleetRuntime) {
 			rt.deaths = 0
 			answer := reply
 			if interrupted {
-				answer = fleetInterruptedReply(reply, rt.interruptedBy, rt.interruptFor)
+				answer = fleetInterruptedReply(reply, rt.interruptedBy, rt.interruptFor, err)
 			}
 			if m.Kind == FleetRequest {
 				k.routeReplyLocked(rt.fleet, a, m, answer)

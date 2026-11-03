@@ -408,9 +408,13 @@ func (a *fleetAgentState) takeSteered() []*FleetMessage {
 	return done
 }
 
-// fleetInterruptedReply marks a reply from a turn an interrupt reached.
-func fleetInterruptedReply(reply, by, forID string) string {
+// fleetInterruptedReply marks a reply from a turn an interrupt reached. The
+// turn may also have failed on its own, which the error says.
+func fleetInterruptedReply(reply, by, forID string, err error) string {
 	note := fmt.Sprintf("[%s interrupted this turn to take up %s first, so this answer may be incomplete.]", by, forID)
+	if err != nil {
+		note += fmt.Sprintf(" The turn ended with an error, which may be the interrupt or its own failure: %v.", err)
+	}
 	if reply == "" || strings.HasSuffix(reply, FleetNoReply) {
 		return note + " It had not replied."
 	}
