@@ -25,6 +25,8 @@ const (
 	FleetOpBudget        = "budget"
 	FleetOpRegisterCheck = "register_check"
 	FleetOpRunCheck      = "run_check"
+	// 🎯T250: expediting a message by its ID (TimerID) and Mode.
+	FleetOpExpedite = "expedite"
 )
 
 // FleetRequest is one owner operation on a fleet.
@@ -69,8 +71,13 @@ type FleetRequest struct {
 	// At is an RFC 3339 time; EverySeconds repeats.
 	At           string  `json:"at,omitempty"`
 	EverySeconds float64 `json:"every_seconds,omitempty"`
+	// AcceptWithinSeconds and AnswerWithinSeconds are the owner's
+	// expectations; Mode expedites (🎯T250).
+	AcceptWithinSeconds float64 `json:"accept_within_seconds,omitempty"`
+	AnswerWithinSeconds float64 `json:"answer_within_seconds,omitempty"`
+	Mode                string  `json:"mode,omitempty"`
 
-	// Cancel.
+	// Cancel, and Expedite's message ID.
 	TimerID string `json:"timer_id,omitempty"`
 
 	// RegisterCheck and RunCheck. Name is the check's name.
@@ -89,7 +96,7 @@ type FleetRequest struct {
 func (r *FleetRequest) Validate() error {
 	switch r.Op {
 	case FleetOpOpen, FleetOpStart, FleetOpSend, FleetOpStop, FleetOpStopTree, FleetOpShutdown, FleetOpStatus, FleetOpRead,
-		FleetOpCancel, FleetOpBudget, FleetOpRegisterCheck, FleetOpRunCheck:
+		FleetOpCancel, FleetOpBudget, FleetOpRegisterCheck, FleetOpRunCheck, FleetOpExpedite:
 	default:
 		return &ProtocolError{Code: CodeUnsupportedValue, Field: "op", Value: r.Op, Msg: "unknown fleet operation"}
 	}

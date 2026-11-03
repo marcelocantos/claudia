@@ -27,7 +27,10 @@ const (
 	// fleetDefaultQuality is the floor for an agent that names none.
 	fleetDefaultQuality = "standard"
 	fleetSeatWatch      = 2 * time.Second
-	fleetSettlePoll     = 10 * time.Millisecond
+	// fleetInterruptSettle is how long an interrupted turn has to close.
+	fleetInterruptSettle = 10 * time.Second
+	fleetSeatPoll        = 50 * time.Millisecond
+	fleetSettlePoll      = 10 * time.Millisecond
 )
 
 // openFleetKernel starts the kernel, which is dormant until a client opens a
@@ -239,6 +242,10 @@ type fleetSeat struct {
 	name string
 	last atomic.Int64
 	once sync.Once
+
+	mu sync.Mutex
+	// endWait ends the wait for the current turn.
+	endWait context.CancelFunc
 }
 
 func (s *fleetSeat) proc() (*claudia.Agent, error) {
@@ -255,7 +262,41 @@ func (s *fleetSeat) Send(text string) error {
 		return err
 	}
 	s.last.Store(time.Now().UnixNano())
+	// After an interrupt the provider may take a moment to close the turn, and
+	// a submit into an open turn is queued or refused rather than started.
+	for deadline := time.Now().Add(fleetInterruptSettle); proc.TurnPhase() == claudia.TurnInTurn && time.Now().Before(deadline); {
+		time.Sleep(fleetSeatPoll)
+	}
 	return proc.Send(text)
+}
+
+func (s *fleetSeat) Steer(text string) error {
+	proc, err := s.proc()
+	if err != nil {
+		return err
+	}
+	s.last.Store(time.Now().UnixNano())
+	_, err = proc.Steer(text)
+	return err
+}
+
+// Interrupt stops the running turn. A provider that does not end the wait
+// promptly is given fleetInterruptSettle before the wait is ended for it.
+func (s *fleetSeat) Interrupt() error {
+	proc, err := s.proc()
+	if err != nil {
+		return err
+	}
+	if err := proc.Interrupt(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	end := s.endWait
+	s.mu.Unlock()
+	if end != nil {
+		time.AfterFunc(fleetInterruptSettle, end)
+	}
+	return nil
 }
 
 // WaitForResponse also watches for the seat's death. A wait that begins after
@@ -267,6 +308,14 @@ func (s *fleetSeat) WaitForResponse(ctx context.Context) (string, error) {
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	s.mu.Lock()
+	s.endWait = cancel
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		s.endWait = nil
+		s.mu.Unlock()
+	}()
 	go func() {
 		tick := time.NewTicker(fleetSeatWatch)
 		defer tick.Stop()
@@ -405,7 +454,8 @@ func (d *Daemon) fleetOp(ctx context.Context, r *broker.FleetRequest) (any, erro
 			from = r.From
 		}
 		send := &claudia.FleetSendArgs{From: from, To: r.To, Kind: r.Kind, Text: r.Text,
-			After: fleetWireSeconds(r.AfterSeconds), Every: fleetWireSeconds(r.EverySeconds)}
+			After: fleetWireSeconds(r.AfterSeconds), Every: fleetWireSeconds(r.EverySeconds),
+			AcceptWithin: fleetWireSeconds(r.AcceptWithinSeconds), AnswerWithin: fleetWireSeconds(r.AnswerWithinSeconds), Mode: r.Mode}
 		if r.At != "" {
 			at, err := time.Parse(time.RFC3339Nano, r.At)
 			if err != nil {
@@ -413,7 +463,16 @@ func (d *Daemon) fleetOp(ctx context.Context, r *broker.FleetRequest) (any, erro
 			}
 			send.At = at
 		}
+		if r.Mode != "" {
+			id, note, err := k.Deliver(r.Fleet, send)
+			if err != nil {
+				return nil, err
+			}
+			return claudia.FleetSent{ID: id, Note: note}, nil
+		}
 		return k.Send(r.Fleet, send)
+	case broker.FleetOpExpedite:
+		return k.Expedite(r.Fleet, claudia.FleetOwner, r.TimerID, r.Mode)
 	case broker.FleetOpCancel:
 		return nil, k.Cancel(r.Fleet, claudia.FleetOwner, r.TimerID)
 	case broker.FleetOpBudget:

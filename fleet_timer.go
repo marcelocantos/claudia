@@ -33,6 +33,15 @@ type FleetSendArgs struct {
 	// Every repeats the message until it is cancelled or its target goes. It
 	// takes authority over the target.
 	Every time.Duration
+	// AcceptWithin and AnswerWithin say how soon the sender expects a message
+	// sent now to be taken up, and a request answered. One that passes wakes the
+	// sender once, with a notice from [FleetClockSender] (🎯T250).
+	AcceptWithin time.Duration
+	AnswerWithin time.Duration
+	// Mode, [FleetExpediteSteer] or [FleetExpediteInterrupt], expedites the
+	// message as it is sent; see [FleetKernel.Expedite]. It takes authority over
+	// the target. [FleetKernel.Deliver] reports what it did.
+	Mode string
 }
 
 // FleetTimerStatus is one scheduled message.
@@ -57,6 +66,11 @@ type fleetTimerState struct {
 // when scheduled, the timer ID that [FleetKernel.Cancel] takes. A message to
 // yourself must be scheduled: it is a timer, and needs no response.
 func (k *FleetKernel) Send(fleet string, args *FleetSendArgs) (string, error) {
+	id, _, err := k.Deliver(fleet, args)
+	return id, err
+}
+
+func (k *FleetKernel) send(fleet string, args *FleetSendArgs) (string, error) {
 	if args == nil {
 		return "", errors.New("nothing to send")
 	}
@@ -95,6 +109,27 @@ func (k *FleetKernel) Send(fleet string, args *FleetSendArgs) (string, error) {
 	if group.Sent >= group.MaxMessages {
 		return "", fmt.Errorf("message limit %d reached", group.MaxMessages)
 	}
+	if args.AcceptWithin < 0 || args.AnswerWithin < 0 {
+		return "", errors.New("an expectation cannot be negative")
+	}
+	if args.AcceptWithin > 0 || args.AnswerWithin > 0 || args.Mode != "" {
+		switch {
+		case scheduled:
+			return "", errors.New("expectations and expediting apply to a message sent now, not a scheduled one")
+		case to == FleetOwner:
+			return "", errors.New("the owner has no queue, so nothing can be expected of or expedited to it")
+		case args.AnswerWithin > 0 && kind != FleetRequest:
+			return "", errors.New("only a request has an answer to expect")
+		}
+	}
+	if args.Mode != "" {
+		if args.Mode != FleetExpediteSteer && args.Mode != FleetExpediteInterrupt {
+			return "", fmt.Errorf("mode is %q or %q, not %q", FleetExpediteSteer, FleetExpediteInterrupt, args.Mode)
+		}
+		if !authorized(group, from, to) {
+			return "", fmt.Errorf("agent %q has no authority to expedite a message to %q", from, to)
+		}
+	}
 	if from == to {
 		kind = FleetTimer
 	}
@@ -104,6 +139,9 @@ func (k *FleetKernel) Send(fleet string, args *FleetSendArgs) (string, error) {
 	m := &FleetMessage{Kind: kind, From: from, To: to, Text: boundFleetText(args.Text)}
 	if !scheduled {
 		m.ID = k.nextIDLocked(group)
+		// Before delivery, which answers at once a request to an agent that is
+		// gone, and that answer ends the expectation.
+		k.expectLocked(fleet, group, m, args.AcceptWithin, args.AnswerWithin)
 		k.deliverLocked(fleet, m)
 	} else {
 		now := k.clock.Now()

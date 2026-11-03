@@ -43,6 +43,13 @@ type fakeFleetSeat struct {
 	// usage is what the seat reports; turnTokens is added on each turn.
 	usage      Usage
 	turnTokens int
+	// steered is what Steer received; steerErr fails it. interruptReply ends a
+	// held turn on Interrupt; interruptErr fails it.
+	steered        []string
+	steerErr       error
+	interrupts     int
+	interruptReply string
+	interruptErr   error
 }
 
 func newFakeFleetSeat(reply func(string) (string, bool)) *fakeFleetSeat {
@@ -97,6 +104,34 @@ func (s *fakeFleetSeat) Stop() {
 	s.once.Do(func() { close(s.gone) })
 }
 func (s *fakeFleetSeat) Alive() bool { return !s.dead.Load() }
+
+func (s *fakeFleetSeat) Steer(text string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.steerErr != nil {
+		return s.steerErr
+	}
+	s.steered = append(s.steered, text)
+	return nil
+}
+
+func (s *fakeFleetSeat) Interrupt() error {
+	s.mu.Lock()
+	s.interrupts++
+	err, reply := s.interruptErr, s.interruptReply
+	s.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	s.replies <- reply
+	return nil
+}
+
+func (s *fakeFleetSeat) steers() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.steered...)
+}
 
 // die ends the seat's process during its turn.
 func (s *fakeFleetSeat) die(err error) {
@@ -719,7 +754,7 @@ func TestFleetMCPToolsActAsTheCallingSeat(t *testing.T) {
 	for _, tool := range tools {
 		names[tool.(map[string]any)["name"].(string)] = true
 	}
-	if len(names) != 8 || !names["start"] || !names["send"] || !names["stop"] || !names["list"] || !names["cancel"] || !names["check"] || !names["budget"] || !names["register_check"] {
+	if len(names) != 9 || !names["expedite"] || !names["start"] || !names["send"] || !names["stop"] || !names["list"] || !names["cancel"] || !names["check"] || !names["budget"] || !names["register_check"] {
 		t.Fatalf("tools: %v", names)
 	}
 	call := func(token, name string, args map[string]any) (string, bool) {

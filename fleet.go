@@ -136,6 +136,11 @@ type FleetSeat interface {
 	// Usage is the seat's cumulative token usage, which budgets read.
 	Usage() Usage
 	LastActivity() time.Time
+	// Steer folds text into the running turn (🎯T250). A seat that cannot says
+	// so with an error.
+	Steer(text string) error
+	// Interrupt ends the running turn, so that WaitForResponse returns soon.
+	Interrupt() error
 }
 
 // FleetSeatSpec is what the broker needs to run one agent.
@@ -222,6 +227,9 @@ type FleetMessage struct {
 	Timer string `json:"timer,omitempty"`
 	// Charged means a budget has already counted this message's turn.
 	Charged bool `json:"charged,omitempty"`
+
+	// steering marks a message on its way into a running turn.
+	steering bool
 }
 
 // FleetEvent is one entry of a fleet's log. The owner's messages are the
@@ -281,8 +289,11 @@ type fleetAgentState struct {
 	Model        string          `json:"model,omitempty"`
 	Inbox        []*FleetMessage `json:"inbox,omitempty"`
 	Current      *FleetMessage   `json:"current,omitempty"`
-	Briefed      bool            `json:"briefed,omitempty"`
-	Stopped      bool            `json:"stopped,omitempty"`
+	// Steered are messages folded into the current turn, which its reply
+	// also answers.
+	Steered []*FleetMessage `json:"steered,omitempty"`
+	Briefed bool            `json:"briefed,omitempty"`
+	Stopped bool            `json:"stopped,omitempty"`
 	// CurrentSince and LastTurnEnd feed the time on its deliveries and status.
 	CurrentSince time.Time `json:"current_since"`
 	LastTurnEnd  time.Time `json:"last_turn_end"`
@@ -313,6 +324,8 @@ type fleetGroupState struct {
 	CheckRuns   map[string]*fleetCheckRun    `json:"check_runs,omitempty"`
 	// CheckLast is each check's latest recorded result.
 	CheckLast map[string]*FleetCheckResult `json:"check_last,omitempty"`
+	// Expects are senders' expectations of messages, keyed by message ID.
+	Expects map[string]*fleetExpectState `json:"expects,omitempty"`
 }
 
 type fleetState struct {
@@ -328,6 +341,13 @@ type fleetRuntime struct {
 	wake  *sync.Cond
 	// deaths counts deaths since this agent last finished a turn.
 	deaths int
+	// turns counts turns begun, so an interrupt or steer knows which it hit.
+	turns int
+	// interruptedBy, when set, interrupted turn interruptTurn for message
+	// interruptFor.
+	interruptedBy string
+	interruptFor  string
+	interruptTurn int
 }
 
 type fleetLog struct {
@@ -437,11 +457,8 @@ func OpenFleetKernel(args *FleetKernelArgs) (*FleetKernel, error) {
 		k.logs[name] = log
 		for _, a := range group.Agents {
 			// A turn the restart interrupted goes round again, ahead of the rest.
-			if a.Current != nil {
-				a.Current.Redelivered = true
-				a.Inbox = append([]*FleetMessage{a.Current}, a.Inbox...)
-				a.Current = nil
-			}
+			a.Inbox = append(a.turnMessages(), a.Inbox...)
+			a.Current, a.Steered = nil, nil
 			k.reviving[fleetKey(name, a.Name)] = true
 		}
 		k.reportInterruptedChecksLocked(name, group)
@@ -466,6 +483,9 @@ func (k *FleetKernel) Resume() {
 	for name, group := range k.state.Fleets {
 		for id, timer := range group.Timers {
 			k.armTimerLocked(name, id, timer)
+		}
+		for id, e := range group.Expects {
+			k.armExpectsLocked(name, id, e)
 		}
 		for _, a := range group.Agents {
 			k.wg.Add(1)
@@ -574,7 +594,7 @@ func (k *FleetKernel) startForAgent(fleet, caller string, args *FleetStartArgs) 
 // admit checks a start and records the agent, saved before its seat exists so
 // that a crash cannot leave a seat with no record.
 func (k *FleetKernel) admit(fleet, caller string, args *FleetStartArgs) (*fleetAgentState, error) {
-	if args == nil || !fleetNameValid(args.Name) || args.Name == FleetOwner || args.Name == FleetBudgetSender || fleetBudgetIDPattern.MatchString(args.Name) {
+	if args == nil || !fleetNameValid(args.Name) || args.Name == FleetOwner || args.Name == FleetBudgetSender || args.Name == FleetClockSender || fleetBudgetIDPattern.MatchString(args.Name) {
 		name := ""
 		if args != nil {
 			name = args.Name
@@ -708,11 +728,8 @@ func (k *FleetKernel) launch(ctx context.Context, fleet string, a *fleetAgentSta
 // answerOwedLocked fails every request the agent held, and reports whether its
 // parent was among those told. k.mu held.
 func (k *FleetKernel) answerOwedLocked(fleet string, a *fleetAgentState, failure string) bool {
-	owed := a.Inbox
-	if a.Current != nil {
-		owed = append([]*FleetMessage{a.Current}, owed...)
-	}
-	a.Inbox, a.Current = nil, nil
+	owed := append(a.turnMessages(), a.Inbox...)
+	a.Inbox, a.Current, a.Steered = nil, nil, nil
 	toldParent := false
 	for _, m := range owed {
 		if m.Kind == FleetRequest {
@@ -852,6 +869,10 @@ func (k *FleetKernel) run(rt *fleetRuntime) {
 		m := a.Inbox[0]
 		a.Inbox = a.Inbox[1:]
 		a.Current = m
+		rt.turns++
+		if group != nil {
+			k.acceptedLocked(rt.fleet, group, m.ID)
+		}
 		// A redelivery repeats the brief, since a restart can lose a seat's
 		// conversation as well as its turn.
 		brief := !a.Briefed || m.Redelivered
@@ -895,6 +916,11 @@ func (k *FleetKernel) run(rt *fleetRuntime) {
 			return
 		}
 		reply = strings.TrimSpace(reply)
+		interruptedBy, interruptFor := "", ""
+		if rt.interruptedBy != "" && rt.interruptTurn == rt.turns {
+			interruptedBy, interruptFor = rt.interruptedBy, rt.interruptFor
+		}
+		rt.interruptedBy = ""
 		usage := rt.seat.Usage()
 		k.eventLocked(rt.fleet, &FleetEvent{Kind: FleetEventTurn, Agent: a.Name, Root: a.Root, Text: boundFleetText(reply), Usage: usage, Cause: errText(err)})
 		// A turn spends whether or not it succeeded.
@@ -916,10 +942,9 @@ func (k *FleetKernel) run(rt *fleetRuntime) {
 				k.retireState(rt.fleet, a, rt, fmt.Errorf("its seat died %d times: %w", rt.deaths, err))
 				return
 			}
-			// The seat goes round again, with this message first.
-			m.Redelivered = true
-			a.Inbox = append([]*FleetMessage{m}, a.Inbox...)
-			a.Current = nil
+			// The seat goes round again, with this turn's messages first.
+			a.Inbox = append(a.turnMessages(), a.Inbox...)
+			a.Current, a.Steered = nil, nil
 			delete(k.running, fleetKey(rt.fleet, a.Name))
 			if saveErr := k.saveLocked(); saveErr != nil {
 				k.logf("fleet: save after death", "fleet", rt.fleet, "agent", a.Name, "err", saveErr)
@@ -930,7 +955,13 @@ func (k *FleetKernel) run(rt *fleetRuntime) {
 			return
 		}
 		a.Current = nil
-		if err != nil {
+		steered := a.takeSteered()
+		switch {
+		case interruptedBy != "":
+			// Interrupted on purpose: its requesters hear so, and nobody else
+			// needs to.
+			k.interruptedLocked(rt.fleet, a, append([]*FleetMessage{m}, steered...), interruptedBy, interruptFor, reply)
+		case err != nil:
 			// The turn failed but the agent is fine, as when a plan refuses it or a
 			// provider goes silent. Whoever is waiting needs to hear, and can retry.
 			failure := fmt.Sprintf("agent %s's turn failed, and it is still available: %v", a.Name, err)
@@ -939,9 +970,21 @@ func (k *FleetKernel) run(rt *fleetRuntime) {
 			} else {
 				k.deliverLocked(rt.fleet, &FleetMessage{Kind: FleetResponse, From: a.Name, To: k.parentOfLocked(rt.fleet, a), Text: failure})
 			}
-		} else {
+			for _, s := range steered {
+				if s.Kind == FleetRequest {
+					k.deliverLocked(rt.fleet, &FleetMessage{Kind: FleetResponse, From: a.Name, To: s.From, InReplyTo: s.ID, Text: failure})
+				}
+			}
+		default:
 			rt.deaths = 0
 			k.routeReplyLocked(rt.fleet, a, m, reply)
+			// A steered request is answered by the turn it joined. Anything else
+			// steered in was news, which the turn's text already covers.
+			for _, s := range steered {
+				if s.Kind == FleetRequest {
+					k.routeReplyLocked(rt.fleet, a, s, reply)
+				}
+			}
 		}
 		if err := k.saveLocked(); err != nil {
 			k.logf("fleet: save after turn", "fleet", rt.fleet, "agent", a.Name, "err", err)
@@ -1019,6 +1062,7 @@ func (k *FleetKernel) retireState(fleet string, a *fleetAgentState, rt *fleetRun
 		}
 	}
 	k.dropTimersOfLocked(fleet, group, a.Name, fmt.Sprintf("agent %s is gone: %v", a.Name, cause))
+	k.dropExpectsOfLocked(fleet, group, a.Name)
 	passOnCreationsLocked(group, a.Name, k.parentOfLocked(fleet, a))
 	dropUnusedBudgetsLocked(group)
 	k.eventLocked(fleet, &FleetEvent{Kind: FleetEventRetired, Agent: a.Name, Root: a.Root, Cause: cause.Error()})
@@ -1054,6 +1098,9 @@ func (k *FleetKernel) deliverLocked(fleet string, m *FleetMessage) {
 		m.SentAt = k.clock.Now()
 	}
 	m.Text = boundFleetText(m.Text)
+	if m.Kind == FleetResponse && m.InReplyTo != "" {
+		k.answeredLocked(fleet, group, m.InReplyTo)
+	}
 	k.eventLocked(fleet, &FleetEvent{Kind: FleetEventMessage, Message: m})
 	if m.To == FleetOwner {
 		return
