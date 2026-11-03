@@ -244,8 +244,13 @@ type fleetSeat struct {
 	once sync.Once
 
 	mu sync.Mutex
-	// endWait ends the wait for the current turn.
-	endWait context.CancelFunc
+	// turn counts turns sent. waitTurn is the turn endWait ends the wait for,
+	// and interruptedTurn the last turn an interrupt hit, so that a late
+	// interrupt never ends a later turn's wait.
+	turn            int
+	waitTurn        int
+	interruptedTurn int
+	endWait         context.CancelFunc
 }
 
 func (s *fleetSeat) proc() (*claudia.Agent, error) {
@@ -267,6 +272,9 @@ func (s *fleetSeat) Send(text string) error {
 	for deadline := time.Now().Add(fleetInterruptSettle); proc.TurnPhase() == claudia.TurnInTurn && time.Now().Before(deadline); {
 		time.Sleep(fleetSeatPoll)
 	}
+	s.mu.Lock()
+	s.turn++
+	s.mu.Unlock()
 	return proc.Send(text)
 }
 
@@ -287,16 +295,31 @@ func (s *fleetSeat) Interrupt() error {
 	if err != nil {
 		return err
 	}
+	s.mu.Lock()
+	turn := s.turn
+	s.mu.Unlock()
 	if err := proc.Interrupt(); err != nil {
 		return err
 	}
 	s.mu.Lock()
-	end := s.endWait
-	s.mu.Unlock()
-	if end != nil {
-		time.AfterFunc(fleetInterruptSettle, end)
+	defer s.mu.Unlock()
+	s.interruptedTurn = turn
+	if s.endWait != nil && s.waitTurn == turn {
+		s.settleLocked(turn)
 	}
 	return nil
+}
+
+// settleLocked ends the wait for turn after fleetInterruptSettle, if that turn
+// is still being waited for. s.mu held.
+func (s *fleetSeat) settleLocked(turn int) {
+	time.AfterFunc(fleetInterruptSettle, func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.endWait != nil && s.waitTurn == turn {
+			s.endWait()
+		}
+	})
 }
 
 // WaitForResponse also watches for the seat's death. A wait that begins after
@@ -309,7 +332,11 @@ func (s *fleetSeat) WaitForResponse(ctx context.Context) (string, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	s.mu.Lock()
-	s.endWait = cancel
+	s.endWait, s.waitTurn = cancel, s.turn
+	if s.interruptedTurn == s.turn && s.turn > 0 {
+		// Interrupted between the send and this wait.
+		s.settleLocked(s.turn)
+	}
 	s.mu.Unlock()
 	defer func() {
 		s.mu.Lock()

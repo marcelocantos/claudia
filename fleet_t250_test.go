@@ -4,6 +4,7 @@
 package claudia
 
 import (
+	"context"
 	"errors"
 	"net/http/httptest"
 	"strings"
@@ -287,7 +288,10 @@ func TestFleetMCPSendTakesExpectationsAndExpediteIsATool(t *testing.T) {
 	if text, isErr := call("start", map[string]any{"name": "b", "instructions": "child"}); isErr {
 		t.Fatal(text)
 	}
-	waitFleet(t, "b up", func() bool { st, _ := r.k.Status("f"); return len(st.Agents) == 2 && st.Agents[1].State != FleetStateStarting })
+	waitFleet(t, "b up", func() bool {
+		st, _ := r.k.Status("f")
+		return len(st.Agents) == 2 && st.Agents[1].State != FleetStateStarting
+	})
 	if text, isErr := call("send", map[string]any{"to": "b", "text": "long job"}); isErr {
 		t.Fatal(text)
 	}
@@ -300,5 +304,97 @@ func TestFleetMCPSendTakesExpectationsAndExpediteIsATool(t *testing.T) {
 	id := strings.TrimPrefix(queued, "queued as ")
 	if text, isErr := call("expedite", map[string]any{"id": id, "mode": "steer"}); isErr || !strings.Contains(text, "steered "+id) {
 		t.Fatalf("expedite: %q", text)
+	}
+}
+
+// gatedSeat holds Steer or Interrupt until released, to open the windows in
+// which the kernel has let go of its lock.
+type gatedSeat struct {
+	*fakeFleetSeat
+	entered chan struct{}
+	release chan error
+}
+
+func newGatedSeat(seat *fakeFleetSeat) *gatedSeat {
+	return &gatedSeat{fakeFleetSeat: seat, entered: make(chan struct{}, 1), release: make(chan error)}
+}
+
+func (g *gatedSeat) Steer(string) error { g.entered <- struct{}{}; return <-g.release }
+func (g *gatedSeat) Interrupt() error   { g.entered <- struct{}{}; return <-g.release }
+
+func (r *fleetRig) startGated(name string, g *gatedSeat) {
+	r.t.Helper()
+	r.setStartFn(func(context.Context, *FleetSeatSpec) (FleetSeat, error) { return g, nil })
+	r.start(name, FleetOwner)
+	r.setStartFn(nil)
+}
+
+func TestFleetASteerFailingWhileItsAgentStopsIsStillAnswered(t *testing.T) {
+	b := newFakeFleetSeat(fleetHold)
+	b.stopHold = make(chan struct{})
+	g := newGatedSeat(b)
+	r := newFleetRig(t, map[string]*fakeFleetSeat{})
+	r.startGated("b", g)
+	first := r.send(FleetOwner, "b", "long job")
+	waitFleet(t, "b's long turn", func() bool { return r.working("b") })
+	steered := r.send(FleetOwner, "b", "also this")
+	done := make(chan string)
+	go func() { note, _ := r.k.Expedite("f", FleetOwner, steered, FleetExpediteSteer); done <- note }()
+	<-g.entered
+	if err := r.k.Stop("f", FleetOwner, "b"); err != nil {
+		t.Fatal(err)
+	}
+	g.release <- errors.New("seat going away")
+	<-done
+	close(b.stopHold)
+	var seq uint64
+	answered := map[string]bool{}
+	for len(answered) < 2 {
+		answered[r.ownerMessage(&seq).InReplyTo] = true
+	}
+	if !answered[first] || !answered[steered] {
+		t.Fatalf("answered %v", answered)
+	}
+}
+
+func TestFleetAnInterruptNeverLandsOnTheNextTurn(t *testing.T) {
+	b := newFakeFleetSeat(fleetHold)
+	g := newGatedSeat(b)
+	r := newFleetRig(t, map[string]*fakeFleetSeat{})
+	r.startGated("b", g)
+	first := r.send(FleetOwner, "b", "long job")
+	waitFleet(t, "b's long turn", func() bool { return r.working("b") })
+	urgent := r.send(FleetOwner, "b", "urgent")
+	done := make(chan string)
+	go func() { note, _ := r.k.Expedite("f", FleetOwner, urgent, FleetExpediteInterrupt); done <- note }()
+	<-g.entered
+	// The turn finishes on its own while the interrupt is still on its way.
+	b.replies <- "finished anyway"
+	time.Sleep(20 * time.Millisecond)
+	if n := len(b.sends()); n != 1 {
+		t.Fatalf("started the next turn with an interrupt in flight: %d sends", n)
+	}
+	g.release <- nil
+	<-done
+	var seq uint64
+	m := r.ownerMessage(&seq)
+	if m.InReplyTo != first || !strings.Contains(m.Text, "finished anyway") {
+		t.Fatalf("first requester heard %+v", m)
+	}
+	waitFleet(t, "the urgent message", func() bool { return len(b.sends()) == 2 })
+}
+
+func TestFleetSteeringRespectsASpentBudget(t *testing.T) {
+	b := newFakeFleetSeat(fleetHold)
+	r := newFleetRig(t, map[string]*fakeFleetSeat{"b": b})
+	if err := r.k.Start(context.Background(), "f", FleetOwner, &FleetStartArgs{Name: "b", Instructions: "x", WorkDir: "/tmp", Budget: &FleetBudget{Turns: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	r.send(FleetOwner, "b", "long job")
+	waitFleet(t, "b's long turn", func() bool { return r.working("b") })
+	extra := r.send(FleetOwner, "b", "more")
+	note, err := r.k.Expedite("f", FleetOwner, extra, FleetExpediteSteer)
+	if err != nil || !strings.Contains(note, "budget") || len(b.steers()) != 0 {
+		t.Fatalf("steered past a spent budget: %q %v %q", note, err, b.steers())
 	}
 }

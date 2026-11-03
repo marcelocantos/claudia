@@ -348,6 +348,8 @@ type fleetRuntime struct {
 	interruptedBy string
 	interruptFor  string
 	interruptTurn int
+	// interrupting counts interrupt calls in progress.
+	interrupting int
 }
 
 type fleetLog struct {
@@ -916,6 +918,19 @@ func (k *FleetKernel) run(rt *fleetRuntime) {
 			return
 		}
 		reply = strings.TrimSpace(reply)
+		// Wait for an interrupt still being delivered, so it cannot land on the
+		// next turn, and so this turn is judged knowing whether it was hit.
+		for rt.interrupting > 0 && !k.closed {
+			rt.wake.Wait()
+		}
+		if k.closed {
+			if group := k.state.Fleets[rt.fleet]; group != nil {
+				k.chargeTokensLocked(group, a, max(fleetTokens(rt.seat.Usage())-usedBefore, 0))
+				_ = k.saveLocked()
+			}
+			k.mu.Unlock()
+			return
+		}
 		interruptedBy, interruptFor := "", ""
 		if rt.interruptedBy != "" && rt.interruptTurn == rt.turns {
 			interruptedBy, interruptFor = rt.interruptedBy, rt.interruptFor

@@ -271,20 +271,33 @@ func (k *FleetKernel) Expedite(fleet, caller, id, mode string) (string, error) {
 	turn := rt.turns
 
 	if mode == FleetExpediteInterrupt {
+		// The seat cannot be told which turn to interrupt, so the run loop
+		// starts no other turn, and judges this one, only once the call returns.
 		rt.interruptedBy, rt.interruptFor, rt.interruptTurn = caller, id, turn
+		rt.interrupting++
 		k.saveOrLogLocked(fleet, "expedite")
 		k.mu.Unlock()
-		if err := rt.seat.Interrupt(); err != nil {
-			k.mu.Lock()
+		err := rt.seat.Interrupt()
+		k.mu.Lock()
+		defer k.mu.Unlock()
+		rt.interrupting--
+		rt.wake.Broadcast()
+		if err != nil {
 			if rt.interruptTurn == turn {
 				rt.interruptedBy = ""
 			}
-			k.mu.Unlock()
 			return fmt.Sprintf("could not interrupt %s (%v), so %s goes next when its turn ends", a.Name, err, id), nil
 		}
 		return fmt.Sprintf("interrupted %s's turn; %s goes next", a.Name, id), nil
 	}
 
+	// A steered message is a turn's worth of work, so a spent budget holds it
+	// as it would hold a turn.
+	if k.blockedLocked(fleet, group, a) {
+		k.saveOrLogLocked(fleet, "expedite")
+		k.mu.Unlock()
+		return fmt.Sprintf("a budget over %s is spent, so %s waits first in its queue", a.Name, id), nil
+	}
 	// Steered messages are saved as part of the turn, so a restart delivers
 	// them again; steering marks one until the seat has taken it.
 	a.Inbox = a.Inbox[1:]
@@ -299,6 +312,10 @@ func (k *FleetKernel) Expedite(fleet, caller, id, mode string) (string, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	m.steering = false
+	if k.closed {
+		// The saved state holds it as steered, so the next kernel delivers it.
+		return fmt.Sprintf("Claudia is restarting; %s will reach %s", id, a.Name), nil
+	}
 	at := slices.Index(a.Steered, m)
 	if at < 0 {
 		// Retired or redelivered meanwhile: whatever took it answers it.
@@ -306,18 +323,21 @@ func (k *FleetKernel) Expedite(fleet, caller, id, mode string) (string, error) {
 	}
 	if err == nil && rt.turns == turn && a.Current != nil && k.running[fleetKey(fleet, a.Name)] == rt {
 		k.acceptedLocked(fleet, group, id)
+		if !m.Charged {
+			k.chargeTurnLocked(group, a)
+			m.Charged = true
+		}
 		k.saveOrLogLocked(fleet, "steer")
 		return fmt.Sprintf("steered %s into %s's running turn; its reply answers it", id, a.Name), nil
 	}
 	// The turn ended first, or the seat cannot steer: it goes next instead. A
 	// steer the seat did take after its turn ended reaches it twice, which is
-	// better than not at all.
+	// better than not at all. A stopping agent still answers its queue as it
+	// retires.
 	a.Steered = slices.Delete(a.Steered, at, at+1)
-	if group.Agents[a.Name] == a && !a.Stopped {
-		a.Inbox = append([]*FleetMessage{m}, a.Inbox...)
-		if live := k.running[fleetKey(fleet, a.Name)]; live != nil {
-			live.wake.Signal()
-		}
+	a.Inbox = append([]*FleetMessage{m}, a.Inbox...)
+	if live := k.running[fleetKey(fleet, a.Name)]; live != nil {
+		live.wake.Signal()
 	}
 	k.saveOrLogLocked(fleet, "steer")
 	if err != nil {
@@ -378,11 +398,15 @@ func (a *fleetAgentState) takeSteered() []*FleetMessage {
 }
 
 // interruptedLocked answers the requests of a turn that was interrupted.
-// k.mu held.
+// Whatever the turn said about anything else goes up the tree as usual, since
+// the turn may have finished just as the interrupt came. k.mu held.
 func (k *FleetKernel) interruptedLocked(fleet string, a *fleetAgentState, turn []*FleetMessage, by, forID, partial string) {
 	said := "It had said nothing yet."
 	if partial != "" {
 		said = "What it had said so far:\n" + partial
+	}
+	if turn[0].Kind != FleetRequest {
+		k.routeReplyLocked(fleet, a, turn[0], partial)
 	}
 	for _, m := range turn {
 		if m.Kind == FleetRequest {
