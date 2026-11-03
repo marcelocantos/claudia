@@ -343,13 +343,21 @@ type fleetRuntime struct {
 	deaths int
 	// turns counts turns begun, so an interrupt or steer knows which it hit.
 	turns int
-	// interruptedBy, when set, interrupted turn interruptTurn for message
-	// interruptFor.
+	// interruptTurn is the last turn an interrupt was delivered to, by
+	// interruptedBy, for message interruptFor.
 	interruptedBy string
 	interruptFor  string
 	interruptTurn int
 	// interrupting counts interrupt calls in progress.
 	interrupting int
+	// live means the seat has been given the current turn. An interrupt that
+	// comes before then waits in pending, since it would reach nothing.
+	live    bool
+	pending *fleetPendingInterrupt
+}
+
+type fleetPendingInterrupt struct {
+	by, forID string
 }
 
 type fleetLog struct {
@@ -872,6 +880,7 @@ func (k *FleetKernel) run(rt *fleetRuntime) {
 		a.Inbox = a.Inbox[1:]
 		a.Current = m
 		rt.turns++
+		rt.live, rt.pending = false, nil
 		if group != nil {
 			k.acceptedLocked(rt.fleet, group, m.ID)
 		}
@@ -901,6 +910,21 @@ func (k *FleetKernel) run(rt *fleetRuntime) {
 			text = instructions + "\n\n---\n\n" + text
 		}
 		err := rt.seat.Send(text)
+		k.mu.Lock()
+		rt.live = true
+		pending, turn := rt.pending, rt.turns
+		rt.pending = nil
+		if pending != nil && err == nil {
+			// Apart from this loop, which must stay free to honour a stop if the
+			// seat never answers the interrupt.
+			rt.interrupting++
+			k.wg.Add(1)
+			go func() {
+				defer k.wg.Done()
+				_ = k.interruptSeat(rt, turn, pending.by, pending.forID)
+			}()
+		}
+		k.mu.Unlock()
 		var reply string
 		if err == nil {
 			reply, err = rt.seat.WaitForResponse(k.ctx)
@@ -919,8 +943,9 @@ func (k *FleetKernel) run(rt *fleetRuntime) {
 		}
 		reply = strings.TrimSpace(reply)
 		// Wait for an interrupt still being delivered, so it cannot land on the
-		// next turn, and so this turn is judged knowing whether it was hit.
-		for rt.interrupting > 0 && !k.closed {
+		// next turn, and so this turn is judged knowing whether it was hit. A
+		// stop does not wait: the seat is going anyway.
+		for rt.interrupting > 0 && !k.closed && !a.Stopped {
 			rt.wake.Wait()
 		}
 		if k.closed {
@@ -931,11 +956,9 @@ func (k *FleetKernel) run(rt *fleetRuntime) {
 			k.mu.Unlock()
 			return
 		}
-		interruptedBy, interruptFor := "", ""
-		if rt.interruptedBy != "" && rt.interruptTurn == rt.turns {
-			interruptedBy, interruptFor = rt.interruptedBy, rt.interruptFor
-		}
-		rt.interruptedBy = ""
+		// An interrupt reached this turn, though the turn may have ended on its
+		// own first: the provider cannot say which.
+		interrupted := rt.interruptTurn == rt.turns
 		usage := rt.seat.Usage()
 		k.eventLocked(rt.fleet, &FleetEvent{Kind: FleetEventTurn, Agent: a.Name, Root: a.Root, Text: boundFleetText(reply), Usage: usage, Cause: errText(err)})
 		// A turn spends whether or not it succeeded.
@@ -972,11 +995,7 @@ func (k *FleetKernel) run(rt *fleetRuntime) {
 		a.Current = nil
 		steered := a.takeSteered()
 		switch {
-		case interruptedBy != "":
-			// Interrupted on purpose: its requesters hear so, and nobody else
-			// needs to.
-			k.interruptedLocked(rt.fleet, a, append([]*FleetMessage{m}, steered...), interruptedBy, interruptFor, reply)
-		case err != nil:
+		case err != nil && !interrupted:
 			// The turn failed but the agent is fine, as when a plan refuses it or a
 			// provider goes silent. Whoever is waiting needs to hear, and can retry.
 			failure := fmt.Sprintf("agent %s's turn failed, and it is still available: %v", a.Name, err)
@@ -991,13 +1010,24 @@ func (k *FleetKernel) run(rt *fleetRuntime) {
 				}
 			}
 		default:
+			// An interrupted turn's wait may end with an error, which is the
+			// interrupt rather than a failure. Its requesters get what it said,
+			// marked as possibly cut short.
 			rt.deaths = 0
-			k.routeReplyLocked(rt.fleet, a, m, reply)
+			answer := reply
+			if interrupted {
+				answer = fleetInterruptedReply(reply, rt.interruptedBy, rt.interruptFor)
+			}
+			if m.Kind == FleetRequest {
+				k.routeReplyLocked(rt.fleet, a, m, answer)
+			} else {
+				k.routeReplyLocked(rt.fleet, a, m, reply)
+			}
 			// A steered request is answered by the turn it joined. Anything else
 			// steered in was news, which the turn's text already covers.
 			for _, s := range steered {
 				if s.Kind == FleetRequest {
-					k.routeReplyLocked(rt.fleet, a, s, reply)
+					k.routeReplyLocked(rt.fleet, a, s, answer)
 				}
 			}
 		}

@@ -216,12 +216,12 @@ func TestFleetInterruptAnswersTheInterruptedRequestAndTakesTheMessageNext(t *tes
 	waitFleet(t, "b's long turn", func() bool { return r.working("b") })
 	r.send(FleetOwner, "b", "waiting")
 	id, note, err := r.k.Deliver("f", &FleetSendArgs{From: FleetOwner, To: "b", Text: "stop and do this", Mode: FleetExpediteInterrupt})
-	if err != nil || !strings.Contains(note, "interrupted") {
+	if err != nil || !strings.Contains(note, "stop its turn") {
 		t.Fatalf("deliver: %q %v", note, err)
 	}
 	var seq uint64
 	m := r.ownerMessage(&seq)
-	if m.InReplyTo != first || !strings.Contains(m.Text, "interrupted by owner, to take up "+id) || !strings.Contains(m.Text, "half done") {
+	if m.InReplyTo != first || !strings.Contains(m.Text, "owner interrupted this turn to take up "+id) || !strings.Contains(m.Text, "half done") {
 		t.Fatalf("interrupted requester heard %+v", m)
 	}
 	waitFleet(t, "the urgent message next", func() bool {
@@ -396,5 +396,95 @@ func TestFleetSteeringRespectsASpentBudget(t *testing.T) {
 	note, err := r.k.Expedite("f", FleetOwner, extra, FleetExpediteSteer)
 	if err != nil || !strings.Contains(note, "budget") || len(b.steers()) != 0 {
 		t.Fatalf("steered past a spent budget: %q %v %q", note, err, b.steers())
+	}
+}
+
+func TestFleetAStopIsHonouredWhileAnInterruptHangs(t *testing.T) {
+	b := newFakeFleetSeat(fleetHold)
+	g := newGatedSeat(b)
+	r := newFleetRig(t, map[string]*fakeFleetSeat{})
+	r.startGated("b", g)
+	r.send(FleetOwner, "b", "long job")
+	waitFleet(t, "b's long turn", func() bool { return r.working("b") })
+	urgent := r.send(FleetOwner, "b", "urgent")
+	go func() { _, _ = r.k.Expedite("f", FleetOwner, urgent, FleetExpediteInterrupt) }()
+	<-g.entered
+	defer func() { g.release <- nil }()
+	if err := r.k.Stop("f", FleetOwner, "b"); err != nil {
+		t.Fatal(err)
+	}
+	waitFleet(t, "b to retire", func() bool { st, _ := r.k.Status("f"); return len(st.Agents) == 0 })
+}
+
+// sendGatedSeat holds Send, as a provider does until its turn has begun.
+type sendGatedSeat struct {
+	*fakeFleetSeat
+	inSend   chan struct{}
+	sendGate chan struct{}
+}
+
+func (s *sendGatedSeat) Send(text string) error {
+	s.inSend <- struct{}{}
+	<-s.sendGate
+	return s.fakeFleetSeat.Send(text)
+}
+
+func TestFleetAnInterruptBeforeTheTurnHasBegunWaitsForIt(t *testing.T) {
+	b := newFakeFleetSeat(fleetHold)
+	b.interruptReply = "barely started"
+	s := &sendGatedSeat{fakeFleetSeat: b, inSend: make(chan struct{}, 4), sendGate: make(chan struct{}, 4)}
+	r := newFleetRig(t, map[string]*fakeFleetSeat{})
+	r.setStartFn(func(context.Context, *FleetSeatSpec) (FleetSeat, error) { return s, nil })
+	r.start("b", FleetOwner)
+	r.setStartFn(nil)
+	first := r.send(FleetOwner, "b", "job")
+	<-s.inSend
+	urgent := r.send(FleetOwner, "b", "urgent")
+	note, err := r.k.Expedite("f", FleetOwner, urgent, FleetExpediteInterrupt)
+	if err != nil || !strings.Contains(note, "just starting") {
+		t.Fatalf("expedite: %q %v", note, err)
+	}
+	b.mu.Lock()
+	early := b.interrupts
+	b.mu.Unlock()
+	if early != 0 {
+		t.Fatal("interrupted a turn the seat did not have yet")
+	}
+	s.sendGate <- struct{}{}
+	var seq uint64
+	m := r.ownerMessage(&seq)
+	if m.InReplyTo != first || !strings.Contains(m.Text, "barely started") || !strings.Contains(m.Text, "interrupted this turn") {
+		t.Fatalf("first requester heard %+v", m)
+	}
+	<-s.inSend
+	s.sendGate <- struct{}{}
+	waitFleet(t, "the urgent message", func() bool { return fleetSeatHeard(b, "urgent") })
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.interrupts != 1 {
+		t.Fatalf("%d interrupts", b.interrupts)
+	}
+}
+
+func TestFleetAFailedInterruptDoesNotEraseADeliveredOne(t *testing.T) {
+	b := newFakeFleetSeat(fleetHold)
+	g := newGatedSeat(b)
+	g.entered = make(chan struct{}, 2)
+	r := newFleetRig(t, map[string]*fakeFleetSeat{})
+	r.startGated("b", g)
+	first := r.send(FleetOwner, "b", "long job")
+	waitFleet(t, "b's long turn", func() bool { return r.working("b") })
+	u1 := r.send(FleetOwner, "b", "urgent1")
+	u2 := r.send(FleetOwner, "b", "urgent2")
+	go func() { _, _ = r.k.Expedite("f", FleetOwner, u1, FleetExpediteInterrupt) }()
+	<-g.entered
+	go func() { _, _ = r.k.Expedite("f", FleetOwner, u2, FleetExpediteInterrupt) }()
+	<-g.entered
+	g.release <- nil
+	b.replies <- "half-wri"
+	g.release <- errors.New("refused")
+	var seq uint64
+	if m := r.ownerMessage(&seq); m.InReplyTo != first || !strings.Contains(m.Text, "interrupted this turn") {
+		t.Fatalf("a cut-short turn was delivered unmarked: %q", m.Text)
 	}
 }

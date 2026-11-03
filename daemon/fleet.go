@@ -272,10 +272,15 @@ func (s *fleetSeat) Send(text string) error {
 	for deadline := time.Now().Add(fleetInterruptSettle); proc.TurnPhase() == claudia.TurnInTurn && time.Now().Before(deadline); {
 		time.Sleep(fleetSeatPoll)
 	}
+	if err := proc.Send(text); err != nil {
+		return err
+	}
+	// Counted once the provider has the turn, so an interrupt that came while
+	// it was still being sent, and so reached nothing, ends no wait.
 	s.mu.Lock()
 	s.turn++
 	s.mu.Unlock()
-	return proc.Send(text)
+	return nil
 }
 
 func (s *fleetSeat) Steer(text string) error {
