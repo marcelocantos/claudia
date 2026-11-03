@@ -329,6 +329,7 @@ type FleetKernel struct {
 	checkSlots chan struct{}
 	// checkCancels ends each running check, keyed by fleet and run ID.
 	checkCancels map[string]context.CancelFunc
+	checkSeq     uint64
 	ctx          context.Context
 	cancel       context.CancelFunc
 	wg           sync.WaitGroup
@@ -552,7 +553,7 @@ func (k *FleetKernel) startForAgent(fleet, caller string, args *FleetStartArgs) 
 // admit checks a start and records the agent, saved before its seat exists so
 // that a crash cannot leave a seat with no record.
 func (k *FleetKernel) admit(fleet, caller string, args *FleetStartArgs) (*fleetAgentState, error) {
-	if args == nil || !fleetNameValid(args.Name) || args.Name == FleetOwner || args.Name == FleetBudgetSender {
+	if args == nil || !fleetNameValid(args.Name) || args.Name == FleetOwner || args.Name == FleetBudgetSender || fleetBudgetIDPattern.MatchString(args.Name) {
 		name := ""
 		if args != nil {
 			name = args.Name
@@ -653,11 +654,13 @@ func (k *FleetKernel) launch(ctx context.Context, fleet string, a *fleetAgentSta
 		return nil
 	}
 	group := k.state.Fleets[fleet]
+	failure := fmt.Sprintf("agent %s could not start: %v", a.Name, err)
 	if group != nil {
 		delete(group.Agents, a.Name)
+		k.dropTimersOfLocked(fleet, group, a.Name, failure)
+		dropUnusedBudgetsLocked(group)
 	}
 	k.eventLocked(fleet, &FleetEvent{Kind: FleetEventStartFailed, Agent: a.Name, Parent: a.Parent, Root: a.Root, Cause: err.Error()})
-	failure := fmt.Sprintf("agent %s could not start: %v", a.Name, err)
 	toldParent := k.answerOwedLocked(fleet, a, failure)
 	if tellParent && !toldParent {
 		k.deliverLocked(fleet, &FleetMessage{Kind: FleetResponse, From: a.Name, To: k.parentOfLocked(fleet, a), Text: failure})
@@ -797,7 +800,9 @@ func (k *FleetKernel) run(rt *fleetRuntime) {
 	for {
 		k.mu.Lock()
 		group := k.state.Fleets[rt.fleet]
-		for !a.Stopped && !k.closed && (len(a.Inbox) == 0 || k.blockedLocked(rt.fleet, group, a)) {
+		// A redelivered message finishes a turn already charged, so no budget holds
+		// it back or charges it again.
+		for !a.Stopped && !k.closed && (len(a.Inbox) == 0 || (!a.Inbox[0].Redelivered && k.blockedLocked(rt.fleet, group, a))) {
 			rt.wake.Wait()
 		}
 		if k.closed {
@@ -819,7 +824,9 @@ func (k *FleetKernel) run(rt *fleetRuntime) {
 		now := k.clock.Now()
 		stamp := fleetStamp(now, m, a.LastTurnEnd)
 		a.CurrentSince = now
-		k.chargeTurnLocked(group, a)
+		if !m.Redelivered {
+			k.chargeTurnLocked(group, a)
+		}
 		if err := k.saveLocked(); err != nil {
 			k.logf("fleet: save before turn", "fleet", rt.fleet, "agent", a.Name, "err", err)
 		}

@@ -1064,10 +1064,12 @@ a result means, whether a goal is met — stays with agents and clients.
   the raise. An agent may put a budget on a child, which only narrows: every budget
   above still applies, including after the agent that held it retires.
 - **A check is a pinned command run on the owner's behalf.** `Fleet.RegisterCheck`
-  copies the script and pins it by hash. A run exports the named commit with `git
-  archive` into a fresh directory (so no repository hook or filter runs, and there
-  is no `.git`; the commit and repository path are in `CLAUDIA_CHECK_COMMIT` and
-  `CLAUDIA_CHECK_REPO`), runs exactly the verified script bytes in their own
+  copies the script and pins it by hash. A run exports the named commit into a
+  fresh directory by reading its objects directly, so none of the repository's
+  hooks, filters, attributes or replace refs apply, and nothing can be written
+  outside it. The export has no `.git`, and Git LFS files arrive as pointers; the
+  commit and repository path are in `CLAUDIA_CHECK_COMMIT` and
+  `CLAUDIA_CHECK_REPO`. It then runs exactly the verified script bytes in their own
   process group with a timeout, and kills anything the script left running. It
   records a `check_result` event with the exit status, the score (the last line of
   standard output, when it is a number) and the output's tail. Only the kernel

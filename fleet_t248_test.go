@@ -6,6 +6,7 @@ package claudia
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http/httptest"
 	"os"
 	"os/exec"
@@ -682,19 +683,163 @@ func TestFleetCheckLeavesNothingRunning(t *testing.T) {
 
 func TestFleetCheckQueueIsBounded(t *testing.T) {
 	repo := fleetCheckRepo(t)
-	r, _ := newClockedFleetRig(t, map[string]*fakeFleetSeat{})
-	if err := r.k.RegisterCheck("f", &FleetCheckArgs{Name: "slow", Repo: repo, Script: "sleep 60\n"}); err != nil {
+	r, _ := newClockedFleetRig(t, map[string]*fakeFleetSeat{"a": newFakeFleetSeat(fleetHold)})
+	r.start("a", FleetOwner)
+	if err := r.k.RegisterCheck("f", &FleetCheckArgs{Name: "slow", Repo: repo, Script: "sleep 60\n", AgentsMayRun: true}); err != nil {
 		t.Fatal(err)
 	}
 	for range fleetCheckQueue {
-		if _, err := r.k.RunCheck("f", FleetOwner, "slow", ""); err != nil {
+		if _, err := r.k.RunCheck("f", "a", "slow", ""); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := r.k.RunCheck("f", FleetOwner, "slow", ""); err == nil {
-		t.Fatal("the queue grew past its bound")
+	if _, err := r.k.RunCheck("f", "a", "slow", ""); err == nil {
+		t.Fatal("agents' queue grew past its bound")
+	}
+	// Agents filling their queue cannot lock the owner out.
+	if _, err := r.k.RunCheck("f", FleetOwner, "slow", ""); err != nil {
+		t.Fatalf("owner locked out: %v", err)
 	}
 	if err := r.k.Shutdown(wallclockguard.UntilTestTimeout(t), "f"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// gitIn runs git in repo and returns its trimmed output, failing the test on error.
+func gitIn(t *testing.T, repo, stdin string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+	cmd.Stdin = strings.NewReader(stdin)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v %s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// Second review, finding 1: a commit cannot make the export write outside it.
+func TestFleetCheckExportCannotEscape(t *testing.T) {
+	repo := fleetCheckRepo(t)
+	outside := t.TempDir()
+	victim := filepath.Join(outside, "victim")
+	if err := os.WriteFile(victim, []byte("intact"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := gitIn(t, repo, outside, "hash-object", "-w", "--stdin")
+	file := gitIn(t, repo, "pwned\n", "hash-object", "-w", "--stdin")
+	// A symlink "a" to outside, and a directory "a" holding "victim": git
+	// archive emitted both, and the second write followed the first.
+	inner := gitIn(t, repo, "100644 blob "+file+"\tvictim\n", "mktree")
+	tree := gitIn(t, repo, "120000 blob "+link+"\ta\n040000 tree "+inner+"\ta\n100644 blob "+file+"\tcount.txt\n", "mktree", "--missing")
+	commit := gitIn(t, repo, "", "commit-tree", tree, "-m", "hostile")
+	r, _ := newClockedFleetRig(t, map[string]*fakeFleetSeat{})
+	if err := r.k.RegisterCheck("f", &FleetCheckArgs{Name: "c", Repo: repo, Script: "echo 1\n"}); err != nil {
+		t.Fatal(err)
+	}
+	var seq uint64
+	if _, err := r.k.RunCheck("f", FleetOwner, "c", commit); err != nil {
+		t.Fatal(err)
+	}
+	checkResult(t, r, &seq)
+	if raw, _ := os.ReadFile(victim); string(raw) != "intact" {
+		t.Fatalf("the export wrote outside its directory: %q", raw)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "victim")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Second review, finding 2: a replace ref cannot substitute another tree.
+func TestFleetCheckIgnoresReplaceRefs(t *testing.T) {
+	repo := fleetCheckRepo(t)
+	owner := gitIn(t, repo, "", "rev-parse", "HEAD")
+	forged := gitIn(t, repo, "", "commit-tree", gitIn(t, repo, "100644 blob "+gitIn(t, repo, "100\n", "hash-object", "-w", "--stdin")+"\tcount.txt\n", "mktree"), "-m", "forged")
+	gitIn(t, repo, "", "replace", owner, forged)
+	r, _ := newClockedFleetRig(t, map[string]*fakeFleetSeat{})
+	if err := r.k.RegisterCheck("f", &FleetCheckArgs{Name: "count", Repo: repo, Script: "cat count.txt\n"}); err != nil {
+		t.Fatal(err)
+	}
+	var seq uint64
+	if _, err := r.k.RunCheck("f", FleetOwner, "count", owner); err != nil {
+		t.Fatal(err)
+	}
+	if res := checkResult(t, r, &seq); res.Score == nil || *res.Score != 7 {
+		t.Fatalf("a replace ref changed the result: %+v", res)
+	}
+}
+
+// Second review, finding 3: the shared repository's attributes cannot hide files.
+func TestFleetCheckIgnoresRepositoryAttributes(t *testing.T) {
+	repo := fleetCheckRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, ".git", "info", "attributes"), []byte("count.txt export-ignore\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r, _ := newClockedFleetRig(t, map[string]*fakeFleetSeat{})
+	if err := r.k.RegisterCheck("f", &FleetCheckArgs{Name: "count", Repo: repo, Script: "cat count.txt\n"}); err != nil {
+		t.Fatal(err)
+	}
+	var seq uint64
+	if _, err := r.k.RunCheck("f", FleetOwner, "count", ""); err != nil {
+		t.Fatal(err)
+	}
+	if res := checkResult(t, r, &seq); res.Score == nil || *res.Score != 7 {
+		t.Fatalf("attributes changed the export: %+v", res)
+	}
+}
+
+// Second review, finding 4: a turn interrupted by a restart is finished, not
+// held by the charge it already paid.
+func TestFleetRedeliveredTurnIsNotHeldOrChargedAgain(t *testing.T) {
+	seat := newFakeFleetSeat(fleetHold)
+	r, _ := newClockedFleetRig(t, map[string]*fakeFleetSeat{"a": seat})
+	if err := r.k.Start(context.Background(), "f", FleetOwner, &FleetStartArgs{Name: "a", Instructions: "x", WorkDir: "/tmp", Budget: &FleetBudget{Turns: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	id := r.send(FleetOwner, "a", "the one job")
+	waitFleet(t, "turn", func() bool { return len(seat.sends()) == 1 })
+	r.k.Close()
+	next := newFakeFleetSeat(fleetAnswer("finished"))
+	r.setSeat("a", next)
+	r.open()
+	var seq uint64
+	var m *FleetMessage
+	for m == nil || m.InReplyTo != id {
+		m = r.ownerMessage(&seq)
+	}
+	if st, _ := r.k.Status("f"); st.Budgets[0].SpentTurns != 1 {
+		t.Fatalf("redelivery charged again: %+v", st.Budgets)
+	}
+}
+
+// Second review, findings 5 and 6.
+func TestFleetBudgetIDsAndFailedStartsLeaveNoAmbiguity(t *testing.T) {
+	r, _ := newClockedFleetRig(t, map[string]*fakeFleetSeat{"b": newFakeFleetSeat(fleetAnswer(FleetNoReply))})
+	if err := r.k.Start(context.Background(), "f", FleetOwner, &FleetStartArgs{Name: "b1", Instructions: "x", WorkDir: "/tmp"}); err == nil {
+		t.Fatal("an agent took a name shaped like a budget ID")
+	}
+	r.start("b", FleetOwner)
+	entered, release := make(chan struct{}), make(chan struct{})
+	r.setStartFn(func(_ context.Context, spec *FleetSeatSpec) (FleetSeat, error) {
+		if spec.Name == "b" {
+			return r.seats["b"], nil
+		}
+		close(entered)
+		<-release
+		return nil, errors.New("no model")
+	})
+	failed := make(chan error, 1)
+	go func() {
+		failed <- r.k.Start(context.Background(), "f", FleetOwner, &FleetStartArgs{Name: "late", Instructions: "x", WorkDir: "/tmp"})
+	}()
+	<-entered
+	if _, err := r.k.Send("f", &FleetSendArgs{From: "b", To: "late", Text: "later", After: time.Hour}); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	if err := <-failed; err == nil {
+		t.Fatal("start succeeded")
+	}
+	if st, _ := r.k.Status("f"); len(st.Timers) != 0 {
+		t.Fatalf("a failed start left %+v for a successor", st.Timers)
 	}
 }

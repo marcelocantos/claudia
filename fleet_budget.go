@@ -6,6 +6,7 @@ package claudia
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -27,6 +28,10 @@ type FleetBudget struct {
 	// Seconds is wall-clock time from when the budget was set.
 	Seconds float64 `json:"seconds,omitempty"`
 }
+
+// fleetBudgetIDPattern matches budget IDs, which agent names may not, so that
+// the owner raising a budget by ID cannot mean an agent.
+var fleetBudgetIDPattern = regexp.MustCompile(`^b[0-9]+$`)
 
 func (b FleetBudget) zero() bool { return b.Tokens == 0 && b.Turns == 0 && b.Seconds == 0 }
 

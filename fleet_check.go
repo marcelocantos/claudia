@@ -4,7 +4,7 @@
 package claudia
 
 import (
-	"archive/tar"
+	"bufio"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -189,9 +189,17 @@ func (k *FleetKernel) RunCheck(fleet, requester, name, commit string) (string, e
 		k.mu.Unlock()
 		return "", fmt.Errorf("no agent named %q", requester)
 	}
-	if len(group.CheckRuns) >= fleetCheckQueue {
-		k.mu.Unlock()
-		return "", fmt.Errorf("%d checks are already waiting or running; wait for a result", fleetCheckQueue)
+	if requester != FleetOwner {
+		queued := 0
+		for _, run := range group.CheckRuns {
+			if run.Requester != FleetOwner {
+				queued++
+			}
+		}
+		if queued >= fleetCheckQueue {
+			k.mu.Unlock()
+			return "", fmt.Errorf("%d agents' checks are already waiting or running; wait for a result", fleetCheckQueue)
+		}
 	}
 	repo := check.Repo
 	k.mu.Unlock()
@@ -228,22 +236,24 @@ func (k *FleetKernel) RunCheck(fleet, requester, name, commit string) (string, e
 	}
 	pinned := *check
 	ctx, cancel := context.WithCancel(k.ctx)
-	k.checkCancels[fleetKey(fleet, id)] = cancel
+	k.checkSeq++
+	key := fmt.Sprintf("%s#%d", fleetKey(fleet, id), k.checkSeq)
+	k.checkCancels[key] = cancel
 	k.wg.Add(1)
-	go k.executeCheck(ctx, fleet, id, run, &pinned)
+	go k.executeCheck(ctx, key, fleet, id, run, &pinned)
 	return id, nil
 }
 
 // executeCheck runs one check and records what happened. If the kernel closes
 // first, the run stays recorded, and the next kernel reports it interrupted. A
 // fleet shut down meanwhile cancels it, and its result goes nowhere.
-func (k *FleetKernel) executeCheck(ctx context.Context, fleet, id string, run *fleetCheckRun, check *fleetCheckState) {
+func (k *FleetKernel) executeCheck(ctx context.Context, key, fleet, id string, run *fleetCheckRun, check *fleetCheckState) {
 	defer k.wg.Done()
 	defer func() {
 		k.mu.Lock()
-		if cancel := k.checkCancels[fleetKey(fleet, id)]; cancel != nil {
+		if cancel := k.checkCancels[key]; cancel != nil {
 			cancel()
-			delete(k.checkCancels, fleetKey(fleet, id))
+			delete(k.checkCancels, key)
 		}
 		k.mu.Unlock()
 	}()
@@ -342,13 +352,18 @@ func runCheckProcess(ctx context.Context, checkouts, id string, check *fleetChec
 		return
 	}
 	defer func() { _ = os.RemoveAll(dir) }()
-	if err := exportCommit(ctx, check.Repo, commit, dir); err != nil {
-		result.Error = "export: " + err.Error()
-		return
-	}
-
+	// The export spends from the same timeout as the script, so a large
+	// repository gets the time its owner allowed.
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(check.TimeoutSeconds*float64(time.Second)))
 	defer cancel()
+	if err := exportCommit(ctx, check.Repo, commit, dir); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			result.Error = fmt.Sprintf("timed out after %s while exporting the commit", fleetDuration(time.Duration(check.TimeoutSeconds*float64(time.Second))))
+		} else {
+			result.Error = "export: " + err.Error()
+		}
+		return
+	}
 	cmd := exec.CommandContext(ctx, "sh", "-c", string(script), "check")
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "CLAUDIA_CHECK_COMMIT="+commit, "CLAUDIA_CHECK_REPO="+check.Repo)
@@ -385,74 +400,125 @@ func runCheckProcess(ctx context.Context, checkouts, id string, check *fleetChec
 	}
 }
 
-// exportCommit writes commit's tree into dir with git archive, which runs no
-// hooks, filters or downloads. Paths that would leave dir are refused.
+// exportCommit writes commit's tree into dir by walking its objects. A git
+// archive would honour the shared repository's attributes and replace refs,
+// both of which agents can write, so either could forge a result. ls-tree and
+// cat-file read the objects themselves, with replacement turned off. Files are
+// written through an os.Root, which no path or symlink can lead out of; no file
+// is written twice; and symlinks are made last, so none can redirect a write.
 func exportCommit(ctx context.Context, repo, commit, dir string) error {
-	ctx, cancel := context.WithTimeout(ctx, fleetGitTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", "-C", repo, "-c", "core.hooksPath=/dev/null", "archive", "--format=tar", commit)
-	out, err := cmd.StdoutPipe()
+	root, err := os.OpenRoot(dir)
 	if err != nil {
 		return err
 	}
-	var stderr tailBuffer
-	stderr.limit = fleetCheckOutput
-	cmd.Stderr = &stderr
+	defer root.Close()
+
+	listing, err := fleetGitContext(ctx, repo, "ls-tree", "-r", "-z", "--full-tree", commit)
+	if err != nil {
+		return err
+	}
+	type entry struct{ mode, oid, path string }
+	var files, links []entry
+	for _, record := range strings.Split(strings.TrimSuffix(listing, "\x00"), "\x00") {
+		if record == "" {
+			continue
+		}
+		meta, path, ok := strings.Cut(record, "\t")
+		fields := strings.Fields(meta)
+		if !ok || len(fields) != 3 {
+			return fmt.Errorf("unexpected ls-tree record %q", record)
+		}
+		e := entry{mode: fields[0], oid: fields[2], path: path}
+		switch {
+		case fields[1] != "blob":
+			// A submodule is a pointer to another repository, not content here.
+		case e.mode == "120000":
+			links = append(links, e)
+		default:
+			files = append(files, e)
+		}
+	}
+
+	cmd := fleetGitCommand(ctx, repo, "cat-file", "--batch")
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return err
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
 	if err := cmd.Start(); err != nil {
 		return err
 	}
-	extractErr := extractTar(out, dir)
-	_, _ = io.Copy(io.Discard, out)
-	if err := cmd.Wait(); err != nil {
-		return fmt.Errorf("git archive: %w: %s", err, strings.TrimSpace(stderr.String()))
-	}
-	return extractErr
-}
-
-func extractTar(r io.Reader, dir string) error {
-	tr := tar.NewReader(r)
-	for {
-		h, err := tr.Next()
-		if errors.Is(err, io.EOF) {
-			return nil
+	defer func() {
+		_ = stdin.Close()
+		_ = cmd.Wait()
+	}()
+	objects := bufio.NewReader(stdout)
+	read := func(oid string) ([]byte, error) {
+		if _, err := io.WriteString(stdin, oid+"\n"); err != nil {
+			return nil, err
 		}
+		header, err := objects.ReadString('\n')
+		if err != nil {
+			return nil, err
+		}
+		fields := strings.Fields(header)
+		if len(fields) != 3 || fields[1] != "blob" {
+			return nil, fmt.Errorf("object %s: %q", oid, strings.TrimSpace(header))
+		}
+		size, err := strconv.ParseInt(fields[2], 10, 64)
+		if err != nil {
+			return nil, err
+		}
+		body := make([]byte, size+1)
+		if _, err := io.ReadFull(objects, body); err != nil {
+			return nil, err
+		}
+		return body[:size], nil
+	}
+	for _, e := range files {
+		body, err := read(e.oid)
 		if err != nil {
 			return err
 		}
-		name := filepath.Clean(h.Name)
-		if filepath.IsAbs(name) || name == ".." || strings.HasPrefix(name, ".."+string(filepath.Separator)) {
-			return fmt.Errorf("archive entry %q leaves the export", h.Name)
+		if parent := filepath.Dir(e.path); parent != "." {
+			if err := root.MkdirAll(parent, 0o755); err != nil {
+				return fmt.Errorf("%s: %w", e.path, err)
+			}
 		}
-		path := filepath.Join(dir, name)
-		switch h.Typeflag {
-		case tar.TypeDir:
-			if err := os.MkdirAll(path, 0o755); err != nil {
-				return err
-			}
-		case tar.TypeReg:
-			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-				return err
-			}
-			f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(h.Mode)&0o755|0o600)
-			if err != nil {
-				return err
-			}
-			_, err = io.Copy(f, tr)
-			if closeErr := f.Close(); err == nil {
-				err = closeErr
-			}
-			if err != nil {
-				return err
-			}
-		case tar.TypeSymlink:
-			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-				return err
-			}
-			if err := os.Symlink(h.Linkname, path); err != nil {
-				return err
-			}
+		perm := os.FileMode(0o644)
+		if e.mode == "100755" {
+			perm = 0o755
+		}
+		f, err := root.OpenFile(e.path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, perm)
+		if err != nil {
+			return fmt.Errorf("%s: %w", e.path, err)
+		}
+		_, err = f.Write(body)
+		if closeErr := f.Close(); err == nil {
+			err = closeErr
+		}
+		if err != nil {
+			return fmt.Errorf("%s: %w", e.path, err)
 		}
 	}
+	for _, e := range links {
+		target, err := read(e.oid)
+		if err != nil {
+			return err
+		}
+		if parent := filepath.Dir(e.path); parent != "." {
+			if err := root.MkdirAll(parent, 0o755); err != nil {
+				return fmt.Errorf("%s: %w", e.path, err)
+			}
+		}
+		if err := root.Symlink(string(target), e.path); err != nil {
+			return fmt.Errorf("%s: %w", e.path, err)
+		}
+	}
+	return nil
 }
 
 func boundCheckOutput(s string) string {
@@ -496,14 +562,31 @@ func (w teeWriter) Write(p []byte) (int, error) {
 	return w.b.Write(p)
 }
 
-// fleetGit runs a git query for a check, bounded in time and with hooks off.
+// fleetGit runs a git query for a check, bounded in time.
 func fleetGit(dir string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), fleetGitTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir, "-c", "core.hooksPath=/dev/null"}, args...)...)
-	out, err := cmd.CombinedOutput()
+	return fleetGitContext(ctx, dir, args...)
+}
+
+// fleetGitCommand is git as a check uses it: hooks off, and replace refs and
+// grafts ignored, since agents working in the repository can write all three.
+func fleetGitCommand(ctx context.Context, dir string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir, "-c", "core.hooksPath=/dev/null", "-c", "advice.graftFileDeprecated=false"}, args...)...)
+	cmd.Env = append(os.Environ(), "GIT_NO_REPLACE_OBJECTS=1", "GIT_GRAFT_FILE=/dev/null")
+	return cmd
+}
+
+// fleetGitContext returns standard output only, so that git's advice on
+// standard error can never end up inside a result.
+func fleetGitContext(ctx context.Context, dir string, args ...string) (string, error) {
+	cmd := fleetGitCommand(ctx, dir, args...)
+	var stderr tailBuffer
+	stderr.limit = fleetCheckOutput
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
 	}
 	return strings.TrimSpace(string(out)), nil
 }
