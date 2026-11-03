@@ -1023,9 +1023,17 @@ connection, so keep calling with the same name and sequence number. After a
 restart, a turn in progress is delivered again with a note saying so, because its
 earlier work may already be done.
 
+An agent does not die of a passing problem. A failed turn, such as a plan refusing
+it, tells whoever was waiting and leaves the agent available. A seat that dies comes
+back with its message delivered again, and retires only after dying three times with
+no finished turn. A seat that cannot come back after a restart keeps trying, and
+its parent hears once. If its conversation cannot be resumed, it starts on a fresh
+one and its parent hears that too.
+
 `Shutdown` stops every agent and deletes the fleet. A fleet's agents are ordinary
-grants named `fleet-<fleet>-<agent>`, visible in `claudia broker status`. Against
-a broker too old to have fleets, calls fail with `ErrFleetUnsupported`.
+grants named `fleet-<fleet>--<agent>`, visible in `claudia broker status`, and only
+the fleet can start or stop them. Against a broker too old to have fleets, calls
+fail with `ErrFleetUnsupported`.
 
 ## Gotchas
 

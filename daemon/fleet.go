@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -21,8 +22,12 @@ import (
 // fleetDirName holds the kernel's state under the broker's state directory.
 const fleetDirName = "fleet"
 
-// fleetDefaultQuality is the floor for an agent that names none.
-const fleetDefaultQuality = "standard"
+const (
+	// fleetDefaultQuality is the floor for an agent that names none.
+	fleetDefaultQuality = "standard"
+	fleetSeatWatch      = 2 * time.Second
+	fleetSettlePoll     = 10 * time.Millisecond
+)
 
 // openFleetKernel starts the kernel, which is dormant until a client opens a
 // fleet. Damaged fleet state disables fleets and leaves the file alone. It does
@@ -35,9 +40,11 @@ func (d *Daemon) openFleetKernel(stateDir string) {
 		return
 	}
 	k, err := claudia.OpenFleetKernel(&claudia.FleetKernelArgs{
-		Dir:    filepath.Join(stateDir, fleetDirName),
-		Start:  d.startFleetSeat,
-		Logger: func(msg string, args ...any) { d.log.Warn(msg, args...) },
+		Dir:           filepath.Join(stateDir, fleetDirName),
+		Start:         d.startFleetSeat,
+		Discard:       func(fleet, name string) { d.removeFleetSeat(fleetGrantName(fleet, name)) },
+		ResumeSpacing: restartNudgeSpacing(d.opts.RestartNudgeSpacing),
+		Logger:        func(msg string, args ...any) { d.log.Warn(msg, args...) },
 	})
 	if err != nil {
 		d.log.Error("fleets disabled", "err", err)
@@ -50,7 +57,25 @@ func (d *Daemon) openFleetKernel(stateDir string) {
 	d.mu.Lock()
 	d.fleet = k
 	d.mu.Unlock()
+	d.reapOrphanFleetSeats(k)
 	k.Resume()
+}
+
+// reapOrphanFleetSeats removes seats a crash left with no agent behind them,
+// which nothing else would ever stop.
+func (d *Daemon) reapOrphanFleetSeats(k *claudia.FleetKernel) {
+	known := map[string]bool{}
+	for fleet, agents := range k.Agents() {
+		for _, agent := range agents {
+			known[fleetGrantName(fleet, agent)] = true
+		}
+	}
+	for _, def := range d.reg.List() {
+		if isFleetGrantName(def.Name) && !known[def.Name] {
+			d.log.Warn("removing a fleet seat with no agent", "grant", def.Name)
+			d.removeFleetSeat(def.Name)
+		}
+	}
 }
 
 func (d *Daemon) fleetKernel() (*claudia.FleetKernel, error) {
@@ -62,7 +87,28 @@ func (d *Daemon) fleetKernel() (*claudia.FleetKernel, error) {
 	return d.fleet, d.fleetErr
 }
 
-func fleetGrantName(fleet, agent string) string { return "fleet-" + fleet + "-" + agent }
+// fleetGrantPrefix and fleetGrantSeparator reserve a namespace of grant names.
+// Fleet and agent names cannot hold a doubled hyphen, so these are unambiguous.
+const (
+	fleetGrantPrefix    = "fleet-"
+	fleetGrantSeparator = "--"
+)
+
+func fleetGrantName(fleet, agent string) string {
+	return fleetGrantPrefix + fleet + fleetGrantSeparator + agent
+}
+
+// isFleetGrantName reports a name only the kernel may hold. Ordinary grant and
+// release requests refuse these, so a client cannot take over or stop a seat
+// behind the kernel's back.
+func isFleetGrantName(name string) bool {
+	return strings.HasPrefix(name, fleetGrantPrefix) && strings.Contains(name, fleetGrantSeparator)
+}
+
+func fleetOnlyError(name string) *broker.ProtocolError {
+	return &broker.ProtocolError{Code: broker.CodeGrantHeld, Field: "name", Value: name,
+		Msg: fmt.Sprintf("%s is a fleet seat; use the fleet to start or stop it", name)}
+}
 
 // startFleetSeat runs one agent. A fleet seat is an ordinary registered seat
 // with no owning connection and no AutoStart: the kernel alone decides when it
@@ -70,17 +116,15 @@ func fleetGrantName(fleet, agent string) string { return "fleet-" + fleet + "-" 
 func (d *Daemon) startFleetSeat(ctx context.Context, spec *claudia.FleetSeatSpec) (claudia.FleetSeat, error) {
 	name := fleetGrantName(spec.Fleet, spec.Name)
 	if deny, _ := d.consumerPolicyHold(name); deny {
-		return nil, fmt.Errorf("the consumer's fleet policy holds %s", name)
+		return nil, fmt.Errorf("%w: %s", claudia.ErrFleetSeatHeld, name)
 	}
 	ctx, cancel := context.WithTimeout(ctx, grantStartTimeout)
 	defer cancel()
 
 	existing := d.reg.Def(name)
 	if existing != nil && !spec.Resume {
-		// Left by a crash between a seat's end and the kernel's record of it.
-		if err := d.reg.Remove(name); err != nil {
-			return nil, fmt.Errorf("clear stale seat %s: %w", name, err)
-		}
+		// Left by a crash, or an agent whose conversation cannot be resumed.
+		d.removeFleetSeat(name)
 		existing = nil
 	}
 	if existing == nil {
@@ -104,13 +148,26 @@ func (d *Daemon) startFleetSeat(ctx context.Context, spec *claudia.FleetSeatSpec
 		}
 	}
 
+	// A failed fresh start leaves nothing behind. A failed resume keeps its
+	// record, because the kernel will try again.
+	abandon := func() {
+		if !spec.Resume {
+			d.removeFleetSeat(name)
+		}
+	}
 	proc, err := d.reg.AdoptOrLaunchContext(ctx, name)
 	if err != nil {
+		abandon()
 		return nil, err
 	}
 	if err := proc.WaitReady(ctx); err != nil {
-		_ = d.reg.Remove(name)
+		abandon()
 		return nil, err
+	}
+	// A seat with no tools cannot take part, and an agent would not know why.
+	if missing := proc.HostMCPUnavailable(); len(missing) > 0 {
+		abandon()
+		return nil, fmt.Errorf("its fleet tools are unavailable: %s", strings.Join(missing, ", "))
 	}
 
 	s := &fleetSeat{d: d, name: name}
@@ -119,7 +176,7 @@ func (d *Daemon) startFleetSeat(ctx context.Context, spec *claudia.FleetSeatSpec
 	d.mu.Lock()
 	g := d.liveGrantLocked(name)
 	if g == nil {
-		g = &brokerGrant{name: name}
+		g = &brokerGrant{name: name, fleet: true}
 		d.grants[name] = g
 	}
 	if g.proc != proc {
@@ -177,12 +234,40 @@ func (s *fleetSeat) Send(text string) error {
 	return proc.Send(text)
 }
 
+// WaitForResponse also watches for the seat's death. A wait that begins after
+// the seat has died would otherwise sit out the long silence bound.
 func (s *fleetSeat) WaitForResponse(ctx context.Context) (string, error) {
 	proc, err := s.proc()
 	if err != nil {
 		return "", err
 	}
-	return proc.WaitForResponse(ctx)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go func() {
+		tick := time.NewTicker(fleetSeatWatch)
+		defer tick.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-tick.C:
+				if !proc.Alive() {
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+	reply, err := proc.WaitForResponse(ctx)
+	if err != nil && !proc.Alive() {
+		return "", fmt.Errorf("seat %s died: %w", s.name, err)
+	}
+	return reply, err
+}
+
+func (s *fleetSeat) Alive() bool {
+	proc := s.d.reg.Get(s.name)
+	return proc != nil && proc.Alive()
 }
 
 func (s *fleetSeat) Describe() string {
@@ -203,42 +288,44 @@ func (s *fleetSeat) Usage() any {
 
 func (s *fleetSeat) LastActivity() time.Time { return time.Unix(0, s.last.Load()) }
 
-// Stop ends the seat for good. It follows handleRelease's stop: interrupt a turn
-// in progress and give it a moment to settle, then remove the seat regardless,
-// because a stop stops (🎯T239).
+// Stop ends the seat for good, once.
 func (s *fleetSeat) Stop() {
-	s.once.Do(func() {
-		d := s.d
-		d.mu.Lock()
-		g := d.liveGrantLocked(s.name)
-		settle := d.releaseSettle
-		d.mu.Unlock()
-		if settle <= 0 {
-			settle = defaultReleaseSettle
-		}
-		if proc := d.reg.Get(s.name); proc != nil && proc.PromptInFlight() {
-			if err := proc.Quiesce(); err == nil {
-				deadline := time.Now().Add(settle)
-				for proc.PromptInFlight() && time.Now().Before(deadline) {
-					time.Sleep(10 * time.Millisecond)
-				}
+	s.once.Do(func() { s.d.removeFleetSeat(s.name) })
+}
+
+// removeFleetSeat follows handleRelease's stop: interrupt a turn in progress and
+// give it a moment to settle, then remove the seat regardless, because a stop
+// stops (🎯T239). It returns when the seat is gone.
+func (d *Daemon) removeFleetSeat(name string) {
+	d.mu.Lock()
+	g := d.liveGrantLocked(name)
+	settle := d.releaseSettle
+	d.mu.Unlock()
+	if settle <= 0 {
+		settle = defaultReleaseSettle
+	}
+	if proc := d.reg.Get(name); proc != nil && proc.PromptInFlight() {
+		if err := proc.Quiesce(); err == nil {
+			deadline := time.Now().Add(settle)
+			for proc.PromptInFlight() && time.Now().Before(deadline) {
+				time.Sleep(fleetSettlePoll)
 			}
 		}
-		d.mu.Lock()
-		if g != nil {
-			d.detachLocked(g)
-			if g.proc != nil && g.sub != 0 {
-				g.proc.UnsubscribeEvents(g.sub)
-			}
-			delete(d.grants, s.name)
+	}
+	d.mu.Lock()
+	if g != nil {
+		d.detachLocked(g)
+		if g.proc != nil && g.sub != 0 {
+			g.proc.UnsubscribeEvents(g.sub)
 		}
-		d.mu.Unlock()
-		d.standDown(s.name)
-		if err := d.reg.Remove(s.name); err != nil {
-			d.log.Warn("fleet seat stop", "grant", s.name, "err", err)
-		}
-		d.emit(broker.EventMessage{Kind: broker.EventRelease, Name: s.name})
-	})
+		delete(d.grants, name)
+	}
+	d.mu.Unlock()
+	d.standDown(name)
+	if err := d.reg.Remove(name); err != nil {
+		d.log.Warn("fleet seat stop", "grant", name, "err", err)
+	}
+	d.emit(broker.EventMessage{Kind: broker.EventRelease, Name: name})
 }
 
 // handleFleet runs apart from the connection's read loop, because a start and a
@@ -258,7 +345,10 @@ func (d *Daemon) handleFleet(c *broker.ClientConn, req *broker.Request) {
 		_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeMalformed, Field: "fleet", Msg: err.Error()})
 		return
 	}
-	_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeFleetResult, Fleet: &broker.FleetResponse{Result: raw}})
+	if err := c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeFleetResult, Fleet: &broker.FleetResponse{Result: raw}}); err != nil {
+		// Silence here would leave the client waiting for a reply that never comes.
+		_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeMalformed, Field: "fleet", Msg: err.Error()})
+	}
 }
 
 func (d *Daemon) fleetOp(ctx context.Context, r *broker.FleetRequest) (any, error) {

@@ -59,32 +59,57 @@ const (
 	fleetDefaultMaxAgents   = 12
 	fleetDefaultMaxMessages = 2000
 	fleetTokenBytes         = 16
-	// fleetMaxText keeps every message well inside one broker frame.
-	fleetMaxText = 1 << 20
+	fleetMaxName            = 48
+	// fleetMaxText keeps any one event inside a broker frame (1 MiB) even when
+	// JSON escaping swells every byte sixfold.
+	fleetMaxText = 128 << 10
 	// fleetEventRing is how many recent events stay in memory per fleet.
 	fleetEventRing = 512
-	// fleetReadBytes bounds the event text one read returns.
-	fleetReadBytes = 4 * fleetMaxText
+	// fleetReadBytes bounds the encoded events one read returns, so that a reply
+	// fits a broker frame. A read always returns at least one event.
+	fleetReadBytes = 512 << 10
 	// fleetStopWait bounds waiting for a stopped tree to be gone.
 	fleetStopWait = time.Minute
 	fleetPoll     = 10 * time.Millisecond
+	// fleetMaxDeaths is how many times in a row a seat can die mid-work, with no
+	// turn finished between, before its agent retires.
+	fleetMaxDeaths = 3
+	// fleetMaxResumes is how many failed tries to reattach to a conversation come
+	// before starting the agent on a fresh one.
+	fleetMaxResumes = 3
+	// fleetRetryMax caps the wait between tries to bring an agent's seat back.
+	fleetRetryMax = time.Minute
+	fleetRetryMin = time.Second
 
 	fleetRedeliveredNote = "[Claudia restarted during your last turn on this message, so its reply was lost. Work you already did remains. Check it and answer now.]"
 	fleetStateVersion    = 1
 )
 
 var (
-	fleetNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,47}$`)
+	// No doubled hyphen, so "<fleet>--<agent>" is unambiguous.
+	fleetNamePattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 
 	errFleetStopped = errors.New("stopped")
 	errFleetClosed  = errors.New("the fleet kernel is shut down")
+
+	// ErrFleetSeatHeld means something outside the fleet currently forbids this
+	// seat. The kernel keeps trying, and it does not count as a failure.
+	ErrFleetSeatHeld = errors.New("the consumer's fleet policy holds this seat")
 )
+
+// fleetNameValid reports whether a fleet or agent name is acceptable.
+func fleetNameValid(name string) bool {
+	return len(name) <= fleetMaxName && fleetNamePattern.MatchString(name)
+}
 
 // FleetSeat is what the kernel needs of a running agent.
 type FleetSeat interface {
 	Send(text string) error
 	WaitForResponse(ctx context.Context) (string, error)
-	// Stop ends the seat for good and returns promptly enough to run in a turn.
+	// Alive reports whether the seat's process is still there.
+	Alive() bool
+	// Stop ends the seat for good. When it returns, the seat is gone and its name
+	// is free. Calling it again waits for the first call.
 	Stop()
 	Describe() string
 	Usage() any
@@ -100,8 +125,8 @@ type FleetSeatSpec struct {
 	Quality string
 	Purpose string
 	Model   string
-	// Resume means this agent ran before a restart: reattach to its seat and
-	// conversation rather than starting afresh.
+	// Resume means reattach to this agent's seat and conversation. Otherwise any
+	// seat it left behind is replaced by a fresh one.
 	Resume bool
 }
 
@@ -111,6 +136,14 @@ type FleetKernelArgs struct {
 	Dir string
 	// Start runs a seat. Required.
 	Start func(ctx context.Context, spec *FleetSeatSpec) (FleetSeat, error)
+	// Discard removes a seat the kernel holds no handle on. Optional.
+	Discard func(fleet, name string)
+	// RetryWait is the first wait between tries to bring a seat back. Zero is a
+	// second. Optional.
+	RetryWait time.Duration
+	// ResumeSpacing paces agents coming back after a restart, because each may
+	// open a turn at once, and a wave of those meets a rate limit. Optional.
+	ResumeSpacing time.Duration
 	// Logger reports failures nobody is waiting on. Optional.
 	Logger func(msg string, args ...any)
 }
@@ -198,6 +231,10 @@ type fleetAgentState struct {
 	Current      *FleetMessage   `json:"current,omitempty"`
 	Briefed      bool            `json:"briefed,omitempty"`
 	Stopped      bool            `json:"stopped,omitempty"`
+
+	// retiring means retireState owns this agent's end. Not saved: a kernel that
+	// restarts sees Stopped and retires it again.
+	retiring bool
 }
 
 type fleetTimerState struct {
@@ -210,6 +247,7 @@ type fleetGroupState struct {
 	MaxMessages int                         `json:"max_messages"`
 	NextID      uint64                      `json:"next_id"`
 	Sent        int                         `json:"sent"`
+	Closing     bool                        `json:"closing,omitempty"`
 	Agents      map[string]*fleetAgentState `json:"agents"`
 	Timers      map[string]*fleetTimerState `json:"timers,omitempty"`
 }
@@ -225,6 +263,8 @@ type fleetRuntime struct {
 	state *fleetAgentState
 	seat  FleetSeat
 	wake  *sync.Cond
+	// deaths counts deaths since this agent last finished a turn.
+	deaths int
 }
 
 type fleetLog struct {
@@ -236,17 +276,23 @@ type fleetLog struct {
 
 // FleetKernel runs every fleet on a broker. It is dormant until one is opened.
 type FleetKernel struct {
-	dir    string
-	start  func(ctx context.Context, spec *FleetSeatSpec) (FleetSeat, error)
-	logf   func(msg string, args ...any)
-	ctx    context.Context
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	dir     string
+	start   func(ctx context.Context, spec *FleetSeatSpec) (FleetSeat, error)
+	discard func(fleet, name string)
+	spacing time.Duration
+	retry   time.Duration
+	logf    func(msg string, args ...any)
+	ctx     context.Context
+	cancel  context.CancelFunc
+	wg      sync.WaitGroup
 
 	mu       sync.Mutex
 	state    fleetState
 	running  map[string]*fleetRuntime
 	starting map[string]bool
+	// reviving holds agents whose seat is being brought back. Unlike a first
+	// start, nobody is waiting on one, so it can be stopped.
+	reviving map[string]bool
 	timers   map[string]*time.Timer
 	logs     map[string]*fleetLog
 	changed  chan struct{}
@@ -267,16 +313,21 @@ func OpenFleetKernel(args *FleetKernelArgs) (*FleetKernel, error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	k := &FleetKernel{
-		dir: args.Dir, start: args.Start, logf: args.Logger, ctx: ctx, cancel: cancel,
+		dir: args.Dir, start: args.Start, discard: args.Discard, spacing: args.ResumeSpacing, logf: args.Logger, ctx: ctx, cancel: cancel,
 		state:    fleetState{Version: fleetStateVersion, Fleets: map[string]*fleetGroupState{}},
 		running:  map[string]*fleetRuntime{},
 		starting: map[string]bool{},
+		reviving: map[string]bool{},
 		timers:   map[string]*time.Timer{},
 		logs:     map[string]*fleetLog{},
 		changed:  make(chan struct{}),
 	}
 	if k.logf == nil {
 		k.logf = func(string, ...any) {}
+	}
+	k.retry = args.RetryWait
+	if k.retry <= 0 {
+		k.retry = fleetRetryMin
 	}
 	raw, err := os.ReadFile(k.statePath())
 	switch {
@@ -304,9 +355,6 @@ func OpenFleetKernel(args *FleetKernelArgs) (*FleetKernel, error) {
 			return nil, err
 		}
 		k.logs[name] = log
-		for id, timer := range group.Timers {
-			k.armTimerLocked(name, id, timer)
-		}
 		for _, a := range group.Agents {
 			// A turn the restart interrupted goes round again, ahead of the rest.
 			if a.Current != nil {
@@ -314,7 +362,7 @@ func OpenFleetKernel(args *FleetKernelArgs) (*FleetKernel, error) {
 				a.Inbox = append([]*FleetMessage{a.Current}, a.Inbox...)
 				a.Current = nil
 			}
-			k.starting[fleetKey(name, a.Name)] = true
+			k.reviving[fleetKey(name, a.Name)] = true
 		}
 	}
 	if err := k.saveLocked(); err != nil {
@@ -324,19 +372,37 @@ func OpenFleetKernel(args *FleetKernelArgs) (*FleetKernel, error) {
 	return k, nil
 }
 
-// Resume reattaches every saved agent in the background.
+// Resume arms saved timers and reattaches every saved agent in the background.
 func (k *FleetKernel) Resume() {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	if k.closed {
 		return
 	}
+	order := 0
 	for name, group := range k.state.Fleets {
+		for id, timer := range group.Timers {
+			k.armTimerLocked(name, id, timer)
+		}
 		for _, a := range group.Agents {
 			k.wg.Add(1)
-			go k.reattach(name, a)
+			go k.revive(name, a, 0, time.Duration(order)*k.spacing)
+			order++
 		}
 	}
+}
+
+// Agents lists every fleet's agents, including ones not yet running.
+func (k *FleetKernel) Agents() map[string][]string {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	out := map[string][]string{}
+	for fleet, group := range k.state.Fleets {
+		for name := range group.Agents {
+			out[fleet] = append(out[fleet], name)
+		}
+	}
+	return out
 }
 
 // Close stops the kernel and leaves its seats running with their state saved,
@@ -367,7 +433,7 @@ func (k *FleetKernel) Close() {
 // Open creates the fleet if it is new. It is safe to call on an existing one,
 // which is how a client reattaches.
 func (k *FleetKernel) Open(fleet string, opts *FleetOptions) error {
-	if !fleetNamePattern.MatchString(fleet) {
+	if !fleetNameValid(fleet) {
 		return fmt.Errorf("invalid fleet name %q: use lowercase letters, digits and hyphens", fleet)
 	}
 	k.mu.Lock()
@@ -395,39 +461,73 @@ func (k *FleetKernel) Open(fleet string, opts *FleetOptions) error {
 }
 
 // Start launches an agent under caller, which is [FleetOwner] or an agent
-// starting its own child.
+// starting its own child, and returns once it is running.
 func (k *FleetKernel) Start(ctx context.Context, fleet, caller string, args *FleetStartArgs) error {
-	if args == nil || !fleetNamePattern.MatchString(args.Name) || args.Name == FleetOwner {
+	a, err := k.admit(fleet, caller, args)
+	if err != nil {
+		return err
+	}
+	return k.launch(ctx, fleet, a, false)
+}
+
+// startForAgent is Start for a tool call, which has too short a deadline to wait
+// for a seat. A bad request fails now. A failure to launch reaches the caller as
+// a message, and anything sent meanwhile waits in the new agent's mailbox.
+func (k *FleetKernel) startForAgent(fleet, caller string, args *FleetStartArgs) error {
+	a, err := k.admit(fleet, caller, args)
+	if err != nil {
+		return err
+	}
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.closed {
+		return errFleetClosed
+	}
+	k.wg.Add(1)
+	go func() {
+		defer k.wg.Done()
+		_ = k.launch(k.ctx, fleet, a, true)
+	}()
+	return nil
+}
+
+// admit checks a start and records the agent, saved before its seat exists so
+// that a crash cannot leave a seat with no record.
+func (k *FleetKernel) admit(fleet, caller string, args *FleetStartArgs) (*fleetAgentState, error) {
+	if args == nil || !fleetNameValid(args.Name) || args.Name == FleetOwner {
 		name := ""
 		if args != nil {
 			name = args.Name
 		}
-		return fmt.Errorf("invalid agent name %q: use lowercase letters, digits and hyphens", name)
+		return nil, fmt.Errorf("invalid agent name %q: use lowercase letters, digits and single hyphens", name)
 	}
 	instructions := args.Instructions
 	if args.InstructionsFile != "" {
 		raw, err := os.ReadFile(args.InstructionsFile)
 		if err != nil {
-			return fmt.Errorf("read instructions: %w", err)
+			return nil, fmt.Errorf("read instructions: %w", err)
 		}
 		instructions = string(raw)
 	}
 	if strings.TrimSpace(instructions) == "" {
-		return errors.New("an agent needs instructions")
+		return nil, errors.New("an agent needs instructions")
 	}
 	if args.WorkDir != "" && !filepath.IsAbs(args.WorkDir) {
-		return fmt.Errorf("workdir %q is not absolute", args.WorkDir)
+		return nil, fmt.Errorf("workdir %q is not absolute", args.WorkDir)
 	}
 	tokenBytes := make([]byte, fleetTokenBytes)
 	if _, err := rand.Read(tokenBytes); err != nil {
-		return err
+		return nil, err
 	}
 
 	k.mu.Lock()
+	defer k.mu.Unlock()
 	group, err := k.groupLocked(fleet)
 	if err != nil {
-		k.mu.Unlock()
-		return err
+		return nil, err
+	}
+	if group.Closing {
+		return nil, fmt.Errorf("fleet %q is shutting down", fleet)
 	}
 	a := &fleetAgentState{
 		Name: args.Name, Parent: caller, Root: args.Name, Instructions: instructions, Token: hex.EncodeToString(tokenBytes),
@@ -436,8 +536,7 @@ func (k *FleetKernel) Start(ctx context.Context, fleet, caller string, args *Fle
 	if caller != FleetOwner {
 		parent := group.Agents[caller]
 		if parent == nil {
-			k.mu.Unlock()
-			return fmt.Errorf("no agent named %q", caller)
+			return nil, fmt.Errorf("no agent named %q", caller)
 		}
 		a.Root = parent.Root
 		if a.WorkDir == "" {
@@ -445,29 +544,28 @@ func (k *FleetKernel) Start(ctx context.Context, fleet, caller string, args *Fle
 		}
 	}
 	if a.WorkDir == "" {
-		k.mu.Unlock()
-		return errors.New("a root agent needs a workdir")
+		return nil, errors.New("a root agent needs a workdir")
 	}
 	if group.Agents[args.Name] != nil {
-		k.mu.Unlock()
-		return fmt.Errorf("agent %q already exists", args.Name)
+		return nil, fmt.Errorf("agent %q already exists", args.Name)
 	}
 	if len(group.Agents) >= group.MaxAgents {
-		k.mu.Unlock()
-		return fmt.Errorf("agent limit %d reached; stop an agent first", group.MaxAgents)
+		return nil, fmt.Errorf("agent limit %d reached; stop an agent first", group.MaxAgents)
 	}
-	// Saved first, so a seat started just before a crash still has a record.
 	group.Agents[args.Name] = a
 	key := fleetKey(fleet, args.Name)
 	k.starting[key] = true
 	if err := k.saveLocked(); err != nil {
 		delete(group.Agents, args.Name)
 		delete(k.starting, key)
-		k.mu.Unlock()
-		return err
+		return nil, err
 	}
-	k.mu.Unlock()
+	return a, nil
+}
 
+// launch gets an admitted agent its first seat. If that fails, the agent is
+// forgotten, and any request already sent to it is answered with the failure.
+func (k *FleetKernel) launch(ctx context.Context, fleet string, a *fleetAgentState, tellParent bool) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	stopCancel := context.AfterFunc(k.ctx, cancel)
@@ -475,25 +573,48 @@ func (k *FleetKernel) Start(ctx context.Context, fleet, caller string, args *Fle
 	seat, err := k.start(ctx, k.specFor(fleet, a, false))
 
 	k.mu.Lock()
+	defer k.mu.Unlock()
 	if k.closed {
 		// Kept on purpose: the next kernel reattaches to it.
-		k.mu.Unlock()
 		return errFleetClosed
 	}
-	delete(k.starting, key)
-	if err != nil {
-		delete(group.Agents, args.Name)
-		saveErr := k.saveLocked()
-		k.eventLocked(fleet, &FleetEvent{Kind: FleetEventStartFailed, Agent: args.Name, Parent: caller, Root: a.Root, Cause: err.Error()})
-		k.mu.Unlock()
-		if saveErr != nil {
-			k.logf("fleet: save after failed start", "fleet", fleet, "agent", args.Name, "err", saveErr)
-		}
-		return err
+	delete(k.starting, fleetKey(fleet, a.Name))
+	if err == nil {
+		k.runLocked(fleet, a, seat, 0)
+		return nil
 	}
-	k.runLocked(fleet, a, seat)
-	k.mu.Unlock()
-	return nil
+	group := k.state.Fleets[fleet]
+	if group != nil {
+		delete(group.Agents, a.Name)
+	}
+	k.eventLocked(fleet, &FleetEvent{Kind: FleetEventStartFailed, Agent: a.Name, Parent: a.Parent, Root: a.Root, Cause: err.Error()})
+	failure := fmt.Sprintf("agent %s could not start: %v", a.Name, err)
+	toldParent := k.answerOwedLocked(fleet, a, failure)
+	if tellParent && !toldParent {
+		k.deliverLocked(fleet, &FleetMessage{Kind: FleetResponse, From: a.Name, To: k.parentOfLocked(fleet, a), Text: failure})
+	}
+	if saveErr := k.saveLocked(); saveErr != nil {
+		k.logf("fleet: save after failed start", "fleet", fleet, "agent", a.Name, "err", saveErr)
+	}
+	return err
+}
+
+// answerOwedLocked fails every request the agent held, and reports whether its
+// parent was among those told. k.mu held.
+func (k *FleetKernel) answerOwedLocked(fleet string, a *fleetAgentState, failure string) bool {
+	owed := a.Inbox
+	if a.Current != nil {
+		owed = append([]*FleetMessage{a.Current}, owed...)
+	}
+	a.Inbox, a.Current = nil, nil
+	toldParent := false
+	for _, m := range owed {
+		if m.Kind == FleetRequest {
+			k.deliverLocked(fleet, &FleetMessage{Kind: FleetResponse, From: a.Name, To: m.From, InReplyTo: m.ID, Text: failure})
+			toldParent = toldParent || m.From == a.Parent
+		}
+	}
+	return toldParent
 }
 
 func (k *FleetKernel) specFor(fleet string, a *fleetAgentState, resume bool) *FleetSeatSpec {
@@ -503,33 +624,89 @@ func (k *FleetKernel) specFor(fleet string, a *fleetAgentState, resume bool) *Fl
 }
 
 // runLocked joins a started seat to the kernel. k.mu held.
-func (k *FleetKernel) runLocked(fleet string, a *fleetAgentState, seat FleetSeat) {
-	rt := &fleetRuntime{fleet: fleet, state: a, seat: seat, wake: sync.NewCond(&k.mu)}
+func (k *FleetKernel) runLocked(fleet string, a *fleetAgentState, seat FleetSeat, deaths int) {
+	rt := &fleetRuntime{fleet: fleet, state: a, seat: seat, wake: sync.NewCond(&k.mu), deaths: deaths}
 	k.running[fleetKey(fleet, a.Name)] = rt
 	k.eventLocked(fleet, &FleetEvent{Kind: FleetEventStarted, Agent: a.Name, Parent: a.Parent, Root: a.Root, Model: seat.Describe()})
 	k.wg.Add(1)
 	go k.run(rt)
 }
 
-// reattach gets a restored agent its seat again. If that fails, whoever it owed
-// hears about it, exactly as if it had died.
-func (k *FleetKernel) reattach(fleet string, a *fleetAgentState) {
+// revive brings back an agent's seat after a restart or its death, and keeps
+// trying for as long as the agent exists, because the usual causes pass: an
+// outage, a policy hold, a plan out of tokens. Its parent hears once if it is
+// taking a while. If the conversation cannot be resumed, the agent starts on a
+// fresh one, and its next message repeats its instructions.
+func (k *FleetKernel) revive(fleet string, a *fleetAgentState, deaths int, delay time.Duration) {
 	defer k.wg.Done()
-	seat, err := k.start(k.ctx, k.specFor(fleet, a, true))
+	key := fleetKey(fleet, a.Name)
 	k.mu.Lock()
-	if k.closed {
-		// A seat that did start keeps running for the next kernel.
-		k.mu.Unlock()
-		return
-	}
-	delete(k.starting, fleetKey(fleet, a.Name))
-	if err != nil {
-		k.mu.Unlock()
-		k.retireState(fleet, a, nil, fmt.Errorf("could not reattach after a restart: %w", err))
-		return
-	}
-	k.runLocked(fleet, a, seat)
+	k.reviving[key] = true
 	k.mu.Unlock()
+
+	failures, told := 0, false
+	wait := k.retry
+	for {
+		k.mu.Lock()
+		closed, stopped, briefed := k.closed, a.Stopped, a.Briefed
+		k.mu.Unlock()
+		if closed {
+			return
+		}
+		if stopped {
+			k.retireState(fleet, a, nil, errFleetStopped)
+			return
+		}
+		if delay > 0 {
+			step := min(delay, fleetRetryMin)
+			delay -= step
+			select {
+			case <-k.ctx.Done():
+			case <-time.After(step):
+			}
+			continue
+		}
+
+		// An agent with no conversation yet has nothing to resume.
+		resume := briefed && failures < fleetMaxResumes
+		seat, err := k.start(k.ctx, k.specFor(fleet, a, resume))
+
+		k.mu.Lock()
+		if k.closed {
+			// A seat that did start keeps running for the next kernel.
+			k.mu.Unlock()
+			return
+		}
+		if err == nil {
+			delete(k.reviving, key)
+			if briefed && !resume {
+				a.Briefed = false
+				k.deliverLocked(fleet, &FleetMessage{Kind: FleetResponse, From: a.Name, To: k.parentOfLocked(fleet, a),
+					Text: fmt.Sprintf("agent %s lost its conversation in a restart and is starting on a fresh one", a.Name)})
+			}
+			if saveErr := k.saveLocked(); saveErr != nil {
+				k.logf("fleet: save after revive", "fleet", fleet, "agent", a.Name, "err", saveErr)
+			}
+			k.runLocked(fleet, a, seat, deaths)
+			k.mu.Unlock()
+			return
+		}
+		if !errors.Is(err, ErrFleetSeatHeld) {
+			failures++
+		}
+		k.logf("fleet: cannot bring seat back", "fleet", fleet, "agent", a.Name, "err", err)
+		if !told {
+			told = true
+			k.deliverLocked(fleet, &FleetMessage{Kind: FleetResponse, From: a.Name, To: k.parentOfLocked(fleet, a),
+				Text: fmt.Sprintf("agent %s cannot come back yet and I will keep trying: %v", a.Name, err)})
+			if saveErr := k.saveLocked(); saveErr != nil {
+				k.logf("fleet: save after failed revive", "fleet", fleet, "agent", a.Name, "err", saveErr)
+			}
+		}
+		k.mu.Unlock()
+		delay = wait
+		wait = min(wait*2, fleetRetryMax)
+	}
 }
 
 // run delivers one message per turn until the agent is stopped or dies.
@@ -584,11 +761,6 @@ func (k *FleetKernel) run(rt *fleetRuntime) {
 		}
 		reply = strings.TrimSpace(reply)
 		k.eventLocked(rt.fleet, &FleetEvent{Kind: FleetEventTurn, Agent: a.Name, Root: a.Root, Text: boundFleetText(reply), Usage: rt.seat.Usage(), Cause: errText(err)})
-		if err != nil {
-			k.mu.Unlock()
-			k.retireState(rt.fleet, a, rt, err)
-			return
-		}
 		// A seat stopped mid-turn can return an empty turn with no error. That
 		// is a failure the requester must hear about, not a silent answer.
 		if a.Stopped {
@@ -596,8 +768,40 @@ func (k *FleetKernel) run(rt *fleetRuntime) {
 			k.retireState(rt.fleet, a, rt, errFleetStopped)
 			return
 		}
+		if err != nil && !rt.seat.Alive() {
+			rt.deaths++
+			if rt.deaths >= fleetMaxDeaths {
+				k.mu.Unlock()
+				k.retireState(rt.fleet, a, rt, fmt.Errorf("its seat died %d times: %w", rt.deaths, err))
+				return
+			}
+			// The seat goes round again, with this message first.
+			m.Redelivered = true
+			a.Inbox = append([]*FleetMessage{m}, a.Inbox...)
+			a.Current = nil
+			delete(k.running, fleetKey(rt.fleet, a.Name))
+			if saveErr := k.saveLocked(); saveErr != nil {
+				k.logf("fleet: save after death", "fleet", rt.fleet, "agent", a.Name, "err", saveErr)
+			}
+			k.wg.Add(1)
+			go k.revive(rt.fleet, a, rt.deaths, 0)
+			k.mu.Unlock()
+			return
+		}
 		a.Current = nil
-		k.routeReplyLocked(rt.fleet, a, m, reply)
+		if err != nil {
+			// The turn failed but the agent is fine, as when a plan refuses it or a
+			// provider goes silent. Whoever is waiting needs to hear, and can retry.
+			failure := fmt.Sprintf("agent %s's turn failed, and it is still available: %v", a.Name, err)
+			if m.Kind == FleetRequest {
+				k.deliverLocked(rt.fleet, &FleetMessage{Kind: FleetResponse, From: a.Name, To: m.From, InReplyTo: m.ID, Text: failure})
+			} else {
+				k.deliverLocked(rt.fleet, &FleetMessage{Kind: FleetResponse, From: a.Name, To: k.parentOfLocked(rt.fleet, a), Text: failure})
+			}
+		} else {
+			rt.deaths = 0
+			k.routeReplyLocked(rt.fleet, a, m, reply)
+		}
 		if err := k.saveLocked(); err != nil {
 			k.logf("fleet: save after turn", "fleet", rt.fleet, "agent", a.Name, "err", err)
 		}
@@ -636,41 +840,52 @@ func (k *FleetKernel) parentOfLocked(fleet string, a *fleetAgentState) string {
 	return FleetOwner
 }
 
-// retireState removes an agent exactly once and answers everything it owed.
+// retireState removes an agent exactly once and answers everything it owed. The
+// seat is gone before the name is free, so a successor can never be hit by its
+// predecessor's stop.
 func (k *FleetKernel) retireState(fleet string, a *fleetAgentState, rt *fleetRuntime, cause error) {
 	k.mu.Lock()
 	group := k.state.Fleets[fleet]
-	if group == nil || group.Agents[a.Name] != a {
+	if group == nil || group.Agents[a.Name] != a || a.retiring {
 		k.mu.Unlock()
 		return
 	}
-	delete(group.Agents, a.Name)
-	delete(k.running, fleetKey(fleet, a.Name))
-	owed := a.Inbox
-	if a.Current != nil {
-		owed = append([]*FleetMessage{a.Current}, owed...)
+	a.retiring = true
+	a.Stopped = true
+	k.mu.Unlock()
+
+	if rt != nil {
+		rt.seat.Stop()
+	} else if k.discard != nil {
+		k.discard(fleet, a.Name)
 	}
-	a.Inbox, a.Current = nil, nil
-	k.eventLocked(fleet, &FleetEvent{Kind: FleetEventRetired, Agent: a.Name, Root: a.Root, Cause: cause.Error()})
-	failure := fmt.Sprintf("agent %s is gone: %v", a.Name, cause)
-	toldParent := false
-	for _, m := range owed {
-		if m.Kind == FleetRequest {
-			k.deliverLocked(fleet, &FleetMessage{Kind: FleetResponse, From: a.Name, To: m.From, InReplyTo: m.ID, Text: failure})
-			toldParent = toldParent || m.From == a.Parent
+
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.closed {
+		// The next kernel finds it marked stopped and finishes this.
+		return
+	}
+	key := fleetKey(fleet, a.Name)
+	delete(group.Agents, a.Name)
+	delete(k.running, key)
+	delete(k.reviving, key)
+	// Anyone it started now answers to the owner. Leaving the link would hand
+	// them to the next agent to take this name.
+	for _, child := range group.Agents {
+		if child.Parent == a.Name {
+			child.Parent = FleetOwner
 		}
 	}
+	k.eventLocked(fleet, &FleetEvent{Kind: FleetEventRetired, Agent: a.Name, Root: a.Root, Cause: cause.Error()})
+	toldParent := k.answerOwedLocked(fleet, a, fmt.Sprintf("agent %s is gone: %v", a.Name, cause))
 	// A deliberate stop is already known to whoever called it. An unexpected
 	// death with nothing owed to the parent would otherwise be silent.
 	if !errors.Is(cause, errFleetStopped) && !toldParent {
-		k.deliverLocked(fleet, &FleetMessage{Kind: FleetResponse, From: a.Name, To: k.parentOfLocked(fleet, a), Text: failure})
+		k.deliverLocked(fleet, &FleetMessage{Kind: FleetResponse, From: a.Name, To: k.parentOfLocked(fleet, a), Text: fmt.Sprintf("agent %s is gone: %v", a.Name, cause)})
 	}
 	if err := k.saveLocked(); err != nil {
 		k.logf("fleet: save after retire", "fleet", fleet, "agent", a.Name, "err", err)
-	}
-	k.mu.Unlock()
-	if rt != nil {
-		rt.seat.Stop()
 	}
 }
 
@@ -796,14 +1011,23 @@ func (k *FleetKernel) Stop(fleet, caller, name string) error {
 	if caller != FleetOwner && caller != name && !fleetDescends(group, name, caller) {
 		return fmt.Errorf("agent %q may stop only itself and its descendants", caller)
 	}
-	rt := k.running[fleetKey(fleet, name)]
-	if rt == nil {
+	key := fleetKey(fleet, name)
+	rt := k.running[key]
+	if rt == nil && !k.reviving[key] {
 		return fmt.Errorf("agent %q is still starting", name)
 	}
 	if a.Stopped {
 		return nil
 	}
 	a.Stopped = true
+	if rt == nil {
+		// Its revive loop notices and retires it.
+		k.eventLocked(fleet, &FleetEvent{Kind: FleetEventStop, Agent: name, Root: a.Root, Parent: caller})
+		if err := k.saveLocked(); err != nil {
+			k.logf("fleet: save after stop", "fleet", fleet, "agent", name, "err", err)
+		}
+		return nil
+	}
 	rt.wake.Broadcast()
 	k.eventLocked(fleet, &FleetEvent{Kind: FleetEventStop, Agent: name, Root: a.Root, Parent: caller})
 	if err := k.saveLocked(); err != nil {
@@ -819,11 +1043,16 @@ func (k *FleetKernel) Stop(fleet, caller, name string) error {
 	return nil
 }
 
+// fleetDescends walks up from name. Parent links always end at the owner,
+// because a retiring agent hands its children to the owner, and a new agent's
+// parent exists when it is created.
 func fleetDescends(group *fleetGroupState, name, ancestor string) bool {
-	for a := group.Agents[name]; a != nil; a = group.Agents[a.Parent] {
+	seen := 0
+	for a := group.Agents[name]; a != nil && seen <= len(group.Agents); a = group.Agents[a.Parent] {
 		if a.Parent == ancestor {
 			return true
 		}
+		seen++
 	}
 	return false
 }
@@ -831,25 +1060,26 @@ func fleetDescends(group *fleetGroupState, name, ancestor string) bool {
 // StopTree stops everything under root and waits for it to be gone, so that a
 // successor never shares a branch with a predecessor still running.
 func (k *FleetKernel) StopTree(ctx context.Context, fleet, root string) error {
-	members := func() []string {
-		k.mu.Lock()
-		defer k.mu.Unlock()
-		group := k.state.Fleets[fleet]
-		if group == nil {
-			return nil
-		}
-		var names []string
-		for _, a := range group.Agents {
-			if a.Root == root {
-				names = append(names, a.Name)
-			}
-		}
-		return names
-	}
 	ctx, cancel := context.WithTimeout(ctx, fleetStopWait)
 	defer cancel()
+	return k.stopAgents(ctx, fleet, func(a *fleetAgentState) bool { return a.Root == root })
+}
+
+// stopAgents stops every matching agent, including ones that appear meanwhile,
+// and waits until none is left.
+func (k *FleetKernel) stopAgents(ctx context.Context, fleet string, match func(*fleetAgentState) bool) error {
 	for {
-		names := members()
+		k.mu.Lock()
+		group := k.state.Fleets[fleet]
+		var names []string
+		if group != nil {
+			for _, a := range group.Agents {
+				if match(a) {
+					names = append(names, a.Name)
+				}
+			}
+		}
+		k.mu.Unlock()
 		if len(names) == 0 {
 			return nil
 		}
@@ -859,34 +1089,29 @@ func (k *FleetKernel) StopTree(ctx context.Context, fleet, root string) error {
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("stopping tree %q: %w", root, ctx.Err())
+			return fmt.Errorf("stopping agents: %w", ctx.Err())
 		case <-time.After(fleetPoll):
 		}
 	}
 }
 
-// Shutdown stops every agent and deletes the fleet and its log.
+// Shutdown stops every agent and deletes the fleet and its log. From the first
+// call the fleet refuses new agents, so nothing can slip in behind it.
 func (k *FleetKernel) Shutdown(ctx context.Context, fleet string) error {
 	k.mu.Lock()
 	group, err := k.groupLocked(fleet)
-	var roots []string
 	if err == nil {
-		seen := map[string]bool{}
-		for _, a := range group.Agents {
-			if !seen[a.Root] {
-				seen[a.Root] = true
-				roots = append(roots, a.Root)
-			}
-		}
+		group.Closing = true
+		err = k.saveLocked()
 	}
 	k.mu.Unlock()
 	if err != nil {
 		return err
 	}
-	for _, root := range roots {
-		if err := k.StopTree(ctx, fleet, root); err != nil {
-			return err
-		}
+	stopCtx, cancel := context.WithTimeout(ctx, fleetStopWait)
+	defer cancel()
+	if err := k.stopAgents(stopCtx, fleet, func(*fleetAgentState) bool { return true }); err != nil {
+		return err
 	}
 	k.mu.Lock()
 	defer k.mu.Unlock()
@@ -942,11 +1167,16 @@ func (k *FleetKernel) Read(ctx context.Context, fleet string, after uint64) ([]F
 			return nil, err
 		}
 		log := k.logs[fleet]
-		events, err := log.after(after)
+		last, path := log.seq, log.path
+		events, cached := log.recentAfter(after)
 		changed := k.changed
 		k.mu.Unlock()
-		if err != nil || len(events) > 0 {
-			return events, err
+		if !cached && after < last {
+			// Far behind: the whole file, read with nobody else waiting on it.
+			return scanFleetEvents(path, after)
+		}
+		if len(events) > 0 {
+			return events, nil
 		}
 		select {
 		case <-ctx.Done():

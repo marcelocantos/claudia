@@ -218,6 +218,8 @@ type Daemon struct {
 
 // brokerGrant is the daemon's ownership record for one seat.
 type brokerGrant struct {
+	// fleet marks a seat the fleet kernel holds (🎯T247).
+	fleet bool
 	name  string
 	owner *broker.ClientConn
 	pump  chan []byte
@@ -528,10 +530,18 @@ func (d *Daemon) HandleRequest(c *broker.ClientConn, req *broker.Request) bool {
 	case broker.TypeReceipt:
 		d.handleReceipt(c, req)
 	case broker.TypeGrant:
+		if isFleetGrantName(req.Grant.Name) {
+			_ = c.Fail(req.ID, fleetOnlyError(req.Grant.Name))
+			return true
+		}
 		d.handleGrant(c, req)
 	case broker.TypeRelease:
 		if req.Release.Name == "" {
 			return false
+		}
+		if isFleetGrantName(req.Release.Name) {
+			_ = c.Fail(req.ID, fleetOnlyError(req.Release.Name))
+			return true
 		}
 		d.handleRelease(c, req)
 	case broker.TypeSend, broker.TypeInterrupt, broker.TypeSetModel, broker.TypeCompact,
@@ -1252,7 +1262,9 @@ func (d *Daemon) forwarder(name string) claudia.EventFunc {
 		d.mu.Lock()
 		defer d.mu.Unlock()
 		g := d.grants[name]
-		if g == nil {
+		// Nobody ever claims a fleet seat, so its events would pile up here. The
+		// fleet's own log is its record.
+		if g == nil || g.fleet {
 			return
 		}
 		if g.pump != nil {

@@ -40,6 +40,9 @@ type MCPHost struct {
 	local  map[string]http.Handler
 }
 
+// mcpUpstreamPrefix starts every path the host serves.
+const mcpUpstreamPrefix = "/upstream/"
+
 type mcpRecipe struct {
 	kind    string // stdio | http
 	command string
@@ -144,8 +147,9 @@ func NewMCPHost(args *MCPHostArgs) (*MCPHost, error) {
 }
 
 // ServeLocal serves the MCP server called name from handler in this process.
-// Seats that name it can differ by the final segment of their URLs, which
-// survives a restart that moves the listener.
+// Seats reach it at [MCPHost.LocalURL], and can differ by the final segment,
+// which survives a restart that moves the listener. A seat's own server that
+// happens to share the name, at any other URL, is unaffected.
 func (h *MCPHost) ServeLocal(name string, handler http.Handler) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -216,11 +220,9 @@ func (h *MCPHost) ensure(s MCPServer) (string, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.local[s.Name] != nil {
-		u, err := url.Parse(strings.TrimSpace(s.URL))
-		if err != nil {
-			return "", false
+		if u, err := url.Parse(strings.TrimSpace(s.URL)); err == nil && strings.HasPrefix(u.Path, mcpUpstreamPrefix+s.Name+"/") {
+			return h.publicURLLocked(s.Name) + "/" + path.Base(u.Path), true
 		}
-		return h.publicURLLocked(s.Name) + "/" + path.Base(u.Path), true
 	}
 	if existing, have := h.recipe[s.Name]; have {
 		if existing.equal(recipe) || h.isOurURLLocked(s.URL) {
@@ -271,7 +273,7 @@ func (h *MCPHost) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	stdio := h.stdio[name]
 	local := h.local[name]
 	h.mu.Unlock()
-	if local != nil {
+	if local != nil && strings.HasPrefix(r.URL.Path, mcpUpstreamPrefix+name+"/") {
 		local.ServeHTTP(w, r)
 		return
 	}

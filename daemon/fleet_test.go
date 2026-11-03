@@ -125,6 +125,7 @@ func TestFleetSeatsCoordinateThroughTheBrokerWithNoConsumer(t *testing.T) {
 	if text, isErr := callSeatTool(t, url, "start", map[string]any{"name": "helper", "instructions": "HELPER-BRIEF"}); isErr {
 		t.Fatalf("start: %s", text)
 	}
+	waitFor(t, "helper's seat", func() bool { return f.seatCount() == 2 })
 	helper := f.seat(1)
 	if text, isErr := callSeatTool(t, url, "send", map[string]any{"to": "helper", "text": "do the job"}); isErr {
 		t.Fatalf("send: %s", text)
@@ -133,12 +134,12 @@ func TestFleetSeatsCoordinateThroughTheBrokerWithNoConsumer(t *testing.T) {
 	if got := helper.sent()[0]; !strings.Contains(got, "HELPER-BRIEF") || !strings.Contains(got, "do the job") {
 		t.Fatalf("helper got %q", got)
 	}
-	answerTurn(t, f, "fleet-home-helper", "job done")
+	answerTurn(t, f, "fleet-home--helper", "job done")
 	waitFor(t, "lead to hear", func() bool { return len(lead.sent()) == 1 })
 	if got := lead.sent()[0]; !strings.Contains(got, "job done") {
 		t.Fatalf("lead got %q", got)
 	}
-	answerTurn(t, f, "fleet-home-lead", "all finished")
+	answerTurn(t, f, "fleet-home--lead", "all finished")
 
 	var seq uint64
 	m := nextOwnerMessage(t, fleet, &seq)
@@ -153,7 +154,7 @@ func TestFleetSeatsCoordinateThroughTheBrokerWithNoConsumer(t *testing.T) {
 	for _, g := range f.d.grantList() {
 		grants = append(grants, g.Name)
 	}
-	if got := strings.Join(grants, ","); !strings.Contains(got, "fleet-home-helper") || !strings.Contains(got, "fleet-home-lead") {
+	if got := strings.Join(grants, ","); !strings.Contains(got, "fleet-home--helper") || !strings.Contains(got, "fleet-home--lead") {
 		t.Fatalf("grants do not show fleet seats: %s", got)
 	}
 }
@@ -179,7 +180,7 @@ func TestFleetStopEndsTheSeatAndTellsTheRequester(t *testing.T) {
 	if interrupts, _, _ := worker.counts(); interrupts == 0 {
 		t.Fatal("the turn in progress was not interrupted")
 	}
-	if f.d.reg.Def("fleet-home-worker") != nil || f.d.reg.Get("fleet-home-worker") != nil {
+	if f.d.reg.Def("fleet-home--worker") != nil || f.d.reg.Get("fleet-home--worker") != nil {
 		t.Fatal("seat left registered")
 	}
 	st, err := fleet.Status(ctx)
@@ -222,7 +223,7 @@ func TestFleetSurvivesABrokerRestartMidTurn(t *testing.T) {
 		t.Fatalf("a fleet seat got the broker's restart nudge: %q", nudged)
 	}
 	// The client carries on by name and sequence number, across the restart.
-	answerTurn(t, f, "fleet-home-worker", "finished after all")
+	answerTurn(t, f, "fleet-home--worker", "finished after all")
 	seq := before.LastSeq
 	var m *claudia.FleetMessage
 	for m == nil || m.InReplyTo != id {
@@ -303,4 +304,143 @@ func TestDamagedFleetStateDisablesFleetsAndNotTheBroker(t *testing.T) {
 		t.Fatalf("an ordinary seat could not start: %v", err)
 	}
 	_ = a.Detach()
+}
+
+// Review finding 9: nobody claims a fleet seat, so its events must not pile up.
+func TestFleetSeatEventsDoNotAccumulateInTheBroker(t *testing.T) {
+	f := newFixture(t)
+	f.bootWith(t, f.fleetOptions())
+	fleet := openTestFleet(t, f)
+	startTestAgent(t, fleet, "worker")
+	proc := f.d.reg.Get("fleet-home--worker")
+	for range 50 {
+		proc.PublishEvent(claudia.Event{Type: "assistant", Text: "chatter"})
+	}
+	f.d.mu.Lock()
+	defer f.d.mu.Unlock()
+	if g := f.d.grants["fleet-home--worker"]; g == nil || len(g.ring) != 0 {
+		t.Fatalf("grant %+v retained events", g)
+	}
+}
+
+// Review finding 10: a client cannot take over or stop a fleet seat.
+func TestClientsCannotGrantOrReleaseAFleetSeat(t *testing.T) {
+	f := newFixture(t)
+	f.bootWith(t, f.fleetOptions())
+	fleet := openTestFleet(t, f)
+	startTestAgent(t, fleet, "worker")
+	before := f.d.reg.Def("fleet-home--worker")
+	_, err := claudia.Start(claudia.Config{Name: "fleet-home--worker", Provider: claudia.ProviderCursor, WorkDir: t.TempDir(), SessionID: "sid-thief", TermLogPath: "-"})
+	if err == nil || !strings.Contains(err.Error(), "fleet seat") {
+		t.Fatalf("grant of a fleet seat: %v", err)
+	}
+	if after := f.d.reg.Def("fleet-home--worker"); after.SessionID != before.SessionID || len(after.MCPServers) != 1 || after.AutoStart {
+		t.Fatalf("definition changed: %+v", after)
+	}
+}
+
+// Review finding 6: names cannot collide across fleets, and an ordinary seat is
+// never cleared as if it were a stale fleet seat.
+func TestFleetGrantNamesAreUnambiguous(t *testing.T) {
+	f := newFixture(t)
+	f.bootWith(t, f.fleetOptions())
+	ctx := wallclockguard.UntilTestTimeout(t)
+	one, err := claudia.OpenFleet(ctx, "a", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	two, err := claudia.OpenFleet(ctx, "a-b", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	startTestAgent(t, one, "b-c")
+	startTestAgent(t, two, "c")
+	if f.seatCount() != 2 || f.d.reg.Def(fleetGrantName("a", "b-c")) == nil || f.d.reg.Def(fleetGrantName("a-b", "c")) == nil {
+		t.Fatal("two agents shared a seat")
+	}
+	if !isFleetGrantName(fleetGrantName("a", "b")) || isFleetGrantName("fleet-ordinary") || isFleetGrantName("worker--x") {
+		t.Fatal("namespace check is wrong")
+	}
+}
+
+// Review finding 12: a crash can leave a seat with no agent behind it.
+func TestOrphanFleetSeatIsRemovedAtBoot(t *testing.T) {
+	f := newFixture(t)
+	opts := f.fleetOptions()
+	f.bootWith(t, opts)
+	fleet := openTestFleet(t, f)
+	startTestAgent(t, fleet, "kept")
+	orphan := fleetGrantName("home", "orphan")
+	if err := f.d.reg.Register(claudia.AgentDef{Name: orphan, Provider: claudia.ProviderCursor, WorkDir: t.TempDir(), SessionID: "sid-orphan"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.d.reg.Register(claudia.AgentDef{Name: "ordinary", Provider: claudia.ProviderCursor, WorkDir: t.TempDir(), SessionID: "sid-ordinary"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.d.Close(); err != nil {
+		t.Fatal(err)
+	}
+	f.bootWith(t, opts)
+	if f.d.reg.Def(orphan) != nil {
+		t.Fatal("orphan survived boot")
+	}
+	if f.d.reg.Def("ordinary") == nil || f.d.reg.Def(fleetGrantName("home", "kept")) == nil {
+		t.Fatal("removed a seat that should have stayed")
+	}
+}
+
+// Review finding 2, through the real wire.
+func TestFleetBacklogLargerThanAFrameReachesAClient(t *testing.T) {
+	f := newFixture(t)
+	f.bootWith(t, f.fleetOptions())
+	fleet := openTestFleet(t, f)
+	startTestAgent(t, fleet, "worker")
+	ctx := wallclockguard.UntilTestTimeout(t)
+	const messages = 12
+	text := strings.Repeat("x", 100<<10)
+	for range messages {
+		if _, err := fleet.Send(ctx, "worker", text, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	st, err := fleet.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seq uint64
+	seen := 0
+	for seq < st.LastSeq {
+		events, err := fleet.Read(ctx, seq)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := range events {
+			seq = events[i].Seq
+			if events[i].Message != nil {
+				seen++
+			}
+		}
+	}
+	if seen != messages {
+		t.Fatalf("saw %d of %d messages", seen, messages)
+	}
+}
+
+func TestSeatThatDiesInATurnIsBroughtBack(t *testing.T) {
+	f := newFixture(t)
+	f.bootWith(t, f.fleetOptions())
+	fleet := openTestFleet(t, f)
+	startTestAgent(t, fleet, "worker")
+	first := f.seat(0)
+	ctx := wallclockguard.UntilTestTimeout(t)
+	if _, err := fleet.Send(ctx, "worker", "the job", 0); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "turn", func() bool { return len(first.sent()) == 1 })
+	first.exit()
+	waitFor(t, "a new seat", func() bool { return f.seatCount() >= 2 })
+	waitFor(t, "the job to go round again", func() bool {
+		sends := f.seat(f.seatCount() - 1).sent()
+		return len(sends) == 1 && strings.Contains(sends[0], "the job")
+	})
 }

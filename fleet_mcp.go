@@ -45,9 +45,9 @@ func fleetProperty(kind, description string) map[string]any {
 var fleetTools = []fleetTool{
 	{
 		Name:        "start",
-		Description: "Start a child agent. It sits idle until sent its first message, and receives its instructions with that message.",
+		Description: "Start a child agent and return at once. You can send it messages straight away, and they wait until it is up. If it cannot start, a message tells you. It receives its instructions with its first message.",
 		InputSchema: fleetSchema([]string{"name"}, map[string]any{
-			"name":              fleetProperty("string", "Lowercase letters, digits and hyphens. Unique in this fleet."),
+			"name":              fleetProperty("string", "Lowercase letters, digits and single hyphens. Unique in this fleet."),
 			"instructions":      fleetProperty("string", "What this agent is and how it behaves. Set this or instructions_file."),
 			"instructions_file": fleetProperty("string", "Absolute path of a file holding the instructions."),
 			"workdir":           fleetProperty("string", "Absolute directory it works in. Default: yours."),
@@ -173,14 +173,14 @@ func (k *FleetKernel) callFleetTool(r *http.Request, fleet, caller string, param
 	args := call.Arguments
 	switch call.Name {
 	case "start":
-		err := k.Start(r.Context(), fleet, caller, &FleetStartArgs{
+		err := k.startForAgent(fleet, caller, &FleetStartArgs{
 			Name: args.Name, Instructions: args.Instructions, InstructionsFile: args.InstructionsFile,
 			WorkDir: args.WorkDir, Quality: args.Quality, Purpose: args.Purpose, Model: args.Model,
 		})
 		if err != nil {
 			return "", err
 		}
-		return "started " + args.Name, nil
+		return "starting " + args.Name, nil
 	case "send":
 		after := time.Duration(args.AfterSeconds * float64(time.Second))
 		id, err := k.Send(fleet, caller, args.To, FleetRequest, args.Text, after)

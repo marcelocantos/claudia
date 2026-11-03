@@ -76,35 +76,52 @@ func scanFleetLog(path string, visit func(e *FleetEvent, end int64) bool) error 
 	}
 }
 
-// after returns events past seq, up to about fleetReadBytes of text. Recent ones
-// come from memory, and a reader further behind goes to the file.
-func (l *fleetLog) after(seq uint64) ([]FleetEvent, error) {
+// fleetEventBatch collects events up to the size one read may return.
+type fleetEventBatch struct {
+	events []FleetEvent
+	size   int
+}
+
+// take reports whether the batch wants more after e.
+func (b *fleetEventBatch) take(e *FleetEvent) bool {
+	raw, err := json.Marshal(e)
+	if err != nil {
+		return true
+	}
+	if len(b.events) > 0 && b.size+len(raw) > fleetReadBytes {
+		return false
+	}
+	b.events = append(b.events, *e)
+	b.size += len(raw)
+	return true
+}
+
+// recentAfter answers from memory, and reports false if seq is older than that.
+func (l *fleetLog) recentAfter(seq uint64) ([]FleetEvent, bool) {
 	if seq >= l.seq {
-		return nil, nil
+		return nil, true
 	}
-	var out []FleetEvent
-	size := 0
-	take := func(e *FleetEvent) bool {
-		out = append(out, *e)
-		size += len(e.Text)
-		if e.Message != nil {
-			size += len(e.Message.Text)
+	if len(l.recent) == 0 || l.recent[0].Seq > seq+1 {
+		return nil, false
+	}
+	var batch fleetEventBatch
+	for i := range l.recent {
+		if l.recent[i].Seq > seq && !batch.take(&l.recent[i]) {
+			break
 		}
-		return size < fleetReadBytes
 	}
-	if len(l.recent) > 0 && l.recent[0].Seq <= seq+1 {
-		for i := range l.recent {
-			if l.recent[i].Seq > seq && !take(&l.recent[i]) {
-				break
-			}
-		}
-		return out, nil
-	}
-	err := scanFleetLog(l.path, func(e *FleetEvent, _ int64) bool {
+	return batch.events, true
+}
+
+// scanFleetEvents answers from the file for a reader further behind. A line a
+// writer is still appending has no newline yet, so the scan stops before it.
+func scanFleetEvents(path string, seq uint64) ([]FleetEvent, error) {
+	var batch fleetEventBatch
+	err := scanFleetLog(path, func(e *FleetEvent, _ int64) bool {
 		if e.Seq <= seq {
 			return true
 		}
-		return take(e)
+		return batch.take(e)
 	})
-	return out, err
+	return batch.events, err
 }
