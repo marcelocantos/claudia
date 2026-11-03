@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -36,6 +37,7 @@ type MCPHost struct {
 	mu     sync.Mutex
 	stdio  map[string]*mcpStdioBackend
 	recipe map[string]mcpRecipe
+	local  map[string]http.Handler
 }
 
 type mcpRecipe struct {
@@ -126,6 +128,7 @@ func NewMCPHost(args *MCPHostArgs) (*MCPHost, error) {
 		consumerOwned: opts.ConsumerOwned,
 		stdio:         map[string]*mcpStdioBackend{},
 		recipe:        map[string]mcpRecipe{},
+		local:         map[string]http.Handler{},
 	}
 	if h.log == nil {
 		h.log = func(string, ...any) {}
@@ -138,6 +141,22 @@ func NewMCPHost(args *MCPHostArgs) (*MCPHost, error) {
 	}()
 	_ = os.WriteFile(filepath.Join(opts.StateDir, "mcp.addr"), []byte(h.addr+"\n"), 0o644)
 	return h, nil
+}
+
+// ServeLocal serves the MCP server called name from handler in this process.
+// Seats that name it can differ by the final segment of their URLs, which
+// survives a restart that moves the listener.
+func (h *MCPHost) ServeLocal(name string, handler http.Handler) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.local[name] = handler
+}
+
+// LocalURL is the URL a seat uses to reach a [MCPHost.ServeLocal] server.
+func (h *MCPHost) LocalURL(name, tail string) string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.publicURLLocked(name) + "/" + tail
 }
 
 // Addr is the loopback address the host listens on.
@@ -196,6 +215,13 @@ func (h *MCPHost) ensure(s MCPServer) (string, bool) {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.local[s.Name] != nil {
+		u, err := url.Parse(strings.TrimSpace(s.URL))
+		if err != nil {
+			return "", false
+		}
+		return h.publicURLLocked(s.Name) + "/" + path.Base(u.Path), true
+	}
 	if existing, have := h.recipe[s.Name]; have {
 		if existing.equal(recipe) || h.isOurURLLocked(s.URL) {
 			return h.publicURLLocked(s.Name), true
@@ -243,7 +269,12 @@ func (h *MCPHost) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	h.mu.Lock()
 	stdio := h.stdio[name]
+	local := h.local[name]
 	h.mu.Unlock()
+	if local != nil {
+		local.ServeHTTP(w, r)
+		return
+	}
 	if stdio != nil {
 		stdio.ServeHTTP(w, r)
 		return

@@ -544,6 +544,7 @@ type Request struct {
 	AuthStatus    *AuthStatusRequest
 	Receipt       *ReceiptRequest
 	Generations   *GenerationsRequest
+	Fleet         *FleetRequest
 	UsageFacts    *UsageFactsRequest
 }
 
@@ -591,6 +592,7 @@ type Response struct {
 	AuthStatus       *AuthStatusResponse
 	Receipt          *omp.RequestReceipt
 	Generations      *omp.GenerationPage
+	Fleet            *FleetResponse
 	UsageFacts       *omp.UsagePage
 }
 
@@ -632,6 +634,7 @@ func spec[M, B any](what string, slot func(*M) **B, noBody bool) bodySpec[M] {
 // walks it, so a type added here without a golden vector fails the build.
 var requestSpecs = map[MessageType]bodySpec[Request]{
 	TypeGenerations:       spec("generations body", func(r *Request) **GenerationsRequest { return &r.Generations }, false),
+	TypeFleet:             spec("fleet body", func(r *Request) **FleetRequest { return &r.Fleet }, false),
 	TypeUsageFacts:        spec("usage facts body", func(r *Request) **UsageFactsRequest { return &r.UsageFacts }, false),
 	TypeReceipt:           spec("receipt body", func(r *Request) **ReceiptRequest { return &r.Receipt }, false),
 	TypeSpawn:             spec("spawn body", func(r *Request) **SpawnRequest { return &r.Spawn }, false),
@@ -664,6 +667,7 @@ var requestSpecs = map[MessageType]bodySpec[Request]{
 // responseSpecs is the broker → client namespace.
 var responseSpecs = map[MessageType]bodySpec[Response]{
 	TypeGenerationsResult:  spec("generations result body", func(r *Response) **omp.GenerationPage { return &r.Generations }, false),
+	TypeFleetResult:        spec("fleet result body", func(r *Response) **FleetResponse { return &r.Fleet }, false),
 	TypeUsageFactsResult:   spec("usage facts result body", func(r *Response) **omp.UsagePage { return &r.UsageFacts }, false),
 	TypeReceiptResult:      spec("receipt result body", func(r *Response) **omp.RequestReceipt { return &r.Receipt }, false),
 	TypeSpawned:            spec("spawned body", func(r *Response) **SpawnResponse { return &r.Spawned }, false),

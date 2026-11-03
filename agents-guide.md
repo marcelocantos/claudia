@@ -992,6 +992,41 @@ connected, no check, or no answer within 30s it continues as if the
 check said not complete.
 Design record: [docs/metaharness.md](docs/metaharness.md).
 
+## Fleets: seats that manage each other (🎯T247)
+
+A fleet is a named tree of seats that start, stop and message each other through
+the broker, with no consumer process in the loop. It is opt-in: only seats started
+through a fleet get its tools, and a broker with no fleets does nothing extra.
+
+```go
+fleet, err := claudia.OpenFleet(ctx, "home", nil) // creates it, or reattaches
+err = fleet.Start(ctx, &claudia.FleetStartArgs{Name: "lead", InstructionsFile: "/abs/lead.md", WorkDir: "/abs/repo"})
+id, err := fleet.Send(ctx, "lead", "Fix the build.", 0)
+events, err := fleet.Read(ctx, lastSeq) // waits for events after lastSeq
+```
+
+Every agent has exactly four MCP tools, `start`, `send`, `stop` and `list`, and
+nothing else from your MCP configuration. Everything else is its instructions.
+
+- **Every request gets a response**, even if its target dies. A turn's text is its
+  response. There is no reply tool.
+- **Anything but a request goes up the tree.** A turn woken by a response, timer or
+  notice sends its text to its parent, and ending it with `NOREPLY` keeps it silent.
+- **A delayed `send` to yourself is a timer**, and arrives even if you go idle.
+- **Authority follows the tree.** An agent starts only its own children and stops
+  only itself and its descendants. Each seat's MCP URL carries its own token.
+- **The owner reads the log.** `Read` returns every event in order, including the
+  messages addressed to `claudia.FleetOwner`. Keep the last `Seq` you saw.
+
+A fleet outlives its client and survives broker restarts. `Fleet` holds no
+connection, so keep calling with the same name and sequence number. After a
+restart, a turn in progress is delivered again with a note saying so, because its
+earlier work may already be done.
+
+`Shutdown` stops every agent and deletes the fleet. A fleet's agents are ordinary
+grants named `fleet-<fleet>-<agent>`, visible in `claudia broker status`. Against
+a broker too old to have fleets, calls fail with `ErrFleetUnsupported`.
+
 ## Gotchas
 
 1. **The CLI seat path is removed.** Fleet seats are sidecar sessions.

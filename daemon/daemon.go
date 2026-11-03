@@ -108,6 +108,8 @@ type Options struct {
 	// launchers, when set, start and adopt the daemon's seats instead of
 	// the providers (tests).
 	launchers *claudia.RegistryLaunchers
+	// fleetPick replaces how a fleet seat's model is chosen (tests).
+	fleetPick func(*claudia.FleetSeatSpec) (claudia.Provider, string, error)
 	// DisableMCPHost skips the loopback MCP listener (tests that do not
 	// want a port). Production serve always hosts MCP (🎯T2.16).
 	DisableMCPHost bool
@@ -163,6 +165,10 @@ const (
 )
 
 type Daemon struct {
+	// fleet is the fleet kernel (🎯T247), or nil with the reason in fleetErr.
+	// The server is already listening when these are set, so read them under mu.
+	fleet    *claudia.FleetKernel
+	fleetErr error
 	// One interactive plan login at a time: concurrent seats must not open
 	// several browser/device-code prompts for the same owner.
 	reauthMu sync.Mutex
@@ -430,6 +436,7 @@ func New(opts Options) (*Daemon, error) {
 			})
 		}()
 	}
+	d.openFleetKernel(stateDir)
 	if !opts.DisableResume {
 		d.wg.Add(1)
 		go func() { defer d.wg.Done(); defer close(d.resumeDone); d.resumeSeats() }()
@@ -460,6 +467,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 // transcripts on the next boot (resumeSeats).
 func (d *Daemon) Close() error {
 	d.cancel()
+	if k, _ := d.fleetKernel(); k != nil {
+		k.Close()
+	}
 	d.reg.UnsubscribeSeatEvents(d.seatSub)
 	// A deliberate stop says so to every host first (jevons 🎯T944); a
 	// crash never reaches here, and its silence is what marks it.
@@ -548,6 +558,8 @@ func (d *Daemon) HandleRequest(c *broker.ClientConn, req *broker.Request) bool {
 			Usage: &broker.UsageResponse{FetchedAt: snap.FetchedAt, Backends: raw, Error: snap.Err, Unlaunchable: unlaunchable}})
 	case broker.TypeResolve:
 		d.handleResolve(c, req)
+	case broker.TypeFleet:
+		go d.handleFleet(c, req)
 	case broker.TypeJudge:
 		// Library code end to end (🎯T127): the daemon adds its own key
 		// and nothing else. The connection is this evaluation's alone, so
@@ -2000,6 +2012,17 @@ func (d *Daemon) handleResolve(c *broker.ClientConn, req *broker.Request) {
 		_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeMalformed, Field: "predicates", Msg: err.Error()})
 		return
 	}
+	pick, err := d.resolvePick(pred)
+	if err != nil {
+		_ = c.Fail(req.ID, err)
+		return
+	}
+	raw, _ := claudia.EncodePickWire(pick)
+	_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeResolved, Resolved: &broker.ResolveResponse{Pick: raw}})
+}
+
+// resolvePick answers a model request from the daemon's own usage and intel.
+func (d *Daemon) resolvePick(pred claudia.ModelPredicates) (claudia.ModelPick, error) {
 	usage := d.usage.Read(d.ctx, false).Backends
 	if usage == nil {
 		usage = []claudia.PlanUsage{}
@@ -2009,13 +2032,7 @@ func (d *Daemon) handleResolve(c *broker.ClientConn, req *broker.Request) {
 	if pred.Purpose != "" || pred.Model != "" || pred.Effort != "" {
 		pred.Intel = &claudia.ModelIntelArgs{Dir: filepath.Join(d.stateDir, claudia.ModelIntelDirName), Now: pred.Now}
 	}
-	pick, err := claudia.Resolve(d.ctx, pred)
-	if err != nil {
-		_ = c.Fail(req.ID, err)
-		return
-	}
-	raw, _ := claudia.EncodePickWire(pick)
-	_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeResolved, Resolved: &broker.ResolveResponse{Pick: raw}})
+	return claudia.Resolve(d.ctx, pred)
 }
 
 func (d *Daemon) handleStatus(c *broker.ClientConn, req *broker.Request) {

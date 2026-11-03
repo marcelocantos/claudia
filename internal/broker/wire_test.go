@@ -50,6 +50,7 @@ type requestVector struct {
 
 // requestVectors is every client → broker message, in canonical form.
 var requestVectors = map[string]requestVector{
+	"fleet":                {msg: &Request{ID: "rpc-fleet", Type: TypeFleet, Fleet: &FleetRequest{Op: FleetOpSend, Fleet: "home", To: "lead", Kind: "request", Text: "go", AfterSeconds: 1.5}}},
 	"generations":          {msg: &Request{ID: "rpc-generations", Type: TypeGenerations, Generations: &GenerationsRequest{Cursor: "opaque:1", Limit: 128, ExpiresAt: goldenAt.UnixMilli()}}},
 	"usage_facts_deadline": {msg: &Request{ID: "rpc-usage-deadline", Type: TypeUsageFacts, UsageFacts: &UsageFactsRequest{Seat: "seat", SessionID: "session", After: 3, Limit: 128, ExpiresAt: goldenAt.UnixMilli()}}},
 	"usage_facts":          {msg: &Request{ID: "rpc-usage", Type: TypeUsageFacts, UsageFacts: &UsageFactsRequest{Seat: "seat", SessionID: "session", After: 3, Limit: 128}}},
@@ -198,6 +199,7 @@ var requestVectors = map[string]requestVector{
 
 // responseVectors is every broker → client message, in canonical form.
 var responseVectors = map[string]*Response{
+	"fleet_result":       {ID: "rpc-fleet", Type: TypeFleetResult, Fleet: &FleetResponse{Result: json.RawMessage(`"r1"`)}},
 	"generations_result": {ID: "rpc-generations", Type: TypeGenerationsResult, Generations: &omp.GenerationPage{Generations: []omp.GenerationIdentity{{Seat: "removed", SessionID: "old"}}, Issues: []omp.GenerationIssue{}, Complete: true}},
 	"usage_facts_result": {ID: "rpc-usage", Type: TypeUsageFactsResult, UsageFacts: &omp.UsagePage{Seat: "seat", SessionID: "session", Facts: []omp.UsageFact{}, Next: 3}},
 	"receipt_result":     {ID: "rpc-receipt", Type: TypeReceiptResult, Receipt: &omp.RequestReceipt{Seat: "seat", SessionID: "session", RequestID: "logical-request", State: omp.ReceiptUnknown, TurnIDs: []string{}, Reason: "not_found"}},
