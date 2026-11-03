@@ -253,6 +253,14 @@ func (k *FleetKernel) callFleetTool(r *http.Request, fleet, caller string, param
 			}
 		}
 		st.Checks = visible
+		// And only the scheduled messages to or from itself.
+		mine := st.Timers[:0]
+		for _, timer := range st.Timers {
+			if timer.From == caller || timer.To == caller {
+				mine = append(mine, timer)
+			}
+		}
+		st.Timers = mine
 		raw, err := json.Marshal(st)
 		if err != nil {
 			return "", err

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -180,8 +181,10 @@ func TestFleetTimersGoWithTheirAgent(t *testing.T) {
 	if err := r.k.StopTree(wallclockguard.UntilTestTimeout(t), "f", "a"); err != nil {
 		t.Fatal(err)
 	}
+	// Everything to or from it goes; b's scheduled request is answered now, so a
+	// later agent named a cannot inherit it.
 	st, _ := r.k.Status("f")
-	if len(st.Timers) != 1 || st.Timers[0].From != "b" {
+	if len(st.Timers) != 0 {
 		t.Fatalf("timers left: %+v", st.Timers)
 	}
 }
@@ -481,4 +484,217 @@ func TestFleetCheckInterruptedByARestartIsAnswered(t *testing.T) {
 	r.k.Close()
 	r.open()
 	waitFleet(t, "the interrupted result", func() bool { return fleetSeatHeard(seat, "broker restarted during this run") })
+}
+
+// Review finding 1: a repeat starting long ago must not spin.
+func TestFleetRepeatFromThePastDoesNotFlood(t *testing.T) {
+	seat := newFakeFleetSeat(fleetHold)
+	r, _ := newClockedFleetRig(t, map[string]*fakeFleetSeat{"a": seat})
+	r.start("a", FleetOwner)
+	r.send(FleetOwner, "a", "busy")
+	waitFleet(t, "turn", func() bool { return len(seat.sends()) == 1 })
+	if _, err := r.k.Send("f", &FleetSendArgs{From: "a", To: "a", Text: "tick", At: time.Date(1700, 1, 1, 0, 0, 0, 0, time.UTC), Every: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	st, _ := r.k.Status("f")
+	if st.Agents[0].Queued > 1 || len(st.Timers) != 1 || st.Timers[0].Due.Before(fleetT0) {
+		t.Fatalf("queued %d, timers %+v", st.Agents[0].Queued, st.Timers)
+	}
+}
+
+// Review finding 3: a repeat keeps one firing waiting, however long its target
+// cannot take it.
+func TestFleetRepeatKeepsOneFiringWaiting(t *testing.T) {
+	seat := newFakeFleetSeat(fleetHold)
+	r, clock := newClockedFleetRig(t, map[string]*fakeFleetSeat{"a": seat})
+	r.start("a", FleetOwner)
+	r.send(FleetOwner, "a", "long job")
+	waitFleet(t, "turn", func() bool { return len(seat.sends()) == 1 })
+	if _, err := r.k.Send("f", &FleetSendArgs{From: FleetOwner, To: "a", Kind: FleetNotice, Text: "tick", Every: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	for range 30 {
+		clock.Advance(time.Minute)
+		time.Sleep(time.Millisecond)
+	}
+	waitFleet(t, "firings to settle", func() bool { st, _ := r.k.Status("f"); return st.Agents[0].Queued == 1 })
+	seat.replies <- FleetNoReply
+	waitFleet(t, "the waiting firing", func() bool { return len(seat.sends()) == 2 })
+	if got := seat.sends()[1]; !strings.Contains(got, "earlier firings missed") {
+		t.Fatalf("coalesced firing: %q", got)
+	}
+	time.Sleep(20 * time.Millisecond)
+	if st, _ := r.k.Status("f"); st.Agents[0].Queued != 0 {
+		t.Fatalf("%d firings still waiting", st.Agents[0].Queued)
+	}
+}
+
+// Review finding 2: a spent budget can be raised after its holder is gone.
+func TestFleetBudgetCanBeRaisedAfterItsHolderRetires(t *testing.T) {
+	seats := map[string]*fakeFleetSeat{"p": newFakeFleetSeat(fleetHold), "c": newFakeFleetSeat(fleetAnswer("ok"))}
+	r, _ := newClockedFleetRig(t, seats)
+	if err := r.k.Start(context.Background(), "f", FleetOwner, &FleetStartArgs{Name: "p", Instructions: "x", WorkDir: "/tmp", Budget: &FleetBudget{Turns: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.k.Start(context.Background(), "f", "p", &FleetStartArgs{Name: "c", Instructions: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.k.StopTree(wallclockguard.UntilTestTimeout(t), "f", "p"); err == nil {
+		// StopTree takes c too; restart c alone under p's budget instead.
+		t.Log("stopped the whole tree")
+	}
+	// Rebuild: p with a budget, c under it, then only p retires.
+	if err := r.k.Start(context.Background(), "f", FleetOwner, &FleetStartArgs{Name: "p", Instructions: "x", WorkDir: "/tmp", Budget: &FleetBudget{Turns: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.k.Start(context.Background(), "f", "p", &FleetStartArgs{Name: "c", Instructions: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := r.k.Status("f")
+	var id string
+	for _, b := range st.Budgets {
+		if b.Holder == "p" {
+			id = b.ID
+		}
+	}
+	if err := r.k.Stop("f", FleetOwner, "p"); err != nil {
+		t.Fatal(err)
+	}
+	waitFleet(t, "p to go", func() bool { st, _ := r.k.Status("f"); return len(st.Agents) == 1 })
+	r.send(FleetOwner, "c", "one")
+	r.send(FleetOwner, "c", "two")
+	var seq uint64
+	for {
+		if m := r.ownerMessage(&seq); m.From == FleetBudgetSender {
+			if !strings.Contains(m.Text, "raises budget "+id) {
+				t.Fatalf("notice does not say how: %q", m.Text)
+			}
+			break
+		}
+	}
+	if err := r.k.SetBudget("f", id, FleetBudget{Turns: 10}); err != nil {
+		t.Fatalf("raise by ID: %v", err)
+	}
+	waitFleet(t, "held work to run", func() bool { return len(seats["c"].sends()) == 2 })
+}
+
+// Review finding 7: agents starting turns at once cannot all slip under a limit.
+func TestFleetTurnBudgetHoldsUnderFanOut(t *testing.T) {
+	seats := map[string]*fakeFleetSeat{"p": newFakeFleetSeat(fleetHold)}
+	for _, name := range []string{"c1", "c2", "c3", "c4", "c5"} {
+		seats[name] = newFakeFleetSeat(fleetHold)
+	}
+	r, _ := newClockedFleetRig(t, seats)
+	if err := r.k.Start(context.Background(), "f", FleetOwner, &FleetStartArgs{Name: "p", Instructions: "x", WorkDir: "/tmp", Budget: &FleetBudget{Turns: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"c1", "c2", "c3", "c4", "c5"} {
+		if err := r.k.Start(context.Background(), "f", "p", &FleetStartArgs{Name: name, Instructions: "x"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"c1", "c2", "c3", "c4", "c5"} {
+		r.send(FleetOwner, name, "go")
+	}
+	time.Sleep(50 * time.Millisecond)
+	started := 0
+	for _, name := range []string{"c1", "c2", "c3", "c4", "c5"} {
+		started += len(seats[name].sends())
+	}
+	if started != 1 {
+		t.Fatalf("%d turns started under a budget of 1", started)
+	}
+}
+
+// Review finding 8: a successor of the same name inherits nothing scheduled.
+func TestFleetSuccessorInheritsNoScheduledMessages(t *testing.T) {
+	seats := map[string]*fakeFleetSeat{"a": newFakeFleetSeat(fleetHold), "b": newFakeFleetSeat(fleetAnswer(FleetNoReply))}
+	r, _ := newClockedFleetRig(t, seats)
+	r.start("a", FleetOwner)
+	r.start("b", FleetOwner)
+	id, err := r.k.Send("f", &FleetSendArgs{From: "b", To: "a", Text: "later", After: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.k.StopTree(wallclockguard.UntilTestTimeout(t), "f", "a"); err != nil {
+		t.Fatal(err)
+	}
+	waitFleet(t, "b to hear now", func() bool { return fleetSeatHeard(seats["b"], "agent a is gone") })
+	if st, _ := r.k.Status("f"); len(st.Timers) != 0 {
+		t.Fatalf("scheduled message %s outlived its target: %+v", id, st.Timers)
+	}
+	if err := r.k.Start(context.Background(), "f", FleetOwner, &FleetStartArgs{Name: FleetBudgetSender, Instructions: "x", WorkDir: "/tmp"}); err == nil {
+		t.Fatal("an agent took the name the kernel's budget notices use")
+	}
+}
+
+// Review finding 4: the repository's hooks cannot touch a check's export.
+func TestFleetCheckIgnoresRepositoryHooks(t *testing.T) {
+	repo := fleetCheckRepo(t)
+	hook := filepath.Join(repo, ".git", "hooks", "post-checkout")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\necho 100 > count.txt\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r, _ := newClockedFleetRig(t, map[string]*fakeFleetSeat{})
+	if err := r.k.RegisterCheck("f", &FleetCheckArgs{Name: "count", Repo: repo, Script: "cat count.txt\n"}); err != nil {
+		t.Fatal(err)
+	}
+	var seq uint64
+	if _, err := r.k.RunCheck("f", FleetOwner, "count", ""); err != nil {
+		t.Fatal(err)
+	}
+	if res := checkResult(t, r, &seq); res.Score == nil || *res.Score != 7 {
+		t.Fatalf("a hook changed the result: %+v", res)
+	}
+}
+
+// Review finding 5: a check's leftovers die with it, and do not spoil its result.
+func TestFleetCheckLeavesNothingRunning(t *testing.T) {
+	repo := fleetCheckRepo(t)
+	r, _ := newClockedFleetRig(t, map[string]*fakeFleetSeat{})
+	pidFile := filepath.Join(t.TempDir(), "child.pid")
+	if err := r.k.RegisterCheck("f", &FleetCheckArgs{Name: "bg", Repo: repo, Script: "sleep 37 &\necho $! > " + pidFile + "\necho 5\n"}); err != nil {
+		t.Fatal(err)
+	}
+	var seq uint64
+	if _, err := r.k.RunCheck("f", FleetOwner, "bg", ""); err != nil {
+		t.Fatal(err)
+	}
+	res := checkResult(t, r, &seq)
+	if res.Exit != 0 || res.Score == nil || *res.Score != 5 || res.Error != "" {
+		t.Fatalf("result %+v", res)
+	}
+	raw, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A killed process can linger briefly until it is reaped; one left running
+	// would stay for its full 37 seconds.
+	waitFleet(t, "the check's background process to end", func() bool {
+		return exec.Command("kill", "-0", strconv.Itoa(pid)).Run() != nil
+	})
+}
+
+func TestFleetCheckQueueIsBounded(t *testing.T) {
+	repo := fleetCheckRepo(t)
+	r, _ := newClockedFleetRig(t, map[string]*fakeFleetSeat{})
+	if err := r.k.RegisterCheck("f", &FleetCheckArgs{Name: "slow", Repo: repo, Script: "sleep 60\n"}); err != nil {
+		t.Fatal(err)
+	}
+	for range fleetCheckQueue {
+		if _, err := r.k.RunCheck("f", FleetOwner, "slow", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := r.k.RunCheck("f", FleetOwner, "slow", ""); err == nil {
+		t.Fatal("the queue grew past its bound")
+	}
+	if err := r.k.Shutdown(wallclockguard.UntilTestTimeout(t), "f"); err != nil {
+		t.Fatal(err)
+	}
 }

@@ -4,12 +4,14 @@
 package claudia
 
 import (
+	"archive/tar"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,11 +23,15 @@ import (
 )
 
 // A check is a pinned command run on the owner's behalf (🎯T248.3). The owner
-// registers it; the kernel keeps the script, pins it by hash, runs it against a
-// clean checkout of a named commit, out of every agent's reach, and records the
-// result in the fleet's log, which agents cannot write. What the result means,
-// the target and whether it is met belong to whoever registered it. A check
-// agents may not run is a held-out check.
+// registers it; the kernel keeps the script, pins it by hash, runs exactly those
+// bytes against a fresh export of a named commit, out of every agent's reach, and
+// records the result in the fleet's log, which agents cannot write. What the
+// result means, the target and whether it is met belong to whoever registered
+// it. A check agents may not run is a held-out check.
+//
+// The export comes from git archive, not a checkout: a checkout would run the
+// repository's hooks and filters, which agents working in the same repository
+// can write, and so could forge a result.
 
 const (
 	fleetCheckDefaultTimeout = 30 * time.Minute
@@ -35,6 +41,10 @@ const (
 	// fleetCheckOutput bounds the output a result keeps: its tail.
 	fleetCheckOutput = 16 << 10
 	fleetCheckKill   = 5 * time.Second
+	// fleetCheckQueue bounds a fleet's runs waiting or running at once.
+	fleetCheckQueue = 8
+	// fleetGitTimeout bounds every git command a check needs.
+	fleetGitTimeout = 2 * time.Minute
 )
 
 // FleetCheckArgs registers or replaces a check.
@@ -89,10 +99,13 @@ type fleetCheckState struct {
 }
 
 type fleetCheckRun struct {
-	Check     string    `json:"check"`
-	Commit    string    `json:"commit"`
-	Requester string    `json:"requester"`
-	Started   time.Time `json:"started"`
+	Check     string `json:"check"`
+	Commit    string `json:"commit"`
+	Requester string `json:"requester"`
+	// RequesterToken tells the agent that asked from a later agent of the same
+	// name, which must not receive the result.
+	RequesterToken string    `json:"requester_token,omitempty"`
+	Started        time.Time `json:"started"`
 }
 
 // RegisterCheck pins a check's script. Re-registering a name replaces it, and
@@ -176,6 +189,10 @@ func (k *FleetKernel) RunCheck(fleet, requester, name, commit string) (string, e
 		k.mu.Unlock()
 		return "", fmt.Errorf("no agent named %q", requester)
 	}
+	if len(group.CheckRuns) >= fleetCheckQueue {
+		k.mu.Unlock()
+		return "", fmt.Errorf("%d checks are already waiting or running; wait for a result", fleetCheckQueue)
+	}
 	repo := check.Repo
 	k.mu.Unlock()
 
@@ -197,6 +214,9 @@ func (k *FleetKernel) RunCheck(fleet, requester, name, commit string) (string, e
 	group.NextID++
 	id := fmt.Sprintf("c%d", group.NextID)
 	run := &fleetCheckRun{Check: name, Commit: sha, Requester: requester, Started: k.clock.Now()}
+	if a := group.Agents[requester]; a != nil {
+		run.RequesterToken = a.Token
+	}
 	if group.CheckRuns == nil {
 		group.CheckRuns = map[string]*fleetCheckRun{}
 	}
@@ -207,26 +227,37 @@ func (k *FleetKernel) RunCheck(fleet, requester, name, commit string) (string, e
 		return "", err
 	}
 	pinned := *check
+	ctx, cancel := context.WithCancel(k.ctx)
+	k.checkCancels[fleetKey(fleet, id)] = cancel
 	k.wg.Add(1)
-	go k.executeCheck(fleet, id, run, &pinned)
+	go k.executeCheck(ctx, fleet, id, run, &pinned)
 	return id, nil
 }
 
 // executeCheck runs one check and records what happened. If the kernel closes
-// first, the run stays recorded, and the next kernel reports it interrupted.
-func (k *FleetKernel) executeCheck(fleet, id string, run *fleetCheckRun, check *fleetCheckState) {
+// first, the run stays recorded, and the next kernel reports it interrupted. A
+// fleet shut down meanwhile cancels it, and its result goes nowhere.
+func (k *FleetKernel) executeCheck(ctx context.Context, fleet, id string, run *fleetCheckRun, check *fleetCheckState) {
 	defer k.wg.Done()
+	defer func() {
+		k.mu.Lock()
+		if cancel := k.checkCancels[fleetKey(fleet, id)]; cancel != nil {
+			cancel()
+			delete(k.checkCancels, fleetKey(fleet, id))
+		}
+		k.mu.Unlock()
+	}()
 	select {
 	case k.checkSlots <- struct{}{}:
 		defer func() { <-k.checkSlots }()
-	case <-k.ctx.Done():
+	case <-ctx.Done():
 		return
 	}
 	result := &FleetCheckResult{RunID: id, Name: run.Check, Commit: run.Commit, SHA256: check.SHA256, Requester: run.Requester, Exit: -1}
 	started := time.Now()
-	runCheckProcess(k.ctx, filepath.Join(k.dir, "checkouts"), id, check, run.Commit, result)
+	runCheckProcess(ctx, filepath.Join(k.dir, "checkouts"), id, check, run.Commit, result)
 	result.Seconds = time.Since(started).Seconds()
-	if k.ctx.Err() != nil {
+	if ctx.Err() != nil {
 		return
 	}
 	k.mu.Lock()
@@ -240,16 +271,19 @@ func (k *FleetKernel) executeCheck(fleet, id string, run *fleetCheckRun, check *
 	}
 }
 
-// finishCheckLocked records a result and tells an agent that asked. k.mu held.
+// finishCheckLocked records a result and tells the agent that asked, if it is
+// still the same agent. k.mu held.
 func (k *FleetKernel) finishCheckLocked(fleet, id string, result *FleetCheckResult) {
 	group := k.state.Fleets[fleet]
 	if group == nil {
 		return
 	}
+	run := group.CheckRuns[id]
 	delete(group.CheckRuns, id)
 	result.Output = boundCheckOutput(result.Output)
 	k.eventLocked(fleet, &FleetEvent{Kind: FleetEventCheckResult, Agent: result.Requester, Check: result})
-	if result.Requester == FleetOwner || group.Agents[result.Requester] == nil {
+	a := group.Agents[result.Requester]
+	if result.Requester == FleetOwner || a == nil || run == nil || a.Token != run.RequesterToken {
 		return
 	}
 	k.deliverLocked(fleet, &FleetMessage{Kind: FleetResponse, From: FleetCheckSenderPrefix + result.Name, To: result.Requester,
@@ -285,8 +319,10 @@ func describeCheckResult(r *FleetCheckResult) string {
 	return b.String()
 }
 
-// runCheckProcess runs the pinned script in a fresh worktree of commit, in its
-// own process group, and fills in result. The worktree is removed afterwards.
+// runCheckProcess runs the pinned script against a fresh export of commit, in
+// its own process group, and fills in result. The bytes run are the bytes whose
+// hash was just verified, so swapping the file afterwards changes nothing.
+// Everything the script started is killed when it ends.
 func runCheckProcess(ctx context.Context, checkouts, id string, check *fleetCheckState, commit string, result *FleetCheckResult) {
 	script, err := os.ReadFile(check.Path)
 	if err != nil {
@@ -301,25 +337,21 @@ func runCheckProcess(ctx context.Context, checkouts, id string, check *fleetChec
 	suffix := make([]byte, 4)
 	_, _ = rand.Read(suffix)
 	dir := filepath.Join(checkouts, id+"-"+hex.EncodeToString(suffix))
-	if err := os.MkdirAll(checkouts, 0o700); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		result.Error = err.Error()
 		return
 	}
-	if _, err := fleetGit(check.Repo, "worktree", "add", "--detach", "--force", dir, commit); err != nil {
-		result.Error = "checkout: " + err.Error()
+	defer func() { _ = os.RemoveAll(dir) }()
+	if err := exportCommit(ctx, check.Repo, commit, dir); err != nil {
+		result.Error = "export: " + err.Error()
 		return
 	}
-	defer func() {
-		_, _ = fleetGit(check.Repo, "worktree", "remove", "--force", dir)
-		_ = os.RemoveAll(dir)
-		_, _ = fleetGit(check.Repo, "worktree", "prune")
-	}()
 
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(check.TimeoutSeconds*float64(time.Second)))
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "sh", check.Path)
+	cmd := exec.CommandContext(ctx, "sh", "-c", string(script), "check")
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "CLAUDIA_CHECK_COMMIT="+commit)
+	cmd.Env = append(os.Environ(), "CLAUDIA_CHECK_COMMIT="+commit, "CLAUDIA_CHECK_REPO="+check.Repo)
 	setCheckProcessGroup(cmd)
 	cmd.WaitDelay = fleetCheckKill
 	stdout := &tailBuffer{limit: fleetCheckOutput}
@@ -327,6 +359,7 @@ func runCheckProcess(ctx context.Context, checkouts, id string, check *fleetChec
 	cmd.Stdout = teeWriter{stdout, combined}
 	cmd.Stderr = combined
 	runErr := cmd.Run()
+	killCheckProcessGroup(cmd)
 	result.Output = combined.String()
 	var exitErr *exec.ExitError
 	switch {
@@ -337,6 +370,9 @@ func runCheckProcess(ctx context.Context, checkouts, id string, check *fleetChec
 		result.Exit = 0
 	case errors.As(runErr, &exitErr):
 		result.Exit = exitErr.ExitCode()
+	case errors.Is(runErr, exec.ErrWaitDelay) && cmd.ProcessState != nil:
+		// The script finished, but something it started still held its output.
+		result.Exit = cmd.ProcessState.ExitCode()
 	default:
 		result.Error = runErr.Error()
 		return
@@ -345,6 +381,76 @@ func runCheckProcess(ctx context.Context, checkouts, id string, check *fleetChec
 	if last := strings.TrimSpace(lines[len(lines)-1]); last != "" {
 		if score, err := strconv.ParseFloat(last, 64); err == nil {
 			result.Score = &score
+		}
+	}
+}
+
+// exportCommit writes commit's tree into dir with git archive, which runs no
+// hooks, filters or downloads. Paths that would leave dir are refused.
+func exportCommit(ctx context.Context, repo, commit, dir string) error {
+	ctx, cancel := context.WithTimeout(ctx, fleetGitTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "-C", repo, "-c", "core.hooksPath=/dev/null", "archive", "--format=tar", commit)
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	var stderr tailBuffer
+	stderr.limit = fleetCheckOutput
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	extractErr := extractTar(out, dir)
+	_, _ = io.Copy(io.Discard, out)
+	if err := cmd.Wait(); err != nil {
+		return fmt.Errorf("git archive: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	return extractErr
+}
+
+func extractTar(r io.Reader, dir string) error {
+	tr := tar.NewReader(r)
+	for {
+		h, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		name := filepath.Clean(h.Name)
+		if filepath.IsAbs(name) || name == ".." || strings.HasPrefix(name, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("archive entry %q leaves the export", h.Name)
+		}
+		path := filepath.Join(dir, name)
+		switch h.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(path, 0o755); err != nil {
+				return err
+			}
+		case tar.TypeReg:
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				return err
+			}
+			f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(h.Mode)&0o755|0o600)
+			if err != nil {
+				return err
+			}
+			_, err = io.Copy(f, tr)
+			if closeErr := f.Close(); err == nil {
+				err = closeErr
+			}
+			if err != nil {
+				return err
+			}
+		case tar.TypeSymlink:
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				return err
+			}
+			if err := os.Symlink(h.Linkname, path); err != nil {
+				return err
+			}
 		}
 	}
 }
@@ -390,8 +496,11 @@ func (w teeWriter) Write(p []byte) (int, error) {
 	return w.b.Write(p)
 }
 
+// fleetGit runs a git query for a check, bounded in time and with hooks off.
 func fleetGit(dir string, args ...string) (string, error) {
-	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	ctx, cancel := context.WithTimeout(context.Background(), fleetGitTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir, "-c", "core.hooksPath=/dev/null"}, args...)...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))

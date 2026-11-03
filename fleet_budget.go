@@ -83,10 +83,12 @@ func (k *FleetKernel) newBudgetLocked(group *fleetGroupState, holder string, lim
 	return id
 }
 
-// SetBudget sets the limits on the budget an agent holds, creating one over it
-// and its descendants if it holds none. Raising a spent budget lets waiting work
-// go on. Only the owner can do this.
-func (k *FleetKernel) SetBudget(fleet, agent string, limits FleetBudget) error {
+// SetBudget sets the limits on a budget, named by its ID or by the agent that
+// holds it, creating one over an agent and its descendants if it holds none. A
+// budget's ID outlives its holder, so a spent budget can still be raised after
+// the holder has gone. Raising a spent budget lets waiting work go on, and a
+// time limit counts from now. Only the owner can do this.
+func (k *FleetKernel) SetBudget(fleet, target string, limits FleetBudget) error {
 	if err := limits.validate(); err != nil {
 		return err
 	}
@@ -96,13 +98,14 @@ func (k *FleetKernel) SetBudget(fleet, agent string, limits FleetBudget) error {
 	if err != nil {
 		return err
 	}
-	a := group.Agents[agent]
-	if a == nil {
-		return fmt.Errorf("no agent named %q", agent)
-	}
-	if b := group.Budgets[a.OwnBudget]; b != nil {
-		b.Limits = limits
-		b.Notified = false
+	agent := target
+	if b := group.Budgets[target]; b != nil {
+		b.Limits, b.Notified, b.Started = limits, false, k.clock.Now()
+		agent = b.Holder
+	} else if a := group.Agents[target]; a == nil {
+		return fmt.Errorf("no agent or budget named %q", target)
+	} else if b := group.Budgets[a.OwnBudget]; b != nil {
+		b.Limits, b.Notified, b.Started = limits, false, k.clock.Now()
 	} else {
 		id := k.newBudgetLocked(group, agent, limits)
 		a.OwnBudget = id
@@ -138,7 +141,7 @@ func (k *FleetKernel) blockedLocked(fleet string, group *fleetGroupState, a *fle
 		if !b.Notified {
 			b.Notified = true
 			k.deliverLocked(fleet, &FleetMessage{Kind: FleetResponse, From: FleetBudgetSender, To: FleetOwner,
-				Text: fmt.Sprintf("The budget on agent %s's tree is spent (%s). Agents under it take no new turns, and messages to them wait, until the owner raises it.", b.Holder, reason)})
+				Text: fmt.Sprintf("Budget %s, on agent %s's tree, is spent (%s). Agents under it take no new turns, and messages to them wait, until the owner raises budget %s.", id, b.Holder, reason, id)})
 			if err := k.saveLocked(); err != nil {
 				k.logf("fleet: save after budget notice", "fleet", fleet, "err", err)
 			}
@@ -148,11 +151,22 @@ func (k *FleetKernel) blockedLocked(fleet string, group *fleetGroupState, a *fle
 	return false
 }
 
-// chargeLocked records one turn and its tokens against every budget over a.
-func (k *FleetKernel) chargeLocked(group *fleetGroupState, a *fleetAgentState, tokens int64) {
+// chargeTurnLocked counts a turn against every budget over a, when it starts, so
+// that agents starting turns at once cannot all slip under the same limit.
+func (k *FleetKernel) chargeTurnLocked(group *fleetGroupState, a *fleetAgentState) {
 	for _, id := range a.Budgets {
 		if b := group.Budgets[id]; b != nil {
 			b.SpentTurns++
+		}
+	}
+}
+
+// chargeTokensLocked records a finished turn's tokens. Tokens can overshoot a
+// limit by what turns already in flight spend, because nobody knows a turn's
+// cost before it runs.
+func (k *FleetKernel) chargeTokensLocked(group *fleetGroupState, a *fleetAgentState, tokens int64) {
+	for _, id := range a.Budgets {
+		if b := group.Budgets[id]; b != nil {
 			b.SpentTokens += tokens
 		}
 	}

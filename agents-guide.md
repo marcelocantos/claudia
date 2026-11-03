@@ -1048,23 +1048,33 @@ a result means, whether a goal is met — stays with agents and clients.
   `Fleet.Schedule` and cancels with `Fleet.Cancel`. Every delivery starts with a
   stamp such as `[now Tue 3 Nov 2026 13:42 AEDT; sent 3h12m ago; your last turn
   ended 5m ago]`, and a scheduled one adds when it was due and how late it came.
-  A timer due while the broker was down fires once on recovery, stamped late; a
-  repeat that missed firings fires once, saying how many, and keeps its schedule.
-  An agent's own timers, and any repeat aimed at it, go when it does.
+  A timer due while the broker was down fires once on recovery, stamped late. A
+  repeat never piles up: if it missed firings, whether the broker was down or its
+  target was busy or held by a budget, one firing waits, saying how many it missed,
+  and the repeat keeps its schedule. A repeat cannot start in the past. Everything
+  an agent scheduled, and everything scheduled to it, goes when it does; a request
+  scheduled to it is answered with the failure at once, so a later agent of the
+  same name inherits none of it.
 - **A budget limits what a subtree spends:** tokens where the provider reports
   them, turns, or wall-clock seconds. Set one with `FleetStartArgs.Budget` or
-  `Fleet.SetBudget`. Once spent, a turn in progress finishes, no new turn starts
-  anywhere under it, messages wait, and the owner hears once; raising it lets the
-  work go on. An agent may put a budget on a child, which only narrows: every
-  budget above still applies, including after the agent that held it retires.
+  `Fleet.SetBudget`. A turn counts when it starts; tokens count when it ends, so
+  turns in flight can overshoot a token limit. Once spent, no new turn starts
+  anywhere under it, messages wait, and the owner hears once, naming the budget's
+  ID. Raise it by that ID or by its holder's name; a time limit then counts from
+  the raise. An agent may put a budget on a child, which only narrows: every budget
+  above still applies, including after the agent that held it retires.
 - **A check is a pinned command run on the owner's behalf.** `Fleet.RegisterCheck`
-  copies the script and pins it by hash. A run checks out the named commit in a
-  fresh worktree, runs the script in its own process group with a timeout, and
+  copies the script and pins it by hash. A run exports the named commit with `git
+  archive` into a fresh directory (so no repository hook or filter runs, and there
+  is no `.git`; the commit and repository path are in `CLAUDIA_CHECK_COMMIT` and
+  `CLAUDIA_CHECK_REPO`), runs exactly the verified script bytes in their own
+  process group with a timeout, and kills anything the script left running. It
   records a `check_result` event with the exit status, the score (the last line of
   standard output, when it is a number) and the output's tail. Only the kernel
   writes these events. With `AgentsMayRun`, agents run it with the `check` tool and
   get the result as a message from `check:<name>`; without it, it is a held-out
-  check that only the owner can run and see. At most two checks run at once.
+  check that only the owner can run and see. At most two checks run at once, and
+  at most eight wait or run per fleet.
 
 ## Gotchas
 

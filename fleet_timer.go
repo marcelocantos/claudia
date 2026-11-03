@@ -114,6 +114,11 @@ func (k *FleetKernel) Send(fleet string, args *FleetSendArgs) (string, error) {
 		case due.IsZero():
 			due = now.Add(args.Every)
 		}
+		// A repeat starting in the past starts now: catching up on firings from
+		// before it existed would be meaningless.
+		if args.Every > 0 && due.Before(now) {
+			due = now
+		}
 		m.ID = k.nextTimerIDLocked(group)
 		timer := &fleetTimerState{At: due, Every: args.Every, Message: m}
 		if group.Timers == nil {
@@ -163,14 +168,19 @@ func (k *FleetKernel) dropTimerLocked(fleet string, group *fleetGroupState, id s
 	}
 }
 
-// dropTimersOfLocked removes what a departing agent scheduled for itself, and
-// any repeat aimed at it. A one-off request someone else scheduled stays, so
-// that it is answered with a failure when it comes due. k.mu held.
-func (k *FleetKernel) dropTimersOfLocked(fleet string, group *fleetGroupState, name string) {
+// dropTimersOfLocked removes everything a departing agent scheduled and
+// everything scheduled to it, so that a successor taking its name inherits
+// none of it. A scheduled request to it is answered now with the failure it
+// would have met when due. k.mu held.
+func (k *FleetKernel) dropTimersOfLocked(fleet string, group *fleetGroupState, name, failure string) {
 	for id, t := range group.Timers {
 		m := t.Message
-		if (m.From == name && m.To == name) || (t.Every > 0 && (m.To == name || m.From == name)) {
-			k.dropTimerLocked(fleet, group, id)
+		if m.From != name && m.To != name {
+			continue
+		}
+		k.dropTimerLocked(fleet, group, id)
+		if m.To == name && m.From != name && m.Kind == FleetRequest && t.Every <= 0 {
+			k.deliverLocked(fleet, &FleetMessage{Kind: FleetResponse, From: name, To: m.From, InReplyTo: id, Text: failure})
 		}
 	}
 }
@@ -210,32 +220,48 @@ func (k *FleetKernel) armTimerLocked(fleet, id string, timer *fleetTimerState) {
 	}()
 }
 
-// fireTimerLocked delivers one firing. A repeat that missed firings while the
-// broker was down fires once, saying how many it missed, and goes on from its
-// own schedule rather than from now. k.mu held.
+// fireTimerLocked delivers one firing. A repeat that missed firings, while the
+// broker was down or while its target could not take them, fires once, saying
+// how many it missed, and keeps its own schedule rather than restarting from now.
+// At most one firing of a repeat waits in a mailbox: a later one adds to that
+// one's missed count. k.mu held.
 func (k *FleetKernel) fireTimerLocked(fleet string, group *fleetGroupState, id string, timer *fleetTimerState) {
 	now := k.clock.Now()
 	m := *timer.Message
 	due := timer.At
 	m.Due = &due
-	if timer.Every > 0 {
-		if m.To != FleetOwner && group.Agents[m.To] == nil {
-			delete(group.Timers, id)
-			return
-		}
-		missed := 0
-		if late := now.Sub(timer.At); late >= timer.Every {
-			missed = int(late / timer.Every)
-		}
-		m.Missed = missed
-		timer.Fires++
-		m.ID = fmt.Sprintf("%s.%d", id, timer.Fires)
-		m.Timer = id
-		timer.At = timer.At.Add(time.Duration(missed+1) * timer.Every)
-		k.armTimerLocked(fleet, id, timer)
-	} else {
+	if timer.Every <= 0 {
 		delete(group.Timers, id)
+		k.deliverLocked(fleet, &m)
+		return
 	}
+	target := group.Agents[m.To]
+	if m.To != FleetOwner && target == nil {
+		delete(group.Timers, id)
+		return
+	}
+	// Computed from the remainder, not by multiplying, so that a due time far in
+	// the past cannot overflow and move the schedule backwards.
+	missed := 0
+	if late := now.Sub(timer.At); late >= timer.Every {
+		missed = int(late / timer.Every)
+		timer.At = now.Add(timer.Every - late%timer.Every)
+	} else {
+		timer.At = timer.At.Add(timer.Every)
+	}
+	k.armTimerLocked(fleet, id, timer)
+	if target != nil {
+		for _, waiting := range target.Inbox {
+			if waiting.Timer == id {
+				waiting.Missed += missed + 1
+				return
+			}
+		}
+	}
+	timer.Fires++
+	m.Missed = missed
+	m.ID = fmt.Sprintf("%s.%d", id, timer.Fires)
+	m.Timer = id
 	k.deliverLocked(fleet, &m)
 }
 

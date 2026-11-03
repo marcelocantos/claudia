@@ -327,9 +327,11 @@ type FleetKernel struct {
 	logf    func(msg string, args ...any)
 	// checkSlots bounds checks running at once.
 	checkSlots chan struct{}
-	ctx        context.Context
-	cancel     context.CancelFunc
-	wg         sync.WaitGroup
+	// checkCancels ends each running check, keyed by fleet and run ID.
+	checkCancels map[string]context.CancelFunc
+	ctx          context.Context
+	cancel       context.CancelFunc
+	wg           sync.WaitGroup
 
 	mu       sync.Mutex
 	state    fleetState
@@ -363,16 +365,17 @@ func OpenFleetKernel(args *FleetKernelArgs) (*FleetKernel, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	k := &FleetKernel{
 		dir: args.Dir, start: args.Start, discard: args.Discard, spacing: args.ResumeSpacing, logf: args.Logger, ctx: ctx, cancel: cancel,
-		state:      fleetState{Version: fleetStateVersion, Fleets: map[string]*fleetGroupState{}},
-		running:    map[string]*fleetRuntime{},
-		starting:   map[string]bool{},
-		reviving:   map[string]bool{},
-		reviveStop: map[string]context.CancelFunc{},
-		timers:     map[string]chan struct{}{},
-		checkSlots: make(chan struct{}, fleetCheckConcurrency),
-		clock:      args.Clock,
-		logs:       map[string]*fleetLog{},
-		changed:    make(chan struct{}),
+		state:        fleetState{Version: fleetStateVersion, Fleets: map[string]*fleetGroupState{}},
+		running:      map[string]*fleetRuntime{},
+		starting:     map[string]bool{},
+		reviving:     map[string]bool{},
+		reviveStop:   map[string]context.CancelFunc{},
+		timers:       map[string]chan struct{}{},
+		checkSlots:   make(chan struct{}, fleetCheckConcurrency),
+		checkCancels: map[string]context.CancelFunc{},
+		clock:        args.Clock,
+		logs:         map[string]*fleetLog{},
+		changed:      make(chan struct{}),
 	}
 	if k.logf == nil {
 		k.logf = func(string, ...any) {}
@@ -419,7 +422,9 @@ func OpenFleetKernel(args *FleetKernelArgs) (*FleetKernel, error) {
 			}
 			k.reviving[fleetKey(name, a.Name)] = true
 		}
+		k.reportInterruptedChecksLocked(name, group)
 	}
+	_ = os.RemoveAll(filepath.Join(k.dir, "checkouts"))
 	if err := k.saveLocked(); err != nil {
 		cancel()
 		return nil, err
@@ -435,16 +440,11 @@ func (k *FleetKernel) Resume() {
 	if k.closed {
 		return
 	}
-	_ = os.RemoveAll(filepath.Join(k.dir, "checkouts"))
 	order := 0
 	for name, group := range k.state.Fleets {
 		for id, timer := range group.Timers {
 			k.armTimerLocked(name, id, timer)
 		}
-		for _, check := range group.Checks {
-			_, _ = fleetGit(check.Repo, "worktree", "prune")
-		}
-		k.reportInterruptedChecksLocked(name, group)
 		for _, a := range group.Agents {
 			k.wg.Add(1)
 			go k.revive(name, a, 0, time.Duration(order)*k.spacing)
@@ -552,7 +552,7 @@ func (k *FleetKernel) startForAgent(fleet, caller string, args *FleetStartArgs) 
 // admit checks a start and records the agent, saved before its seat exists so
 // that a crash cannot leave a seat with no record.
 func (k *FleetKernel) admit(fleet, caller string, args *FleetStartArgs) (*fleetAgentState, error) {
-	if args == nil || !fleetNameValid(args.Name) || args.Name == FleetOwner {
+	if args == nil || !fleetNameValid(args.Name) || args.Name == FleetOwner || args.Name == FleetBudgetSender {
 		name := ""
 		if args != nil {
 			name = args.Name
@@ -819,6 +819,7 @@ func (k *FleetKernel) run(rt *fleetRuntime) {
 		now := k.clock.Now()
 		stamp := fleetStamp(now, m, a.LastTurnEnd)
 		a.CurrentSince = now
+		k.chargeTurnLocked(group, a)
 		if err := k.saveLocked(); err != nil {
 			k.logf("fleet: save before turn", "fleet", rt.fleet, "agent", a.Name, "err", err)
 		}
@@ -841,7 +842,12 @@ func (k *FleetKernel) run(rt *fleetRuntime) {
 
 		k.mu.Lock()
 		if k.closed {
-			// Current stays saved, and the next kernel delivers it again.
+			// Current stays saved, and the next kernel delivers it again. What the
+			// turn spent so far still counts.
+			if group := k.state.Fleets[rt.fleet]; group != nil {
+				k.chargeTokensLocked(group, a, max(fleetTokens(rt.seat.Usage())-usedBefore, 0))
+				_ = k.saveLocked()
+			}
 			k.mu.Unlock()
 			return
 		}
@@ -850,7 +856,7 @@ func (k *FleetKernel) run(rt *fleetRuntime) {
 		k.eventLocked(rt.fleet, &FleetEvent{Kind: FleetEventTurn, Agent: a.Name, Root: a.Root, Text: boundFleetText(reply), Usage: usage, Cause: errText(err)})
 		// A turn spends whether or not it succeeded.
 		if group := k.state.Fleets[rt.fleet]; group != nil {
-			k.chargeLocked(group, a, max(fleetTokens(usage)-usedBefore, 0))
+			k.chargeTokensLocked(group, a, max(fleetTokens(usage)-usedBefore, 0))
 		}
 		a.LastTurnEnd = k.clock.Now()
 		// A seat stopped mid-turn can return an empty turn with no error. That
@@ -969,7 +975,7 @@ func (k *FleetKernel) retireState(fleet string, a *fleetAgentState, rt *fleetRun
 			child.Parent = FleetOwner
 		}
 	}
-	k.dropTimersOfLocked(fleet, group, a.Name)
+	k.dropTimersOfLocked(fleet, group, a.Name, fmt.Sprintf("agent %s is gone: %v", a.Name, cause))
 	dropUnusedBudgetsLocked(group)
 	k.eventLocked(fleet, &FleetEvent{Kind: FleetEventRetired, Agent: a.Name, Root: a.Root, Cause: cause.Error()})
 	toldParent := k.answerOwedLocked(fleet, a, fmt.Sprintf("agent %s is gone: %v", a.Name, cause))
@@ -1162,6 +1168,12 @@ func (k *FleetKernel) Shutdown(ctx context.Context, fleet string) error {
 		if strings.HasPrefix(key, fleet+"/") {
 			close(stop)
 			delete(k.timers, key)
+		}
+	}
+	for key, cancel := range k.checkCancels {
+		if strings.HasPrefix(key, fleet+"/") {
+			cancel()
+			delete(k.checkCancels, key)
 		}
 	}
 	_ = os.RemoveAll(filepath.Join(k.dir, "checks", fleet))

@@ -10,3 +10,6 @@ import "os/exec"
 // setCheckProcessGroup kills only the script on Windows, which has no process
 // groups of this kind.
 func setCheckProcessGroup(cmd *exec.Cmd) {}
+
+// killCheckProcessGroup does nothing on Windows.
+func killCheckProcessGroup(cmd *exec.Cmd) {}
