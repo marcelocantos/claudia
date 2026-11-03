@@ -97,8 +97,10 @@ test("an aborted Bash tool kills its process group promptly, without discarding 
     const abort = new AbortController();
     const tracked = tool(dir, "Bash").execute("tracked", { command: withMarker }, abort.signal);
     const { existsSync, readFileSync } = await import("node:fs");
-    for (let i = 0; i < 100 && !existsSync(marker); i++) await Bun.sleep(10);
-    expect(existsSync(marker)).toBe(true);
+    // The shell creates the file before echo writes it, so wait for the pid.
+    const written = () => existsSync(marker) && readFileSync(marker, "utf8").trim() !== "";
+    for (let i = 0; i < 100 && !written(); i++) await Bun.sleep(10);
+    expect(written()).toBe(true);
     pid = Number(readFileSync(marker, "utf8").trim());
     await Bun.sleep(1000);
     abort.abort();
