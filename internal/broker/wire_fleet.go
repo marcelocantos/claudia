@@ -49,6 +49,9 @@ type FleetRequest struct {
 	// may call (🎯T249). A nil set means every tool.
 	Authority string   `json:"authority,omitempty"`
 	Tools     []string `json:"tools,omitempty"`
+	// HasTools says Tools was chosen, so that an empty choice means no tools
+	// rather than every tool.
+	HasTools bool `json:"has_tools,omitempty"`
 
 	// Start and Budget: a limit in up to three dimensions, when HasBudget.
 	HasBudget     bool    `json:"has_budget,omitempty"`

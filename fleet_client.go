@@ -45,7 +45,7 @@ func (f *Fleet) Start(ctx context.Context, args *FleetStartArgs) error {
 	req := &broker.FleetRequest{
 		Op: broker.FleetOpStart, Name: args.Name, Instructions: args.Instructions, InstructionsFile: args.InstructionsFile,
 		WorkDir: args.WorkDir, Quality: args.Quality, Purpose: args.Purpose, Model: args.Model, Authority: args.Authority,
-		Tools: args.Tools,
+		Tools: args.Tools, HasTools: args.Tools != nil,
 	}
 	if args.Budget != nil {
 		req.HasBudget, req.BudgetTokens, req.BudgetTurns, req.BudgetSeconds = true, args.Budget.Tokens, args.Budget.Turns, args.Budget.Seconds

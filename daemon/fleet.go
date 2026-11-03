@@ -391,7 +391,9 @@ func (d *Daemon) fleetOp(ctx context.Context, r *broker.FleetRequest) (any, erro
 		args := &claudia.FleetStartArgs{
 			Name: r.Name, Instructions: r.Instructions, InstructionsFile: r.InstructionsFile,
 			WorkDir: r.WorkDir, Quality: r.Quality, Purpose: r.Purpose, Model: r.Model, Authority: r.Authority,
-			Tools: r.Tools,
+		}
+		if r.HasTools {
+			args.Tools = append([]string{}, r.Tools...)
 		}
 		if r.HasBudget {
 			args.Budget = &claudia.FleetBudget{Tokens: r.BudgetTokens, Turns: r.BudgetTurns, Seconds: r.BudgetSeconds}

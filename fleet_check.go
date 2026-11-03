@@ -168,6 +168,8 @@ func (k *FleetKernel) RegisterCheck(fleet, caller string, args *FleetCheckArgs) 
 	if group.Checks == nil {
 		group.Checks = map[string]*fleetCheckState{}
 	}
+	// A new script's results start afresh; an old one's never stand for it.
+	delete(group.CheckLast, args.Name)
 	group.Checks[args.Name] = &fleetCheckState{Repo: args.Repo, Path: path, SHA256: hex.EncodeToString(sum[:]),
 		AgentsMayRun: args.AgentsMayRun, TimeoutSeconds: timeout.Seconds(), Registered: k.clock.Now(), RegisteredBy: caller}
 	k.eventLocked(fleet, &FleetEvent{Kind: FleetEventCheckRegistered, Agent: caller, Text: fmt.Sprintf("%s %s %s", args.Name, hex.EncodeToString(sum[:]), args.Repo)})
@@ -225,8 +227,9 @@ func (k *FleetKernel) RunCheck(fleet, requester, name, commit string) (string, e
 	if err != nil {
 		return "", err
 	}
+	// Checked again: the check may have been replaced while git ran.
 	check = group.Checks[name]
-	if check == nil {
+	if check == nil || (!check.AgentsMayRun && !authorized(group, requester, check.RegisteredBy)) {
 		return "", fmt.Errorf("no check named %q", name)
 	}
 	group.NextID++
@@ -305,7 +308,9 @@ func (k *FleetKernel) finishCheckLocked(fleet, id string, result *FleetCheckResu
 	if group.CheckLast == nil {
 		group.CheckLast = map[string]*FleetCheckResult{}
 	}
-	group.CheckLast[result.Name] = result
+	if current := group.Checks[result.Name]; current != nil && current.SHA256 == result.SHA256 {
+		group.CheckLast[result.Name] = result
+	}
 	a := group.Agents[result.Requester]
 	if result.Requester == FleetOwner || a == nil || run == nil || a.Token != run.RequesterToken {
 		return

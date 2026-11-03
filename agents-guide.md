@@ -1024,7 +1024,14 @@ the owner holds all eight. Everything else is its instructions.
   authority over whoever created it. A held-out check can be run and seen only by
   those with authority over whoever registered it. Claudia enforces this one
   rule; who should direct whom, and with which tools, is for the agents and their
-  instructions to decide. Each seat's MCP URL carries its own token.
+  instructions to decide. Each seat's MCP URL carries its own token. When an
+  agent retires, what it created passes to its creator, so a later agent taking
+  its name inherits nothing.
+
+  This keeps well-meaning agents in their lanes. It is not a security boundary
+  against a hostile one: seats and check scripts run as the broker's user, so an
+  agent with a shell, or one that registers a check, can read the broker's files,
+  tokens included. Sandboxing seats is what would make it one.
 - **The owner reads the log.** `Read` returns every event in order, including the
   messages addressed to `claudia.FleetOwner`. Keep the last `Seq` you saw.
 

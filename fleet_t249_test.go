@@ -169,3 +169,85 @@ func TestFleetToolsNarrowDownTheLineOfCreation(t *testing.T) {
 		t.Fatalf("a tool it was not given: %q", text)
 	}
 }
+
+// Review findings 2 and 3: a name keeps nothing after its agent retires.
+func TestFleetAReusedNameInheritsNoAuthority(t *testing.T) {
+	repo := fleetCheckRepo(t)
+	seats := map[string]*fakeFleetSeat{}
+	for _, name := range []string{"alice", "bob", "p", "c"} {
+		seats[name] = newFakeFleetSeat(fleetHold)
+	}
+	r, _ := newClockedFleetRig(t, seats)
+	ctx := context.Background()
+	r.start("alice", FleetOwner)
+	r.start("bob", FleetOwner)
+	if err := r.k.RegisterCheck("f", "alice", &FleetCheckArgs{Name: "secret", Repo: repo, Script: "echo 1\n"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.k.StopTree(wallclockguard.UntilTestTimeout(t), "f", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	seats["alice"] = newFakeFleetSeat(fleetHold)
+	if err := r.k.Start(ctx, "f", "bob", &FleetStartArgs{Name: "alice", Instructions: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := r.k.StatusFor("f", "bob"); len(st.Checks) != 0 {
+		t.Fatalf("a newcomer's starter sees the old holder's check: %+v", st.Checks)
+	}
+	if _, err := r.k.RunCheck("f", "bob", "secret", ""); err == nil {
+		t.Fatal("ran a check through a reused name")
+	}
+	if err := r.k.RegisterCheck("f", "bob", &FleetCheckArgs{Name: "secret", Repo: repo, Script: "echo 0\n"}); err == nil {
+		t.Fatal("replaced a check through a reused name")
+	}
+
+	// A budget its parent set cannot be escaped by taking the parent's name.
+	if err := r.k.Start(ctx, "f", FleetOwner, &FleetStartArgs{Name: "p", Instructions: "x", WorkDir: "/tmp"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.k.Start(ctx, "f", "p", &FleetStartArgs{Name: "c", Instructions: "x", Budget: &FleetBudget{Turns: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.k.Stop("f", FleetOwner, "p"); err != nil {
+		t.Fatal(err)
+	}
+	waitFleet(t, "p to go", func() bool { st, _ := r.k.Status("f"); return !hasAgent(st, "p") })
+	seats["p"] = newFakeFleetSeat(fleetHold)
+	if err := r.k.Start(ctx, "f", "c", &FleetStartArgs{Name: "p", Instructions: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.k.SetBudget("f", "c", "c", FleetBudget{Turns: 1000}); err == nil {
+		t.Fatal("escaped a budget by taking its setter's name")
+	}
+}
+
+func hasAgent(st *FleetStatus, name string) bool {
+	for _, a := range st.Agents {
+		if a.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// Review finding 4: an old script's result never stands for a new one.
+func TestFleetReregisteringACheckClearsItsResult(t *testing.T) {
+	repo := fleetCheckRepo(t)
+	r, _ := newClockedFleetRig(t, map[string]*fakeFleetSeat{"a": newFakeFleetSeat(fleetHold)})
+	r.start("a", FleetOwner)
+	if err := r.k.RegisterCheck("f", FleetOwner, &FleetCheckArgs{Name: "held", Repo: repo, Script: "echo HELDOUT-SECRET\necho 7\n"}); err != nil {
+		t.Fatal(err)
+	}
+	var seq uint64
+	if _, err := r.k.RunCheck("f", FleetOwner, "held", ""); err != nil {
+		t.Fatal(err)
+	}
+	checkResult(t, r, &seq)
+	if err := r.k.RegisterCheck("f", FleetOwner, &FleetCheckArgs{Name: "held", Repo: repo, Script: "echo 1\n", AgentsMayRun: true}); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := r.k.StatusFor("f", "a")
+	if len(st.Checks) != 1 || st.Checks[0].Last != nil {
+		t.Fatalf("an old result survived re-registration: %+v", st.Checks)
+	}
+}

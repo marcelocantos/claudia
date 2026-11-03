@@ -114,7 +114,8 @@ func (k *FleetKernel) SetBudget(fleet, caller, target string, limits FleetBudget
 	} else {
 		existing = group.Budgets[a.OwnBudget]
 	}
-	if !authorized(group, caller, agent) {
+	// A budget whose holder has gone is governed by whoever set it.
+	if agent != "" && !authorized(group, caller, agent) {
 		return fmt.Errorf("agent %q has no authority over %q", caller, agent)
 	}
 	if existing != nil && !authorized(group, caller, existing.SetBy) {

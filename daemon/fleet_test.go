@@ -511,3 +511,18 @@ func TestFleetChecksTimersAndBudgetsOverTheWire(t *testing.T) {
 		t.Fatalf("timer survived cancel: %+v", st.Timers)
 	}
 }
+
+// Review finding 5: an empty tool set crosses the wire as no tools.
+func TestFleetEmptyToolSetSurvivesTheWire(t *testing.T) {
+	f := newFixture(t)
+	f.bootWith(t, f.fleetOptions())
+	fleet := openTestFleet(t, f)
+	ctx := wallclockguard.UntilTestTimeout(t)
+	if err := fleet.Start(ctx, &claudia.FleetStartArgs{Name: "mute", Instructions: "x", WorkDir: t.TempDir(), Tools: []string{}}); err != nil {
+		t.Fatal(err)
+	}
+	st, err := fleet.Status(ctx)
+	if err != nil || len(st.Agents) != 1 || len(st.Agents[0].Tools) != 0 {
+		t.Fatalf("status %+v %v", st, err)
+	}
+}

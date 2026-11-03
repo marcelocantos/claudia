@@ -1019,6 +1019,7 @@ func (k *FleetKernel) retireState(fleet string, a *fleetAgentState, rt *fleetRun
 		}
 	}
 	k.dropTimersOfLocked(fleet, group, a.Name, fmt.Sprintf("agent %s is gone: %v", a.Name, cause))
+	passOnCreationsLocked(group, a.Name, k.parentOfLocked(fleet, a))
 	dropUnusedBudgetsLocked(group)
 	k.eventLocked(fleet, &FleetEvent{Kind: FleetEventRetired, Agent: a.Name, Root: a.Root, Cause: cause.Error()})
 	toldParent := k.answerOwedLocked(fleet, a, fmt.Sprintf("agent %s is gone: %v", a.Name, cause))
@@ -1131,6 +1132,26 @@ func (k *FleetKernel) Stop(fleet, caller, name string) error {
 // fleetDescends walks up from name. Parent links always end at the owner,
 // because a retiring agent hands its children to the owner, and a new agent's
 // parent exists when it is created.
+// passOnCreationsLocked hands what a departing agent created to its own
+// creator, who had authority over it anyway, so that nothing stays attached to
+// a name a later agent may take. A budget it held keeps applying to the agents
+// under it, with no holder. k.mu held.
+func passOnCreationsLocked(group *fleetGroupState, name, heir string) {
+	for _, c := range group.Checks {
+		if c.RegisteredBy == name {
+			c.RegisteredBy = heir
+		}
+	}
+	for _, b := range group.Budgets {
+		if b.SetBy == name {
+			b.SetBy = heir
+		}
+		if b.Holder == name {
+			b.Holder = ""
+		}
+	}
+}
+
 // authorized is the fleet's one rule of authority (🎯T249): actor may act on
 // what subject created, or on subject itself, if actor is the owner, holds
 // authority over everything, is subject, or created subject or one of its
