@@ -358,11 +358,7 @@ func runCheckProcess(ctx context.Context, checkouts, id string, check *fleetChec
 	// repository gets the time its owner allowed.
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(check.TimeoutSeconds*float64(time.Second)))
 	defer cancel()
-	var exportNote string
-	var skip *exportSkipError
-	if err := exportCommit(ctx, check.Repo, commit, dir); errors.As(err, &skip) {
-		exportNote = "[Claudia: " + skip.Error() + "]\n"
-	} else if err != nil {
+	if err := exportCommit(ctx, check.Repo, commit, dir); err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			result.Error = fmt.Sprintf("timed out after %s while exporting the commit", fleetDuration(time.Duration(check.TimeoutSeconds*float64(time.Second))))
 		} else {
@@ -381,7 +377,7 @@ func runCheckProcess(ctx context.Context, checkouts, id string, check *fleetChec
 	cmd.Stderr = combined
 	runErr := cmd.Run()
 	killCheckProcessGroup(cmd)
-	result.Output = exportNote + combined.String()
+	result.Output = combined.String()
 	var exitErr *exec.ExitError
 	switch {
 	case ctx.Err() == context.DeadlineExceeded:
@@ -488,7 +484,6 @@ func exportCommit(ctx context.Context, repo, commit, dir string) error {
 		_, err := objects.Discard(1)
 		return err
 	}
-	var skipped []string
 	for _, e := range files {
 		size, err := open(e.oid)
 		if err != nil {
@@ -506,15 +501,9 @@ func exportCommit(ctx context.Context, repo, commit, dir string) error {
 		f, err := root.OpenFile(e.path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, perm)
 		if errors.Is(err, os.ErrExist) {
 			// Paths that differ only in case collide on a case-insensitive
-			// filesystem. The first wins; nothing is overwritten.
-			skipped = append(skipped, e.path)
-			if _, err := objects.Discard(int(size)); err != nil {
-				return err
-			}
-			if err := finish(); err != nil {
-				return err
-			}
-			continue
+			// filesystem. Keeping either would let whoever wrote the commit choose
+			// what the check reads, so the run fails instead.
+			return fmt.Errorf("%s collides with another path on this filesystem", e.path)
 		}
 		if err != nil {
 			return fmt.Errorf("%s: %w", e.path, err)
@@ -559,24 +548,12 @@ func exportCommit(ctx context.Context, repo, commit, dir string) error {
 		}
 		if err := root.Symlink(string(target), e.path); err != nil {
 			if errors.Is(err, os.ErrExist) {
-				skipped = append(skipped, e.path)
-				continue
+				return fmt.Errorf("%s collides with another path on this filesystem", e.path)
 			}
 			return fmt.Errorf("%s: %w", e.path, err)
 		}
 	}
-	if len(skipped) > 0 {
-		return &exportSkipError{paths: skipped}
-	}
 	return nil
-}
-
-// exportSkipError reports paths an export left out because they collide with
-// one already written. The export is otherwise complete, so the check runs.
-type exportSkipError struct{ paths []string }
-
-func (e *exportSkipError) Error() string {
-	return fmt.Sprintf("these paths collide with others on this filesystem and were left out: %s", strings.Join(e.paths, ", "))
 }
 
 func boundCheckOutput(s string) string {

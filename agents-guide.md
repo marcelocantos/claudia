@@ -1067,7 +1067,9 @@ a result means, whether a goal is met — stays with agents and clients.
   copies the script and pins it by hash. A run exports the named commit into a
   fresh directory by reading its objects directly, so none of the repository's
   hooks, filters, attributes or replace refs apply, and nothing can be written
-  outside it. The export has no `.git`, and Git LFS files arrive as pointers; the
+  outside it. Symlinks must point within it, and paths that collide on a
+  case-insensitive filesystem fail the run rather than letting the commit choose
+  which one the check reads. The export has no `.git`, and Git LFS files arrive as pointers; the
   commit and repository path are in `CLAUDIA_CHECK_COMMIT` and
   `CLAUDIA_CHECK_REPO`. It then runs exactly the verified script bytes in their own
   process group with a timeout, and kills anything the script left running. It

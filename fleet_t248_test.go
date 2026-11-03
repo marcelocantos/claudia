@@ -966,3 +966,30 @@ func TestFleetTurnInterruptedByRestartsIsChargedOnce(t *testing.T) {
 		t.Fatalf("one message charged %d turns", st.Budgets[0].SpentTurns)
 	}
 }
+
+// Fourth round: on a case-insensitive filesystem, a commit cannot choose which
+// of two colliding paths a check reads.
+func TestFleetCheckFailsOnPathsThatCollide(t *testing.T) {
+	probe := t.TempDir()
+	if err := os.WriteFile(filepath.Join(probe, "a"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(probe, "A")); err != nil {
+		t.Skip("this filesystem is case-sensitive, so nothing collides")
+	}
+	repo := fleetCheckRepo(t)
+	forged := gitIn(t, repo, "100\n", "hash-object", "-w", "--stdin")
+	real := gitIn(t, repo, "7\n", "hash-object", "-w", "--stdin")
+	commit := commitTree(t, repo, "100644 blob "+forged+"\tCOUNT.TXT\n100644 blob "+real+"\tcount.txt\n")
+	r, _ := newClockedFleetRig(t, map[string]*fakeFleetSeat{})
+	if err := r.k.RegisterCheck("f", &FleetCheckArgs{Name: "c", Repo: repo, Script: "cat count.txt\n"}); err != nil {
+		t.Fatal(err)
+	}
+	var seq uint64
+	if _, err := r.k.RunCheck("f", FleetOwner, "c", commit); err != nil {
+		t.Fatal(err)
+	}
+	if res := checkResult(t, r, &seq); res.Score != nil || !strings.Contains(res.Error, "collides") {
+		t.Fatalf("result %+v", res)
+	}
+}
