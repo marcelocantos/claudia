@@ -1005,10 +1005,10 @@ id, err := fleet.Send(ctx, "lead", "Fix the build.", 0)
 events, err := fleet.Read(ctx, lastSeq) // waits for events after lastSeq
 ```
 
-There are eight fleet tools: `start`, `send`, `stop`, `list`, `cancel`, `check`,
-`register_check` and `budget`. An agent gets only the fleet tools its starter
-chose for it, from the starter's own, and nothing from your MCP configuration;
-the owner holds all eight. Everything else is its instructions.
+There are nine fleet tools: `start`, `send`, `stop`, `list`, `cancel`,
+`expedite`, `check`, `register_check` and `budget`. An agent gets only the fleet
+tools its starter chose for it, from the starter's own, and nothing from your MCP
+configuration; the owner holds all nine. Everything else is its instructions.
 
 - **Every request gets a response**, even if its target dies. A turn's text is its
   response. There is no reply tool.
@@ -1095,6 +1095,31 @@ a result means, whether a goal is met — stays with agents and clients.
   get the result as a message from `check:<name>`; without it, it is a held-out
   check that only the owner can run and see. At most two checks run at once, and
   at most eight wait or run per fleet.
+
+### Expectations and expediting (🎯T250)
+
+An idle agent hears nothing, so on its own it cannot notice that a reply is late.
+
+- **A sender can say what it expects.** `send` takes `accept_within_seconds` (how
+  soon the message should be taken up) and, for a request, `answer_within_seconds`.
+  The owner sets the same with `Fleet.SendWith`. Each one that passes wakes the
+  sender once, with a notice from `clock` saying where the message stands: its
+  place in the queue, how long the recipient's current turn has run, or that the
+  recipient took it up and is still on it. One that is met ends silently.
+  Expectations apply only to a message sent now, not to the owner, and they
+  survive a broker restart. They go when their sender does.
+- **Expediting moves a waiting message ahead.** It needs authority over the
+  recipient. Use the `expedite` tool, `Fleet.Expedite`, or `mode` on `send`
+  (`Fleet.SendWith`'s `Mode`).
+  - `steer` folds the message into the recipient's running turn, and that turn's
+    reply also answers it. Claude seats cannot steer; Cursor, Grok and Codex
+    seats can.
+  - `interrupt` ends the running turn. Its requester is answered that it was
+    interrupted, with whatever the turn had said so far, and the message goes
+    next.
+  - If a message cannot be steered or interrupted, or the recipient is between
+    turns, it goes first in the queue and the result says so.
+  - A steered message is saved with the turn, so a restart delivers it again.
 
 ## Gotchas
 

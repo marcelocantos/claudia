@@ -67,11 +67,22 @@ var fleetTools = []fleetTool{
 		Name:        "send",
 		Description: "Send a message to another agent or to \"owner\", now or later, and return immediately. Your turn ends when you stop calling tools; the recipient's reply arrives as your next message. A scheduled message to yourself is a timer, and it arrives even if you go idle. Scheduled messages return an ID that cancel takes. Every message you receive starts with the time now and how long it took to reach you.",
 		InputSchema: fleetSchema([]string{"to", "text"}, map[string]any{
-			"to":            fleetProperty("string", "An agent's name, or \"owner\"."),
-			"text":          fleetProperty("string", "The message."),
-			"after_seconds": fleetProperty("number", "Deliver after this delay."),
-			"at":            fleetProperty("string", "Deliver at this time, in RFC 3339 form (2026-11-03T15:00:00+11:00)."),
-			"every_seconds": fleetProperty("number", "Repeat this often, to yourself only, at least 60 seconds apart, until cancelled."),
+			"to":                    fleetProperty("string", "An agent's name, or \"owner\"."),
+			"text":                  fleetProperty("string", "The message."),
+			"after_seconds":         fleetProperty("number", "Deliver after this delay."),
+			"at":                    fleetProperty("string", "Deliver at this time, in RFC 3339 form (2026-11-03T15:00:00+11:00)."),
+			"every_seconds":         fleetProperty("number", "Repeat this often, to yourself only, at least 60 seconds apart, until cancelled."),
+			"accept_within_seconds": fleetProperty("number", "How soon you expect it to be taken up. If it is not, you are woken once with a notice from clock saying where it stands."),
+			"answer_within_seconds": fleetProperty("number", "How soon you expect an answer. If none comes, you are woken once with a notice from clock saying where it stands."),
+			"mode":                  fleetProperty("string", "steer or interrupt, to expedite it as it is sent, as the expedite tool does."),
+		}),
+	},
+	{
+		Name:        "expedite",
+		Description: "Move a message waiting in an agent's queue ahead of the rest. steer folds it into the agent's running turn, whose reply then answers it too; not every agent's provider can steer. interrupt ends the running turn, whose requester hears it was interrupted, so the message goes next. Either way it goes first in the queue if that cannot be done. Takes authority over the agent.",
+		InputSchema: fleetSchema([]string{"id", "mode"}, map[string]any{
+			"id":   fleetProperty("string", "The message's ID, as send returned it."),
+			"mode": fleetProperty("string", "steer or interrupt."),
 		}),
 	},
 	{
@@ -226,6 +237,9 @@ func (k *FleetKernel) callFleetTool(r *http.Request, fleet, caller string, param
 			Tokens           int64        `json:"tokens"`
 			Turns            int          `json:"turns"`
 			Seconds          float64      `json:"seconds"`
+			AcceptWithin     float64      `json:"accept_within_seconds"`
+			AnswerWithin     float64      `json:"answer_within_seconds"`
+			Mode             string       `json:"mode"`
 		} `json:"arguments"`
 	}
 	if err := json.Unmarshal(params, &call); err != nil {
@@ -248,7 +262,8 @@ func (k *FleetKernel) callFleetTool(r *http.Request, fleet, caller string, param
 		return "starting " + args.Name, nil
 	case "send":
 		send := &FleetSendArgs{From: caller, To: args.To, Kind: FleetRequest, Text: args.Text,
-			After: fleetSeconds(args.AfterSeconds), Every: fleetSeconds(args.EverySeconds)}
+			After: fleetSeconds(args.AfterSeconds), Every: fleetSeconds(args.EverySeconds),
+			AcceptWithin: fleetSeconds(args.AcceptWithin), AnswerWithin: fleetSeconds(args.AnswerWithin), Mode: args.Mode}
 		if args.At != "" {
 			at, err := time.Parse(time.RFC3339, args.At)
 			if err != nil {
@@ -256,11 +271,16 @@ func (k *FleetKernel) callFleetTool(r *http.Request, fleet, caller string, param
 			}
 			send.At = at
 		}
-		id, err := k.Send(fleet, send)
+		id, note, err := k.Deliver(fleet, send)
 		if err != nil {
 			return "", err
 		}
+		if note != "" {
+			return "queued as " + id + "; " + note, nil
+		}
 		return "queued as " + id, nil
+	case "expedite":
+		return k.Expedite(fleet, caller, args.ID, args.Mode)
 	case "cancel":
 		if err := k.Cancel(fleet, caller, args.ID); err != nil {
 			return "", err

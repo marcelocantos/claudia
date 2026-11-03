@@ -145,6 +145,57 @@ func (f *Fleet) Send(ctx context.Context, to, text string, after time.Duration) 
 	return id, nil
 }
 
+// FleetSendWithArgs is a request from the owner, sent now, with expectations
+// and expediting (🎯T250).
+type FleetSendWithArgs struct {
+	To   string
+	Text string
+	// AcceptWithin and AnswerWithin say how soon the owner expects it to be
+	// taken up and answered. One that passes brings a message from
+	// [FleetClockSender].
+	AcceptWithin time.Duration
+	AnswerWithin time.Duration
+	// Mode is empty, [FleetExpediteSteer] or [FleetExpediteInterrupt].
+	Mode string
+}
+
+// FleetSent is a sent message's ID and, when it was expedited, what that did.
+type FleetSent struct {
+	ID   string `json:"id"`
+	Note string `json:"note,omitempty"`
+}
+
+// SendWith sends a request now, as [FleetSendWithArgs] describes.
+func (f *Fleet) SendWith(ctx context.Context, args *FleetSendWithArgs) (*FleetSent, error) {
+	resp, err := f.call(ctx, &broker.FleetRequest{Op: broker.FleetOpSend, To: args.To, Kind: FleetRequest, Text: args.Text,
+		AcceptWithinSeconds: args.AcceptWithin.Seconds(), AnswerWithinSeconds: args.AnswerWithin.Seconds(), Mode: args.Mode})
+	if err != nil {
+		return nil, err
+	}
+	var sent FleetSent
+	if err := json.Unmarshal(resp.Result, &sent.ID); err == nil {
+		return &sent, nil
+	}
+	if err := json.Unmarshal(resp.Result, &sent); err != nil {
+		return nil, fmt.Errorf("claudia: fleet send: %w", err)
+	}
+	return &sent, nil
+}
+
+// Expedite moves a waiting message ahead by [FleetExpediteSteer] or
+// [FleetExpediteInterrupt], and says what happened.
+func (f *Fleet) Expedite(ctx context.Context, id, mode string) (string, error) {
+	resp, err := f.call(ctx, &broker.FleetRequest{Op: broker.FleetOpExpedite, TimerID: id, Mode: mode})
+	if err != nil {
+		return "", err
+	}
+	var note string
+	if err := json.Unmarshal(resp.Result, &note); err != nil {
+		return "", fmt.Errorf("claudia: fleet expedite: %w", err)
+	}
+	return note, nil
+}
+
 // Notify gives an agent news from source that needs no answer to source: the
 // turn's text goes up the agent's parent tree.
 func (f *Fleet) Notify(ctx context.Context, to, source, text string) error {
