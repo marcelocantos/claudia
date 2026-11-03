@@ -5,8 +5,10 @@ package claudia
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http/httptest"
 	"os"
 	"os/exec"
@@ -841,5 +843,126 @@ func TestFleetBudgetIDsAndFailedStartsLeaveNoAmbiguity(t *testing.T) {
 	}
 	if st, _ := r.k.Status("f"); len(st.Timers) != 0 {
 		t.Fatalf("a failed start left %+v for a successor", st.Timers)
+	}
+}
+
+// commitTree makes a commit of the given ls-tree lines in repo and returns it.
+func commitTree(t *testing.T, repo, entries string) string {
+	t.Helper()
+	tree := gitIn(t, repo, entries, "mktree", "--missing")
+	return gitIn(t, repo, "", "commit-tree", tree, "-m", "test")
+}
+
+// Third review, finding 2: a malformed object fails fast, not at the timeout.
+func TestFleetCheckMalformedObjectFailsFast(t *testing.T) {
+	repo := fleetCheckRepo(t)
+	// A tree object, listed as a file, larger than a pipe's buffer.
+	var lines strings.Builder
+	blob := gitIn(t, repo, "x\n", "hash-object", "-w", "--stdin")
+	for i := range 3000 {
+		fmt.Fprintf(&lines, "100644 blob %s\tfile%04d\n", blob, i)
+	}
+	innerTree := gitIn(t, repo, lines.String(), "mktree")
+	// mktree refuses the lie, so write the outer tree object directly.
+	raw, err := hex.DecodeString(innerTree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outer := gitIn(t, repo, "100644 looks-like-a-file\x00"+string(raw), "hash-object", "-t", "tree", "--literally", "-w", "--stdin")
+	commit := gitIn(t, repo, "", "commit-tree", outer, "-m", "malformed")
+	r, _ := newClockedFleetRig(t, map[string]*fakeFleetSeat{})
+	if err := r.k.RegisterCheck("f", &FleetCheckArgs{Name: "c", Repo: repo, Script: "echo 1\n", Timeout: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	var seq uint64
+	if _, err := r.k.RunCheck("f", FleetOwner, "c", commit); err != nil {
+		t.Fatal(err)
+	}
+	res := checkResult(t, r, &seq)
+	if !strings.Contains(res.Error, "export") || res.Seconds > 20 {
+		t.Fatalf("result %+v", res)
+	}
+}
+
+// Third review, finding 3: a link may not lead outside the export.
+func TestFleetCheckRefusesLinksOutOfTheExport(t *testing.T) {
+	repo := fleetCheckRepo(t)
+	for _, target := range []string{"/etc/hosts", "../../outside", "sub/../../x"} {
+		link := gitIn(t, repo, target, "hash-object", "-w", "--stdin")
+		commit := commitTree(t, repo, "120000 blob "+link+"\tcount.txt\n")
+		r, _ := newClockedFleetRig(t, map[string]*fakeFleetSeat{})
+		if err := r.k.RegisterCheck("f", &FleetCheckArgs{Name: "c", Repo: repo, Script: "cat count.txt\n"}); err != nil {
+			t.Fatal(err)
+		}
+		var seq uint64
+		if _, err := r.k.RunCheck("f", FleetOwner, "c", commit); err != nil {
+			t.Fatal(err)
+		}
+		if res := checkResult(t, r, &seq); !strings.Contains(res.Error, "leaves the export") {
+			t.Fatalf("link to %s: %+v", target, res)
+		}
+	}
+	// A link within the export is fine.
+	file := gitIn(t, repo, "9\n", "hash-object", "-w", "--stdin")
+	link := gitIn(t, repo, "real.txt", "hash-object", "-w", "--stdin")
+	commit := commitTree(t, repo, "100644 blob "+file+"\treal.txt\n120000 blob "+link+"\tcount.txt\n")
+	r, _ := newClockedFleetRig(t, map[string]*fakeFleetSeat{})
+	if err := r.k.RegisterCheck("f", &FleetCheckArgs{Name: "c", Repo: repo, Script: "cat count.txt\n"}); err != nil {
+		t.Fatal(err)
+	}
+	var seq uint64
+	if _, err := r.k.RunCheck("f", FleetOwner, "c", commit); err != nil {
+		t.Fatal(err)
+	}
+	if res := checkResult(t, r, &seq); res.Score == nil || *res.Score != 9 {
+		t.Fatalf("inner link: %+v", res)
+	}
+}
+
+// Third review, finding 1: a large file is streamed to disk.
+func TestFleetCheckExportsALargeFile(t *testing.T) {
+	repo := fleetCheckRepo(t)
+	big := filepath.Join(t.TempDir(), "big")
+	if err := os.WriteFile(big, make([]byte, 64<<20), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	blob := gitIn(t, repo, "", "hash-object", "-w", big)
+	count := gitIn(t, repo, "7\n", "hash-object", "-w", "--stdin")
+	commit := commitTree(t, repo, "100644 blob "+blob+"\tzeros\n100644 blob "+count+"\tcount.txt\n")
+	r, _ := newClockedFleetRig(t, map[string]*fakeFleetSeat{})
+	if err := r.k.RegisterCheck("f", &FleetCheckArgs{Name: "c", Repo: repo, Script: "test $(wc -c < zeros) -eq 67108864 && cat count.txt\n"}); err != nil {
+		t.Fatal(err)
+	}
+	var seq uint64
+	if _, err := r.k.RunCheck("f", FleetOwner, "c", commit); err != nil {
+		t.Fatal(err)
+	}
+	if res := checkResult(t, r, &seq); res.Score == nil || *res.Score != 7 {
+		t.Fatalf("result %+v", res)
+	}
+}
+
+// Third review, finding 4: restarts during one turn charge it once.
+func TestFleetTurnInterruptedByRestartsIsChargedOnce(t *testing.T) {
+	r, _ := newClockedFleetRig(t, map[string]*fakeFleetSeat{"a": newFakeFleetSeat(fleetHold)})
+	if err := r.k.Start(context.Background(), "f", FleetOwner, &FleetStartArgs{Name: "a", Instructions: "x", WorkDir: "/tmp", Budget: &FleetBudget{Turns: 5}}); err != nil {
+		t.Fatal(err)
+	}
+	r.send(FleetOwner, "a", "long job")
+	for range 3 {
+		waitFleet(t, "a turn", func() bool {
+			st, _ := r.k.Status("f")
+			return len(st.Agents) == 1 && st.Agents[0].State == FleetStateWorking
+		})
+		r.k.Close()
+		r.setSeat("a", newFakeFleetSeat(fleetHold))
+		r.open()
+	}
+	waitFleet(t, "the last turn", func() bool {
+		st, _ := r.k.Status("f")
+		return len(st.Agents) == 1 && st.Agents[0].State == FleetStateWorking
+	})
+	if st, _ := r.k.Status("f"); st.Budgets[0].SpentTurns != 1 {
+		t.Fatalf("one message charged %d turns", st.Budgets[0].SpentTurns)
 	}
 }

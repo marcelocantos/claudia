@@ -210,6 +210,8 @@ type FleetMessage struct {
 	Missed int `json:"missed,omitempty"`
 	// Timer is the repeat this firing belongs to.
 	Timer string `json:"timer,omitempty"`
+	// Charged means a budget has already counted this message's turn.
+	Charged bool `json:"charged,omitempty"`
 }
 
 // FleetEvent is one entry of a fleet's log. The owner's messages are the
@@ -800,9 +802,10 @@ func (k *FleetKernel) run(rt *fleetRuntime) {
 	for {
 		k.mu.Lock()
 		group := k.state.Fleets[rt.fleet]
-		// A redelivered message finishes a turn already charged, so no budget holds
-		// it back or charges it again.
-		for !a.Stopped && !k.closed && (len(a.Inbox) == 0 || (!a.Inbox[0].Redelivered && k.blockedLocked(rt.fleet, group, a))) {
+		// Each message is charged once. A redelivered one finishes a turn already
+		// paid for, so no budget holds it back or charges it again, however many
+		// restarts interrupt it.
+		for !a.Stopped && !k.closed && (len(a.Inbox) == 0 || (!a.Inbox[0].Charged && k.blockedLocked(rt.fleet, group, a))) {
 			rt.wake.Wait()
 		}
 		if k.closed {
@@ -824,8 +827,9 @@ func (k *FleetKernel) run(rt *fleetRuntime) {
 		now := k.clock.Now()
 		stamp := fleetStamp(now, m, a.LastTurnEnd)
 		a.CurrentSince = now
-		if !m.Redelivered {
+		if !m.Charged {
 			k.chargeTurnLocked(group, a)
+			m.Charged = true
 		}
 		if err := k.saveLocked(); err != nil {
 			k.logf("fleet: save before turn", "fleet", rt.fleet, "agent", a.Name, "err", err)

@@ -43,6 +43,8 @@ const (
 	fleetCheckKill   = 5 * time.Second
 	// fleetCheckQueue bounds a fleet's runs waiting or running at once.
 	fleetCheckQueue = 8
+	// fleetMaxLinkTarget bounds a symlink's target in an export.
+	fleetMaxLinkTarget = 4096
 	// fleetGitTimeout bounds every git command a check needs.
 	fleetGitTimeout = 2 * time.Minute
 )
@@ -356,7 +358,11 @@ func runCheckProcess(ctx context.Context, checkouts, id string, check *fleetChec
 	// repository gets the time its owner allowed.
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(check.TimeoutSeconds*float64(time.Second)))
 	defer cancel()
-	if err := exportCommit(ctx, check.Repo, commit, dir); err != nil {
+	var exportNote string
+	var skip *exportSkipError
+	if err := exportCommit(ctx, check.Repo, commit, dir); errors.As(err, &skip) {
+		exportNote = "[Claudia: " + skip.Error() + "]\n"
+	} else if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			result.Error = fmt.Sprintf("timed out after %s while exporting the commit", fleetDuration(time.Duration(check.TimeoutSeconds*float64(time.Second))))
 		} else {
@@ -375,7 +381,7 @@ func runCheckProcess(ctx context.Context, checkouts, id string, check *fleetChec
 	cmd.Stderr = combined
 	runErr := cmd.Run()
 	killCheckProcessGroup(cmd)
-	result.Output = combined.String()
+	result.Output = exportNote + combined.String()
 	var exitErr *exec.ExitError
 	switch {
 	case ctx.Err() == context.DeadlineExceeded:
@@ -439,7 +445,12 @@ func exportCommit(ctx context.Context, repo, commit, dir string) error {
 		}
 	}
 
-	cmd := fleetGitCommand(ctx, repo, "cat-file", "--batch")
+	// Its own context, so that any early return also ends git: a git process
+	// left writing into a pipe nobody reads would hold the check slot until
+	// the check's timeout.
+	gitCtx, stopGit := context.WithCancel(ctx)
+	defer stopGit()
+	cmd := fleetGitCommand(gitCtx, repo, "cat-file", "--batch")
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return err
@@ -452,34 +463,34 @@ func exportCommit(ctx context.Context, repo, commit, dir string) error {
 		return err
 	}
 	defer func() {
+		stopGit()
 		_ = stdin.Close()
 		_ = cmd.Wait()
 	}()
 	objects := bufio.NewReader(stdout)
-	read := func(oid string) ([]byte, error) {
+	// open asks for a blob and returns its size, leaving the content next to read.
+	open := func(oid string) (int64, error) {
 		if _, err := io.WriteString(stdin, oid+"\n"); err != nil {
-			return nil, err
+			return 0, err
 		}
 		header, err := objects.ReadString('\n')
 		if err != nil {
-			return nil, err
+			return 0, err
 		}
 		fields := strings.Fields(header)
 		if len(fields) != 3 || fields[1] != "blob" {
-			return nil, fmt.Errorf("object %s: %q", oid, strings.TrimSpace(header))
+			return 0, fmt.Errorf("object %s: %q", oid, strings.TrimSpace(header))
 		}
-		size, err := strconv.ParseInt(fields[2], 10, 64)
-		if err != nil {
-			return nil, err
-		}
-		body := make([]byte, size+1)
-		if _, err := io.ReadFull(objects, body); err != nil {
-			return nil, err
-		}
-		return body[:size], nil
+		return strconv.ParseInt(fields[2], 10, 64)
 	}
+	// finish consumes the newline after an object's content.
+	finish := func() error {
+		_, err := objects.Discard(1)
+		return err
+	}
+	var skipped []string
 	for _, e := range files {
-		body, err := read(e.oid)
+		size, err := open(e.oid)
 		if err != nil {
 			return err
 		}
@@ -493,21 +504,53 @@ func exportCommit(ctx context.Context, repo, commit, dir string) error {
 			perm = 0o755
 		}
 		f, err := root.OpenFile(e.path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, perm)
+		if errors.Is(err, os.ErrExist) {
+			// Paths that differ only in case collide on a case-insensitive
+			// filesystem. The first wins; nothing is overwritten.
+			skipped = append(skipped, e.path)
+			if _, err := objects.Discard(int(size)); err != nil {
+				return err
+			}
+			if err := finish(); err != nil {
+				return err
+			}
+			continue
+		}
 		if err != nil {
 			return fmt.Errorf("%s: %w", e.path, err)
 		}
-		_, err = f.Write(body)
+		// Streamed, never held whole: a huge file compresses to almost nothing
+		// in git, and would otherwise cost the broker its size in memory.
+		_, err = io.CopyN(f, objects, size)
 		if closeErr := f.Close(); err == nil {
 			err = closeErr
 		}
 		if err != nil {
 			return fmt.Errorf("%s: %w", e.path, err)
 		}
+		if err := finish(); err != nil {
+			return err
+		}
 	}
 	for _, e := range links {
-		target, err := read(e.oid)
+		size, err := open(e.oid)
 		if err != nil {
 			return err
+		}
+		if size > fleetMaxLinkTarget {
+			return fmt.Errorf("%s: a link target of %d bytes", e.path, size)
+		}
+		target := make([]byte, size)
+		if _, err := io.ReadFull(objects, target); err != nil {
+			return err
+		}
+		if err := finish(); err != nil {
+			return err
+		}
+		// A link may point only within the export, so that the owner's script
+		// cannot be led to read or write anything outside it.
+		if filepath.IsAbs(string(target)) || !filepath.IsLocal(filepath.Join(filepath.Dir(e.path), string(target))) {
+			return fmt.Errorf("%s: the link target %q leaves the export", e.path, target)
 		}
 		if parent := filepath.Dir(e.path); parent != "." {
 			if err := root.MkdirAll(parent, 0o755); err != nil {
@@ -515,10 +558,25 @@ func exportCommit(ctx context.Context, repo, commit, dir string) error {
 			}
 		}
 		if err := root.Symlink(string(target), e.path); err != nil {
+			if errors.Is(err, os.ErrExist) {
+				skipped = append(skipped, e.path)
+				continue
+			}
 			return fmt.Errorf("%s: %w", e.path, err)
 		}
 	}
+	if len(skipped) > 0 {
+		return &exportSkipError{paths: skipped}
+	}
 	return nil
+}
+
+// exportSkipError reports paths an export left out because they collide with
+// one already written. The export is otherwise complete, so the check runs.
+type exportSkipError struct{ paths []string }
+
+func (e *exportSkipError) Error() string {
+	return fmt.Sprintf("these paths collide with others on this filesystem and were left out: %s", strings.Join(e.paths, ", "))
 }
 
 func boundCheckOutput(s string) string {
