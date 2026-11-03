@@ -390,7 +390,8 @@ func (d *Daemon) fleetOp(ctx context.Context, r *broker.FleetRequest) (any, erro
 	case broker.FleetOpStart:
 		args := &claudia.FleetStartArgs{
 			Name: r.Name, Instructions: r.Instructions, InstructionsFile: r.InstructionsFile,
-			WorkDir: r.WorkDir, Quality: r.Quality, Purpose: r.Purpose, Model: r.Model,
+			WorkDir: r.WorkDir, Quality: r.Quality, Purpose: r.Purpose, Model: r.Model, Authority: r.Authority,
+			Tools: r.Tools,
 		}
 		if r.HasBudget {
 			args.Budget = &claudia.FleetBudget{Tokens: r.BudgetTokens, Turns: r.BudgetTurns, Seconds: r.BudgetSeconds}
@@ -414,9 +415,9 @@ func (d *Daemon) fleetOp(ctx context.Context, r *broker.FleetRequest) (any, erro
 	case broker.FleetOpCancel:
 		return nil, k.Cancel(r.Fleet, claudia.FleetOwner, r.TimerID)
 	case broker.FleetOpBudget:
-		return nil, k.SetBudget(r.Fleet, r.Name, claudia.FleetBudget{Tokens: r.BudgetTokens, Turns: r.BudgetTurns, Seconds: r.BudgetSeconds})
+		return nil, k.SetBudget(r.Fleet, claudia.FleetOwner, r.Name, claudia.FleetBudget{Tokens: r.BudgetTokens, Turns: r.BudgetTurns, Seconds: r.BudgetSeconds})
 	case broker.FleetOpRegisterCheck:
-		return nil, k.RegisterCheck(r.Fleet, &claudia.FleetCheckArgs{Name: r.Name, Repo: r.Repo, Script: r.Script,
+		return nil, k.RegisterCheck(r.Fleet, claudia.FleetOwner, &claudia.FleetCheckArgs{Name: r.Name, Repo: r.Repo, Script: r.Script,
 			AgentsMayRun: r.AgentsMayRun, Timeout: fleetWireSeconds(r.TimeoutSeconds)})
 	case broker.FleetOpRunCheck:
 		return k.RunCheck(r.Fleet, claudia.FleetOwner, r.Name, r.Commit)

@@ -12,11 +12,10 @@ import (
 	"time"
 )
 
-// A budget limits what a subtree spends (🎯T248.2). The owner chooses the amount;
-// the kernel stops new turns once it is spent and says why. A turn in progress
-// finishes. An agent can put a budget on a child, which only narrows what the
-// child may spend, because every budget above it still applies; nothing an agent
-// does can raise one.
+// A budget limits what a subtree spends (🎯T248.2). The kernel stops new turns
+// once it is spent and says why. A turn in progress finishes. Setting one
+// takes authority over its holder and over whoever set it before (🎯T249).
+// Every budget above an agent still applies, so one set lower can only narrow.
 
 // FleetBudget is a limit in up to three dimensions. Zero is unlimited.
 type FleetBudget struct {
@@ -56,7 +55,9 @@ type FleetBudgetStatus struct {
 }
 
 type fleetBudgetState struct {
-	Holder      string      `json:"holder"`
+	Holder string `json:"holder"`
+	// SetBy is who last set it: the owner or an agent.
+	SetBy       string      `json:"set_by,omitempty"`
 	Limits      FleetBudget `json:"limits"`
 	Started     time.Time   `json:"started"`
 	SpentTokens int64       `json:"spent_tokens,omitempty"`
@@ -78,13 +79,13 @@ func (b *fleetBudgetState) spentBy(now time.Time) string {
 	return ""
 }
 
-func (k *FleetKernel) newBudgetLocked(group *fleetGroupState, holder string, limits FleetBudget) string {
+func (k *FleetKernel) newBudgetLocked(group *fleetGroupState, holder, setBy string, limits FleetBudget) string {
 	group.NextID++
 	id := fmt.Sprintf("b%d", group.NextID)
 	if group.Budgets == nil {
 		group.Budgets = map[string]*fleetBudgetState{}
 	}
-	group.Budgets[id] = &fleetBudgetState{Holder: holder, Limits: limits, Started: k.clock.Now()}
+	group.Budgets[id] = &fleetBudgetState{Holder: holder, SetBy: setBy, Limits: limits, Started: k.clock.Now()}
 	return id
 }
 
@@ -92,8 +93,9 @@ func (k *FleetKernel) newBudgetLocked(group *fleetGroupState, holder string, lim
 // holds it, creating one over an agent and its descendants if it holds none. A
 // budget's ID outlives its holder, so a spent budget can still be raised after
 // the holder has gone. Raising a spent budget lets waiting work go on, and a
-// time limit counts from now. Only the owner can do this.
-func (k *FleetKernel) SetBudget(fleet, target string, limits FleetBudget) error {
+// time limit counts from now. It takes authority over the holder and over
+// whoever set the budget before.
+func (k *FleetKernel) SetBudget(fleet, caller, target string, limits FleetBudget) error {
 	if err := limits.validate(); err != nil {
 		return err
 	}
@@ -104,15 +106,25 @@ func (k *FleetKernel) SetBudget(fleet, target string, limits FleetBudget) error 
 		return err
 	}
 	agent := target
-	if b := group.Budgets[target]; b != nil {
-		b.Limits, b.Notified, b.Started = limits, false, k.clock.Now()
-		agent = b.Holder
+	existing := group.Budgets[target]
+	if existing != nil {
+		agent = existing.Holder
 	} else if a := group.Agents[target]; a == nil {
 		return fmt.Errorf("no agent or budget named %q", target)
-	} else if b := group.Budgets[a.OwnBudget]; b != nil {
-		b.Limits, b.Notified, b.Started = limits, false, k.clock.Now()
 	} else {
-		id := k.newBudgetLocked(group, agent, limits)
+		existing = group.Budgets[a.OwnBudget]
+	}
+	if !authorized(group, caller, agent) {
+		return fmt.Errorf("agent %q has no authority over %q", caller, agent)
+	}
+	if existing != nil && !authorized(group, caller, existing.SetBy) {
+		return fmt.Errorf("agent %q has no authority over %q, who set this budget", caller, existing.SetBy)
+	}
+	if existing != nil {
+		existing.Limits, existing.Notified, existing.Started, existing.SetBy = limits, false, k.clock.Now(), caller
+	} else {
+		a := group.Agents[agent]
+		id := k.newBudgetLocked(group, agent, caller, limits)
 		a.OwnBudget = id
 		a.Budgets = append(a.Budgets, id)
 		for _, other := range group.Agents {

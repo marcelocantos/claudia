@@ -719,7 +719,7 @@ func TestFleetMCPToolsActAsTheCallingSeat(t *testing.T) {
 	for _, tool := range tools {
 		names[tool.(map[string]any)["name"].(string)] = true
 	}
-	if len(names) != 6 || !names["start"] || !names["send"] || !names["stop"] || !names["list"] || !names["cancel"] || !names["check"] {
+	if len(names) != 8 || !names["start"] || !names["send"] || !names["stop"] || !names["list"] || !names["cancel"] || !names["check"] || !names["budget"] || !names["register_check"] {
 		t.Fatalf("tools: %v", names)
 	}
 	call := func(token, name string, args map[string]any) (string, bool) {
@@ -743,7 +743,7 @@ func TestFleetMCPToolsActAsTheCallingSeat(t *testing.T) {
 		}
 		return false
 	})
-	if text, isErr := call(otherToken, "stop", map[string]any{"name": "b"}); !isErr || !strings.Contains(text, "may stop only") {
+	if text, isErr := call(otherToken, "stop", map[string]any{"name": "b"}); !isErr || !strings.Contains(text, "no authority") {
 		t.Fatalf("another tree's stop: %q %v", text, isErr)
 	}
 	text, isErr := call(token, "list", nil)

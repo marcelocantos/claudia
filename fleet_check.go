@@ -58,8 +58,8 @@ type FleetCheckArgs struct {
 	// Its contents are copied, so later edits to the file change nothing.
 	Script     string
 	ScriptFile string
-	// AgentsMayRun lets agents run it with the check tool. Otherwise only the
-	// owner can, and agents never see its results.
+	// AgentsMayRun lets any agent run it. Otherwise it is held out: only those
+	// with authority over whoever registered it can run it or see it.
 	AgentsMayRun bool
 	// Timeout ends a run that takes longer. Zero is 30 minutes.
 	Timeout time.Duration
@@ -72,6 +72,8 @@ type FleetCheckStatus struct {
 	SHA256         string  `json:"sha256"`
 	AgentsMayRun   bool    `json:"agents_may_run"`
 	TimeoutSeconds float64 `json:"timeout_seconds"`
+	// Last is the latest recorded result, if any.
+	Last *FleetCheckResult `json:"last,omitempty"`
 }
 
 // FleetCheckResult is one run, as the kernel recorded it.
@@ -98,6 +100,8 @@ type fleetCheckState struct {
 	AgentsMayRun   bool      `json:"agents_may_run,omitempty"`
 	TimeoutSeconds float64   `json:"timeout_seconds"`
 	Registered     time.Time `json:"registered"`
+	// RegisteredBy is the owner or the agent that registered it.
+	RegisteredBy string `json:"registered_by,omitempty"`
 }
 
 type fleetCheckRun struct {
@@ -110,9 +114,10 @@ type fleetCheckRun struct {
 	Started        time.Time `json:"started"`
 }
 
-// RegisterCheck pins a check's script. Re-registering a name replaces it, and
-// the log records the new hash. Only the owner can do this.
-func (k *FleetKernel) RegisterCheck(fleet string, args *FleetCheckArgs) error {
+// RegisterCheck pins a check's script. Anyone may register a check; replacing
+// one takes authority over whoever registered it, and the log records the new
+// hash and who replaced it.
+func (k *FleetKernel) RegisterCheck(fleet, caller string, args *FleetCheckArgs) error {
 	if args == nil || !fleetNameValid(args.Name) {
 		return errors.New("a check needs a name of lowercase letters, digits and single hyphens")
 	}
@@ -147,6 +152,9 @@ func (k *FleetKernel) RegisterCheck(fleet string, args *FleetCheckArgs) error {
 	if err != nil {
 		return err
 	}
+	if old := group.Checks[args.Name]; old != nil && !authorized(group, caller, old.RegisteredBy) {
+		return fmt.Errorf("agent %q has no authority over %q, who registered check %s", caller, old.RegisteredBy, args.Name)
+	}
 	dir := filepath.Join(k.dir, "checks", fleet)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
@@ -161,8 +169,8 @@ func (k *FleetKernel) RegisterCheck(fleet string, args *FleetCheckArgs) error {
 		group.Checks = map[string]*fleetCheckState{}
 	}
 	group.Checks[args.Name] = &fleetCheckState{Repo: args.Repo, Path: path, SHA256: hex.EncodeToString(sum[:]),
-		AgentsMayRun: args.AgentsMayRun, TimeoutSeconds: timeout.Seconds(), Registered: k.clock.Now()}
-	k.eventLocked(fleet, &FleetEvent{Kind: FleetEventCheckRegistered, Text: fmt.Sprintf("%s %s %s", args.Name, hex.EncodeToString(sum[:]), args.Repo)})
+		AgentsMayRun: args.AgentsMayRun, TimeoutSeconds: timeout.Seconds(), Registered: k.clock.Now(), RegisteredBy: caller}
+	k.eventLocked(fleet, &FleetEvent{Kind: FleetEventCheckRegistered, Agent: caller, Text: fmt.Sprintf("%s %s %s", args.Name, hex.EncodeToString(sum[:]), args.Repo)})
 	return k.saveLocked()
 }
 
@@ -183,7 +191,7 @@ func (k *FleetKernel) RunCheck(fleet, requester, name, commit string) (string, e
 		return "", err
 	}
 	check := group.Checks[name]
-	if check == nil || (requester != FleetOwner && !check.AgentsMayRun) {
+	if check == nil || (!check.AgentsMayRun && !authorized(group, requester, check.RegisteredBy)) {
 		k.mu.Unlock()
 		return "", fmt.Errorf("no check named %q", name)
 	}
@@ -294,6 +302,10 @@ func (k *FleetKernel) finishCheckLocked(fleet, id string, result *FleetCheckResu
 	delete(group.CheckRuns, id)
 	result.Output = boundCheckOutput(result.Output)
 	k.eventLocked(fleet, &FleetEvent{Kind: FleetEventCheckResult, Agent: result.Requester, Check: result})
+	if group.CheckLast == nil {
+		group.CheckLast = map[string]*FleetCheckResult{}
+	}
+	group.CheckLast[result.Name] = result
 	a := group.Agents[result.Requester]
 	if result.Requester == FleetOwner || a == nil || run == nil || a.Token != run.RequesterToken {
 		return
@@ -632,7 +644,7 @@ func (k *FleetKernel) checkStatusLocked(group *fleetGroupState, agentsOnly bool)
 		if agentsOnly && !c.AgentsMayRun {
 			continue
 		}
-		out = append(out, FleetCheckStatus{Name: name, Repo: c.Repo, SHA256: c.SHA256, AgentsMayRun: c.AgentsMayRun, TimeoutSeconds: c.TimeoutSeconds})
+		out = append(out, FleetCheckStatus{Name: name, Repo: c.Repo, SHA256: c.SHA256, AgentsMayRun: c.AgentsMayRun, TimeoutSeconds: c.TimeoutSeconds, Last: group.CheckLast[name]})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out

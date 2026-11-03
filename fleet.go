@@ -60,6 +60,10 @@ const (
 	FleetEventCheckStarted    = "check_started"
 	FleetEventCheckResult     = "check_result"
 
+	// FleetAuthorityAll, given at start by the owner, gives an agent authority
+	// over everything in its fleet (🎯T249).
+	FleetAuthorityAll = "all"
+
 	// FleetBudgetSender is the From of the kernel's notice that a budget is spent.
 	FleetBudgetSender = "budget"
 	// FleetCheckSenderPrefix starts the From of a check result sent to an agent.
@@ -190,6 +194,12 @@ type FleetStartArgs struct {
 	Model   string
 	// Budget, when set, limits what this agent and its descendants spend.
 	Budget *FleetBudget
+	// Authority is [FleetAuthorityAll] to give the agent authority over
+	// everything, or empty. Only the owner can give it.
+	Authority string
+	// Tools are the tools the agent may call, chosen from the starter's own: an
+	// agent can do at most what its creator can. Nil means all of the starter's.
+	Tools []string
 }
 
 // FleetMessage is one message between agents or with the owner.
@@ -245,6 +255,8 @@ type FleetAgentStatus struct {
 	WorkingSeconds int `json:"working_seconds,omitempty"`
 	// Waiting names a budget holding back its next turn.
 	Waiting string `json:"waiting,omitempty"`
+	// Tools it may call.
+	Tools []string `json:"tools"`
 }
 
 // FleetStatus is a fleet as it is right now.
@@ -277,6 +289,11 @@ type fleetAgentState struct {
 	// Budgets are every budget over it; OwnBudget is the one it holds.
 	Budgets   []string `json:"budgets,omitempty"`
 	OwnBudget string   `json:"own_budget,omitempty"`
+	// Authority is FleetAuthorityAll or empty.
+	Authority string `json:"authority,omitempty"`
+	// Tools is what it may call. Nil, as in state saved before tools could be
+	// chosen, means every tool.
+	Tools []string `json:"tools"`
 
 	// retiring means retireState owns this agent's end. Not saved: a kernel that
 	// restarts sees Stopped and retires it again.
@@ -294,6 +311,8 @@ type fleetGroupState struct {
 	Budgets     map[string]*fleetBudgetState `json:"budgets,omitempty"`
 	Checks      map[string]*fleetCheckState  `json:"checks,omitempty"`
 	CheckRuns   map[string]*fleetCheckRun    `json:"check_runs,omitempty"`
+	// CheckLast is each check's latest recorded result.
+	CheckLast map[string]*FleetCheckResult `json:"check_last,omitempty"`
 }
 
 type fleetState struct {
@@ -581,6 +600,12 @@ func (k *FleetKernel) admit(fleet, caller string, args *FleetStartArgs) (*fleetA
 			return nil, err
 		}
 	}
+	if args.Authority != "" && args.Authority != FleetAuthorityAll {
+		return nil, fmt.Errorf("unknown authority %q", args.Authority)
+	}
+	if args.Authority != "" && caller != FleetOwner {
+		return nil, errors.New("only the owner can give an agent its authority")
+	}
 	tokenBytes := make([]byte, fleetTokenBytes)
 	if _, err := rand.Read(tokenBytes); err != nil {
 		return nil, err
@@ -597,7 +622,7 @@ func (k *FleetKernel) admit(fleet, caller string, args *FleetStartArgs) (*fleetA
 	}
 	a := &fleetAgentState{
 		Name: args.Name, Parent: caller, Root: args.Name, Instructions: instructions, Token: hex.EncodeToString(tokenBytes),
-		WorkDir: args.WorkDir, Quality: args.Quality, Purpose: args.Purpose, Model: args.Model,
+		WorkDir: args.WorkDir, Quality: args.Quality, Purpose: args.Purpose, Model: args.Model, Authority: args.Authority,
 	}
 	if caller != FleetOwner {
 		parent := group.Agents[caller]
@@ -613,6 +638,13 @@ func (k *FleetKernel) admit(fleet, caller string, args *FleetStartArgs) (*fleetA
 	if a.WorkDir == "" {
 		return nil, errors.New("a root agent needs a workdir")
 	}
+	may := allFleetTools()
+	if parent := group.Agents[caller]; parent != nil {
+		may = toolSet(parent.Tools)
+	}
+	if a.Tools, err = chooseTools(args.Tools, may); err != nil {
+		return nil, err
+	}
 	if group.Agents[args.Name] != nil {
 		return nil, fmt.Errorf("agent %q already exists", args.Name)
 	}
@@ -620,7 +652,7 @@ func (k *FleetKernel) admit(fleet, caller string, args *FleetStartArgs) (*fleetA
 		return nil, fmt.Errorf("agent limit %d reached; stop an agent first", group.MaxAgents)
 	}
 	if args.Budget != nil && !args.Budget.zero() {
-		a.OwnBudget = k.newBudgetLocked(group, args.Name, *args.Budget)
+		a.OwnBudget = k.newBudgetLocked(group, args.Name, caller, *args.Budget)
 		a.Budgets = append(a.Budgets, a.OwnBudget)
 	}
 	group.Agents[args.Name] = a
@@ -1058,8 +1090,8 @@ func (k *FleetKernel) Stop(fleet, caller, name string) error {
 	if a == nil {
 		return fmt.Errorf("no agent named %q", name)
 	}
-	if caller != FleetOwner && caller != name && !fleetDescends(group, name, caller) {
-		return fmt.Errorf("agent %q may stop only itself and its descendants", caller)
+	if !authorized(group, caller, name) {
+		return fmt.Errorf("agent %q has no authority over %q", caller, name)
 	}
 	key := fleetKey(fleet, name)
 	rt := k.running[key]
@@ -1099,6 +1131,21 @@ func (k *FleetKernel) Stop(fleet, caller, name string) error {
 // fleetDescends walks up from name. Parent links always end at the owner,
 // because a retiring agent hands its children to the owner, and a new agent's
 // parent exists when it is created.
+// authorized is the fleet's one rule of authority (🎯T249): actor may act on
+// what subject created, or on subject itself, if actor is the owner, holds
+// authority over everything, is subject, or created subject or one of its
+// creators. Who is meant to direct whom is the agents' business; this only
+// enforces the line of creation and the owner's grant.
+func authorized(group *fleetGroupState, actor, subject string) bool {
+	if actor == FleetOwner || actor == subject {
+		return true
+	}
+	if a := group.Agents[actor]; a != nil && a.Authority == FleetAuthorityAll {
+		return true
+	}
+	return fleetDescends(group, subject, actor)
+}
+
 func fleetDescends(group *fleetGroupState, name, ancestor string) bool {
 	seen := 0
 	for a := group.Agents[name]; a != nil && seen <= len(group.Agents); a = group.Agents[a.Parent] {
@@ -1198,8 +1245,15 @@ func (k *FleetKernel) Shutdown(ctx context.Context, fleet string) error {
 	return k.saveLocked()
 }
 
-// Status reads what exists right now.
+// Status reads what exists right now, as the owner sees it.
 func (k *FleetKernel) Status(fleet string) (*FleetStatus, error) {
+	return k.StatusFor(fleet, FleetOwner)
+}
+
+// StatusFor reads what exists right now, as viewer sees it: every agent and
+// budget, the checks it may run, and the scheduled messages it has authority
+// over.
+func (k *FleetKernel) StatusFor(fleet, viewer string) (*FleetStatus, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	group, err := k.groupLocked(fleet)
@@ -1210,7 +1264,8 @@ func (k *FleetKernel) Status(fleet string) (*FleetStatus, error) {
 	st := &FleetStatus{Agents: make([]FleetAgentStatus, 0, len(group.Agents)), Timers: k.timerStatusLocked(group),
 		Budgets: k.budgetStatusLocked(group), Checks: k.checkStatusLocked(group, false), LastSeq: k.logs[fleet].seq}
 	for _, a := range group.Agents {
-		row := FleetAgentStatus{Name: a.Name, Parent: a.Parent, Root: a.Root, Queued: len(a.Inbox), State: FleetStateStarting}
+		row := FleetAgentStatus{Name: a.Name, Parent: a.Parent, Root: a.Root, Queued: len(a.Inbox), State: FleetStateStarting,
+			Tools: toolSet(a.Tools)}
 		if rt := k.running[fleetKey(fleet, a.Name)]; rt != nil {
 			row.State = FleetStateIdle
 			if a.Current != nil {
@@ -1229,6 +1284,20 @@ func (k *FleetKernel) Status(fleet string) (*FleetStatus, error) {
 		st.Agents = append(st.Agents, row)
 	}
 	sort.Slice(st.Timers, func(i, j int) bool { return st.Timers[i].Due.Before(st.Timers[j].Due) })
+	timers := st.Timers[:0]
+	for _, t := range st.Timers {
+		if authorized(group, viewer, t.From) || authorized(group, viewer, t.To) {
+			timers = append(timers, t)
+		}
+	}
+	st.Timers = timers
+	checks := st.Checks[:0]
+	for _, c := range st.Checks {
+		if c.AgentsMayRun || authorized(group, viewer, group.Checks[c.Name].RegisteredBy) {
+			checks = append(checks, c)
+		}
+	}
+	st.Checks = checks
 	sort.Slice(st.Agents, func(i, j int) bool { return st.Agents[i].Name < st.Agents[j].Name })
 	return st, nil
 }

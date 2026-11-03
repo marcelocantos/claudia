@@ -45,6 +45,11 @@ type FleetRequest struct {
 	Purpose          string `json:"purpose,omitempty"`
 	Model            string `json:"model,omitempty"`
 
+	// Start: give the agent authority over everything, and choose the tools it
+	// may call (🎯T249). A nil set means every tool.
+	Authority string   `json:"authority,omitempty"`
+	Tools     []string `json:"tools,omitempty"`
+
 	// Start and Budget: a limit in up to three dimensions, when HasBudget.
 	HasBudget     bool    `json:"has_budget,omitempty"`
 	BudgetTokens  int64   `json:"budget_tokens,omitempty"`

@@ -1005,17 +1005,26 @@ id, err := fleet.Send(ctx, "lead", "Fix the build.", 0)
 events, err := fleet.Read(ctx, lastSeq) // waits for events after lastSeq
 ```
 
-Every agent has exactly six MCP tools, `start`, `send`, `stop`, `list`, `cancel`
-and `check`, and nothing else from your MCP configuration. Everything else is its
-instructions.
+There are eight fleet tools: `start`, `send`, `stop`, `list`, `cancel`, `check`,
+`register_check` and `budget`. An agent gets only the fleet tools its starter
+chose for it, from the starter's own, and nothing from your MCP configuration;
+the owner holds all eight. Everything else is its instructions.
 
 - **Every request gets a response**, even if its target dies. A turn's text is its
   response. There is no reply tool.
 - **Anything but a request goes up the tree.** A turn woken by a response, timer or
   notice sends its text to its parent, and ending it with `NOREPLY` keeps it silent.
 - **A delayed `send` to yourself is a timer**, and arrives even if you go idle.
-- **Authority follows the tree.** An agent starts only its own children and stops
-  only itself and its descendants. Each seat's MCP URL carries its own token.
+- **One rule of authority, along the line of creation (🎯T249).** An agent has
+  authority over every agent it started and everything they started; the owner
+  has authority over everything, and can start an agent with
+  `Authority: claudia.FleetAuthorityAll` to give it the same. Stopping an agent,
+  scheduling a repeat to it, or setting its budget takes authority over it;
+  cancelling a scheduled message, replacing a check or changing a budget takes
+  authority over whoever created it. A held-out check can be run and seen only by
+  those with authority over whoever registered it. Claudia enforces this one
+  rule; who should direct whom, and with which tools, is for the agents and their
+  instructions to decide. Each seat's MCP URL carries its own token.
 - **The owner reads the log.** `Read` returns every event in order, including the
   messages addressed to `claudia.FleetOwner`. Keep the last `Seq` you saw.
 

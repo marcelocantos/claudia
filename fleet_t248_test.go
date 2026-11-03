@@ -239,7 +239,7 @@ func TestFleetTurnBudgetHoldsWorkAndTellsTheOwnerOnce(t *testing.T) {
 	if st.Agents[0].Waiting == "" || st.Agents[0].Queued != 2 || st.Budgets[0].Spent == "" {
 		t.Fatalf("status %+v %+v", st.Agents, st.Budgets)
 	}
-	if err := r.k.SetBudget("f", "a", FleetBudget{Turns: 10}); err != nil {
+	if err := r.k.SetBudget("f", FleetOwner, "a", FleetBudget{Turns: 10}); err != nil {
 		t.Fatal(err)
 	}
 	waitFleet(t, "held work to run", func() bool { return len(seat.sends()) == 4 })
@@ -372,7 +372,7 @@ func TestFleetCheckRunsThePinnedScriptOnACleanCheckout(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repo, "count.txt"), []byte("999\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.k.RegisterCheck("f", &FleetCheckArgs{Name: "count", Repo: repo, Script: "echo working >&2\ncat count.txt\n", AgentsMayRun: true}); err != nil {
+	if err := r.k.RegisterCheck("f", FleetOwner, &FleetCheckArgs{Name: "count", Repo: repo, Script: "echo working >&2\ncat count.txt\n", AgentsMayRun: true}); err != nil {
 		t.Fatal(err)
 	}
 	var seq uint64
@@ -407,7 +407,7 @@ func TestFleetHiddenCheckIsTheOwnersAlone(t *testing.T) {
 	repo := fleetCheckRepo(t)
 	r, _ := newClockedFleetRig(t, map[string]*fakeFleetSeat{"a": newFakeFleetSeat(fleetHold)})
 	r.start("a", FleetOwner)
-	if err := r.k.RegisterCheck("f", &FleetCheckArgs{Name: "heldout", Repo: repo, Script: "echo 1\n"}); err != nil {
+	if err := r.k.RegisterCheck("f", FleetOwner, &FleetCheckArgs{Name: "heldout", Repo: repo, Script: "echo 1\n"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := r.k.RunCheck("f", "a", "heldout", ""); err == nil {
@@ -431,7 +431,7 @@ func TestFleetHiddenCheckIsTheOwnersAlone(t *testing.T) {
 func TestFleetCheckRefusesATamperedScriptAndBadRevisions(t *testing.T) {
 	repo := fleetCheckRepo(t)
 	r, _ := newClockedFleetRig(t, map[string]*fakeFleetSeat{})
-	if err := r.k.RegisterCheck("f", &FleetCheckArgs{Name: "c", Repo: repo, Script: "echo 1\n"}); err != nil {
+	if err := r.k.RegisterCheck("f", FleetOwner, &FleetCheckArgs{Name: "c", Repo: repo, Script: "echo 1\n"}); err != nil {
 		t.Fatal(err)
 	}
 	for _, rev := range []string{"-x", "a b", "no-such-branch"} {
@@ -458,7 +458,7 @@ func TestFleetCheckRefusesATamperedScriptAndBadRevisions(t *testing.T) {
 func TestFleetCheckTimesOutAndReportsIt(t *testing.T) {
 	repo := fleetCheckRepo(t)
 	r, _ := newClockedFleetRig(t, map[string]*fakeFleetSeat{})
-	if err := r.k.RegisterCheck("f", &FleetCheckArgs{Name: "slow", Repo: repo, Script: "sleep 60\n", Timeout: 200 * time.Millisecond}); err != nil {
+	if err := r.k.RegisterCheck("f", FleetOwner, &FleetCheckArgs{Name: "slow", Repo: repo, Script: "sleep 60\n", Timeout: 200 * time.Millisecond}); err != nil {
 		t.Fatal(err)
 	}
 	var seq uint64
@@ -478,7 +478,7 @@ func TestFleetCheckInterruptedByARestartIsAnswered(t *testing.T) {
 	seat := newFakeFleetSeat(fleetAnswer(FleetNoReply))
 	r, _ := newClockedFleetRig(t, map[string]*fakeFleetSeat{"a": seat})
 	r.start("a", FleetOwner)
-	if err := r.k.RegisterCheck("f", &FleetCheckArgs{Name: "slow", Repo: repo, Script: "sleep 60\n", AgentsMayRun: true}); err != nil {
+	if err := r.k.RegisterCheck("f", FleetOwner, &FleetCheckArgs{Name: "slow", Repo: repo, Script: "sleep 60\n", AgentsMayRun: true}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := r.k.RunCheck("f", "a", "slow", ""); err != nil {
@@ -576,7 +576,7 @@ func TestFleetBudgetCanBeRaisedAfterItsHolderRetires(t *testing.T) {
 			break
 		}
 	}
-	if err := r.k.SetBudget("f", id, FleetBudget{Turns: 10}); err != nil {
+	if err := r.k.SetBudget("f", FleetOwner, id, FleetBudget{Turns: 10}); err != nil {
 		t.Fatalf("raise by ID: %v", err)
 	}
 	waitFleet(t, "held work to run", func() bool { return len(seats["c"].sends()) == 2 })
@@ -640,7 +640,7 @@ func TestFleetCheckIgnoresRepositoryHooks(t *testing.T) {
 		t.Fatal(err)
 	}
 	r, _ := newClockedFleetRig(t, map[string]*fakeFleetSeat{})
-	if err := r.k.RegisterCheck("f", &FleetCheckArgs{Name: "count", Repo: repo, Script: "cat count.txt\n"}); err != nil {
+	if err := r.k.RegisterCheck("f", FleetOwner, &FleetCheckArgs{Name: "count", Repo: repo, Script: "cat count.txt\n"}); err != nil {
 		t.Fatal(err)
 	}
 	var seq uint64
@@ -657,7 +657,7 @@ func TestFleetCheckLeavesNothingRunning(t *testing.T) {
 	repo := fleetCheckRepo(t)
 	r, _ := newClockedFleetRig(t, map[string]*fakeFleetSeat{})
 	pidFile := filepath.Join(t.TempDir(), "child.pid")
-	if err := r.k.RegisterCheck("f", &FleetCheckArgs{Name: "bg", Repo: repo, Script: "sleep 37 &\necho $! > " + pidFile + "\necho 5\n"}); err != nil {
+	if err := r.k.RegisterCheck("f", FleetOwner, &FleetCheckArgs{Name: "bg", Repo: repo, Script: "sleep 37 &\necho $! > " + pidFile + "\necho 5\n"}); err != nil {
 		t.Fatal(err)
 	}
 	var seq uint64
@@ -687,7 +687,7 @@ func TestFleetCheckQueueIsBounded(t *testing.T) {
 	repo := fleetCheckRepo(t)
 	r, _ := newClockedFleetRig(t, map[string]*fakeFleetSeat{"a": newFakeFleetSeat(fleetHold)})
 	r.start("a", FleetOwner)
-	if err := r.k.RegisterCheck("f", &FleetCheckArgs{Name: "slow", Repo: repo, Script: "sleep 60\n", AgentsMayRun: true}); err != nil {
+	if err := r.k.RegisterCheck("f", FleetOwner, &FleetCheckArgs{Name: "slow", Repo: repo, Script: "sleep 60\n", AgentsMayRun: true}); err != nil {
 		t.Fatal(err)
 	}
 	for range fleetCheckQueue {
@@ -735,7 +735,7 @@ func TestFleetCheckExportCannotEscape(t *testing.T) {
 	tree := gitIn(t, repo, "120000 blob "+link+"\ta\n040000 tree "+inner+"\ta\n100644 blob "+file+"\tcount.txt\n", "mktree", "--missing")
 	commit := gitIn(t, repo, "", "commit-tree", tree, "-m", "hostile")
 	r, _ := newClockedFleetRig(t, map[string]*fakeFleetSeat{})
-	if err := r.k.RegisterCheck("f", &FleetCheckArgs{Name: "c", Repo: repo, Script: "echo 1\n"}); err != nil {
+	if err := r.k.RegisterCheck("f", FleetOwner, &FleetCheckArgs{Name: "c", Repo: repo, Script: "echo 1\n"}); err != nil {
 		t.Fatal(err)
 	}
 	var seq uint64
@@ -758,7 +758,7 @@ func TestFleetCheckIgnoresReplaceRefs(t *testing.T) {
 	forged := gitIn(t, repo, "", "commit-tree", gitIn(t, repo, "100644 blob "+gitIn(t, repo, "100\n", "hash-object", "-w", "--stdin")+"\tcount.txt\n", "mktree"), "-m", "forged")
 	gitIn(t, repo, "", "replace", owner, forged)
 	r, _ := newClockedFleetRig(t, map[string]*fakeFleetSeat{})
-	if err := r.k.RegisterCheck("f", &FleetCheckArgs{Name: "count", Repo: repo, Script: "cat count.txt\n"}); err != nil {
+	if err := r.k.RegisterCheck("f", FleetOwner, &FleetCheckArgs{Name: "count", Repo: repo, Script: "cat count.txt\n"}); err != nil {
 		t.Fatal(err)
 	}
 	var seq uint64
@@ -777,7 +777,7 @@ func TestFleetCheckIgnoresRepositoryAttributes(t *testing.T) {
 		t.Fatal(err)
 	}
 	r, _ := newClockedFleetRig(t, map[string]*fakeFleetSeat{})
-	if err := r.k.RegisterCheck("f", &FleetCheckArgs{Name: "count", Repo: repo, Script: "cat count.txt\n"}); err != nil {
+	if err := r.k.RegisterCheck("f", FleetOwner, &FleetCheckArgs{Name: "count", Repo: repo, Script: "cat count.txt\n"}); err != nil {
 		t.Fatal(err)
 	}
 	var seq uint64
@@ -871,7 +871,7 @@ func TestFleetCheckMalformedObjectFailsFast(t *testing.T) {
 	outer := gitIn(t, repo, "100644 looks-like-a-file\x00"+string(raw), "hash-object", "-t", "tree", "--literally", "-w", "--stdin")
 	commit := gitIn(t, repo, "", "commit-tree", outer, "-m", "malformed")
 	r, _ := newClockedFleetRig(t, map[string]*fakeFleetSeat{})
-	if err := r.k.RegisterCheck("f", &FleetCheckArgs{Name: "c", Repo: repo, Script: "echo 1\n", Timeout: time.Minute}); err != nil {
+	if err := r.k.RegisterCheck("f", FleetOwner, &FleetCheckArgs{Name: "c", Repo: repo, Script: "echo 1\n", Timeout: time.Minute}); err != nil {
 		t.Fatal(err)
 	}
 	var seq uint64
@@ -891,7 +891,7 @@ func TestFleetCheckRefusesLinksOutOfTheExport(t *testing.T) {
 		link := gitIn(t, repo, target, "hash-object", "-w", "--stdin")
 		commit := commitTree(t, repo, "120000 blob "+link+"\tcount.txt\n")
 		r, _ := newClockedFleetRig(t, map[string]*fakeFleetSeat{})
-		if err := r.k.RegisterCheck("f", &FleetCheckArgs{Name: "c", Repo: repo, Script: "cat count.txt\n"}); err != nil {
+		if err := r.k.RegisterCheck("f", FleetOwner, &FleetCheckArgs{Name: "c", Repo: repo, Script: "cat count.txt\n"}); err != nil {
 			t.Fatal(err)
 		}
 		var seq uint64
@@ -907,7 +907,7 @@ func TestFleetCheckRefusesLinksOutOfTheExport(t *testing.T) {
 	link := gitIn(t, repo, "real.txt", "hash-object", "-w", "--stdin")
 	commit := commitTree(t, repo, "100644 blob "+file+"\treal.txt\n120000 blob "+link+"\tcount.txt\n")
 	r, _ := newClockedFleetRig(t, map[string]*fakeFleetSeat{})
-	if err := r.k.RegisterCheck("f", &FleetCheckArgs{Name: "c", Repo: repo, Script: "cat count.txt\n"}); err != nil {
+	if err := r.k.RegisterCheck("f", FleetOwner, &FleetCheckArgs{Name: "c", Repo: repo, Script: "cat count.txt\n"}); err != nil {
 		t.Fatal(err)
 	}
 	var seq uint64
@@ -930,7 +930,7 @@ func TestFleetCheckExportsALargeFile(t *testing.T) {
 	count := gitIn(t, repo, "7\n", "hash-object", "-w", "--stdin")
 	commit := commitTree(t, repo, "100644 blob "+blob+"\tzeros\n100644 blob "+count+"\tcount.txt\n")
 	r, _ := newClockedFleetRig(t, map[string]*fakeFleetSeat{})
-	if err := r.k.RegisterCheck("f", &FleetCheckArgs{Name: "c", Repo: repo, Script: "test $(wc -c < zeros) -eq 67108864 && cat count.txt\n"}); err != nil {
+	if err := r.k.RegisterCheck("f", FleetOwner, &FleetCheckArgs{Name: "c", Repo: repo, Script: "test $(wc -c < zeros) -eq 67108864 && cat count.txt\n"}); err != nil {
 		t.Fatal(err)
 	}
 	var seq uint64
@@ -982,7 +982,7 @@ func TestFleetCheckFailsOnPathsThatCollide(t *testing.T) {
 	real := gitIn(t, repo, "7\n", "hash-object", "-w", "--stdin")
 	commit := commitTree(t, repo, "100644 blob "+forged+"\tCOUNT.TXT\n100644 blob "+real+"\tcount.txt\n")
 	r, _ := newClockedFleetRig(t, map[string]*fakeFleetSeat{})
-	if err := r.k.RegisterCheck("f", &FleetCheckArgs{Name: "c", Repo: repo, Script: "cat count.txt\n"}); err != nil {
+	if err := r.k.RegisterCheck("f", FleetOwner, &FleetCheckArgs{Name: "c", Repo: repo, Script: "cat count.txt\n"}); err != nil {
 		t.Fatal(err)
 	}
 	var seq uint64

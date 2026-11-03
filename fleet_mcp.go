@@ -54,6 +54,7 @@ var fleetTools = []fleetTool{
 			"quality":           fleetProperty("string", "economy, standard or frontier. Default: standard."),
 			"purpose":           fleetProperty("string", "What the model should be good at, if it matters."),
 			"model":             fleetProperty("string", "A specific model, only if you need that one."),
+			"tools":             map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "The tools it may call, chosen from your own. Default: all of yours."},
 			"budget": map[string]any{"type": "object", "description": "Optional limit on what it and its descendants spend. Every budget over you still applies, so this can only narrow.",
 				"properties": map[string]any{
 					"tokens":  fleetProperty("integer", "Tokens, where the provider reports them."),
@@ -75,7 +76,7 @@ var fleetTools = []fleetTool{
 	},
 	{
 		Name:        "stop",
-		Description: "Stop yourself or one of your descendants for good. Whoever it owed a reply hears that it has gone.",
+		Description: "Stop an agent for good: yourself, or one you have authority over. You have authority over agents you started and everything they started, and over everything if the owner gave you that. Whoever it owed a reply hears that it has gone.",
 		InputSchema: fleetSchema([]string{"name"}, map[string]any{
 			"name": fleetProperty("string", "The agent to stop."),
 		}),
@@ -93,6 +94,28 @@ var fleetTools = []fleetTool{
 		InputSchema: fleetSchema([]string{"name"}, map[string]any{
 			"name":   fleetProperty("string", "The check's name."),
 			"commit": fleetProperty("string", "The commit or branch to check out. Default: HEAD of the check's repository."),
+		}),
+	},
+	{
+		Name:        "budget",
+		Description: "Set the limits on a budget over an agent you have authority over, named by its ID or by the agent holding it, creating one if it holds none. You need authority over whoever set it before, too. Every budget above an agent still applies. Once spent, no new turn starts under it until it is raised. Zero in a dimension means unlimited.",
+		InputSchema: fleetSchema([]string{"target"}, map[string]any{
+			"target":  fleetProperty("string", "An agent's name, or a budget ID such as b3."),
+			"tokens":  fleetProperty("integer", "Tokens, where the provider reports them."),
+			"turns":   fleetProperty("integer", "Turns, across the whole subtree."),
+			"seconds": fleetProperty("number", "Wall-clock seconds from now."),
+		}),
+	},
+	{
+		Name:        "register_check",
+		Description: "Register a check, or replace one of the same name if you have authority over whoever registered it: a script Claudia pins by hash and runs against a fresh export of a commit, recording the result where no agent can change it. The last line of its output, if a number, is the score. A check other agents may not run is held out: only you and those with authority over you can run it or see it.",
+		InputSchema: fleetSchema([]string{"name", "repo"}, map[string]any{
+			"name":            fleetProperty("string", "Lowercase letters, digits and single hyphens."),
+			"repo":            fleetProperty("string", "Absolute path of the git repository."),
+			"script":          fleetProperty("string", "The shell script. Set this or script_file."),
+			"script_file":     fleetProperty("string", "Absolute path of a file holding the script; its contents are copied now."),
+			"agents_may_run":  fleetProperty("boolean", "Let any agent run it with the check tool. Default: false, held out."),
+			"timeout_seconds": fleetProperty("number", "Ends a run that takes longer. Default: 1800."),
 		}),
 	},
 	{
@@ -155,7 +178,7 @@ func (k *FleetKernel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "ping":
 		writeFleetJSON(w, fleetRPCResult(req.ID, map[string]any{}))
 	case "tools/list":
-		writeFleetJSON(w, fleetRPCResult(req.ID, map[string]any{"tools": fleetTools}))
+		writeFleetJSON(w, fleetRPCResult(req.ID, map[string]any{"tools": k.toolsOf(fleet, caller)}))
 	case "tools/call":
 		text, err := k.callFleetTool(r, fleet, caller, req.Params)
 		result := map[string]any{"content": []map[string]any{{"type": "text", "text": text}}}
@@ -193,17 +216,31 @@ func (k *FleetKernel) callFleetTool(r *http.Request, fleet, caller string, param
 			ID               string       `json:"id"`
 			Commit           string       `json:"commit"`
 			Budget           *FleetBudget `json:"budget"`
+			Tools            []string     `json:"tools"`
+			Repo             string       `json:"repo"`
+			Script           string       `json:"script"`
+			ScriptFile       string       `json:"script_file"`
+			AgentsMayRun     bool         `json:"agents_may_run"`
+			TimeoutSeconds   float64      `json:"timeout_seconds"`
+			Target           string       `json:"target"`
+			Tokens           int64        `json:"tokens"`
+			Turns            int          `json:"turns"`
+			Seconds          float64      `json:"seconds"`
 		} `json:"arguments"`
 	}
 	if err := json.Unmarshal(params, &call); err != nil {
 		return "", fmt.Errorf("bad tool call: %w", err)
 	}
 	args := call.Arguments
+	if !k.holdsTool(fleet, caller, call.Name) {
+		return "", fmt.Errorf("unknown tool %q", call.Name)
+	}
 	switch call.Name {
 	case "start":
 		err := k.startForAgent(fleet, caller, &FleetStartArgs{
 			Name: args.Name, Instructions: args.Instructions, InstructionsFile: args.InstructionsFile,
 			WorkDir: args.WorkDir, Quality: args.Quality, Purpose: args.Purpose, Model: args.Model, Budget: args.Budget,
+			Tools: args.Tools,
 		})
 		if err != nil {
 			return "", err
@@ -229,6 +266,17 @@ func (k *FleetKernel) callFleetTool(r *http.Request, fleet, caller string, param
 			return "", err
 		}
 		return "cancelled " + args.ID, nil
+	case "budget":
+		if err := k.SetBudget(fleet, caller, args.Target, FleetBudget{Tokens: args.Tokens, Turns: args.Turns, Seconds: args.Seconds}); err != nil {
+			return "", err
+		}
+		return "budget set on " + args.Target, nil
+	case "register_check":
+		if err := k.RegisterCheck(fleet, caller, &FleetCheckArgs{Name: args.Name, Repo: args.Repo, Script: args.Script, ScriptFile: args.ScriptFile,
+			AgentsMayRun: args.AgentsMayRun, Timeout: fleetSeconds(args.TimeoutSeconds)}); err != nil {
+			return "", err
+		}
+		return "registered check " + args.Name, nil
 	case "check":
 		id, err := k.RunCheck(fleet, caller, args.Name, args.Commit)
 		if err != nil {
@@ -241,26 +289,10 @@ func (k *FleetKernel) callFleetTool(r *http.Request, fleet, caller string, param
 		}
 		return "stopping " + args.Name, nil
 	case "list":
-		st, err := k.Status(fleet)
+		st, err := k.StatusFor(fleet, caller)
 		if err != nil {
 			return "", err
 		}
-		// An agent sees only the checks it may run.
-		visible := st.Checks[:0]
-		for _, c := range st.Checks {
-			if c.AgentsMayRun {
-				visible = append(visible, c)
-			}
-		}
-		st.Checks = visible
-		// And only the scheduled messages to or from itself.
-		mine := st.Timers[:0]
-		for _, timer := range st.Timers {
-			if timer.From == caller || timer.To == caller {
-				mine = append(mine, timer)
-			}
-		}
-		st.Timers = mine
 		raw, err := json.Marshal(st)
 		if err != nil {
 			return "", err

@@ -30,8 +30,8 @@ type FleetSendArgs struct {
 	// is set, which then also sets the first delay.
 	After time.Duration
 	At    time.Time
-	// Every repeats the message until it is cancelled or its target goes. Only
-	// the owner, or an agent scheduling itself, may repeat.
+	// Every repeats the message until it is cancelled or its target goes. It
+	// takes authority over the target.
 	Every time.Duration
 }
 
@@ -85,8 +85,8 @@ func (k *FleetKernel) Send(fleet string, args *FleetSendArgs) (string, error) {
 	if args.Every > 0 && args.Every < fleetMinEvery {
 		return "", fmt.Errorf("a repeat must be at least %s apart", fleetMinEvery)
 	}
-	if args.Every > 0 && from != to && from != FleetOwner {
-		return "", errors.New("an agent may repeat a message only to itself")
+	if args.Every > 0 && !authorized(group, from, to) {
+		return "", fmt.Errorf("agent %q has no authority to repeat a message to %q", from, to)
 	}
 	scheduled := args.After > 0 || !args.At.IsZero() || args.Every > 0
 	if from == to && !scheduled {
@@ -138,8 +138,8 @@ func (k *FleetKernel) nextTimerIDLocked(group *fleetGroupState) string {
 	return fmt.Sprintf("t%d", group.NextID)
 }
 
-// Cancel removes a scheduled message. The owner can cancel any; an agent, only
-// its own.
+// Cancel removes a scheduled message. It takes authority over whoever
+// scheduled it.
 func (k *FleetKernel) Cancel(fleet, caller, id string) error {
 	k.mu.Lock()
 	defer k.mu.Unlock()
@@ -151,8 +151,8 @@ func (k *FleetKernel) Cancel(fleet, caller, id string) error {
 	if timer == nil {
 		return fmt.Errorf("no scheduled message %q", id)
 	}
-	if caller != FleetOwner && timer.Message.From != caller {
-		return fmt.Errorf("agent %q may cancel only its own scheduled messages", caller)
+	if !authorized(group, caller, timer.Message.From) {
+		return fmt.Errorf("agent %q has no authority over %q, who scheduled it", caller, timer.Message.From)
 	}
 	k.dropTimerLocked(fleet, group, id)
 	k.eventLocked(fleet, &FleetEvent{Kind: FleetEventCancel, Agent: caller, Text: id})
