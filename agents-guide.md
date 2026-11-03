@@ -1005,8 +1005,9 @@ id, err := fleet.Send(ctx, "lead", "Fix the build.", 0)
 events, err := fleet.Read(ctx, lastSeq) // waits for events after lastSeq
 ```
 
-Every agent has exactly four MCP tools, `start`, `send`, `stop` and `list`, and
-nothing else from your MCP configuration. Everything else is its instructions.
+Every agent has exactly six MCP tools, `start`, `send`, `stop`, `list`, `cancel`
+and `check`, and nothing else from your MCP configuration. Everything else is its
+instructions.
 
 - **Every request gets a response**, even if its target dies. A turn's text is its
   response. There is no reply tool.
@@ -1035,6 +1036,35 @@ when the provider says the old one is gone, and its parent hears that too.
 grants named `fleet-<fleet>--<agent>`, visible in `claudia broker status`, and only
 the fleet can start or stop them. Against a broker too old to have fleets, calls
 fail with `ErrFleetUnsupported`.
+
+### Time, budgets and checks (🎯T248)
+
+Fleets execute, deliver, fire and limit. Every judgment — how long to wait, what
+a result means, whether a goal is met — stays with agents and clients.
+
+- **Time only ever reaches an agent as a message, and nothing polls.** `send` takes
+  `after_seconds`, `at` (RFC 3339) or `every_seconds` (to yourself, at least a
+  minute apart), and returns an ID that `cancel` takes. The owner schedules with
+  `Fleet.Schedule` and cancels with `Fleet.Cancel`. Every delivery starts with a
+  stamp such as `[now Tue 3 Nov 2026 13:42 AEDT; sent 3h12m ago; your last turn
+  ended 5m ago]`, and a scheduled one adds when it was due and how late it came.
+  A timer due while the broker was down fires once on recovery, stamped late; a
+  repeat that missed firings fires once, saying how many, and keeps its schedule.
+  An agent's own timers, and any repeat aimed at it, go when it does.
+- **A budget limits what a subtree spends:** tokens where the provider reports
+  them, turns, or wall-clock seconds. Set one with `FleetStartArgs.Budget` or
+  `Fleet.SetBudget`. Once spent, a turn in progress finishes, no new turn starts
+  anywhere under it, messages wait, and the owner hears once; raising it lets the
+  work go on. An agent may put a budget on a child, which only narrows: every
+  budget above still applies, including after the agent that held it retires.
+- **A check is a pinned command run on the owner's behalf.** `Fleet.RegisterCheck`
+  copies the script and pins it by hash. A run checks out the named commit in a
+  fresh worktree, runs the script in its own process group with a timeout, and
+  records a `check_result` event with the exit status, the score (the last line of
+  standard output, when it is a number) and the output's tail. Only the kernel
+  writes these events. With `AgentsMayRun`, agents run it with the `check` tool and
+  get the result as a message from `check:<name>`; without it, it is a held-out
+  check that only the owner can run and see. At most two checks run at once.
 
 ## Gotchas
 

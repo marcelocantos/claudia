@@ -1,0 +1,484 @@
+// Copyright 2026 Marcelo Cantos
+// SPDX-License-Identifier: Apache-2.0
+
+package claudia
+
+import (
+	"context"
+	"encoding/json"
+	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/marcelocantos/claudia/internal/wallclockguard"
+)
+
+// 🎯T248: timers, budgets and checks. Timers and budgets run on a manual clock,
+// so lateness, missed repeats and deadlines are exact rather than raced.
+
+var fleetT0 = time.Date(2026, 11, 3, 9, 0, 0, 0, time.UTC)
+
+func newClockedFleetRig(t *testing.T, seats map[string]*fakeFleetSeat) (*fleetRig, *ManualClock) {
+	t.Helper()
+	clock := NewManualClock(fleetT0)
+	r := &fleetRig{t: t, dir: t.TempDir(), seats: seats, clock: clock}
+	r.open()
+	if err := r.k.Open("f", nil); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { r.k.Close() })
+	return r, clock
+}
+
+// advanceUntil moves the clock in steps until cond holds, letting timer
+// goroutines run between steps.
+func advanceUntil(t *testing.T, clock *ManualClock, step time.Duration, what string, cond func() bool) {
+	t.Helper()
+	ctx := wallclockguard.UntilTestTimeout(t)
+	for !cond() {
+		if ctx.Err() != nil {
+			t.Fatal("test timed out waiting for " + what)
+		}
+		clock.Advance(step)
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestFleetTimerFiresAtItsTimeStampedWithTheTime(t *testing.T) {
+	seat := newFakeFleetSeat(fleetAnswer(FleetNoReply))
+	r, clock := newClockedFleetRig(t, map[string]*fakeFleetSeat{"a": seat})
+	r.start("a", FleetOwner)
+	id, err := r.k.Send("f", &FleetSendArgs{From: "a", To: "a", Text: "wake up", At: fleetT0.Add(10 * time.Minute)})
+	if err != nil || !strings.HasPrefix(id, "t") {
+		t.Fatalf("schedule: %q %v", id, err)
+	}
+	clock.Advance(9 * time.Minute)
+	time.Sleep(20 * time.Millisecond)
+	if len(seat.sends()) != 0 {
+		t.Fatal("fired early")
+	}
+	advanceUntil(t, clock, time.Minute, "the timer", func() bool { return len(seat.sends()) == 1 })
+	got := seat.sends()[0]
+	for _, want := range []string{"[now ", "scheduled " + id, "wake up"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("delivery lacks %q: %q", want, got)
+		}
+	}
+}
+
+func TestFleetRepeatRunsUntilCancelledAndOnlyItsOwnerMayCancel(t *testing.T) {
+	seats := map[string]*fakeFleetSeat{"a": newFakeFleetSeat(fleetAnswer(FleetNoReply)), "b": newFakeFleetSeat(fleetAnswer(FleetNoReply))}
+	r, clock := newClockedFleetRig(t, seats)
+	r.start("a", FleetOwner)
+	r.start("b", FleetOwner)
+	if _, err := r.k.Send("f", &FleetSendArgs{From: "a", To: "a", Text: "tick", Every: 30 * time.Second}); err == nil {
+		t.Fatal("a repeat under a minute was accepted")
+	}
+	if _, err := r.k.Send("f", &FleetSendArgs{From: "a", To: "b", Text: "nag", Every: time.Minute}); err == nil {
+		t.Fatal("an agent repeated a message to another agent")
+	}
+	id, err := r.k.Send("f", &FleetSendArgs{From: "a", To: "a", Text: "tick", Every: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	advanceUntil(t, clock, time.Minute, "three ticks", func() bool { return len(seats["a"].sends()) == 3 })
+	st, err := r.k.Status("f")
+	if err != nil || len(st.Timers) != 1 || st.Timers[0].ID != id || st.Timers[0].EverySeconds != 60 {
+		t.Fatalf("status timers %+v %v", st.Timers, err)
+	}
+	if err := r.k.Cancel("f", "b", id); err == nil {
+		t.Fatal("another agent cancelled it")
+	}
+	if err := r.k.Cancel("f", "a", id); err != nil {
+		t.Fatal(err)
+	}
+	// A firing already delivered stays delivered; nothing fires after this.
+	waitFleet(t, "the mailbox to drain", func() bool {
+		st, _ := r.k.Status("f")
+		for _, a := range st.Agents {
+			if a.Name == "a" {
+				return a.Queued == 0 && a.State == FleetStateIdle
+			}
+		}
+		return false
+	})
+	before := len(seats["a"].sends())
+	clock.Advance(5 * time.Minute)
+	time.Sleep(20 * time.Millisecond)
+	if n := len(seats["a"].sends()); n != before {
+		t.Fatalf("fired %d times after cancel", n-before)
+	}
+	if st, _ := r.k.Status("f"); len(st.Timers) != 0 {
+		t.Fatalf("cancelled timer still listed: %+v", st.Timers)
+	}
+}
+
+func TestFleetRepeatAfterDowntimeFiresOnceAndSaysWhatItMissed(t *testing.T) {
+	seat := newFakeFleetSeat(fleetAnswer(FleetNoReply))
+	r, clock := newClockedFleetRig(t, map[string]*fakeFleetSeat{"a": seat})
+	r.start("a", FleetOwner)
+	r.send(FleetOwner, "a", "brief")
+	waitFleet(t, "first turn", func() bool { return len(seat.sends()) == 1 })
+	if _, err := r.k.Send("f", &FleetSendArgs{From: FleetOwner, To: "a", Kind: FleetNotice, Text: "tick", Every: time.Hour}); err != nil {
+		t.Fatal(err)
+	}
+	r.k.Close()
+	clock.Advance(4*time.Hour + 30*time.Minute)
+	r.open()
+	waitFleet(t, "the catch-up firing", func() bool { return len(seat.sends()) == 2 })
+	got := seat.sends()[1]
+	if !strings.Contains(got, "3 earlier firings missed") || !strings.Contains(got, "late") {
+		t.Fatalf("catch-up: %q", got)
+	}
+	time.Sleep(20 * time.Millisecond)
+	if n := len(seat.sends()); n != 2 {
+		t.Fatalf("a burst of %d deliveries after downtime", n)
+	}
+	st, _ := r.k.Status("f")
+	if len(st.Timers) != 1 || !st.Timers[0].Due.Equal(fleetT0.Add(5*time.Hour)) {
+		t.Fatalf("repeat lost its schedule: %+v", st.Timers)
+	}
+}
+
+func TestFleetStampSaysHowLongAMessageWaited(t *testing.T) {
+	seat := newFakeFleetSeat(fleetHold)
+	r, clock := newClockedFleetRig(t, map[string]*fakeFleetSeat{"a": seat})
+	r.start("a", FleetOwner)
+	r.send(FleetOwner, "a", "first")
+	waitFleet(t, "turn", func() bool { return len(seat.sends()) == 1 })
+	r.send(FleetOwner, "a", "second")
+	clock.Advance(42 * time.Minute)
+	st, _ := r.k.Status("f")
+	if st.Agents[0].WorkingSeconds != 42*60 {
+		t.Fatalf("working seconds %d", st.Agents[0].WorkingSeconds)
+	}
+	seat.replies <- "done"
+	waitFleet(t, "second turn", func() bool { return len(seat.sends()) == 2 })
+	if got := seat.sends()[1]; !strings.Contains(got, "sent 42m ago") || !strings.Contains(got, "your last turn ended 0s ago") {
+		t.Fatalf("stamp: %q", got)
+	}
+}
+
+func TestFleetTimersGoWithTheirAgent(t *testing.T) {
+	seats := map[string]*fakeFleetSeat{"a": newFakeFleetSeat(fleetHold), "b": newFakeFleetSeat(fleetHold)}
+	r, _ := newClockedFleetRig(t, seats)
+	r.start("a", FleetOwner)
+	r.start("b", FleetOwner)
+	for _, args := range []*FleetSendArgs{
+		{From: "a", To: "a", Text: "self", After: time.Hour},
+		{From: FleetOwner, To: "a", Kind: FleetNotice, Text: "tick", Every: time.Hour},
+		{From: "b", To: "a", Text: "later", After: time.Hour},
+	} {
+		if _, err := r.k.Send("f", args); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := r.k.StopTree(wallclockguard.UntilTestTimeout(t), "f", "a"); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := r.k.Status("f")
+	if len(st.Timers) != 1 || st.Timers[0].From != "b" {
+		t.Fatalf("timers left: %+v", st.Timers)
+	}
+}
+
+func TestFleetScheduleRefusals(t *testing.T) {
+	r, _ := newClockedFleetRig(t, map[string]*fakeFleetSeat{"a": newFakeFleetSeat(fleetHold)})
+	r.start("a", FleetOwner)
+	for name, args := range map[string]*FleetSendArgs{
+		"both delay and time": {From: "a", To: "a", Text: "x", After: time.Minute, At: fleetT0.Add(time.Hour)},
+		"negative delay":      {From: "a", To: "a", Text: "x", After: -time.Minute},
+		"undelayed to self":   {From: "a", To: "a", Text: "x"},
+	} {
+		if _, err := r.k.Send("f", args); err == nil {
+			t.Errorf("%s was accepted", name)
+		}
+	}
+	if err := r.k.Cancel("f", FleetOwner, "t999"); err == nil {
+		t.Error("cancelled a timer that does not exist")
+	}
+}
+
+func TestFleetTurnBudgetHoldsWorkAndTellsTheOwnerOnce(t *testing.T) {
+	seat := newFakeFleetSeat(fleetAnswer("ok"))
+	r, _ := newClockedFleetRig(t, map[string]*fakeFleetSeat{"a": seat})
+	if err := r.k.Start(context.Background(), "f", FleetOwner, &FleetStartArgs{Name: "a", Instructions: "x", WorkDir: "/tmp", Budget: &FleetBudget{Turns: 2}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range []string{"one", "two", "three", "four"} {
+		r.send(FleetOwner, "a", text)
+	}
+	var seq uint64
+	notices := 0
+	for answers := 0; answers < 2 || notices == 0; {
+		m := r.ownerMessage(&seq)
+		if m.From == FleetBudgetSender {
+			notices++
+			if !strings.Contains(m.Text, "turns 2 of 2") {
+				t.Fatalf("notice: %q", m.Text)
+			}
+		} else {
+			answers++
+		}
+	}
+	time.Sleep(20 * time.Millisecond)
+	if n := len(seat.sends()); n != 2 {
+		t.Fatalf("%d turns ran under a budget of 2", n)
+	}
+	st, _ := r.k.Status("f")
+	if st.Agents[0].Waiting == "" || st.Agents[0].Queued != 2 || st.Budgets[0].Spent == "" {
+		t.Fatalf("status %+v %+v", st.Agents, st.Budgets)
+	}
+	if err := r.k.SetBudget("f", "a", FleetBudget{Turns: 10}); err != nil {
+		t.Fatal(err)
+	}
+	waitFleet(t, "held work to run", func() bool { return len(seat.sends()) == 4 })
+	if notices != 1 {
+		t.Fatalf("owner told %d times", notices)
+	}
+}
+
+func TestFleetTokenBudgetCountsWhatTheSeatReports(t *testing.T) {
+	seat := newFakeFleetSeat(fleetAnswer("ok"))
+	seat.turnTokens = 600
+	r, _ := newClockedFleetRig(t, map[string]*fakeFleetSeat{"a": seat})
+	if err := r.k.Start(context.Background(), "f", FleetOwner, &FleetStartArgs{Name: "a", Instructions: "x", WorkDir: "/tmp", Budget: &FleetBudget{Tokens: 1000}}); err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		r.send(FleetOwner, "a", "work")
+	}
+	var seq uint64
+	for {
+		if m := r.ownerMessage(&seq); m.From == FleetBudgetSender {
+			break
+		}
+	}
+	if n := len(seat.sends()); n != 2 {
+		t.Fatalf("%d turns ran; the second crossed the limit, so the third must wait", n)
+	}
+	st, _ := r.k.Status("f")
+	if st.Budgets[0].SpentTokens != 1200 {
+		t.Fatalf("spent %d tokens", st.Budgets[0].SpentTokens)
+	}
+}
+
+func TestFleetBudgetCannotBeEscaped(t *testing.T) {
+	seats := map[string]*fakeFleetSeat{"p": newFakeFleetSeat(fleetHold), "c": newFakeFleetSeat(fleetAnswer("ok"))}
+	r, _ := newClockedFleetRig(t, seats)
+	if err := r.k.Start(context.Background(), "f", FleetOwner, &FleetStartArgs{Name: "p", Instructions: "x", WorkDir: "/tmp", Budget: &FleetBudget{Turns: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	// A child's bigger budget does not raise the parent's.
+	if err := r.k.Start(context.Background(), "f", "p", &FleetStartArgs{Name: "c", Instructions: "x", Budget: &FleetBudget{Turns: 100}}); err != nil {
+		t.Fatal(err)
+	}
+	// Retiring the holder does not free its descendants.
+	if err := r.k.Stop("f", FleetOwner, "p"); err != nil {
+		t.Fatal(err)
+	}
+	waitFleet(t, "p to go", func() bool { st, _ := r.k.Status("f"); return len(st.Agents) == 1 })
+	r.send(FleetOwner, "c", "one")
+	r.send(FleetOwner, "c", "two")
+	var seq uint64
+	for {
+		if m := r.ownerMessage(&seq); m.From == FleetBudgetSender {
+			break
+		}
+	}
+	if n := len(seats["c"].sends()); n != 1 {
+		t.Fatalf("the orphan ran %d turns under its old parent's budget of 1", n)
+	}
+}
+
+func TestFleetTimeBudgetEndsOnTheClock(t *testing.T) {
+	seat := newFakeFleetSeat(fleetAnswer("ok"))
+	r, clock := newClockedFleetRig(t, map[string]*fakeFleetSeat{"a": seat})
+	if err := r.k.Start(context.Background(), "f", FleetOwner, &FleetStartArgs{Name: "a", Instructions: "x", WorkDir: "/tmp", Budget: &FleetBudget{Seconds: 3600}}); err != nil {
+		t.Fatal(err)
+	}
+	r.send(FleetOwner, "a", "early")
+	waitFleet(t, "early turn", func() bool { return len(seat.sends()) == 1 })
+	clock.Advance(time.Hour)
+	r.send(FleetOwner, "a", "late")
+	var seq uint64
+	for {
+		if m := r.ownerMessage(&seq); m.From == FleetBudgetSender {
+			if !strings.Contains(m.Text, "time 1h00m") {
+				t.Fatalf("notice: %q", m.Text)
+			}
+			break
+		}
+	}
+	if n := len(seat.sends()); n != 1 {
+		t.Fatalf("ran %d turns after the deadline", n-1)
+	}
+}
+
+// fleetCheckRepo makes a git repository with one commit.
+func fleetCheckRepo(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	for _, args := range [][]string{{"init", "-q", "-b", "master"}, {"config", "user.email", "t@example.com"}, {"config", "user.name", "t"}} {
+		if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(repo, "count.txt"), []byte("7\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"add", "."}, {"commit", "-qm", "start"}} {
+		if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	return repo
+}
+
+// checkResult waits for the next check result in the log.
+func checkResult(t *testing.T, r *fleetRig, seq *uint64) *FleetCheckResult {
+	t.Helper()
+	ctx := wallclockguard.UntilTestTimeout(t)
+	for {
+		events, err := r.k.Read(ctx, "f", *seq)
+		if err != nil || events == nil {
+			t.Fatalf("read: %v", err)
+		}
+		for i := range events {
+			*seq = events[i].Seq
+			if events[i].Kind == FleetEventCheckResult {
+				return events[i].Check
+			}
+		}
+	}
+}
+
+func TestFleetCheckRunsThePinnedScriptOnACleanCheckout(t *testing.T) {
+	repo := fleetCheckRepo(t)
+	seat := newFakeFleetSeat(fleetAnswer(FleetNoReply))
+	r, _ := newClockedFleetRig(t, map[string]*fakeFleetSeat{"a": seat})
+	r.start("a", FleetOwner)
+	// The script reads a file in the checkout, and ignores the agent's dirty tree.
+	if err := os.WriteFile(filepath.Join(repo, "count.txt"), []byte("999\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.k.RegisterCheck("f", &FleetCheckArgs{Name: "count", Repo: repo, Script: "echo working >&2\ncat count.txt\n", AgentsMayRun: true}); err != nil {
+		t.Fatal(err)
+	}
+	var seq uint64
+	id, err := r.k.RunCheck("f", FleetOwner, "count", "master")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := checkResult(t, r, &seq)
+	if res.RunID != id || res.Score == nil || *res.Score != 7 || res.Exit != 0 || len(res.Commit) != 40 || res.SHA256 == "" || !strings.Contains(res.Output, "working") {
+		t.Fatalf("result %+v", res)
+	}
+	if len(seat.sends()) != 0 {
+		t.Fatal("an agent heard about the owner's run")
+	}
+
+	// An agent runs it through its tool and hears the result as a message.
+	srv := httptest.NewServer(r.k)
+	defer srv.Close()
+	r.mu.Lock()
+	token := r.specs[0].Token
+	r.mu.Unlock()
+	if text, isErr := fleetToolText(t, fleetRPC(t, srv, token, "tools/call", map[string]any{"name": "check", "arguments": map[string]any{"name": "count"}})); isErr {
+		t.Fatalf("check tool: %s", text)
+	}
+	waitFleet(t, "the result message", func() bool { return fleetSeatHeard(seat, "Check count on") })
+	if !fleetSeatHeard(seat, "score 7") {
+		t.Fatalf("agent heard %q", seat.sends())
+	}
+}
+
+func TestFleetHiddenCheckIsTheOwnersAlone(t *testing.T) {
+	repo := fleetCheckRepo(t)
+	r, _ := newClockedFleetRig(t, map[string]*fakeFleetSeat{"a": newFakeFleetSeat(fleetHold)})
+	r.start("a", FleetOwner)
+	if err := r.k.RegisterCheck("f", &FleetCheckArgs{Name: "heldout", Repo: repo, Script: "echo 1\n"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.k.RunCheck("f", "a", "heldout", ""); err == nil {
+		t.Fatal("an agent ran a hidden check")
+	}
+	srv := httptest.NewServer(r.k)
+	defer srv.Close()
+	r.mu.Lock()
+	token := r.specs[0].Token
+	r.mu.Unlock()
+	text, _ := fleetToolText(t, fleetRPC(t, srv, token, "tools/call", map[string]any{"name": "list"}))
+	var st FleetStatus
+	if err := json.Unmarshal([]byte(text), &st); err != nil || len(st.Checks) != 0 {
+		t.Fatalf("an agent's list shows hidden checks: %q", text)
+	}
+	if owner, _ := r.k.Status("f"); len(owner.Checks) != 1 {
+		t.Fatal("the owner cannot see the hidden check")
+	}
+}
+
+func TestFleetCheckRefusesATamperedScriptAndBadRevisions(t *testing.T) {
+	repo := fleetCheckRepo(t)
+	r, _ := newClockedFleetRig(t, map[string]*fakeFleetSeat{})
+	if err := r.k.RegisterCheck("f", &FleetCheckArgs{Name: "c", Repo: repo, Script: "echo 1\n"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, rev := range []string{"-x", "a b", "no-such-branch"} {
+		if _, err := r.k.RunCheck("f", FleetOwner, "c", rev); err == nil {
+			t.Errorf("revision %q was accepted", rev)
+		}
+	}
+	pinned := filepath.Join(r.dir, "checks", "f", "c.sh")
+	if err := os.Chmod(pinned, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pinned, []byte("echo 0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var seq uint64
+	if _, err := r.k.RunCheck("f", FleetOwner, "c", ""); err != nil {
+		t.Fatal(err)
+	}
+	if res := checkResult(t, r, &seq); res.Score != nil || !strings.Contains(res.Error, "modified") {
+		t.Fatalf("tampered script: %+v", res)
+	}
+}
+
+func TestFleetCheckTimesOutAndReportsIt(t *testing.T) {
+	repo := fleetCheckRepo(t)
+	r, _ := newClockedFleetRig(t, map[string]*fakeFleetSeat{})
+	if err := r.k.RegisterCheck("f", &FleetCheckArgs{Name: "slow", Repo: repo, Script: "sleep 60\n", Timeout: 200 * time.Millisecond}); err != nil {
+		t.Fatal(err)
+	}
+	var seq uint64
+	if _, err := r.k.RunCheck("f", FleetOwner, "slow", ""); err != nil {
+		t.Fatal(err)
+	}
+	if res := checkResult(t, r, &seq); !strings.Contains(res.Error, "timed out") {
+		t.Fatalf("result %+v", res)
+	}
+	if out, _ := exec.Command("git", "-C", repo, "worktree", "list").Output(); strings.Count(string(out), "\n") != 1 {
+		t.Fatalf("checkout left behind: %s", out)
+	}
+}
+
+func TestFleetCheckInterruptedByARestartIsAnswered(t *testing.T) {
+	repo := fleetCheckRepo(t)
+	seat := newFakeFleetSeat(fleetAnswer(FleetNoReply))
+	r, _ := newClockedFleetRig(t, map[string]*fakeFleetSeat{"a": seat})
+	r.start("a", FleetOwner)
+	if err := r.k.RegisterCheck("f", &FleetCheckArgs{Name: "slow", Repo: repo, Script: "sleep 60\n", AgentsMayRun: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.k.RunCheck("f", "a", "slow", ""); err != nil {
+		t.Fatal(err)
+	}
+	r.k.Close()
+	r.open()
+	waitFleet(t, "the interrupted result", func() bool { return fleetSeatHeard(seat, "broker restarted during this run") })
+}

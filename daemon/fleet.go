@@ -42,6 +42,7 @@ func (d *Daemon) openFleetKernel(stateDir string) {
 	}
 	k, err := claudia.OpenFleetKernel(&claudia.FleetKernelArgs{
 		Dir:           filepath.Join(stateDir, fleetDirName),
+		Clock:         d.clock,
 		Start:         d.startFleetSeat,
 		Discard:       func(fleet, name string) { d.removeFleetSeat(fleetGrantName(fleet, name)) },
 		ResumeSpacing: restartNudgeSpacing(d.opts.RestartNudgeSpacing),
@@ -301,10 +302,10 @@ func (s *fleetSeat) Describe() string {
 	return fmt.Sprintf("%s/%s", proc.Provider(), proc.Model())
 }
 
-func (s *fleetSeat) Usage() any {
+func (s *fleetSeat) Usage() claudia.Usage {
 	proc, err := s.proc()
 	if err != nil {
-		return nil
+		return claudia.Usage{}
 	}
 	return proc.Usage()
 }
@@ -387,16 +388,38 @@ func (d *Daemon) fleetOp(ctx context.Context, r *broker.FleetRequest) (any, erro
 	case broker.FleetOpOpen:
 		return nil, k.Open(r.Fleet, &claudia.FleetOptions{MaxAgents: r.MaxAgents, MaxMessages: r.MaxMessages})
 	case broker.FleetOpStart:
-		return nil, k.Start(ctx, r.Fleet, claudia.FleetOwner, &claudia.FleetStartArgs{
+		args := &claudia.FleetStartArgs{
 			Name: r.Name, Instructions: r.Instructions, InstructionsFile: r.InstructionsFile,
 			WorkDir: r.WorkDir, Quality: r.Quality, Purpose: r.Purpose, Model: r.Model,
-		})
+		}
+		if r.HasBudget {
+			args.Budget = &claudia.FleetBudget{Tokens: r.BudgetTokens, Turns: r.BudgetTurns, Seconds: r.BudgetSeconds}
+		}
+		return nil, k.Start(ctx, r.Fleet, claudia.FleetOwner, args)
 	case broker.FleetOpSend:
 		from := claudia.FleetOwner
 		if r.Kind == claudia.FleetNotice && r.From != "" {
 			from = r.From
 		}
-		return k.Send(r.Fleet, from, r.To, r.Kind, r.Text, time.Duration(r.AfterSeconds*float64(time.Second)))
+		send := &claudia.FleetSendArgs{From: from, To: r.To, Kind: r.Kind, Text: r.Text,
+			After: fleetWireSeconds(r.AfterSeconds), Every: fleetWireSeconds(r.EverySeconds)}
+		if r.At != "" {
+			at, err := time.Parse(time.RFC3339Nano, r.At)
+			if err != nil {
+				return nil, fmt.Errorf("at %q is not an RFC 3339 time: %w", r.At, err)
+			}
+			send.At = at
+		}
+		return k.Send(r.Fleet, send)
+	case broker.FleetOpCancel:
+		return nil, k.Cancel(r.Fleet, claudia.FleetOwner, r.TimerID)
+	case broker.FleetOpBudget:
+		return nil, k.SetBudget(r.Fleet, r.Name, claudia.FleetBudget{Tokens: r.BudgetTokens, Turns: r.BudgetTurns, Seconds: r.BudgetSeconds})
+	case broker.FleetOpRegisterCheck:
+		return nil, k.RegisterCheck(r.Fleet, &claudia.FleetCheckArgs{Name: r.Name, Repo: r.Repo, Script: r.Script,
+			AgentsMayRun: r.AgentsMayRun, Timeout: fleetWireSeconds(r.TimeoutSeconds)})
+	case broker.FleetOpRunCheck:
+		return k.RunCheck(r.Fleet, claudia.FleetOwner, r.Name, r.Commit)
 	case broker.FleetOpStop:
 		return nil, k.Stop(r.Fleet, claudia.FleetOwner, r.Name)
 	case broker.FleetOpStopTree:
@@ -412,4 +435,8 @@ func (d *Daemon) fleetOp(ctx context.Context, r *broker.FleetRequest) (any, erro
 	default:
 		return nil, fmt.Errorf("unknown fleet operation %q", r.Op)
 	}
+}
+
+func fleetWireSeconds(seconds float64) time.Duration {
+	return time.Duration(seconds * float64(time.Second))
 }

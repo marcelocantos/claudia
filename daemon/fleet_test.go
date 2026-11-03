@@ -9,9 +9,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/marcelocantos/claudia"
 	"github.com/marcelocantos/claudia/internal/wallclockguard"
@@ -450,4 +452,62 @@ func TestSeatThatDiesInATurnIsBroughtBack(t *testing.T) {
 		sends := f.seat(f.seatCount() - 1).sent()
 		return len(sends) == 1 && strings.Contains(sends[0], "the job")
 	})
+}
+
+// 🎯T248 through the real wire: checks, scheduled messages and budgets.
+func TestFleetChecksTimersAndBudgetsOverTheWire(t *testing.T) {
+	f := newFixture(t)
+	f.bootWith(t, f.fleetOptions())
+	fleet := openTestFleet(t, f)
+	startTestAgent(t, fleet, "worker")
+	ctx := wallclockguard.UntilTestTimeout(t)
+
+	repo := t.TempDir()
+	for _, args := range [][]string{{"init", "-q", "-b", "master"}, {"config", "user.email", "t@example.com"}, {"config", "user.name", "t"}, {"commit", "-q", "--allow-empty", "-m", "start"}} {
+		if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	if err := fleet.RegisterCheck(ctx, &claudia.FleetCheckArgs{Name: "answer", Repo: repo, Script: "echo 42\n"}); err != nil {
+		t.Fatal(err)
+	}
+	id, err := fleet.RunCheck(ctx, "answer", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seq uint64
+	var result *claudia.FleetCheckResult
+	for result == nil {
+		events, err := fleet.Read(ctx, seq)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := range events {
+			seq = events[i].Seq
+			if events[i].Kind == claudia.FleetEventCheckResult {
+				result = events[i].Check
+			}
+		}
+	}
+	if result.RunID != id || result.Score == nil || *result.Score != 42 {
+		t.Fatalf("result %+v", result)
+	}
+
+	timer, err := fleet.Schedule(ctx, &claudia.FleetScheduleArgs{To: "worker", Kind: claudia.FleetNotice, Text: "tick", Every: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fleet.SetBudget(ctx, "worker", claudia.FleetBudget{Turns: 5}); err != nil {
+		t.Fatal(err)
+	}
+	st, err := fleet.Status(ctx)
+	if err != nil || len(st.Timers) != 1 || st.Timers[0].ID != timer || len(st.Budgets) != 1 || st.Budgets[0].Limits.Turns != 5 || len(st.Checks) != 1 {
+		t.Fatalf("status %+v %v", st, err)
+	}
+	if err := fleet.Cancel(ctx, timer); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := fleet.Status(ctx); len(st.Timers) != 0 {
+		t.Fatalf("timer survived cancel: %+v", st.Timers)
+	}
 }

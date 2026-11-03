@@ -20,6 +20,11 @@ const (
 	FleetOpShutdown = "shutdown"
 	FleetOpStatus   = "status"
 	FleetOpRead     = "read"
+	// 🎯T248: scheduled messages, budgets and checks.
+	FleetOpCancel        = "cancel"
+	FleetOpBudget        = "budget"
+	FleetOpRegisterCheck = "register_check"
+	FleetOpRunCheck      = "run_check"
 )
 
 // FleetRequest is one owner operation on a fleet.
@@ -40,6 +45,12 @@ type FleetRequest struct {
 	Purpose          string `json:"purpose,omitempty"`
 	Model            string `json:"model,omitempty"`
 
+	// Start and Budget: a limit in up to three dimensions, when HasBudget.
+	HasBudget     bool    `json:"has_budget,omitempty"`
+	BudgetTokens  int64   `json:"budget_tokens,omitempty"`
+	BudgetTurns   int     `json:"budget_turns,omitempty"`
+	BudgetSeconds float64 `json:"budget_seconds,omitempty"`
+
 	// Send. From names the source of a notice; a request always comes from
 	// the owner.
 	From         string  `json:"from,omitempty"`
@@ -47,6 +58,19 @@ type FleetRequest struct {
 	Kind         string  `json:"kind,omitempty"`
 	Text         string  `json:"text,omitempty"`
 	AfterSeconds float64 `json:"after_seconds,omitempty"`
+	// At is an RFC 3339 time; EverySeconds repeats.
+	At           string  `json:"at,omitempty"`
+	EverySeconds float64 `json:"every_seconds,omitempty"`
+
+	// Cancel.
+	TimerID string `json:"timer_id,omitempty"`
+
+	// RegisterCheck and RunCheck. Name is the check's name.
+	Repo           string  `json:"repo,omitempty"`
+	Script         string  `json:"script,omitempty"`
+	AgentsMayRun   bool    `json:"agents_may_run,omitempty"`
+	TimeoutSeconds float64 `json:"timeout_seconds,omitempty"`
+	Commit         string  `json:"commit,omitempty"`
 
 	// Read returns events after this sequence number, waiting up to WaitMillis
 	// for some to exist.
@@ -56,7 +80,8 @@ type FleetRequest struct {
 
 func (r *FleetRequest) Validate() error {
 	switch r.Op {
-	case FleetOpOpen, FleetOpStart, FleetOpSend, FleetOpStop, FleetOpStopTree, FleetOpShutdown, FleetOpStatus, FleetOpRead:
+	case FleetOpOpen, FleetOpStart, FleetOpSend, FleetOpStop, FleetOpStopTree, FleetOpShutdown, FleetOpStatus, FleetOpRead,
+		FleetOpCancel, FleetOpBudget, FleetOpRegisterCheck, FleetOpRunCheck:
 	default:
 		return &ProtocolError{Code: CodeUnsupportedValue, Field: "op", Value: r.Op, Msg: "unknown fleet operation"}
 	}

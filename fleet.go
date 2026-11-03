@@ -50,6 +50,20 @@ const (
 	FleetEventStop        = "stop"
 	FleetEventRetired     = "retired"
 	FleetEventTurn        = "turn"
+	// FleetEventCancel records a cancelled scheduled message.
+	FleetEventCancel = "cancel"
+	// FleetEventBudget records a budget set by the owner.
+	FleetEventBudget = "budget"
+	// FleetEventCheckRegistered, FleetEventCheckStarted and FleetEventCheckResult
+	// record checks. A result carries Check, and only the kernel writes one.
+	FleetEventCheckRegistered = "check_registered"
+	FleetEventCheckStarted    = "check_started"
+	FleetEventCheckResult     = "check_result"
+
+	// FleetBudgetSender is the From of the kernel's notice that a budget is spent.
+	FleetBudgetSender = "budget"
+	// FleetCheckSenderPrefix starts the From of a check result sent to an agent.
+	FleetCheckSenderPrefix = "check:"
 
 	// Agent states in a status.
 	FleetStateStarting = "starting"
@@ -77,6 +91,8 @@ const (
 	// fleetRetryMax caps the wait between tries to bring an agent's seat back.
 	fleetRetryMax = time.Minute
 	fleetRetryMin = time.Second
+	// fleetStatusText bounds the message text a status shows for a timer.
+	fleetStatusText = 200
 
 	fleetRedeliveredNote = "[Claudia restarted during your last turn on this message, so its reply was lost. Work you already did remains. Check it and answer now.]"
 	fleetStateVersion    = 1
@@ -113,7 +129,8 @@ type FleetSeat interface {
 	// is free. Calling it again waits for the first call.
 	Stop()
 	Describe() string
-	Usage() any
+	// Usage is the seat's cumulative token usage, which budgets read.
+	Usage() Usage
 	LastActivity() time.Time
 }
 
@@ -145,6 +162,8 @@ type FleetKernelArgs struct {
 	// ResumeSpacing paces agents coming back after a restart, because each may
 	// open a turn at once, and a wave of those meets a rate limit. Optional.
 	ResumeSpacing time.Duration
+	// Clock is the time timers, stamps and budgets read. Nil is the wall clock.
+	Clock Clock
 	// Logger reports failures nobody is waiting on. Optional.
 	Logger func(msg string, args ...any)
 }
@@ -169,6 +188,8 @@ type FleetStartArgs struct {
 	Quality string
 	Purpose string
 	Model   string
+	// Budget, when set, limits what this agent and its descendants spend.
+	Budget *FleetBudget
 }
 
 // FleetMessage is one message between agents or with the owner.
@@ -181,6 +202,14 @@ type FleetMessage struct {
 	Text      string `json:"text"`
 	// Redelivered marks a message whose earlier turn a restart interrupted.
 	Redelivered bool `json:"redelivered,omitempty"`
+	// SentAt is when the kernel delivered it to the mailbox.
+	SentAt time.Time `json:"sent_at"`
+	// Due is when a scheduled message was meant to arrive.
+	Due *time.Time `json:"due,omitempty"`
+	// Missed counts firings of a repeat lost while the broker was down.
+	Missed int `json:"missed,omitempty"`
+	// Timer is the repeat this firing belongs to.
+	Timer string `json:"timer,omitempty"`
 }
 
 // FleetEvent is one entry of a fleet's log. The owner's messages are the
@@ -197,6 +226,8 @@ type FleetEvent struct {
 	Text    string        `json:"text,omitempty"`
 	Usage   any           `json:"usage,omitempty"`
 	Message *FleetMessage `json:"message,omitempty"`
+	// Check is set on check events.
+	Check *FleetCheckResult `json:"check,omitempty"`
 }
 
 // FleetAgentStatus is one agent as it is right now.
@@ -208,12 +239,18 @@ type FleetAgentStatus struct {
 	Model       string `json:"model,omitempty"`
 	Queued      int    `json:"queued"`
 	IdleSeconds int    `json:"idle_seconds"`
+	// WorkingSeconds is how long its current turn has run.
+	WorkingSeconds int `json:"working_seconds,omitempty"`
+	// Waiting names a budget holding back its next turn.
+	Waiting string `json:"waiting,omitempty"`
 }
 
 // FleetStatus is a fleet as it is right now.
 type FleetStatus struct {
-	Agents []FleetAgentStatus `json:"agents"`
-	Timers int                `json:"timers"`
+	Agents  []FleetAgentStatus  `json:"agents"`
+	Timers  []FleetTimerStatus  `json:"timers"`
+	Budgets []FleetBudgetStatus `json:"budgets"`
+	Checks  []FleetCheckStatus  `json:"checks"`
 	// LastSeq is the newest event, so a new reader can skip history.
 	LastSeq uint64 `json:"last_seq"`
 }
@@ -232,25 +269,29 @@ type fleetAgentState struct {
 	Current      *FleetMessage   `json:"current,omitempty"`
 	Briefed      bool            `json:"briefed,omitempty"`
 	Stopped      bool            `json:"stopped,omitempty"`
+	// CurrentSince and LastTurnEnd feed the time on its deliveries and status.
+	CurrentSince time.Time `json:"current_since"`
+	LastTurnEnd  time.Time `json:"last_turn_end"`
+	// Budgets are every budget over it; OwnBudget is the one it holds.
+	Budgets   []string `json:"budgets,omitempty"`
+	OwnBudget string   `json:"own_budget,omitempty"`
 
 	// retiring means retireState owns this agent's end. Not saved: a kernel that
 	// restarts sees Stopped and retires it again.
 	retiring bool
 }
 
-type fleetTimerState struct {
-	At      time.Time     `json:"at"`
-	Message *FleetMessage `json:"message"`
-}
-
 type fleetGroupState struct {
-	MaxAgents   int                         `json:"max_agents"`
-	MaxMessages int                         `json:"max_messages"`
-	NextID      uint64                      `json:"next_id"`
-	Sent        int                         `json:"sent"`
-	Closing     bool                        `json:"closing,omitempty"`
-	Agents      map[string]*fleetAgentState `json:"agents"`
-	Timers      map[string]*fleetTimerState `json:"timers,omitempty"`
+	MaxAgents   int                          `json:"max_agents"`
+	MaxMessages int                          `json:"max_messages"`
+	NextID      uint64                       `json:"next_id"`
+	Sent        int                          `json:"sent"`
+	Closing     bool                         `json:"closing,omitempty"`
+	Agents      map[string]*fleetAgentState  `json:"agents"`
+	Timers      map[string]*fleetTimerState  `json:"timers,omitempty"`
+	Budgets     map[string]*fleetBudgetState `json:"budgets,omitempty"`
+	Checks      map[string]*fleetCheckState  `json:"checks,omitempty"`
+	CheckRuns   map[string]*fleetCheckRun    `json:"check_runs,omitempty"`
 }
 
 type fleetState struct {
@@ -282,10 +323,13 @@ type FleetKernel struct {
 	discard func(fleet, name string)
 	spacing time.Duration
 	retry   time.Duration
+	clock   Clock
 	logf    func(msg string, args ...any)
-	ctx     context.Context
-	cancel  context.CancelFunc
-	wg      sync.WaitGroup
+	// checkSlots bounds checks running at once.
+	checkSlots chan struct{}
+	ctx        context.Context
+	cancel     context.CancelFunc
+	wg         sync.WaitGroup
 
 	mu       sync.Mutex
 	state    fleetState
@@ -297,10 +341,11 @@ type FleetKernel struct {
 	// reviveStop cancels a revive's start in progress, so a stop need not wait
 	// for a slow seat to finish starting.
 	reviveStop map[string]context.CancelFunc
-	timers     map[string]*time.Timer
-	logs       map[string]*fleetLog
-	changed    chan struct{}
-	closed     bool
+	// timers holds each armed timer's stop channel.
+	timers  map[string]chan struct{}
+	logs    map[string]*fleetLog
+	changed chan struct{}
+	closed  bool
 }
 
 func fleetKey(fleet, name string) string { return fleet + "/" + name }
@@ -323,12 +368,17 @@ func OpenFleetKernel(args *FleetKernelArgs) (*FleetKernel, error) {
 		starting:   map[string]bool{},
 		reviving:   map[string]bool{},
 		reviveStop: map[string]context.CancelFunc{},
-		timers:     map[string]*time.Timer{},
+		timers:     map[string]chan struct{}{},
+		checkSlots: make(chan struct{}, fleetCheckConcurrency),
+		clock:      args.Clock,
 		logs:       map[string]*fleetLog{},
 		changed:    make(chan struct{}),
 	}
 	if k.logf == nil {
 		k.logf = func(string, ...any) {}
+	}
+	if k.clock == nil {
+		k.clock = SystemClock{}
 	}
 	k.retry = args.RetryWait
 	if k.retry <= 0 {
@@ -377,18 +427,24 @@ func OpenFleetKernel(args *FleetKernelArgs) (*FleetKernel, error) {
 	return k, nil
 }
 
-// Resume arms saved timers and reattaches every saved agent in the background.
+// Resume arms saved timers, answers check runs a restart interrupted, and
+// reattaches every saved agent in the background.
 func (k *FleetKernel) Resume() {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	if k.closed {
 		return
 	}
+	_ = os.RemoveAll(filepath.Join(k.dir, "checkouts"))
 	order := 0
 	for name, group := range k.state.Fleets {
 		for id, timer := range group.Timers {
 			k.armTimerLocked(name, id, timer)
 		}
+		for _, check := range group.Checks {
+			_, _ = fleetGit(check.Repo, "worktree", "prune")
+		}
+		k.reportInterruptedChecksLocked(name, group)
 		for _, a := range group.Agents {
 			k.wg.Add(1)
 			go k.revive(name, a, 0, time.Duration(order)*k.spacing)
@@ -419,9 +475,6 @@ func (k *FleetKernel) Close() {
 		return
 	}
 	k.closed = true
-	for _, timer := range k.timers {
-		timer.Stop()
-	}
 	for _, rt := range k.running {
 		rt.wake.Broadcast()
 	}
@@ -520,6 +573,11 @@ func (k *FleetKernel) admit(fleet, caller string, args *FleetStartArgs) (*fleetA
 	if args.WorkDir != "" && !filepath.IsAbs(args.WorkDir) {
 		return nil, fmt.Errorf("workdir %q is not absolute", args.WorkDir)
 	}
+	if args.Budget != nil {
+		if err := args.Budget.validate(); err != nil {
+			return nil, err
+		}
+	}
 	tokenBytes := make([]byte, fleetTokenBytes)
 	if _, err := rand.Read(tokenBytes); err != nil {
 		return nil, err
@@ -547,6 +605,7 @@ func (k *FleetKernel) admit(fleet, caller string, args *FleetStartArgs) (*fleetA
 		if a.WorkDir == "" {
 			a.WorkDir = parent.WorkDir
 		}
+		a.Budgets = append([]string(nil), parent.Budgets...)
 	}
 	if a.WorkDir == "" {
 		return nil, errors.New("a root agent needs a workdir")
@@ -557,12 +616,17 @@ func (k *FleetKernel) admit(fleet, caller string, args *FleetStartArgs) (*fleetA
 	if len(group.Agents) >= group.MaxAgents {
 		return nil, fmt.Errorf("agent limit %d reached; stop an agent first", group.MaxAgents)
 	}
+	if args.Budget != nil && !args.Budget.zero() {
+		a.OwnBudget = k.newBudgetLocked(group, args.Name, *args.Budget)
+		a.Budgets = append(a.Budgets, a.OwnBudget)
+	}
 	group.Agents[args.Name] = a
 	key := fleetKey(fleet, args.Name)
 	k.starting[key] = true
 	if err := k.saveLocked(); err != nil {
 		delete(group.Agents, args.Name)
 		delete(k.starting, key)
+		dropUnusedBudgetsLocked(group)
 		return nil, err
 	}
 	return a, nil
@@ -667,7 +731,7 @@ func (k *FleetKernel) revive(fleet string, a *fleetAgentState, deaths int, delay
 			delay -= step
 			select {
 			case <-k.ctx.Done():
-			case <-time.After(step):
+			case <-k.clock.After(step):
 			}
 			continue
 		}
@@ -732,7 +796,8 @@ func (k *FleetKernel) run(rt *fleetRuntime) {
 	a := rt.state
 	for {
 		k.mu.Lock()
-		for len(a.Inbox) == 0 && !a.Stopped && !k.closed {
+		group := k.state.Fleets[rt.fleet]
+		for !a.Stopped && !k.closed && (len(a.Inbox) == 0 || k.blockedLocked(rt.fleet, group, a)) {
 			rt.wake.Wait()
 		}
 		if k.closed {
@@ -751,13 +816,17 @@ func (k *FleetKernel) run(rt *fleetRuntime) {
 		// conversation as well as its turn.
 		brief := !a.Briefed || m.Redelivered
 		a.Briefed = true
+		now := k.clock.Now()
+		stamp := fleetStamp(now, m, a.LastTurnEnd)
+		a.CurrentSince = now
 		if err := k.saveLocked(); err != nil {
 			k.logf("fleet: save before turn", "fleet", rt.fleet, "agent", a.Name, "err", err)
 		}
 		instructions := a.Instructions
 		k.mu.Unlock()
 
-		text := formatFleetMessage(m)
+		usedBefore := fleetTokens(rt.seat.Usage())
+		text := stamp + "\n" + formatFleetMessage(m)
 		if m.Redelivered {
 			text = fleetRedeliveredNote + "\n\n" + text
 		}
@@ -777,7 +846,13 @@ func (k *FleetKernel) run(rt *fleetRuntime) {
 			return
 		}
 		reply = strings.TrimSpace(reply)
-		k.eventLocked(rt.fleet, &FleetEvent{Kind: FleetEventTurn, Agent: a.Name, Root: a.Root, Text: boundFleetText(reply), Usage: rt.seat.Usage(), Cause: errText(err)})
+		usage := rt.seat.Usage()
+		k.eventLocked(rt.fleet, &FleetEvent{Kind: FleetEventTurn, Agent: a.Name, Root: a.Root, Text: boundFleetText(reply), Usage: usage, Cause: errText(err)})
+		// A turn spends whether or not it succeeded.
+		if group := k.state.Fleets[rt.fleet]; group != nil {
+			k.chargeLocked(group, a, max(fleetTokens(usage)-usedBefore, 0))
+		}
+		a.LastTurnEnd = k.clock.Now()
 		// A seat stopped mid-turn can return an empty turn with no error. That
 		// is a failure the requester must hear about, not a silent answer.
 		if a.Stopped {
@@ -894,6 +969,8 @@ func (k *FleetKernel) retireState(fleet string, a *fleetAgentState, rt *fleetRun
 			child.Parent = FleetOwner
 		}
 	}
+	k.dropTimersOfLocked(fleet, group, a.Name)
+	dropUnusedBudgetsLocked(group)
 	k.eventLocked(fleet, &FleetEvent{Kind: FleetEventRetired, Agent: a.Name, Root: a.Root, Cause: cause.Error()})
 	toldParent := k.answerOwedLocked(fleet, a, fmt.Sprintf("agent %s is gone: %v", a.Name, cause))
 	// A deliberate stop is already known to whoever called it. An unexpected
@@ -904,70 +981,6 @@ func (k *FleetKernel) retireState(fleet string, a *fleetAgentState, rt *fleetRun
 	if err := k.saveLocked(); err != nil {
 		k.logf("fleet: save after retire", "fleet", fleet, "agent", a.Name, "err", err)
 	}
-}
-
-// Send queues a message now or after a delay, and returns its ID. A delayed
-// message to yourself is a timer: it wakes you and needs no response. kind is
-// [FleetRequest] unless the owner sends a [FleetNotice].
-func (k *FleetKernel) Send(fleet, from, to, kind, text string, after time.Duration) (string, error) {
-	k.mu.Lock()
-	defer k.mu.Unlock()
-	group, err := k.groupLocked(fleet)
-	if err != nil {
-		return "", err
-	}
-	if to != FleetOwner && group.Agents[to] == nil {
-		return "", fmt.Errorf("no agent named %q", to)
-	}
-	if from == to && after <= 0 {
-		return "", errors.New("a message to yourself needs a delay")
-	}
-	if kind == "" {
-		kind = FleetRequest
-	}
-	if kind != FleetRequest && kind != FleetNotice {
-		return "", fmt.Errorf("cannot send a message of kind %q", kind)
-	}
-	if group.Sent >= group.MaxMessages {
-		return "", fmt.Errorf("message limit %d reached", group.MaxMessages)
-	}
-	if from == to {
-		kind = FleetTimer
-	}
-	group.Sent++
-	m := &FleetMessage{ID: k.nextIDLocked(group), Kind: kind, From: from, To: to, Text: boundFleetText(text)}
-	if after <= 0 {
-		k.deliverLocked(fleet, m)
-	} else {
-		timer := &fleetTimerState{At: time.Now().Add(after), Message: m}
-		if group.Timers == nil {
-			group.Timers = map[string]*fleetTimerState{}
-		}
-		group.Timers[m.ID] = timer
-		k.armTimerLocked(fleet, m.ID, timer)
-	}
-	if err := k.saveLocked(); err != nil {
-		return "", err
-	}
-	return m.ID, nil
-}
-
-func (k *FleetKernel) armTimerLocked(fleet, id string, timer *fleetTimerState) {
-	key := fleetKey(fleet, id)
-	k.timers[key] = time.AfterFunc(max(time.Until(timer.At), 0), func() {
-		k.mu.Lock()
-		defer k.mu.Unlock()
-		delete(k.timers, key)
-		group := k.state.Fleets[fleet]
-		if k.closed || group == nil || group.Timers[id] != timer {
-			return
-		}
-		delete(group.Timers, id)
-		k.deliverLocked(fleet, timer.Message)
-		if err := k.saveLocked(); err != nil {
-			k.logf("fleet: save after timer", "fleet", fleet, "err", err)
-		}
-	})
 }
 
 func (k *FleetKernel) nextIDLocked(group *fleetGroupState) string {
@@ -986,6 +999,9 @@ func (k *FleetKernel) deliverLocked(fleet string, m *FleetMessage) {
 	}
 	if m.ID == "" {
 		m.ID = k.nextIDLocked(group)
+	}
+	if m.SentAt.IsZero() {
+		m.SentAt = k.clock.Now()
 	}
 	m.Text = boundFleetText(m.Text)
 	k.eventLocked(fleet, &FleetEvent{Kind: FleetEventMessage, Message: m})
@@ -1142,12 +1158,13 @@ func (k *FleetKernel) Shutdown(ctx context.Context, fleet string) error {
 	}
 	k.mu.Lock()
 	defer k.mu.Unlock()
-	for key, timer := range k.timers {
+	for key, stop := range k.timers {
 		if strings.HasPrefix(key, fleet+"/") {
-			timer.Stop()
+			close(stop)
 			delete(k.timers, key)
 		}
 	}
+	_ = os.RemoveAll(filepath.Join(k.dir, "checks", fleet))
 	delete(k.state.Fleets, fleet)
 	if log := k.logs[fleet]; log != nil {
 		_ = log.file.Close()
@@ -1166,19 +1183,29 @@ func (k *FleetKernel) Status(fleet string) (*FleetStatus, error) {
 	if err != nil {
 		return nil, err
 	}
-	st := &FleetStatus{Agents: make([]FleetAgentStatus, 0, len(group.Agents)), Timers: len(group.Timers), LastSeq: k.logs[fleet].seq}
+	now := k.clock.Now()
+	st := &FleetStatus{Agents: make([]FleetAgentStatus, 0, len(group.Agents)), Timers: k.timerStatusLocked(group),
+		Budgets: k.budgetStatusLocked(group), Checks: k.checkStatusLocked(group, false), LastSeq: k.logs[fleet].seq}
 	for _, a := range group.Agents {
 		row := FleetAgentStatus{Name: a.Name, Parent: a.Parent, Root: a.Root, Queued: len(a.Inbox), State: FleetStateStarting}
 		if rt := k.running[fleetKey(fleet, a.Name)]; rt != nil {
 			row.State = FleetStateIdle
 			if a.Current != nil {
 				row.State = FleetStateWorking
+				row.WorkingSeconds = int(now.Sub(a.CurrentSince).Seconds())
 			}
 			row.Model = rt.seat.Describe()
-			row.IdleSeconds = int(time.Since(rt.seat.LastActivity()).Seconds())
+			row.IdleSeconds = int(now.Sub(rt.seat.LastActivity()).Seconds())
+		}
+		for _, id := range a.Budgets {
+			if b := group.Budgets[id]; b != nil && b.spentBy(now) != "" {
+				row.Waiting = id
+				break
+			}
 		}
 		st.Agents = append(st.Agents, row)
 	}
+	sort.Slice(st.Timers, func(i, j int) bool { return st.Timers[i].Due.Before(st.Timers[j].Due) })
 	sort.Slice(st.Agents, func(i, j int) bool { return st.Agents[i].Name < st.Agents[j].Name })
 	return st, nil
 }
@@ -1288,7 +1315,7 @@ func (k *FleetKernel) eventLocked(fleet string, e *FleetEvent) {
 	// fits a read.
 	e.Text = boundFleetText(e.Text)
 	e.Cause = boundFleetText(e.Cause)
-	e.At = time.Now().UTC()
+	e.At = k.clock.Now().UTC()
 	raw, err := json.Marshal(e)
 	if err == nil {
 		_, err = log.file.Write(append(raw, '\n'))

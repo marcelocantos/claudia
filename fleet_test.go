@@ -40,6 +40,9 @@ type fakeFleetSeat struct {
 	failTurn error
 	// stopHold, if set, keeps Stop from returning until it closes.
 	stopHold chan struct{}
+	// usage is what the seat reports; turnTokens is added on each turn.
+	usage      Usage
+	turnTokens int
 }
 
 func newFakeFleetSeat(reply func(string) (string, bool)) *fakeFleetSeat {
@@ -55,6 +58,7 @@ func fleetHold(string) (string, bool) { return "", false }
 func (s *fakeFleetSeat) Send(text string) error {
 	s.mu.Lock()
 	s.sent = append(s.sent, text)
+	s.usage.OutputTokens += s.turnTokens
 	s.mu.Unlock()
 	if s.dieOnSend != nil {
 		s.dead.Store(true)
@@ -99,8 +103,12 @@ func (s *fakeFleetSeat) die(err error) {
 	s.dead.Store(true)
 	s.death <- err
 }
-func (s *fakeFleetSeat) Describe() string        { return "fake/model" }
-func (s *fakeFleetSeat) Usage() any              { return nil }
+func (s *fakeFleetSeat) Describe() string { return "fake/model" }
+func (s *fakeFleetSeat) Usage() Usage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.usage
+}
 func (s *fakeFleetSeat) LastActivity() time.Time { return time.Now() }
 
 func (s *fakeFleetSeat) sends() []string {
@@ -122,6 +130,8 @@ type fleetRig struct {
 	startFn func(ctx context.Context, spec *FleetSeatSpec) (FleetSeat, error)
 
 	discarded []string
+	// clock, when set before open, is the kernel's clock.
+	clock Clock
 }
 
 func (r *fleetRig) setStartFn(fn func(ctx context.Context, spec *FleetSeatSpec) (FleetSeat, error)) {
@@ -155,7 +165,7 @@ func newFleetRig(t *testing.T, seats map[string]*fakeFleetSeat) *fleetRig {
 
 func (r *fleetRig) open() {
 	r.t.Helper()
-	k, err := OpenFleetKernel(&FleetKernelArgs{Dir: r.dir, RetryWait: time.Millisecond, Discard: func(_, name string) {
+	k, err := OpenFleetKernel(&FleetKernelArgs{Dir: r.dir, Clock: r.clock, RetryWait: time.Millisecond, Discard: func(_, name string) {
 		r.mu.Lock()
 		r.discarded = append(r.discarded, name)
 		r.mu.Unlock()
@@ -190,7 +200,7 @@ func (r *fleetRig) start(name, parent string) {
 
 func (r *fleetRig) send(from, to, text string) string {
 	r.t.Helper()
-	id, err := r.k.Send("f", from, to, FleetRequest, text, 0)
+	id, err := r.k.Send("f", &FleetSendArgs{From: from, To: to, Kind: FleetRequest, Text: text})
 	if err != nil {
 		r.t.Fatal(err)
 	}
@@ -297,7 +307,7 @@ func TestFleetRequestToAGoneAgentIsAnsweredWithAFailure(t *testing.T) {
 	r := newFleetRig(t, map[string]*fakeFleetSeat{"a": seat})
 	r.start("a", FleetOwner)
 	// A timer outlives its target, which is the case a Send check cannot catch.
-	if _, err := r.k.Send("f", FleetOwner, "a", FleetRequest, "later", 20*time.Millisecond); err != nil {
+	if _, err := r.k.Send("f", &FleetSendArgs{From: FleetOwner, To: "a", Kind: FleetRequest, Text: "later", After: 20 * time.Millisecond}); err != nil {
 		t.Fatal(err)
 	}
 	if err := r.k.Stop("f", FleetOwner, "a"); err != nil {
@@ -320,11 +330,11 @@ func TestFleetUnsolicitedTurnsGoUpTheTreeAndNoReplyStaysSilent(t *testing.T) {
 	r := newFleetRig(t, map[string]*fakeFleetSeat{"p": parent, "c": child})
 	r.start("p", FleetOwner)
 	r.start("c", "p")
-	if _, err := r.k.Send("f", FleetOwner, "c", FleetNotice, "quietly", 0); err != nil {
+	if _, err := r.k.Send("f", &FleetSendArgs{From: FleetOwner, To: "c", Kind: FleetNotice, Text: "quietly"}); err != nil {
 		t.Fatal(err)
 	}
 	waitFleet(t, "silent turn", func() bool { return len(child.sends()) == 1 })
-	if _, err := r.k.Send("f", FleetOwner, "c", FleetNotice, "report", 0); err != nil {
+	if _, err := r.k.Send("f", &FleetSendArgs{From: FleetOwner, To: "c", Kind: FleetNotice, Text: "report"}); err != nil {
 		t.Fatal(err)
 	}
 	waitFleet(t, "report to reach the parent", func() bool { return len(parent.sends()) == 1 })
@@ -337,14 +347,14 @@ func TestFleetDelayedMessageArrivesThoughItsSenderIsIdle(t *testing.T) {
 	seat := newFakeFleetSeat(fleetAnswer(FleetNoReply))
 	r := newFleetRig(t, map[string]*fakeFleetSeat{"a": seat})
 	r.start("a", FleetOwner)
-	if _, err := r.k.Send("f", "a", "a", "", "wake up", time.Millisecond); err != nil {
+	if _, err := r.k.Send("f", &FleetSendArgs{From: "a", To: "a", Text: "wake up", After: time.Millisecond}); err != nil {
 		t.Fatal(err)
 	}
 	waitFleet(t, "timer", func() bool { return len(seat.sends()) == 1 })
 	if got := seat.sends()[0]; !strings.Contains(got, "[timer") || !strings.Contains(got, "wake up") {
 		t.Fatalf("got %q", got)
 	}
-	if _, err := r.k.Send("f", "a", "a", "", "now", 0); err == nil {
+	if _, err := r.k.Send("f", &FleetSendArgs{From: "a", To: "a", Text: "now"}); err == nil {
 		t.Fatal("an undelayed message to yourself was accepted")
 	}
 }
@@ -421,16 +431,16 @@ func TestFleetRefusals(t *testing.T) {
 	if err := k.Start(ctx, "f2", FleetOwner, &FleetStartArgs{Name: "a2", Instructions: "x", WorkDir: "/tmp"}); err == nil || !strings.Contains(err.Error(), "agent limit") {
 		t.Fatalf("agent limit: %v", err)
 	}
-	if _, err := k.Send("f2", FleetOwner, "a", "", "one", 0); err != nil {
+	if _, err := k.Send("f2", &FleetSendArgs{From: FleetOwner, To: "a", Text: "one"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := k.Send("f2", FleetOwner, "a", "", "two", 0); err == nil || !strings.Contains(err.Error(), "message limit") {
+	if _, err := k.Send("f2", &FleetSendArgs{From: FleetOwner, To: "a", Text: "two"}); err == nil || !strings.Contains(err.Error(), "message limit") {
 		t.Fatalf("message limit: %v", err)
 	}
-	if _, err := k.Send("f", FleetOwner, "ghost", "", "x", 0); err == nil {
+	if _, err := k.Send("f", &FleetSendArgs{From: FleetOwner, To: "ghost", Text: "x"}); err == nil {
 		t.Fatal("sent to an unknown agent")
 	}
-	if _, err := k.Send("f", FleetOwner, "a", "response", "x", 0); err == nil {
+	if _, err := k.Send("f", &FleetSendArgs{From: FleetOwner, To: "a", Kind: "response", Text: "x"}); err == nil {
 		t.Fatal("a client forged a response")
 	}
 }
@@ -498,7 +508,7 @@ func TestFleetRestartKeepsAgentsTimersAndHistory(t *testing.T) {
 	r.send(FleetOwner, "a", "one")
 	var seq uint64
 	r.ownerMessage(&seq)
-	if _, err := r.k.Send("f", "a", "a", "", "after the restart", 50*time.Millisecond); err != nil {
+	if _, err := r.k.Send("f", &FleetSendArgs{From: "a", To: "a", Text: "after the restart", After: 50 * time.Millisecond}); err != nil {
 		t.Fatal(err)
 	}
 	r.k.Close()
@@ -709,7 +719,7 @@ func TestFleetMCPToolsActAsTheCallingSeat(t *testing.T) {
 	for _, tool := range tools {
 		names[tool.(map[string]any)["name"].(string)] = true
 	}
-	if len(names) != 4 || !names["start"] || !names["send"] || !names["stop"] || !names["list"] {
+	if len(names) != 6 || !names["start"] || !names["send"] || !names["stop"] || !names["list"] || !names["cancel"] || !names["check"] {
 		t.Fatalf("tools: %v", names)
 	}
 	call := func(token, name string, args map[string]any) (string, bool) {
@@ -851,7 +861,7 @@ func TestFleetFailedTurnKeepsTheAgentAndTellsTheRequester(t *testing.T) {
 		t.Fatalf("agent lost: %+v %v, stops %d", st, err, seat.stops)
 	}
 	seat.failTurn = nil
-	if _, err := r.k.Send("f", FleetOwner, "a", FleetNotice, "again", 0); err != nil {
+	if _, err := r.k.Send("f", &FleetSendArgs{From: FleetOwner, To: "a", Kind: FleetNotice, Text: "again"}); err != nil {
 		t.Fatal(err)
 	}
 	waitFleet(t, "a second turn", func() bool { return len(seat.sends()) == 2 })
@@ -1105,7 +1115,7 @@ func TestFleetStartDuringShutdownIsRefused(t *testing.T) {
 func TestFleetFailedOpenArmsNoTimers(t *testing.T) {
 	r := newFleetRig(t, map[string]*fakeFleetSeat{"a": newFakeFleetSeat(fleetHold)})
 	r.start("a", FleetOwner)
-	if _, err := r.k.Send("f", "a", "a", "", "later", time.Millisecond); err != nil {
+	if _, err := r.k.Send("f", &FleetSendArgs{From: "a", To: "a", Text: "later", After: time.Millisecond}); err != nil {
 		t.Fatal(err)
 	}
 	if err := r.k.Open("g", nil); err != nil {

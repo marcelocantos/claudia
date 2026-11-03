@@ -54,15 +54,23 @@ var fleetTools = []fleetTool{
 			"quality":           fleetProperty("string", "economy, standard or frontier. Default: standard."),
 			"purpose":           fleetProperty("string", "What the model should be good at, if it matters."),
 			"model":             fleetProperty("string", "A specific model, only if you need that one."),
+			"budget": map[string]any{"type": "object", "description": "Optional limit on what it and its descendants spend. Every budget over you still applies, so this can only narrow.",
+				"properties": map[string]any{
+					"tokens":  fleetProperty("integer", "Tokens, where the provider reports them."),
+					"turns":   fleetProperty("integer", "Turns, across its whole subtree."),
+					"seconds": fleetProperty("number", "Wall-clock seconds from now."),
+				}},
 		}),
 	},
 	{
 		Name:        "send",
-		Description: "Send a message to another agent or to \"owner\", and return immediately. Your turn ends when you stop calling tools; the recipient's reply arrives as your next message. A message to yourself with after_seconds is a timer.",
+		Description: "Send a message to another agent or to \"owner\", now or later, and return immediately. Your turn ends when you stop calling tools; the recipient's reply arrives as your next message. A scheduled message to yourself is a timer, and it arrives even if you go idle. Scheduled messages return an ID that cancel takes. Every message you receive starts with the time now and how long it took to reach you.",
 		InputSchema: fleetSchema([]string{"to", "text"}, map[string]any{
 			"to":            fleetProperty("string", "An agent's name, or \"owner\"."),
 			"text":          fleetProperty("string", "The message."),
-			"after_seconds": fleetProperty("number", "Deliver after this delay. Works even if you go idle."),
+			"after_seconds": fleetProperty("number", "Deliver after this delay."),
+			"at":            fleetProperty("string", "Deliver at this time, in RFC 3339 form (2026-11-03T15:00:00+11:00)."),
+			"every_seconds": fleetProperty("number", "Repeat this often, to yourself only, at least 60 seconds apart, until cancelled."),
 		}),
 	},
 	{
@@ -73,8 +81,23 @@ var fleetTools = []fleetTool{
 		}),
 	},
 	{
+		Name:        "cancel",
+		Description: "Cancel a message you scheduled, by the ID send returned.",
+		InputSchema: fleetSchema([]string{"id"}, map[string]any{
+			"id": fleetProperty("string", "The scheduled message's ID."),
+		}),
+	},
+	{
+		Name:        "check",
+		Description: "Run one of the owner's checks against a commit, and return at once. The result arrives later as a message from check:<name>, and is recorded where no agent can change it. list shows the checks you may run.",
+		InputSchema: fleetSchema([]string{"name"}, map[string]any{
+			"name":   fleetProperty("string", "The check's name."),
+			"commit": fleetProperty("string", "The commit or branch to check out. Default: HEAD of the check's repository."),
+		}),
+	},
+	{
 		Name:        "list",
-		Description: "List every agent in this fleet as it is right now: state, parent, queue length and seconds since it last did anything.",
+		Description: "List this fleet as it is right now: every agent with its state, parent, queue length, seconds since it last did anything and how long its current turn has run; every scheduled message; every budget and what is spent; and the checks you may run.",
 		InputSchema: fleetSchema(nil, map[string]any{}),
 	},
 }
@@ -155,16 +178,21 @@ func (k *FleetKernel) callFleetTool(r *http.Request, fleet, caller string, param
 	var call struct {
 		Name      string `json:"name"`
 		Arguments struct {
-			Name             string  `json:"name"`
-			Instructions     string  `json:"instructions"`
-			InstructionsFile string  `json:"instructions_file"`
-			WorkDir          string  `json:"workdir"`
-			Quality          string  `json:"quality"`
-			Purpose          string  `json:"purpose"`
-			Model            string  `json:"model"`
-			To               string  `json:"to"`
-			Text             string  `json:"text"`
-			AfterSeconds     float64 `json:"after_seconds"`
+			Name             string       `json:"name"`
+			Instructions     string       `json:"instructions"`
+			InstructionsFile string       `json:"instructions_file"`
+			WorkDir          string       `json:"workdir"`
+			Quality          string       `json:"quality"`
+			Purpose          string       `json:"purpose"`
+			Model            string       `json:"model"`
+			To               string       `json:"to"`
+			Text             string       `json:"text"`
+			AfterSeconds     float64      `json:"after_seconds"`
+			At               string       `json:"at"`
+			EverySeconds     float64      `json:"every_seconds"`
+			ID               string       `json:"id"`
+			Commit           string       `json:"commit"`
+			Budget           *FleetBudget `json:"budget"`
 		} `json:"arguments"`
 	}
 	if err := json.Unmarshal(params, &call); err != nil {
@@ -175,19 +203,38 @@ func (k *FleetKernel) callFleetTool(r *http.Request, fleet, caller string, param
 	case "start":
 		err := k.startForAgent(fleet, caller, &FleetStartArgs{
 			Name: args.Name, Instructions: args.Instructions, InstructionsFile: args.InstructionsFile,
-			WorkDir: args.WorkDir, Quality: args.Quality, Purpose: args.Purpose, Model: args.Model,
+			WorkDir: args.WorkDir, Quality: args.Quality, Purpose: args.Purpose, Model: args.Model, Budget: args.Budget,
 		})
 		if err != nil {
 			return "", err
 		}
 		return "starting " + args.Name, nil
 	case "send":
-		after := time.Duration(args.AfterSeconds * float64(time.Second))
-		id, err := k.Send(fleet, caller, args.To, FleetRequest, args.Text, after)
+		send := &FleetSendArgs{From: caller, To: args.To, Kind: FleetRequest, Text: args.Text,
+			After: fleetSeconds(args.AfterSeconds), Every: fleetSeconds(args.EverySeconds)}
+		if args.At != "" {
+			at, err := time.Parse(time.RFC3339, args.At)
+			if err != nil {
+				return "", fmt.Errorf("at %q is not an RFC 3339 time: %w", args.At, err)
+			}
+			send.At = at
+		}
+		id, err := k.Send(fleet, send)
 		if err != nil {
 			return "", err
 		}
 		return "queued as " + id, nil
+	case "cancel":
+		if err := k.Cancel(fleet, caller, args.ID); err != nil {
+			return "", err
+		}
+		return "cancelled " + args.ID, nil
+	case "check":
+		id, err := k.RunCheck(fleet, caller, args.Name, args.Commit)
+		if err != nil {
+			return "", err
+		}
+		return "running as " + id + "; the result will arrive as a message", nil
 	case "stop":
 		if err := k.Stop(fleet, caller, args.Name); err != nil {
 			return "", err
@@ -198,6 +245,14 @@ func (k *FleetKernel) callFleetTool(r *http.Request, fleet, caller string, param
 		if err != nil {
 			return "", err
 		}
+		// An agent sees only the checks it may run.
+		visible := st.Checks[:0]
+		for _, c := range st.Checks {
+			if c.AgentsMayRun {
+				visible = append(visible, c)
+			}
+		}
+		st.Checks = visible
 		raw, err := json.Marshal(st)
 		if err != nil {
 			return "", err
@@ -206,4 +261,9 @@ func (k *FleetKernel) callFleetTool(r *http.Request, fleet, caller string, param
 	default:
 		return "", fmt.Errorf("unknown tool %q", call.Name)
 	}
+}
+
+// fleetSeconds turns a tool's seconds into a duration.
+func fleetSeconds(seconds float64) time.Duration {
+	return time.Duration(seconds * float64(time.Second))
 }
