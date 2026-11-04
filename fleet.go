@@ -99,6 +99,7 @@ const (
 	fleetStatusText = 200
 
 	fleetRedeliveredNote = "[Claudia restarted during your last turn on this message, so its reply was lost. Work you already did remains. Check it and answer now.]"
+	fleetReclaimedNote   = "[This was steered into your last turn, which was interrupted so that you take it up on its own. You may already have started on it: check what you did before acting again.]"
 	fleetStateVersion    = 1
 )
 
@@ -227,6 +228,9 @@ type FleetMessage struct {
 	Timer string `json:"timer,omitempty"`
 	// Charged means a budget has already counted this message's turn.
 	Charged bool `json:"charged,omitempty"`
+	// Reclaimed marks a message taken back out of a turn it was steered into,
+	// which its seat may already have started on (🎯T250).
+	Reclaimed bool `json:"reclaimed,omitempty"`
 
 	// steering marks a message on its way into a running turn.
 	steering bool
@@ -905,6 +909,8 @@ func (k *FleetKernel) run(rt *fleetRuntime) {
 		text := stamp + "\n" + formatFleetMessage(m)
 		if m.Redelivered {
 			text = fleetRedeliveredNote + "\n\n" + text
+		} else if m.Reclaimed {
+			text = fleetReclaimedNote + "\n\n" + text
 		}
 		if brief {
 			text = instructions + "\n\n---\n\n" + text

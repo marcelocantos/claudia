@@ -514,8 +514,41 @@ func TestFleetInterruptTakesBackASteeredMessage(t *testing.T) {
 		sent := b.sends()
 		return len(sent) == 2 && strings.Contains(sent[1], "urgent")
 	})
+	if !strings.Contains(b.sends()[1], fleetReclaimedNote) {
+		t.Fatalf("the rerun does not say it was steered in before: %q", b.sends()[1])
+	}
 	b.replies <- "PING"
 	if m := r.ownerMessage(&seq); m.InReplyTo != urgent || m.Text != "PING" {
 		t.Fatalf("urgent requester heard %+v", m)
+	}
+}
+
+func TestFleetAFailedInterruptLeavesASteeredMessageInItsTurn(t *testing.T) {
+	b := newFakeFleetSeat(fleetHold)
+	b.interruptErr = errors.New("refused")
+	r := newFleetRig(t, map[string]*fakeFleetSeat{"b": b})
+	r.start("b", FleetOwner)
+	first := r.send(FleetOwner, "b", "long job")
+	waitFleet(t, "b's long turn", func() bool { return r.working("b") })
+	urgent := r.send(FleetOwner, "b", "urgent")
+	if _, err := r.k.Expedite("f", FleetOwner, urgent, FleetExpediteSteer); err != nil {
+		t.Fatal(err)
+	}
+	note, err := r.k.Expedite("f", FleetOwner, urgent, FleetExpediteInterrupt)
+	if err != nil || !strings.Contains(note, "stays steered") || len(r.inbox("b")) != 0 {
+		t.Fatalf("interrupt: %q %v, queue %v", note, err, r.inbox("b"))
+	}
+	b.replies <- "both"
+	var seq uint64
+	answered := map[string]bool{}
+	for len(answered) < 2 {
+		m := r.ownerMessage(&seq)
+		if m.Text != "both" {
+			t.Fatalf("owner heard %+v", m)
+		}
+		answered[m.InReplyTo] = true
+	}
+	if !answered[first] || !answered[urgent] || len(b.sends()) != 1 {
+		t.Fatalf("answered %v after %d sends", answered, len(b.sends()))
 	}
 }

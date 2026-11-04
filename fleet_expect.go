@@ -266,6 +266,7 @@ func (k *FleetKernel) Expedite(fleet, caller, id, mode string) (string, error) {
 		return "", err
 	}
 	a, i := queuedLocked(group, id)
+	var reclaimed *FleetMessage
 	if a == nil && mode == FleetExpediteInterrupt {
 		// Steered into a turn that is still running, as when the provider reads
 		// it only after a long step: take it back out, so it goes next.
@@ -276,8 +277,9 @@ func (k *FleetKernel) Expedite(fleet, caller, id, mode string) (string, error) {
 			}
 			m := s.Steered[j]
 			s.Steered = slices.Delete(s.Steered, j, j+1)
+			m.Reclaimed = true
 			s.Inbox = append([]*FleetMessage{m}, s.Inbox...)
-			a, i = s, 0
+			a, i, reclaimed = s, 0, m
 		}
 	}
 	if a == nil {
@@ -309,6 +311,9 @@ func (k *FleetKernel) Expedite(fleet, caller, id, mode string) (string, error) {
 		k.saveOrLogLocked(fleet, "expedite")
 		k.mu.Unlock()
 		if err := k.interruptSeat(rt, turn, caller, id); err != nil {
+			if reclaimed != nil && k.restoreSteered(fleet, a, rt, turn, reclaimed) {
+				return fmt.Sprintf("could not interrupt %s (%v), so %s stays steered into its running turn", a.Name, err, id), nil
+			}
 			return fmt.Sprintf("could not interrupt %s (%v), so %s goes next when its turn ends", a.Name, err, id), nil
 		}
 		return fmt.Sprintf("asked %s to stop its turn; %s goes next", a.Name, id), nil
@@ -367,6 +372,24 @@ func (k *FleetKernel) Expedite(fleet, caller, id, mode string) (string, error) {
 		return fmt.Sprintf("could not steer into %s's turn (%v), so %s goes next", a.Name, err, id), nil
 	}
 	return fmt.Sprintf("%s's turn ended first, so %s goes next", a.Name, id), nil
+}
+
+// restoreSteered puts a message taken back for an interrupt that failed
+// back into the turn it was steered into, if that turn is still running, so
+// that the turn's reply still answers it. It reports whether it did. Takes
+// k.mu.
+func (k *FleetKernel) restoreSteered(fleet string, a *fleetAgentState, rt *fleetRuntime, turn int, m *FleetMessage) bool {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	at := slices.Index(a.Inbox, m)
+	if k.closed || at < 0 || rt.turns != turn || a.Current == nil || k.running[fleetKey(fleet, a.Name)] != rt {
+		return false
+	}
+	a.Inbox = slices.Delete(a.Inbox, at, at+1)
+	m.Reclaimed = false
+	a.Steered = append(a.Steered, m)
+	k.saveOrLogLocked(fleet, "expedite")
+	return true
 }
 
 // interruptSeat interrupts turn, for which the caller has counted an
