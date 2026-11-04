@@ -488,3 +488,34 @@ func TestFleetAFailedInterruptDoesNotEraseADeliveredOne(t *testing.T) {
 		t.Fatalf("a cut-short turn was delivered unmarked: %q", m.Text)
 	}
 }
+
+// A provider may read steered text only after a long step, so an interrupt
+// must still be able to hurry a message already steered in.
+func TestFleetInterruptTakesBackASteeredMessage(t *testing.T) {
+	b := newFakeFleetSeat(fleetHold)
+	b.interruptReply = "partway"
+	r := newFleetRig(t, map[string]*fakeFleetSeat{"b": b})
+	r.start("b", FleetOwner)
+	first := r.send(FleetOwner, "b", "long job")
+	waitFleet(t, "b's long turn", func() bool { return r.working("b") })
+	urgent := r.send(FleetOwner, "b", "urgent")
+	if note, err := r.k.Expedite("f", FleetOwner, urgent, FleetExpediteSteer); err != nil || !strings.Contains(note, "steered") {
+		t.Fatalf("steer: %q %v", note, err)
+	}
+	if note, err := r.k.Expedite("f", FleetOwner, urgent, FleetExpediteInterrupt); err != nil || !strings.Contains(note, "stop its turn") {
+		t.Fatalf("interrupt: %q %v", note, err)
+	}
+	var seq uint64
+	m := r.ownerMessage(&seq)
+	if m.InReplyTo != first || !strings.Contains(m.Text, "partway") {
+		t.Fatalf("first requester heard %+v", m)
+	}
+	waitFleet(t, "the urgent message as its own turn", func() bool {
+		sent := b.sends()
+		return len(sent) == 2 && strings.Contains(sent[1], "urgent")
+	})
+	b.replies <- "PING"
+	if m := r.ownerMessage(&seq); m.InReplyTo != urgent || m.Text != "PING" {
+		t.Fatalf("urgent requester heard %+v", m)
+	}
+}

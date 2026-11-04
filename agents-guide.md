@@ -1113,10 +1113,15 @@ An idle agent hears nothing, so on its own it cannot notice that a reply is late
   (`Fleet.SendWith`'s `Mode`).
   - `steer` folds the message into the recipient's running turn, and that turn's
     reply also answers it. Claude seats cannot steer; Cursor, Grok and Codex
-    seats can.
-  - `interrupt` ends the running turn. Its requester is answered that it was
-    interrupted, with whatever the turn had said so far, and the message goes
-    next.
+    seats can. Grok and Codex read steered text only once their current step
+    finishes, so a steer does not cut short a long tool call; `interrupt`
+    does.
+  - `interrupt` stops the running turn, and the message goes next. The turn's
+    requester gets what it said, marked as possibly incomplete, with any error
+    it ended with. An interrupt that comes before the seat has the turn waits
+    until it does. It also takes back a message already steered into the turn,
+    which matters for providers that read steered text only after their
+    current step, however long that step is.
   - If a message cannot be steered or interrupted, or the recipient is between
     turns, it goes first in the queue and the result says so.
   - A steered message is saved with the turn, so a restart delivers it again.

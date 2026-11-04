@@ -237,11 +237,24 @@ func queuedLocked(group *fleetGroupState, id string) (*fleetAgentState, int) {
 	return nil, -1
 }
 
+// steeredLocked finds a message steered into a running turn and taken by its
+// seat. k.mu held.
+func steeredLocked(group *fleetGroupState, id string) (*fleetAgentState, int) {
+	for _, a := range group.Agents {
+		for i, m := range a.Steered {
+			if m.ID == id && !m.steering {
+				return a, i
+			}
+		}
+	}
+	return nil, -1
+}
+
 // Expedite moves a waiting message ahead of the rest. [FleetExpediteSteer]
 // folds it into its recipient's running turn; [FleetExpediteInterrupt] ends
-// that turn so the message goes next. Either way it goes first in the queue
-// if it cannot be done. It takes authority over the recipient, and returns
-// what happened.
+// that turn so the message goes next, and also takes back a message already
+// steered into it. Either way it goes first in the queue if it cannot be done.
+// It takes authority over the recipient, and returns what happened.
 func (k *FleetKernel) Expedite(fleet, caller, id, mode string) (string, error) {
 	if mode != FleetExpediteSteer && mode != FleetExpediteInterrupt {
 		return "", fmt.Errorf("expedite by %q or %q, not %q", FleetExpediteSteer, FleetExpediteInterrupt, mode)
@@ -253,6 +266,20 @@ func (k *FleetKernel) Expedite(fleet, caller, id, mode string) (string, error) {
 		return "", err
 	}
 	a, i := queuedLocked(group, id)
+	if a == nil && mode == FleetExpediteInterrupt {
+		// Steered into a turn that is still running, as when the provider reads
+		// it only after a long step: take it back out, so it goes next.
+		if s, j := steeredLocked(group, id); s != nil {
+			if !authorized(group, caller, s.Name) {
+				k.mu.Unlock()
+				return "", fmt.Errorf("agent %q has no authority over %q", caller, s.Name)
+			}
+			m := s.Steered[j]
+			s.Steered = slices.Delete(s.Steered, j, j+1)
+			s.Inbox = append([]*FleetMessage{m}, s.Inbox...)
+			a, i = s, 0
+		}
+	}
 	if a == nil {
 		k.mu.Unlock()
 		return "", fmt.Errorf("message %q %w: it may have been taken up or answered already", id, errFleetNotWaiting)
