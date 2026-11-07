@@ -59,6 +59,12 @@ type AgentDef struct {
 	PreferProvider   Provider   `json:"prefer_provider,omitempty"`
 	AllowedProviders []Provider `json:"allowed_providers"`
 	ExcludeProviders []Provider `json:"exclude_providers,omitempty"`
+	// ProviderPick records that Claudia chose Provider for this seat: a
+	// grant with pick [PickRemaining] stores [PickRemaining] here. A seat
+	// whose provider was delegated this way may be moved by the broker when
+	// that provider refuses a turn for exhaustion (🎯T252); a seat whose
+	// consumer named its provider (empty here) never is.
+	ProviderPick string `json:"provider_pick,omitempty"`
 	// HostMayInterrupt opts this seat into host-initiated interruption for
 	// automatic migration. HostNeverPark forbids a host from parking the seat
 	// solely because its plan has no eligible destination. Both are host

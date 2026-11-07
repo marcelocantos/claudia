@@ -244,6 +244,14 @@ If none of the four admits with a number, the daemon returns
 `plan_exhausted` and starts nothing. A grant of a name the daemon
 already holds keeps that seat's provider.
 
+A picked seat stays picked (🎯T252). When its provider refuses a turn
+as `rate_limit` or `spend_wall`, the daemon re-picks among the other
+providers, excluding every one that refused even if its meter still
+shows room, and moves the seat in place with its conversation. It does
+this at most twice per host submit. A seat granted with `--provider`
+is never moved. See the agents guide, "Exhaustion failover for
+delegated seats".
+
 The accounts are the ones already signed in on the host. This path
 does not log in.
 

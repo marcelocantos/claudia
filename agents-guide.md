@@ -687,7 +687,9 @@ published, carrying `FromProvider`, `ToProvider`, `FromModel`, and
 `Model`. Switches are never silent. A seat that is not running has its
 definition rewritten instead (`SeatSwitch.Live` is false): its next
 launch resumes the same session on the new model. Only a sidecar seat changes provider. A native CLI session is not a
-seat. Claudia never switches on its own; the host decides when.
+seat. Claudia never switches on its own; the host decides when. The one
+exception is a broker seat whose provider the host delegated to Claudia
+(grant `pick=remaining`), described below.
 
 A sidecar seat whose provider refuses a turn (usage limit, rate limit,
 auth) makes `WaitForResponse` return `provider refused the turn:
@@ -696,6 +698,8 @@ auth) makes `WaitForResponse` return `provider refused the turn:
 Per-seat placement and host permissions are durable `AgentDef` fields. `PreferProvider` is a preference, not a ban; nil `AllowedProviders` leaves the catalog open, while an explicit empty slice allows no destination. `ExcludeProviders` removes named providers. `HostMayInterrupt` permits the host to interrupt an in-flight turn for an automatic move, and `HostNeverPark` forbids the host from parking the seat solely because no destination is eligible. Both permissions default to false. Use `Registry.SetSeatPlanPolicy` to update these fields atomically without remapping the current session. Claudia owns provider eligibility and ranking; the host still decides when to move, interrupt, or park.
 
 When a turn ends in a classified stuck/exhausted condition (`rate_limit` or spend/quota wall — not auth, not `model_not_found`), Claudia publishes `ProgressType=stuck` with `StuckClass` and a short detail on the same stream and does **not** switch the model, remint, or climb a ladder. The host decides the next step.
+
+**Exhaustion failover for delegated seats (🎯T252).** A grant made with `pick=remaining` (`claudia broker grant --pick remaining`) records that delegation as `AgentDef.ProviderPick`. When that seat's turn ends refused with cause `rate_limit` or `spend_wall`, the broker moves the seat in place, with the same session and conversation, to the fullest admitted fleet provider that its `AllowedProviders`/`ExcludeProviders` allow. Every provider that has already refused is excluded, whatever its usage reading says. Destination quality matches the source model. The broker then submits a short continuation instead of resending the prompt, which is already in the conversation. The owner's stream receives a non-error `ProgressType=provider_failover` event and a `model_switch`, not the refusal, so a `broker events --wait` that is folding the turn ends on the continued one. A seat moves at most twice per host submit. When that bound is reached, no destination is eligible, or the move fails, the original refusal is forwarded unchanged, after a `provider_failover` note saying why. A seat whose consumer named its provider is never moved, and neither is a refused send that carried a host `RequestID`: in both cases the typed refusal is forwarded as before. A reclaim that restates the seat's provider (as `broker send` does) keeps the delegation. Naming a different provider takes the choice back. xAI's `(type=personal-team-blocked:spending-limit)` is typed `spend_wall`.
 
 **Readiness detection**: The TUI-ready detector polls `tmux capture-pane`
 every 50 ms and gives up after 30 s. These values are fixed and not

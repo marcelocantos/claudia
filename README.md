@@ -114,7 +114,9 @@ reply, err := agent.WaitForResponse(ctx)
 A seat changes model with `agent.SwitchModel(provider, model)`,
 keeping its conversation. A sidecar seat can also change provider in
 place; a native CLI seat changes model within its own provider.
-Claudia never switches on its own. See [agents-guide.md](agents-guide.md).
+Claudia never switches on its own, except a broker seat granted with
+`pick=remaining` whose provider refuses a turn for exhaustion (🎯T252).
+See [agents-guide.md](agents-guide.md).
 
 `Config.Goal` (also `AgentDef.Goal`) is a host-owned Session
 objective. Empty keeps one-shot `Send`. When set, the Agent issues a

@@ -116,6 +116,51 @@ func TestCauseFromConnectErrorAnthropicStream(t *testing.T) {
 	}
 }
 
+// 🎯T252: Grok's spend wall, verbatim from Pimp's refused turn on
+// 2026-11-07 (mnemo-ocr-reassign windows-diagnosis-events-1.txt). xAI puts
+// its error type in "(type=…)" at the end; that code, not the sentence, is
+// the cause.
+const grokSpendWallSpecimen = "403 You have run out of credits or need a Grok subscription. Add credits at https://grok.com/?_s=usage or upgrade at https://grok.com/supergrok.\n" +
+	"You have run out of credits or need a Grok subscription. Add credits at https://grok.com/?_s=usage or upgrade at https://grok.com/supergrok. (type=personal-team-blocked:spending-limit)"
+
+func TestCauseFromConnectErrorXAITypeCode(t *testing.T) {
+	cases := []struct {
+		in   string
+		want ProviderCause
+	}{
+		{grokSpendWallSpecimen, CauseSpendWall},
+		{"403 blocked (type=personal-team-blocked:spending-limit)  \n", CauseSpendWall},
+		// The sentence alone is not the code.
+		{"You have run out of credits or need a Grok subscription.", ""},
+		{"personal-team-blocked:spending-limit", ""},
+		// Not at the end, so not xAI's code position.
+		{"(type=personal-team-blocked:spending-limit) and then the model kept talking", ""},
+		// An unknown or malformed code maps to nothing.
+		{"403 forbidden (type=personal-team-blocked:something-else)", ""},
+		{"403 forbidden (type=)", ""},
+		{"403 forbidden (type=Personal Team)", ""},
+	}
+	for _, tc := range cases {
+		if got := CauseFromConnectError(tc.in); got != tc.want {
+			t.Errorf("CauseFromConnectError(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// The specimen through the production sidecar pump: the refused turn's
+// answer and its stuck event both carry spend_wall.
+func TestOMPGrokSpendWallIsSpendWall(t *testing.T) {
+	reason, errs := lastOMPRefusalReason(t, "grok-spend-seat", grokSpendWallSpecimen)
+	if reason != string(CauseSpendWall) {
+		t.Fatalf("error events %+v; want Reason %q", errs, CauseSpendWall)
+	}
+	for _, ev := range errs {
+		if ev.ProgressType == ProgressStuck && ev.Reason != string(CauseSpendWall) {
+			t.Fatalf("stuck event %+v; want Reason %q", ev, CauseSpendWall)
+		}
+	}
+}
+
 // Production sidecar turn_end: error field plus snapshot errorMessage.
 // A Claude subscription seat only so the fake sidecar needs no Anthropic
 // login; the pump's refusal path is the same.

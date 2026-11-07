@@ -71,6 +71,18 @@ func CauseFromConnectError(errorMessage string) ProviderCause {
 	if code, ok := anthropicStreamErrorCode(errorMessage); ok {
 		return CauseFromProviderCode(code)
 	}
+	if code, ok := xaiErrorType(errorMessage); ok {
+		// xAI ends its refusal with the error's type code. Without this,
+		// Grok's spend wall (HTTP 403, personal-team-blocked:spending-limit)
+		// reached hosts with no cause, and a seat on an exhausted SuperGrok
+		// plan kept being sent work (Pimp, 2026-11-07, 🎯T252).
+		switch code {
+		case xaiSpendingLimit:
+			return CauseSpendWall
+		default:
+			return ""
+		}
+	}
 	if code, ok := connectErrorCode(errorMessage); ok {
 		switch code {
 		case "resource_exhausted":
@@ -95,6 +107,37 @@ func connectErrorCode(errorMessage string) (string, bool) {
 	code := errorMessage[i+len(prefix):]
 	if j := strings.IndexAny(code, ": "); j >= 0 {
 		code = code[:j]
+	}
+	return code, true
+}
+
+// xaiSpendingLimit is xAI's type code for an account whose credits or
+// spending limit are used up.
+const xaiSpendingLimit = "personal-team-blocked:spending-limit"
+
+// xaiErrorType is the code in the "(type=<code>)" that closes an xAI
+// refusal, e.g. "403 You have run out of credits … (type=personal-team-
+// blocked:spending-limit)". The code is one token of lower-case letters,
+// digits and ":_-"; the sentence before it is not consulted.
+func xaiErrorType(errorMessage string) (string, bool) {
+	const open = "(type="
+	s := strings.TrimSpace(errorMessage)
+	if !strings.HasSuffix(s, ")") {
+		return "", false
+	}
+	i := strings.LastIndex(s, open)
+	if i < 0 {
+		return "", false
+	}
+	code := s[i+len(open) : len(s)-1]
+	if code == "" {
+		return "", false
+	}
+	for i := 0; i < len(code); i++ {
+		c := code[i]
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != ':' && c != '_' && c != '-' {
+			return "", false
+		}
 	}
 	return code, true
 }

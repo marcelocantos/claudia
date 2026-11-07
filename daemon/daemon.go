@@ -212,6 +212,10 @@ type Daemon struct {
 	// (tests). stopped is false when the seat was reclaimed or the
 	// generation no longer matches. Nil outside tests.
 	orphanDecision func(name string, stopped bool)
+	// failoverDecision, when set, observes how one failed exhaustion move
+	// ended (tests): forwarded is false when a newer submit made its
+	// refusal stale. Nil outside tests.
+	failoverDecision func(name string, forwarded bool)
 	tasks          map[string]*brokerDaemonTask
 	checks         map[string]pendingGoalCheck
 }
@@ -247,6 +251,9 @@ type brokerGrant struct {
 	// becomes unowned and again when a consumer takes it back, so a timer
 	// from the previous gap cannot stop a seat that was reclaimed by name.
 	orphanGen uint64
+	// failover is the current host submit's exhaustion-failover budget
+	// (🎯T252).
+	failover failoverEpisode
 }
 
 type brokerDaemonTask struct {
@@ -862,6 +869,9 @@ func (d *Daemon) handleGrant(c *broker.ClientConn, req *broker.Request) {
 		def.WorkDir = "."
 	}
 	var pickedRemaining *float64
+	// Only a pick on this request delegates the provider; a definition
+	// cannot claim the delegation for itself (🎯T252).
+	def.ProviderPick = ""
 	if req.Grant.Pick != "" {
 		chosen, err := d.resolveGrantPick(name, def.Provider, req.Grant.Pick)
 		if err != nil {
@@ -869,6 +879,7 @@ func (d *Daemon) handleGrant(c *broker.ClientConn, req *broker.Request) {
 			return
 		}
 		def.Provider = chosen.provider
+		def.ProviderPick = claudia.PickRemaining
 		pickedRemaining = chosen.remaining
 	}
 	// A broker grant seat writes its workdir on every provider: Codex
@@ -914,6 +925,13 @@ func (d *Daemon) handleGrant(c *broker.ClientConn, req *broker.Request) {
 	// broker's destination is authoritative; accepting the stale source
 	// would overwrite the only durable record of the moved seat.
 	if existing := d.reg.Def(name); existing != nil {
+		if req.Grant.Pick == "" && existing.ProviderPick != "" && def.SessionID == existing.SessionID &&
+			claudia.PlanProvider(def.Provider) == claudia.PlanProvider(existing.Provider) {
+			// A reclaim that restates the seat's provider (`broker send`
+			// copies it from the grants list) keeps the delegation. Naming
+			// another provider is the consumer taking the choice back.
+			def.ProviderPick = existing.ProviderPick
+		}
 		if req.Grant.Adopt && def.Provider != existing.Provider {
 			switch {
 			case def.SessionID != existing.SessionID:
@@ -1254,35 +1272,46 @@ func (d *Daemon) forwarder(name string) claudia.EventFunc {
 			// so forwarding this one would double it.
 			return
 		}
-		raw, err := claudia.EncodeEventWire(ev)
-		if err != nil {
-			d.log.Warn("event not encodable", "grant", name, "err", err)
+		if d.takeExhaustionRefusal(name, ev) {
+			// The seat is moving; the consumer hears the move, not the
+			// refusal (🎯T252).
 			return
 		}
-		d.mu.Lock()
-		defer d.mu.Unlock()
-		g := d.grants[name]
-		// Nobody ever claims a fleet seat, so its events would pile up here. The
-		// fleet's own log is its record.
-		if g == nil || g.fleet {
-			return
-		}
-		if g.pump != nil {
-			select {
-			case g.pump <- raw:
-				return
-			default:
-				d.log.Warn("consumer not reading; detaching seat", "grant", name)
-				owner := g.owner
-				d.detachLocked(g)
-				d.noteUnownedLocked(name)
-				// Silent detach left the consumer sending on a grant it no
-				// longer owned, one not_owner per send (🎯T125). Tell it.
-				d.notifyDetached(owner, name, "consumer not reading; event queue full")
-			}
-		}
-		g.retainUnowned(raw)
+		d.forwardEvent(name, ev)
 	}
+}
+
+// forwardEvent sends one seat event to the grant's owner, or keeps it for
+// the next one.
+func (d *Daemon) forwardEvent(name string, ev claudia.Event) {
+	raw, err := claudia.EncodeEventWire(ev)
+	if err != nil {
+		d.log.Warn("event not encodable", "grant", name, "err", err)
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	g := d.grants[name]
+	// Nobody ever claims a fleet seat, so its events would pile up here. The
+	// fleet's own log is its record.
+	if g == nil || g.fleet {
+		return
+	}
+	if g.pump != nil {
+		select {
+		case g.pump <- raw:
+			return
+		default:
+			d.log.Warn("consumer not reading; detaching seat", "grant", name)
+			owner := g.owner
+			d.detachLocked(g)
+			d.noteUnownedLocked(name)
+			// Silent detach left the consumer sending on a grant it no
+			// longer owned, one not_owner per send (🎯T125). Tell it.
+			d.notifyDetached(owner, name, "consumer not reading; event queue full")
+		}
+	}
+	g.retainUnowned(raw)
 }
 
 // pumpCap is the outbound queue length for a new owner.
@@ -1627,6 +1656,9 @@ func (d *Daemon) handleAgentOp(c *broker.ClientConn, req *broker.Request) {
 			_ = c.Fail(req.ID, err)
 			return
 		}
+		d.mu.Lock()
+		g.failover.noteSend(req.Send)
+		d.mu.Unlock()
 		sent.Name = name
 		_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeSent, Sent: sent})
 	case broker.TypeInterrupt:
@@ -1902,11 +1934,20 @@ func (d *Daemon) resolveGrantPick(name string, provider claudia.Provider, pick s
 // left to fail at spawn. The error is plan_exhausted, naming any
 // provider dropped for a missing binary.
 func (d *Daemon) pickByRemaining(session bool) (claudia.FleetPick, error) {
+	return d.pickByRemainingFor(session, nil)
+}
+
+// pickByRemainingFor is pickByRemaining among the providers keep accepts;
+// nil keeps every one.
+func (d *Daemon) pickByRemainingFor(session bool, keep func(claudia.Provider) bool) (claudia.FleetPick, error) {
 	snap := d.usage.Read(d.ctx, false)
 	missing := d.unlaunchable(session)
 	usable := make([]claudia.PlanUsage, 0, len(snap.Backends))
 	for _, u := range snap.Backends {
 		if _, gone := missing[u.Provider]; gone {
+			continue
+		}
+		if keep != nil && !keep(claudia.PlanProvider(u.Provider)) {
 			continue
 		}
 		usable = append(usable, u)
