@@ -142,9 +142,9 @@ unavailable-with-reason — fix the parser, do not gate the read.
   read-write without URI support, and a read-write connection can
   checkpoint or delete the IDE's `-wal`. The file and its `-wal` are
   copied into a private temp directory, read, and removed. Values prefixed
-  `cursor-safe-storage:v1:` (Electron encrypted storage) and other opaque
-  non-JWT blobs are rejected with a reason — they are not dashboard bearer
-  tokens. A missing file or key is unavailable with a reason naming the path.
+  `cursor-safe-storage:v1:` (Electron encrypted storage) are rejected with a
+  reason — they are not dashboard bearer tokens. A missing file or key is
+  unavailable with a reason naming the path.
   Plan usage is not a
   seat, so the legacy CLI-transport refusals (`af439b7`) do not apply.
 - Only a **billing-cycle** included pool is published (mapped onto

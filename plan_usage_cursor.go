@@ -292,10 +292,6 @@ func rejectCursorIDEStoredToken(tok string) error {
 	if strings.HasPrefix(tok, cursorSafeStoragePrefix) || strings.HasPrefix(tok, "cursor-safe-storage:") {
 		return fmt.Errorf("%s holds %sencrypted IDE storage (not a dashboard token); run `agent login`, set %s, or use the broker managed subscription store", cursorAccessTokenKey, cursorSafeStoragePrefix, cursorAPIKeyEnv)
 	}
-	// Plain JWT/session tokens contain dot-separated segments; long opaque blobs do not.
-	if strings.Count(tok, ".") < 2 && len(tok) > 64 {
-		return fmt.Errorf("%s holds an opaque IDE credential blob (not a dashboard token); run `agent login`, set %s, or use the broker managed subscription store", cursorAccessTokenKey, cursorAPIKeyEnv)
-	}
 	return nil
 }
 

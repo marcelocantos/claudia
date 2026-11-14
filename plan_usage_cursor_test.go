@@ -294,17 +294,15 @@ func TestLoadCursorAccessTokenDefaultPathUnderHome(t *testing.T) {
 }
 
 func TestLoadCursorAccessTokenRejectsEncryptedIDEStorage(t *testing.T) {
-	opaque := strings.Repeat("x", 120)
-	for _, tok := range []string{cursorSafeStoragePrefix + "ciphertext", opaque} {
-		path := filepath.Join(t.TempDir(), "state.vscdb")
-		writeCursorStateDB(t, path, map[string]string{cursorAccessTokenKey: tok})
-		_, err := loadCursorAccessToken(path)
-		if err == nil {
-			t.Fatalf("token %q: expected rejection", tok[:min(32, len(tok))])
-		}
-		if !strings.Contains(err.Error(), "dashboard token") && !strings.Contains(err.Error(), "encrypted IDE storage") {
-			t.Fatalf("error %v", err)
-		}
+	path := filepath.Join(t.TempDir(), "state.vscdb")
+	tok := cursorSafeStoragePrefix + "ciphertext"
+	writeCursorStateDB(t, path, map[string]string{cursorAccessTokenKey: tok})
+	_, err := loadCursorAccessToken(path)
+	if err == nil {
+		t.Fatal("expected rejection")
+	}
+	if !strings.Contains(err.Error(), "encrypted IDE storage") || !strings.Contains(err.Error(), "dashboard token") {
+		t.Fatalf("error %v", err)
 	}
 }
 
