@@ -27,6 +27,10 @@ const cursorPeriodUsageURL = "https://api2.cursor.sh/aiserver.v1.DashboardServic
 
 const cursorAPIKeyEnv = "CURSOR_API_KEY"
 
+// cursorSafeStoragePrefix is the Electron safeStorage envelope Cursor's IDE
+// stores in state.vscdb. It is ciphertext, not a DashboardService bearer.
+const cursorSafeStoragePrefix = "cursor-safe-storage:v1:"
+
 // cursorPeriodUsage is the subset of GetCurrentPeriodUsage this maps.
 // Unknown fields are ignored. A missing totalPercentUsed is unavailable,
 // not a fabricated 0.
@@ -275,7 +279,24 @@ func loadCursorAccessToken(path string) (string, error) {
 	if tok == "" {
 		return "", fmt.Errorf("no %s in %s (set %s or sign in to Cursor)", cursorAccessTokenKey, path, cursorAPIKeyEnv)
 	}
+	if err := rejectCursorIDEStoredToken(tok); err != nil {
+		return "", fmt.Errorf("read %s: %w", path, err)
+	}
 	return tok, nil
+}
+
+// rejectCursorIDEStoredToken refuses IDE session values that are not plain
+// bearer credentials. Cursor now stores encrypted blobs in state.vscdb; sending
+// them to DashboardService only yields HTTP 401 while omp.Health stays ok.
+func rejectCursorIDEStoredToken(tok string) error {
+	if strings.HasPrefix(tok, cursorSafeStoragePrefix) || strings.HasPrefix(tok, "cursor-safe-storage:") {
+		return fmt.Errorf("%s holds %sencrypted IDE storage (not a dashboard token); run `agent login`, set %s, or use the broker managed subscription store", cursorAccessTokenKey, cursorSafeStoragePrefix, cursorAPIKeyEnv)
+	}
+	// Plain JWT/session tokens contain dot-separated segments; long opaque blobs do not.
+	if strings.Count(tok, ".") < 2 && len(tok) > 64 {
+		return fmt.Errorf("%s holds an opaque IDE credential blob (not a dashboard token); run `agent login`, set %s, or use the broker managed subscription store", cursorAccessTokenKey, cursorAPIKeyEnv)
+	}
+	return nil
 }
 
 // copyFileIfPresent copies src to a new 0600 file at dst. A missing src is
