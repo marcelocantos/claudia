@@ -131,8 +131,10 @@ Always fetched. The surface is the undocumented dashboard RPC the
 Cursor billing UI reads; it is private and unversioned. A break is
 unavailable-with-reason — fix the parser, do not gate the read.
 
-- Auth: `PlanUsageArgs.CursorAccessToken`, then `CURSOR_API_KEY`, then
-  the Cursor IDE session token: `ItemTable` key `cursorAuth/accessToken`
+- Auth: on the broker monitor, `BrokerPlanFetchArgs` supplies
+  `CursorTokenSource` from the managed subscription store (same renewal path
+  as Claude and Grok). Otherwise `PlanUsageArgs.CursorAccessToken`, then
+  `CURSOR_API_KEY`, then the Cursor IDE session token: `ItemTable` key `cursorAuth/accessToken`
   in `~/Library/Application Support/Cursor/User/globalStorage/state.vscdb`
   (`~/.config/Cursor/…` on Linux; `PlanUsageArgs.CursorAuthPath`
   overrides). The read uses the SQLite linked into claudia (sqlpipe), not
