@@ -156,6 +156,18 @@ func queryCursorPlanUsage(ctx context.Context, args *PlanUsageArgs, now time.Tim
 
 func fetchCursorPeriodUsage(ctx context.Context, args *PlanUsageArgs) ([]byte, error) {
 	tok := strings.TrimSpace(args.CursorAccessToken)
+	fromSource := tok == "" && args.CursorTokenSource != nil
+	if fromSource {
+		var err error
+		tok, err = args.CursorTokenSource(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("cursor usage credential source unavailable: %w", err)
+		}
+		tok = strings.TrimSpace(tok)
+		if tok == "" {
+			return nil, fmt.Errorf("cursor usage credential source returned an empty token (agent login health is unchanged)")
+		}
+	}
 	if tok == "" {
 		tok = strings.TrimSpace(os.Getenv(cursorAPIKeyEnv))
 	}
@@ -192,6 +204,9 @@ func fetchCursorPeriodUsage(ctx context.Context, args *PlanUsageArgs) ([]byte, e
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode != http.StatusOK {
+		if fromSource && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
+			return nil, fmt.Errorf("HTTP %d: Cursor dashboard rejected the broker subscription credential (agent login health is unchanged)", resp.StatusCode)
+		}
 		return nil, fmt.Errorf("HTTP %d (token may be expired — run `agent login`)", resp.StatusCode)
 	}
 	return body, nil

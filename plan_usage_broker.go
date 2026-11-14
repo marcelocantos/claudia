@@ -13,7 +13,7 @@ import (
 )
 
 // BrokerPlanFetchArgs uses the broker's already-open in-memory subscription
-// store for Claude and Grok usage. An expired, refreshable record can renew
+// store for Claude, Grok, and Cursor usage. An expired, refreshable record can renew
 // noninteractively through the existing auth owner; no Keychain read, browser
 // sign-in or CLI credential fallback is permitted. Ordinary library callers
 // keep DefaultPlanFetchArgs.
@@ -25,6 +25,9 @@ func BrokerPlanFetchArgs() *AllPlanUsageArgs {
 	}
 	args.GrokTokenSource = func(ctx context.Context) (string, error) {
 		return brokerUsageToken(ctx, omp.XAIOAuth)
+	}
+	args.CursorTokenSource = func(ctx context.Context) (string, error) {
+		return brokerUsageToken(ctx, omp.Cursor)
 	}
 	return args
 }

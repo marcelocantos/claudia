@@ -191,6 +191,87 @@ func TestBrokerClaudeUsageCurrentCredentialAndUsageOnlyFailures(t *testing.T) {
 	}
 }
 
+func TestBrokerCursorUsageCurrentCredentialAndUsageOnlyFailures(t *testing.T) {
+	ctx := t.Context()
+	t.Setenv(cursorAPIKeyEnv, "unrelated-environment-token")
+	omp.ResetKeychainShot()
+	t.Cleanup(omp.ResetKeychainShot)
+	keychainReads := 0
+	store := omp.Store{Run: func(context.Context, string, ...string) ([]byte, error) {
+		keychainReads++
+		return []byte(`{"records":{}}`), nil
+	}}
+	if err := omp.Open(ctx, store); err != nil {
+		t.Fatal(err)
+	}
+	status := http.StatusOK
+	var tokens []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tokens = append(tokens, r.Header.Get("Authorization"))
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(`{"planUsage":{"totalPercentUsed":12.5}}`))
+	}))
+	defer srv.Close()
+	args := BrokerPlanFetchArgs()
+	args.Providers, args.ThrottleDir = []Provider{ProviderCursor}, ""
+	args.HTTPClient, args.CursorUsageURL = srv.Client(), srv.URL
+	// A reachable IDE token would conceal broker-store wiring.
+	args.CursorAuthPath = t.TempDir() + "/missing.vscdb"
+	for _, token := range []string{"cursor-before", "cursor-after"} {
+		if err := store.Put(ctx, omp.Cursor, omp.Record{AccessToken: token, Expiry: time.Now().Add(time.Hour)}); err != nil {
+			t.Fatal(err)
+		}
+		got, err := QueryAllPlanUsage(ctx, args)
+		if err != nil || len(got) != 1 || got[0].Status != PlanUsageAvailable {
+			t.Fatalf("fetch = %+v, %v", got, err)
+		}
+	}
+	if !reflect.DeepEqual(tokens, []string{"Bearer cursor-before", "Bearer cursor-after"}) {
+		t.Fatalf("tokens = %v", tokens)
+	}
+	before, err := omp.Health(ctx, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, code := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+		status = code
+		got, err := QueryAllPlanUsage(ctx, args)
+		if err != nil || len(got) != 1 || got[0].Status != PlanUsageUnavailable || !strings.Contains(got[0].Reason, "agent login health is unchanged") {
+			t.Fatalf("rejected = %+v, %v", got, err)
+		}
+	}
+	after, err := omp.Health(ctx, store)
+	if err != nil || !reflect.DeepEqual(before, after) {
+		t.Fatalf("usage changed health: %v -> %v, %v", before, after, err)
+	}
+	for _, item := range []omp.Item{
+		{Records: map[string]omp.Record{}},
+		{Records: map[string]omp.Record{omp.Cursor: {AccessToken: "expired", RefreshToken: "still-refreshable", Expiry: time.Now().Add(-time.Hour)}}},
+	} {
+		if err := store.Save(ctx, item); err != nil {
+			t.Fatal(err)
+		}
+		got, err := QueryAllPlanUsage(ctx, args)
+		if err != nil || len(got) != 1 || got[0].Status != PlanUsageUnavailable || !strings.Contains(got[0].Reason, "credential source unavailable") {
+			t.Fatalf("missing/expired = %+v, %v", got, err)
+		}
+		if rec, ok := item.Records[omp.Cursor]; ok && rec.RefreshToken != "" {
+			health, err := omp.Health(ctx, store)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, h := range health {
+				if h.Provider == omp.Cursor && h.State != omp.HealthOK {
+					t.Fatalf("refresh-capable login health changed: %+v", h)
+				}
+			}
+		}
+	}
+	if len(tokens) != 4 || keychainReads != 1 {
+		t.Fatalf("unexpected retry, fallback or Keychain probe: HTTP=%d Keychain=%d", len(tokens), keychainReads)
+	}
+}
+
 func TestClaudeUsageCredentialPrecedence(t *testing.T) {
 	t.Setenv(claudeOAuthTokenEnv, "environment")
 	for _, tc := range []struct {

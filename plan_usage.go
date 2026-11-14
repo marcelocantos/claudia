@@ -218,6 +218,11 @@ type PlanUsageArgs struct {
 	// in the Cursor IDE's state.vscdb, read from a private copy with the
 	// linked SQLite (never sqlite3(1), never the IDE's file in place).
 	CursorAccessToken string
+	// CursorTokenSource supplies the current token when CursorAccessToken is
+	// empty. It is authoritative: errors/empty tokens never fall back to CLI
+	// files or the IDE database, and usage never rotates a token obtained from
+	// this source.
+	CursorTokenSource func(context.Context) (string, error)
 	// CursorAuthPath overrides the path to Cursor state.vscdb (tests).
 	// Default: ~/Library/Application Support/Cursor/User/globalStorage/
 	// state.vscdb, else ~/.config/Cursor/User/globalStorage/state.vscdb.
@@ -274,6 +279,8 @@ type AllPlanUsageArgs struct {
 	// CursorUnstableUsage is ignored. Cursor usage is always fetched.
 	CursorUnstableUsage bool
 	CursorAccessToken   string
+	// CursorTokenSource is forwarded to PlanUsageArgs; see its source contract.
+	CursorTokenSource func(context.Context) (string, error)
 	CursorAuthPath      string
 	CursorUsageURL      string
 	CursorUsageRaw      json.RawMessage
@@ -432,6 +439,7 @@ func QueryAllPlanUsage(ctx context.Context, args *AllPlanUsageArgs) ([]PlanUsage
 			GrokBillingRaw:      args.GrokBillingRaw,
 			CursorUnstableUsage: args.CursorUnstableUsage,
 			CursorAccessToken:   args.CursorAccessToken,
+			CursorTokenSource:   args.CursorTokenSource,
 			CursorAuthPath:      args.CursorAuthPath,
 			CursorUsageURL:      args.CursorUsageURL,
 			CursorUsageRaw:      args.CursorUsageRaw,
