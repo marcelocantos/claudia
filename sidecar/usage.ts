@@ -63,9 +63,10 @@ export function validateUsageFact(value: unknown, seat: string, session: string)
   return f;
 }
 
-// canonicalUsageSeqOnRead renumbers a stored fact for replay. Persists monotonic
-// projection sequence without rewriting the journal when stored seq drifted
-// (for example after compaction dropped sibling usage rows).
+// canonicalUsageSeqOnRead renumbers a stored fact for in-memory replay only.
+// On-disk custom entries keep their persisted `seq`; the usage projection and
+// HistoricalUsageReader expose contiguous 1..n sequence without mutating the
+// conversation store when stored seq drifted (e.g. compaction dropped sibling rows).
 export function canonicalUsageSeqOnRead(f: UsageFact, next: number): UsageFact {
   return { ...f, seq: next };
 }
