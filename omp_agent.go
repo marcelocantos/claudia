@@ -469,6 +469,7 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 	if historyLost {
 		superseded = sessionID
 	}
+	seatLifetime, seatLifetimeCancel := context.WithCancel(context.Background())
 	ctrl := &ompControl{
 		conn: conn, bytes: make(chan []byte, 8),
 		token: token, provider: provider,
@@ -478,6 +479,9 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 		tools: tools, mcpServers: slices.Clone(req.Config.MCPServers), toolServers: toolRoutes, toolNames: toolNames,
 		sandbox:        sandbox,
 		protectedPaths: slices.Clone(ompProtectedPathRules(req.Config)),
+		done:             make(chan struct{}),
+		seatLifetime:     seatLifetime,
+		seatLifetimeCancel: seatLifetimeCancel,
 	}
 	// A reattach (adopt, or a load that found this seat already running in
 	// the sidecar's memory) may find a turn already open from before this
@@ -677,6 +681,13 @@ type ompControl struct {
 	// authRetry tracks answerAuthRetry goroutines so Stop joins them before
 	// tests restore package-level plan fixtures (T169/cancel race under -race).
 	authRetry sync.WaitGroup
+	// seatLifetime cancels in-flight auth-retry refresh work when the seat stops.
+	seatLifetime       context.Context
+	seatLifetimeCancel context.CancelFunc
+	// doneOnce closes done exactly once (pump exit or stop before pump ran).
+	doneOnce sync.Once
+	// pumpStarted is set when the event pump goroutine begins (before Recv).
+	pumpStarted atomic.Bool
 }
 
 // ompSeats holds the live sidecar seats, so a plan recovered by the owner
@@ -777,15 +788,10 @@ func (c *ompControl) openTurnID() string {
 }
 
 func (c *ompControl) pump(a *Agent) {
+	c.pumpStarted.Store(true)
 	defer close(c.bytes)
 	defer c.closeToolCalls()
-	c.mu.Lock()
-	if c.done == nil {
-		c.done = make(chan struct{})
-	}
-	done := c.done
-	c.mu.Unlock()
-	defer close(done)
+	defer c.closePumpDone()
 	// Recv and publication run in this one goroutine, so the sequence belongs
 	// to the pump rather than the control's concurrently accessed send state.
 	var fragments ompFragmentSequence
@@ -840,6 +846,9 @@ func (c *ompControl) pump(a *Agent) {
 			a.publishEvent(Event{Type: "receipt", RequestID: ev.RequestID, SessionID: c.sessionID, Receipt: ev.Receipt})
 		case "auth_retry":
 			if ev.RequestID != "" && ev.TurnID != "" && len(ev.FailedToken) == 64 && oauthRejected(ev.Error) {
+				if c.seatCtx().Err() != nil {
+					continue
+				}
 				c.authRetry.Add(1)
 				go func(ev omp.Event) {
 					defer c.authRetry.Done()
@@ -1065,6 +1074,10 @@ func tokenFingerprint(token string) string { return fmt.Sprintf("%x", sha256.Sum
 
 // The sidecar identifies the credential actually used, even if renewal raced the request.
 func (c *ompControl) recoverFailedToken(failed string) {
+	ctx := c.seatCtx()
+	if ctx.Err() != nil {
+		return
+	}
 	// One refresh at a time per plan (🎯T158). A refresh spends the refresh
 	// token it presents, so two seats refused together that both refresh
 	// present the same one: the second gets invalid_grant, and that marks a
@@ -1075,7 +1088,7 @@ func (c *ompControl) recoverFailedToken(failed string) {
 	mu := ompRefreshLock(c.provider)
 	mu.Lock()
 	defer mu.Unlock()
-	tok, err := planStore().AccessToken(context.Background(), c.provider)
+	tok, err := planStore().AccessToken(ctx, c.provider)
 	if err == nil && tokenFingerprint(tok) != failed {
 		slog.Info("omp token rejected; seat takes the plan's newer token", "provider", c.provider, "seat", c.seat)
 		c.reload(tok)
@@ -1101,9 +1114,15 @@ func (c *ompControl) recoverFailedToken(failed string) {
 // A response is useful only to the matching pending sidecar turn. The token
 // travels on the private command wire, never on the event/spool path.
 func (c *ompControl) answerAuthRetry(ev omp.Event) {
+	if c.seatCtx().Err() != nil {
+		return
+	}
 	c.recoverFailedToken(ev.FailedToken)
+	if c.seatCtx().Err() != nil {
+		return
+	}
 	reply := omp.Message{Op: omp.OpAuthRetry, Seat: c.seat, RequestID: ev.RequestID, TurnID: ev.TurnID}
-	item, err := planStore().Load(context.Background())
+	item, err := planStore().Load(c.seatCtx())
 	if err == nil {
 		rec := item.Records[c.provider]
 		if rec.AccessToken != "" && tokenFingerprint(rec.AccessToken) != ev.FailedToken && rec.Expiry.After(time.Now()) {
@@ -1409,6 +1428,10 @@ func reloadOMPSeats(ctx context.Context, provider string) int {
 }
 
 func (c *ompControl) refreshRejectedToken() {
+	ctx := c.seatCtx()
+	if ctx.Err() != nil {
+		return
+	}
 	login := ompLogin
 	if login.Run == nil {
 		login.Run = execBunLogin
@@ -1423,19 +1446,22 @@ func (c *ompControl) refreshRejectedToken() {
 	login.Caller = "seat " + c.seat + " refused"
 	// A seat's refusal is never a person at the keyboard (🎯T165).
 	login.NoLogin = true
-	rec, err := login.Refresh(context.Background(), planStore(), c.provider)
+	rec, err := login.Refresh(ctx, planStore(), c.provider)
 	if err != nil {
+		if ctx.Err() != nil {
+			return
+		}
 		slog.Warn("omp token rejected; refresh failed", "provider", c.provider, "seat", c.seat, "err", err)
 		// 🎯T924: the cockpit offers the owner a Reauth for this plan.
 		omp.MarkRejected(c.provider, err.Error())
 		return
 	}
-	if err := FlushOMPPlans(context.Background()); err != nil {
+	if err := FlushOMPPlans(ctx); err != nil {
 		slog.Warn("omp token refreshed; keychain flush failed", "provider", c.provider, "err", err)
 	}
 	// Every seat on the plan, this one included, gets the new token now,
 	// rather than each on its next refusal (🎯T158, 🎯T159).
-	if reloadOMPSeats(context.Background(), c.provider) == 0 && c.currentToken() != rec.AccessToken {
+	if reloadOMPSeats(ctx, c.provider) == 0 && c.currentToken() != rec.AccessToken {
 		c.reload(rec.AccessToken)
 	}
 }
@@ -1860,11 +1886,33 @@ func execBunLogin(ctx context.Context, name string, args ...string) ([]byte, err
 
 func (c *ompControl) Bytes() <-chan []byte { return c.bytes }
 
-// shutdownOMPSeat closes the sidecar connection, waits for the event pump
-// and any in-flight auth-retry handlers, then drops this seat from ompSeats.
+func (c *ompControl) seatCtx() context.Context {
+	if c.seatLifetime != nil {
+		return c.seatLifetime
+	}
+	return context.Background()
+}
+
+func (c *ompControl) closePumpDone() {
+	c.doneOnce.Do(func() {
+		if c.done != nil {
+			close(c.done)
+		}
+	})
+}
+
+// shutdownOMPSeat cancels seat work, closes the sidecar connection, waits for
+// the event pump and any in-flight auth-retry handlers, then drops this seat
+// from ompSeats.
 func (c *ompControl) shutdownOMPSeat() {
+	if c.seatLifetimeCancel != nil {
+		c.seatLifetimeCancel()
+	}
 	if c.conn != nil {
 		_ = c.conn.Close()
+	}
+	if !c.pumpStarted.Load() {
+		c.closePumpDone()
 	}
 	c.waitPumpStopped()
 	c.authRetry.Wait()
@@ -1872,13 +1920,10 @@ func (c *ompControl) shutdownOMPSeat() {
 }
 
 func (c *ompControl) waitPumpStopped() {
-	c.mu.Lock()
-	done := c.done
-	c.mu.Unlock()
-	if done == nil {
+	if c.done == nil {
 		return
 	}
-	<-done
+	<-c.done
 }
 
 func (c *ompControl) Close() error {
