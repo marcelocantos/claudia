@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createMockModel, registerMockApi, type MockResponse } from "@oh-my-pi/pi-ai/providers/mock";
@@ -12,7 +12,6 @@ import { SeatStore } from "./store.ts";
 import { History } from "./maintain.ts";
 import { UsageJournal, usageFactType, measuredStream } from "./usage.ts";
 import { Spool } from "./spool.ts";
-import { readFileSync } from "node:fs";
 
 registerMockApi();
 const roots: string[] = [];
@@ -173,6 +172,37 @@ test("unfinished facts are replayable uncertainty and corrupt identity is refuse
   const entry = restored.entries.find(e => e.type === "custom")! as any;
   entry.data.session_id = "wrong";
   expect(() => new UsageJournal(restored)).toThrow(/identity/);
+});
+
+test("gap journal reloads conversation via createSeatAgent but poisons usage pages", async () => {
+  const root = mkdtempSync(join(tmpdir(), "claudia-gap-reload-"));
+  const store = new SeatStore(join(root, "omp-seats"), "seat", "generation");
+  const model = createMockModel({ handler: () => ({ content: ["ok"], usage: { input: 5, output: 1 } }) });
+  const agent = createSeatAgent({
+    provider: "mock", model: "mock", token: "test", cwd: root, modelOverride: model, store,
+    emit: () => {}, callTool: async () => "",
+  });
+  await agent.prompt("A", { request_id: "A", attempt_id: "attempt-A", session_id: "generation", turn_id: "turn-A" });
+  let text = readFileSync(store.path, "utf8");
+  text = text.replace('"seq":2', '"seq":4');
+  writeFileSync(store.path, text);
+  const before = readFileSync(store.path);
+  const reloaded = createSeatAgent({
+    provider: "mock", model: "mock", token: "test", cwd: root, modelOverride: model, store,
+    emit: () => {}, callTool: async () => "",
+  });
+  expect(reloaded.snapshot().messages.length).toBeGreaterThanOrEqual(2);
+  const restored = new History(store);
+  restored.restore();
+  const errors: string[] = [];
+  const j = new UsageJournal(restored, () => {}, msg => errors.push(msg));
+  expect(errors.some(e => e.includes("discontinuous sequence"))).toBe(true);
+  expect(() => j.page()).toThrow(/accounting unavailable/);
+  await reloaded.prompt("B", { request_id: "B", attempt_id: "attempt-B", session_id: "generation", turn_id: "turn-B" });
+  expect(reloaded.snapshot().messages.length).toBeGreaterThanOrEqual(3);
+  const usageLines = readFileSync(store.path, "utf8").split("\n").filter(l => l.includes(usageFactType));
+  expect(usageLines.length).toBe(2);
+  expect(readFileSync(store.path, "utf8").slice(0, before.length)).toEqual(before.toString("utf8"));
 });
 
 test("discontinuous stored seq poisons accounting without mutating the journal", async () => {
