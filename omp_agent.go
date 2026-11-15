@@ -583,8 +583,7 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 				_ = ctrl.send(omp.Message{Op: omp.OpDrop, Seat: ctrl.seat, SessionID: sessionID})
 			},
 			stop: func(*Agent) {
-				ompSeats.Delete(ctrl)
-				conn.Close()
+				ctrl.shutdownOMPSeat()
 			},
 		},
 		DetectReady: func(a *Agent) {
@@ -596,8 +595,7 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 			}
 		},
 		Cleanup: func() {
-			ompSeats.Delete(ctrl)
-			conn.Close()
+			ctrl.shutdownOMPSeat()
 		},
 	}, nil
 }
@@ -676,6 +674,9 @@ type ompControl struct {
 	toolsClosed bool
 	// lastRefresh is when this seat last refreshed a rejected token (under mu).
 	lastRefresh time.Time
+	// authRetry tracks answerAuthRetry goroutines so Stop joins them before
+	// tests restore package-level plan fixtures (T169/cancel race under -race).
+	authRetry sync.WaitGroup
 }
 
 // ompSeats holds the live sidecar seats, so a plan recovered by the owner
@@ -839,7 +840,11 @@ func (c *ompControl) pump(a *Agent) {
 			a.publishEvent(Event{Type: "receipt", RequestID: ev.RequestID, SessionID: c.sessionID, Receipt: ev.Receipt})
 		case "auth_retry":
 			if ev.RequestID != "" && ev.TurnID != "" && len(ev.FailedToken) == 64 && oauthRejected(ev.Error) {
-				go c.answerAuthRetry(ev)
+				c.authRetry.Add(1)
+				go func(ev omp.Event) {
+					defer c.authRetry.Done()
+					c.answerAuthRetry(ev)
+				}(ev)
 			}
 		case "accepted":
 			if ev.RequestID != "" {
@@ -1854,6 +1859,28 @@ func execBunLogin(ctx context.Context, name string, args ...string) ([]byte, err
 }
 
 func (c *ompControl) Bytes() <-chan []byte { return c.bytes }
+
+// shutdownOMPSeat closes the sidecar connection, waits for the event pump
+// and any in-flight auth-retry handlers, then drops this seat from ompSeats.
+func (c *ompControl) shutdownOMPSeat() {
+	if c.conn != nil {
+		_ = c.conn.Close()
+	}
+	c.waitPumpStopped()
+	c.authRetry.Wait()
+	ompSeats.Delete(c)
+}
+
+func (c *ompControl) waitPumpStopped() {
+	c.mu.Lock()
+	done := c.done
+	c.mu.Unlock()
+	if done == nil {
+		return
+	}
+	<-done
+}
+
 func (c *ompControl) Close() error {
 	if c.conn != nil {
 		return c.conn.Close()

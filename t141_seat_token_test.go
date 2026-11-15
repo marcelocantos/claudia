@@ -115,6 +115,18 @@ func (s *t141Sidecar) settle(t *testing.T, a *Agent, c net.Conn) {
 	}
 }
 
+// waitOMPPlanFixtureDrain joins OMP seats still winding down. t141Plan resets
+// package-level Keychain fixtures; without this, a trailing answerAuthRetry can
+// read planStore while cleanup writes ompKeychain (T169/cancel under -race).
+func waitOMPPlanFixtureDrain() {
+	ompSeats.Range(func(k, _ any) bool {
+		c := k.(*ompControl)
+		c.waitPumpStopped()
+		c.authRetry.Wait()
+		return true
+	})
+}
+
 func t141Plan(t *testing.T, token string, refreshes *atomic.Int32, refreshed string) {
 	t.Helper()
 	exp := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
@@ -131,7 +143,12 @@ func t141Plan(t *testing.T, token string, refreshes *atomic.Int32, refreshed str
 		},
 	}
 	omp.ResetKeychainShot() // no renewal from an earlier test holds this one quiet
-	t.Cleanup(func() { ompKeychain = nil; ompLogin = omp.Login{}; omp.ResetKeychainShot() })
+	t.Cleanup(func() {
+		waitOMPPlanFixtureDrain()
+		ompKeychain = nil
+		ompLogin = omp.Login{}
+		omp.ResetKeychainShot()
+	})
 	if err := OpenOMPPlans(context.Background()); err != nil {
 		t.Fatal(err)
 	}

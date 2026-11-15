@@ -180,7 +180,7 @@ func t169ProtocolJourney(t *testing.T, scenario string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer a.Stop()
+	t.Cleanup(a.Stop)
 	if err := a.WaitReady(ctx); err != nil {
 		t.Fatal(err)
 	}
