@@ -63,10 +63,18 @@ export function validateUsageFact(value: unknown, seat: string, session: string)
   return f;
 }
 
+// canonicalUsageSeqOnRead renumbers a stored fact for replay. Persists monotonic
+// projection sequence without rewriting the journal when stored seq drifted
+// (for example after compaction dropped sibling usage rows).
+export function canonicalUsageSeqOnRead(f: UsageFact, next: number): UsageFact {
+  return { ...f, seq: next };
+}
+
 export function validateUsageTransition(f: UsageFact, next: number, old?: UsageFact): void {
   if (f.seq !== next) throw new Error("usage journal: discontinuous sequence");
-  if ((!old && f.state !== "started") || (old && (old.state !== "started" || f.state === "started" ||
-      JSON.stringify({ ...old, seq: 0, state: "", counters: {} }) !== JSON.stringify({ ...f, seq: 0, state: "", counters: {}, finished_at: undefined, context_tokens: undefined, protocol_token_delta_total: undefined, api_equivalent_cost_usd: undefined, cost_source: undefined, provider_request_id: undefined, provider_response_id: undefined })))) {
+  if (!old) return; // first-seen terminal is valid when its start row is absent (omp parity).
+  if (old.state !== "started" || f.state === "started" ||
+      JSON.stringify({ ...old, seq: 0, state: "", counters: {} }) !== JSON.stringify({ ...f, seq: 0, state: "", counters: {}, finished_at: undefined, context_tokens: undefined, protocol_token_delta_total: undefined, api_equivalent_cost_usd: undefined, cost_source: undefined, provider_request_id: undefined, provider_response_id: undefined })) {
     throw new Error("usage journal: conflicting invocation transition");
   }
 }
@@ -87,8 +95,8 @@ export class UsageJournal {
     for (const e of history.entries) {
       if (e.customType !== usageFactType) continue;
       if (e.type !== "custom") throw new Error("usage journal: invalid fact entry type");
-      const f = validateUsageFact(e.data, history.store?.seat ?? "", history.store?.session ?? "");
-      this.#accept(f);
+      const raw = validateUsageFact(e.data, history.store?.seat ?? "", history.store?.session ?? "");
+      this.#accept(canonicalUsageSeqOnRead(raw, this.#facts.length + 1));
     }
   }
 

@@ -6,7 +6,7 @@ import type { BigIntStats } from "node:fs";
 import { setImmediate as yieldIO } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import { SeatStore, validateStoreEntry, validateStoreHeader } from "./store.ts";
-import { usageFactType, usagePageLimit, validateUsageFact, validateUsageTransition, type UsageFact, type UsagePage } from "./usage.ts";
+import { usageFactType, usagePageLimit, canonicalUsageSeqOnRead, validateUsageFact, validateUsageTransition, type UsageFact, type UsagePage } from "./usage.ts";
 
 // Admission ceilings, not claims about a provider's history or exact JS heap.
 // A projection is charged four times its encoded bytes plus 512 bytes/fact
@@ -149,7 +149,8 @@ export class HistoricalUsageReader {
             } else {
               const entry = validateStoreEntry(value, store.path, line);
               if (entry.type === "custom" && entry.customType === usageFactType) {
-                const f = validateUsageFact(entry.data, store.seat, store.session);
+                const raw = validateUsageFact(entry.data, store.seat, store.session);
+                const f = canonicalUsageSeqOnRead(raw, facts.length + 1);
                 validateUsageTransition(f, facts.length + 1, last.get(f.call_id));
                 if (prior && facts.length < prior.facts.length && !isDeepStrictEqual(f, prior.facts[facts.length])) {
                   throw new Error("usage journal changed an existing fact");

@@ -96,14 +96,13 @@ test("append and preserving rewrite rebuild while conflicting prefix or truncati
   expect((await reader.page(f.store, 300)).facts).toEqual([extra]);
 });
 
-test("cold scans share identity and transition checks and never repair bad journals", async () => {
-  for (const kind of ["identity", "json", "entry", "sequence", "transition", "torn", "delimiter"] as const) {
+test("cold scans reject corrupt journals but renumber stored seq without mutating disk", async () => {
+  for (const kind of ["identity", "json", "entry", "transition", "torn", "delimiter"] as const) {
     const f = fixture(2);
     let text = readFileSync(f.store.path, "utf8");
     if (kind === "identity") text = text.replace('"seat":"seat"', '"seat":"foreign"');
     if (kind === "json") text += "{invalid}\n";
     if (kind === "entry") text += '{"type":"message"}\n';
-    if (kind === "sequence") text = text.replace('"seq":2', '"seq":3');
     if (kind === "transition") text = text.replace('"call_id":"call-1"', '"call_id":"call-0"');
     if (kind === "torn") text += '{"type":';
     if (kind === "delimiter") text = text.slice(0, -1);
@@ -111,6 +110,15 @@ test("cold scans share identity and transition checks and never repair bad journ
     const reader = new HistoricalUsageReader();
     await expect(reader.page(f.store)).rejects.toThrow();
     expect(reader.stats().cacheEntries).toBe(0);
+    expect(readFileSync(f.store.path, "utf8")).toBe(text);
+  }
+  {
+    const f = fixture(2);
+    let text = readFileSync(f.store.path, "utf8");
+    text = text.replace('"seq":2', '"seq":3');
+    writeFileSync(f.store.path, text);
+    const reader = new HistoricalUsageReader();
+    expect((await reader.page(f.store)).facts.map((x) => x.seq)).toEqual([1, 2]);
     expect(readFileSync(f.store.path, "utf8")).toBe(text);
   }
 });
