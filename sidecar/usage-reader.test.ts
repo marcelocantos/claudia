@@ -96,7 +96,7 @@ test("append and preserving rewrite rebuild while conflicting prefix or truncati
   expect((await reader.page(f.store, 300)).facts).toEqual([extra]);
 });
 
-test("cold scans reject corrupt journals but renumber stored seq without mutating disk", async () => {
+test("cold scans reject corrupt journals and discontinuous stored seq without mutating disk", async () => {
   for (const kind of ["identity", "json", "entry", "transition", "torn", "delimiter"] as const) {
     const f = fixture(2);
     let text = readFileSync(f.store.path, "utf8");
@@ -118,7 +118,7 @@ test("cold scans reject corrupt journals but renumber stored seq without mutatin
     text = text.replace('"seq":2', '"seq":3');
     writeFileSync(f.store.path, text);
     const reader = new HistoricalUsageReader();
-    expect((await reader.page(f.store)).facts.map((x) => x.seq)).toEqual([1, 2]);
+    await expect(reader.page(f.store)).rejects.toThrow(/discontinuous sequence/);
     expect(readFileSync(f.store.path, "utf8")).toBe(text);
   }
 });

@@ -63,12 +63,8 @@ export function validateUsageFact(value: unknown, seat: string, session: string)
   return f;
 }
 
-// canonicalUsageSeqOnRead renumbers a stored fact for in-memory replay only.
-// On-disk custom entries keep their persisted `seq`; the usage projection and
-// HistoricalUsageReader expose contiguous 1..n sequence without mutating the
-// conversation store when stored seq drifted (e.g. compaction dropped sibling rows).
-export function canonicalUsageSeqOnRead(f: UsageFact, next: number): UsageFact {
-  return { ...f, seq: next };
+export function expectedStoredUsageSeq(facts: UsageFact[]): number {
+  return facts.length === 0 ? 1 : facts[facts.length - 1]!.seq + 1;
 }
 
 export function validateUsageTransition(f: UsageFact, next: number, old?: UsageFact): void {
@@ -97,8 +93,25 @@ export class UsageJournal {
       if (e.customType !== usageFactType) continue;
       if (e.type !== "custom") throw new Error("usage journal: invalid fact entry type");
       const raw = validateUsageFact(e.data, history.store?.seat ?? "", history.store?.session ?? "");
-      this.#accept(canonicalUsageSeqOnRead(raw, this.#facts.length + 1));
+      try {
+        this.#replayStored(raw);
+      } catch (err) {
+        if (err instanceof Error && err.message === "usage journal: discontinuous sequence") {
+          this.#facts = [];
+          this.#last.clear();
+          this.#fail(err);
+          break;
+        }
+        throw err;
+      }
     }
+  }
+
+  #replayStored(f: UsageFact): void {
+    if (f.seq !== expectedStoredUsageSeq(this.#facts)) throw new Error("usage journal: discontinuous sequence");
+    validateUsageTransition(f, f.seq, this.#last.get(f.call_id));
+    this.#facts.push(structuredClone(f));
+    this.#last.set(f.call_id, structuredClone(f));
   }
 
   #accept(f: UsageFact): void {

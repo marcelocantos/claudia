@@ -9,10 +9,12 @@ observation mirror; the conversation journal is the durable query source.
 Each observation has a stable `call_id`, a `started` fact and, when
 observed, a terminal fact. `seq` identifies each append in the seat/session
 usage sequence.
-Stored `seq` values in the conversation journal are the persisted source;
-readers may remap them to a contiguous projection sequence in memory when
-gaps appear (for example after compaction removed some usage rows) without
-rewriting or truncating the journal file. `requests` lists the host logical request IDs and their
+Stored `seq` values in the conversation journal are the persisted source of
+identity for control-plane replication and `RefreshUsage` cursors. A
+discontinuous stored sequence (for example after compaction dropped sibling
+usage rows) poisons live seat accounting: conversation load continues, but
+usage pages report unavailable rather than renumbering stored `seq`. The
+journal file is never rewritten for recovery. `requests` lists the host logical request IDs and their
 original acceptance attempt IDs; one call can absorb several inputs, and
 one input can require many model calls. A transport `rpc_id` identifies only
 a query. Neither the owner request nor the turn is an accounting dedup key.

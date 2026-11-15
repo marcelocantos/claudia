@@ -187,3 +187,22 @@ func countRows(t *testing.T, db *sqlpipe.Database, table string) int {
 	}
 	return int(n)
 }
+
+// TestPublishRefusesDifferentCallAtStoredSeq: mirror rows are keyed by
+// (seat, session_id, seq). A renumbered replay that reaches the publisher with
+// a new call_id at an occupied seq must not rewrite the row (T1398).
+func TestPublishRefusesDifferentCallAtStoredSeq(t *testing.T) {
+	db := openFileDB(t)
+	first := usageAt(1, "call-a", "started")
+	second := usageAt(2, "call-a", "completed")
+	if err := PublishUsageFacts(db, []claudia.UsageFact{first, second}); err != nil {
+		t.Fatal(err)
+	}
+	intruder := usageAt(2, "call-b", "completed")
+	if err := PublishUsageFacts(db, []claudia.UsageFact{intruder}); err == nil {
+		t.Fatal("different call at stored seq was published")
+	}
+	if n := countRows(t, db, UsageTable); n != 2 {
+		t.Fatalf("rows = %d, want 2", n)
+	}
+}

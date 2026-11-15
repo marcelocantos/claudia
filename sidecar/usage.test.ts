@@ -174,3 +174,22 @@ test("unfinished facts are replayable uncertainty and corrupt identity is refuse
   entry.data.session_id = "wrong";
   expect(() => new UsageJournal(restored)).toThrow(/identity/);
 });
+
+test("discontinuous stored seq poisons accounting without mutating the journal", async () => {
+  const store = storage();
+  const f = fixture(store);
+  await f.agent.prompt("A", meta("A"));
+  const finals = f.agent.usage().facts.filter(v => v.state !== "started");
+  const gap = structuredClone(finals[0]);
+  gap.seq = finals[0].seq + 3;
+  gap.call_id = "gap-call";
+  store.append([{ type: "custom", id: "gap", parentId: null, timestamp: gap.started_at, customType: usageFactType, data: gap }]);
+  const before = readFileSync(store.path);
+  const restored = new History(store);
+  restored.restore();
+  const errors: string[] = [];
+  const j = new UsageJournal(restored, () => {}, msg => errors.push(msg));
+  expect(errors.some(e => e.includes("discontinuous sequence"))).toBe(true);
+  expect(() => j.page()).toThrow(/accounting unavailable/);
+  expect(readFileSync(store.path)).toEqual(before);
+});
