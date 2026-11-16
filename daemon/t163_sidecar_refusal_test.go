@@ -21,7 +21,7 @@ import (
 // 🎯T163: a Grok or Cursor seat starts through the Oh My Pi sidecar. When
 // the sidecar refuses the seat's load, the broker's caller gets the
 // sidecar's own words and what to do about them — restart the broker
-// service, and the PATH a supervised broker needs — rather than the bare
+// service, and the PATH the launchd broker needs — rather than the bare
 // `omp: sidecar said "error", want ready`. Origin PR #59 gave those hints
 // on the vendor CLI path, which this line no longer takes.
 
@@ -120,13 +120,13 @@ func TestT163SidecarRefusalSaysWhatToDo(t *testing.T) {
 				`sidecar said "error", want ready`,
 				t163SidecarWords, // the sidecar's own words
 				// restart the broker service
-				"supervisorctl restart claudia",
+				"launchctl kickstart -k gui/$(id -u)/com.marcelocantos.claudia",
 				"brew services restart claudia",
-				// the PATH a supervised broker needs
+				// the PATH the launchd broker needs
 				"PATH",
 				"~/.bun/bin",
 				"~/.grok/bin",
-				"supervisor/claudia.ini",
+				"launchd/com.marcelocantos.claudia.plist",
 				// where to look next
 				socket + ".pid",
 				filepath.Join(filepath.Dir(socket), "omp-sidecar.log"),

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2015 # pass/fail/skip always return 0, so A && pass || fail is exact
 # verify-release: prove the installed Homebrew claudia is the release it claims
-# to be and that the supervised broker is actually running it.
+# to be and that the launchd broker is actually running it.
 #
 # Read-only against the owner's broker: it runs `broker status` and
 # `broker usage` and nothing else there. It never creates a seat, never
-# restarts or stops the supervised program, and never refreshes a plan login.
+# restarts or stops the LaunchAgent, and never refreshes a plan login.
 # The full exercise (sidecar start, a real Task round trip) runs on a private
 # broker started from the same brew binary with its state and both sockets
 # under a mktemp dir (XDG_STATE_HOME + CLAUDIA_BROKER_SOCKET +
@@ -15,7 +15,7 @@
 # Knobs (environment or make variables):
 #   VERSION       expected release, e.g. 0.65.0 or v0.65.0 (default: latest vX.Y.Z tag)
 #   MIN_GO        minimum Go the binary was built with (default: local `go env GOVERSION`)
-#   UPTIME_MIN    seconds the supervised program must have been up (default: 30)
+#   UPTIME_MIN    seconds the LaunchAgent must have been up (default: 30)
 #   OLLAMA_MODEL  model for the private Task round trip (default: first local
 #                 completion-capable model; SKIP when ollama is absent)
 #   OLLAMA_ENDPOINT  default http://127.0.0.1:11434
@@ -25,6 +25,7 @@ set -uo pipefail
 
 ROOT="$(CDPATH='' cd "$(dirname "$0")/.." && pwd)"
 PROGRAM=claudia
+LABEL=com.marcelocantos.claudia
 UPTIME_MIN="${UPTIME_MIN:-30}"
 OLLAMA_ENDPOINT="${OLLAMA_ENDPOINT:-http://127.0.0.1:11434}"
 OLLAMA_ENDPOINT="${OLLAMA_ENDPOINT%/}"
@@ -45,11 +46,14 @@ version_ge() {
 	[ "$(printf '%s\n%s\n' "$b" "$a" | sort -t. -k1,1n -k2,2n -k3,3n | head -1)" = "$b" ]
 }
 
-# supervisord uptime "H:MM:SS" or "N day(s), H:MM:SS" -> seconds.
+# ps elapsed time [[days-]hours:]minutes:seconds -> seconds.
 uptime_seconds() {
 	local s="$1" days=0 h m sec
-	if [[ "$s" =~ ([0-9]+)\ days?,\ (.*) ]]; then days="${BASH_REMATCH[1]}" s="${BASH_REMATCH[2]}"; fi
+	s="${s//[[:space:]]/}"
+	if [[ "$s" == *-* ]]; then days="${s%%-*}" s="${s#*-}"; fi
+	[[ "$s" =~ ^[0-9]+:[0-9]+(:[0-9]+)?$ ]] || return 1
 	IFS=: read -r h m sec <<<"$s"
+	if [ -z "$sec" ]; then sec="$m" m="$h" h=0; fi
 	echo $(( days*86400 + 10#$h*3600 + 10#$m*60 + 10#$sec ))
 }
 
@@ -100,19 +104,17 @@ else
 	[ "$cli" = "$WANT" ] && pass "claudia --version: $cli" || fail "claudia --version: '$cli' (want $WANT)"
 fi
 
-# ---------------------------------------------------------------- supervised broker
-echo "== supervised broker (read-only)"
-st="$(supervisorctl status "$PROGRAM" 2>&1)"
-note "$st"
-if [[ "$st" =~ ^${PROGRAM}[[:space:]]+RUNNING[[:space:]]+pid\ ([0-9]+),\ uptime\ (.+)$ ]]; then
-	LIVE_PID="${BASH_REMATCH[1]}"
-	up="$(uptime_seconds "${BASH_REMATCH[2]}")"
-	pass "supervisord $PROGRAM RUNNING (pid $LIVE_PID)"
+# ---------------------------------------------------------------- launchd broker
+echo "== launchd broker (read-only)"
+LIVE_PID="$(launchctl list | awk -v l="$LABEL" '$3 == l && $1 != "-" { print $1 }')"
+if [[ "$LIVE_PID" =~ ^[0-9]+$ ]] && kill -0 "$LIVE_PID" 2>/dev/null; then
+	up="$(uptime_seconds "$(ps -o etime= -p "$LIVE_PID")")" || up=0
+	pass "launchd $PROGRAM RUNNING (pid $LIVE_PID)"
 	[ "$up" -ge "$UPTIME_MIN" ] && pass "uptime ${up}s >= ${UPTIME_MIN}s" || fail "uptime ${up}s < ${UPTIME_MIN}s (just restarted or flapping)"
 	exe="$(pid_exe "$LIVE_PID")"
 	[ "$exe" = "$CELLAR_BIN" ] && pass "pid $LIVE_PID executable is $exe" || fail "pid $LIVE_PID executable is '${exe:-unknown}' (want $CELLAR_BIN)"
 else
-	fail "supervisord $PROGRAM RUNNING"
+	fail "launchd $PROGRAM RUNNING ($LABEL)"
 fi
 
 if [ -n "$BIN" ]; then
@@ -258,8 +260,8 @@ fi
 
 # ---------------------------------------------------------------- the owner's broker is untouched
 if [ -n "${LIVE_PID:-}" ]; then
-	now="$(supervisorctl pid "$PROGRAM" 2>/dev/null)"
-	[ "$now" = "$LIVE_PID" ] && pass "supervised broker still pid $LIVE_PID" || fail "supervised broker pid changed during the run ($LIVE_PID -> $now)"
+	now="$(launchctl list | awk -v l="$LABEL" '$3 == l && $1 != "-" { print $1 }')"
+	[ "$now" = "$LIVE_PID" ] && pass "launchd broker still pid $LIVE_PID" || fail "launchd broker pid changed during the run ($LIVE_PID -> $now)"
 fi
 
 echo "== summary: ${#PASSES[@]} PASS, ${#FAILS[@]} FAIL, ${#SKIPS[@]} SKIP"

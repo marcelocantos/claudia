@@ -623,10 +623,10 @@ func TestOMPLoginRunsBunFromSidecar(t *testing.T) {
 	}
 	body := string(src)
 	if !strings.Contains(body, "login.Run = execBunLogin") {
-		t.Fatal("StartAgent must run auth.ts through bun, not the Keychain runner")
+		t.Fatal("StartAgent must use the auth helper runner, not the Keychain runner")
 	}
-	if !strings.Contains(body, "filepath.Dir(sidecarAuthScript())") || !strings.Contains(body, "cmd.Dir") {
-		t.Fatal("bun login must run from the sidecar directory")
+	if !strings.Contains(body, "filepath.Dir(helper)") || !strings.Contains(body, "cmd.Dir") {
+		t.Fatal("auth helper must run from its own directory")
 	}
 	if !strings.Contains(body, "io.MultiWriter(os.Stderr, &stderr)") {
 		t.Fatal("bun login must forward the auth URL on stderr")

@@ -8,7 +8,8 @@ agents working *in* this repo.
 ```bash
 make gate                      # hermetic owner gate; attests the tree for pre-push
 make live                      # real backends; each live env is opt-in
-make supervisor-install        # host daemon under supervisord (evicts brew/launchd)
+make build                     # broker + compiled sidecar/auth helpers
+make launchd-install           # render and load the dev-host LaunchAgent
 ```
 
 ## Delivery
@@ -18,6 +19,20 @@ Owner ships to `master` by gated push (`make gate`, then
 release-prep PR. Inbound PRs from others stay. After clone:
 `make hooks` (or `git config core.hooksPath scripts/hooks`).
 Flow: [docs/gate.md](docs/gate.md).
+
+Dev-host service: `launchd/install.sh` renders
+`launchd/com.marcelocantos.claudia.plist` into `~/Library/LaunchAgents`.
+Use `launchctl kickstart -k gui/$(id -u)/com.marcelocantos.claudia` to restart
+and `launchctl print gui/$(id -u)/com.marcelocantos.claudia` for status.
+The owner's `svc restart claudia` helper is equivalent. Logs remain at
+`~/.local/var/log/claudia.log`. `LAUNCHD_SKIP_LOAD=1` renders only.
+The wrapper uses `bin/claudia-omp-server` and `bin/claudia-omp-auth` plus
+their pinned native addon, built by `make build-sidecar`. Bun is a build
+dependency, not a separate runtime process. Until the installed Homebrew
+broker supports compiled helpers, build this tree and explicitly pin it
+with `CLAUDIA_BIN="$PWD/bin/claudia" make launchd-install`; an unpinned
+install retains the Homebrew broker default. Live migration/rollback is
+coordinated by the owner; preparing this repo does not authorize a restart.
 
 ## Shared checkout: stage through the index only, never write the working tree
 

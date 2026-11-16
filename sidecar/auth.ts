@@ -18,7 +18,7 @@ const provider = process.argv[3];
 const noLogin = process.argv.includes("--no-login");
 
 if (!cmd || !provider) {
-  console.error("usage: bun auth.ts refresh|login <provider>  (record JSON on stdin)");
+  console.error("usage: claudia-omp-auth refresh|login <provider>  (record JSON on stdin)");
   process.exit(2);
 }
 

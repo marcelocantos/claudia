@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Template: launchd/install.sh renders @REPO@, @HOME@ and @USER@. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.marcelocantos.claudia</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>@REPO@/launchd/run-claudia.sh</string>
+	</array>
+	<key>WorkingDirectory</key>
+	<string>@REPO@</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>HOME</key>
+		<string>@HOME@</string>
+		<key>USER</key>
+		<string>@USER@</string>
+		<key>PATH</key>
+		<string>/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:@HOME@/.cargo/bin:@HOME@/.local/bin:@HOME@/.py/bin:@HOME@/go/bin:@HOME@/.grok/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+		<key>TERM</key>
+		<string>xterm-256color</string>
+		<key>LANG</key>
+		<string>en_US.UTF-8</string>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>ExitTimeOut</key>
+	<integer>15</integer>
+	<key>SoftResourceLimits</key>
+	<dict>
+		<key>NumberOfFiles</key>
+		<integer>8192</integer>
+	</dict>
+	<key>StandardOutPath</key>
+	<string>@HOME@/.local/var/log/claudia.log</string>
+	<key>StandardErrorPath</key>
+	<string>@HOME@/.local/var/log/claudia.log</string>
+</dict>
+</plist>

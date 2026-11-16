@@ -1839,8 +1839,8 @@ func execKeychain(ctx context.Context, name string, args ...string) ([]byte, err
 	return out, nil
 }
 
-// execBunLogin runs sidecar/auth.ts through bun from that directory so
-// @oh-my-pi/pi-ai resolves. It is not the Keychain runner. Stderr is
+// execBunLogin runs the compiled auth helper directly, or sidecar/auth.ts
+// through Bun from its package directory. It is not the Keychain runner. Stderr is
 // forwarded so an interactive login URL reaches the owner (🎯T865).
 func execBunLogin(ctx context.Context, name string, args ...string) ([]byte, error) {
 	// A test binary never opens an interactive provider login: a hermetic
@@ -1850,18 +1850,27 @@ func execBunLogin(ctx context.Context, name string, args ...string) ([]byte, err
 	if testing.Testing() && len(args) >= 2 && args[1] == "login" {
 		return nil, errors.New("omp: a test binary never starts an interactive plan login; set ompLogin.Run")
 	}
-	if err := omp.EnsureDeps(ctx, sidecarAuthScript()); err != nil {
-		return nil, err
+	if len(args) == 0 {
+		return nil, errors.New("omp: auth helper path is required")
+	}
+	helper := args[0]
+	if filepath.Ext(helper) == ".ts" {
+		if err := omp.EnsureDeps(ctx, helper); err != nil {
+			return nil, err
+		}
 	}
 	var stdin []byte
 	if len(args) >= 4 {
 		stdin = []byte(args[len(args)-1])
 		args = args[:len(args)-1]
 	}
+	if filepath.Ext(helper) != ".ts" {
+		name, args = helper, args[1:]
+	}
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Stdin = bytes.NewReader(stdin)
 	cmd.Env = omp.ScrubEnv(os.Environ())
-	if dir := filepath.Dir(sidecarAuthScript()); dir != "." && dir != "" {
+	if dir := filepath.Dir(helper); dir != "." && dir != "" {
 		cmd.Dir = dir
 	}
 	var stderr bytes.Buffer

@@ -26,6 +26,11 @@ test-sidecar:
 	@command -v bun >/dev/null || { echo "OUTAGE: Bun is required for sidecar tests" >&2; exit 2; }
 	@bun scripts/check-sidecar-prerequisites.ts
 	@cd sidecar && bun install --frozen-lockfile && bun test
+	@$(MAKE) --no-print-directory test-compiled-sidecar
+
+.PHONY: test-compiled-sidecar
+test-compiled-sidecar: build-sidecar
+	@GOWORK=off CLAUDIA_TEST_COMPILED_DIR="$(CURDIR)/bin" go test -count=1 -run '^TestCompiled(Sidecar|Auth)' . ./omp
 
 # TLA+ broker lifecycle (Java + tla2tools). Not on the pre-push hook;
 # run before a release.
@@ -121,12 +126,25 @@ live-usage:
 # must be green AND every fault-injection mutant must be caught — a spec that
 # stays green on known-broken code is toothless. Requires Java + tla2tools.jar
 # (see scripts/tlc.sh). Run it before a release (`make gate-full`).
-.PHONY: supervisor-install supervisor-status
-supervisor-install:
-	@supervisor/install.sh
+.PHONY: build build-sidecar launchd-install launchd-status
+build: build-sidecar
+	@GOWORK=off go build -o bin/claudia ./cmd/claudia
 
-supervisor-status:
-	-supervisorctl status claudia
+# Build both entry points and stage pi-natives beside them; its compiled
+# loader searches next to the executable. Nothing installs deps at runtime.
+build-sidecar:
+	@cd sidecar && bun install --frozen-lockfile
+	@mkdir -p bin
+	@bun build --compile sidecar/server.ts --outfile bin/claudia-omp-server
+	@bun build --compile sidecar/auth.ts --outfile bin/claudia-omp-auth
+	@native=$$(cd sidecar && bun -p 'require.resolve("@oh-my-pi/pi-natives-" + process.platform + "-" + process.arch + "/package.json")'); \
+	 cp "$$(dirname "$$native")"/*.node bin/
+
+launchd-install: build-sidecar
+	@launchd/install.sh
+
+launchd-status:
+	@launchctl print "gui/$$(id -u)/com.marcelocantos.claudia"
 
 .PHONY: release-dist release-tap
 release-dist:
@@ -136,7 +154,7 @@ release-tap:
 	@tapper push --version "v$$(sed -n 's/^const Version = "\([0-9.]*\)"/\1/p' version.go)"
 
 # Post-release proof that the installed brew claudia is the tagged build and
-# that supervisord serves it. Read-only against the owner's broker; the full
+# that launchd serves it. Read-only against the owner's broker; the full
 # exercise runs on a private broker under a mktemp dir. Never part of gate.
 .PHONY: verify-release
 verify-release:

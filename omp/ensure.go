@@ -79,7 +79,8 @@ func stateDir() (string, error) {
 	return filepath.Join(home, ".local", "state", stateSubdir), nil
 }
 
-// ServerScript is sidecar/server.ts next to this module, or CLAUDIA_OMP_SERVER.
+// ServerScript is sidecar/server.ts next to this module, or CLAUDIA_OMP_SERVER
+// naming a source script or a compiled sidecar executable.
 func ServerScript() string {
 	if p := os.Getenv("CLAUDIA_OMP_SERVER"); p != "" {
 		return p
@@ -138,7 +139,7 @@ func SetServingExitHook(fn func(pid int)) {
 	ensureMu.Unlock()
 }
 
-// Ensure starts a Bun sidecar if the socket is not already accepting.
+// Ensure starts the sidecar if the socket is not already accepting.
 //
 // The sidecar is this process's child and lives only as long as it
 // (🎯T166). Its stdin is a pipe whose write end only this process holds;
@@ -166,12 +167,16 @@ func Ensure(ctx context.Context) (string, error) {
 	if _, err := os.Stat(script); err != nil {
 		return "", fmt.Errorf("omp: sidecar script %s: %w", script, err)
 	}
-	if err := EnsureDeps(ctx, script); err != nil {
-		return "", err
-	}
-	bun, err := exec.LookPath("bun")
-	if err != nil {
-		return "", fmt.Errorf("omp: bun is required for the sidecar: %w", err)
+	command, args := script, []string{path, LifelineArg}
+	if filepath.Ext(script) == ".ts" {
+		if err := EnsureDeps(ctx, script); err != nil {
+			return "", err
+		}
+		command, err = exec.LookPath("bun")
+		if err != nil {
+			return "", fmt.Errorf("omp: bun is required for the source sidecar: %w", err)
+		}
+		args = append([]string{script}, args...)
 	}
 	logPath := filepath.Join(filepath.Dir(path), "omp-sidecar.log")
 	logf, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
@@ -185,7 +190,7 @@ func Ensure(ctx context.Context) (string, error) {
 		_ = logf.Close()
 		return "", fmt.Errorf("omp: sidecar lifeline: %w", err)
 	}
-	cmd := exec.Command(bun, script, path, LifelineArg)
+	cmd := exec.Command(command, args...)
 	cmd.Env = ScrubEnv(os.Environ())
 	cmd.Dir = filepath.Dir(script)
 	cmd.Stdin = lifeline
@@ -384,10 +389,15 @@ func packagedSidecarDir(exe string) string {
 // Cursor tool call "Tool not available", so a cursor seat can do nothing.
 const CursorExecFile = "cursorexec.ts"
 
-// CursorExecWired reports whether the sidecar this host runs
-// ([ServerScript]'s directory) carries [CursorExecFile]. The broker serves
-// the sidecar from its supervisor checkout, which can lag the binary.
+// CursorExecWired reports whether the sidecar this host runs carries
+// [CursorExecFile] as source or in the compiled server. The broker serves
+// the sidecar from its launchd checkout, which can lag the broker binary.
 func CursorExecWired() bool {
+	if script := ServerScript(); filepath.Ext(script) != ".ts" {
+		// Compiled server.ts bundles cursorexec.ts; no adjacent source needed.
+		info, err := os.Stat(script)
+		return err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0
+	}
 	_, err := os.Stat(filepath.Join(filepath.Dir(ServerScript()), CursorExecFile))
 	return err == nil
 }

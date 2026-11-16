@@ -22,8 +22,7 @@ import (
 //
 // err already carries the sidecar's own words. The explanation adds what
 // the operator can do about them: which process refused, where its log and
-// pid are, the PATH a supervised broker must hand it, and that restarting
-// the broker service does not by itself restart the sidecar.
+// pid are, the PATH the broker must hand it, and how to restart the service.
 func explainOMPSidecarRefusal(err error, provider Provider, socket string) error {
 	if err == nil {
 		return nil
@@ -32,7 +31,7 @@ func explainOMPSidecarRefusal(err error, provider Provider, socket string) error
 	logPath := filepath.Join(dir, "omp-sidecar.log")
 	var b strings.Builder
 	fmt.Fprintf(&b, "The Oh My Pi sidecar refused to load this %s seat; its words are above. "+
-		"Grok, Cursor and other subscription-plan seats run inside that sidecar, a Bun process (%s) the broker starts on first use, listening on %s and logging to %s; tmux Claude and Codex CLI seats do not use it. ",
+		"Subscription-plan seats run inside that sidecar (%s), which the broker starts on first use, listening on %s and logging to %s. ",
 		provider, omp.ServerScript(), socket, logPath)
 	if !ompSidecarRefusalWantsPathHints(err) {
 		if excerpt := ompSidecarLogExcerptAt(logPath); excerpt != "" {
@@ -41,8 +40,8 @@ func explainOMPSidecarRefusal(err error, provider Provider, socket string) error
 		return fmt.Errorf("%w\n\n%s", err, b.String())
 	}
 	b.WriteString("The sidecar, and every command its seats run, inherits the broker's environment, so a refusal that names a missing command or file is usually the broker's PATH. " +
-		"A supervised broker needs Homebrew (/opt/homebrew/bin), bun (~/.bun/bin) and the user tool directories (~/.grok/bin, ~/.local/bin, ~/go/bin, ~/.cargo/bin, ~/.py/bin) on its PATH. " +
-		"supervisor/claudia.ini and supervisor/run-claudia.sh set that PATH (`make supervisor-install` renders them); a launchd or `brew services` broker runs on /usr/bin:/bin:/usr/sbin:/sbin unless its plist says otherwise. ")
+		"The broker needs Homebrew (/opt/homebrew/bin) and the user tool directories (~/.grok/bin, ~/.local/bin, ~/go/bin, ~/.cargo/bin, ~/.py/bin) on its PATH; source-based helpers also need bun (~/.bun/bin). " +
+		"launchd/com.marcelocantos.claudia.plist and launchd/run-claudia.sh set that PATH (`make launchd-install` renders the LaunchAgent); a service runs on /usr/bin:/bin:/usr/sbin:/sbin unless its plist or wrapper says otherwise. ")
 	if bun, err := exec.LookPath("bun"); err == nil {
 		fmt.Fprintf(&b, "On this broker's PATH, bun is %s.", bun)
 	} else {
@@ -51,8 +50,8 @@ func explainOMPSidecarRefusal(err error, provider Provider, socket string) error
 	if missing := missingUserToolDirs(); len(missing) > 0 {
 		fmt.Fprintf(&b, " Present on this machine but not on its PATH: %s.", strings.Join(missing, ", "))
 	}
-	fmt.Fprintf(&b, " Restart the broker service so the next grant is served with that PATH: `supervisorctl restart claudia` under supervisord, or `brew services restart claudia` for a Homebrew service. "+
-		"The sidecar outlives a broker restart and keeps the environment it was started with, so after fixing the PATH also stop it (`kill $(cat %s.pid)`); the next sidecar grant starts a fresh one from the broker. "+
+	fmt.Fprintf(&b, " Restart the broker service so the next grant is served with that PATH: `launchctl kickstart -k gui/$(id -u)/com.marcelocantos.claudia`, or `brew services restart claudia` for a Homebrew service. "+
+		"The sidecar exits with its broker; the next broker starts a fresh one. Its pid is recorded at %s.pid. "+
 		"Every seat on the old sidecar loses its connection when it stops.", socket)
 	if excerpt := ompSidecarLogExcerptAt(logPath); excerpt != "" {
 		b.WriteString("\n\n" + excerpt)

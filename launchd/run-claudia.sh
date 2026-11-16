@@ -1,5 +1,5 @@
 #!/bin/sh
-# Start `claudia broker serve` for supervisord. Homebrew Cellar only
+# Start `claudia broker serve` for launchd. Homebrew Cellar only
 # on the shared socket: a PATH lookup can resolve ~/go/bin and
 # serve an unreleased tree build to every consumer. CLAUDIA_BIN is the
 # explicit pin for a bisect; otherwise prefer brew --prefix/opt.
@@ -15,17 +15,17 @@ export TERM="${TERM:-xterm-256color}"
 export LANG="${LANG:-en_US.UTF-8}"
 
 # Go's runtime.Caller path can point at a throwaway clean build worktree.
-# Resolve the OMP scripts from this installed supervisor checkout instead.
-ROOT="$(CDPATH= cd "$(dirname "$0")/.." && pwd)"
-export CLAUDIA_OMP_SERVER="${CLAUDIA_OMP_SERVER:-$ROOT/sidecar/server.ts}"
-export CLAUDIA_OMP_AUTH="${CLAUDIA_OMP_AUTH:-$ROOT/sidecar/auth.ts}"
+# Resolve the compiled OMP helpers from this launchd checkout instead.
+ROOT="$(CDPATH='' cd "$(dirname "$0")/.." && pwd)"
+export CLAUDIA_OMP_SERVER="${CLAUDIA_OMP_SERVER:-$ROOT/bin/claudia-omp-server}"
+export CLAUDIA_OMP_AUTH="${CLAUDIA_OMP_AUTH:-$ROOT/bin/claudia-omp-auth}"
 
 BIN=""
 # 🎯T212: a pin is best-effort. A pinned tree build that is missing, not
 # executable, or not a working claudia (2026-10-22: a root-level `go build`
 # left bin/claudia as a Go package archive, three times) falls back to the
-# Homebrew binary with a loud line, instead of exiting 1 until supervisord
-# marks the broker FATAL and every seat loses its backend.
+# Homebrew binary with a loud line instead of leaving every seat without
+# its backend.
 if [ -n "${CLAUDIA_BIN:-}" ]; then
   if [ -x "$CLAUDIA_BIN" ] && "$CLAUDIA_BIN" --version >/dev/null 2>&1; then
     BIN="$CLAUDIA_BIN"
@@ -49,6 +49,13 @@ if [ "${1:-}" = "--print-bin" ]; then
   exit 0
 fi
 
+for helper in "$CLAUDIA_OMP_SERVER" "$CLAUDIA_OMP_AUTH"; do
+  if [ ! -x "$helper" ]; then
+    echo "claudia: compiled helper missing: $helper; run make build-sidecar in $ROOT" >&2
+    exit 1
+  fi
+done
+
 # 🎯T233.2: pin the Jevons consumer state ROOT so the broker enforces,
 # before AutoStart resume and before Grant/Adopt, the UNION of the two
 # distinct files the consumer owns under it: fleet/intent.json (genuine
@@ -59,7 +66,7 @@ fi
 # broker reads each file from it. Override with CLAUDIA_CONSUMER_STATE_DIR.
 #
 # NOT YET LIVE (🎯T233.2 land-hold): this flag is wired in source but the
-# installed supervisor is not activated with it until the Jevons writer
+# installed LaunchAgent is not activated with it until the Jevons writer
 # publishes a validated both-files SHA and the overseer gives explicit
 # rollout GO. Do not treat this script existing as evidence of rollout.
 CONSUMER_STATE_DIR="${CLAUDIA_CONSUMER_STATE_DIR:-$HOME/.jevons/claudia-consumer}"

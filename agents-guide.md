@@ -967,10 +967,19 @@ machinery with stub verbs) or `claudia.NewStubTask`, and a Registry
 launches stubs with `Registry.SetLaunchers`.
 
 Install the daemon with `brew install marcelocantos/tap/claudia`.
-On a supervisor-hosted machine, `make supervisor-install` (or
-`supervisor/install.sh`) renders `supervisor.d/claudia.ini`, evicts
-brew/launchd, and starts `claudia broker serve` under supervisord —
-same shape as bullseye/mnemo/jevonsd. Elsewhere, operate it with
+For the dev-host LaunchAgent, run `make build` then
+`CLAUDIA_BIN="$PWD/bin/claudia" make launchd-install`.
+`launchd/install.sh` renders `launchd/com.marcelocantos.claudia.plist`
+into `~/Library/LaunchAgents`, retires the older service registration,
+and loads the agent. The explicit pin uses the current broker's compiled
+helper support; without it the wrapper selects the Homebrew broker.
+`make build-sidecar` builds `bin/claudia-omp-server`, `bin/claudia-omp-auth`
+and their pinned native addon. The daemon spawns those binaries directly.
+Use `launchctl kickstart -k gui/$(id -u)/com.marcelocantos.claudia` to restart,
+`launchctl print gui/$(id -u)/com.marcelocantos.claudia` for status, and
+`~/.local/var/log/claudia.log` for logs. The owner's `svc restart claudia`
+helper also works. To render without starting or stopping any service,
+set `LAUNCHD_SKIP_LOAD=1` and use a scratch HOME. Elsewhere, operate it with
 `brew services start claudia` (Homebrew launchd plist, 🎯T2.7) or
 `claudia broker install` (owner-installed launchd user agent on
 macOS). Operator commands: `status`, `grants`, `usage [--refresh] [-json]`

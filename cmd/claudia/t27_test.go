@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -21,91 +22,78 @@ import (
 	"github.com/marcelocantos/claudia/internal/wallclockguard"
 )
 
-func TestSupervisorInstallRendersProgram(t *testing.T) {
+func TestLaunchdInstallRendersProgram(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("LaunchAgent installation requires macOS")
+	}
 	dir := t.TempDir()
-	script := filepath.Join("..", "..", "supervisor", "install.sh")
-	cmd := exec.Command(script)
-	cmd.Env = append(os.Environ(),
-		"SUPERVISOR_SKIP_CTL=1",
-		"SUPERVISOR_CONF_DIR="+dir,
-	)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
+	t.Setenv("HOME", dir)
+	t.Setenv("LAUNCHD_SKIP_LOAD", "1")
+	t.Setenv("CLAUDIA_BIN", "")
+	cmd := exec.Command(filepath.Join("..", "..", "launchd", "install.sh"))
+	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("install.sh: %v\n%s", err, out)
 	}
-	body, err := os.ReadFile(filepath.Join(dir, "claudia.ini"))
+	body, err := os.ReadFile(filepath.Join(dir, "Library", "LaunchAgents", "com.marcelocantos.claudia.plist"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	s := string(body)
 	for _, want := range []string{
-		"[program:claudia]",
-		"supervisor/run-claudia.sh",
-		"TERM=\"xterm-256color\"",
-		"LANG=\"en_US.UTF-8\"",
+		"<string>com.marcelocantos.claudia</string>",
+		"launchd/run-claudia.sh",
+		"<string>xterm-256color</string>",
+		"<string>en_US.UTF-8</string>",
+		"<key>ExitTimeOut</key>",
+		"<integer>15</integer>",
+		"<integer>8192</integer>",
+		filepath.Join(dir, ".local", "var", "log", "claudia.log"),
 	} {
 		if !strings.Contains(s, want) {
-			t.Fatalf("rendered claudia.ini missing %q:\n%s", want, s)
+			t.Fatalf("rendered LaunchAgent missing %q:\n%s", want, s)
 		}
 	}
-	if strings.Contains(s, "@REPO@") {
-		t.Fatalf("rendered claudia.ini still has @REPO@:\n%s", s)
+	for _, placeholder := range []string{"@REPO@", "@HOME@", "@USER@"} {
+		// The template's explanatory comment also gets rendered.
+		if strings.Contains(s, placeholder) {
+			t.Fatalf("rendered LaunchAgent still has %s:\n%s", placeholder, s)
+		}
 	}
 }
 
-func TestSupervisorInstallPinsClaudiaBin(t *testing.T) {
+func TestLaunchdInstallPinsClaudiaBinAndDropsEarlierPin(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("LaunchAgent installation requires macOS")
+	}
 	dir := t.TempDir()
-	script := filepath.Join("..", "..", "supervisor", "install.sh")
-	cmd := exec.Command(script)
-	cmd.Env = append(os.Environ(),
-		"SUPERVISOR_SKIP_CTL=1",
-		"SUPERVISOR_CONF_DIR="+dir,
-		"CLAUDIA_BIN=/tmp/claudia-dev",
-	)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
+	t.Setenv("HOME", dir)
+	t.Setenv("LAUNCHD_SKIP_LOAD", "1")
+	// plutil, rather than string interpolation, owns XML escaping.
+	t.Setenv("CLAUDIA_BIN", "/tmp/claudia-dev&a")
+	script := filepath.Join("..", "..", "launchd", "install.sh")
+	if out, err := exec.Command(script).CombinedOutput(); err != nil {
 		t.Fatalf("install.sh: %v\n%s", err, out)
 	}
-	body, err := os.ReadFile(filepath.Join(dir, "claudia.ini"))
-	if err != nil {
-		t.Fatal(err)
+	dest := filepath.Join(dir, "Library", "LaunchAgents", "com.marcelocantos.claudia.plist")
+	out, err := exec.Command("plutil", "-extract", "EnvironmentVariables.CLAUDIA_BIN", "raw", "-o", "-", dest).CombinedOutput()
+	if err != nil || strings.TrimSpace(string(out)) != "/tmp/claudia-dev&a" {
+		t.Fatalf("CLAUDIA_BIN pin = %q, %v", out, err)
 	}
-	if !strings.Contains(string(body), `CLAUDIA_BIN="/tmp/claudia-dev"`) {
-		t.Fatalf("CLAUDIA_BIN not pinned:\n%s", body)
-	}
-}
-
-func TestSupervisorInstallDropsAnEarlierPin(t *testing.T) {
-	dir := t.TempDir()
-	dest := filepath.Join(dir, "claudia.ini")
-	if err := os.WriteFile(dest, []byte(`environment=HOME="/tmp",LANG="en_US.UTF-8",CLAUDIA_BIN="/tmp/kept"`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	script := filepath.Join("..", "..", "supervisor", "install.sh")
-	cmd := exec.Command(script)
-	env := []string{"SUPERVISOR_SKIP_CTL=1", "SUPERVISOR_CONF_DIR=" + dir}
-	for _, e := range os.Environ() {
-		if strings.HasPrefix(e, "CLAUDIA_BIN=") || strings.HasPrefix(e, "SUPERVISOR_SKIP_CTL=") || strings.HasPrefix(e, "SUPERVISOR_CONF_DIR=") {
-			continue
-		}
-		env = append(env, e)
-	}
-	cmd.Env = env
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("install.sh: %v\n%s", err, out)
+	t.Setenv("CLAUDIA_BIN", "")
+	if out, err := exec.Command(script).CombinedOutput(); err != nil {
+		t.Fatalf("second install.sh: %v\n%s", err, out)
 	}
 	body, err := os.ReadFile(dest)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(string(body), "CLAUDIA_BIN") {
-		t.Fatalf("an earlier render's CLAUDIA_BIN pin was carried over:\n%s\n%s", body, out)
+		t.Fatalf("an earlier render's CLAUDIA_BIN pin was carried over:\n%s", body)
 	}
 }
 
-func TestSupervisorRunScriptPrefersHomebrewOpt(t *testing.T) {
-	body, err := os.ReadFile(filepath.Join("..", "..", "supervisor", "run-claudia.sh"))
+func TestLaunchdRunScriptPrefersHomebrewOpt(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", "launchd", "run-claudia.sh"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,6 +102,8 @@ func TestSupervisorRunScriptPrefersHomebrewOpt(t *testing.T) {
 		"opt/claudia/bin/claudia",
 		"broker serve",
 		"CLAUDIA_BIN",
+		"bin/claudia-omp-server",
+		"bin/claudia-omp-auth",
 		"TERM=",
 		"LANG=",
 	} {
@@ -126,11 +116,11 @@ func TestSupervisorRunScriptPrefersHomebrewOpt(t *testing.T) {
 	}
 }
 
-// 🎯T233.2: the installed supervisor pins the canonical Jevons consumer
+// 🎯T233.2: the installed LaunchAgent pins the canonical Jevons consumer
 // state path so the broker enforces fleet/intent.json before AutoStart
 // resume and Grant/Adopt, with an env override for non-default installs.
-func TestSupervisorRunScriptPinsConsumerStateDir(t *testing.T) {
-	body, err := os.ReadFile(filepath.Join("..", "..", "supervisor", "run-claudia.sh"))
+func TestLaunchdRunScriptPinsConsumerStateDir(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", "launchd", "run-claudia.sh"))
 	if err != nil {
 		t.Fatal(err)
 	}

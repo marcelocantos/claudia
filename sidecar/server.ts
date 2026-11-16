@@ -1,4 +1,4 @@
-// One long-lived Bun process. Claudia dials it over a unix socket.
+// One long-lived sidecar (compiled with Bun). Claudia dials its unix socket.
 // The access token arrives on a load or token message. It is not read from
 // the environment, and the pay-as-you-go key variables are ignored.
 //
@@ -58,7 +58,7 @@ for (const name of banned) delete process.env[name];
 
 const sock = process.argv[2];
 if (!sock) {
-  console.error("usage: bun server.ts <socket-path>");
+  console.error("usage: claudia-omp-server <socket-path>");
   process.exit(2);
 }
 // 🎯T145: another live sidecar owns this socket; leave it alone.

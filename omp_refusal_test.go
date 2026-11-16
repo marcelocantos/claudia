@@ -30,7 +30,7 @@ func TestExplainOMPSidecarRefusalResumeOmitsPathHints(t *testing.T) {
 	base := errors.New("omp: sidecar said \"error\", want ready: existing conversation required; store /tmp/omp-seats/seat/s1.jsonl has no message records")
 	wrapped := explainOMPSidecarRefusal(base, ProviderCursor, "/tmp/omp.sock")
 	msg := wrapped.Error()
-	if strings.Contains(msg, "~/.bun/bin") || strings.Contains(msg, "supervisorctl restart claudia") {
+	if strings.Contains(msg, "~/.bun/bin") || strings.Contains(msg, "launchctl kickstart") {
 		t.Fatalf("resume refusal should not carry PATH appendix:\n%s", msg)
 	}
 	if !strings.Contains(msg, "existing conversation required") {
