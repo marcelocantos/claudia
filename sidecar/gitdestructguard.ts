@@ -5,31 +5,13 @@
 // The sidecar's Bash executes only after this check. This is deliberately not
 // a general shell interpreter: dynamically generated commands remain a residual.
 import path from "node:path";
-import { segments, stripHeredocBodies, stripPrefixes, runGit, type GitRunner } from "./branchguard.ts";
+import { gitCommands, runGit, type GitProbe, type GitRunner } from "./branchguard.ts";
 
-type Hit = { dir: string; operation: string; paths: string[]; untrackedOnly: boolean; includeIgnored: boolean; cleanArgs: string[] };
+type Hit = { dir: string; probe: GitProbe; operation: string; paths: string[]; untrackedOnly: boolean; includeIgnored: boolean; cleanArgs: string[] };
 
 export function destructiveGitCommands(command: string): Hit[] {
   const hits: Hit[] = [];
-  let dir = "";
-  for (const words of segments(stripHeredocBodies(command))) {
-    if (words[0] === "cd") {
-      dir = words[1] && words[1] !== "-"
-        ? (path.isAbsolute(words[1]) ? words[1] : path.join(dir, words[1])) : "";
-      continue;
-    }
-    const cmd = stripPrefixes(words);
-    if (path.basename(cmd[0] || "") !== "git") continue;
-    let at = 1, target = dir;
-    while (at < cmd.length) {
-      if (cmd[at] === "-C" && cmd[at + 1]) {
-        const next = cmd[at + 1];
-        target = path.isAbsolute(next) ? next : path.join(target, next); at += 2;
-      } else if (cmd[at].startsWith("-")) at++;
-      else break;
-    }
-    const sub = cmd[at++];
-    const args = cmd.slice(at);
+  for (const { sub, args, dir, probe } of gitCommands(command)) {
     let operation = "", paths: string[] = [], untrackedOnly = false, includeIgnored = false;
     let cleanArgs: string[] = [];
     const dash = args.indexOf("--");
@@ -68,7 +50,7 @@ export function destructiveGitCommands(command: string): Hit[] {
         }
         break;
     }
-    if (operation) hits.push({ dir: target, operation, paths, untrackedOnly, includeIgnored, cleanArgs });
+    if (operation) hits.push({ dir, probe, operation, paths, untrackedOnly, includeIgnored, cleanArgs });
   }
   return hits;
 }
@@ -77,22 +59,23 @@ export function destructiveGitCommands(command: string): Hit[] {
 // deny with an explicit unknown path set rather than launching destructive git.
 export async function guardDestructiveGit(cwd: string, command: string, git: GitRunner = runGit): Promise<void> {
   for (const hit of destructiveGitCommands(command)) {
-    const dir = path.resolve(cwd, hit.dir || ".");
-    const gitDir = await git(dir, ["rev-parse", "--path-format=absolute", "--git-dir"]);
-    const common = await git(dir, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+    const dir = path.resolve(cwd, hit.probe.dir);
+    const query = (args: string[]) => git(dir, args, hit.probe.globals);
+    const gitDir = await query(["rev-parse", "--path-format=absolute", "--git-dir"]);
+    const common = await query(["rev-parse", "--path-format=absolute", "--git-common-dir"]);
     if (gitDir === null || common === null || gitDir !== common) continue;
     if (hit.operation === "checkout path?") {
-      const ref = await git(dir, ["rev-parse", "--verify", "--quiet", `${hit.paths[0]}^{commit}`]);
+      const ref = await query(["rev-parse", "--verify", "--quiet", `${hit.paths[0]}^{commit}`]);
       if (ref !== null) continue;
     }
-    const repo = await git(dir, ["rev-parse", "--show-toplevel"]);
+    const repo = await query(["rev-parse", "--show-toplevel"]);
     // `git clean -n` runs Git's own selection without deleting anything.
     // Parsing -e's value as a pathspec makes status report no paths, while
     // simply listing status would falsely name excluded files. Its dry-run
     // output tells us exactly which untracked/ignored entries this clean
     // would remove. A failed dry-run remains a refusal, not permission.
-    const cleanPreview = hit.operation === "clean -f" ? await git(dir, ["clean", "-n", ...hit.cleanArgs]) : null;
-    const raw = hit.operation === "clean -f" ? null : await git(dir, ["status", "--porcelain=v1", "-z", "--untracked-files=all", ...(hit.includeIgnored ? ["--ignored"] : []), ...(hit.paths.length ? ["--", ...hit.paths] : [])]);
+    const cleanPreview = hit.operation === "clean -f" ? await query(["clean", "-n", ...hit.cleanArgs]) : null;
+    const raw = hit.operation === "clean -f" ? null : await query(["status", "--porcelain=v1", "-z", "--untracked-files=all", ...(hit.includeIgnored ? ["--ignored"] : []), ...(hit.paths.length ? ["--", ...hit.paths] : [])]);
     const entries: string[] = [];
     if (raw !== null) {
       const fields = raw.split("\0");
@@ -109,6 +92,6 @@ export async function guardDestructiveGit(cwd: string, command: string, git: Git
     const names = hit.operation === "clean -f"
       ? cleanPreview === null ? "clean dry-run unavailable (paths unknown)" : cleanNames.length ? cleanNames.map((p) => JSON.stringify(p)).join(", ") : "none observed"
       : raw === null ? "status unavailable (paths unknown)" : entries.length ? entries.map((p) => JSON.stringify(p)).join(", ") : "none observed";
-    throw new Error(`gitdestructguard: refusing git ${hit.operation} in shared clone ${repo || dir}; dirty paths command would touch: ${names}; command was not run. Work in your own linked worktree. 🎯T240`);
+    throw new Error(`gitdestructguard: refusing git ${hit.operation} in shared clone ${repo || path.resolve(cwd, hit.dir)}; dirty paths command would touch: ${names}; command was not run. Work in your own linked worktree. 🎯T240`);
   }
 }

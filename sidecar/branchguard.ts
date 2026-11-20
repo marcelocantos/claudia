@@ -48,43 +48,18 @@ const gitMaxBuffer = 64 * 1024;
 // and other subcommands are not switches. The last switching segment wins,
 // as in jevons treeguard.DetectBranchCheckout.
 export function detectBranchCheckout(command: string): BranchCheckout | null {
-  let found: BranchCheckout | null = null;
-  let dir = "";
-  for (const words of segments(stripHeredocBodies(command))) {
-    if (words.length === 0) continue;
-    if (words[0] === "cd") {
-      // `cd` moves every later segment; `cd` alone or `cd -` is unknowable,
-      // so later segments are judged where the shell started.
-      dir = words.length > 1 && words[1] !== "-"
-        ? (path.isAbsolute(words[1]) ? words[1] : path.join(dir, words[1])) : "";
-      continue;
-    }
-    const cmd = stripPrefixes(words);
-    if (cmd.length < 2 || path.basename(cmd[0]) !== "git") continue;
-    let sub = "";
-    const rest: string[] = [];
-    let createFlag = false;
-    let segDir = dir;
-    for (let i = 1; i < cmd.length; i++) {
-      const a = cmd[i];
-      if (sub === "") {
-        if (a === "-C" && i + 1 < cmd.length) {
-          const next = cmd[++i];
-          segDir = path.isAbsolute(next) ? next : path.join(segDir, next);
-          continue;
-        }
-        if (a.startsWith("-")) continue;
-        sub = a;
-        continue;
-      }
-      if (a === "-b" || a === "-B" || a === "-c" || a === "-C") createFlag = true;
-      rest.push(a);
-    }
+  return findBranchCheckout(command)?.checkout ?? null;
+}
+
+function findBranchCheckout(command: string): { checkout: BranchCheckout; probe: GitProbe } | null {
+  let found: { checkout: BranchCheckout; probe: GitProbe } | null = null;
+  for (const { sub, args, dir, probe } of gitCommands(command)) {
     if (sub !== "checkout" && sub !== "switch") continue;
-    if (rest.includes("--")) continue; // `checkout [<ref>] -- <path>`: a restore
-    const pos = rest.filter((a) => !a.startsWith("-"));
+    if (args.includes("--")) continue; // `checkout [<ref>] -- <path>`: a restore
+    const pos = args.filter((a) => !a.startsWith("-"));
     if (pos.length === 0) continue;
-    found = { ref: pos[0], dir: segDir, definite: sub === "switch" || createFlag };
+    const createFlag = args.some((a) => a === "-b" || a === "-B" || a === "-c" || a === "-C");
+    found = { checkout: { ref: pos[0], dir, definite: sub === "switch" || createFlag }, probe };
   }
   return found;
 }
@@ -109,10 +84,10 @@ export function decideBranchCheckout(args: { currentBranch: string; targetRef: s
 
 // GitRunner runs git in dir and resolves stdout, or null on a non-zero exit
 // or a failure to run. Tests substitute it; the default spawns git.
-export type GitRunner = (dir: string, args: string[]) => Promise<string | null>;
+export type GitRunner = (dir: string, args: string[], globals?: readonly string[]) => Promise<string | null>;
 
-export const runGit: GitRunner = async (dir, args) => {
-  const r = await runCommand("git", ["-C", dir, ...args], { timeoutMs: gitTimeoutMs, maxBuffer: gitMaxBuffer });
+export const runGit: GitRunner = async (dir, args, globals = []) => {
+  const r = await runCommand("git", ["-C", dir, ...globals, ...args], { timeoutMs: gitTimeoutMs, maxBuffer: gitMaxBuffer });
   if (r.error || r.status !== 0) return null;
   return args[0] === "status" ? r.stdout : r.stdout.trim();
 };
@@ -123,21 +98,91 @@ export const runGit: GitRunner = async (dir, args) => {
 // bare `git checkout <arg>` whose <arg> is not a ref), otherwise the
 // decision. The command has not run when this returns.
 export async function guardBranchCheckout(cwd: string, command: string, git: GitRunner = runGit): Promise<BranchDecision | null> {
-  const hit = detectBranchCheckout(command);
+  const hit = findBranchCheckout(command);
   if (!hit) return null;
-  const dir = path.resolve(cwd, hit.dir || ".");
-  const gitDir = await git(dir, ["rev-parse", "--path-format=absolute", "--git-dir"]);
-  const commonDir = await git(dir, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+  const { checkout, probe } = hit;
+  const dir = path.resolve(cwd, probe.dir);
+  const query = (args: string[]) => git(dir, args, probe.globals);
+  const gitDir = await query(["rev-parse", "--path-format=absolute", "--git-dir"]);
+  const commonDir = await query(["rev-parse", "--path-format=absolute", "--git-common-dir"]);
   if (gitDir === null || commonDir === null) return null; // not a repository
   if (gitDir !== commonDir) return null; // a linked worktree: the seat's own
-  const branch = await git(dir, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
+  const branch = await query(["symbolic-ref", "--quiet", "--short", "HEAD"]);
   if (branch === null || branch === "") return null; // detached HEAD: no branch to protect
-  if (hit.ref === branch) return null;
-  if (!hit.definite && (await git(dir, ["rev-parse", "--verify", "--quiet", `${hit.ref}^{commit}`])) === null) {
+  if (checkout.ref === branch) return null;
+  if (!checkout.definite && (await query(["rev-parse", "--verify", "--quiet", `${checkout.ref}^{commit}`])) === null) {
     return null; // `git checkout <path>`: a restore, not a switch
   }
-  const repo = (await git(dir, ["rev-parse", "--show-toplevel"])) || dir;
-  return decideBranchCheckout({ currentBranch: branch, targetRef: hit.ref, repo });
+  const repo = (await query(["rev-parse", "--show-toplevel"])) || path.resolve(cwd, checkout.dir);
+  return decideBranchCheckout({ currentBranch: branch, targetRef: checkout.ref, repo });
+}
+
+export type GitProbe = { dir: string; globals: string[] };
+
+// Git's top-level parser has separate operands for these options. The long
+// options also accept `=value`, except for `--shallow-file`. Keep the retired
+// `--super-prefix` spellings for older Git.
+const gitValueOptions = new Set([
+  "-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env",
+  "--attr-source", "--shallow-file", "--super-prefix",
+]);
+const gitPathspecOptions = [
+  "--literal-pathspecs", "--no-literal-pathspecs", "--glob-pathspecs", "--noglob-pathspecs", "--icase-pathspecs",
+];
+const gitFlags = new Set([
+  "-p", "--paginate", "-P", "--no-pager", "--bare", "--no-replace-objects",
+  "--no-lazy-fetch", "--no-optional-locks", "--no-advice", ...gitPathspecOptions,
+]);
+const gitProbeOptions = new Set([
+  "-C", "--git-dir", "--work-tree", "--bare", "--namespace", "--attr-source",
+  "--no-replace-objects", "--no-lazy-fetch", ...gitPathspecOptions,
+]);
+
+function gitCommand(words: string[], cwd: string) {
+  const cmd = stripPrefixes(words);
+  if (path.basename(cmd[0] || "") !== "git") return null;
+  const globals: string[] = [];
+  let dir = cwd;
+  for (let i = 1; i < cmd.length; i++) {
+    const arg = cmd[i];
+    if (!arg.startsWith("-")) return { sub: arg, args: cmd.slice(i + 1), dir, probe: { dir: cwd, globals } };
+    const equals = arg.indexOf("=");
+    const option = equals < 0 ? arg : arg.slice(0, equals);
+    if (gitValueOptions.has(option)) {
+      if (equals < 0) {
+        const value = cmd[++i];
+        if (value === undefined) return null;
+        if (option === "-C" && value !== "") dir = path.isAbsolute(value) ? value : path.join(dir, value);
+        if (gitProbeOptions.has(option)) globals.push(option, value);
+      } else {
+        if (!option.startsWith("--") || option === "--shallow-file") return null;
+        if (gitProbeOptions.has(option)) globals.push(arg);
+      }
+    } else if (gitFlags.has(arg)) {
+      if (gitProbeOptions.has(arg)) globals.push(arg);
+    } else if (!arg.startsWith("--exec-path=")) {
+      // Git rejects a top-level `--` and attached/combined short options.
+      // Options such as `--help` and bare `--exec-path` finish without a command.
+      return null;
+    }
+  }
+  return null;
+}
+
+// Both guards use the same Git invocation. The probe lets Git apply each
+// `-C` in sequence and resolve repository selectors from the resulting cwd.
+// Command-provided config and exec paths are excluded from the probe.
+export function* gitCommands(command: string) {
+  let cwd = "";
+  for (const words of segments(stripHeredocBodies(command))) {
+    if (words[0] === "cd") {
+      cwd = words[1] && words[1] !== "-"
+        ? (path.isAbsolute(words[1]) ? words[1] : path.join(cwd, words[1])) : "";
+      continue;
+    }
+    const parsed = gitCommand(words, cwd);
+    if (parsed) yield parsed;
+  }
 }
 
 // --- lexing ----------------------------------------------------------------

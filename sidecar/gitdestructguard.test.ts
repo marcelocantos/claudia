@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { detectBranchCheckout, guardBranchCheckout } from "./branchguard.ts";
 import { destructiveGitCommands, guardDestructiveGit } from "./gitdestructguard.ts";
 import { runShell } from "./execution.ts";
 import { SeatProcessOwnership } from "./killguard.ts";
@@ -22,6 +23,70 @@ function fixture() {
   writeFileSync(join(dir, "untracked.txt"), "owner new file\n");
   return dir;
 }
+
+describe("Git global options in both shared-clone guards (H8)", () => {
+  const prefixes = [
+    "git -c color.ui=never",
+    "git -c 'core.pager=git stash' -c advice.detachedHead=false",
+    "git -C '' -C sub -C .. -c color.ui=never",
+    "git --git-dir .git --work-tree .",
+    "git --git-dir=.git --work-tree=.",
+    "git --git-dir .git -C repo --work-tree=.",
+    "git --namespace seat",
+    "git --namespace=seat",
+    "git --config-env color.ui=SEAT_COLOR",
+    "git --config-env=color.ui=SEAT_COLOR",
+    "git --attr-source HEAD",
+    "git --attr-source=HEAD",
+    "git --shallow-file .git/shallow",
+    "git --super-prefix dir/",
+    "git --super-prefix=dir/",
+    "git --exec-path=/usr/bin -p -P --literal-pathspecs",
+  ];
+  for (const prefix of prefixes) {
+    test(prefix, () => {
+      expect(detectBranchCheckout(`${prefix} checkout other`)?.ref).toBe("other");
+      expect(destructiveGitCommands(`${prefix} stash`).map((h) => h.operation)).toEqual(["stash"]);
+      expect(destructiveGitCommands(`${prefix} checkout -- owner.txt`)[0]?.paths).toEqual(["owner.txt"]);
+    });
+  }
+
+  for (const prefix of ["git --", "git --exec-path", "git --version", "git -pP", "git -Csub", "git -ccolor.ui=never"]) {
+    test(`${prefix} does not select a subcommand`, () => {
+      expect(detectBranchCheckout(`${prefix} checkout other`)).toBeNull();
+      expect(destructiveGitCommands(`${prefix} stash`)).toEqual([]);
+    });
+  }
+
+  test("denies both operations before launch, including explicit repository paths", async () => {
+    const dir = fixture();
+    const elsewhere = realpathSync(mkdtempSync(join(tmpdir(), "git-options-")));
+    try {
+      git(dir, "branch", "other");
+      mkdirSync(join(dir, "sub"));
+      symlinkSync(join(dir, "sub"), join(elsewhere, "link"));
+      const invocations = [
+        { cwd: dir, prefix: "git -c color.ui=never" },
+        { cwd: elsewhere, prefix: `git --git-dir .git -C "${dir}" -C sub -C .. --work-tree=.` },
+        { cwd: elsewhere, prefix: `git --git-dir="${dir}/.git" --work-tree "${dir}"` },
+        { cwd: elsewhere, prefix: "git -C link -C .. -c color.ui=never" },
+      ];
+      let launched = false;
+      for (const { cwd, prefix } of invocations) {
+        for (const [command, guard] of [["stash", "gitdestructguard:"], ["checkout other", "branchguard:"]]) {
+          await expect(runShell(() => cwd, () => undefined,
+            { command: `${prefix} ${command}`, timeoutMs: 1000, maxBuffer: 1000 },
+            new SeatProcessOwnership(), async () => { launched = true; throw new Error("spawned"); }))
+            .rejects.toThrow(guard);
+        }
+      }
+      expect(launched).toBe(false);
+    } finally {
+      rmSync(elsewhere, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("T240 shared clone destructive git pre-exec", () => {
   const commands = [
@@ -116,7 +181,10 @@ describe("T240 shared clone destructive git pre-exec", () => {
       const wt = join(parent, "wt"); git(dir, "worktree", "add", "-qb", "seat", wt);
       writeFileSync(join(wt, "owner.txt"), "seat edit\n");
       await expect(guardDestructiveGit(wt, "git reset --hard")).resolves.toBeUndefined();
-      for (const command of ["git status", "git stash list", "git stash show", "git restore --staged owner.txt", "echo 'git clean -f'"]) {
+      const explicit = `git --git-dir="${git(wt, "rev-parse", "--absolute-git-dir")}" --work-tree="${wt}"`;
+      await expect(guardDestructiveGit(dir, `${explicit} stash`)).resolves.toBeUndefined();
+      await expect(guardBranchCheckout(dir, `${explicit} checkout -b elsewhere`)).resolves.toBeNull();
+      for (const command of ["git status", "git stash list", "git -c color.ui=never stash show", "git restore --staged owner.txt", "echo 'git clean -f'"]) {
         await expect(guardDestructiveGit(dir, command)).resolves.toBeUndefined();
       }
     } finally { rmSync(parent, { recursive: true, force: true }); rmSync(dir, { recursive: true, force: true }); }
