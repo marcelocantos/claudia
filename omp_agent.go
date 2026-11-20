@@ -548,7 +548,7 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 				// Before the write: the peer can answer it with the turn
 				// this prompt interrupts, and that end must not satisfy
 				// the wait for this one (C3).
-				a.noteLatchedTurn(msg.TurnID)
+				a.noteLatchedTurn(msg.TurnID, msg.Text)
 				return ctrl.send(msg)
 			},
 			sendWithRequestID: func(a *Agent, text, id string) error {
@@ -559,7 +559,7 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 					ctrl.inflight.Store(true)
 				}
 				msg := promptMessage(omp.OpPrompt, req.Config.Name, text, a, ctrl)
-				a.noteLatchedTurn(msg.TurnID)
+				a.noteLatchedTurn(msg.TurnID, msg.Text)
 				return ctrl.sendRequest(msg, id)
 			},
 			steer: func(a *Agent, text string) (DeliveryOutcome, error) {

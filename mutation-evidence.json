@@ -179,7 +179,7 @@
       "edits": [
         {
           "file": "agent.go",
-          "find": "\ttoken := a.subscribeEventsTakingTurn(onEvent, func(prior turnSoFar) {\n\t\twantTurn = prior.turnID\n\t\tif prior.err != nil {\n\t\t\temitOnce(outcome{err: prior.err})\n\t\t\treturn\n\t\t}\n\t\tmu.Lock()\n\t\ttext.WriteString(prior.text)\n\t\tseenTerminal = prior.terminal\n\t\tif seenTerminal {\n\t\t\tsettleTimer = time.AfterFunc(waitSettleDuration, emitOK)\n\t\t}\n\t\tmu.Unlock()\n\t})",
+          "find": "\ttoken := a.subscribeEventsTakingTurn(onEvent, func(prior turnSoFar) {\n\t\tmu.Lock()\n\t\twantTurn, wantSent = prior.turnID, prior.sent\n\t\tmu.Unlock()\n\t\tif prior.err != nil {\n\t\t\temitOnce(outcome{err: prior.err})\n\t\t\treturn\n\t\t}\n\t\tmu.Lock()\n\t\ttext.WriteString(prior.text)\n\t\tseenTerminal = prior.terminal\n\t\tif seenTerminal {\n\t\t\tsettleTimer = time.AfterFunc(waitSettleDuration, emitOK)\n\t\t}\n\t\tmu.Unlock()\n\t})",
           "replace": "\ttoken := a.subscribeEventsTakingTurn(onEvent, func(prior turnSoFar) { _ = prior })"
         }
       ],
@@ -187,7 +187,7 @@
         {"name": "TestWaitForResponseSeesTurnPublishedBeforeItSubscribed", "expect": "red"},
         {"name": "TestWaitForResponseIgnoresEventsFromBeforeTheSubmit", "expect": "green"}
       ],
-      "note": "The mutation is the differential run that identified 🎯T98: the handover disabled, everything else — the latch, the arming in Send, the recording in publishEvent — left in place, so what goes red is the handover and nothing else. TestWaitForResponseIgnoresEventsFromBeforeTheSubmit is declared green on purpose: it holds the other half of the contract, that the latch never hands back a turn from before the submit, and a mutation that simply deleted the latch would satisfy it trivially. It staying green is what makes the red ones evidence about the handover rather than about the latch existing at all. Re-derived after C3: the handover also records prior.turnID as the turn this wait belongs to, and the mutation drops that line with the rest of the callback."
+      "note": "The mutation is the differential run that identified 🎯T98: the handover disabled, everything else — the latch, the arming in Send, the recording in publishEvent — left in place, so what goes red is the handover and nothing else. TestWaitForResponseIgnoresEventsFromBeforeTheSubmit is declared green on purpose: it holds the other half of the contract, that the latch never hands back a turn from before the submit, and a mutation that simply deleted the latch would satisfy it trivially. It staying green is what makes the red ones evidence about the handover rather than about the latch existing at all. Re-derived after C3: the handover also records prior.turnID (and the submit text an absorb is matched against) as the turn this wait belongs to, and the mutation drops those lines with the rest of the callback."
     },
     {
       "target": "T73",

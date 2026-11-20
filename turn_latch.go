@@ -62,6 +62,10 @@ type turnLatch struct {
 	// one. An assistant event that names a different turn — the aborted
 	// turn's end arriving after the next send — is not this turn (C3).
 	turnID string
+	// sent is the text of the plain submit that named turnID. A seat that
+	// absorbs that text into the turn already running answers it there,
+	// under the running turn's id, so the latch follows the absorb.
+	sent string
 }
 
 // turnSoFar is a latch handed to one waiter. Empty when no submit has
@@ -71,6 +75,7 @@ type turnSoFar struct {
 	terminal bool
 	err      error
 	turnID   string
+	sent     string
 }
 
 // beginTurn arms the latch for a newly submitted turn, discarding
@@ -84,8 +89,9 @@ func (a *Agent) beginTurn() {
 // noteLatchedTurn names the turn a submit just minted, before the write.
 // The peer can answer that write with the previous turn's end. Unarmed
 // latches (an identified send, which arms on its started receipt) are
-// left alone.
-func (a *Agent) noteLatchedTurn(turnID string) {
+// left alone. text is what the submit sends: a seat that absorbs it into
+// the turn already running answers it under that turn's id.
+func (a *Agent) noteLatchedTurn(turnID, text string) {
 	if a == nil || turnID == "" {
 		return
 	}
@@ -93,7 +99,18 @@ func (a *Agent) noteLatchedTurn(turnID string) {
 	defer a.mu.Unlock()
 	if a.turn.armed {
 		a.turn.turnID = turnID
+		a.turn.sent = text
 	}
+}
+
+// absorbedInto reports the turn that took sent into itself: a sidecar
+// seat queues a prompt that arrives mid-turn and the running turn answers
+// it, so no turn ever carries the submit's own id. "" when ev is not that.
+func absorbedInto(ev Event, sent string) string {
+	if sent == "" || ev.Type != "progress" || ev.ProgressType != ProgressDeliveryAbsorbed || ev.Text != sent {
+		return ""
+	}
+	return ev.TurnID
 }
 
 // retireEndedTurnFor disarms a latched turn that has already ended and
@@ -133,6 +150,10 @@ func (a *Agent) recordTurnEventLocked(ev Event) {
 	if !a.turn.armed {
 		return
 	}
+	// The submit was absorbed into the running turn: that turn answers it.
+	if into := absorbedInto(ev, a.turn.sent); into != "" {
+		a.turn.turnID = into
+	}
 	// A named turn does not absorb another turn's events. An empty id
 	// (a backend that does not stamp turns) keeps the old behaviour.
 	if ev.TurnID != "" && a.turn.turnID != "" && ev.TurnID != a.turn.turnID {
@@ -167,7 +188,7 @@ func (a *Agent) takeTurnLocked() turnSoFar {
 	if !a.turn.armed {
 		return turnSoFar{}
 	}
-	out := turnSoFar{terminal: a.turn.terminal, err: a.turn.err, turnID: a.turn.turnID}
+	out := turnSoFar{terminal: a.turn.terminal, err: a.turn.err, turnID: a.turn.turnID, sent: a.turn.sent}
 	if a.turn.text != nil {
 		out.text = a.turn.text.String()
 	}
