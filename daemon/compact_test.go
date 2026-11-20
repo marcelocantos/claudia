@@ -96,7 +96,13 @@ func TestT244BrokerDisconnectDuringSidecarFold(t *testing.T) {
 	waitFor(t, "wake prompt on sidecar", func() bool {
 		return strings.Count(readFileOrEmpty(tracePath), `"op":"prompt"`) >= 1
 	})
-	time.Sleep(500 * time.Millisecond)
+	// The compact under test is refused as turn_in_flight while the wake
+	// prompt runs, and then never reaches the sidecar. A fixed sleep here let
+	// that refusal through under load, and the wait below hung.
+	waitFor(t, "wake prompt finished", func() bool {
+		info := rawCall(t, conn, &broker.Request{ID: "info", Type: broker.TypeAgentInfo, AgentInfo: &broker.NamedRequest{Name: seat}})
+		return info.Type == broker.TypeAgentInfoResult && info.AgentInfo != nil && !info.AgentInfo.PromptInFlight
+	})
 	before := countStoreType(t, storePath, "compaction")
 
 	var wg sync.WaitGroup
