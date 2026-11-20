@@ -24,6 +24,11 @@ function fixture() {
   return dir;
 }
 
+// The real-git tables spawn git a few hundred times. Under the owner gate's
+// load that took longer than bun's 5s default, and a test cut off mid-loop
+// kept spawning git into the next tests.
+const realGitBudgetMs = 120_000;
+
 describe("Git global options in both shared-clone guards (H8)", () => {
   const prefixes = [
     "git -c color.ui=never",
@@ -136,7 +141,7 @@ describe("Git global options in both shared-clone guards (H8)", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
-  });
+  }, realGitBudgetMs);
 
   test("denies both operations before launch, including explicit repository paths", async () => {
     const dir = fixture();
@@ -225,7 +230,7 @@ describe("Git global options in both shared-clone guards (H8)", () => {
         rmSync(guarded, { recursive: true, force: true });
       }
     }
-  });
+  }, realGitBudgetMs);
 
   test("an alias or prefix that does not run a guarded command is not refused", () => {
     for (const command of [
