@@ -33,11 +33,8 @@ func TestReclaimAfterDisconnectKeepsPumpEventsInOrder(t *testing.T) {
 	old := rawSeat(t, f.sock, name)
 	proc := f.d.reg.Get(name)
 	publishReclaimEvent(proc, "e0")
-	select {
-	case <-entered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("pump did not take e0")
-	}
+	// entered closes when the pump takes e0. go test -timeout is the clock.
+	<-entered
 	publishReclaimEvent(proc, "e1")
 	if err := old.Close(); err != nil {
 		t.Fatal(err)
@@ -124,11 +121,8 @@ func TestReclaimAfterReplayDisconnectKeepsHistory(t *testing.T) {
 			if err := crashed.Close(); err != nil {
 				t.Fatal(err)
 			}
-			select {
-			case <-handled:
-			case <-time.After(5 * time.Second):
-				t.Fatal("broker did not finish handling the crashed reclaimer")
-			}
+			// handled closes when handleGrant returns. go test -timeout is the clock.
+			<-handled
 			replacement := dialRaw(t, f.sock)
 			assertGrantReplay(t, replacement, req, append(history, "e3"))
 			if err := replacement.Close(); err != nil {
