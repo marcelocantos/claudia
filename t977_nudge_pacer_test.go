@@ -13,13 +13,13 @@ import (
 
 // jevons 🎯T977: restart nudges leave at least NudgeSpacing apart, however
 // many seats are ready together, so a resumed fleet does not reach its
-// provider as one burst. The assertion is a lower bound on the gaps: a slow
-// host can only widen them.
+// provider as one burst. The clock records the wait the pacer asks for: a
+// wall-clock timestamp taken after pace returns measured the scheduler too,
+// and under load two seats released 40ms apart were stamped 36µs apart.
 func TestT977NudgesLeaveSpacedApart(t *testing.T) {
 	const spacing = 40 * time.Millisecond
-	pace := nudgePacer(SystemClock{}, spacing)
-	var mu sync.Mutex
-	var at []time.Time
+	clock := &recordingClock{now: time.Now()}
+	pace := nudgePacer(clock, spacing)
 	var wg sync.WaitGroup
 	for range 4 {
 		wg.Add(1)
@@ -27,19 +27,15 @@ func TestT977NudgesLeaveSpacedApart(t *testing.T) {
 			defer wg.Done()
 			if err := pace(context.Background()); err != nil {
 				t.Error(err)
-				return
 			}
-			mu.Lock()
-			at = append(at, time.Now())
-			mu.Unlock()
 		}()
 	}
 	wg.Wait()
-	slices.SortFunc(at, func(a, b time.Time) int { return a.Compare(b) })
-	for i := 1; i < len(at); i++ {
-		if gap := at[i].Sub(at[i-1]); gap < spacing-5*time.Millisecond {
-			t.Fatalf("nudges %d and %d left %v apart, want at least %v", i-1, i, gap, spacing)
-		}
+	// The first seat leaves at once; each of the others waits one more slot.
+	got := clock.waits()
+	slices.Sort(got)
+	if want := []time.Duration{spacing, 2 * spacing, 3 * spacing}; !slices.Equal(got, want) {
+		t.Fatalf("pacer waits %v, want %v", got, want)
 	}
 
 	// Zero spacing never waits; a cancelled resume stops waiting.
@@ -53,4 +49,29 @@ func TestT977NudgesLeaveSpacedApart(t *testing.T) {
 	if err := slow(ctx); err == nil {
 		t.Fatal("a cancelled resume kept waiting for its nudge slot")
 	}
+}
+
+// recordingClock stands still and fires every After at once, recording the
+// duration asked for.
+type recordingClock struct {
+	now   time.Time
+	mu    sync.Mutex
+	asked []time.Duration
+}
+
+func (c *recordingClock) Now() time.Time { return c.now }
+
+func (c *recordingClock) After(d time.Duration) <-chan time.Time {
+	c.mu.Lock()
+	c.asked = append(c.asked, d)
+	c.mu.Unlock()
+	ch := make(chan time.Time, 1)
+	ch <- c.now.Add(d)
+	return ch
+}
+
+func (c *recordingClock) waits() []time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.asked)
 }
