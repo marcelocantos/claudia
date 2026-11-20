@@ -27,6 +27,7 @@ import { agentPauseGate } from "@oh-my-pi/pi-agent-core";
 import type { SandboxPolicy } from "./coding.ts";
 import { withSeatCommand } from "./seat_command.ts";
 import { abortBoundCompact, registerBoundCompact, unregisterBoundCompact } from "./bound_compact_inflight.ts";
+import { killAllGroups } from "./process.ts";
 
 /** Serialize only bound compact (🎯T244). Prompt/steer queue inside the seat agent;
 chaining them here blocked T169 queued auth recovery behind an in-flight prompt handle. */
@@ -75,6 +76,30 @@ try { unlinkSync(sock); } catch { /* absent */ }
 // file; this keeps the journal from reopening those rows as unknown.
 let finishStartedOnExit = (): void => {};
 
+// Tool children are their own sessions. Exit, including a caught stop
+// signal, has to signal those groups or their background jobs keep running
+// with nobody attached (C7). A descendant that left its group is outside
+// this; see killAllGroups.
+function stopToolGroups(): void {
+  try {
+    killAllGroups();
+  } catch (err) {
+    console.error("sidecar: could not stop tool processes", err);
+  }
+}
+
+function dieBySignal(signal: NodeJS.Signals): void {
+  stopToolGroups();
+  process.removeAllListeners(signal);
+  try {
+    process.kill(process.pid, signal);
+  } catch {
+    process.exit(1);
+  }
+}
+process.on("SIGTERM", () => dieBySignal("SIGTERM"));
+process.on("SIGINT", () => dieBySignal("SIGINT"));
+
 // 🎯T166: started with a lifeline, the sidecar lives only as long as the
 // process that started it. Only that process holds the pipe's write end;
 // when it exits, however it exits, stdin reaches EOF and the sidecar goes
@@ -87,6 +112,7 @@ if (process.argv.includes("--lifeline=stdin")) {
     } catch (err) {
       console.error("sidecar: could not finish started receipts", err);
     }
+    stopToolGroups();
     console.error("sidecar: the process that started it is gone; exiting");
     process.exit(0);
   };

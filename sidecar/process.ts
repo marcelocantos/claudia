@@ -3,6 +3,31 @@
 
 import { spawn } from "node:child_process";
 
+// Group leaders this process started. A tool child is detached, so it is its
+// own session: the sidecar exiting does not deliver SIGHUP, and a background
+// job the shell left in that group (sleep 60 &) keeps running after the
+// sidecar is gone. Abort and timeout already signal the group; exit must too.
+//
+// killAllGroups reaches every process that stayed in a group this process
+// created. A descendant that left the group (setsid, a new session) is
+// outside it — the same bound as the abort path's kill of -pid. This does
+// not walk the process tree and does not kill a pid it did not spawn.
+const groups = new Set<number>();
+
+export function killAllGroups(): void {
+  if (process.platform === "win32") return;
+  for (const pid of [...groups]) {
+    groups.delete(pid);
+    try {
+      process.kill(-pid, "SIGKILL");
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "ESRCH") {
+        try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ }
+      }
+    }
+  }
+}
+
 // RunResult is what runCommand saw, shaped like a synchronous spawn's result
 // so the tools read it the way they always did.
 export type RunResult = {
@@ -70,7 +95,9 @@ export function runCommand(
       return;
     }
     child = spawn(command, args, { cwd: opts.cwd, env: opts.env, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
-    if (child.pid) opts.onSpawn?.(child.pid);
+    const leader = child.pid;
+    if (leader && process.platform !== "win32") groups.add(leader);
+    if (leader) opts.onSpawn?.(leader);
     opts.signal?.addEventListener("abort", onAbort, { once: true });
     if (opts.signal?.aborted) onAbort();
     if (!settled) timer = setTimeout(() => fail("ETIMEDOUT", `${command} timed out after ${opts.timeoutMs}ms`), opts.timeoutMs);
@@ -88,7 +115,10 @@ export function runCommand(
       if (!settled) error = err;
       finish(null);
     });
-    child.on("close", (code) => finish(code));
+    child.on("close", (code) => {
+      if (leader) groups.delete(leader);
+      finish(code);
+    });
   });
 }
 
