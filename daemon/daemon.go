@@ -275,6 +275,8 @@ type grantPump struct {
 	closed bool
 	// done is closed after a started writer has recorded that outcome.
 	done chan struct{}
+	// conn is the connection a started writer writes to.
+	conn *broker.ClientConn
 }
 
 type brokerDaemonTask struct {
@@ -1045,14 +1047,36 @@ func (d *Daemon) handleGrant(c *broker.ClientConn, req *broker.Request) {
 	// seat alive) keeps its pump: a second one would strand the first
 	// (🎯T124). Only an unowned or displaced grant gets a new pump.
 	//
-	// A writer detached mid-write still has the in-flight event. Wait,
-	// without the lock, until it has handed the event back or recorded
-	// that the connection accepted it. Re-check ownership after the wait:
-	// another grant can have taken the seat while this one stood aside.
+	// A writer detached mid-write still has the in-flight event. When that
+	// write is going to this connection, wait, without the lock, until it
+	// has handed the event back or recorded that the connection accepted
+	// it. Re-check ownership after the wait: another grant can have taken
+	// the seat while this one stood aside.
+	//
+	// Another connection does not wait. The write is to a consumer that
+	// stopped reading, and it returns only when that consumer reads or its
+	// connection closes. The new consumer has seen none of the detached
+	// writer's events, so it takes them all, the in-flight one first.
 	var alreadyOwned bool
 	for {
 		if g.owner != nil && g.owner != c {
 			d.detachLocked(g)
+		}
+		if g.draining != nil && g.draining.conn != c {
+			pump := g.draining
+			g.draining = nil
+			if !g.pool {
+				var pending [][]byte
+				if pump.writing != nil {
+					pending = append(pending, pump.writing)
+					pump.writing = nil
+				}
+				for raw := range pump.queue {
+					pending = append(pending, raw)
+				}
+				g.putBackLocked(pending)
+			}
+			pump.stolen = true
 		}
 		if g.draining == nil {
 			alreadyOwned = g.owner == c && g.pump != nil
@@ -1405,6 +1429,22 @@ func takePumpLocked(g *brokerGrant, pump *grantPump) {
 	}
 }
 
+// putBackLocked puts a detached writer's events in front of the reclaim
+// ring: they are older than anything retained since the detach. d.mu held.
+func (g *brokerGrant) putBackLocked(pending [][]byte) {
+	if len(pending) == 0 {
+		return
+	}
+	combined := make([][]byte, 0, len(pending)+len(g.ring))
+	combined = append(combined, pending...)
+	combined = append(combined, g.ring...)
+	if len(combined) > brokerUnownedRingCap {
+		g.lag = true
+		combined = combined[len(combined)-brokerUnownedRingCap:]
+	}
+	g.ring = combined
+}
+
 // retainUnowned appends one event to the reclaim ring. d.mu / caller
 // must hold the grant lock. A live bounce stream must not mark Lagged
 // at the old 256 bound (🎯T70).
@@ -1424,6 +1464,7 @@ func (g *brokerGrant) retainUnowned(raw []byte) {
 func (d *Daemon) startPumpLocked(g *brokerGrant, c *broker.ClientConn, pump *grantPump) {
 	pump.started = true
 	pump.done = make(chan struct{})
+	pump.conn = c
 	d.wg.Add(1)
 	go func() {
 		defer d.wg.Done()
@@ -1507,16 +1548,7 @@ func (d *Daemon) finishPumpLocked(g *brokerGrant, pump *grantPump) {
 		for raw := range pump.queue {
 			pending = append(pending, raw)
 		}
-		if len(pending) > 0 {
-			combined := make([][]byte, 0, len(pending)+len(g.ring))
-			combined = append(combined, pending...)
-			combined = append(combined, g.ring...)
-			if len(combined) > brokerUnownedRingCap {
-				g.lag = true
-				combined = combined[len(combined)-brokerUnownedRingCap:]
-			}
-			g.ring = combined
-		}
+		g.putBackLocked(pending)
 	}
 	if g.draining == pump {
 		g.draining = nil
