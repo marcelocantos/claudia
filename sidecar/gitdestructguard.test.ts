@@ -203,6 +203,24 @@ describe("Git global options in both shared-clone guards (H8)", () => {
     "time -p git stash",
     "command -p git stash",
     "exec -a seat git stash",
+    // 🎯T1403: literal grouping, keywords, nested shells, eval, and aliases
+    // this command itself defines. Each row is shown to stash or move HEAD
+    // under real git before the guard is allowed to refuse it.
+    "sh -c 'git stash'",
+    "bash -c 'git stash'",
+    "bash -lc 'git stash'",
+    "bash -c \"git checkout other\"",
+    "eval git stash",
+    "eval 'git checkout other'",
+    "{ git stash; }",
+    "(git stash)",
+    "if true; then git stash; fi",
+    "while true; do git checkout other; break; done",
+    "f() { git stash; }; f",
+    "git config alias.zz stash && git zz",
+    "git config --local alias.zz checkout && git zz other",
+    "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.zz GIT_CONFIG_VALUE_0=stash git zz",
+    "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.zz GIT_CONFIG_VALUE_0='checkout other' git zz",
   ];
   test("real git runs each alias and prefix spelling, and the guard refuses it before launch", async () => {
     for (const command of realBypasses) {
@@ -241,10 +259,28 @@ describe("Git global options in both shared-clone guards (H8)", () => {
       "command -v git stash",
       "env -i git status",
       "nice -n 5 git log stash",
+      "(git status)",
+      "bash -c 'git status'",
+      "sh -c 'git status'",
+      "if true; then git status; fi",
+      "eval git status",
+      "git config alias.zz status && git zz",
+      "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.zz GIT_CONFIG_VALUE_0=status git zz",
+      // Residue: not executed, and not read as git. See gitCommands.
+      "python3 -c 'import os; os.system(\"git stash\")'",
+      "bash -c '$cmd'",
+      "eval \"$cmd\"",
+      "bash script.sh",
     ]) {
       expect({ command, hits: destructiveGitCommands(command), checkout: detectBranchCheckout(command) })
         .toEqual({ command, hits: [], checkout: null });
     }
+  });
+
+  test("a --global alias and other shells are read off the command, without consulting git", () => {
+    expect(destructiveGitCommands("git config --global alias.zz stash && git zz").map((h) => h.operation)).toEqual(["stash"]);
+    expect(destructiveGitCommands("zsh -c 'git stash'").map((h) => h.operation)).toEqual(["stash"]);
+    expect(detectBranchCheckout("dash -c 'git checkout other'")?.ref).toBe("other");
   });
 });
 

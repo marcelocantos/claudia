@@ -3,7 +3,11 @@
 
 // Literal Bash git pre-exec admission for the shared clone (🎯T240).
 // The sidecar's Bash executes only after this check. This is deliberately not
-// a general shell interpreter: dynamically generated commands remain a residual.
+// a general shell interpreter. What a reading of the command line can and
+// cannot see is stated on gitCommands in branchguard.ts (🎯T1403): literal
+// grouping, keywords, nested `sh -c` / `eval`, and aliases this command
+// itself defines. Expansion, other languages, script files, and an alias
+// that already lives only in a config file stay residual.
 import path from "node:path";
 import { gitCommands, runGit, type GitProbe, type GitRunner } from "./branchguard.ts";
 

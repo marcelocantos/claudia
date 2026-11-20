@@ -229,13 +229,18 @@ type GitInvocation = { sub: string; args: string[]; dir: string; probe: GitProbe
 // or `--config-env alias.<name>=<VAR>` expanded. A `!` alias is a shell
 // command, so its text is read as one. inherited carries the repository
 // selectors an outer git exports to a shell alias.
-function* gitCommand(words: string[], cwd: string, inherited: readonly string[] = []): Generator<GitInvocation> {
+function* gitCommand(words: string[], cwd: string, inherited: readonly string[] = [], scriptAliases?: ReadonlyMap<string, string>): Generator<GitInvocation> {
   const utility = commandUtility(words);
   if (!utility || path.basename(utility.argv[0] || "") !== "git") return;
   const env = (name: string) => utility.vars.get(name) ?? (utility.clearedEnv ? undefined : process.env[name]);
   const probeDir = utility.chdir ? joinDir(cwd, utility.chdir) : cwd;
   const globals: string[] = [...inherited];
   const aliases = new Map<string, string>();
+  // A `git config alias.…` earlier in this script has not been written yet
+  // when the guard runs, so the definition is carried here. GIT_CONFIG_*
+  // overrides that, and a later `-c` overrides both.
+  if (scriptAliases) for (const [name, value] of scriptAliases) aliases.set(name, value);
+  seedConfigEnv(aliases, env);
   const expanded = new Set<string>();
   let argv = utility.argv.slice(1);
   let dir = probeDir;
@@ -303,6 +308,22 @@ function* gitCommand(words: string[], cwd: string, inherited: readonly string[] 
   }
 }
 
+// seedConfigEnv applies GIT_CONFIG_COUNT / GIT_CONFIG_KEY_n / GIT_CONFIG_VALUE_n
+// from the command's own assignments. A count that is not a small integer
+// is ignored: git would refuse it, and the guard must not invent aliases.
+function seedConfigEnv(aliases: Map<string, string>, env: (name: string) => string | undefined) {
+  const raw = env("GIT_CONFIG_COUNT");
+  if (raw === undefined || !/^\d+$/.test(raw)) return;
+  const count = Number(raw);
+  if (count > 64) return;
+  for (let i = 0; i < count; i++) {
+    const key = env(`GIT_CONFIG_KEY_${i}`);
+    const value = env(`GIT_CONFIG_VALUE_${i}`);
+    if (key === undefined || value === undefined) continue;
+    defineAlias(aliases, key, value);
+  }
+}
+
 // defineAlias records `alias.<name>` the way git's config parser keys it:
 // section and name compare without case, and `alias.<sub>.<key>` is a
 // subsection, not an alias. A later definition wins.
@@ -357,21 +378,152 @@ function joinDir(base: string, dir: string): string {
 // Both guards use the same Git invocation. The probe lets Git apply each
 // `-C` in sequence and resolve repository selectors from the resulting cwd.
 // Command-provided config and exec paths are excluded from the probe.
-export function* gitCommands(command: string, start = "", inherited: readonly string[] = []): Generator<GitInvocation> {
+//
+// shellReadLimit bounds literal `sh -c` / `eval` nesting. Deeper text is
+// left unread rather than followed forever.
+const shellReadLimit = 8;
+
+export function* gitCommands(
+  command: string,
+  start = "",
+  inherited: readonly string[] = [],
+  depth = 0,
+  scriptAliases: Map<string, string> = new Map(),
+): Generator<GitInvocation> {
   let cwd = start;
   for (const words of segments(stripHeredocBodies(command))) {
-    if (words[0] === "cd") {
-      cwd = words[1] && words[1] !== "-" ? joinDir(cwd, words[1]) : "";
+    const body = stripShellKeywords(words);
+    const utility = commandUtility(body);
+    if (utility && depth < shellReadLimit) {
+      const script = nestedScript(utility.argv);
+      if (script !== null) {
+        const dir = utility.chdir ? joinDir(cwd, utility.chdir) : cwd;
+        yield* gitCommands(script, dir, inherited, depth + 1, scriptAliases);
+        continue;
+      }
+    }
+    if (body[0] === "cd") {
+      cwd = body[1] && body[1] !== "-" ? joinDir(cwd, body[1]) : "";
       continue;
     }
-    yield* gitCommand(words, cwd, inherited);
+    yield* gitCommand(body, cwd, inherited, scriptAliases);
+    const defined = aliasWrite(body);
+    if (defined) {
+      if ("unset" in defined) scriptAliases.delete(defined.name);
+      else scriptAliases.set(defined.name, defined.value);
+    }
   }
+}
+
+// A shell keyword at the front of a segment is not the utility. The git
+// word after `then` / `do` is. A function body is read as if the function
+// runs: the guard does not track which names are called.
+const shellKeywords = new Set([
+  "if", "then", "else", "elif", "fi", "while", "do", "done", "for", "in",
+  "until", "case", "esac", "function", "select", "{", "}", "!",
+]);
+
+function stripShellKeywords(words: string[]): string[] {
+  let i = 0;
+  while (i < words.length && shellKeywords.has(words[i])) i++;
+  return words.slice(i);
+}
+
+const shellBasenames = new Set(["sh", "bash", "dash", "zsh", "ksh"]);
+
+// nestedScript is the literal text a shell `-c` or a literal `eval` runs,
+// or null when this command is not one of those. A script file (`bash
+// file.sh`), a `$` / backtick / process substitution, and any other
+// language (`python -c`) are null: the guard does not execute them and
+// does not pretend to know what they run.
+function nestedScript(argv: string[]): string | null {
+  const base = path.basename(argv[0] || "");
+  if (shellBasenames.has(base)) return shellDashC(argv);
+  if (base !== "eval") return null;
+  const rest = argv.slice(1);
+  if (rest.length === 0 || rest.some((word) => /[$`]/.test(word) || word.includes("<(") || word.includes(">("))) return null;
+  return rest.join(" ");
+}
+
+function shellDashC(argv: string[]): string | null {
+  for (let i = 1; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === "--") return null;
+    if (arg === "-c" || arg === "--command") return argv[i + 1] ?? null;
+    if (arg.startsWith("--command=")) return arg.slice("--command=".length);
+    if (arg.startsWith("-") && !arg.startsWith("--")) {
+      const at = arg.indexOf("c");
+      if (at > 0) {
+        const attached = arg.slice(at + 1);
+        return attached || argv[i + 1] || null;
+      }
+      continue;
+    }
+    return null;
+  }
+  return null;
+}
+
+// aliasWrite is `git config [--global|--local|…] alias.<name> <value>` in
+// this same script, including an unset. The file is not updated until the
+// script runs, which is after the guard, so the definition has to be read
+// off the command. An alias that already lives only in a config file is
+// not looked up: that read depends on HOME, includeIf and which file git
+// would choose, and a different answer would disagree with the git that runs.
+function aliasWrite(words: string[]): { name: string; value: string } | { name: string; unset: true } | null {
+  const utility = commandUtility(words);
+  if (!utility || path.basename(utility.argv[0] || "") !== "git") return null;
+  const argv = utility.argv.slice(1);
+  let i = 0;
+  for (; i < argv.length; i++) {
+    const arg = argv[i];
+    if (!arg.startsWith("-")) break;
+    const equals = arg.indexOf("=");
+    const option = equals < 0 ? arg : arg.slice(0, equals);
+    if (gitValueOptions.has(option) && equals < 0) i++;
+  }
+  if (argv[i] !== "config") return null;
+  let unset = false;
+  const positional: string[] = [];
+  for (i++; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === "--") {
+      positional.push(...argv.slice(i + 1));
+      break;
+    }
+    if (arg === "--unset" || arg === "--unset-all") { unset = true; continue; }
+    if (arg === "--get" || arg === "--get-all" || arg === "--get-regexp" || arg === "--list" || arg === "--edit" || arg === "--show-origin" || arg === "--show-scope") return null;
+    if (arg === "-f" || arg === "--file" || arg === "--blob") { i++; continue; }
+    if (arg.startsWith("--file=") || arg.startsWith("--blob=")) continue;
+    if (arg.startsWith("-")) continue;
+    positional.push(arg);
+  }
+  if (positional.length < 1) return null;
+  const lower = positional[0].toLowerCase();
+  if (!lower.startsWith("alias.")) return null;
+  const name = lower.slice("alias.".length);
+  if (!name || name.includes(".")) return null;
+  if (unset) return { name, unset: true };
+  if (positional.length < 2) return null;
+  return { name, value: positional[1] };
 }
 
 // --- lexing ----------------------------------------------------------------
 //
-// Not a shell: just enough to keep a quoted `;` from splitting a command, to
-// drop redirections, and to split on `;`, `&&`, `||`, `|`, `&` and newlines.
+// Not a shell. The guard reads the command string; it does not run it.
+//
+// It can see: words split on `;`, `&&`, `||`, `|`, `&`, newlines and
+// unquoted `(` `)` `{` `}`; a shell keyword in front of a segment; a
+// literal `sh`/`bash`/`dash`/`zsh`/`ksh` `-c` (including `-lc`) or a
+// literal `eval`, nested up to shellReadLimit; aliases this command
+// defines with `git config`, `GIT_CONFIG_KEY_n` or `-c`.
+//
+// It cannot see: parameter expansion, command substitution, process
+// substitution, a script file named as an argument, another language
+// (`python -c`), or an alias that already lives only in a git config
+// file this command does not write or name. A function body is read as
+// if the function runs, because which names get called is not tracked.
+// Those limits are the residue. The Bash tool is not failed closed.
 
 // Commands that run the rest of their words as another command, with the
 // options each takes first. `values` are short options that consume an
@@ -540,6 +692,10 @@ export function segments(command: string): string[][] {
       i++;
       if (command[i + 1] === ">") i++;
       redirNext = true;
+      continue;
+    }
+    if (c === "(" || c === ")" || c === "{" || c === "}") {
+      endSeg();
       continue;
     }
     if (c === ";" || c === "\n" || c === "&" || c === "|") {
