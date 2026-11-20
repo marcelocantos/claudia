@@ -10,7 +10,6 @@ import (
 	"strings"
 	"syscall"
 	"testing"
-	"time"
 
 	"github.com/marcelocantos/claudia/omp"
 )
@@ -44,11 +43,5 @@ func TestStopEndsTheSeatsToolProcess(t *testing.T) {
 	})
 	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
 	a.Stop()
-	deadline := time.Now().Add(time.Second)
-	for syscall.Kill(pid, 0) == nil && time.Now().Before(deadline) {
-		time.Sleep(20 * time.Millisecond)
-	}
-	if syscall.Kill(pid, 0) == nil {
-		t.Fatalf("Stop returned and nothing is attached to the seat, but its Bash tool (pid %d) is still running", pid)
-	}
+	waitFor(t, "Bash tool child to exit", func() bool { return syscall.Kill(pid, 0) != nil })
 }

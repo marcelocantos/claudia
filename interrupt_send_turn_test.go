@@ -5,7 +5,6 @@ package claudia
 
 import (
 	"bufio"
-	"context"
 	"encoding/json"
 	"net"
 	"os"
@@ -125,7 +124,7 @@ func TestInterruptThenSendReturnsTheNewTurnsAnswer(t *testing.T) {
 	}
 	select {
 	case <-sawA:
-	case <-time.After(10 * time.Second):
+	case <-t.Context().Done():
 		t.Fatal("turn A never started")
 	}
 	if err := a.Interrupt(); err != nil {
@@ -134,9 +133,7 @@ func TestInterruptThenSendReturnsTheNewTurnsAnswer(t *testing.T) {
 	if err := a.Send("question B"); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
-	got, err := a.WaitForResponse(ctx)
+	got, err := a.WaitForResponse(t.Context())
 	if err != nil || got != "answer B" {
 		t.Fatalf("WaitForResponse after Interrupt+Send(B) = %q, %v; want %q", got, err, "answer B")
 	}
@@ -169,7 +166,7 @@ func TestEscalatedMessageWaitGetsItsOwnAnswer(t *testing.T) {
 	}
 	select {
 	case <-sawA:
-	case <-time.After(10 * time.Second):
+	case <-t.Context().Done():
 		t.Fatal("turn A never started")
 	}
 	if a.TurnPhase() != TurnInTurn {
@@ -181,9 +178,7 @@ func TestEscalatedMessageWaitGetsItsOwnAnswer(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
-	got, err := a.WaitForResponse(ctx)
+	got, err := a.WaitForResponse(t.Context())
 	if err != nil || got != "answer B" {
 		t.Fatalf("wait for escalated message = %q, %v; want %q", got, err, "answer B")
 	}
