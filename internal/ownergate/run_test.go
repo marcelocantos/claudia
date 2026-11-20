@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -221,7 +222,11 @@ func TestProductionGateRejectsFailingSidecar(t *testing.T) {
 	fixtureGit(t, dir, "commit", "-qm", "plant sidecar failure")
 	var output bytes.Buffer
 	err = Run(dir, &output)
-	if err == nil || !strings.Contains(output.String(), "(fail) "+marker) {
+	// Bun 1.4 prints a ballot-x and the test name. Older Bun printed "(fail)".
+	// ANSI colour sits between the mark and the name.
+	plain := regexp.MustCompile(`\x1b\[[0-9;]*m`).ReplaceAllString(output.String(), "")
+	plantedFailed := strings.Contains(plain, "(fail) "+marker) || strings.Contains(plain, "\u2717 "+marker)
+	if err == nil || !plantedFailed {
 		t.Fatalf("planted test was not the failing check: %v\n%s", err, &output)
 	}
 	noAttestation(t, dir)
