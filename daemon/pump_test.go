@@ -45,6 +45,71 @@ func TestReclaimAfterDisconnectKeepsPumpEventsInOrder(t *testing.T) {
 	assertGrantReplay(t, dialRaw(t, f.sock), reclaimRequest(t, f, name), []string{"e0", "e1", "e2"})
 }
 
+// TestReclaimPlaysHistoryBeforeALiveEvent pins H11. The seat publishes
+// again as soon as the reclaim takes ownership, which is before the ring
+// has been written. That event must follow the history and the grant
+// reply. The pump starts only after both.
+func TestReclaimPlaysHistoryBeforeALiveEvent(t *testing.T) {
+	const name = "order"
+	t.Setenv("HOME", t.TempDir())
+	f := newFixture(t)
+	opts := f.options(nil)
+	opts.DisableResume, opts.DisableMCPHost = true, true
+	f.bootWith(t, opts)
+
+	old := rawSeat(t, f.sock, name)
+	proc := f.d.reg.Get(name)
+	if err := old.Close(); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "owner disconnect", func() bool { return !f.owned(name) })
+
+	const history = 64
+	want := make([]string, history)
+	for i := range want {
+		want[i] = fmt.Sprintf("h%04d", i)
+		publishReclaimEvent(proc, want[i])
+	}
+
+	c := dialRaw(t, f.sock)
+	req := reclaimRequest(t, f, name)
+	if err := c.WriteRequest(req); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "reclaim to take ownership", func() bool { return f.owned(name) })
+	publishReclaimEvent(proc, "LIVE")
+
+	if err := c.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for {
+		resp, err := c.ReadResponse()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.Type == broker.TypeGranted {
+			break
+		}
+		got = append(got, replayTitle(t, resp))
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("events before the grant reply = %v, want history %v and no LIVE", got, want)
+	}
+	if got := replayTitle(t, mustRead(t, c)); got != "LIVE" {
+		t.Fatalf("first event after the grant reply = %q, want LIVE", got)
+	}
+}
+
+func mustRead(t *testing.T, c *broker.Conn) *broker.Response {
+	t.Helper()
+	resp, err := c.ReadResponse()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp
+}
+
 func TestDetachReportsLagWhenPumpQueueExceedsReclaimCapacity(t *testing.T) {
 	d := &Daemon{}
 	pump := d.newGrantPump()
