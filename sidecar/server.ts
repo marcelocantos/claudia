@@ -199,9 +199,12 @@ function holdSeatClose(seat: string): () => void {
   };
 }
 
-async function waitSeatClosed(seat: string): Promise<void> {
-  const pending = seatClosing.get(seat);
-  if (pending) await pending;
+// The promise is returned only while a drop is still unwinding. Callers
+// await it then. Awaiting an already-settled promise still yields a turn,
+// and a load plus an abort written in one chunk would run the abort before
+// this load created the seat.
+function seatStillClosing(seat: string): Promise<void> | undefined {
+  return seatClosing.get(seat);
 }
 finishStartedOnExit = () => {
   for (const loaded of seats.values()) loaded.agent.cancelOpenReceipts();
@@ -381,7 +384,8 @@ async function handle(
     throw Object.assign(new Error("required resume needs an explicit session identity"), { reason: "seat_identity_mismatch" });
   }
   if (msg.op === "adopt") {
-    await waitSeatClosed(seat);
+    const closing = seatStillClosing(seat);
+    if (closing) await closing;
     // A seat that is not already running is not created (🎯T869). ResumeAll
     // treats that as a miss and launches, and only the launch is nudged.
     if (!msg.token) {
@@ -416,7 +420,8 @@ async function handle(
     return;
   }
   if (msg.op === "load") {
-    await waitSeatClosed(seat);
+    const closing = seatStillClosing(seat);
+    if (closing) await closing;
     if (!msg.token) {
       write(errorEvent(msg, seat, "load without an access token"));
       return;
