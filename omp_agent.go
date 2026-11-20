@@ -594,7 +594,12 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 				_ = ctrl.send(omp.Message{Op: omp.OpDrop, Seat: ctrl.seat, SessionID: sessionID})
 			},
 			stop: func(*Agent) {
-				ctrl.shutdownOMPSeat()
+				// Close alone fails unanswered host calls and leaves the
+				// sidecar's tool processes running (C8). End the turn first,
+				// while the pump can still read its turn_end. Cleanup closes
+				// the connection after this returns. Discard still sends
+				// OpDrop on its own, ahead of Stop.
+				ctrl.quiesceForStop()
 			},
 		},
 		DetectReady: func(a *Agent) {
@@ -1915,6 +1920,24 @@ func (c *ompControl) closePumpDone() {
 			close(c.done)
 		}
 	})
+}
+
+// quiesceForStop is the seat stop that is not a removal. A turn still open
+// gets the same StopTurn abort Release uses, and Stop waits for that turn
+// to end before the connection closes. An idle seat sends nothing: there
+// is no tool process to reap, and a write to a peer that has already
+// stopped reading must not hold Stop for the receipt timeout.
+func (c *ompControl) quiesceForStop() {
+	if !c.inflight.Load() {
+		return
+	}
+	if err := c.send(omp.Message{Op: omp.OpAbort, Seat: c.seat, StopTurn: true}); err != nil {
+		return
+	}
+	deadline := time.Now().Add(interruptSettleTimeout)
+	for c.inflight.Load() && time.Now().Before(deadline) {
+		time.Sleep(interruptSettlePoll)
+	}
 }
 
 // shutdownOMPSeat cancels seat work, closes the sidecar connection, waits for
