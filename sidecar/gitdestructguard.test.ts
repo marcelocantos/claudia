@@ -58,6 +58,86 @@ describe("Git global options in both shared-clone guards (H8)", () => {
     });
   }
 
+  test("real git executes these spellings, and both guards refuse them", async () => {
+    const dir = fixture();
+    try {
+      git(dir, "branch", "other");
+      mkdirSync(join(dir, "sub"));
+      const before = git(dir, "status", "--short");
+      const head = () => git(dir, "symbolic-ref", "--short", "HEAD");
+      expect(head()).toBe("main");
+      // Each line is one argv sequence git itself runs. Attached and
+      // clustered subcommand shorts are parse-options; top-level git
+      // options are exact words with a separate operand.
+      const switches = [
+        "git checkout -b spell-b",
+        "git checkout -bspell-attached",
+        "git checkout -qbspell-cluster",
+        "git checkout -qfbspell-flags",
+        "git switch -c spell-c",
+        "git switch -cspell-attached",
+        "git switch -Cspell-force",
+        "git switch --create=spell-long",
+        "git switch --force-create spell-force-long",
+        "git checkout --orphan=spell-orphan",
+        "git checkout --orphan spell-orphan-sep",
+        "git checkout -b spell-dashdash --",
+        "git -c color.ui=never checkout -qbspell-config",
+        "git -c color.ui checkout -b spell-bool",
+        "git --git-dir=.git --work-tree=. switch -cspell-gitdir",
+        "git --namespace=seat checkout -b spell-namespace",
+        "git -C sub -C .. checkout -b spell-rel-c",
+        "git -C '' --no-pager checkout -b spell-empty-c",
+      ];
+      for (const command of switches) {
+        let launched = false;
+        await expect(runShell(() => dir, () => undefined,
+          { command, timeoutMs: 1000, maxBuffer: 1000 },
+          new SeatProcessOwnership(), async () => { launched = true; throw new Error("spawned"); }))
+          .rejects.toThrow("branchguard:");
+        expect(launched).toBe(false);
+        expect(head()).toBe("main");
+      }
+      const destructive = [
+        "git -c color.ui=never stash",
+        "git -c color.ui stash push",
+        "git --git-dir .git --work-tree . stash",
+        "git --attr-source=HEAD reset --hard",
+        "git -C sub -C .. clean -fd",
+        "git -P --no-replace-objects checkout -- owner.txt",
+      ];
+      for (const command of destructive) {
+        let launched = false;
+        await expect(runShell(() => dir, () => undefined,
+          { command, timeoutMs: 1000, maxBuffer: 1000 },
+          new SeatProcessOwnership(), async () => { launched = true; throw new Error("spawned"); }))
+          .rejects.toThrow("gitdestructguard:");
+        expect(launched).toBe(false);
+      }
+      expect(git(dir, "status", "--short")).toBe(before);
+      // These argv are real and do not run the subcommand: git's top-level
+      // parser rejects `--`, clustered shorts, and an operand glued on.
+      const inert = [
+        "git -- checkout other",
+        "git -pP checkout other",
+        "git -Csub checkout other",
+        "git -ccolor.ui=never stash",
+        "git --shallow-file=.git/shallow stash",
+        "git --exec-path stash",
+        "git --version checkout other",
+      ];
+      for (const command of inert) {
+        await runShell(() => dir, () => undefined,
+          { command, timeoutMs: 1000, maxBuffer: 1000 },
+          new SeatProcessOwnership()).catch(() => undefined);
+        expect(head()).toBe("main");
+        expect(git(dir, "status", "--short")).toBe(before);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("denies both operations before launch, including explicit repository paths", async () => {
     const dir = fixture();
     const elsewhere = realpathSync(mkdtempSync(join(tmpdir(), "git-options-")));

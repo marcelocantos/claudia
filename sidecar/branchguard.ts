@@ -54,14 +54,83 @@ export function detectBranchCheckout(command: string): BranchCheckout | null {
 function findBranchCheckout(command: string): { checkout: BranchCheckout; probe: GitProbe } | null {
   let found: { checkout: BranchCheckout; probe: GitProbe } | null = null;
   for (const { sub, args, dir, probe } of gitCommands(command)) {
-    if (sub !== "checkout" && sub !== "switch") continue;
-    if (args.includes("--")) continue; // `checkout [<ref>] -- <path>`: a restore
-    const pos = args.filter((a) => !a.startsWith("-"));
-    if (pos.length === 0) continue;
-    const createFlag = args.some((a) => a === "-b" || a === "-B" || a === "-c" || a === "-C");
-    found = { checkout: { ref: pos[0], dir, definite: sub === "switch" || createFlag }, probe };
+    const ref = branchOperand(sub, args);
+    if (!ref) continue;
+    found = { checkout: { ref: ref.ref, dir, definite: ref.definite }, probe };
   }
   return found;
+}
+
+// branchOperand is the ref a checkout or switch would move HEAD to.
+// Subcommand options follow parse-options: a short option that takes an
+// operand consumes the rest of a combined cluster (`-qbother`, `-cnew`),
+// and `--name=value` does not leave `value` looking like the branch.
+// `--` starts pathspecs, so `checkout <ref> -- <path>` is not a switch,
+// except when a create option already named the branch (`checkout -b other --`
+// still moves HEAD).
+function branchOperand(sub: string, args: string[]): { ref: string; definite: boolean } | null {
+  if (sub !== "checkout" && sub !== "switch") return null;
+  const createShort = sub === "switch" ? new Set(["c", "C"]) : new Set(["b", "B"]);
+  // Flags with no operand. `-t` / `--track` takes an optional attached value
+  // only (`-tbother` is `--track=bother`, not `-t -b other`).
+  const flagShort = new Set(["q", "l", "m", "d", "f", "p", "2", "3"]);
+  const requiredShort = new Set([...createShort, "U"]);
+  const createLong = new Set(sub === "switch"
+    ? ["--create", "--force-create", "--orphan"]
+    : ["--orphan"]);
+  const valueLong = new Set(["--conflict", "--unified", "--inter-hunk-context", "--pathspec-from-file"]);
+  let createRef: string | null = null;
+  const positionals: string[] = [];
+  let paths = false;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (paths) {
+      positionals.push(arg);
+      continue;
+    }
+    if (arg === "--") {
+      paths = true;
+      continue;
+    }
+    if (arg.startsWith("--")) {
+      const eq = arg.indexOf("=");
+      const name = eq < 0 ? arg : arg.slice(0, eq);
+      const inline = eq < 0 ? undefined : arg.slice(eq + 1);
+      if (name.startsWith("--no-")) continue;
+      if (createLong.has(name)) {
+        const value = inline ?? args[++i];
+        if (value === undefined) return null;
+        createRef = value;
+        continue;
+      }
+      if (valueLong.has(name)) {
+        if (inline === undefined) i++;
+        continue;
+      }
+      continue;
+    }
+    if (arg.startsWith("-") && arg !== "-") {
+      let rest = arg.slice(1);
+      while (rest) {
+        const letter = rest[0];
+        rest = rest.slice(1);
+        if (flagShort.has(letter)) continue;
+        if (letter === "t") break; // optional operand consumes the rest of the cluster
+        if (requiredShort.has(letter)) {
+          const value = rest || args[++i];
+          if (!value) return null;
+          if (createShort.has(letter)) createRef = value;
+          break;
+        }
+        return null; // unknown short: this git rejects the command
+      }
+      continue;
+    }
+    positionals.push(arg);
+  }
+  if (createRef !== null) return { ref: createRef, definite: true };
+  if (paths || positionals.length === 0) return null;
+  return { ref: positionals[0], definite: sub === "switch" };
 }
 
 // decideBranchCheckout is the pure verdict: a switch away from the shared
