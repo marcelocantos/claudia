@@ -17,7 +17,10 @@ import (
 // TestStopEndsTheSeatsToolProcess: Agent.Stop (which Registry.Stop calls
 // for every stop that is not a removal) on a seat whose turn is running a
 // Bash tool. Once Stop has returned nobody is attached to the seat; the
-// tool's process must not keep running.
+// tool's process must not keep running. The command runs to the Bash
+// tool's 600s ceiling, so only the stop ends it before go test's default
+// deadline. With BASH_CANCEL's 60s sleep the wait below passed with the stop
+// doing nothing.
 func TestStopEndsTheSeatsToolProcess(t *testing.T) {
 	ctx, dir := startAbortSidecar(t)
 	a, err := StartDirect(Config{Name: "hunt-stop", Provider: Provider(omp.Anthropic), Model: "claude-sonnet-5",
@@ -29,7 +32,7 @@ func TestStopEndsTheSeatsToolProcess(t *testing.T) {
 		t.Fatal(err)
 	}
 	marker := filepath.Join(dir, "child.pid")
-	if err := a.Send("BASH_CANCEL " + marker); err != nil {
+	if err := a.Send("BASH_HOLD " + marker); err != nil {
 		t.Fatal(err)
 	}
 	var pid int

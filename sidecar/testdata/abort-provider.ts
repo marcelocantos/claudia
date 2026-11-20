@@ -35,6 +35,13 @@ const handler = (context: any) => {
     const marker = text.slice("BASH_CANCEL ".length);
     return { content: [{ type: "toolCall", id: "cancel-bash", name: "Bash", arguments: { command: `sleep 60 & child=$!; echo $child > '${marker}'; wait $child`, timeout: 65 } }] };
   }
+  // BASH_HOLD runs until the Bash tool's 600s ceiling kills it, past the
+  // deadline of a test that asks whether a stop ended the command, so the
+  // command ending by itself cannot answer that test.
+  if (text.startsWith("BASH_HOLD ") && !context.messages.some(m => m.role === "toolResult")) {
+    const marker = text.slice("BASH_HOLD ".length);
+    return { content: [{ type: "toolCall", id: "hold-bash", name: "Bash", arguments: { command: `sleep 3600 & child=$!; echo $child > '${marker}'; wait $child`, timeout: 600 } }] };
+  }
   // 🎯T236: an unanswered function call is a rejection, never an empty
   // successful stop. Pairing must close the call before this prompt.
   if (unpairedToolCall(context.messages)) {
