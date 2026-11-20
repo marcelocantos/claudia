@@ -477,10 +477,10 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 		sessionID: sessionID,
 		preserve:  req.Config.ContextPreserve, pins: req.Config.ContextPins,
 		tools: tools, mcpServers: slices.Clone(req.Config.MCPServers), toolServers: toolRoutes, toolNames: toolNames,
-		sandbox:        sandbox,
-		protectedPaths: slices.Clone(ompProtectedPathRules(req.Config)),
-		done:             make(chan struct{}),
-		seatLifetime:     seatLifetime,
+		sandbox:            sandbox,
+		protectedPaths:     slices.Clone(ompProtectedPathRules(req.Config)),
+		done:               make(chan struct{}),
+		seatLifetime:       seatLifetime,
 		seatLifetimeCancel: seatLifetimeCancel,
 	}
 	// A reattach (adopt, or a load that found this seat already running in
@@ -544,7 +544,12 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 					return err
 				}
 				ctrl.inflight.Store(true)
-				return ctrl.send(promptMessage(omp.OpPrompt, req.Config.Name, text, a, ctrl))
+				msg := promptMessage(omp.OpPrompt, req.Config.Name, text, a, ctrl)
+				// Before the write: the peer can answer it with the turn
+				// this prompt interrupts, and that end must not satisfy
+				// the wait for this one (C3).
+				a.noteLatchedTurn(msg.TurnID)
+				return ctrl.send(msg)
 			},
 			sendWithRequestID: func(a *Agent, text, id string) error {
 				if err := ctrl.blockIfCompactBusy(); err != nil {
@@ -553,7 +558,9 @@ func (ompAgentBackend) StartAgent(req agentStartRequest) (*agentStart, error) {
 				if id == "" {
 					ctrl.inflight.Store(true)
 				}
-				return ctrl.sendRequest(promptMessage(omp.OpPrompt, req.Config.Name, text, a, ctrl), id)
+				msg := promptMessage(omp.OpPrompt, req.Config.Name, text, a, ctrl)
+				a.noteLatchedTurn(msg.TurnID)
+				return ctrl.sendRequest(msg, id)
 			},
 			steer: func(a *Agent, text string) (DeliveryOutcome, error) {
 				err := ctrl.send(promptMessage(omp.OpSteer, req.Config.Name, text, a, ctrl))
@@ -661,10 +668,10 @@ type ompControl struct {
 	toolServers map[string]string
 	// toolNames maps an advertised tool name to the server's own name for
 	// it, where the provider needed it renamed (🎯T146).
-	toolNames   map[string]string
-	mu          sync.Mutex
-	writeOnce   sync.Once
-	writePermit chan struct{}
+	toolNames        map[string]string
+	mu               sync.Mutex
+	writeOnce        sync.Once
+	writePermit      chan struct{}
 	inflight         atomic.Bool
 	compactInFlight  atomic.Bool
 	compactUncertain atomic.Bool
@@ -889,15 +896,15 @@ func (c *ompControl) pump(a *Agent) {
 			slog.Info("omp seat context maintenance", "seat", c.seat, "event", ev.Type, "text", ev.Text)
 			text := ev.Type + ": " + ev.Text
 			a.publishEvent(Event{
-				Type:            "progress",
-				ProgressType:    ProgressCompaction,
-				Text:            text,
-				ContextBefore:   ev.ContextBefore,
-				ContextAfter:    ev.ContextAfter,
+				Type:             "progress",
+				ProgressType:     ProgressCompaction,
+				Text:             text,
+				ContextBefore:    ev.ContextBefore,
+				ContextAfter:     ev.ContextAfter,
 				CompactionWindow: ev.TargetWindow,
-				CompactOn:       ev.CompactOn,
-				CompactProvider: ev.CompactProvider,
-				CompactModel:    ev.CompactModel,
+				CompactOn:        ev.CompactOn,
+				CompactProvider:  ev.CompactProvider,
+				CompactModel:     ev.CompactModel,
 			})
 		case "text":
 			visible, token := omp.StripStopToken(ev.Text)

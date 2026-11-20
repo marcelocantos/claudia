@@ -1740,6 +1740,7 @@ func (a *Agent) WaitForResponse(ctx context.Context) (string, error) {
 		settleTimer  *time.Timer
 		emitted      bool
 		witness      turnWitness
+		wantTurn     string
 	)
 
 	// The wake set (🎯T96). ctx and the turn's own terminal event are the
@@ -1817,6 +1818,11 @@ func (a *Agent) WaitForResponse(ctx context.Context) (string, error) {
 		// bound below asks whether the agent is saying ANYTHING, not
 		// whether it has answered yet.
 		witness.note(ev, a.now())
+		// The aborted turn's end is an ordinary terminal assistant event.
+		// A wait armed for the next turn must not take it (C3).
+		if wantTurn != "" && ev.TurnID != "" && ev.TurnID != wantTurn {
+			return
+		}
 		if ev.IsError {
 			msg := strings.TrimSpace(ev.Text)
 			if msg == "" {
@@ -1853,6 +1859,7 @@ func (a *Agent) WaitForResponse(ctx context.Context) (string, error) {
 	// only hears the future, and a blocking submit can consume the whole
 	// turn before its caller ever reaches this line (🎯T98).
 	token := a.subscribeEventsTakingTurn(onEvent, func(prior turnSoFar) {
+		wantTurn = prior.turnID
 		if prior.err != nil {
 			emitOnce(outcome{err: prior.err})
 			return

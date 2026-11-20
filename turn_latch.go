@@ -58,6 +58,10 @@ type turnLatch struct {
 	// requests are the identified requests whose started receipt named
 	// this turn: the sends this turn answers.
 	requests map[string]bool
+	// turnID is the turn this latch is waiting on, when the submit named
+	// one. An assistant event that names a different turn — the aborted
+	// turn's end arriving after the next send — is not this turn (C3).
+	turnID string
 }
 
 // turnSoFar is a latch handed to one waiter. Empty when no submit has
@@ -66,6 +70,7 @@ type turnSoFar struct {
 	text     string
 	terminal bool
 	err      error
+	turnID   string
 }
 
 // beginTurn arms the latch for a newly submitted turn, discarding
@@ -74,6 +79,21 @@ func (a *Agent) beginTurn() {
 	a.mu.Lock()
 	a.turn = turnLatch{armed: true, text: &strings.Builder{}}
 	a.mu.Unlock()
+}
+
+// noteLatchedTurn names the turn a submit just minted, before the write.
+// The peer can answer that write with the previous turn's end. Unarmed
+// latches (an identified send, which arms on its started receipt) are
+// left alone.
+func (a *Agent) noteLatchedTurn(turnID string) {
+	if a == nil || turnID == "" {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.turn.armed {
+		a.turn.turnID = turnID
+	}
 }
 
 // retireEndedTurnFor disarms a latched turn that has already ended and
@@ -101,7 +121,7 @@ func (a *Agent) recordTurnEventLocked(ev Event) {
 		turnID := ev.Receipt.TurnIDs[len(ev.Receipt.TurnIDs)-1]
 		if turnID != a.receiptTurnID {
 			a.receiptTurnID = turnID
-			a.turn = turnLatch{armed: true, text: &strings.Builder{}}
+			a.turn = turnLatch{armed: true, text: &strings.Builder{}, turnID: turnID}
 		}
 		if a.turn.armed && ev.Receipt.RequestID != "" {
 			if a.turn.requests == nil {
@@ -111,6 +131,11 @@ func (a *Agent) recordTurnEventLocked(ev Event) {
 		}
 	}
 	if !a.turn.armed {
+		return
+	}
+	// A named turn does not absorb another turn's events. An empty id
+	// (a backend that does not stamp turns) keeps the old behaviour.
+	if ev.TurnID != "" && a.turn.turnID != "" && ev.TurnID != a.turn.turnID {
 		return
 	}
 	if ev.IsError {
@@ -142,7 +167,7 @@ func (a *Agent) takeTurnLocked() turnSoFar {
 	if !a.turn.armed {
 		return turnSoFar{}
 	}
-	out := turnSoFar{terminal: a.turn.terminal, err: a.turn.err}
+	out := turnSoFar{terminal: a.turn.terminal, err: a.turn.err, turnID: a.turn.turnID}
 	if a.turn.text != nil {
 		out.text = a.turn.text.String()
 	}
