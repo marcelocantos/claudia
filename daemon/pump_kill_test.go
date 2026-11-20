@@ -128,12 +128,18 @@ func TestRealSocketReclaimerDiesBeforeReplay(t *testing.T) {
 		killPublish(proc, i, 0)
 	}
 	crashed := dialRaw(t, f.sock)
+	// The seat is already unowned, so "owner == nil" is true before this
+	// grant is read. The generation moves when the handler takes the seat;
+	// the close then gives it back. Sample before the write, which the
+	// handler can finish before WriteRequest returns.
+	gen := f.orphanGen(name)
 	if err := crashed.WriteRequest(reclaimRequest(t, f, name)); err != nil {
 		t.Fatal(err)
 	}
 	_ = crashed.Close()
-	// Let the daemon handle (or fail) the crashed grant before the next one.
-	waitFor(t, "crashed grant handled", func() bool { return f.unowned(name) })
+	waitFor(t, "crashed grant handled", func() bool {
+		return f.orphanGen(name) != gen && f.unowned(name)
+	})
 	replay, g := killReclaim(t, f, name)
 	assertUnreadReplayed(t, n, nil, replay, g)
 }

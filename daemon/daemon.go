@@ -103,8 +103,13 @@ type Options struct {
 	// pumpSize overrides brokerPumpSize (tests).
 	pumpSize int
 	// pumpGate, when set, is called before each event the pump writes, so a
-	// test can hold the write side and fill the queue (tests).
+	// test can hold the write side and fill the queue (tests). A detach
+	// while the gate is held takes the event back; the write has not started.
 	pumpGate func()
+	// pumpDuringWrite, when set, is called after the pump has committed to
+	// the write and before the socket write returns (tests). A detach in
+	// that window must not also keep a copy for replay.
+	pumpDuringWrite func()
 	// launchers, when set, start and adopt the daemon's seats instead of
 	// the providers (tests).
 	launchers *claudia.RegistryLaunchers
@@ -247,6 +252,10 @@ type brokerGrant struct {
 	// becomes unowned and again when a consumer takes it back, so a timer
 	// from the previous gap cannot stop a seat that was reclaimed by name.
 	orphanGen uint64
+	// draining is a writer that had already committed a socket write when
+	// it was detached. The next grant waits for it to finish that write
+	// and put back anything the connection did not accept.
+	draining *grantPump
 }
 
 // grantPump keeps both the queued events and the current write visible under
@@ -255,6 +264,17 @@ type grantPump struct {
 	queue   chan []byte
 	ready   *sync.Cond
 	writing []byte
+	// started is set under d.mu before the writer goroutine is launched.
+	started bool
+	// committed is set under d.mu once the writer will call write and has
+	// not yet recorded whether that write reached the connection.
+	committed bool
+	// stolen means detach already moved writing and the queue onto the ring.
+	stolen bool
+	// closed is set under d.mu immediately before queue is closed.
+	closed bool
+	// done is closed after a started writer has recorded that outcome.
+	done chan struct{}
 }
 
 type brokerDaemonTask struct {
@@ -712,18 +732,26 @@ func (d *Daemon) ConnClosed(c *broker.ClientConn) {
 
 // detachLocked drops ownership and returns undelivered events to the reclaim
 // ring before any events can arrive while unowned. d.mu held.
+//
+// An event is one delivery. A writer that has not committed its socket write
+// gives the event back here. A writer already inside the write keeps it: if
+// the connection accepts the bytes, replaying them would deliver the event
+// twice on that same connection. Bytes the kernel accepted and the process
+// never read are still that connection's — seeing them requires an
+// acknowledgement on the wire (🎯T1404), which this does not invent.
 func (d *Daemon) detachLocked(g *brokerGrant) {
 	g.owner = nil
 	if pump := g.pump; pump != nil {
 		g.pump = nil
+		pump.closed = true
 		close(pump.queue)
-		if !g.pool {
-			if pump.writing != nil {
-				g.retainUnowned(pump.writing)
+		if pump.started && pump.committed {
+			g.draining = pump
+		} else {
+			if !g.pool {
+				takePumpLocked(g, pump)
 			}
-			for raw := range pump.queue {
-				g.retainUnowned(raw)
-			}
+			pump.stolen = true
 		}
 		pump.ready.Signal()
 	}
@@ -1013,13 +1041,35 @@ func (d *Daemon) handleGrant(c *broker.ClientConn, req *broker.Request) {
 	if claudia.IsEphemeralGrant(def) {
 		g.ephemeral = true
 	}
-	if g.owner != nil && g.owner != c {
-		d.detachLocked(g)
-	}
 	// A consumer re-claiming a grant it still owns (its re-adopt found the
 	// seat alive) keeps its pump: a second one would strand the first
 	// (🎯T124). Only an unowned or displaced grant gets a new pump.
-	alreadyOwned := g.owner == c && g.pump != nil
+	//
+	// A writer detached mid-write still has the in-flight event. Wait,
+	// without the lock, until it has handed the event back or recorded
+	// that the connection accepted it. Re-check ownership after the wait:
+	// another grant can have taken the seat while this one stood aside.
+	var alreadyOwned bool
+	for {
+		if g.owner != nil && g.owner != c {
+			d.detachLocked(g)
+		}
+		if g.draining == nil {
+			alreadyOwned = g.owner == c && g.pump != nil
+			break
+		}
+		done := g.draining.done
+		d.mu.Unlock()
+		<-done
+		d.mu.Lock()
+		g = d.grants[name]
+		if g == nil {
+			d.mu.Unlock()
+			_ = c.Fail(req.ID, &broker.ProtocolError{Code: broker.CodeUnknownGrant, Field: "name", Value: name,
+				Msg: fmt.Sprintf("grant %s is not one the daemon holds", name)})
+			return
+		}
+	}
 	ring, lagged := g.ring, g.lag
 	if !alreadyOwned {
 		// A timer armed while this seat was unowned must not fire after
@@ -1343,6 +1393,18 @@ func (d *Daemon) notifyDetached(owner *broker.ClientConn, name, reason string) {
 	}()
 }
 
+// takePumpLocked moves a pump's in-flight event and queue onto the ring,
+// oldest first. The queue is already closed. d.mu held.
+func takePumpLocked(g *brokerGrant, pump *grantPump) {
+	if pump.writing != nil {
+		g.retainUnowned(pump.writing)
+		pump.writing = nil
+	}
+	for raw := range pump.queue {
+		g.retainUnowned(raw)
+	}
+}
+
 // retainUnowned appends one event to the reclaim ring. d.mu / caller
 // must hold the grant lock. A live bounce stream must not mark Lagged
 // at the old 256 bound (🎯T70).
@@ -1360,6 +1422,8 @@ func (g *brokerGrant) retainUnowned(raw []byte) {
 // startPumpLocked runs the live writer once any reclaim replay has committed.
 // d.mu held.
 func (d *Daemon) startPumpLocked(g *brokerGrant, c *broker.ClientConn, pump *grantPump) {
+	pump.started = true
+	pump.done = make(chan struct{})
 	d.wg.Add(1)
 	go func() {
 		defer d.wg.Done()
@@ -1378,11 +1442,13 @@ func (d *Daemon) writeAgentEvent(c *broker.ClientConn, name string, raw []byte) 
 
 // runPump writes queued events to the current owner. Dequeuing and recording
 // the in-flight event are atomic with respect to detach, but writing does
-// not hold the daemon lock.
+// not hold the daemon lock. Every return holds d.mu: finishPumpLocked records
+// the in-flight event before the next grant copies the ring.
 func (d *Daemon) runPump(g *brokerGrant, c *broker.ClientConn, pump *grantPump) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	for g.pump == pump {
+	defer d.finishPumpLocked(g, pump)
+	for g.pump == pump && !pump.stolen {
 		if len(pump.queue) == 0 {
 			pump.ready.Wait()
 			continue
@@ -1392,14 +1458,28 @@ func (d *Daemon) runPump(g *brokerGrant, c *broker.ClientConn, pump *grantPump) 
 		d.mu.Unlock()
 		if d.opts.pumpGate != nil {
 			d.opts.pumpGate()
-			d.mu.Lock()
-			if g.pump != pump {
-				return
-			}
-			d.mu.Unlock()
+		}
+		d.mu.Lock()
+		if g.pump != pump || pump.stolen {
+			return
+		}
+		// Past this point the write happens. Detach leaves the event with
+		// the writer instead of copying it onto the ring.
+		pump.committed = true
+		d.mu.Unlock()
+		if d.opts.pumpDuringWrite != nil {
+			d.opts.pumpDuringWrite()
 		}
 		err := d.writeAgentEvent(c, g.name, raw)
 		d.mu.Lock()
+		pump.committed = false
+		if err == nil {
+			// The connection accepted the bytes, so the ring must not
+			// carry a second copy. A consumer that dies with those bytes
+			// still unread is 🎯T1404: only a wire acknowledgement can
+			// tell that apart from a delivery.
+			pump.writing = nil
+		}
 		if g.pump != pump {
 			return
 		}
@@ -1409,6 +1489,40 @@ func (d *Daemon) runPump(g *brokerGrant, c *broker.ClientConn, pump *grantPump) 
 			return
 		}
 		pump.writing = nil
+	}
+}
+
+// finishPumpLocked puts back an event the detached writer still holds and
+// closes its done channel. Events already accepted by the connection are
+// not among them. d.mu held.
+func (d *Daemon) finishPumpLocked(g *brokerGrant, pump *grantPump) {
+	// A queue that is still open belongs to a live writer. Ranging it here
+	// would wait for sends that are not coming and hold the daemon lock.
+	if !pump.stolen && !g.pool && pump.closed {
+		var pending [][]byte
+		if pump.writing != nil {
+			pending = append(pending, pump.writing)
+			pump.writing = nil
+		}
+		for raw := range pump.queue {
+			pending = append(pending, raw)
+		}
+		if len(pending) > 0 {
+			combined := make([][]byte, 0, len(pending)+len(g.ring))
+			combined = append(combined, pending...)
+			combined = append(combined, g.ring...)
+			if len(combined) > brokerUnownedRingCap {
+				g.lag = true
+				combined = combined[len(combined)-brokerUnownedRingCap:]
+			}
+			g.ring = combined
+		}
+	}
+	if g.draining == pump {
+		g.draining = nil
+	}
+	if pump.done != nil {
+		close(pump.done)
 	}
 }
 
@@ -1642,7 +1756,6 @@ func (d *Daemon) seatFor(c *broker.ClientConn, id, name string, needOwner bool) 
 	}
 	return g, g.proc, true
 }
-
 
 func (d *Daemon) connectionContext(c *broker.ClientConn) context.Context {
 	if v, ok := c.Get(connCtxKey); ok {

@@ -62,6 +62,16 @@ func (f *fixture) unowned(name string) bool {
 	return g != nil && g.owner == nil
 }
 
+func (f *fixture) orphanGen(name string) uint64 {
+	f.d.mu.Lock()
+	defer f.d.mu.Unlock()
+	g := f.d.grants[name]
+	if g == nil {
+		return 0
+	}
+	return g.orphanGen
+}
+
 // TestEphemeralOrphanTTLLeavesLongLivedGrants: a dropped plumbing seat is
 // stopped after EphemeralGrantTTL. A jevons grant, and a parent-pimp seat
 // whose name is not pimp-smoke-* / pimp-handoff-*, stay running.
