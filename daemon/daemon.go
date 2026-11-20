@@ -1706,11 +1706,14 @@ func (d *Daemon) handleAgentOp(c *broker.ClientConn, req *broker.Request) {
 		}
 		ch := make(chan compactRes, 1)
 		go func() {
-			defer cancel()
 			out, err := proc.Compact(ctx, req.Compact.BoundTokens)
 			ch <- compactRes{out, err}
 		}()
+		// cancel belongs to the replier. Cancelling as Compact returned made
+		// ctx.Done ready beside the result, and select picked either: a
+		// prompt-in-flight refusal reached the consumer as "context canceled".
 		go func() {
+			defer cancel()
 			select {
 			case r := <-ch:
 				if r.err != nil {
