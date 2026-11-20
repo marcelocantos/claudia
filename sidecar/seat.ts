@@ -902,6 +902,10 @@ export function createSeatAgent(opts: {
     prompt: async (text: string, meta?: PromptMeta) => {
       receipts.assertHealthy();
       assertRestorableExecution();
+      // Bound compaction is idle-only. Refuse before the receipt is durable:
+      // an accepted record survives the refusal and a restart runs the text
+      // the host was told had failed (C5). steer() already refuses first.
+      refuseDuringBoundCompact();
       const accepted = meta?.request_id ? receipts.accept(text, meta as typeof meta & { request_id: string; session_id: string }, "prompt") : undefined;
       if (accepted && !accepted.fresh) {
         sink.emit({ type: "accepted", request_id: meta!.request_id, rpc_id: meta?.rpc_id, receipt: accepted.receipt });
