@@ -207,50 +207,164 @@ const gitProbeOptions = new Set([
   "--no-replace-objects", "--no-lazy-fetch", ...gitPathspecOptions,
 ]);
 
-function gitCommand(words: string[], cwd: string) {
-  const cmd = stripPrefixes(words);
-  if (path.basename(cmd[0] || "") !== "git") return null;
-  const globals: string[] = [];
-  let dir = cwd;
-  for (let i = 1; i < cmd.length; i++) {
-    const arg = cmd[i];
-    if (!arg.startsWith("-")) return { sub: arg, args: cmd.slice(i + 1), dir, probe: { dir: cwd, globals } };
+// Inside an alias, git accepts only the global options that leave the
+// environment alone; any other one ends the command with "alias changes
+// environment variables", so nothing runs.
+const gitAliasOptions = new Set(["-c", "--config-env", "-p", "--paginate", "--exec-path"]);
+
+// git ignores an alias that would hide one of its own commands. These are
+// the commands the guards read, so an alias of the same name never stands in
+// for them. Other shadowing aliases are expanded, which can only refuse a
+// command git would not have run.
+const gitGuardedCommands = new Set(["stash", "reset", "checkout", "switch", "restore", "checkout-index", "clean"]);
+
+// git reports an alias loop and runs nothing; this bounds a chain that never
+// repeats a name but keeps growing.
+const gitAliasExpansionLimit = 64;
+
+type GitInvocation = { sub: string; args: string[]; dir: string; probe: GitProbe };
+
+// gitCommand reads one simple command as git does: global options, then the
+// subcommand, with aliases defined on the command line by `-c alias.<name>=`
+// or `--config-env alias.<name>=<VAR>` expanded. A `!` alias is a shell
+// command, so its text is read as one. inherited carries the repository
+// selectors an outer git exports to a shell alias.
+function* gitCommand(words: string[], cwd: string, inherited: readonly string[] = []): Generator<GitInvocation> {
+  const utility = commandUtility(words);
+  if (!utility || path.basename(utility.argv[0] || "") !== "git") return;
+  const env = (name: string) => utility.vars.get(name) ?? (utility.clearedEnv ? undefined : process.env[name]);
+  const probeDir = utility.chdir ? joinDir(cwd, utility.chdir) : cwd;
+  const globals: string[] = [...inherited];
+  const aliases = new Map<string, string>();
+  const expanded = new Set<string>();
+  let argv = utility.argv.slice(1);
+  let dir = probeDir;
+  let inAlias = false;
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (!arg.startsWith("-")) {
+      const name = arg.toLowerCase();
+      const alias = gitGuardedCommands.has(arg) ? undefined : aliases.get(name);
+      if (alias === undefined) {
+        yield { sub: arg, args: argv.slice(i + 1), dir, probe: { dir: probeDir, globals } };
+        return;
+      }
+      if (expanded.has(name) || expanded.size >= gitAliasExpansionLimit) return; // git: alias loop
+      expanded.add(name);
+      const rest = argv.slice(i + 1);
+      if (alias.startsWith("!")) {
+        // git runs the text with sh at the repository's top level, the
+        // remaining words as its arguments and the outer selectors exported.
+        const selectors = globals.filter((g, k) => g !== "-C" && globals[k - 1] !== "-C");
+        yield* gitCommands(`${alias.slice(1)} ${rest.map(shellQuote).join(" ")}`, dir, selectors);
+        return;
+      }
+      argv = [...splitAliasWords(alias), ...rest];
+      i = -1;
+      inAlias = true;
+      continue;
+    }
     const equals = arg.indexOf("=");
     const option = equals < 0 ? arg : arg.slice(0, equals);
+    if (inAlias && !gitAliasOptions.has(option)) return;
     if (gitValueOptions.has(option)) {
+      let value: string;
       if (equals < 0) {
-        const value = cmd[++i];
-        if (value === undefined) return null;
-        if (option === "-C" && value !== "") dir = path.isAbsolute(value) ? value : path.join(dir, value);
+        const next = argv[++i];
+        if (next === undefined) return;
+        value = next;
+        if (option === "-C" && value !== "") dir = joinDir(dir, value);
         if (gitProbeOptions.has(option)) globals.push(option, value);
       } else {
-        if (!option.startsWith("--") || option === "--shallow-file") return null;
+        if (!option.startsWith("--") || option === "--shallow-file") return;
+        value = arg.slice(equals + 1);
         if (gitProbeOptions.has(option)) globals.push(arg);
+      }
+      if (option === "-c") {
+        const eq = value.indexOf("=");
+        if (eq >= 0) defineAlias(aliases, value.slice(0, eq), value.slice(eq + 1));
+      } else if (option === "--config-env") {
+        // --config-env=<name>=<envvar>: the variable name follows the last
+        // `=`. An alias whose variable is unset makes git refuse to run.
+        const eq = value.lastIndexOf("=");
+        if (eq > 0 && value.slice(0, eq).toLowerCase().startsWith("alias.")) {
+          const variable = env(value.slice(eq + 1));
+          if (variable === undefined) return;
+          defineAlias(aliases, value.slice(0, eq), variable);
+        }
       }
     } else if (gitFlags.has(arg)) {
       if (gitProbeOptions.has(arg)) globals.push(arg);
     } else if (!arg.startsWith("--exec-path=")) {
       // Git rejects a top-level `--` and attached/combined short options.
       // Options such as `--help` and bare `--exec-path` finish without a command.
-      return null;
+      return;
     }
   }
-  return null;
+}
+
+// defineAlias records `alias.<name>` the way git's config parser keys it:
+// section and name compare without case, and `alias.<sub>.<key>` is a
+// subsection, not an alias. A later definition wins.
+function defineAlias(aliases: Map<string, string>, key: string, value: string) {
+  const lower = key.toLowerCase();
+  if (!lower.startsWith("alias.")) return;
+  const name = lower.slice("alias.".length);
+  if (name && !name.includes(".")) aliases.set(name, value);
+}
+
+// splitAliasWords splits a non-shell alias as git's split_cmdline does:
+// whitespace separates words, quotes group them, and a backslash outside
+// single quotes escapes the next character.
+function splitAliasWords(text: string): string[] {
+  const words: string[] = [];
+  let cur = "";
+  let started = false;
+  let quote = "";
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quote) {
+      if (c === quote) quote = "";
+      else if (c === "\\" && quote === '"' && i + 1 < text.length) cur += text[++i];
+      else cur += c;
+    } else if (c === "'" || c === '"') {
+      quote = c;
+      started = true;
+    } else if (c === "\\" && i + 1 < text.length) {
+      cur += text[++i];
+      started = true;
+    } else if (/\s/.test(c)) {
+      if (started) words.push(cur);
+      cur = "";
+      started = false;
+    } else {
+      cur += c;
+      started = true;
+    }
+  }
+  if (started) words.push(cur);
+  return words;
+}
+
+function shellQuote(word: string): string {
+  return `'${word.replaceAll("'", `'\\''`)}'`;
+}
+
+function joinDir(base: string, dir: string): string {
+  return path.isAbsolute(dir) ? dir : path.join(base, dir);
 }
 
 // Both guards use the same Git invocation. The probe lets Git apply each
 // `-C` in sequence and resolve repository selectors from the resulting cwd.
 // Command-provided config and exec paths are excluded from the probe.
-export function* gitCommands(command: string) {
-  let cwd = "";
+export function* gitCommands(command: string, start = "", inherited: readonly string[] = []): Generator<GitInvocation> {
+  let cwd = start;
   for (const words of segments(stripHeredocBodies(command))) {
     if (words[0] === "cd") {
-      cwd = words[1] && words[1] !== "-"
-        ? (path.isAbsolute(words[1]) ? words[1] : path.join(cwd, words[1])) : "";
+      cwd = words[1] && words[1] !== "-" ? joinDir(cwd, words[1]) : "";
       continue;
     }
-    const parsed = gitCommand(words, cwd);
-    if (parsed) yield parsed;
+    yield* gitCommand(words, cwd, inherited);
   }
 }
 
@@ -259,24 +373,104 @@ export function* gitCommands(command: string) {
 // Not a shell: just enough to keep a quoted `;` from splitting a command, to
 // drop redirections, and to split on `;`, `&&`, `||`, `|`, `&` and newlines.
 
-export const commandPrefixes = new Set(["env", "sudo", "nice", "nohup", "time", "command", "exec", "builtin"]);
+// Commands that run the rest of their words as another command, with the
+// options each takes first. `values` are short options that consume an
+// operand, attached or as the next word; `long` maps long options to the
+// short option they spell. `noRun` options make the prefix print, list or
+// edit instead of running the utility.
+type PrefixSpec = { values: string; long?: Record<string, string>; noRun?: string };
+const prefixSpecs: Record<string, PrefixSpec> = {
+  env: { values: "uCPSLU", long: { "--unset": "u", "--chdir": "C", "--split-string": "S", "--ignore-environment": "i" } },
+  sudo: { values: "ughpCDrtTU", long: { "--user": "u", "--group": "g", "--prompt": "p", "--chdir": "D" }, noRun: "eKlvV" },
+  nice: { values: "n", long: { "--adjustment": "n" } },
+  nohup: { values: "" },
+  time: { values: "of", long: { "--output": "o", "--format": "f" } },
+  command: { values: "", noRun: "vV" },
+  exec: { values: "a" },
+  builtin: { values: "" },
+};
+export const commandPrefixes = new Set(Object.keys(prefixSpecs));
 
-export function stripPrefixes(words: string[]): string[] {
+type Utility = { argv: string[]; vars: Map<string, string>; chdir: string; clearedEnv: boolean };
+
+function assignmentAt(word: string): number {
+  const eq = word.indexOf("=");
+  return eq > 0 && !word.startsWith("-") && !/[/. ]/.test(word.slice(0, eq)) ? eq : -1;
+}
+
+// commandUtility peels assignments and prefix commands (with their own
+// options) off a simple command and returns the utility it runs, or null
+// when the prefix does not run one. env -S splits its string into words in
+// place; env -C and sudo -D change the directory the utility starts in.
+// An unknown option is skipped as a flag: the utility after it is what the
+// guards must see.
+function commandUtility(input: string[]): Utility | null {
+  const words = [...input];
+  const vars = new Map<string, string>();
+  let chdir = "";
+  let clearedEnv = false;
   let i = 0;
-  while (i < words.length) {
-    const w = words[i];
-    const eq = w.indexOf("=");
-    if (eq > 0 && !w.startsWith("-") && !/[/. ]/.test(w.slice(0, eq))) {
-      i++; // FOO=bar cmd …
-      continue;
-    }
-    if (commandPrefixes.has(path.basename(w))) {
+  for (;;) {
+    const word = words[i];
+    if (word === undefined) return null;
+    const eq = assignmentAt(word);
+    if (eq > 0) {
+      vars.set(word.slice(0, eq), word.slice(eq + 1)); // FOO=bar cmd …
       i++;
       continue;
     }
-    break;
+    const prefix = path.basename(word);
+    const spec = prefixSpecs[prefix];
+    if (!spec) break;
+    for (i++; i < words.length; i++) {
+      const arg = words[i];
+      if (arg === "--") {
+        i++;
+        break;
+      }
+      if (prefix === "env" && arg === "-") {
+        clearedEnv = true; // the historical spelling of -i
+        continue;
+      }
+      if (prefix === "nice" && /^-\d+$/.test(arg)) continue; // nice -5
+      const assign = prefix === "env" ? assignmentAt(arg) : -1;
+      if (assign > 0) {
+        vars.set(arg.slice(0, assign), arg.slice(assign + 1));
+        continue;
+      }
+      if (!arg.startsWith("-") || arg === "-") break;
+      let option = "";
+      let value: string | undefined;
+      if (arg.startsWith("--")) {
+        const eqAt = arg.indexOf("=");
+        option = spec.long?.[eqAt < 0 ? arg : arg.slice(0, eqAt)] ?? "";
+        if (spec.values.includes(option) && option) value = eqAt < 0 ? words[++i] : arg.slice(eqAt + 1);
+      } else {
+        for (let k = 1; k < arg.length; k++) {
+          const letter = arg[k];
+          if (spec.noRun?.includes(letter)) return null;
+          if (spec.values.includes(letter)) {
+            option = letter;
+            value = k + 1 < arg.length ? arg.slice(k + 1) : words[++i];
+            break;
+          }
+          if (prefix === "env" && letter === "i") clearedEnv = true;
+        }
+      }
+      if (option && spec.values.includes(option) && value === undefined) return null; // missing operand
+      if (prefix === "env" && option === "i") clearedEnv = true;
+      if (prefix === "env" && option === "u") vars.delete(value!);
+      if (prefix === "env" && option === "S") words.splice(i + 1, 0, ...splitAliasWords(value!));
+      if ((prefix === "env" && option === "C") || (prefix === "sudo" && option === "D")) chdir = joinDir(chdir, value!);
+    }
   }
-  return words.slice(i);
+  return { argv: words.slice(i), vars, chdir, clearedEnv };
+}
+
+// stripPrefixes returns the words of the utility a simple command runs,
+// without assignments and prefix commands, or no words when none runs.
+export function stripPrefixes(words: string[]): string[] {
+  return commandUtility(words)?.argv ?? [];
 }
 
 const heredocStart = /<<-?\s*['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?/;

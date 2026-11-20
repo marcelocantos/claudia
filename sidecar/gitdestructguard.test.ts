@@ -166,6 +166,81 @@ describe("Git global options in both shared-clone guards (H8)", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  // H8 review: git runs these, so each one is checked against real git first
+  // (the row must really stash or move HEAD), then the guard must refuse it
+  // before launch. Aliases named by -c and --config-env, and prefix commands
+  // that take their own options before git.
+  const realBypasses = [
+    "git -c alias.x=stash x",
+    "git -c alias.x='stash push' x",
+    "git -c Alias.X=stash x",
+    "git -c alias.x=stash X",
+    "git -c alias.x=stash -c alias.y=x y",
+    "git -c alias.x=stash -C . x",
+    "git -c alias.x='-c color.ui=never stash' x",
+    "git -c alias.x='!git stash' x",
+    "git -c alias.x='!echo seat; git stash' x",
+    "git -c alias.co=checkout co other",
+    "git -c alias.sw=switch sw other",
+    "git -c alias.stash=status stash",
+    "git -c alias.checkout=status checkout other",
+    "SEAT_ALIAS=stash git --config-env=alias.x=SEAT_ALIAS x",
+    "SEAT_ALIAS=checkout git --config-env alias.x=SEAT_ALIAS x other",
+    "env -i git stash",
+    "env -i PATH=/usr/bin:/bin git checkout other",
+    "env -u HOME git stash",
+    "env -- git stash",
+    "env -S 'git stash'",
+    "env -C sub git stash",
+    "nice -n 5 git stash",
+    "nice -5 git checkout other",
+    "time -p git stash",
+    "command -p git stash",
+    "exec -a seat git stash",
+  ];
+  test("real git runs each alias and prefix spelling, and the guard refuses it before launch", async () => {
+    for (const command of realBypasses) {
+      const real = fixture();
+      const guarded = fixture();
+      try {
+        for (const dir of [real, guarded]) {
+          git(dir, "branch", "other");
+          mkdirSync(join(dir, "sub"));
+        }
+        execFileSync("/bin/bash", ["-c", command], { cwd: real, stdio: "ignore" });
+        const moved = git(real, "symbolic-ref", "--short", "HEAD") !== "main";
+        const stashed = git(real, "stash", "list") !== "";
+        expect({ command, ran: moved || stashed }).toEqual({ command, ran: true });
+
+        let launched = false;
+        const message = await runShell(() => guarded, () => undefined,
+          { command, timeoutMs: 1000, maxBuffer: 1000 },
+          new SeatProcessOwnership(), async () => { launched = true; throw new Error("spawned"); })
+          .then(() => "ran", (e: Error) => e.message);
+        expect({ command, launched, refused: /^(branchguard|gitdestructguard):/.test(message) })
+          .toEqual({ command, launched: false, refused: true });
+      } finally {
+        rmSync(real, { recursive: true, force: true });
+        rmSync(guarded, { recursive: true, force: true });
+      }
+    }
+  });
+
+  test("an alias or prefix that does not run a guarded command is not refused", () => {
+    for (const command of [
+      "git -c alias.x=log x stash",
+      "git -c alias.x.y=stash x",
+      "git -c alias.x=y -c alias.y=x x",
+      "git -c alias.x='-C sub stash' x",
+      "command -v git stash",
+      "env -i git status",
+      "nice -n 5 git log stash",
+    ]) {
+      expect({ command, hits: destructiveGitCommands(command), checkout: detectBranchCheckout(command) })
+        .toEqual({ command, hits: [], checkout: null });
+    }
+  });
 });
 
 describe("T240 shared clone destructive git pre-exec", () => {
