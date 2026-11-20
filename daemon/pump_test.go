@@ -5,6 +5,8 @@ package daemon
 
 import (
 	"fmt"
+	"net"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -12,6 +14,182 @@ import (
 	"github.com/marcelocantos/claudia"
 	"github.com/marcelocantos/claudia/internal/broker"
 )
+
+func TestReclaimAfterDisconnectKeepsPumpEventsInOrder(t *testing.T) {
+	const name = "pump-reclaim"
+	t.Setenv("HOME", t.TempDir())
+	f := newFixture(t)
+	gate, release := heldPump(t)
+	entered := make(chan struct{})
+	var once sync.Once
+	opts := f.options(nil)
+	opts.DisableResume, opts.DisableMCPHost = true, true
+	opts.pumpGate = func() {
+		once.Do(func() { close(entered) })
+		gate()
+	}
+	f.bootWith(t, opts)
+	t.Cleanup(release)
+	old := rawSeat(t, f.sock, name)
+	proc := f.d.reg.Get(name)
+	publishReclaimEvent(proc, "e0")
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("pump did not take e0")
+	}
+	publishReclaimEvent(proc, "e1")
+	if err := old.Close(); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "owner disconnect", func() bool { return !f.owned(name) })
+	publishReclaimEvent(proc, "e2")
+	// The old writer can still be in flight when the next owner arrives.
+	assertGrantReplay(t, dialRaw(t, f.sock), reclaimRequest(t, f, name), []string{"e0", "e1", "e2"})
+}
+
+func TestDetachReportsLagWhenPumpQueueExceedsReclaimCapacity(t *testing.T) {
+	d := &Daemon{}
+	pump := d.newGrantPump()
+	pump.writing = []byte("oldest")
+	for range brokerUnownedRingCap - 1 {
+		pump.queue <- []byte("retained")
+	}
+	pump.queue <- []byte("newest")
+	g := &brokerGrant{pump: pump}
+	d.mu.Lock()
+	d.detachLocked(g)
+	d.mu.Unlock()
+	if !g.lag || len(g.ring) != brokerUnownedRingCap {
+		t.Fatalf("ring count=%d lagged=%v, want %d and true", len(g.ring), g.lag, brokerUnownedRingCap)
+	}
+	if first, last := string(g.ring[0]), string(g.ring[len(g.ring)-1]); first != "retained" || last != "newest" {
+		t.Fatalf("ring starts with %q and ends with %q, want retained through newest", first, last)
+	}
+}
+
+func TestReclaimAfterReplayDisconnectKeepsHistory(t *testing.T) {
+	for _, cut := range []struct {
+		name string
+		read int
+	}{
+		{"during-replay", 1},
+		{"before-granted", 3},
+	} {
+		t.Run(cut.name, func(t *testing.T) {
+			const name = "replay-reclaim"
+			t.Setenv("HOME", t.TempDir())
+			f := newFixture(t)
+			opts := f.options(nil)
+			opts.DisableResume, opts.DisableMCPHost = true, true
+			f.bootWith(t, opts)
+			old := rawSeat(t, f.sock, name)
+			if err := old.Close(); err != nil {
+				t.Fatal(err)
+			}
+			waitFor(t, "owner disconnect", func() bool { return !f.owned(name) })
+			proc := f.d.reg.Get(name)
+			history := []string{"e0", "e1", "e2"}
+			for _, title := range history {
+				publishReclaimEvent(proc, title)
+			}
+			req := reclaimRequest(t, f, name)
+
+			// A synchronous pipe lets the reclaimer close at an exact frame
+			// boundary, even when the entire replay would fit in a socket buffer.
+			server, client := net.Pipe()
+			crashed := broker.NewConn(client)
+			t.Cleanup(func() { _ = crashed.Close() })
+			if err := crashed.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			handled := make(chan struct{})
+			go func() {
+				defer close(handled)
+				defer server.Close()
+				conn := &broker.ClientConn{Conn: broker.NewConn(server)}
+				defer f.d.ConnClosed(conn)
+				f.d.handleGrant(conn, req)
+			}()
+			for _, want := range history[:cut.read] {
+				resp, err := crashed.ReadResponse()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got := replayTitle(t, resp); got != want {
+					t.Fatalf("first replay event = %q, want %q", got, want)
+				}
+			}
+			publishReclaimEvent(proc, "e3")
+			if err := crashed.Close(); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-handled:
+			case <-time.After(5 * time.Second):
+				t.Fatal("broker did not finish handling the crashed reclaimer")
+			}
+			replacement := dialRaw(t, f.sock)
+			assertGrantReplay(t, replacement, req, append(history, "e3"))
+			if err := replacement.Close(); err != nil {
+				t.Fatal(err)
+			}
+			waitFor(t, "replacement disconnect", func() bool { return !f.owned(name) })
+			assertGrantReplay(t, dialRaw(t, f.sock), req, nil)
+		})
+	}
+}
+
+func publishReclaimEvent(proc *claudia.Agent, title string) {
+	proc.PublishEvent(claudia.Event{Type: "progress", ProgressType: "tool_use", ToolTitle: title})
+}
+
+func reclaimRequest(t *testing.T, f *fixture, name string) *broker.Request {
+	t.Helper()
+	raw, err := claudia.EncodeGrantDefinition(claudia.GrantDefinition{AgentDef: *f.d.reg.Def(name)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &broker.Request{ID: "reclaim", Type: broker.TypeGrant,
+		Grant: &broker.GrantRequest{Name: name, Def: raw, Adopt: true, Fallback: true}}
+}
+
+func replayTitle(t *testing.T, resp *broker.Response) string {
+	t.Helper()
+	if resp.Type != broker.TypeAgentEvent {
+		t.Fatalf("waiting for agent event, got %s: %+v", resp.Type, resp.Error)
+	}
+	ev, err := claudia.DecodeEventWire(resp.AgentEvent.Event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ev.ToolTitle
+}
+
+func assertGrantReplay(t *testing.T, c *broker.Conn, req *broker.Request, want []string) {
+	t.Helper()
+	if err := c.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.WriteRequest(req); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for {
+		resp, err := c.ReadResponse()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.Type == broker.TypeGranted {
+			if !slices.Equal(got, want) || resp.Granted.Replayed != len(want) || resp.Granted.Lagged {
+				t.Fatalf("replay = %v, count=%d lagged=%v, want %v with no lag",
+					got, resp.Granted.Replayed, resp.Granted.Lagged, want)
+			}
+			return
+		}
+		got = append(got, replayTitle(t, resp))
+	}
+}
 
 // heldPump is a pumpGate that blocks every pump write until released, which
 // models a consumer that has stopped reading without depending on socket
@@ -27,6 +205,7 @@ func heldPump(t *testing.T) (gate func(), release func()) {
 // detaches the consumer and says so, so the consumer's next Send is not a
 // bare not_owner. Removing notifyDetached turns this red (🎯T125).
 func TestT125DetachIsAnnounced(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	f := newFixture(t)
 	gate, release := heldPump(t)
 	opts := f.options(nil)
@@ -37,8 +216,10 @@ func TestT125DetachIsAnnounced(t *testing.T) {
 	t.Cleanup(release)
 	c := rawSeat(t, f.sock, "slow")
 	proc := f.d.reg.Get("slow")
-	for i := 0; i < 20; i++ {
-		proc.PublishEvent(claudia.Event{Type: "progress", ProgressType: "tool_use", ToolTitle: fmt.Sprintf("t%d", i)})
+	want := make([]string, 20)
+	for i := range want {
+		want[i] = fmt.Sprintf("t%d", i)
+		publishReclaimEvent(proc, want[i])
 	}
 	waitFor(t, "detached", func() bool { return !f.owned("slow") })
 	release()
@@ -53,9 +234,10 @@ func TestT125DetachIsAnnounced(t *testing.T) {
 			if resp.AgentDetached.Name != "slow" || resp.AgentDetached.Reason == "" {
 				t.Fatalf("detach message = %+v", resp.AgentDetached)
 			}
-			return
+			break
 		}
 	}
+	assertGrantReplay(t, c, reclaimRequest(t, f, "slow"), want)
 }
 
 // TestT125ReplayBurstDoesNotDetach: a launch or adopt of a large session
