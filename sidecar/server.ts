@@ -158,6 +158,25 @@ type Seat = {
 };
 
 const seats = new Map<string, Seat>();
+// Drop installs this synchronously, before it awaits the old seat's unwind,
+// so a load already parsed behind the drop cannot open the same store
+// until that writer is sealed (C4).
+const seatClosing = new Map<string, Promise<void>>();
+
+function holdSeatClose(seat: string): () => void {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  seatClosing.set(seat, gate);
+  return () => {
+    release();
+    if (seatClosing.get(seat) === gate) seatClosing.delete(seat);
+  };
+}
+
+async function waitSeatClosed(seat: string): Promise<void> {
+  const pending = seatClosing.get(seat);
+  if (pending) await pending;
+}
 finishStartedOnExit = () => {
   for (const loaded of seats.values()) loaded.agent.cancelOpenReceipts();
 };
@@ -336,6 +355,7 @@ async function handle(
     throw Object.assign(new Error("required resume needs an explicit session identity"), { reason: "seat_identity_mismatch" });
   }
   if (msg.op === "adopt") {
+    await waitSeatClosed(seat);
     // A seat that is not already running is not created (🎯T869). ResumeAll
     // treats that as a miss and launches, and only the launch is nudged.
     if (!msg.token) {
@@ -370,6 +390,7 @@ async function handle(
     return;
   }
   if (msg.op === "load") {
+    await waitSeatClosed(seat);
     if (!msg.token) {
       write(errorEvent(msg, seat, "load without an access token"));
       return;
@@ -469,9 +490,16 @@ async function handle(
     return;
   }
   if (msg.op === "drop") {
-    loaded.agent.cancelOpenReceipts();
-    loaded.agent.abort();
-    seats.delete(seat);
+    const release = holdSeatClose(seat);
+    try {
+      // stop, not abort: abort would deliver the queue onto a seat the
+      // host has already released. Await the unwind, then seal the store,
+      // before any load waiting on this gate may write the same file.
+      await loaded.agent.close();
+    } finally {
+      if (seats.get(seat) === loaded) seats.delete(seat);
+      release();
+    }
     write({ seat, type: "dropped" });
     return;
   }

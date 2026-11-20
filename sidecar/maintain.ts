@@ -184,6 +184,9 @@ export class History {
   store: SeatStore | undefined;
   #persisted = 0;
   #dirty = false;
+  // sealed refuses every further store write. Drop seals the old seat
+  // after its turn has unwound, before another seat opens this file (C4).
+  #sealed = false;
   // streamingEntryId is the durable row for an assistant message still
   // growing while the provider streams (🎯T215). Content hash changes on
   // every partial persist; identity alone is not stable enough to replace.
@@ -289,9 +292,16 @@ export class History {
     this.#dirty = false;
   }
 
+  // seal freezes the file. Later persists from a dropped seat must not
+  // append beside the seat that reloaded it.
+  seal(): void {
+    this.#sealed = true;
+  }
+
   // persist writes what the store does not have yet: the new tail, or the
   // whole list when an entry was taken back.
   persist(messages?: readonly AgentMessage[]): void {
+    if (this.#sealed) return;
     if (messages) this.sync(messages);
     if (!this.store) return;
     if (this.#dirty) {
@@ -307,6 +317,7 @@ export class History {
   // Switch viability must not use append for the trial fold commit: append can
   // leave a partial or complete compaction line while the switch is still refused.
   persistSwitchCommit(messages?: readonly AgentMessage[]): void {
+    if (this.#sealed) return;
     if (messages) this.sync(messages);
     if (!this.store) return;
     this.store.rewrite(this.entries);
@@ -317,6 +328,7 @@ export class History {
   // Execution facts share the conversation's durable entry sequence but
   // never enter model context. Persist before acknowledging the fact.
   appendFact(customType: string, data: unknown): void {
+    if (this.#sealed) return;
     if (!this.store) throw new Error("durable execution facts require a session store");
     this.entries.push({
       type: "custom", customType, data,

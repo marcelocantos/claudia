@@ -97,6 +97,10 @@ export type SeatAgent = {
   // as itself; undefined when no turn was open, and nothing ended.
   abort: () => EndedTurn | undefined;
   stopTurn: () => EndedTurn | undefined;
+  // close stops the seat, waits until that turn has unwound, and then
+  // refuses any further turn or store write. Drop awaits it before a
+  // later load may open the same session file (C4).
+  close: () => Promise<void>;
   // cancelOpenReceipts finishes every started receipt as cancelled.
   // Abort, drop, and process exit call it. Accepted inputs stay accepted.
   cancelOpenReceipts: () => void;
@@ -826,7 +830,13 @@ export function createSeatAgent(opts: {
     throw Object.assign(new Error("seat refused: bound compaction running"), { reason: "turn_in_flight" });
   };
 
+  // closed is drop. runTurn and the store refuse after the in-flight turn
+  // has unwound, so a queued prompt cannot start on a seat the host released.
+  let closed = false;
+  let unwind: Promise<void> = Promise.resolve();
+
   const runTurn = async (text: string, meta: PromptMeta | undefined, run: () => Promise<void>, accepted?: RequestReceipt) => {
+    if (closed) throw new Error("seat is closed");
     if (turnDone) throw new Error("a turn is still unwinding");
     let releaseTurn!: () => void;
     turnDone = new Promise<void>(resolve => { releaseTurn = resolve; });
@@ -863,10 +873,12 @@ export function createSeatAgent(opts: {
       // An interrupt is how a waiting message gets taken now (T138). The
       // queues survive abort; once the aborted run has unwound, run what is
       // queued as its own turn instead of leaving it for a later prompt.
-      void agent.waitForIdle().then(async () => {
+      // Drop awaits this promise, then seals the seat (C4). A closed seat
+      // must not start that turn: the host can no longer abort it.
+      unwind = agent.waitForIdle().then(async () => {
         await interruptedTurn;
         await retryDone;
-        if (!agent.hasQueuedMessages() || agent.state.isStreaming || turnDone) return;
+        if (closed || !agent.hasQueuedMessages() || agent.state.isStreaming || turnDone) return;
         try {
           // continue() from a toolResult tail re-asks the model about the
           // cancelled tool, then absorbs the next prompt in the same turn
@@ -890,6 +902,16 @@ export function createSeatAgent(opts: {
         }
       });
       return ended;
+  };
+
+  const stopTurn = () => {
+    const ended = abortTurn();
+    // A released host owns no queued work. The ordinary interrupt path
+    // delivers queues; a stop must not start another old-provider request.
+    agent.replaceQueues([], []);
+    heldSteering.length = 0;
+    heldFollowUps.length = 0;
+    return ended;
   };
 
   return {
@@ -958,14 +980,17 @@ export function createSeatAgent(opts: {
     },
     cancelOpenReceipts,
     abort: abortTurn,
-    stopTurn: () => {
-      const ended = abortTurn();
-      // A released host owns no queued work. The ordinary interrupt path
-      // delivers queues; a stop must not start another old-provider request.
-      agent.replaceQueues([], []);
-      heldSteering.length = 0;
-      heldFollowUps.length = 0;
-      return ended;
+    stopTurn,
+    close: async () => {
+      closed = true;
+      stopTurn();
+      try {
+        await unwind;
+      } catch {
+        // The aborted turn already ended as itself. Its unwind error is not
+        // a reason to keep the store writable.
+      }
+      maint.history.seal();
     },
     switchModel: async (provider: string, modelId: string, compact?: { on?: SwitchCompactOn; compact_provider?: string; compact_model?: string }) => {
       assertRestorableExecution();
