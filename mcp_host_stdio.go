@@ -264,6 +264,7 @@ func (b *mcpStdioBackend) ensureLocked() (*mcpStdioProc, error) {
 		env = append(env, k+"="+v)
 	}
 	cmd.Env = env
+	setMCPStdioProcessGroup(cmd)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, fmt.Errorf("mcp stdio %s: stdin: %w", b.srv.Name, err)
@@ -324,9 +325,7 @@ func (p *mcpStdioProc) read(r *bufio.Reader) {
 // the reader.
 func (p *mcpStdioProc) kill() {
 	p.stop.Do(func() {
-		if p.cmd.Process != nil {
-			_ = p.cmd.Process.Kill()
-		}
+		killMCPStdioProcess(p.cmd)
 		_ = p.stdin.Close()
 		_ = p.cmd.Wait()
 	})
