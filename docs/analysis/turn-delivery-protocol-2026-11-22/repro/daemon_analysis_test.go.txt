@@ -1,0 +1,184 @@
+// Copyright 2026 Marcelo Cantos
+// SPDX-License-Identifier: Apache-2.0
+
+// Analysis reproductions, 2026-11-22 (turn-delivery-protocol report). Kept
+// with a .txt suffix so no build or vet in the repository compiles it;
+// run_go_repros.sh copies it into daemon/ of a scratch copy of the module.
+// Each test asserts the desired delivery contract and fails on c33e60e.
+// Real unix sockets, stub seats, temporary directories; nothing installed.
+
+package daemon
+
+import (
+	"fmt"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/marcelocantos/claudia"
+	"github.com/marcelocantos/claudia/internal/broker"
+)
+
+func analysisBoot(t *testing.T, pumpSize int) *fixture {
+	t.Setenv("HOME", t.TempDir())
+	f := newFixture(t)
+	opts := f.options(nil)
+	opts.DisableResume, opts.DisableMCPHost, opts.pumpSize = true, true, pumpSize
+	f.bootWith(t, opts)
+	return f
+}
+
+// readGrant reads frames on c until the Granted reply, returning the
+// replayed event indices.
+func analysisReadGrant(t *testing.T, c *broker.Conn) ([]int, *broker.GrantResponse) {
+	t.Helper()
+	var got []int
+	for {
+		resp, err := c.ReadResponse()
+		if err != nil {
+			t.Fatal(err)
+		}
+		switch resp.Type {
+		case broker.TypeGranted:
+			return got, resp.Granted
+		case broker.TypeAgentEvent:
+			got = append(got, killIndex(t, replayTitle(t, resp)))
+		}
+	}
+}
+
+// D1. The pump a grant creates is not started until the Granted reply is
+// written. If more events than the pump holds arrive while the replay is
+// blocked on a slow reader, the forwarder detaches the grant (daemon.go:1385)
+// and takePumpLocked appends the queue to a ring that still holds the replay,
+// because the ring is cleared only when g.pump is still this grant's pump
+// (daemon.go:1152). The Granted reply then goes out on the same connection,
+// followed by agent_detached, and the re-claim that notice asks for replays
+// the whole history a second time.
+func TestAnalysisPumpOverflowDuringReplayReplaysTwice(t *testing.T) {
+	const name, history, pad = "d1-overflow", 40, 2048
+	f := analysisBoot(t, 1)
+	_ = rawSeat(t, f.sock, name).Close()
+	waitFor(t, "detach", func() bool { return f.unowned(name) })
+	proc := f.d.reg.Get(name)
+	for i := 0; i < history; i++ {
+		killPublish(proc, i, pad)
+	}
+	c := dialRaw(t, f.sock)
+	if err := c.WriteRequest(reclaimRequest(t, f, name)); err != nil {
+		t.Fatal(err)
+	}
+	// The replay is under way and blocked: this connection owns the grant
+	// with a pump that has not started.
+	waitFor(t, "replay in progress", func() bool {
+		f.d.mu.Lock()
+		defer f.d.mu.Unlock()
+		g := f.d.grants[name]
+		return g != nil && g.owner != nil && g.pump != nil && !g.pump.started
+	})
+	killPublish(proc, history, 0)   // fills the pump (capacity 1)
+	killPublish(proc, history+1, 0) // overflows it: detach, notice
+	waitFor(t, "overflow detach", func() bool { return f.unowned(name) })
+
+	// The agent_detached notice is written by its own goroutine and can land
+	// between replay frames; read until both it and the reply have arrived.
+	var first []int
+	var g1 *broker.GrantResponse
+	detached := false
+	for g1 == nil || !detached {
+		resp, err := c.ReadResponse()
+		if err != nil {
+			t.Fatal(err)
+		}
+		switch resp.Type {
+		case broker.TypeGranted:
+			g1 = resp.Granted
+		case broker.TypeAgentDetached:
+			detached = true
+		case broker.TypeAgentEvent:
+			if g1 == nil {
+				first = append(first, killIndex(t, replayTitle(t, resp)))
+			}
+		}
+	}
+	if err := c.WriteRequest(reclaimRequest(t, f, name)); err != nil {
+		t.Fatal(err)
+	}
+	second, g2 := analysisReadGrant(t, c)
+	seen := map[int]bool{}
+	for _, i := range first {
+		seen[i] = true
+	}
+	var twice []int
+	for _, i := range second {
+		if seen[i] {
+			twice = append(twice, i)
+		}
+	}
+	t.Logf("ANALYSIS-D1 first replay %d events (lagged=%v), re-claim replay %d events (lagged=%v), %d delivered twice",
+		len(first), g1.Lagged, len(second), g2.Lagged, len(twice))
+	if len(twice) > 0 {
+		t.Fatalf("one connection received %d events twice (first %d): replayed in the grant and again in the re-claim it was told to make",
+			len(twice), twice[0])
+	}
+}
+
+// 🎯T1404 at c33e60e, end to end. A consumer that dies with written events
+// unread loses them, and the next owner's grant says Replayed=0, Lagged=false.
+func TestAnalysisUnreadEventsOfADeadConsumerAreReportedClean(t *testing.T) {
+	const name, n = "t1404-unread", 3
+	f := analysisBoot(t, 0)
+	c := rawSeat(t, f.sock, name)
+	proc := f.d.reg.Get(name)
+	for i := 0; i < n; i++ {
+		killPublish(proc, i, 0)
+	}
+	waitFor(t, "all written", func() bool {
+		f.d.mu.Lock()
+		defer f.d.mu.Unlock()
+		g := f.d.grants[name]
+		return g != nil && g.pump != nil && len(g.pump.queue) == 0 && g.pump.writing == nil
+	})
+	_ = c.Close() // the consumer read nothing
+	waitFor(t, "detach", func() bool { return f.unowned(name) })
+	next := dialRaw(t, f.sock)
+	if err := next.WriteRequest(reclaimRequest(t, f, name)); err != nil {
+		t.Fatal(err)
+	}
+	replay, g := analysisReadGrant(t, next)
+	t.Logf("ANALYSIS-T1404 published=%d read=0 replayed=%d lagged=%v", n, len(replay), g.Lagged)
+	assertUnreadReplayed(t, n, nil, replay, g)
+}
+
+// D4. An event too large for one frame is dropped by an attached writer
+// (daemon.go:1532) with only a log line. A replay of the same event marks the
+// grant Lagged (daemon.go:1118); the live path tells nobody. ToolTitle is
+// one of the fields EncodeEventWire does not bound (broker_bound.go:151).
+func TestAnalysisLiveOversizeEventIsReported(t *testing.T) {
+	const name = "d4-oversize"
+	f := analysisBoot(t, 0)
+	c := rawSeat(t, f.sock, name)
+	proc := f.d.reg.Get(name)
+	proc.PublishEvent(claudia.Event{Type: "progress", ProgressType: "tool_use",
+		ToolTitle: "e0000" + strings.Repeat("x", broker.MaxLineLen)})
+	killPublish(proc, 1, 0)
+	if err := c.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for len(got) == 0 {
+		resp, err := c.ReadResponse()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.Type == broker.TypeAgentEvent {
+			got = append(got, replayTitle(t, resp)[:5])
+		} else if resp.Type == broker.TypeError || resp.Type == broker.TypeAgentDetached {
+			got = append(got, fmt.Sprintf("%s", resp.Type))
+		}
+	}
+	t.Logf("ANALYSIS-D4 first frame after the oversize event: %v", got)
+	if got[0] == "e0001" {
+		t.Fatalf("the consumer received e0001 with no sign that e0000 was dropped")
+	}
+}

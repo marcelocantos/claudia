@@ -1,0 +1,12 @@
+  1 Initial: 
+  2 Prompt: j=<<"accepted", "none", "none">>; host=<<"accepted", "none", "none">>; sends=1; turn=[on |-> TRUE, root |-> 1, rootTaken |-> FALSE]
+  3 MidCompact: compact="mid"
+  4 Stop: deliver=TRUE; host=<<"stopped", "none", "none">>; compact="none"; turn=[on |-> FALSE, root |-> 0, rootTaken |-> FALSE]
+  5 Crash: proc="down"; deliver=FALSE; seat="none"
+  6 Restart: proc="up"
+  7 Load: fresh=TRUE; seat="loaded"; queue=<<1>>
+  8 Prompt: fresh=FALSE; j=<<"accepted", "accepted", "none">>; host=<<"stopped", "accepted", "none">>; queue=<<1, 2>>; sends=2; turn=[on |-> TRUE, root |-> 0, rootTaken |-> TRUE]
+  9 Take: flag=[ refusedDurable |-> FALSE, ranAfterEnd |-> TRUE, ranAfterDrop |-> FALSE, twice |-> FALSE ]; j=<<"started", "accepted", "none">>; queue=<<2>>; starts=<<1, 0, 0>>; turn=[on |-> TRUE, root |-> 0, rootTaken |-> TRUE] 18389 states generated, 8107 distinct states found, 4422 states left on queue. The depth of the complete state graph search is 9. The average outdegree of the complete state graph is 2 (minimum is 0, the maximum 8 and the 95th percentile is 5). Finished in 07s at (2026-11-23 09:07:03)
+Error: Invariant EndedStaysEnded is violated.
+18389 states generated, 8107 distinct states found, 4422 states left on queue.
+The depth of the complete state graph search is 9.

@@ -1,0 +1,6 @@
+  1 Initial: 
+  2 BoundBegin: compact="bound"
+  3 Prompt: flag=[ refusedDurable |-> TRUE, ranAfterEnd |-> FALSE, ranAfterDrop |-> FALSE, twice |-> FALSE ]; j=<<"accepted", "none">>; host=<<"refused", "none">>; sends=1; turn=[on |-> FALSE, root |-> 0, rootTaken |-> FALSE] 37 states generated, 33 distinct states found, 22 states left on queue. The depth of the complete state graph search is 5. The average outdegree of the complete state graph is 3 (minimum is 2, the maximum 5 and the 95th percentile is 5). Finished in 03s at (2026-11-23 09:06:00)
+Error: Invariant RefusedNotDurable is violated.
+37 states generated, 33 distinct states found, 22 states left on queue.
+The depth of the complete state graph search is 5.

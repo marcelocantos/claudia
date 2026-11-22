@@ -1,0 +1,9 @@
+  1 Initial: 
+  2 Prompt: j=<<"accepted", "none">>; host=<<"accepted", "none">>; sends=1; turn=[on |-> TRUE, root |-> 1, rootTaken |-> FALSE]
+  3 MidCompact: compact="mid"
+  4 Stop: deliver=TRUE; host=<<"stopped", "none">>; compact="none"; turn=[on |-> FALSE, root |-> 0, rootTaken |-> FALSE]
+  5 Prompt: host=<<"accepted", "none">>; sends=2
+  6 Unwind: deliver=FALSE; turn=[on |-> FALSE, root |-> 0, rootTaken |-> FALSE] 332 states generated, 227 distinct states found, 136 states left on queue. The depth of the complete state graph search is 7. The average outdegree of the complete state graph is 3 (minimum is 0, the maximum 5 and the 95th percentile is 4). Finished in 05s at (2026-11-23 09:07:13)
+Error: Invariant NotStranded is violated.
+332 states generated, 227 distinct states found, 136 states left on queue.
+The depth of the complete state graph search is 7.

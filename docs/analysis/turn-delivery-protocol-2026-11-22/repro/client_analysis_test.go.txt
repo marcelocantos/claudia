@@ -1,0 +1,136 @@
+// Copyright 2026 Marcelo Cantos
+// SPDX-License-Identifier: Apache-2.0
+
+// Analysis reproductions, 2026-11-22 (turn-delivery-protocol report),
+// consumer side. Kept with a .txt suffix so the repository never compiles
+// it; run_go_repros.sh copies it into the root package of a scratch copy of
+// the module. A fake daemon on a temporary unix socket answers the grant;
+// no daemon, provider or installed service is involved. Each test asserts
+// the desired contract and fails on c33e60e.
+
+package claudia
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/marcelocantos/claudia/internal/broker"
+)
+
+// analysisGrantHandler answers a grant the way daemon.handleGrant does after
+// a reclaim: n replayed agent_event frames, then the granted reply.
+type analysisGrantHandler struct {
+	n      int
+	lagged bool
+}
+
+func (h *analysisGrantHandler) HandleRequest(c *broker.ClientConn, req *broker.Request) bool {
+	switch req.Type {
+	case broker.TypeGrant:
+		for i := 0; i < h.n; i++ {
+			raw, err := EncodeEventWire(Event{Type: "progress", ProgressType: "tool_use", ToolTitle: fmt.Sprintf("replayed-%d", i)})
+			if err != nil {
+				panic(err)
+			}
+			_ = c.Reply(&broker.Response{Type: broker.TypeAgentEvent, AgentEvent: &broker.AgentEventMessage{Name: req.Grant.Name, Event: raw}})
+		}
+		_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeGranted, Granted: &broker.GrantResponse{
+			Name: req.Grant.Name, SessionID: "s-analysis", Provider: broker.ProviderClaude,
+			Reclaimed: true, Replayed: h.n, Lagged: h.lagged,
+		}})
+		return true
+	case broker.TypeRelease:
+		_ = c.Reply(&broker.Response{ID: req.ID, Type: broker.TypeReleased,
+			Released: &broker.ReleaseResponse{Name: req.Release.Name, Disposition: req.Release.Disposition}})
+		return true
+	}
+	return false
+}
+
+func (h *analysisGrantHandler) ConnClosed(*broker.ClientConn) {}
+
+func analysisBroker(t *testing.T, h broker.Handler) {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "cba")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sock := filepath.Join(dir, "b.sock")
+	t.Setenv(broker.SocketPathEnv, sock)
+	t.Setenv(broker.NoBrokerEnv, "")
+	ln, err := broker.Listen(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv, err := broker.Serve(&broker.ServeArgs{Listener: ln, Handler: h})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = srv.Close(); _ = os.RemoveAll(dir) })
+}
+
+func analysisStart(t *testing.T, name string) *Agent {
+	t.Helper()
+	a, err := startViaBrokerContext(context.Background(), Config{Name: name, WorkDir: t.TempDir(), SessionID: "s-" + name, TermLogPath: "-"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(a.Stop)
+	return a
+}
+
+func analysisCollect(a *Agent) func() []Event {
+	var mu sync.Mutex
+	var got []Event
+	a.SubscribeEvents(func(ev Event) { mu.Lock(); got = append(got, ev); mu.Unlock() })
+	return func() []Event { mu.Lock(); defer mu.Unlock(); return append([]Event(nil), got...) }
+}
+
+// A reclaim's replay waits for the first subscriber only replayGrace
+// (500 ms, broker_agent.go:99), then is delivered to whoever is subscribed:
+// nobody, so Agent.publishEvent drops it. A consumer that subscribes later
+// (more setup after Start, or a loaded host) loses the replay with no sign.
+func TestAnalysisLateSubscriberGetsTheReplay(t *testing.T) {
+	analysisBroker(t, &analysisGrantHandler{n: 3})
+	a := analysisStart(t, "late-sub")
+	time.Sleep(700 * time.Millisecond)
+	got := analysisCollect(a)
+	time.Sleep(300 * time.Millisecond)
+	t.Logf("ANALYSIS-LATE subscribed 700ms after Start: received %d of 3 replayed events", len(got()))
+	if n := len(got()); n != 3 {
+		t.Fatalf("subscriber attached after the replay grace received %d of 3 replayed events, and nothing said so", n)
+	}
+}
+
+// A granted reply with Lagged=true says the replay is incomplete. The
+// library writes a log line (broker_agent.go:163) and the application,
+// which receives the events, learns nothing: no event, no error, no field.
+func TestAnalysisLaggedGrantReachesTheApplication(t *testing.T) {
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	analysisBroker(t, &analysisGrantHandler{n: 3, lagged: true})
+	a := analysisStart(t, "lagged")
+	got := analysisCollect(a)
+	time.Sleep(800 * time.Millisecond)
+	var other []string
+	for _, ev := range got() {
+		if !(ev.Type == "progress" && ev.ProgressType == "tool_use" && strings.HasPrefix(ev.ToolTitle, "replayed-")) {
+			other = append(other, ev.Type+"/"+ev.ProgressType)
+		}
+	}
+	logged := strings.Contains(logs.String(), "lagged replay")
+	t.Logf("ANALYSIS-LAG events=%d non-replay events=%v log line=%v", len(got()), other, logged)
+	if len(other) == 0 {
+		t.Fatalf("a lagged reclaim reached the application as %d ordinary events; the only trace is a log line (%v)", len(got()), logged)
+	}
+}

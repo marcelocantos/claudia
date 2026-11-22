@@ -1,0 +1,5 @@
+  1 Initial: 
+  2 Steer: j=<<"accepted", "none">>; host=<<"accepted", "none">>; queue=<<1>>; sends=1; turn=[on |-> FALSE, root |-> 0, rootTaken |-> FALSE] 23 states generated, 17 distinct states found, 10 states left on queue. The depth of the complete state graph search is 5. The average outdegree of the complete state graph is 3 (minimum is 2, the maximum 4 and the 95th percentile is 4). Finished in 03s at (2026-11-23 09:07:46)
+Error: Invariant NotStranded is violated.
+23 states generated, 17 distinct states found, 10 states left on queue.
+The depth of the complete state graph search is 5.
