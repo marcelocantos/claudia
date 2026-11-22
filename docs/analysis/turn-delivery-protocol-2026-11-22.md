@@ -112,7 +112,7 @@ model to the stated bound), **argument** (holds by reading), **unknown**.
 | # | Invariant | Maintained at | How it breaks | Status |
 |---|-----------|---------------|---------------|--------|
 | I1 | No consumer incarnation's application receives an event twice. | `detachLocked` committed/draining split (`daemon.go:744`); success clears `writing` (`:1522`); ring cleared after the reply (`:1151`). | A pump overflow while the grant's replay is blocked leaves the replay on the ring; the re-claim it asks for replays it again (D6). | violated: TLC `Delivery-D1`, Go repro (40 of 40 twice) |
-| I2 | Events reach the application in publish order. | Put-back goes in front of the ring (`:1434`); the pump exists before the replay (`:1103`). | Not found; current-mode checks combine order with loss in I3, and every I3 trace was a loss. | argument |
+| I2 | Events reach the application in publish order. | Put-back goes in front of the ring (`:1434`); the pump exists before the replay (`:1103`). | When another connection takes a draining writer's events, the writer still writes its in-flight event to its old consumer, which may be the live owner by then (D10). | violated: TLC `Delivery-R2`; holds in `-R1`, `-R3` |
 | I3 | An event a live consumer did not receive is still in daemon custody, or the application is told before it receives a later event (or by the end). | Lagged on ring overflow (`:1458`) and replay skips (`:1118`). | Bytes in a dead consumer's socket (🎯T1404); daemon restart (rings are memory); live oversize drop (`:1532`); Lagged never reaches the application; on a re-claim the lagged reply arrives after the replayed events. | violated: TLC `Delivery-D2..D6`, Go repros |
 | I4 | A grant reply's Lagged reaches the application. | `StartAgent` logs it (`broker_agent.go:163`); `reclaim` discards the reply (`:242`). | Always. | violated: Go repro, code |
 | I5 | A reclaim's replay reaches the subscriber the consumer attaches. | `drain` waits for the first subscriber for `replayGrace` (`broker_agent.go:98`, `:564`). | A subscriber attached more than 500 ms after Start gets none of it; `publishEvent` drops events with no subscriber (`agent.go:1605`). | violated: Go repro |
@@ -142,8 +142,14 @@ fetched), then `repro/run_sidecar_repros.sh <scratch> <test>`. The Go ones
 need `git archive HEAD` unpacked as `<scratch>/mod`, then
 `repro/run_go_repros.sh <scratch>` (private `GOCACHE`, `GOPROXY=off`).
 
-Three expectations were wrong on the first run and are recorded rather than
-hidden: `Delivery-D3` trips `EndComplete` before `InOrderOrReported` (the same
+The final pass over every config is Pueue 1569 (S2 rerun in 1614 after a
+transient failure: TLC's extracted `TLC.tla` vanished from the shared system
+temp directory mid-run). Four expectations were wrong on the first run and
+are recorded rather than hidden: `Delivery-R2` was expected to pass and found
+D10 (after three refinements of what counts as "still on its way", each
+removing a false report: an oversize event the replay had skipped, a writer's
+copy it re-checks before writing, and a copy aimed at a dead consumer);
+`Delivery-D3` trips `EndComplete` before `InOrderOrReported` (the same
 loss, a shorter trace); `PromptProtocol-P1b` passes, because the modelled host
 never re-sends a request it was told had ended; and `Delivery-A2` first
 failed for a modelling reason (a fresh consumer never gained a gap baseline),
@@ -170,9 +176,12 @@ current code or one of the two 🎯T1404 designs (§5).
 | `Delivery-D4` current, event 1 oversize | all | **InOrderOrReported violated** | The attached writer drops the frame (`daemon.go:1532`); event 2 arrives with nothing said. |
 | `Delivery-D5` current, ring 1, Lagged as coded | all | **InOrderOrReported violated** | The ring overflows, the reply says Lagged, the application is not told. |
 | `Delivery-D6` current, ring 1, Lagged counted as told | all | **InOrderOrReported violated** | Same, on a re-claim: the replayed events are delivered as they arrive, before the lagged reply. |
-| `Delivery-S1` seq, durable cursor, crash, oversize | all | pass, 416,993 states | |
+| `Delivery-R1` current, one consumer, ring 3 | order only | pass, 1,225 states | |
+| `Delivery-R2` current, consumer death | order only | **NoReorder violated**, 24-state trace | Defect D10: a stale grant from a dead consumer takes a draining writer's events; the writer's write of event 1 still lands on the live consumer after the replayed 2. |
+| `Delivery-R3` current, daemon crash, oversize | order only | pass, 8,459 states | |
+| `Delivery-S1` seq, durable cursor, crash, oversize | all | pass, 417,217 states | |
 | `Delivery-S2` seq, volatile cursor | all | **InOrderOrReported violated** | A fresh incarnation cannot judge what its predecessor missed. |
-| `Delivery-A1` ack, durable cursor, oversize | all | pass, 181,948 states | |
+| `Delivery-A1` ack, durable cursor, oversize | all | pass, 182,064 states | |
 | `Delivery-A2` ack, volatile cursor | all | **NoDupLogical violated** | Delivered to incarnation 1, unacknowledged at its death, replayed to 2. |
 | `Delivery-A3` ack, daemon crash | all | pass, 16,441 states | The loss is reported (epoch), not prevented. |
 
@@ -442,6 +451,36 @@ Pueue 1535: the first frame after the oversize event is the next event,
 `e0001`, with nothing said. **Fix:** set a per-grant "dropped" flag the next frame
 or grant carries, or bound every string field in `boundEventForWire`.
 
+### D10. An event taken from a draining writer is delivered once, in order
+
+**Severity: low.** It needs a full pump (100,000 events) while the writer is
+inside a write, and another connection's grant in that window. The model's
+route to it is a grant sent by a consumer just before it died: its
+`handleGrant` is still in `Launch` (up to 90 s) when its successor connects.
+
+**Mechanism.** A writer detached mid-write becomes `g.draining`
+(`daemon.go:750`). A grant from another connection takes its in-flight event
+and queue onto the front of the ring (`:1065-1080`) and clears
+`pump.writing`, but the writer writes its own local copy (`raw`, `:1497`,
+`:1514`) regardless. If that consumer is alive, the event reaches it, and if
+it is also the next owner (here, after re-claiming from the stale grant), it
+arrives after newer replayed events, or twice when the ring still holds it.
+
+**Reproduction.** TLC `Delivery-R2`, 24-state trace in
+`results/Delivery-R2-current-order-death.trace.txt`: consumer 1 sends a grant
+and dies (states 2–5); consumer 2 owns the seat (6–11); its writer commits to
+event 1 (12–14); event 3 overflows the queue and the grant is detached with
+the writer draining (15, `:1385`, `:750`); consumer 2 reads the notice and
+re-claims (16–20); consumer 1's stale grant binds and takes events 1 and 2
+(21, `:1065`); consumer 2's re-claim displaces it and replays (22–23); 2 is
+delivered while the writer's write of 1 to consumer 2 is still to land (24).
+Not reproduced in Go.
+
+**Smallest fix.** Before taking a draining writer's events for another
+connection, make its write fail (`SetWriteDeadline(time.Now())` on the old
+connection) and wait for it, as the same-connection path already waits; the
+writer then puts the event back itself or records that it landed.
+
 ## 5. 🎯T1404: the acknowledgement design
 
 Modelled as two designs in `Delivery.tla` (`Mode = "seq"`, `"ack"`):
@@ -553,12 +592,10 @@ reproductions here use the same oracle.
 
 ## 7. Unconfirmed suspicions
 
-1. **A stolen in-flight event reaches two consumers.** When another
-   connection takes a draining writer's events (`daemon.go:1065-1080`) it
-   clears `pump.writing`, but the writer goroutine still writes its local
-   `raw` (`:1497`, `:1514`). If the wedged consumer is alive and later reads,
-   it receives an event the new owner was also replayed. Needs two live
-   consumers of one seat; not modelled (one logical consumer) and not run.
+1. **Promoted to D10.** The stolen in-flight event was a suspicion until
+   `Delivery-R2` produced a trace; the two-different-consumers form (an
+   operator's connection taking a seat from a wedged Jevons) is the same
+   mechanism and was not modelled separately.
 2. **`agent_gone` can arrive before the seat's last events** (F4). The
    consumer marks the handle dead and keeps delivering the queued events;
    whether any consumer misreads that order was not checked.

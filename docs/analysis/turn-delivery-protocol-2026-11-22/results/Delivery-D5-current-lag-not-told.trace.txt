@@ -1,13 +1,13 @@
   1 Initial: 
   2 Publish: d=[ owner |-> 0, pump |-> 0, draining |-> 0, ring |-> <<1>>, lag |-> FALSE, unacked |-> <<>>, acked |-> 0 ]; pub=1
-  3 RequestGrant: grants=1; cl=<<[granted |-> FALSE, held |-> <<>>, want |-> FALSE]>>; gr=<< [ ph |-> "req", rep |-> <<>>, lagged |-> FALSE, p |-> 0, own |-> FALSE, from |-> 0, upto |-> 0 ] >>
-  4 Publish: d=[ owner |-> 0, pump |-> 0, draining |-> 0, ring |-> <<2>>, lag |-> TRUE, unacked |-> <<>>, acked |-> 0 ]; pub=2
+  3 Publish: d=[ owner |-> 0, pump |-> 0, draining |-> 0, ring |-> <<2>>, lag |-> TRUE, unacked |-> <<>>, acked |-> 0 ]; pub=2
+  4 RequestGrant: grants=1; cl=<<[granted |-> FALSE, held |-> <<>>, want |-> FALSE]>>; gr=<< [ ph |-> "req", rep |-> <<>>, lagged |-> FALSE, p |-> 0, own |-> FALSE, from |-> 0, upto |-> 0 ] >>
   5 GrantCheck: gr=<< [ ph |-> "launched", rep |-> <<>>, lagged |-> FALSE, p |-> 0, own |-> FALSE, from |-> 0, upto |-> 0 ] >>
   6 GrantBind: pumps=<< [ st |-> "unstarted", conn |-> 1, q |-> <<>>, w |-> 0, raw |-> 0, closed |-> FALSE, stolen |-> FALSE ], [ st |-> "none", conn |-> 0, q |-> <<>>, w |-> 0, raw |-> 0, closed |-> FALSE, stolen |-> FALSE ], [ st |-> "none", conn |-> 0, q |-> <<>>, w |-> 0, raw |-> 0, closed |-> FALSE, stolen |-> FALSE ] >>; d=[ owner |-> 1, pump |-> 1, draining |-> 0, ring |-> <<2>>, lag |-> TRUE, unacked |-> <<>>, acked |-> 0 ]; gr=<< [ ph |-> "replay", rep |-> <<2>>, lagged |-> TRUE, p |-> 1, own |-> FALSE, from |-> 0, upto |-> 2 ] >>; npumps=1
   7 Replay: gr=<< [ ph |-> "replay", rep |-> <<>>, lagged |-> TRUE, p |-> 1, own |-> FALSE, from |-> 0, upto |-> 2 ] >>; sock=<<<<[lag |-> FALSE, upto |-> 0, e |-> 2, k |-> "E"]>>>>
   8 Read: cl=<<[granted |-> FALSE, held |-> <<2>>, want |-> FALSE]>>; sock=<<<<>>>>
   9 Reply: gr=<< [ ph |-> "reply", rep |-> <<>>, lagged |-> TRUE, p |-> 1, own |-> FALSE, from |-> 0, upto |-> 2 ] >>; sock=<<<<[lag |-> TRUE, upto |-> 2, e |-> 0, k |-> "G"]>>>>
- 10 Read: bad=[hole |-> TRUE, dupInc |-> FALSE, dupLogical |-> FALSE]; cl=<<[granted |-> TRUE, held |-> <<>>, want |-> FALSE]>>; applied=<<{2}>>; cursor=<<2>>; sock=<<<<>>>> 340 states generated, 191 distinct states found, 52 states left on queue. The depth of the complete state graph search is 11. The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 4 and the 95th percentile is 4). Finished in 08s at (2026-11-23 09:04:52)
+ 10 Read: bad=[hole |-> TRUE, dupInc |-> FALSE, dupLogical |-> FALSE, reorder |-> FALSE]; cl=<<[granted |-> TRUE, held |-> <<>>, want |-> FALSE]>>; applied=<<{2}>>; cursor=<<2>>; sock=<<<<>>>> 339 states generated, 190 distinct states found, 51 states left on queue. The depth of the complete state graph search is 11. The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 4 and the 95th percentile is 3). Finished in 08s at (2026-11-23 09:29:06)
 Error: Invariant InOrderOrReported is violated.
-340 states generated, 191 distinct states found, 52 states left on queue.
+339 states generated, 190 distinct states found, 51 states left on queue.
 The depth of the complete state graph search is 11.

@@ -120,13 +120,19 @@ FinishR(dd, pp, p) ==
 
 AppliedBy(ap) == UNION {ap[i] : i \in Conns}
 
-\* Events still held somewhere on their way: the ring, a pump's queue or
-\* in-flight copy, the unacknowledged window, a socket, a push queue.
+\* Events that can still reach a consumer: the ring, a pump's queue and
+\* in-flight event, the writer's own copy once it has committed to a write
+\* to a live consumer (before that it re-checks stolen, daemon.go:1504; a
+\* write to a dead one fails and puts nothing back once stolen), the
+\* unacknowledged window, a socket, a push queue. An oversize event can
+\* never be written, so it is not on its way anywhere.
 InCustody ==
-  Range(d.ring) \cup Range(d.unacked)
-  \cup UNION {Range(pumps[p].q) \cup ({pumps[p].w, pumps[p].raw} \ {0}) : p \in 1..MaxGrants}
-  \cup UNION {{f.e : f \in Range(sock[c])} \ {0} : c \in Conns}
-  \cup UNION {Range(cl[c].held) : c \in Conns}
+  (Range(d.ring) \cup Range(d.unacked)
+   \cup UNION {Range(pumps[p].q) \cup ({pumps[p].w} \ {0})
+               \cup (IF pumps[p].st = "committed" /\ alive[pumps[p].conn] THEN {pumps[p].raw} ELSE {})
+             : p \in 1..MaxGrants}
+   \cup UNION {{f.e : f \in Range(sock[c])} \ {0} : c \in Conns}
+   \cup UNION {Range(cl[c].held) : c \in Conns}) \ Oversize
 
 ApplyOne(st, c, e) ==
   IF Mode # "current" /\ e <= st.cursor[c] THEN st   \* seq dedup
