@@ -176,6 +176,35 @@ current code or one of the two 🎯T1404 designs (§5).
 | `Delivery-A2` ack, volatile cursor | all | **NoDupLogical violated** | Delivered to incarnation 1, unacknowledged at its death, replayed to 2. |
 | `Delivery-A3` ack, daemon crash | all | pass, 16,441 states | The loss is reported (epoch), not prevented. |
 
+**`Delivery-D1` mapped to code** (defect D6; the Go reproduction follows
+the same steps):
+
+| State | Model action | Code |
+|-------|--------------|------|
+| 2 | Publish 1 with no owner | `forwarder` → `retainUnowned` (`daemon.go:1394`) |
+| 3–4 | RequestGrant, GrantCheck | `StartAgent` sends the grant (`broker_agent.go:147`); first lock section (`daemon.go:928`) |
+| 5 | GrantBind: owner, unstarted pump, ring snapshot ⟨1⟩ | `:1097-1104` |
+| 6 | Publish 2 into the unstarted pump | `:1381` |
+| 7 | Replay writes 1 into the socket | `:1117` |
+| 8 | Publish 3: queue full, detach, queue appended to the uncleared ring ⟨1,2⟩, then 3 | `:1385-1394`, `detachLocked` `:744`, `takePumpLocked` `:1422` |
+| 9 | The consumer reads 1; the handle does not exist yet, so it waits in the push queue | `readLoop`, `pushQueue` (`broker_client.go:98`, `broker_agent.go:515`) |
+| 10–11 | Reply written; commit sees another pump and leaves the ring | `:1147`, `:1152` |
+| 12 | The consumer reads the reply and delivers 1 | `DetectReady`, `drain` (`broker_agent.go:181`, `:544`) |
+| 13–14 | The notice is written and read | `notifyDetached` (`:1409`); `deliver` → `reclaim` (`broker_agent.go:609`) |
+| 15–18 | The re-claim replays ⟨1,2,3⟩ | `handleGrant` again |
+| 19 | 1 delivered a second time | |
+
+**`PromptProtocol-P2b` mapped to code** (defect D1; the Bun reproduction
+follows the same steps):
+
+| State | Model action | Code |
+|-------|--------------|------|
+| 2 | prompt(1) on an idle seat opens a turn with 1 as its input | `seat.ts:963-964`, `runTurn` `:838` |
+| 3 | pre-turn compaction | `executeTurn` `:665-667`, `Maintenance.run` (`maintain.ts:847`) |
+| 4 | Release Stop: queues emptied, turn closed; the cancelled compaction's catch puts 1 back | `server.ts:511-518` → `stopTurn` `:907-915`; catch `:768-774` |
+| 5 | The unwind opens an `interrupt-deliver` turn on the queue | `:878-896` |
+| 6 | 1 reaches the pre-model gate and starts | `addBeforeModelCall` `:558-576` |
+
 ### 3.2 Prompt admission (`PromptProtocol.tla`)
 
 One sidecar seat: `prompt`, `steer`, the turn taking its root input and its
