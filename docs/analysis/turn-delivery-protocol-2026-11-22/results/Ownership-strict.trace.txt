@@ -1,0 +1,5 @@
+  1 Initial: 
+  2 BrokerDies: broker=FALSE; tracked={} 9 states generated, 9 distinct states found, 5 states left on queue. The depth of the complete state graph search is 3. Finished in 04s at (2026-11-23 09:14:02)
+Error: Invariant StrictNoChildOutlivesOwner is violated.
+9 states generated, 9 distinct states found, 5 states left on queue.
+The depth of the complete state graph search is 3.

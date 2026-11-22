@@ -1,0 +1,8 @@
+  1 Initial: 
+  2 Spawn: born={1}; leaders={1}; tracked={1}
+  3 Fork: descendants={1}
+  4 LeaderExit: leaders={}; tracked={}
+  5 SignalSidecar: deadEpochs={1}; seat=FALSE; sidecar=FALSE; tracked={} 239 states generated, 112 distinct states found, 56 states left on queue. The depth of the complete state graph search is 6. The average outdegree of the complete state graph is 2 (minimum is 0, the maximum 7 and the 95th percentile is 6). Finished in 05s at (2026-11-23 09:13:52)
+Error: Invariant NoToolOutlivesSidecar is violated.
+239 states generated, 112 distinct states found, 56 states left on queue.
+The depth of the complete state graph search is 6.

@@ -31,7 +31,7 @@ covers a daemon restart without a durable ring. §5.
 
 ## 1. What the system is, from the code
 
-Five kinds of process take part. Arrows are sockets or pipes; every wire is
+Four kinds of process take part. Arrows are sockets or pipes; every wire is
 newline-delimited JSON.
 
 ```
@@ -164,7 +164,7 @@ current code or one of the two 🎯T1404 designs (§5).
 
 | Config | Checks | Result | What the trace is |
 |--------|--------|--------|-------------------|
-| D1 current, one consumer, ring 3 | all | **NoDupIncarnation violated**, 19 steps | Event 1 is on the ring; the grant replays it into the buffer and the reply blocks; events 2 and 3 overflow the unstarted pump; detach appends the queue to the uncleared ring; the reply goes out, the commit does not clear (pump changed); `agent_detached` arrives; the re-claim replays 1 again. |
+| D1 current, one consumer, ring 3 | all | **NoDupIncarnation violated**, 19-state trace | Event 1 is on the ring; the grant replays it into the buffer and the reply blocks; events 2 and 3 overflow the unstarted pump; detach appends the queue to the uncleared ring; the reply goes out, the commit does not clear (pump changed); `agent_detached` arrives; the re-claim replays 1 again. |
 | D2 current, consumer death | all | **InOrderOrReported violated** | Event 1 written into the dead consumer's buffer; the next owner's grant is clean; it receives 2 over the hole. 🎯T1404. |
 | D3 current, daemon crash | all | **EndComplete violated** | Events 1–2 on the ring; the daemon dies; the new daemon's grant replays nothing with Lagged=false. |
 | D4 current, event 1 oversize | all | **InOrderOrReported violated** | The attached writer drops the frame (`daemon.go:1532`); event 2 arrives with nothing said. |
@@ -189,16 +189,16 @@ since only microtasks separate them. Bounds: 2–3 request ids, 3–4 sends.
 
 | Config | Checks | Result | What the trace is |
 |--------|--------|--------|-------------------|
-| P0 C5 mutant (accept before refusing) | I6, I7, I10, I11 | **RefusedNotDurable violated**, 4 steps | The known C5 bug; shows the model sees it. |
+| P0 C5 mutant (accept before refusing) | I6, I7, I10, I11 | **RefusedNotDurable violated**, 3 states | The known C5 bug; shows the model sees it. |
 | P1 compaction, drop, crash | I6, I7, I10, I11 | pass, 54,673 states | |
 | P1b as P1 plus interrupts | I6, I7, I10, I11 | pass, 102,593 states | |
-| P2 interrupt during pre-turn compaction | I8 | **EndedStaysEnded violated**, 6 steps | prompt(1); pre-turn compaction; abort; the catch re-queues 1; the unwind starts a turn; 1 starts. |
-| P2b Release Stop during pre-turn compaction | I8 | **EndedStaysEnded violated**, 5 steps | Same with `stop_turn`. |
-| P3 Release Stop, no re-queue, restart | I8 | **EndedStaysEnded violated**, 9 steps | The stopped input stays `accepted`; crash, restart, load re-queue it; the next prompt runs it. |
-| P4 Release Stop, then a same-id retry | I9 | **NotStranded violated**, 6 steps | The retry is acknowledged `accepted`; the queue is empty, so nothing runs it. |
+| P2 interrupt during pre-turn compaction | I8 | **EndedStaysEnded violated**, 6 states | prompt(1); pre-turn compaction; abort; the catch re-queues 1; the unwind starts a turn; 1 starts. |
+| P2b Release Stop during pre-turn compaction | I8 | **EndedStaysEnded violated**, 6 states | Same with `stop_turn`. |
+| P3 Release Stop, no re-queue, restart | I8 | **EndedStaysEnded violated**, 9 states | With the catch's re-queue switched off, the input stopped during pre-turn compaction stays `accepted`; crash, restart and load re-queue it; the next prompt runs it. The Bun reproduction of D2 shows the same for an input queued behind a running turn. |
+| P4 Release Stop, then a same-id retry | I9 | **NotStranded violated**, 6 states | Re-queue off as in P3; the retry is acknowledged `accepted`; the queue is empty, so nothing runs it. |
 | P5 the proposed fix, everything enabled | all | pass, 115,139 states | |
-| P6 steer on an idle seat | I9 | **NotStranded violated**, 2 steps | Hunt C6, still present. |
-| P7 provider refusal with a queued input | I9 | **NotStranded violated**, 5 steps | By design (`seat.ts:954`). |
+| P6 steer on an idle seat | I9 | **NotStranded violated**, 2 states | Hunt C6, still present. |
+| P7 provider refusal with a queued input | I9 | **NotStranded violated**, 5 states | By design (`seat.ts:954`). |
 
 ### 3.3 Ownership (`Ownership.tla`, from the Codex partials)
 
@@ -211,10 +211,10 @@ signal races. Bounds: 2 groups, 2 sidecar epochs. Pueue 1537:
 | Config | Result | What the trace is |
 |--------|--------|-------------------|
 | baseline (leaders stay, no SIGKILL; liveness included) | pass, 204 states | Lifeline and SIGTERM reap every tracked group; the EOF is eventually handled. |
-| crash (SIGKILL allowed) | **NoToolOutlivesSidecar violated**, 3 steps | Spawn, SIGKILL; the group outlives the sidecar. |
+| crash (SIGKILL allowed) | **NoToolOutlivesSidecar violated**, 3 states | Spawn, SIGKILL; the group outlives the sidecar. |
 | retain (leaders exit, groups kept) | pass, 348 states | Keeping the group until it is empty would be enough. |
-| retired (leaders exit, groups forgotten: the code) | **NoToolOutlivesSidecar violated**, 6 steps | Spawn, fork a background child, the leader exits and is forgotten, the sidecar exits; the child lives. |
-| strict (sidecar must never outlive the broker) | **StrictNoChildOutlivesOwner violated**, 3 steps | Between the broker's death and the EOF being handled; transient by design. |
+| retired (leaders exit, groups forgotten: the code) | **NoToolOutlivesSidecar violated**, 5 states | Spawn, fork a background child, the leader exits and is forgotten, SIGTERM; the child lives. |
+| strict (sidecar must never outlive the broker) | **StrictNoChildOutlivesOwner violated**, 2 states | Between the broker's death and the EOF being handled; transient by design. |
 
 "No child outlives its owner" therefore holds for the lifeline and SIGTERM
 paths over everything still in a tracked group, and fails for a SIGKILLed
@@ -315,7 +315,7 @@ The `agent_detached` notice makes the consumer re-claim, and the re-claim
 replays the history it has just received.
 
 **Reproduction.** TLC `Delivery-D1`, 19-step trace in
-`results/Delivery-D1-current-reclaim-dup.trace.txt`. Go, through a real
+`results/Delivery-D1-current-reclaim-dup.trace.txt` (19 states). Go, through a real
 socket and `handleGrant` with `pumpSize` 1:
 `TestAnalysisPumpOverflowDuringReplayReplaysTwice` in
 `repro/daemon_analysis_test.go.txt`, Pueue 1535

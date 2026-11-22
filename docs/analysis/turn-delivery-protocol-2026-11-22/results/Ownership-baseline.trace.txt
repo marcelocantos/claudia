@@ -1,0 +1,4 @@
+Progress(9) at 2026-11-23 09:13:15: 595 states generated, 204 distinct states found, 0 states left on queue.
+Model checking completed. No error has been found.
+595 states generated, 204 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 9.
