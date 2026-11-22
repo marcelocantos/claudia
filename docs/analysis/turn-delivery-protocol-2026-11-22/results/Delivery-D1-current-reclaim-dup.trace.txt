@@ -1,0 +1,22 @@
+  1 Initial: 
+  2 Publish: d=[ owner |-> 0, pump |-> 0, draining |-> 0, ring |-> <<1>>, lag |-> FALSE, unacked |-> <<>>, acked |-> 0 ]; pub=1
+  3 RequestGrant: grants=1; cl=<<[granted |-> FALSE, held |-> <<>>, want |-> FALSE]>>; gr=<< [ ph |-> "req", rep |-> <<>>, lagged |-> FALSE, p |-> 0, own |-> FALSE, from |-> 0, upto |-> 0 ] >>
+  4 GrantCheck: gr=<< [ ph |-> "launched", rep |-> <<>>, lagged |-> FALSE, p |-> 0, own |-> FALSE, from |-> 0, upto |-> 0 ] >>
+  5 GrantBind: pumps=<< [ st |-> "unstarted", conn |-> 1, q |-> <<>>, w |-> 0, raw |-> 0, closed |-> FALSE, stolen |-> FALSE ], [ st |-> "none", conn |-> 0, q |-> <<>>, w |-> 0, raw |-> 0, closed |-> FALSE, stolen |-> FALSE ], [ st |-> "none", conn |-> 0, q |-> <<>>, w |-> 0, raw |-> 0, closed |-> FALSE, stolen |-> FALSE ] >>; d=[ owner |-> 1, pump |-> 1, draining |-> 0, ring |-> <<1>>, lag |-> FALSE, unacked |-> <<>>, acked |-> 0 ]; gr=<< [ ph |-> "replay", rep |-> <<1>>, lagged |-> FALSE, p |-> 1, own |-> FALSE, from |-> 0, upto |-> 1 ] >>; npumps=1
+  6 Publish: pumps=<< [ st |-> "unstarted", conn |-> 1, q |-> <<2>>, w |-> 0, raw |-> 0, closed |-> FALSE, stolen |-> FALSE ], [ st |-> "none", conn |-> 0, q |-> <<>>, w |-> 0, raw |-> 0, closed |-> FALSE, stolen |-> FALSE ], [ st |-> "none", conn |-> 0, q |-> <<>>, w |-> 0, raw |-> 0, closed |-> FALSE, stolen |-> FALSE ] >>; pub=2
+  7 Replay: gr=<< [ ph |-> "replay", rep |-> <<>>, lagged |-> FALSE, p |-> 1, own |-> FALSE, from |-> 0, upto |-> 1 ] >>; sock=<<<<[lag |-> FALSE, upto |-> 0, e |-> 1, k |-> "E"]>>>>
+  8 Publish: pumps=<< [ st |-> "unstarted", conn |-> 1, q |-> <<>>, w |-> 0, raw |-> 0, closed |-> TRUE, stolen |-> TRUE ], [ st |-> "none", conn |-> 0, q |-> <<>>, w |-> 0, raw |-> 0, closed |-> FALSE, stolen |-> FALSE ], [ st |-> "none", conn |-> 0, q |-> <<>>, w |-> 0, raw |-> 0, closed |-> FALSE, stolen |-> FALSE ] >>; d=[ owner |-> 0, pump |-> 0, draining |-> 0, ring |-> <<1, 2, 3>>, lag |-> FALSE, unacked |-> <<>>, acked |-> 0 ]; notice=<<TRUE>>; pub=3
+  9 Read: cl=<<[granted |-> FALSE, held |-> <<1>>, want |-> FALSE]>>; sock=<<<<>>>>
+ 10 Reply: gr=<< [ ph |-> "reply", rep |-> <<>>, lagged |-> FALSE, p |-> 1, own |-> FALSE, from |-> 0, upto |-> 1 ] >>; sock=<<<<[lag |-> FALSE, upto |-> 1, e |-> 0, k |-> "G"]>>>>
+ 11 GrantCommit: gr=<< [ ph |-> "idle", rep |-> <<>>, lagged |-> FALSE, p |-> 0, own |-> FALSE, from |-> 0, upto |-> 0 ] >>
+ 12 Read: cl=<<[granted |-> TRUE, held |-> <<>>, want |-> FALSE]>>; applied=<<{1}>>; cursor=<<1>>; sock=<<<<>>>>
+ 13 WriteNotice: notice=<<FALSE>>; sock=<<<<[lag |-> FALSE, upto |-> 0, e |-> 0, k |-> "D"]>>>>
+ 14 Read: cl=<<[granted |-> TRUE, held |-> <<>>, want |-> TRUE]>>; sock=<<<<>>>>
+ 15 RequestGrant: grants=2; cl=<<[granted |-> TRUE, held |-> <<>>, want |-> FALSE]>>; gr=<< [ ph |-> "req", rep |-> <<>>, lagged |-> FALSE, p |-> 0, own |-> FALSE, from |-> 1, upto |-> 0 ] >>
+ 16 GrantCheck: gr=<< [ ph |-> "launched", rep |-> <<>>, lagged |-> FALSE, p |-> 0, own |-> FALSE, from |-> 1, upto |-> 0 ] >>
+ 17 GrantBind: pumps=<< [ st |-> "unstarted", conn |-> 1, q |-> <<>>, w |-> 0, raw |-> 0, closed |-> TRUE, stolen |-> TRUE ], [ st |-> "unstarted", conn |-> 1, q |-> <<>>, w |-> 0, raw |-> 0, closed |-> FALSE, stolen |-> FALSE ], [ st |-> "none", conn |-> 0, q |-> <<>>, w |-> 0, raw |-> 0, closed |-> FALSE, stolen |-> FALSE ] >>; d=[ owner |-> 1, pump |-> 2, draining |-> 0, ring |-> <<1, 2, 3>>, lag |-> FALSE, unacked |-> <<>>, acked |-> 0 ]; gr=<< [ ph |-> "replay", rep |-> <<1, 2, 3>>, lagged |-> FALSE, p |-> 2, own |-> FALSE, from |-> 1, upto |-> 3 ] >>; npumps=2
+ 18 Replay: gr=<< [ ph |-> "replay", rep |-> <<2, 3>>, lagged |-> FALSE, p |-> 2, own |-> FALSE, from |-> 1, upto |-> 3 ] >>; sock=<<<<[lag |-> FALSE, upto |-> 0, e |-> 1, k |-> "E"]>>>>
+ 19 Read: bad=[hole |-> FALSE, dupInc |-> TRUE, dupLogical |-> FALSE]; sock=<<<<>>>> 1705 states generated, 837 distinct states found, 58 states left on queue. The depth of the complete state graph search is 20. The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 4 and the 95th percentile is 3). Finished in 06s at (2026-11-23 09:04:08)
+Error: Invariant NoDupIncarnation is violated.
+1705 states generated, 837 distinct states found, 58 states left on queue.
+The depth of the complete state graph search is 20.

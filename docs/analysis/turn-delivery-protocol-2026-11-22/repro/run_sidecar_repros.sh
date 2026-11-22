@@ -12,6 +12,7 @@ mkdir -p "$scratch/tmp"
 for f in "$here"/$pattern; do
   cp "$f" "$scratch/sidecar/"
 done
+cp "$here"/analysis-*-provider.ts "$scratch/sidecar/testdata/"
 cd "$scratch/sidecar"
 export TMPDIR="$scratch/tmp"
 exec bun test --timeout 200000 $(cd "$here" && ls $pattern)

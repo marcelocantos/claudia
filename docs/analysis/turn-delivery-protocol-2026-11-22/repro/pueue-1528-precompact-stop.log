@@ -1,0 +1,68 @@
+┌───────────────────────────────────────┐
+│ Task 1528:    failed with exit code 1 │
+└───────────────────────────────────────┘
+Command: docs/analysis/turn-delivery-protocol-2026-11-22/repro/run_sidecar_repros.sh /Volumes/Storage/worktrees/claudia-turn-delivery-2026-11-22 analysis-precompact-stop.test.ts 
+   Path: /Users/marcelo/.t3/worktrees/claudia/filler-analysis-2026-11-6722f05690448811                                                                                            
+  Label: claudia-analysis: P2 precompact-stop repro                                                                                                                               
+  Start: Mon, 23 Nov 2026 09:05:46 +1100                                                                                                                                          
+    End: Mon, 23 Nov 2026 09:05:54 +1100                                                                                                                                          
+
+output:
+bun test v1.4.2 (744846f84)
+
+analysis-precompact-stop.test.ts:
+ANALYSIS-P2 {"stopTurn":true,"endedStop":"aborted","ran":{"turn":"4c6d85aa-e235-4c8b-95b8-24a606c7fbef","request":"r1"},"receipt":"completed","receiptTurns":["4c6d85aa-e235-4c8b-95b8-24a606c7fbef"],"unsentTurnsOpened":["4c6d85aa-e235-4c8b-95b8-24a606c7fbef"]}
+76 |     host.send({ op: "receipt", seat, session_id: session, request_id: "r1", rpc_id: "q-r1" });
+77 |     const r = await host.next("receipt", (e) => e.type === "receipt" && e.rpc_id === "q-r1");
+78 |     const turnsAfter = host.events.filter((e) => e.type === "accepted" && !e.request_id).map((e) => e.turn_id);
+79 |     console.log("ANALYSIS-P2 " + JSON.stringify({ stopTurn, endedStop: ended.stop_reason, ran, receipt: r.receipt?.state,
+80 |       receiptTurns: r.receipt?.turn_ids, unsentTurnsOpened: turnsAfter }));
+81 |     expect({ ran, receipt: r.receipt?.state }).toEqual({ ran: undefined, receipt: "cancelled" });
+                                                    ^
+error: expect(received).toEqual(expected)
+
+  {
+-   "ran": undefined,
+-   "receipt": "cancelled",
++   "ran": {
++     "request": "r1",
++     "turn": "4c6d85aa-e235-4c8b-95b8-24a606c7fbef",
++   },
++   "receipt": "completed",
+  }
+
+- Expected  - 2
++ Received  + 5
+
+      at <anonymous> (/Volumes/Storage/worktrees/claudia-turn-delivery-2026-11-22/sidecar/analysis-precompact-stop.test.ts:81:48)
+(fail) an input whose turn is stopped (Release Stop) during pre-turn compaction does not run [3541.14ms]
+ANALYSIS-P2 {"stopTurn":false,"endedStop":"aborted","ran":{"turn":"23629150-5fd4-419e-a610-a9a6cbe6ca78","request":"r1"},"receipt":"completed","receiptTurns":["23629150-5fd4-419e-a610-a9a6cbe6ca78"],"unsentTurnsOpened":["23629150-5fd4-419e-a610-a9a6cbe6ca78"]}
+76 |     host.send({ op: "receipt", seat, session_id: session, request_id: "r1", rpc_id: "q-r1" });
+77 |     const r = await host.next("receipt", (e) => e.type === "receipt" && e.rpc_id === "q-r1");
+78 |     const turnsAfter = host.events.filter((e) => e.type === "accepted" && !e.request_id).map((e) => e.turn_id);
+79 |     console.log("ANALYSIS-P2 " + JSON.stringify({ stopTurn, endedStop: ended.stop_reason, ran, receipt: r.receipt?.state,
+80 |       receiptTurns: r.receipt?.turn_ids, unsentTurnsOpened: turnsAfter }));
+81 |     expect({ ran, receipt: r.receipt?.state }).toEqual({ ran: undefined, receipt: "cancelled" });
+                                                    ^
+error: expect(received).toEqual(expected)
+
+  {
+-   "ran": undefined,
+-   "receipt": "cancelled",
++   "ran": {
++     "request": "r1",
++     "turn": "23629150-5fd4-419e-a610-a9a6cbe6ca78",
++   },
++   "receipt": "completed",
+  }
+
+- Expected  - 2
++ Received  + 5
+
+      at <anonymous> (/Volumes/Storage/worktrees/claudia-turn-delivery-2026-11-22/sidecar/analysis-precompact-stop.test.ts:81:48)
+(fail) an input whose turn is interrupted during pre-turn compaction does not run [3165.67ms]
+
+ 0 pass
+ 2 fail
+ 4 expect() calls
+Ran 2 tests across 1 file. [6.86s]

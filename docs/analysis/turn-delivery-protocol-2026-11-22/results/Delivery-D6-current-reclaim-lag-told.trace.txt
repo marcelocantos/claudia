@@ -1,0 +1,19 @@
+  1 Initial: 
+  2 RequestGrant: grants=1; cl=<<[granted |-> FALSE, held |-> <<>>, want |-> FALSE]>>; gr=<< [ ph |-> "req", rep |-> <<>>, lagged |-> FALSE, p |-> 0, own |-> FALSE, from |-> 0, upto |-> 0 ] >>
+  3 GrantCheck: gr=<< [ ph |-> "launched", rep |-> <<>>, lagged |-> FALSE, p |-> 0, own |-> FALSE, from |-> 0, upto |-> 0 ] >>
+  4 GrantBind: pumps=<< [ st |-> "unstarted", conn |-> 1, q |-> <<>>, w |-> 0, raw |-> 0, closed |-> FALSE, stolen |-> FALSE ], [ st |-> "none", conn |-> 0, q |-> <<>>, w |-> 0, raw |-> 0, closed |-> FALSE, stolen |-> FALSE ], [ st |-> "none", conn |-> 0, q |-> <<>>, w |-> 0, raw |-> 0, closed |-> FALSE, stolen |-> FALSE ] >>; d=[ owner |-> 1, pump |-> 1, draining |-> 0, ring |-> <<>>, lag |-> FALSE, unacked |-> <<>>, acked |-> 0 ]; gr=<< [ ph |-> "replay", rep |-> <<>>, lagged |-> FALSE, p |-> 1, own |-> FALSE, from |-> 0, upto |-> 0 ] >>; npumps=1
+  5 Publish: pumps=<< [ st |-> "unstarted", conn |-> 1, q |-> <<1>>, w |-> 0, raw |-> 0, closed |-> FALSE, stolen |-> FALSE ], [ st |-> "none", conn |-> 0, q |-> <<>>, w |-> 0, raw |-> 0, closed |-> FALSE, stolen |-> FALSE ], [ st |-> "none", conn |-> 0, q |-> <<>>, w |-> 0, raw |-> 0, closed |-> FALSE, stolen |-> FALSE ] >>; pub=1
+  6 Publish: pumps=<< [ st |-> "unstarted", conn |-> 1, q |-> <<>>, w |-> 0, raw |-> 0, closed |-> TRUE, stolen |-> TRUE ], [ st |-> "none", conn |-> 0, q |-> <<>>, w |-> 0, raw |-> 0, closed |-> FALSE, stolen |-> FALSE ], [ st |-> "none", conn |-> 0, q |-> <<>>, w |-> 0, raw |-> 0, closed |-> FALSE, stolen |-> FALSE ] >>; d=[ owner |-> 0, pump |-> 0, draining |-> 0, ring |-> <<2>>, lag |-> TRUE, unacked |-> <<>>, acked |-> 0 ]; notice=<<TRUE>>; pub=2
+  7 Reply: gr=<< [ ph |-> "reply", rep |-> <<>>, lagged |-> FALSE, p |-> 1, own |-> FALSE, from |-> 0, upto |-> 0 ] >>; sock=<<<<[lag |-> FALSE, upto |-> 0, e |-> 0, k |-> "G"]>>>>
+  8 GrantCommit: gr=<< [ ph |-> "idle", rep |-> <<>>, lagged |-> FALSE, p |-> 0, own |-> FALSE, from |-> 0, upto |-> 0 ] >>
+  9 Read: cl=<<[granted |-> TRUE, held |-> <<>>, want |-> FALSE]>>; sock=<<<<>>>>
+ 10 WriteNotice: notice=<<FALSE>>; sock=<<<<[lag |-> FALSE, upto |-> 0, e |-> 0, k |-> "D"]>>>>
+ 11 Read: cl=<<[granted |-> TRUE, held |-> <<>>, want |-> TRUE]>>; sock=<<<<>>>>
+ 12 RequestGrant: grants=2; cl=<<[granted |-> TRUE, held |-> <<>>, want |-> FALSE]>>; gr=<< [ ph |-> "req", rep |-> <<>>, lagged |-> FALSE, p |-> 0, own |-> FALSE, from |-> 0, upto |-> 0 ] >>
+ 13 GrantCheck: gr=<< [ ph |-> "launched", rep |-> <<>>, lagged |-> FALSE, p |-> 0, own |-> FALSE, from |-> 0, upto |-> 0 ] >>
+ 14 GrantBind: pumps=<< [ st |-> "unstarted", conn |-> 1, q |-> <<>>, w |-> 0, raw |-> 0, closed |-> TRUE, stolen |-> TRUE ], [ st |-> "unstarted", conn |-> 1, q |-> <<>>, w |-> 0, raw |-> 0, closed |-> FALSE, stolen |-> FALSE ], [ st |-> "none", conn |-> 0, q |-> <<>>, w |-> 0, raw |-> 0, closed |-> FALSE, stolen |-> FALSE ] >>; d=[ owner |-> 1, pump |-> 2, draining |-> 0, ring |-> <<2>>, lag |-> TRUE, unacked |-> <<>>, acked |-> 0 ]; gr=<< [ ph |-> "replay", rep |-> <<2>>, lagged |-> TRUE, p |-> 2, own |-> FALSE, from |-> 0, upto |-> 2 ] >>; npumps=2
+ 15 Replay: gr=<< [ ph |-> "replay", rep |-> <<>>, lagged |-> TRUE, p |-> 2, own |-> FALSE, from |-> 0, upto |-> 2 ] >>; sock=<<<<[lag |-> FALSE, upto |-> 0, e |-> 2, k |-> "E"]>>>>
+ 16 Read: bad=[hole |-> TRUE, dupInc |-> FALSE, dupLogical |-> FALSE]; applied=<<{2}>>; cursor=<<2>>; sock=<<<<>>>> 1225 states generated, 605 distinct states found, 72 states left on queue. The depth of the complete state graph search is 16. The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 4 and the 95th percentile is 3). Finished in 05s at (2026-11-23 09:05:01)
+Error: Invariant InOrderOrReported is violated.
+1225 states generated, 605 distinct states found, 72 states left on queue.
+The depth of the complete state graph search is 16.
