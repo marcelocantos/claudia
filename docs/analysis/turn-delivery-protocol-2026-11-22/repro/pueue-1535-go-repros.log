@@ -1,0 +1,53 @@
+┌───────────────────────────────────────┐
+│ Task 1535:    failed with exit code 1 │
+└───────────────────────────────────────┘
+Command: docs/analysis/turn-delivery-protocol-2026-11-22/repro/run_go_repros.sh /Volumes/Storage/worktrees/claudia-turn-delivery-2026-11-22 
+   Path: /Users/marcelo/.t3/worktrees/claudia/filler-analysis-2026-11-6722f05690448811                                                      
+  Label: claudia-analysis: Go delivery repros                                                                                               
+  Start: Mon, 23 Nov 2026 09:11:47 +1100                                                                                                    
+    End: Mon, 23 Nov 2026 09:22:41 +1100                                                                                                    
+
+output:
+=== RUN   TestAnalysisPumpOverflowDuringReplayReplaysTwice
+2026/11/23 09:20:28 INFO claudia broker serving socket=/tmp/cbd2715628944/b.sock state=/tmp/cbd2715628944/state
+2026/11/23 09:20:28 INFO claudia agent started session=sid-d1-overflow window="" attach=""
+2026/11/23 09:20:28 INFO agent started name=d1-overflow provider="" session=sid-d1-overflow connect_pid=0 connect_url_set=false window="" materialized=false
+2026/11/23 09:20:28 INFO consumer connection closed; seat kept running grant=d1-overflow
+2026/11/23 09:20:28 WARN consumer not reading; detaching seat grant=d1-overflow
+    zz_analysis_test.go:118: ANALYSIS-D1 first replay 40 events (lagged=false), re-claim replay 42 events (lagged=false), 40 delivered twice
+    zz_analysis_test.go:121: one connection received 40 events twice (first 0): replayed in the grant and again in the re-claim it was told to make
+2026/11/23 09:20:28 INFO consumer connection closed; seat kept running grant=d1-overflow
+--- FAIL: TestAnalysisPumpOverflowDuringReplayReplaysTwice (0.35s)
+=== RUN   TestAnalysisUnreadEventsOfADeadConsumerAreReportedClean
+2026/11/23 09:20:28 INFO claudia broker serving socket=/tmp/cbd466465125/b.sock state=/tmp/cbd466465125/state
+2026/11/23 09:20:28 INFO claudia agent started session=sid-t1404-unread window="" attach=""
+2026/11/23 09:20:28 INFO agent started name=t1404-unread provider="" session=sid-t1404-unread connect_pid=0 connect_url_set=false window="" materialized=false
+2026/11/23 09:20:28 INFO consumer connection closed; seat kept running grant=t1404-unread
+    zz_analysis_test.go:149: ANALYSIS-T1404 published=3 read=0 replayed=0 lagged=false
+    zz_analysis_test.go:150: 3 of 3 events never reached any consumer (first 0), replayed=0 lagged=false; dead consumer read 0
+2026/11/23 09:20:28 INFO consumer connection closed; seat kept running grant=t1404-unread
+--- FAIL: TestAnalysisUnreadEventsOfADeadConsumerAreReportedClean (0.58s)
+=== RUN   TestAnalysisLiveOversizeEventIsReported
+2026/11/23 09:20:29 INFO claudia broker serving socket=/tmp/cbd659744800/b.sock state=/tmp/cbd659744800/state
+2026/11/23 09:20:29 INFO claudia agent started session=sid-d4-oversize window="" attach=""
+2026/11/23 09:20:29 INFO agent started name=d4-oversize provider="" session=sid-d4-oversize connect_pid=0 connect_url_set=false window="" materialized=false
+2026/11/23 09:20:29 WARN event too large for one frame; dropped grant=d4-oversize bytes=1048660
+    zz_analysis_test.go:180: ANALYSIS-D4 first frame after the oversize event: [e0001]
+    zz_analysis_test.go:182: the consumer received e0001 with no sign that e0000 was dropped
+2026/11/23 09:20:29 INFO consumer connection closed; seat kept running grant=d4-oversize
+--- FAIL: TestAnalysisLiveOversizeEventIsReported (0.08s)
+FAIL
+FAIL	github.com/marcelocantos/claudia/daemon	9.239s
+FAIL
+=== RUN   TestAnalysisLateSubscriberGetsTheReplay
+2026/11/23 09:22:38 INFO claudia agent started session=s-analysis window="" attach=""
+    zz_analysis_test.go:107: ANALYSIS-LATE subscribed 700ms after Start: received 0 of 3 replayed events
+    zz_analysis_test.go:109: subscriber attached after the replay grace received 0 of 3 replayed events, and nothing said so
+--- FAIL: TestAnalysisLateSubscriberGetsTheReplay (1.20s)
+=== RUN   TestAnalysisLaggedGrantReachesTheApplication
+    zz_analysis_test.go:132: ANALYSIS-LAG events=3 non-replay events=[] log line=true
+    zz_analysis_test.go:134: a lagged reclaim reached the application as 3 ordinary events; the only trace is a log line (true)
+--- FAIL: TestAnalysisLaggedGrantReachesTheApplication (0.82s)
+FAIL
+FAIL	github.com/marcelocantos/claudia	2.830s
+FAIL

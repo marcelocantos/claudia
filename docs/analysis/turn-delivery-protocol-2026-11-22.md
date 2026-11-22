@@ -111,7 +111,7 @@ model to the stated bound), **argument** (holds by reading), **unknown**.
 
 | # | Invariant | Maintained at | How it breaks | Status |
 |---|-----------|---------------|---------------|--------|
-| I1 | No consumer incarnation's application receives an event twice. | `detachLocked` committed/draining split (`daemon.go:744`); success clears `writing` (`:1522`); ring cleared after the reply (`:1151`). | A pump overflow while the grant's replay is blocked leaves the replay on the ring; the re-claim it asks for replays it again (D3). | violated: TLC `Delivery-D1`, Go repro |
+| I1 | No consumer incarnation's application receives an event twice. | `detachLocked` committed/draining split (`daemon.go:744`); success clears `writing` (`:1522`); ring cleared after the reply (`:1151`). | A pump overflow while the grant's replay is blocked leaves the replay on the ring; the re-claim it asks for replays it again (D3). | violated: TLC `Delivery-D1`, Go repro (40 of 40 twice) |
 | I2 | Events reach the application in publish order. | Put-back goes in front of the ring (`:1434`); the pump exists before the replay (`:1103`). | Not found; current-mode checks combine order with loss in I3, and every I3 trace was a loss. | argument |
 | I3 | An event a live consumer did not receive is still in daemon custody, or the application is told before it receives a later event (or by the end). | Lagged on ring overflow (`:1458`) and replay skips (`:1118`). | Bytes in a dead consumer's socket (🎯T1404); daemon restart (rings are memory); live oversize drop (`:1532`); Lagged never reaches the application; on a re-claim the lagged reply arrives after the replayed events. | violated: TLC `Delivery-D2..D6`, Go repros |
 | I4 | A grant reply's Lagged reaches the application. | `StartAgent` logs it (`broker_agent.go:163`); `reclaim` discards the reply (`:242`). | Always. | violated: Go repro, code |
@@ -267,8 +267,10 @@ input `cancelled`. The journal has no `accepted → cancelled` transition
 
 **Severity: high.** The host released the seat and treats its waiting work
 as discarded. The next sidecar process (every daemon restart starts one) runs
-it, possibly long after and out of context. A same-id retry, which
-`ErrReceiptUncertain` tells hosts to make, is acknowledged and never runs.
+it, possibly long after and out of context. Until then, a host that
+queries the request (as `ErrReceiptUncertain` asks, `omp_receipt.go:70`) is
+told `accepted` and waits for a turn that does not come, and a same-id retry
+is acknowledged and never runs.
 
 **Mechanism.** `stopTurn` empties the agent queues (`seat.ts:911`).
 `cancelOpenReceipts` settles only `started` rows (`:552-557`), and
@@ -313,9 +315,15 @@ The `agent_detached` notice makes the consumer re-claim, and the re-claim
 replays the history it has just received.
 
 **Reproduction.** TLC `Delivery-D1`, 19-step trace in
-`results/Delivery-D1-current-reclaim-dup.trace.txt`. Go:
+`results/Delivery-D1-current-reclaim-dup.trace.txt`. Go, through a real
+socket and `handleGrant` with `pumpSize` 1:
 `TestAnalysisPumpOverflowDuringReplayReplaysTwice` in
-`repro/daemon_analysis_test.go.txt` (pending Pueue 1535).
+`repro/daemon_analysis_test.go.txt`, Pueue 1535
+(`repro/pueue-1535-go-repros.log`):
+
+```
+ANALYSIS-D1 first replay 40 events (lagged=false), re-claim replay 42 events (lagged=false), 40 delivered twice
+```
 
 **Smallest fix.** Count the replay: when the reply was written but the pump
 changed, drop the replayed prefix from the front of the ring at the commit
@@ -327,8 +335,9 @@ overflow; the grant is already about to replay.
 **Severity: high** (already filed as 🎯T1404). Confirmed on this tip end to
 end: three events written into the socket of a consumer that read none, the
 next owner's grant says `Replayed=0, Lagged=false`. Go:
-`TestAnalysisUnreadEventsOfADeadConsumerAreReportedClean` (pending Pueue
-1535). Model: `Delivery-D2`. §5 is the design.
+`TestAnalysisUnreadEventsOfADeadConsumerAreReportedClean`, Pueue 1535:
+`ANALYSIS-T1404 published=3 read=0 replayed=0 lagged=false`. Model:
+`Delivery-D2`. §5 is the design.
 
 ### D5. A daemon restart reports the events it lost
 
@@ -349,7 +358,10 @@ queue triggers, discards the whole reply (`:242`), so a lagged re-claim is not
 even logged. Nothing in `Event`, `Agent` or an error carries it. On a
 re-claim the replayed events are delivered before the reply is read, so even
 a library that read Lagged would report it after the events (`Delivery-D6`).
-Go: `TestAnalysisLaggedGrantReachesTheApplication` (pending Pueue 1535).
+Go: `TestAnalysisLaggedGrantReachesTheApplication` (a fake daemon on a
+temporary socket answers the grant with three replayed events and
+`Lagged=true`), Pueue 1535: `ANALYSIS-LAG events=3 non-replay events=[] log
+line=true`.
 **Fix:** publish one `system` event naming the gap from both `StartAgent` and
 `reclaim`; with sequence numbers (§5) the gap is known per event.
 
@@ -359,8 +371,9 @@ Go: `TestAnalysisLaggedGrantReachesTheApplication` (pending Pueue 1535).
 (`broker_agent.go:98`, `:564`) and then delivers the replay to nobody;
 `publishEvent` drops events with no subscriber (`agent.go:1605`). On this
 host at load 200 a 500 ms gap between Start returning and the next statement
-is plausible. Go: `TestAnalysisLateSubscriberGetsTheReplay` (pending Pueue
-1535). **Fix:** hold the replay until the first subscriber with a count
+is plausible. Go: `TestAnalysisLateSubscriberGetsTheReplay`, Pueue 1535:
+`ANALYSIS-LATE subscribed 700ms after Start: received 0 of 3 replayed
+events`. **Fix:** hold the replay until the first subscriber with a count
 bound rather than a clock, or take the subscriber in `Config`.
 
 ### D8. An oversize live event is reported
@@ -369,8 +382,9 @@ bound rather than a clock, or take the subscriber in `Config`.
 log line (`daemon.go:1532`); the same event in a replay marks the grant Lagged
 (`:1118`). `EncodeEventWire` bounds `Raw` and `Text` only
 (`boundEventForWire`, `broker_bound.go:153`), so it takes an unbounded field such as `ToolTitle`
-over 1 MiB. Model `Delivery-D4`; Go `TestAnalysisLiveOversizeEventIsReported`
-(pending Pueue 1535). **Fix:** set a per-grant "dropped" flag the next frame
+over 1 MiB. Model `Delivery-D4`; Go `TestAnalysisLiveOversizeEventIsReported`,
+Pueue 1535: the first frame after the oversize event is the next event,
+`e0001`, with nothing said. **Fix:** set a per-grant "dropped" flag the next frame
 or grant carries, or bound every string field in `boundEventForWire`.
 
 ### D9. A tool process does not outlive its sidecar or its seat's stop
@@ -381,7 +395,19 @@ a group is forgotten when its leader's stdio closes (`process.ts:119`), so
 `sleep 60 > /dev/null 2>&1 &` from a finished command survives
 `killAllGroups`, Release Stop and drop; and a SIGKILLed sidecar runs no
 handler while every tool group is its own session. Model `Ownership-retired`,
-`-crash`; the Codex reproduction rerun (pending Pueue 1538). **Fix:** keep a
+`-crash`. The Codex reproduction, rerun on this tip (Pueue 1546,
+`repro/pueue-1546-ownership-repro.out`), drives the real `runCommand` and
+`killAllGroups`:
+
+```
+{"scenario":"leader-exits-with-redirected-background-child",…,"childAliveBeforeCleanup":true,"childAliveAfterCleanup":true}
+{"scenario":"tracked-active-group-control","childAliveAfterCleanup":false}
+{"scenario":"wrapper-owner-SIGKILL","ownerExited":true,"leaderAliveAfterOwnerDeath":true,"childAliveAfterOwnerDeath":true}
+```
+
+(A first run, Pueue 1538, exited 0 and printed nothing; I did not find out
+why. The rerun ran `bun ./analysis-ownership-repro.ts` with `~/.local/bin` on
+`PATH` and its output captured to a file.) **Fix:** keep a
 group until `kill(-pgid, 0)` says it is empty, not until its leader closes;
 for SIGKILL, record live pgids beside the socket and have the next sidecar
 reap them after checking each leader's start time.

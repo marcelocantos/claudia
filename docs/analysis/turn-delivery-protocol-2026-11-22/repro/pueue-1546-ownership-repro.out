@@ -1,0 +1,4 @@
+{"scenario":"leader-exits-with-redirected-background-child","shellStatus":0,"shellExited":true,"childAliveBeforeCleanup":true,"childAliveAfterCleanup":true}
+{"scenario":"tracked-active-group-control","childAliveAfterCleanup":false}
+{"scenario":"wrapper-owner-SIGKILL","ownerExited":true,"leaderAliveAfterOwnerDeath":true,"childAliveAfterOwnerDeath":true}
+EXIT 0
