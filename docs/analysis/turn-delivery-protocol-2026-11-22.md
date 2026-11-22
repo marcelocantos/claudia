@@ -400,15 +400,145 @@ per-frame cost with no request traffic and no retention.
 
 ## 6. Design findings that are not defects
 
-*pending*
+**F1. The request journal cannot record "discarded before it started".**
+`receipts.ts` allows `accepted → started → terminal` and nothing else
+(`#validateTransition`, `:230`), and `finish` skips rows that are not started
+(`:168`). Every path that removes an input before the pre-model gate (Release
+Stop, an abort during pre-turn compaction, a drop for removal, a turn ended by
+a refusal) therefore leaves an `accepted` row that the next load re-queues.
+D1 and D2 are two faces of this. *Change:* add `accepted → cancelled` (and
+`accepted → failed` for the refusal case), and settle at each removal point.
+*Cost:* one transition rule, a settle call in `stopTurn`, the `executeTurn`
+catch and the refusal drain; old stores stay valid because the rule only
+widens.
+
+**F2. Every loss report ends in a log.** Lagged (`broker_agent.go:163`), a
+discarded re-claim reply (`:242`), skipped oversize frames
+(`brokerClient.noteDropped`, whose own comment says the count reaches no
+consumer) and the live oversize drop (`daemon.go:1479`) are all log lines.
+The application has no way to know its history has a hole. *Change:* one
+`system` event (for example `ProgressType: "history_gap"`, with the reason
+and, once sequence numbers exist, the range), published by the library
+before the next event. *Cost:* a new event type; consumers that ignore it
+behave as today.
+
+**F3. Replay delivery is decided by a wall clock.** The 500 ms
+`replayGrace` (D7) is a guess about how soon a consumer subscribes, on a
+host whose own notes record multi-second scheduling delays at high load.
+*Change:* buffer the replay until the first subscriber, bounded by count,
+or let `Config` carry the subscriber so it exists before the grant. *Cost:*
+small; the bound already exists as the ring capacity.
+
+**F4. Lifecycle messages bypass the pump.** `agent_gone` (`daemon.go:2486`)
+and goal checks are written with `owner.Reply` directly, so they can overtake
+events still queued for the same seat, and the seat-watch goroutine that
+writes `agent_gone` blocks on a consumer that is not reading (hunt C10).
+*Change:* send them through the grant's pump as ordered frames. *Cost:* a
+frame type in the pump; ordering becomes a property instead of an accident.
+
+**F5. One blocked write stalls a whole connection.** `Conn.writeLine` holds
+the connection mutex across `net.Write` with no deadline
+(`transport.go`, `writeLine`). A consumer that stops reading blocks every
+writer to it: grant replies, goal checks, notices, every seat it owns. The
+detach-on-overflow rule only fires after 100,000 queued events. *Change:* a
+write deadline that detaches the consumer, as the overflow does. *Cost:* one
+deadline and a test; a consumer that pauses longer than the deadline is
+detached and re-claims, which it already handles.
+
+**F6. Release Stop and drop share `stopTurn`, but want different things
+for the queue.** Drop before a reload wants the queued inputs to survive
+(🎯T1407's acceptance); Release Stop wants them gone. Today both clear
+memory and leave the journal, which suits neither exactly (D2). *Change:* a
+`stopTurn({settle})` flag, settle on Release Stop and on removal, keep on the
+replacement drop. *Cost:* one parameter; the Go side already distinguishes
+the two (`quiesce` vs `discard`).
+
+**F7. A provider refusal strands queued inputs.** The drain loops stop on a
+refusal (`seat.ts:733`, `:758`) and the comment at `:954` says the next
+prompt runs them. The host was told each was accepted and its waiter waits
+for a turn that will not come until someone else sends (`PromptProtocol-P7`).
+*Change:* settle them `failed` with the turn's cause, or run them (they will
+likely be refused the same way, which at least answers them). *Cost:* small.
+
+**F8. Tests that pin behaviour rather than check it.** The branch's own
+review already notes that `TestSlowConsumerReclaimKeepsEventOrder` passes on
+the pre-H12 code. The kill tests in `daemon/pump_kill_test.go` are the better
+pattern: `assertUnreadReplayed` takes its expectation from what the dead
+consumer actually read, not from the daemon's own counters. The D3 and D4
+reproductions here use the same oracle.
 
 ## 7. Unconfirmed suspicions
 
-*pending*
+1. **A stolen in-flight event reaches two consumers.** When another
+   connection takes a draining writer's events (`daemon.go:1065-1080`) it
+   clears `pump.writing`, but the writer goroutine still writes its local
+   `raw` (`:1497`, `:1514`). If the wedged consumer is alive and later reads,
+   it receives an event the new owner was also replayed. Needs two live
+   consumers of one seat; not modelled (one logical consumer) and not run.
+2. **`agent_gone` can arrive before the seat's last events** (F4). The
+   consumer marks the handle dead and keeps delivering the queued events;
+   whether any consumer misreads that order was not checked.
+3. **Release Stop drops the stopped turn's last events.** `handleRelease`
+   detaches the live owner and deletes the grant (`daemon.go:1683-1689`);
+   events still queued in its pump go onto the ring of a deleted grant. The
+   owner asked to stop and does not wait for them, so this may be harmless;
+   not reproduced.
+4. **Whether the daemon catches D1's re-run turn.** After the stop,
+   `handleRelease` polls `PromptInFlight` every 10 ms for up to 5 s, and
+   `Agent.Stop` sends a second stop only if `inflight` is set. The re-run
+   turn's `accepted` arrives right behind the aborted `turn_end`, so the
+   daemon either waits out 5 s and discards the seat, or proceeds and closes
+   the connection while the turn runs on. Either way the stopped input
+   reaches the provider at least for its compaction. Only a live run decides
+   which; not run (brief: no live gate).
+5. **The window between a prompt and its first model call.** The prompt
+   model excludes stops in that state (`Settled`), on the reading that
+   nothing awaits real I/O between `agent.prompt` and the pre-model gate. If
+   pi-agent-core does await I/O there, an input stopped in that window stays
+   `accepted` (the `P3`/`P4` traces before the guard showed it). Not checked
+   in pi-agent-core's source.
+6. **`seatFor` reads `g.owner` and `g.proc` after releasing `d.mu`**
+   (`daemon.go:1775-1789`): a data race against a concurrent detach; benign
+   in effect (a stale ownership answer), not run under `-race`.
+7. **The eight-pass drain bound** (`seat.ts:733`, `:758`): a turn that keeps
+   receiving prompts faster than it answers them ends with inputs queued,
+   stranded like F7. Not modelled (the model drains without a bound).
+8. **Hunt C6 (steer on an idle seat parks) is still present.** Shown by the
+   model (`PromptProtocol-P6`) and the code (`seat.ts:966-980` opens no
+   turn); not rerun on the real seat here.
 
 ## 8. Relation to the 2026-11-21 Codex partials
 
-*pending*
+The Codex run left 24 files under
+`analysis-partials-2026-11-21/claudia-filler_analysis-2026-11-21/docs/analysis/turn-delivery-model/`.
+All were read.
+
+* **Kept, copied unchanged:** `Ownership.tla` and its five configs. The
+  abstraction matches `process.ts` and `server.ts`: groups are tracked at
+  spawn, forgotten when the leader closes, killed on lifeline and SIGTERM,
+  and not on SIGKILL. The only additions are the `EXPECT` line on each
+  config and a provenance comment. `Ownership-repro.ts` is kept as
+  `repro/analysis-ownership-repro.ts` with its import path changed; it
+  exercises the real `runCommand` and `killAllGroups`.
+* **Redone: `Delivery.tla`.** It modelled an abstract log, wire and inbox in
+  which a write retires the event and a detach only flips a flag. With no
+  pump, no draining writer, no grant replay and no commit step it could not
+  reach D3, the lagged re-claim ordering, the replay grace or the
+  granted-reply boundary. Its conclusions (socket loss, daemon-restart loss,
+  silent oversize drop, ack without dedup duplicates) are all confirmed by
+  the new model (`D2`, `D3`, `D4`, `A2`), and its ack design is close to the
+  `ack` mode here.
+* **Redone: `PromptProtocol.tla`.** It had no Release Stop, no interrupt, no
+  pre-turn compaction inside a turn and no host view of a request, and it
+  treated re-queueing every accepted input on reload as the goal, so it could
+  not find D1 or D2. Its invariants correspond to I6, I7 and I10 here.
+* **Redone: `_repro/delivery_test.go`.** Its two tests called daemon
+  internals directly (`detachLocked`, `forwarder`). The equivalents here go
+  through a real socket and `handleGrant`
+  (`TestAnalysisUnreadEventsOfADeadConsumerAreReportedClean`,
+  `TestAnalysisLiveOversizeEventIsReported`).
+* **Replaced:** `run_delivery.py` by `run_tlc.sh`, which covers all three
+  models and fails on any outcome that differs from the config's claim.
 
 ## 9. Coverage
 
