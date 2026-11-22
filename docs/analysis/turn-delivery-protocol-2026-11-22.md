@@ -190,7 +190,20 @@ since only microtasks separate them. Bounds: 2–3 request ids, 3–4 sends.
 Kept unchanged after review (§8): broker, sidecar epochs, one seat, two tool
 groups each with a leader and a descendant that stays in the group, leader
 exit with and without forgetting the group, lifeline, SIGTERM, SIGKILL, seat
-stop, restart. Results: see §3.3 table below (pending Pueue 1537).
+stop, restart. Kill delivery is atomic, so the model is optimistic about
+signal races. Bounds: 2 groups, 2 sidecar epochs. Pueue 1537:
+
+| Config | Result | What the trace is |
+|--------|--------|-------------------|
+| baseline (leaders stay, no SIGKILL; liveness included) | pass, 204 states | Lifeline and SIGTERM reap every tracked group; the EOF is eventually handled. |
+| crash (SIGKILL allowed) | **NoToolOutlivesSidecar violated**, 3 steps | Spawn, SIGKILL; the group outlives the sidecar. |
+| retain (leaders exit, groups kept) | pass, 348 states | Keeping the group until it is empty would be enough. |
+| retired (leaders exit, groups forgotten: the code) | **NoToolOutlivesSidecar violated**, 6 steps | Spawn, fork a background child, the leader exits and is forgotten, the sidecar exits; the child lives. |
+| strict (sidecar must never outlive the broker) | **StrictNoChildOutlivesOwner violated**, 3 steps | Between the broker's death and the EOF being handled; transient by design. |
+
+"No child outlives its owner" therefore holds for the lifeline and SIGTERM
+paths over everything still in a tracked group, and fails for a SIGKILLed
+sidecar and for a background job whose command already returned.
 
 ## 4. Confirmed defects
 
@@ -506,6 +519,12 @@ reproductions here use the same oracle.
 8. **Hunt C6 (steer on an idle seat parks) is still present.** Shown by the
    model (`PromptProtocol-P6`) and the code (`seat.ts:966-980` opens no
    turn); not rerun on the real seat here.
+9. **D1's re-run answer may be handed to the next wait.** The re-run turn
+   produces a `started` receipt for the stopped request, which re-arms the
+   host's turn latch on a turn id the host never minted
+   (`turn_latch.go`, `recordTurnEventLocked`); `retireEndedTurnFor` keeps a
+   turn that is still running, so the next send's wait may take the stopped
+   request's answer. The C3 class; not run.
 
 ## 8. Relation to the 2026-11-21 Codex partials
 
@@ -542,4 +561,33 @@ All were read.
 
 ## 9. Coverage
 
-*pending*
+**Read in full:** `daemon/daemon.go` except `New` (`:289-480`) and the task,
+pick and resolve handlers (`:1957-2260`); `internal/broker/server.go`,
+`transport.go`; `broker_client.go`, `broker_agent.go`, `broker_bound.go`;
+`turn_latch.go`; `omp/sidecar.go`; `omp_receipt.go`; `sidecar/server.ts`,
+`seat.ts`, `receipts.ts`, `process.ts`; `sidecar/maintain.ts` from
+`Maintenance` on (`:586-1013`); the daemon test fixture
+(`daemon/fixture_test.go`, `pump_test.go`, `pump_kill_test.go`) and the
+sidecar fixtures used by the reproductions; all 24 Codex partial files;
+AGENTS.md, `~/.claude/go.md`, `~/.claude/tlaplus.md`, `~/.claude/bash.md`;
+the claudia sections of the 2026-11-20 hunt digest; 🎯T1400–🎯T1412 in this
+branch's `bullseye.yaml`.
+
+**Read in part:** `omp_agent.go` (`StartAgent`, the pump, compaction, switch,
+stop and shutdown, `:322-1341`, `:1900-1975`); `agent.go` (subscribe,
+publish, interrupt, quiesce, stop); `registry.go` (stop and remove);
+`mcp_invocation.go` (`sendContext`); `sidecar/killguard.ts` (first 80
+lines); `broker_wire.go` (the event codec); `internal/broker/wire_grants.go`
+(the grant reply fields).
+
+**Not reached:** `turn_wait.go` and `delivery.go` (WaitForResponse and the
+escalation ladder, which suspicion 9 touches); `registry_seats.go`
+(`ResumeAll` and the seat watch) beyond the lines cited; the usage spool
+(`omp/spool.go`, `sidecar/spool.ts`); `sidecar/turn.ts`, `hostcalls.ts`,
+`maintain.ts`'s `History`; `mcp_host_stdio.go` (M13's group kill, taken from
+🎯T1412 as written); every non-sidecar provider backend (Codex app-server,
+Grok and Cursor ACP), whose processes the ownership model does not cover;
+the fleet kernel.
+
+**Not run:** the live gate (brief), the repository's own suites (not needed
+for these claims), pi-agent-core's internals (suspicion 5).
