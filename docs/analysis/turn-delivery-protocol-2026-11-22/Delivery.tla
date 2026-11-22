@@ -120,6 +120,14 @@ FinishR(dd, pp, p) ==
 
 AppliedBy(ap) == UNION {ap[i] : i \in Conns}
 
+\* Events still held somewhere on their way: the ring, a pump's queue or
+\* in-flight copy, the unacknowledged window, a socket, a push queue.
+InCustody ==
+  Range(d.ring) \cup Range(d.unacked)
+  \cup UNION {Range(pumps[p].q) \cup ({pumps[p].w, pumps[p].raw} \ {0}) : p \in 1..MaxGrants}
+  \cup UNION {{f.e : f \in Range(sock[c])} \ {0} : c \in Conns}
+  \cup UNION {Range(cl[c].held) : c \in Conns}
+
 ApplyOne(st, c, e) ==
   IF Mode # "current" /\ e <= st.cursor[c] THEN st   \* seq dedup
   ELSE
@@ -128,6 +136,8 @@ ApplyOne(st, c, e) ==
                THEN {x \in (st.cursor[c] + 1)..(e - 1) : x \notin all} ELSE {}
         rep == st.reported \cup gap
         hole == {x \in 1..(e - 1) : x \notin all} \ rep
+        \* an earlier event still on its way arrives after this one
+        late == {x \in 1..(e - 1) : x \notin all /\ x \in InCustody}
     IN [applied |-> [st.applied EXCEPT ![c] = @ \cup {e}],
         cursor |-> [st.cursor EXCEPT ![c] = IF e > @ THEN e ELSE @],
         \* Having applied one event, the incarnation has a baseline; a fresh
@@ -136,7 +146,8 @@ ApplyOne(st, c, e) ==
         reported |-> rep,
         bad |-> [st.bad EXCEPT !.dupInc = @ \/ e \in st.applied[c],
                                !.dupLogical = @ \/ e \in (all \ st.applied[c]),
-                               !.hole = @ \/ hole # {}]]
+                               !.hole = @ \/ hole # {},
+                               !.reorder = @ \/ late # {}]]
 
 RECURSIVE ApplyAll(_, _, _)
 ApplyAll(st, c, s) == IF s = <<>> THEN st ELSE ApplyAll(ApplyOne(st, c, Head(s)), c, Tail(s))
@@ -156,7 +167,7 @@ Init ==
   /\ applied = [c \in Conns |-> {}] /\ cursor = [c \in Conns |-> 0]
   /\ knows = [c \in Conns |-> c = 1] /\ reported = {}
   /\ up = TRUE /\ crashes = 0 /\ grants = 0 /\ epochNew = FALSE
-  /\ bad = [dupInc |-> FALSE, dupLogical |-> FALSE, hole |-> FALSE]
+  /\ bad = [dupInc |-> FALSE, dupLogical |-> FALSE, hole |-> FALSE, reorder |-> FALSE]
 
 ConsumerVars == <<alive, born, cl, applied, cursor, knows, reported, bad>>
 
@@ -458,6 +469,9 @@ NoDupLogical == ~bad.dupLogical
 \* and was not reported: the history arrives in order, and a hole is
 \* announced before the stream moves past it.
 InOrderOrReported == ~bad.hole
+\* Order alone: no event is delivered while an earlier one is still on its
+\* way (a hole that is a loss is InOrderOrReported's).
+NoReorder == ~bad.reorder
 
 Quiescent ==
   /\ pub = N /\ up

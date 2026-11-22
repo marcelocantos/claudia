@@ -131,8 +131,23 @@ model to the stated bound), **argument** (holds by reading), **unknown**.
 
 All runs: TLC 2.19, two workers, seed 1, through Pueue. Each config's first
 line declares the expected outcome and `run_tlc.sh` fails on a mismatch; the
-final runs matched on every config. Traces, reduced to one line per step,
-are in `results/`.
+final runs matched on every config. Traces, reduced to one line per step by
+`trace_summary.py`, are in `results/`.
+
+To rerun: `run_tlc.sh <scratch> cfg/*.cfg` for the models. The sidecar
+reproductions need a scratch copy of this commit's `sidecar/` with its
+`node_modules` (made here by `git archive HEAD sidecar` plus a copy of the
+review worktree's install at the same `c33e60e` lockfile, so nothing was
+fetched), then `repro/run_sidecar_repros.sh <scratch> <test>`. The Go ones
+need `git archive HEAD` unpacked as `<scratch>/mod`, then
+`repro/run_go_repros.sh <scratch>` (private `GOCACHE`, `GOPROXY=off`).
+
+Three expectations were wrong on the first run and are recorded rather than
+hidden: `Delivery-D3` trips `EndComplete` before `InOrderOrReported` (the same
+loss, a shorter trace); `PromptProtocol-P1b` passes, because the modelled host
+never re-sends a request it was told had ended; and `Delivery-A2` first
+failed for a modelling reason (a fresh consumer never gained a gap baseline),
+fixed by taking the baseline from its first grant reply.
 
 ### 3.1 Delivery (`Delivery.tla`)
 
