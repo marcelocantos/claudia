@@ -1,0 +1,41 @@
+┌───────────────────────────────────────┐
+│ Task 1492:    failed with exit code 1 │
+└───────────────────────────────────────┘
+Command: docs/analysis/turn-delivery-protocol-2026-11-22/repro/run_sidecar_repros.sh /Volumes/Storage/worktrees/claudia-turn-delivery-2026-11-22 analysis-stop-discard.test.ts 
+   Path: /Users/marcelo/.t3/worktrees/claudia/filler-analysis-2026-11-6722f05690448811                                                                                         
+  Label: claudia-analysis: P1 stop-discard repro                                                                                                                               
+  Start: Mon, 23 Nov 2026 08:45:07 +1100                                                                                                                                       
+    End: Mon, 23 Nov 2026 08:45:20 +1100                                                                                                                                       
+
+output:
+bun test v1.4.2 (744846f84)
+
+analysis-stop-discard.test.ts:
+ANALYSIS-P1 {"acceptedBeforeStop":"accepted","ranAfterStop":false,"receiptAfterStop":"accepted","retryAck":["accepted","accepted"],"ranOnRetry":false,"ranAfterRestart":true,"startedAfterRestart":true}
+81 |     startedAfterRestart,
+82 |   };
+83 |   console.log("ANALYSIS-P1 " + JSON.stringify(observed));
+84 |   // Desired: the stop discards r2 durably, so nothing ever runs it again.
+85 |   expect({ ranAfterStop, receiptAfterStop: afterStop.receipt?.state, ranAfterRestart })
+86 |     .toEqual({ ranAfterStop: false, receiptAfterStop: "cancelled", ranAfterRestart: false });
+          ^
+error: expect(received).toEqual(expected)
+
+  {
+-   "ranAfterRestart": false,
++   "ranAfterRestart": true,
+    "ranAfterStop": false,
+-   "receiptAfterStop": "cancelled",
++   "receiptAfterStop": "accepted",
+  }
+
+- Expected  - 2
++ Received  + 2
+
+      at <anonymous> (/Volumes/Storage/worktrees/claudia-turn-delivery-2026-11-22/sidecar/analysis-stop-discard.test.ts:86:6)
+(fail) a prompt discarded by Release Stop is settled, not left accepted [12776.73ms]
+
+ 0 pass
+ 1 fail
+ 3 expect() calls
+Ran 1 test across 1 file. [12.79s]
