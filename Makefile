@@ -126,9 +126,33 @@ live-usage:
 # must be green AND every fault-injection mutant must be caught — a spec that
 # stays green on known-broken code is toothless. Requires Java + tla2tools.jar
 # (see scripts/tlc.sh). Run it before a release (`make gate-full`).
-.PHONY: build build-sidecar launchd-install launchd-status
-build: build-sidecar
-	@GOWORK=off go build -o bin/claudia ./cmd/claudia
+# Keychain ACLs bind to the code signature; signing with a stable Developer ID
+# Application identity and bundle identifier keeps Keychain trust across
+# rebuilds. Override with CLAUDIA_CODESIGN_IDENTITY (set empty to skip).
+CLAUDIA_CODESIGN_IDENTITY ?= Developer ID Application: Canticode Pty Ltd (N29CRQ669R)
+CLAUDIA_CODESIGN_IDENTIFIER := com.marcelocantos.claudia
+CLAUDIA_BUILD_OUT ?= bin/claudia
+
+.PHONY: build build-claudia build-sidecar launchd-install launchd-status
+build: build-sidecar build-claudia
+
+build-claudia:
+	@mkdir -p "$(dir $(CLAUDIA_BUILD_OUT))"
+	@GOWORK=off go build -o "$(CLAUDIA_BUILD_OUT)" ./cmd/claudia
+	@if [ "$$(uname -s)" = "Darwin" ] && [ "$$(GOWORK=off go env GOOS)" = "darwin" ]; then \
+		id="$(CLAUDIA_CODESIGN_IDENTITY)"; \
+		if [ -z "$$id" ]; then \
+			echo "claudia: CLAUDIA_CODESIGN_IDENTITY is empty; skipping codesign" >&2; \
+		elif command -v security >/dev/null 2>&1 && command -v codesign >/dev/null 2>&1 && \
+			security find-identity -v -p codesigning 2>/dev/null | grep -Fq -e "\"$$id\"" -e " $$id "; then \
+			codesign --force --options runtime --timestamp \
+				--identifier "$(CLAUDIA_CODESIGN_IDENTIFIER)" \
+				--sign "$$id" "$(CLAUDIA_BUILD_OUT)" && \
+			codesign --verify --strict "$(CLAUDIA_BUILD_OUT)"; \
+		else \
+			echo "claudia: codesign identity '$$id' not found in keychain; skipping codesign" >&2; \
+		fi; \
+	fi
 
 # Build both entry points and stage pi-natives beside them; its compiled
 # loader searches next to the executable. Nothing installs deps at runtime.

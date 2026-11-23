@@ -61,6 +61,34 @@ command -v zig >/dev/null || {
 	exit 1
 }
 
+# Sign darwin binaries with a stable Developer ID identity and bundle
+# identifier so Keychain ACLs and TCC grants survive upgrades. Override with
+# CLAUDIA_CODESIGN_IDENTITY (set empty to skip).
+CLAUDIA_CODESIGN_IDENTITY="${CLAUDIA_CODESIGN_IDENTITY-Developer ID Application: Canticode Pty Ltd (N29CRQ669R)}"
+CLAUDIA_CODESIGN_IDENTIFIER="com.marcelocantos.claudia"
+
+codesign_darwin() {
+	local bin=$1
+	if [ "$(uname -s)" != "Darwin" ]; then
+		echo "release-package: WARNING not on Darwin; leaving $bin unsigned" >&2
+		return 0
+	fi
+	if [ -z "$CLAUDIA_CODESIGN_IDENTITY" ]; then
+		echo "release-package: WARNING CLAUDIA_CODESIGN_IDENTITY is empty; leaving $bin unsigned" >&2
+		return 0
+	fi
+	if command -v security >/dev/null 2>&1 && command -v codesign >/dev/null 2>&1 && \
+		security find-identity -v -p codesigning 2>/dev/null | grep -Fq -e "\"$CLAUDIA_CODESIGN_IDENTITY\"" -e " $CLAUDIA_CODESIGN_IDENTITY "; then
+		codesign --force --options runtime --timestamp \
+			--identifier "$CLAUDIA_CODESIGN_IDENTIFIER" \
+			--sign "$CLAUDIA_CODESIGN_IDENTITY" "$bin"
+		codesign --verify --strict --verbose=2 "$bin"
+		echo "release-package: signed $bin ($CLAUDIA_CODESIGN_IDENTITY)"
+	else
+		echo "release-package: WARNING codesign identity '$CLAUDIA_CODESIGN_IDENTITY' not found in keychain; leaving $bin unsigned" >&2
+	fi
+}
+
 build_one() {
 	local goos=$1 goarch=$2 zigtarget=$3 asset_os=$4 asset_arch=$5
 	local out asset ldflags
@@ -76,6 +104,9 @@ build_one() {
 		CGO_ENABLED=1 GOOS="$goos" GOARCH="$goarch" \
 			CC="zig cc -target $zigtarget" CXX="zig c++ -target $zigtarget" \
 			go build -trimpath -ldflags="$ldflags" -o "$out" ./cmd/claudia
+	fi
+	if [ "$goos" = "darwin" ]; then
+		codesign_darwin "$out"
 	fi
 	tar -czf "$DIST/$asset" -C "$BUILD" claudia sidecar -C "$ROOT" LICENSE README.md NOTICE
 	rm -f "$out"
