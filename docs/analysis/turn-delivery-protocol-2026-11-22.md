@@ -12,8 +12,8 @@ checked with TLC, and each is answered here:
 
 1. **Every event is delivered to a live consumer exactly once or reported
    lost.** No. Six ways an event is lost without a report reaching the
-   application, and one way a live consumer receives the same history twice.
-   §3.1, §4.
+   application, one way a live consumer receives the same history twice, and
+   one way it receives an event after newer ones (or twice). §3.1, §4.
 2. **No prompt is accepted during compaction and then dropped.** Yes, to the
    model's bound, including interrupts, drops and sidecar crashes during
    compaction. But compaction opens a window for the opposite fault: an input
@@ -142,9 +142,11 @@ fetched), then `repro/run_sidecar_repros.sh <scratch> <test>`. The Go ones
 need `git archive HEAD` unpacked as `<scratch>/mod`, then
 `repro/run_go_repros.sh <scratch>` (private `GOCACHE`, `GOPROXY=off`).
 
-The final pass over every config is Pueue 1569 (S2 rerun in 1614 after a
-transient failure: TLC's extracted `TLC.tla` vanished from the shared system
-temp directory mid-run). Four expectations were wrong on the first run and
+The final pass over every config is Pueue 1569. Its `Delivery-S2` run did not
+start (TLC's extracted `TLC.tla` vanished from the shared system temp
+directory), so S2's result is from Pueue 1549, whose model differs from the
+final one only in how `NoReorder` counts events on their way, which S2 does
+not check. Four expectations were wrong on the first run and
 are recorded rather than hidden: `Delivery-R2` was expected to pass and found
 D10 (after three refinements of what counts as "still on its way", each
 removing a false report: an oversize event the replay had skipped, a writer's
